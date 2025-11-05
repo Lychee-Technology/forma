@@ -1,0 +1,152 @@
+{
+  "id": {
+    "attributeID": 1,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "status": {
+    "attributeID": 2,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "personalInfo.name.display": {
+    "attributeID": 3,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "personalInfo.name.japanese": {
+    "attributeID": 4,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "personalInfo.name.given": {
+    "attributeID": 5,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "personalInfo.name.family": {
+    "attributeID": 6,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "personalInfo.age": {
+    "attributeID": 7,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "personalInfo.maritalStatus": {
+    "attributeID": 8,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "contactInfo.email": {
+    "attributeID": 9,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "contactInfo.phone": {
+    "attributeID": 10,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "contactInfo.preferredContactMethod": {
+    "attributeID": 11,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "currentAddress.city": {
+    "attributeID": 12,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "currentAddress.prefecture": {
+    "attributeID": 13,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "currentAddress.fullAddress": {
+    "attributeID": 14,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "propertyRequirements.budget.min": {
+    "attributeID": 15,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "propertyRequirements.budget.max": {
+    "attributeID": 16,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "propertyRequirements.budget.currency": {
+    "attributeID": 17,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "propertyRequirements.desiredAreas": {
+    "attributeID": 18,
+    "valueType": "text",
+    "insideArray": true
+  },
+  "propertyRequirements.propertyType": {
+    "attributeID": 19,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "propertyRequirements.bedrooms.min": {
+    "attributeID": 20,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "propertyRequirements.bedrooms.max": {
+    "attributeID": 21,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "propertyRequirements.purpose": {
+    "attributeID": 22,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "propertyRequirements.maxStationWalkMinutes": {
+    "attributeID": 23,
+    "valueType": "numeric",
+    "insideArray": false
+  },
+  "propertyRequirements.preferences": {
+    "attributeID": 24,
+    "valueType": "text",
+    "insideArray": true
+  },
+  "propertyRequirements.excludeConditions": {
+    "attributeID": 25,
+    "valueType": "text",
+    "insideArray": true
+  },
+  "propertyRequirements.targetMoveInDate": {
+    "attributeID": 26,
+    "valueType": "date",
+    "insideArray": false
+  },
+  "propertyRequirements.moveInDateFlexibility": {
+    "attributeID": 27,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "metadata.createdAt": {
+    "attributeID": 28,
+    "valueType": "date",
+    "insideArray": false
+  },
+  "metadata.createdBy": {
+    "attributeID": 29,
+    "valueType": "text",
+    "insideArray": false
+  },
+  "metadata.source": {
+    "attributeID": 30,
+    "valueType": "text",
+    "insideArray": false
+  }
+}

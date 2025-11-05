@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lead",
+  "description": "Real estate lead data model",
+  "type": "object",
+  "required": [
+    "id",
+    "personalInfo",
+    "contactInfo",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique customer identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "hot",
+        "warm",
+        "cold",
+        "inactive",
+        "converted"
+      ],
+      "description": "Customer lead status"
+    },
+    "personalInfo": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "object",
+          "required": [
+            "display"
+          ],
+          "properties": {
+            "display": {
+              "type": "string",
+              "description": "Primary display name"
+            },
+            "japanese": {
+              "type": "string",
+              "description": "Japanese name representation"
+            },
+            "given": {
+              "type": "string",
+              "description": "Given name"
+            },
+            "family": {
+              "type": "string",
+              "description": "Family name"
+            }
+          }
+        },
+        "age": {
+          "type": "integer",
+          "minimum": 18,
+          "maximum": 120,
+          "description": "Customer age in years"
+        },
+        "maritalStatus": {
+          "type": "string",
+          "enum": [
+            "single",
+            "married",
+            "divorced",
+            "widowed",
+            "other"
+          ],
+          "description": "Marital status"
+        },
+        "familyComposition": {
+          "type": "object",
+          "properties": {
+            "adults": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of adults"
+            },
+            "children": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of children"
+            },
+            "other": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Other dependents"
+            }
+          }
+        }
+      }
+    },
+    "contactInfo": {
+      "type": "object",
+      "required": [
+        "email"
+      ],
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Primary email address"
+        },
+        "phone": {
+          "type": "string",
+          "pattern": "^[0-9-+() ]+$",
+          "description": "Primary phone number"
+        },
+        "alternatePhone": {
+          "type": "string",
+          "pattern": "^[0-9-+() ]+$",
+          "description": "Alternate phone number"
+        },
+        "preferredContactMethod": {
+          "type": "string",
+          "enum": [
+            "email",
+            "phone",
+            "sms",
+            "line",
+            "other"
+          ],
+          "description": "Preferred method of contact"
+        }
+      }
+    },
+    "currentAddress": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "description": "City name"
+        },
+        "ward": {
+          "type": "string",
+          "description": "Ward/district (e.g., Meguro-ku)"
+        },
+        "prefecture": {
+          "type": "string",
+          "description": "Prefecture (e.g., Tokyo)"
+        },
+        "fullAddress": {
+          "type": "string",
+          "description": "Complete address string"
+        }
+      }
+    },
+    "employment": {
+      "type": "object",
+      "properties": {
+        "occupation": {
+          "type": "string",
+          "description": "Job title or occupation"
+        },
+        "company": {
+          "type": "string",
+          "description": "Company name"
+        },
+        "employmentType": {
+          "type": "string",
+          "enum": [
+            "full-time",
+            "part-time",
+            "contract",
+            "self-employed",
+            "unemployed",
+            "retired"
+          ],
+          "description": "Type of employment"
+        },
+        "yearsEmployed": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Years at current employer"
+        },
+        "annualIncome": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Annual income amount"
+            },
+            "currency": {
+              "type": "string",
+              "default": "JPY",
+              "enum": [
+                "JPY",
+                "USD",
+                "EUR"
+              ],
+              "description": "Currency code"
+            }
+          }
+        }
+      }
+    },
+    "propertyRequirements": {
+      "type": "object",
+      "properties": {
+        "budget": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Minimum budget"
+            },
+            "max": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum budget"
+            },
+            "absolute": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Absolute maximum budget"
+            },
+            "currency": {
+              "type": "string",
+              "default": "JPY",
+              "enum": [
+                "JPY",
+                "USD",
+                "EUR"
+              ]
+            }
+          }
+        },
+        "desiredAreas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of desired areas/neighborhoods"
+        },
+        "propertyType": {
+          "type": "string",
+          "enum": [
+            "apartment",
+            "condo",
+            "house",
+            "townhouse",
+            "land",
+            "other"
+          ],
+          "description": "Type of property"
+        },
+        "bedrooms": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "primary-residence",
+            "investment",
+            "vacation",
+            "business",
+            "other"
+          ],
+          "description": "Purchase purpose"
+        },
+        "maxStationWalkMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum walking time to station in minutes"
+        },
+        "preferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of preferences (e.g., modern design, natural light)"
+        },
+        "excludeConditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Conditions to avoid"
+        },
+        "targetMoveInDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Target move-in date (ISO 8601 format)"
+        },
+        "moveInDateFlexibility": {
+          "type": "string",
+          "enum": [
+            "flexible",
+            "somewhat-flexible",
+            "fixed"
+          ],
+          "description": "Flexibility of move-in date"
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional notes and comments"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Record creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "User who created the record"
+        },
+        "assignedAgent": {
+          "type": "string",
+          "description": "Assigned sales agent ID"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "web",
+            "referral",
+            "walk-in",
+            "phone",
+            "event",
+            "other"
+          ],
+          "description": "Lead source"
+        }
+      }
+    }
+  }
+}

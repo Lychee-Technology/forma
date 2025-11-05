@@ -1,0 +1,929 @@
+{
+  "type": "object",
+  "properties": {
+    "listingId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this specific listing (e.g., provided by the listing platform)."
+    },
+    "propertyType": {
+      "type": "string",
+      "enum": [
+        "condominium",
+        "house",
+        "land",
+        "commercial"
+      ],
+      "description": "Type of property."
+    },
+    "building": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "object",
+          "properties": {
+            "ja": {
+              "type": "string",
+              "description": "Name in Japanese (Kanji/Kana). e.g., パークコート麻布十番 ザ・タワー"
+            },
+            "ja_romanized": {
+              "type": "string",
+              "description": "Romanized (Romaji) or Katakana name. e.g., PARK COURT AZABUJUBAN THE TOWER"
+            }
+          },
+          "propertyOrdering": [
+            "ja",
+            "ja_romanized"
+          ],
+          "required": [
+            "ja"
+          ],
+          "description": "Name of the building or complex."
+        },
+        "address": {
+          "type": "object",
+          "properties": {
+            "postalCode": {
+              "type": "string",
+              "description": "Postal code (e.g., 108-0073).",
+              "pattern": "^\\d{3}-\\d{4}$"
+            },
+            "prefecture": {
+              "type": "string",
+              "description": "Prefecture (e.g., 東京都, 神奈川県)."
+            },
+            "city": {
+              "type": "string",
+              "description": "City/Ward (e.g., 港区, 横浜市)."
+            },
+            "district": {
+              "type": "string",
+              "description": "District/Town (e.g., 三田, 青葉区)."
+            },
+            "streetAddress": {
+              "type": "string",
+              "description": "Street number, etc. (e.g., 一丁目7番1, 荏田西1-12-17)."
+            },
+            "fullAddress": {
+              "type": "string",
+              "description": "The complete, unparsed address string (住居表示)."
+            }
+          },
+          "propertyOrdering": [
+            "postalCode",
+            "prefecture",
+            "city",
+            "district",
+            "streetAddress",
+            "fullAddress"
+          ],
+          "required": [
+            "prefecture",
+            "city",
+            "fullAddress"
+          ],
+          "description": "Structured address of the property."
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "latitude": {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            },
+            "longitude": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            }
+          },
+          "propertyOrdering": [
+            "latitude",
+            "longitude"
+          ],
+          "description": "Geographic coordinates."
+        },
+        "completionDate": {
+          "type": "string",
+          "description": "Date of construction completion (竣工年月). Format YYYY-MM.",
+          "pattern": "^\\d{4}-\\d{2}$"
+        },
+        "structure": {
+          "type": "object",
+          "properties": {
+            "material": {
+              "type": "string",
+              "enum": [
+                "RC",
+                "SRC",
+                "S",
+                "Wood",
+                "Other"
+              ],
+              "description": "Main construction material (e.g., RC)."
+            },
+            "storiesAboveGround": {
+              "type": "integer",
+              "description": "Number of floors above ground (e.g., 7階建).",
+              "minimum": 1
+            },
+            "storiesBelowGround": {
+              "type": "integer",
+              "description": "Number of basement floors."
+            }
+          },
+          "propertyOrdering": [
+            "material",
+            "storiesAboveGround",
+            "storiesBelowGround"
+          ],
+          "description": "Building construction and scale (構造)."
+        },
+        "totalUnits": {
+          "type": "integer",
+          "description": "Total number of units in the building (総戸数).",
+          "minimum": 1
+        },
+        "management": {
+          "type": "object",
+          "properties": {
+            "company": {
+              "type": "string",
+              "description": "Management company name (管理会社)."
+            },
+            "style": {
+              "type": "string",
+              "description": "Management style (e.g., 24時間有人管理, 日勤, 全部委託)."
+            }
+          },
+          "propertyOrdering": [
+            "company",
+            "style"
+          ],
+          "description": "Building management information (管理)."
+        },
+        "developer": {
+          "type": "string",
+          "description": "Original developer/seller (売主)."
+        },
+        "constructionCompany": {
+          "type": "string",
+          "description": "Construction company (施工会社)."
+        },
+        "amenities": {
+          "type": "object",
+          "properties": {
+            "evCharging": {
+              "type": "boolean",
+              "description": "EV charging availability."
+            },
+            "conciergeService": {
+              "type": "boolean",
+              "description": "Concierge service availability."
+            },
+            "internetProviders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Available internet providers (e.g., NTT, KDDI)."
+            }
+          },
+          "propertyOrdering": [
+            "evCharging",
+            "conciergeService",
+            "internetProviders"
+          ],
+          "description": "Building-wide amenities and features."
+        }
+      },
+      "propertyOrdering": [
+        "name",
+        "address",
+        "location",
+        "completionDate",
+        "structure",
+        "totalUnits",
+        "management",
+        "developer",
+        "constructionCompany",
+        "amenities"
+      ],
+      "required": [
+        "name",
+        "address",
+        "completionDate",
+        "structure"
+      ],
+      "description": "Information about the building itself."
+    },
+    "unit": {
+      "type": "object",
+      "properties": {
+        "unitNumber": {
+          "type": "string",
+          "description": "Room or unit number (部屋番号). e.g., 3011, 105"
+        },
+        "floor": {
+          "type": "integer",
+          "description": "The floor the unit is on (階)."
+        },
+        "price": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "integer",
+              "description": "Price in Japanese Yen (JPY)."
+            },
+            "currency": {
+              "type": "string",
+              "enum": [
+                "JPY"
+              ]
+            },
+            "isTaxIncluded": {
+              "type": "boolean",
+              "description": "Is consumption tax included (税込)."
+            }
+          },
+          "propertyOrdering": [
+            "amount",
+            "currency",
+            "isTaxIncluded"
+          ],
+          "required": [
+            "amount"
+          ],
+          "description": "Listing price (販売価格)."
+        },
+        "monthlyFees": {
+          "type": "object",
+          "properties": {
+            "managementFee": {
+              "type": "integer",
+              "description": "Monthly management fee (管理費)."
+            },
+            "repairFund": {
+              "type": "integer",
+              "description": "Monthly repair reserve fund (修繕積立金)."
+            },
+            "otherFees": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the fee (e.g., 専用庭, 水道基本料)."
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "description": "Cost in JPY."
+                  }
+                },
+                "propertyOrdering": [
+                  "name",
+                  "amount"
+                ],
+                "required": [
+                  "name",
+                  "amount"
+                ]
+              },
+              "description": "Other monthly fees (その他月額内訳)."
+            }
+          },
+          "propertyOrdering": [
+            "managementFee",
+            "repairFund",
+            "otherFees"
+          ],
+          "description": "Recurring monthly costs."
+        },
+        "floorPlan": {
+          "type": "object",
+          "properties": {
+            "layout": {
+              "type": "string",
+              "description": "Standard layout code (e.g., 2LDK, 2SLDK).",
+              "pattern": "^\\d+(S?L?D?K?R?)$"
+            },
+            "layoutDescription": {
+              "type": "string",
+              "description": "Full layout description (e.g., 2LDK+SIC+WIC)."
+            },
+            "rooms": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "Bedroom",
+                      "LivingDiningKitchen",
+                      "LivingDining",
+                      "Kitchen",
+                      "ServiceRoom",
+                      "WIC",
+                      "SIC",
+                      "Other"
+                    ],
+                    "description": "Type of room."
+                  },
+                  "size": {
+                    "type": "number",
+                    "description": "Size of the room."
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": [
+                      "J",
+                      "畳"
+                    ],
+                    "description": "Unit of measurement for room size."
+                  }
+                },
+                "propertyOrdering": [
+                  "type",
+                  "size",
+                  "unit"
+                ],
+                "required": [
+                  "type",
+                  "size"
+                ]
+              },
+              "description": "Details of individual rooms."
+            }
+          },
+          "propertyOrdering": [
+            "layout",
+            "layoutDescription",
+            "rooms"
+          ],
+          "required": [
+            "layout"
+          ],
+          "description": "Room layout (間取)."
+        },
+        "area": {
+          "type": "object",
+          "properties": {
+            "exclusive": {
+              "type": "number",
+              "description": "Exclusive area (専有面積)."
+            },
+            "balcony": {
+              "type": "number",
+              "description": "Balcony area (バルコニー面積)."
+            },
+            "privateGarden": {
+              "type": "number",
+              "description": "Private garden area (専用庭)."
+            },
+            "terrace": {
+              "type": "number",
+              "description": "Terrace area (テラス)."
+            },
+            "other": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the area (e.g., 室外機置場)."
+                  },
+                  "size": {
+                    "type": "number",
+                    "description": "Size in ㎡."
+                  }
+                },
+                "propertyOrdering": [
+                  "name",
+                  "size"
+                ],
+                "required": [
+                  "name",
+                  "size"
+                ]
+              },
+              "description": "Other associated areas."
+            }
+          },
+          "propertyOrdering": [
+            "exclusive",
+            "balcony",
+            "privateGarden",
+            "terrace",
+            "other"
+          ],
+          "required": [
+            "exclusive"
+          ],
+          "description": "Area measurements in square meters (㎡)."
+        },
+        "ceilingHeight_mm": {
+          "type": "integer",
+          "description": "Ceiling height in millimeters (天井高)."
+        },
+        "petPolicy": {
+          "type": "object",
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "rules": {
+              "type": "string",
+              "description": "Text description of the rules (e.g., 体重15kg、2匹まで)."
+            }
+          },
+          "propertyOrdering": [
+            "allowed",
+            "rules"
+          ],
+          "required": [
+            "allowed"
+          ],
+          "description": "Pet ownership rules (ペット飼育)."
+        },
+        "dedicatedParking": {
+          "type": "object",
+          "properties": {
+            "area_sqm": {
+              "type": "number"
+            },
+            "monthlyFee": {
+              "type": "integer"
+            }
+          },
+          "propertyOrdering": [
+            "area_sqm",
+            "monthlyFee"
+          ],
+          "description": "Parking space attached to the unit (専用駐車場)."
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Special features of the unit (e.g., 角部屋, 眺望良好)."
+        },
+        "equipment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Installed equipment (設備). e.g., 床暖房, 食器洗い乾燥機"
+        },
+        "warranty": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string",
+                "description": "e.g., 設備, 建物"
+              },
+              "duration_years": {
+                "type": "number"
+              }
+            },
+            "propertyOrdering": [
+              "provider",
+              "subject",
+              "duration_years"
+            ]
+          },
+          "description": "After-sales service warranty (アフターサービス保証)."
+        }
+      },
+      "propertyOrdering": [
+        "unitNumber",
+        "floor",
+        "price",
+        "monthlyFees",
+        "floorPlan",
+        "area",
+        "ceilingHeight_mm",
+        "petPolicy",
+        "dedicatedParking",
+        "features",
+        "equipment",
+        "warranty"
+      ],
+      "required": [
+        "unitNumber",
+        "floor",
+        "price",
+        "monthlyFees",
+        "floorPlan",
+        "area"
+      ],
+      "description": "Information about the specific unit for sale."
+    },
+    "access": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "string",
+            "description": "Train/Subway line name (e.g., 東京メトロ南北線)."
+          },
+          "station": {
+            "type": "string",
+            "description": "Station name (e.g., 麻布十番)."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "walk",
+              "bus",
+              "car"
+            ],
+            "description": "Method of transport."
+          },
+          "duration_min": {
+            "type": "integer",
+            "description": "Time required in minutes.",
+            "minimum": 1
+          }
+        },
+        "propertyOrdering": [
+          "line",
+          "station",
+          "method",
+          "duration_min"
+        ],
+        "required": [
+          "line",
+          "station",
+          "method",
+          "duration_min"
+        ]
+      },
+      "description": "Transportation access (交通)."
+    },
+    "parking": {
+      "type": "object",
+      "properties": {
+        "car": {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "enum": [
+                "available",
+                "none",
+                "waitlist"
+              ]
+            },
+            "monthlyCost": {
+              "type": "object",
+              "properties": {
+                "min": {
+                  "type": "integer"
+                },
+                "max": {
+                  "type": "integer"
+                }
+              },
+              "propertyOrdering": [
+                "min",
+                "max"
+              ],
+              "description": "Monthly cost range in JPY."
+            }
+          },
+          "propertyOrdering": [
+            "availability",
+            "monthlyCost"
+          ],
+          "description": "Car parking (駐車場)."
+        },
+        "bicycle": {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "enum": [
+                "available",
+                "none",
+                "waitlist"
+              ]
+            },
+            "monthlyCost": {
+              "type": "object",
+              "properties": {
+                "min": {
+                  "type": "integer"
+                },
+                "max": {
+                  "type": "integer"
+                }
+              },
+              "propertyOrdering": [
+                "min",
+                "max"
+              ]
+            }
+          },
+          "propertyOrdering": [
+            "availability",
+            "monthlyCost"
+          ],
+          "description": "Bicycle parking (駐輪場)."
+        },
+        "motorcycle": {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "enum": [
+                "available",
+                "none",
+                "waitlist"
+              ]
+            },
+            "monthlyCost": {
+              "type": "object",
+              "properties": {
+                "min": {
+                  "type": "integer"
+                },
+                "max": {
+                  "type": "integer"
+                }
+              },
+              "propertyOrdering": [
+                "min",
+                "max"
+              ]
+            }
+          },
+          "propertyOrdering": [
+            "availability",
+            "monthlyCost"
+          ],
+          "description": "Motorcycle parking (バイク置き場)."
+        }
+      },
+      "propertyOrdering": [
+        "car",
+        "bicycle",
+        "motorcycle"
+      ],
+      "description": "Building parking facilities (not unit-specific)."
+    },
+    "legal": {
+      "type": "object",
+      "properties": {
+        "landRights": {
+          "type": "string",
+          "enum": [
+            "freehold",
+            "leasehold_fixed_term",
+            "leasehold_old_law",
+            "other"
+          ],
+          "description": "Type of land ownership (権利)."
+        },
+        "zoning": {
+          "type": "string",
+          "description": "Land use zone (用途地域). e.g., 第二種住居地域"
+        }
+      },
+      "propertyOrdering": [
+        "landRights",
+        "zoning"
+      ],
+      "description": "Legal and zoning information."
+    },
+    "status": {
+      "type": "object",
+      "properties": {
+        "currentCondition": {
+          "type": "string",
+          "enum": [
+            "vacant",
+            "occupied_by_owner",
+            "rented",
+            "other"
+          ],
+          "description": "Current occupancy status (現況)."
+        },
+        "handover": {
+          "type": "string",
+          "description": "Handover timing and conditions (引渡し). e.g., 相談, 即時"
+        }
+      },
+      "propertyOrdering": [
+        "currentCondition",
+        "handover"
+      ],
+      "description": "Current status of the property."
+    },
+    "renovation": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "planned",
+            "none"
+          ],
+          "description": "Status of the renovation."
+        },
+        "completionDate": {
+          "type": "string",
+          "description": "Date of renovation completion. Format YYYY-MM-DD or YYYY-MM."
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of renovated items (e.g., キッチン新規交換)."
+        }
+      },
+      "propertyOrdering": [
+        "status",
+        "completionDate",
+        "details"
+      ],
+      "description": "Information about renovations (リノベーション)."
+    },
+    "listingInfo": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "object",
+          "properties": {
+            "companyName": {
+              "type": "string"
+            },
+            "officeName": {
+              "type": "string"
+            },
+            "licenseNumber": {
+              "type": "string"
+            },
+            "address": {
+              "type": "string"
+            },
+            "phone": {
+              "type": "string"
+            },
+            "fax": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string",
+              "format": "email"
+            },
+            "officeHours": {
+              "type": "string"
+            },
+            "officeClosed": {
+              "type": "string"
+            }
+          },
+          "propertyOrdering": [
+            "companyName",
+            "officeName",
+            "licenseNumber",
+            "address",
+            "phone",
+            "fax",
+            "email",
+            "officeHours",
+            "officeClosed"
+          ],
+          "required": [
+            "companyName",
+            "phone"
+          ],
+          "description": "The agency or broker managing the listing."
+        },
+        "contacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              }
+            },
+            "propertyOrdering": [
+              "name",
+              "phone"
+            ],
+            "required": [
+              "name"
+            ]
+          },
+          "description": "Specific contact persons (担当者)."
+        },
+        "transactionType": {
+          "type": "string",
+          "enum": [
+            "seller",
+            "exclusive_agent",
+            "non_exclusive_agent",
+            "broker"
+          ],
+          "description": "Transaction type (取引態様)."
+        },
+        "commission": {
+          "type": "string",
+          "description": "Brokerage commission fee (手数料)."
+        },
+        "viewingMethod": {
+          "type": "string",
+          "description": "How to view the property (内覧方法). e.g., 立会い"
+        },
+        "openHouse": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "datetimeStart": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "datetimeEnd": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "propertyOrdering": [
+              "datetimeStart",
+              "datetimeEnd"
+            ]
+          },
+          "description": "Open house schedule."
+        },
+        "adExpiryDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Advertising expiration date (広告期限). Format YYYY-MM-DD."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this listing data was last updated."
+        }
+      },
+      "propertyOrdering": [
+        "agent",
+        "contacts",
+        "transactionType",
+        "commission",
+        "viewingMethod",
+        "openHouse",
+        "adExpiryDate",
+        "lastUpdated"
+      ],
+      "required": [
+        "agent",
+        "contacts",
+        "transactionType"
+      ],
+      "description": "Information about the sales listing itself."
+    }
+  },
+  "propertyOrdering": [
+    "listingId",
+    "propertyType",
+    "building",
+    "unit",
+    "access",
+    "parking",
+    "legal",
+    "status",
+    "renovation",
+    "listingInfo"
+  ],
+  "required": [
+    "listingId",
+    "propertyType",
+    "building",
+    "unit",
+    "access",
+    "legal",
+    "status",
+    "listingInfo"
+  ],
+  "description": "A data model for a single real estate property listing in Japan."
+}

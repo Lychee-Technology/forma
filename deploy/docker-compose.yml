@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  aurora-dsql:
+    image: postgres:16
+    shm_size: 512mb
+    container_name: forma-postgres
+    environment:
+      POSTGRES_DB: forma
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
