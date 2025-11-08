@@ -15,7 +15,6 @@ type EntityManager interface {
 	// Query operations
 	Query(ctx context.Context, req *QueryRequest) (*QueryResult, error)
 	CrossSchemaSearch(ctx context.Context, req *CrossSchemaRequest) (*QueryResult, error)
-	AdvancedQuery(ctx context.Context, req *AdvancedQueryRequest) (*QueryResult, error)
 
 	// Batch operations
 	BatchCreate(ctx context.Context, req *BatchOperation) (*BatchResult, error)

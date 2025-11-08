@@ -127,6 +127,71 @@ curl -v -sS -X PUT "${BASE_URL}/api/v1/lead/${row_id}" \
   -H "Content-Type: application/json" \
   -d "${update_payload}" | jq .
 
+echo ">> Testing Advanced Query (Hybrid Optimization)..."
+
+echo ">> 1. Query by Status (hot)..."
+query_status_payload=$(
+  cat <<JSON
+{
+  "schema_name": "lead",
+  "page": 1,
+  "items_per_page": 10,
+  "condition": {
+    "attr": "status",
+    "value": "hot"
+  }
+}
+JSON
+)
+curl -v -sS -X POST "${BASE_URL}/api/v1/advanced_query" \
+  -H "Content-Type: application/json" \
+  -d "${query_status_payload}" | jq .
+
+echo ">> 2. Query by Age (> 25)..."
+query_age_payload=$(
+  cat <<JSON
+{
+  "schema_name": "lead",
+  "page": 1,
+  "items_per_page": 10,
+  "condition": {
+    "attr": "personalInfo.age",
+    "value": "gt:25"
+  }
+}
+JSON
+)
+curl -v -sS -X POST "${BASE_URL}/api/v1/advanced_query" \
+  -H "Content-Type: application/json" \
+  -d "${query_age_payload}" | jq .
+
+echo ">> 3. Hybrid Query (Status=hot AND Age>25)..."
+query_hybrid_payload=$(
+  cat <<JSON
+{
+  "schema_name": "lead",
+  "page": 1,
+  "items_per_page": 10,
+  "condition": {
+    "logic": "and",
+    "conditions": [
+      {
+        "attr": "status",
+        "value": "hot"
+      },
+      {
+        "attr": "personalInfo.age",
+        "value": "gt:25"
+      }
+    ]
+  }
+}
+JSON
+)
+curl -v -sS -X POST "${BASE_URL}/api/v1/advanced_query" \
+  -H "Content-Type: application/json" \
+  -d "${query_hybrid_payload}" | jq .
+
 # echo ">> Deleting lead..."
 # curl -v -sS -X DELETE "${BASE_URL}/api/v1/lead/${row_id}"
 # echo

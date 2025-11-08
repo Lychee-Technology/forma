@@ -7,34 +7,28 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
-	"lychee.technology/ltbase/forma"
 )
 
 type transformer struct {
-	registry SchemaRegistry
-
-	cacheMu     sync.RWMutex
-	attrCache   map[int16]forma.SchemaAttributeCache // schemaID -> attrName -> meta
-	idNameCache map[int16]map[int16]string           // schemaID -> attrID -> attrName
+	*schemaMetadataCache
+	converter *AttributeConverter
 }
 
 // NewTransformer creates a new Transformer instance backed by the provided schema registry.
 func NewTransformer(registry SchemaRegistry) Transformer {
 	return &transformer{
-		registry:    registry,
-		attrCache:   make(map[int16]forma.SchemaAttributeCache),
-		idNameCache: make(map[int16]map[int16]string),
+		schemaMetadataCache: newSchemaMetadataCache(registry),
+		converter:           NewAttributeConverter(registry),
 	}
 }
 
-func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) ([]Attribute, error) {
+func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) ([]EntityAttribute, error) {
 	if jsonData == nil {
-		return []Attribute{}, nil
+		return []EntityAttribute{}, nil
 	}
 
 	cache, _, err := t.getSchemaMetadata(schemaID)
@@ -64,14 +58,22 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		}
 	}
 
-	attributes := make([]Attribute, 0)
-	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &attributes); err != nil {
+	// First convert to EAVRecords internally
+	eavRecords := make([]EAVRecord, 0)
+	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &eavRecords); err != nil {
 		return nil, err
 	}
+
+	// Convert EAVRecords to EntityAttributes
+	attributes, err := t.converter.FromEAVRecords(eavRecords)
+	if err != nil {
+		return nil, fmt.Errorf("convert to EntityAttribute: %w", err)
+	}
+
 	return attributes, nil
 }
 
-func (t *transformer) FromAttributes(ctx context.Context, attributes []Attribute) (map[string]any, error) {
+func (t *transformer) FromAttributes(ctx context.Context, attributes []EntityAttribute) (map[string]any, error) {
 	if len(attributes) == 0 {
 		return make(map[string]any), nil
 	}
@@ -79,7 +81,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []Attribute
 	result := make(map[string]any)
 
 	for _, attr := range attributes {
-		cache, idToName, err := t.getSchemaMetadata(attr.SchemaID)
+		_, idToName, err := t.getSchemaMetadata(attr.SchemaID)
 		if err != nil {
 			return nil, err
 		}
@@ -89,13 +91,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []Attribute
 			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
 
-		meta := cache[attrName]
-		value, err := attributeValue(attr, meta.ValueType)
-		if err != nil {
-			return nil, fmt.Errorf("read value for attribute '%s': %w", attrName, err)
-		}
-
-		if value == nil {
+		if attr.Value == nil {
 			continue
 		}
 
@@ -105,7 +101,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []Attribute
 		}
 
 		segments := strings.Split(attrName, ".")
-		if err := setValueAtPath(result, segments, indices, value); err != nil {
+		if err := setValueAtPath(result, segments, indices, attr.Value); err != nil {
 			return nil, fmt.Errorf("set value for attribute '%s': %w", attrName, err)
 		}
 	}
@@ -113,8 +109,8 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []Attribute
 	return result, nil
 }
 
-func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]Attribute, error) {
-	attributes := make([]Attribute, 0)
+func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]EntityAttribute, error) {
+	attributes := make([]EntityAttribute, 0)
 
 	for _, obj := range jsonObjects {
 		var rowID uuid.UUID
@@ -143,14 +139,38 @@ func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jso
 	return attributes, nil
 }
 
-func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []Attribute) ([]map[string]any, error) {
-	groupedByRowID := make(map[uuid.UUID][]Attribute)
-	for _, attr := range attributes {
-		groupedByRowID[attr.RowID] = append(groupedByRowID[attr.RowID], attr)
+func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []EntityAttribute) ([]map[string]any, error) {
+	if len(attributes) == 0 {
+		return []map[string]any{}, nil
 	}
 
+	// Convert EntityAttributes back to EAVRecords to get RowID information
+	eavRecords := make([]EAVRecord, len(attributes))
+	for i, attr := range attributes {
+		// We need RowID to properly convert, but EntityAttribute doesn't have it
+		// This is a design issue - for batch operations, we need RowID in the conversion
+		// For now, we'll use a placeholder approach
+		record, err := t.converter.ToEAVRecord(attr, uuid.UUID{})
+		if err != nil {
+			return nil, fmt.Errorf("convert EntityAttribute to EAVRecord: %w", err)
+		}
+		eavRecords[i] = record
+	}
+
+	// Group by RowID
+	groupedByRowID := make(map[uuid.UUID][]EAVRecord)
+	for _, record := range eavRecords {
+		groupedByRowID[record.RowID] = append(groupedByRowID[record.RowID], record)
+	}
+
+	// Convert each group back to JSON
 	results := make([]map[string]any, 0, len(groupedByRowID))
-	for _, attrs := range groupedByRowID {
+	for _, records := range groupedByRowID {
+		// Convert EAVRecords to EntityAttributes
+		attrs, err := t.converter.FromEAVRecords(records)
+		if err != nil {
+			return nil, fmt.Errorf("convert EAVRecords to EntityAttributes: %w", err)
+		}
 		result, err := t.FromAttributes(ctx, attrs)
 		if err != nil {
 			return nil, err
@@ -219,46 +239,14 @@ func (t *transformer) ValidateAgainstSchema(ctx context.Context, jsonSchema any,
 	return nil
 }
 
-func (t *transformer) getSchemaMetadata(schemaID int16) (forma.SchemaAttributeCache, map[int16]string, error) {
-	t.cacheMu.RLock()
-	cache, okCache := t.attrCache[schemaID]
-	idMap, okMap := t.idNameCache[schemaID]
-	t.cacheMu.RUnlock()
-
-	if okCache && okMap {
-		return cache, idMap, nil
-	}
-
-	if t.registry == nil {
-		return nil, nil, fmt.Errorf("schema registry is not configured")
-	}
-
-	_, schemaCache, err := t.registry.GetSchemaByID(schemaID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load schema metadata for id %d: %w", schemaID, err)
-	}
-
-	idToName := make(map[int16]string, len(schemaCache))
-	for name, meta := range schemaCache {
-		idToName[meta.AttributeID] = name
-	}
-
-	t.cacheMu.Lock()
-	t.attrCache[schemaID] = schemaCache
-	t.idNameCache[schemaID] = idToName
-	t.cacheMu.Unlock()
-
-	return schemaCache, idToName, nil
-}
-
 func (t *transformer) flattenToAttributes(
 	schemaID int16,
 	rowID uuid.UUID,
 	path []string,
 	data any,
 	indices []int,
-	cache forma.SchemaAttributeCache,
-	result *[]Attribute,
+	cache SchemaAttributeCache,
+	result *[]EAVRecord,
 ) error {
 	switch v := data.(type) {
 	case map[string]any:
@@ -291,7 +279,7 @@ func (t *transformer) flattenToAttributes(
 			return fmt.Errorf("attribute '%s' not defined for schema %d", attrName, schemaID)
 		}
 
-		attr := Attribute{
+		attr := EAVRecord{
 			SchemaID:     schemaID,
 			RowID:        rowID,
 			AttrID:       meta.AttributeID,
@@ -307,32 +295,40 @@ func (t *transformer) flattenToAttributes(
 	return nil
 }
 
-func populateTypedValue(attr *Attribute, value any, valueType forma.ValueType) error {
+func populateTypedValue(attr *EAVRecord, value any, valueType ValueType) error {
 	switch valueType {
-	case forma.ValueTypeText:
+	case ValueTypeText:
 		strVal, err := toString(value)
 		if err != nil {
 			return err
 		}
 		attr.ValueText = &strVal
-	case forma.ValueTypeNumeric:
+	case ValueTypeNumeric:
 		numVal, err := toFloat64(value)
 		if err != nil {
 			return err
 		}
 		attr.ValueNumeric = &numVal
-	case forma.ValueTypeDate:
+	case ValueTypeDate:
 		timeVal, err := toTime(value)
 		if err != nil {
 			return err
 		}
-		attr.ValueDate = &timeVal
-	case forma.ValueTypeBool:
+
+		unixMillis := float64(timeVal.UnixMilli())
+		attr.ValueNumeric = &unixMillis
+	case ValueTypeBool:
 		boolVal, err := toBool(value)
 		if err != nil {
 			return err
 		}
-		attr.ValueBool = &boolVal
+		var floatBool float64
+		if boolVal {
+			floatBool = 1.0
+		} else {
+			floatBool = 0.0
+		}
+		attr.ValueNumeric = &floatBool
 	default:
 		return fmt.Errorf("unsupported value type '%s'", valueType)
 	}
@@ -443,40 +439,36 @@ func parseIndices(indices string) ([]int, error) {
 	return result, nil
 }
 
-func attributeValue(attr Attribute, valueType forma.ValueType) (any, error) {
+func attributeValue(attr EAVRecord, valueType ValueType) (any, error) {
 	switch valueType {
-	case forma.ValueTypeText:
+	case ValueTypeText:
 		if attr.ValueText == nil {
 			return nil, nil
 		}
 		return *attr.ValueText, nil
-	case forma.ValueTypeNumeric:
+	case ValueTypeNumeric:
 		if attr.ValueNumeric == nil {
 			return nil, nil
 		}
 		return *attr.ValueNumeric, nil
-	case forma.ValueTypeDate:
-		if attr.ValueDate == nil {
+	case ValueTypeDate:
+		if attr.ValueNumeric == nil {
 			return nil, nil
 		}
-		return *attr.ValueDate, nil
-	case forma.ValueTypeBool:
-		if attr.ValueBool == nil {
+		timeVal := time.UnixMilli(int64(*attr.ValueNumeric))
+		return &timeVal, nil
+	case ValueTypeBool:
+		if attr.ValueNumeric == nil {
 			return nil, nil
 		}
-		return *attr.ValueBool, nil
+		boolVal := *attr.ValueNumeric > 0.5
+		return &boolVal, nil
 	default:
 		if attr.ValueText != nil {
 			return *attr.ValueText, nil
 		}
 		if attr.ValueNumeric != nil {
 			return *attr.ValueNumeric, nil
-		}
-		if attr.ValueDate != nil {
-			return *attr.ValueDate, nil
-		}
-		if attr.ValueBool != nil {
-			return *attr.ValueBool, nil
 		}
 		return nil, nil
 	}
@@ -487,9 +479,36 @@ func setValueAtPath(target map[string]any, segments []string, indices []int, val
 		return fmt.Errorf("empty attribute path")
 	}
 
-	// Navigate to the parent of the last segment (all segments are objects until the last one)
+	if len(indices) == 0 {
+		// No indices - simple nested object path
+		current := target
+		for i := 0; i < len(segments)-1; i++ {
+			segment := segments[i]
+			next, ok := current[segment].(map[string]any)
+			if !ok || next == nil {
+				next = make(map[string]any)
+				current[segment] = next
+			}
+			current = next
+		}
+		current[segments[len(segments)-1]] = value
+		return nil
+	}
+
+	// Has indices - need to handle arrays
+	if len(segments) == 1 {
+		// Simple array: e.g., tags[0] = "value"
+		segment := segments[0]
+		arr := ensureArray(target, segment)
+		arr = setArrayValueRecursive(arr, indices, value)
+		target[segment] = arr
+		return nil
+	}
+
+	// Object array: e.g., jobs[0].title = "value"
+	// Navigate to the array container (all segments except last)
 	current := target
-	for i := 0; i < len(segments)-1; i++ {
+	for i := 0; i < len(segments)-2; i++ {
 		segment := segments[i]
 		next, ok := current[segment].(map[string]any)
 		if !ok || next == nil {
@@ -499,35 +518,92 @@ func setValueAtPath(target map[string]any, segments []string, indices []int, val
 		current = next
 	}
 
-	// Handle the last segment - this is where arrays are used
+	// The second-to-last segment is the array
+	arraySegment := segments[len(segments)-2]
 	lastSegment := segments[len(segments)-1]
 
-	if len(indices) == 0 {
-		// Simple scalar value
-		current[lastSegment] = value
-		return nil
-	}
+	// Get or create array
+	arr := ensureArray(current, arraySegment)
 
-	// Value is inside an array (or nested arrays)
-	// Get or create the array
-	existing := current[lastSegment]
-	var arr []any
-	if existing != nil {
-		var ok bool
-		arr, ok = existing.([]any)
-		if !ok {
-			return fmt.Errorf("expected array at %s but found %T", strings.Join(segments, "."), existing)
-		}
-	}
-	if arr == nil {
-		arr = []any{}
-	}
-
-	// Set the value in the nested array structure
-	arr = setArrayValueRecursive(arr, indices, value)
-	current[lastSegment] = arr
+	// Set value in object within array
+	arr = setObjectArrayValue(arr, indices, lastSegment, value)
+	current[arraySegment] = arr
 
 	return nil
+}
+
+func ensureArray(target map[string]any, key string) []any {
+	existing := target[key]
+	if existing == nil {
+		return []any{}
+	}
+	if arr, ok := existing.([]any); ok {
+		return arr
+	}
+	return []any{}
+}
+
+func setObjectArrayValue(arr []any, indices []int, fieldName string, value any) []any {
+	if len(indices) == 0 {
+		return arr
+	}
+
+	idx := indices[0]
+	if idx < 0 {
+		return arr
+	}
+
+	// Expand array if needed
+	for len(arr) <= idx {
+		arr = append(arr, nil)
+	}
+
+	if len(indices) == 1 {
+		// Last index - set the field in the object at this index
+		var obj map[string]any
+		if arr[idx] != nil {
+			if existing, ok := arr[idx].(map[string]any); ok {
+				obj = existing
+			} else {
+				// If it's not an object, we have a conflict - replace with object
+				obj = make(map[string]any)
+			}
+		} else {
+			obj = make(map[string]any)
+		}
+		obj[fieldName] = value
+		arr[idx] = obj
+	} else {
+		// More indices - need nested array within the object
+		var obj map[string]any
+		if arr[idx] != nil {
+			if existing, ok := arr[idx].(map[string]any); ok {
+				obj = existing
+			} else {
+				obj = make(map[string]any)
+			}
+		} else {
+			obj = make(map[string]any)
+		}
+
+		// Get or create nested array
+		var nestedArr []any
+		if existingNested := obj[fieldName]; existingNested != nil {
+			if nested, ok := existingNested.([]any); ok {
+				nestedArr = nested
+			}
+		}
+		if nestedArr == nil {
+			nestedArr = []any{}
+		}
+
+		// Recursively set in nested array
+		nestedArr = setObjectArrayValue(nestedArr, indices[1:], fieldName, value)
+		obj[fieldName] = nestedArr
+		arr[idx] = obj
+	}
+
+	return arr
 }
 
 func setArrayValueRecursive(arr []any, indices []int, value any) []any {

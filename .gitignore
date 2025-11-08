@@ -32,3 +32,6 @@ go.work.sum
 # .vscode/
 deploy/data/
 .DS_Store
+.cache/
+.gocache/
+.gomodcache/

@@ -9,24 +9,23 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"lychee.technology/ltbase/forma"
 )
 
 type stubSchemaRegistry struct {
 	schemaID   int16
 	schemaName string
-	cache      forma.SchemaAttributeCache
+	cache      SchemaAttributeCache
 }
 
 func newStubSchemaRegistry() SchemaRegistry {
-	cache := forma.SchemaAttributeCache{
-		"name":               {AttributeID: 1, ValueType: forma.ValueTypeText},
-		"age":                {AttributeID: 2, ValueType: forma.ValueTypeNumeric},
-		"person.name":        {AttributeID: 3, ValueType: forma.ValueTypeText},
-		"person.age":         {AttributeID: 4, ValueType: forma.ValueTypeNumeric},
-		"items":              {AttributeID: 5, ValueType: forma.ValueTypeText, InsideArray: true},
-		"metadata.createdAt": {AttributeID: 6, ValueType: forma.ValueTypeDate},
-		"metadata.active":    {AttributeID: 7, ValueType: forma.ValueTypeBool},
+	cache := SchemaAttributeCache{
+		"name":               {AttributeID: 1, ValueType: ValueTypeText},
+		"age":                {AttributeID: 2, ValueType: ValueTypeNumeric},
+		"person.name":        {AttributeID: 3, ValueType: ValueTypeText},
+		"person.age":         {AttributeID: 4, ValueType: ValueTypeNumeric},
+		"items":              {AttributeID: 5, ValueType: ValueTypeText},
+		"metadata.createdAt": {AttributeID: 6, ValueType: ValueTypeDate},
+		"metadata.active":    {AttributeID: 7, ValueType: ValueTypeBool},
 	}
 	return &stubSchemaRegistry{
 		schemaID:   100,
@@ -35,22 +34,22 @@ func newStubSchemaRegistry() SchemaRegistry {
 	}
 }
 
-func copyAttributeCache(src forma.SchemaAttributeCache) forma.SchemaAttributeCache {
-	dst := make(forma.SchemaAttributeCache, len(src))
+func copyAttributeCache(src SchemaAttributeCache) SchemaAttributeCache {
+	dst := make(SchemaAttributeCache, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
 }
 
-func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttributeCache, error) {
 	if name != s.schemaName {
 		return 0, nil, fmt.Errorf("schema %s not found", name)
 	}
 	return s.schemaID, copyAttributeCache(s.cache), nil
 }
 
-func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCache, error) {
 	if id != s.schemaID {
 		return "", nil, fmt.Errorf("schema id %d not found", id)
 	}
@@ -90,7 +89,12 @@ func TestTransformer_ToAttributes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 8, len(attrs))
 
-	attrMap := buildAttributeLookup(t, registry, attrs)
+	// Convert EntityAttributes to EAVRecords for lookup
+	converter := NewAttributeConverter(registry)
+	eavRecords, err := converter.ToEAVRecords(attrs, rowID)
+	require.NoError(t, err)
+
+	attrMap := buildAttributeLookup(t, registry, eavRecords)
 
 	nameAttr := attrMap["name|"]
 	require.NotNil(t, nameAttr)
@@ -120,13 +124,13 @@ func TestTransformer_ToAttributes(t *testing.T) {
 
 	createdAtAttr := attrMap["metadata.createdAt|"]
 	require.NotNil(t, createdAtAttr)
-	require.NotNil(t, createdAtAttr.ValueDate)
-	assert.Equal(t, createdAt, createdAtAttr.ValueDate.UTC().Format(time.RFC3339))
+	require.NotNil(t, createdAtAttr.ValueNumeric)
+	assert.Equal(t, createdAt, time.UnixMilli(int64(*createdAtAttr.ValueNumeric)).UTC().Format(time.RFC3339))
 
 	activeAttr := attrMap["metadata.active|"]
 	require.NotNil(t, activeAttr)
-	require.NotNil(t, activeAttr.ValueBool)
-	assert.True(t, *activeAttr.ValueBool)
+	require.NotNil(t, activeAttr.ValueNumeric)
+	assert.True(t, *activeAttr.ValueNumeric > 0.5)
 }
 
 func TestTransformer_FromAttributes(t *testing.T) {
@@ -140,7 +144,7 @@ func TestTransformer_FromAttributes(t *testing.T) {
 	rowID := uuid.Must(uuid.NewV7())
 	createdAt := time.Date(2024, 3, 14, 9, 26, 0, 0, time.UTC)
 
-	attrs := []Attribute{
+	eavRecords := []EAVRecord{
 		newTestAttribute(t, registry, schemaID, rowID, "name", "", "Jane Doe"),
 		newTestAttribute(t, registry, schemaID, rowID, "age", "", 42),
 		newTestAttribute(t, registry, schemaID, rowID, "person.name", "", "Bob"),
@@ -150,6 +154,11 @@ func TestTransformer_FromAttributes(t *testing.T) {
 		newTestAttribute(t, registry, schemaID, rowID, "metadata.createdAt", "", createdAt),
 		newTestAttribute(t, registry, schemaID, rowID, "metadata.active", "", false),
 	}
+
+	// Convert EAVRecords to EntityAttributes
+	converter := NewAttributeConverter(registry)
+	attrs, err := converter.FromEAVRecords(eavRecords)
+	require.NoError(t, err)
 
 	result, err := transformer.FromAttributes(ctx, attrs)
 	require.NoError(t, err)
@@ -235,9 +244,9 @@ func TestTransformer_ValidateAgainstSchema(t *testing.T) {
 	require.Error(t, err)
 }
 
-func buildAttributeLookup(t *testing.T, registry SchemaRegistry, attrs []Attribute) map[string]*Attribute {
-	result := make(map[string]*Attribute)
-	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)
+func buildAttributeLookup(t *testing.T, registry SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
+	result := make(map[string]*EAVRecord)
+	cacheBySchema := make(map[int16]SchemaAttributeCache)
 
 	for i := range attrs {
 		attr := attrs[i]
@@ -265,14 +274,14 @@ func buildAttributeLookup(t *testing.T, registry SchemaRegistry, attrs []Attribu
 	return result
 }
 
-func newTestAttribute(t *testing.T, registry SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) Attribute {
+func newTestAttribute(t *testing.T, registry SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
 	_, cache, err := registry.GetSchemaByID(schemaID)
 	require.NoError(t, err)
 
 	meta, ok := cache[name]
 	require.True(t, ok, "attribute %s not found", name)
 
-	attr := Attribute{
+	attr := EAVRecord{
 		SchemaID:     schemaID,
 		RowID:        rowID,
 		AttrID:       meta.AttributeID,

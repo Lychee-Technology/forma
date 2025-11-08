@@ -11,7 +11,7 @@ import (
 	"lychee.technology/ltbase/forma/internal"
 )
 
-func NewEntityManager(config *forma.Config) (forma.EntityManager, *internal.MetadataCache) {
+func NewEntityManager(config *internal.Config) (forma.EntityManager, *internal.MetadataCache) {
 	// Create database connection pool
 	pool, err := createDatabasePool(config)
 	if err != nil {
@@ -69,13 +69,11 @@ AND table_type = 'BASE TABLE';`)
 	}
 
 	// Initialize transformer
-	transformer := internal.NewTransformer(registry)
+	transformer := internal.NewPersistentRecordTransformer(registry)
 
-	// Initialize PostgreSQL attribute repository with metadata cache
-	repository := internal.NewPostgresAttributeRepository(
+	// Initialize PostgreSQL persistent repository with metadata cache
+	repository := internal.NewPostgresPersistentRecordRepository(
 		pool,
-		config.Database.TableNames.EAVData,
-		config.Database.TableNames.SchemaRegistry,
 		metadataCache,
 	)
 
@@ -84,7 +82,7 @@ AND table_type = 'BASE TABLE';`)
 }
 
 // createDatabasePool creates a PostgreSQL connection pool
-func createDatabasePool(config *forma.Config) (*pgxpool.Pool, error) {
+func createDatabasePool(config *internal.Config) (*pgxpool.Pool, error) {
 	connString := fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		config.Database.Username,

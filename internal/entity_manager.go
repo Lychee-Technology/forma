@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,18 +11,18 @@ import (
 )
 
 type entityManager struct {
-	transformer Transformer
-	repository  AttributeRepository
+	transformer PersistentRecordTransformer
+	repository  PersistentRecordRepository
 	registry    SchemaRegistry
-	config      *forma.Config
+	config      *Config
 }
 
 // NewEntityManager creates a new EntityManager instance
 func NewEntityManager(
-	transformer Transformer,
-	repository AttributeRepository,
+	transformer PersistentRecordTransformer,
+	repository PersistentRecordRepository,
 	registry SchemaRegistry,
-	config *forma.Config,
+	config *Config,
 ) forma.EntityManager {
 	return &entityManager{
 		transformer: transformer,
@@ -29,6 +30,45 @@ func NewEntityManager(
 		registry:    registry,
 		config:      config,
 	}
+}
+
+func (em *entityManager) storageTables() StorageTables {
+	if em == nil || em.config == nil {
+		return StorageTables{}
+	}
+	tables := StorageTables{}
+	if em.config.Database.TableNames.EntityMain != "" {
+		tables.EntityMain = em.config.Database.TableNames.EntityMain
+	}
+	if em.config.Database.TableNames.EAVData != "" {
+		tables.EAVData = em.config.Database.TableNames.EAVData
+	}
+	return tables
+}
+
+func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, record *PersistentRecord) (*forma.DataRecord, error) {
+	if record == nil {
+		return nil, fmt.Errorf("persistent record cannot be nil")
+	}
+	resolvedName := schemaName
+	if resolvedName == "" {
+		name, _, err := em.registry.GetSchemaByID(record.SchemaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve schema name for id %d: %w", record.SchemaID, err)
+		}
+		resolvedName = name
+	}
+
+	attributes, err := em.transformer.FromPersistentRecord(ctx, record)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transform persistent record to JSON: %w", err)
+	}
+
+	return &forma.DataRecord{
+		SchemaName: resolvedName,
+		RowID:      record.RowID,
+		Attributes: attributes,
+	}, nil
 }
 
 // Create creates a new entity with the provided data
@@ -51,25 +91,26 @@ func (em *entityManager) Create(ctx context.Context, req *forma.EntityOperation)
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Generate UUID v7 for the new entity
 	rowID := uuid.Must(uuid.NewV7())
-
-	// Convert JSON data to attributes
-	attributes, err := em.transformer.ToAttributes(ctx, schemaID, rowID, req.Data)
+	record, err := em.transformer.ToPersistentRecord(ctx, schemaID, rowID, req.Data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform data to attributes: %w", err)
+		return nil, fmt.Errorf("failed to transform data to persistent record: %w", err)
 	}
 
-	// Insert attributes
-	if err := em.repository.InsertAttributes(ctx, attributes); err != nil {
-		return nil, fmt.Errorf("failed to insert attributes: %w", err)
+	tables := em.storageTables()
+	if err := em.repository.InsertPersistentRecord(ctx, tables, record); err != nil {
+		return nil, fmt.Errorf("failed to insert persistent record: %w", err)
 	}
 
-	// Return the created entity
+	attributes, err := em.transformer.FromPersistentRecord(ctx, record)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transform persistent record to JSON: %w", err)
+	}
+
 	return &forma.DataRecord{
 		SchemaName: req.SchemaName,
 		RowID:      rowID,
-		Attributes: req.Data,
+		Attributes: attributes,
 	}, nil
 }
 
@@ -87,33 +128,21 @@ func (em *entityManager) Get(ctx context.Context, req *forma.QueryRequest) (*for
 		return nil, fmt.Errorf("row ID is required for get operation")
 	}
 
-	// Verify schema exists
-	_, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	// Verify schema exists and fetch schema ID
+	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Get attributes for the entity
-	attributes, err := em.repository.GetAttributes(ctx, req.SchemaName, *req.RowID)
+	record, err := em.repository.GetPersistentRecord(ctx, em.storageTables(), schemaID, *req.RowID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get attributes: %w", err)
+		return nil, fmt.Errorf("failed to load persistent record: %w", err)
 	}
-
-	if len(attributes) == 0 {
+	if record == nil {
 		return nil, fmt.Errorf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	// Convert attributes back to JSON
-	jsonData, err := em.transformer.FromAttributes(ctx, attributes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to transform attributes to JSON: %w", err)
-	}
-
-	return &forma.DataRecord{
-		SchemaName: req.SchemaName,
-		RowID:      *req.RowID,
-		Attributes: jsonData,
-	}, nil
+	return em.toDataRecord(ctx, req.SchemaName, record)
 }
 
 // Update updates an existing entity
@@ -140,40 +169,31 @@ func (em *entityManager) Update(ctx context.Context, req *forma.EntityOperation)
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Check if entity exists
-	exists, err := em.repository.ExistsEntity(ctx, req.SchemaName, req.RowID)
+	tables := em.storageTables()
+	existingRecord, err := em.repository.GetPersistentRecord(ctx, tables, schemaID, req.RowID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check entity existence: %w", err)
+		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
-
-	if !exists {
+	if existingRecord == nil {
 		return nil, fmt.Errorf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	// Get existing entity
-	existingAttrs, err := em.repository.GetAttributes(ctx, req.SchemaName, req.RowID)
+	existingData, err := em.transformer.FromPersistentRecord(ctx, existingRecord)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get existing attributes: %w", err)
+		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
 
-	// Convert existing attributes to JSON
-	existingData, err := em.transformer.FromAttributes(ctx, existingAttrs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to transform existing attributes: %w", err)
-	}
-
-	// Merge updates with existing data
 	mergedData := mergeMaps(existingData, req.Updates)
-
-	// Convert merged data to attributes
-	newAttributes, err := em.transformer.ToAttributes(ctx, schemaID, req.RowID, mergedData)
+	updatedRecord, err := em.transformer.ToPersistentRecord(ctx, schemaID, req.RowID, mergedData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform merged data to attributes: %w", err)
+		return nil, fmt.Errorf("failed to transform merged data: %w", err)
 	}
 
-	// Upsert attributes
-	if err := em.repository.BatchUpsertAttributes(ctx, newAttributes); err != nil {
-		return nil, fmt.Errorf("failed to upsert attributes: %w", err)
+	updatedRecord.CreatedAt = existingRecord.CreatedAt
+	updatedRecord.DeletedAt = existingRecord.DeletedAt
+
+	if err := em.repository.UpdatePersistentRecord(ctx, tables, updatedRecord); err != nil {
+		return nil, fmt.Errorf("failed to update persistent record: %w", err)
 	}
 
 	return &forma.DataRecord{
@@ -197,15 +217,13 @@ func (em *entityManager) Delete(ctx context.Context, req *forma.EntityOperation)
 		return fmt.Errorf("row ID is required for delete operation")
 	}
 
-	// Verify schema exists
-	_, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Delete entity
-	if err := em.repository.DeleteEntity(ctx, req.SchemaName, req.RowID); err != nil {
-		return fmt.Errorf("failed to delete entity: %w", err)
+	if err := em.repository.DeletePersistentRecord(ctx, em.storageTables(), schemaID, req.RowID); err != nil {
+		return fmt.Errorf("failed to delete persistent record: %w", err)
 	}
 
 	return nil
@@ -233,78 +251,73 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 		req.ItemsPerPage = em.config.Query.MaxPageSize
 	}
 
-	// Verify schema exists
-	schemaId, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	// Verify schema exists and get attribute metadata
+	schemaId, schemaCache, err := em.registry.GetSchemaByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Convert QueryRequest filters to AttributeQuery
-	filterSlice := make([]forma.Filter, 0, len(req.Filters))
-	for _, filter := range req.Filters {
-		filterSlice = append(filterSlice, filter)
+	sortOrder := req.SortOrder
+	if sortOrder == "" {
+		sortOrder = forma.SortOrderAsc
 	}
 
-	attributeQuery := &AttributeQuery{
-		SchemaID: schemaId,
-		Filters:  filterSlice,
-		Limit:    req.ItemsPerPage,
-		Offset:   (req.Page - 1) * req.ItemsPerPage,
-	}
-
-	// Add ordering
-	if len(req.SortBy) > 0 {
-		attributeQuery.OrderBy = []forma.OrderBy{
-			{
-				Field:     forma.FilterField(req.SortBy),
-				SortOrder: req.SortOrder,
-			},
+	attributeOrders := make([]AttributeOrder, 0, len(req.SortBy))
+	for _, sortAttr := range req.SortBy {
+		meta, ok := schemaCache[sortAttr]
+		if !ok {
+			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", sortAttr, req.SchemaName)
 		}
+		order := AttributeOrder{
+			AttrID:    meta.AttributeID,
+			ValueType: meta.ValueType,
+			SortOrder: sortOrder,
+		}
+		// Check if attribute has column_binding to main table
+		if meta.Storage != nil && meta.Storage.Location == AttributeStorageLocationMain && meta.Storage.ColumnBinding != nil {
+			order.StorageLocation = AttributeStorageLocationMain
+			order.ColumnName = string(meta.Storage.ColumnBinding.ColumnName)
+		} else {
+			order.StorageLocation = AttributeStorageLocationEAV
+		}
+		attributeOrders = append(attributeOrders, order)
 	}
 
-	// Execute query
+	tables := em.storageTables()
+	query := &PersistentRecordQuery{
+		Tables:          tables,
+		SchemaID:        schemaId,
+		Condition:       req.Condition,
+		AttributeOrders: attributeOrders,
+		Limit:           req.ItemsPerPage,
+		Offset:          (req.Page - 1) * req.ItemsPerPage,
+	}
+
 	startTime := time.Now()
-	attributes, err := em.repository.QueryAttributes(ctx, attributeQuery)
+	page, err := em.repository.QueryPersistentRecords(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query attributes: %w", err)
+		return nil, fmt.Errorf("failed to query persistent records: %w", err)
 	}
 
-	// Group attributes by rowID
-	groupedByRowID := make(map[uuid.UUID][]Attribute)
-	for _, attr := range attributes {
-		groupedByRowID[attr.RowID] = append(groupedByRowID[attr.RowID], attr)
-	}
-
-	// Convert attribute groups to DataRecords
-	records := make([]*forma.DataRecord, 0, len(groupedByRowID))
-	for rowID, attrs := range groupedByRowID {
-		jsonData, err := em.transformer.FromAttributes(ctx, attrs)
+	records := make([]*forma.DataRecord, 0, len(page.Records))
+	for _, record := range page.Records {
+		dataRecord, err := em.toDataRecord(ctx, req.SchemaName, record)
 		if err != nil {
-			return nil, fmt.Errorf("failed to transform attributes to JSON: %w", err)
+			return nil, err
 		}
-		records = append(records, &forma.DataRecord{
-			SchemaName: req.SchemaName,
-			RowID:      rowID,
-			Attributes: jsonData,
-		})
+		records = append(records, dataRecord)
 	}
 
-	// Get total count
-	countFilterSlice := make([]forma.Filter, 0, len(req.Filters))
-	for _, filter := range req.Filters {
-		countFilterSlice = append(countFilterSlice, filter)
+	totalPages := page.TotalPages
+	if totalPages == 0 && page.TotalRecords > 0 && req.ItemsPerPage > 0 {
+		totalPages = int((page.TotalRecords + int64(req.ItemsPerPage) - 1) / int64(req.ItemsPerPage))
 	}
 
-	totalRecords, err := em.repository.CountEntities(ctx, req.SchemaName, countFilterSlice)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count entities: %w", err)
-	}
-
-	totalPages := int((totalRecords + int64(req.ItemsPerPage) - 1) / int64(req.ItemsPerPage))
+	log.Printf("records: %d, total pages: %d", len(records), totalPages)
 
 	return &forma.QueryResult{
 		Data:          records,
-		TotalRecords:  int(totalRecords),
+		TotalRecords:  int(page.TotalRecords),
 		TotalPages:    totalPages,
 		CurrentPage:   req.Page,
 		ItemsPerPage:  req.ItemsPerPage,
@@ -312,94 +325,6 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 		HasPrevious:   req.Page > 1,
 		ExecutionTime: time.Since(startTime),
 	}, nil
-}
-
-// AdvancedQuery executes complex condition-based queries using the CompositeCondition tree.
-func (em *entityManager) AdvancedQuery(ctx context.Context, req *forma.AdvancedQueryRequest) (*forma.QueryResult, error) {
-	if req == nil {
-		return nil, fmt.Errorf("advanced query request cannot be nil")
-	}
-
-	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required")
-	}
-
-	if req.Condition == nil {
-		return nil, fmt.Errorf("advanced query condition is required")
-	}
-
-	if req.Page < 1 {
-		req.Page = 1
-	}
-
-	limit := req.ItemsPerPage
-	if limit < 1 {
-		limit = em.config.Query.DefaultPageSize
-	}
-
-	if limit > em.config.Query.MaxPageSize {
-		limit = em.config.Query.MaxPageSize
-	}
-
-	startTime := time.Now()
-
-	schemaID, cache, err := em.registry.GetSchemaByName(req.SchemaName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get schema: %w", err)
-	}
-
-	var paramCounter int
-	clause, args, err := req.Condition.ToSqlClauses(schemaID, cache, &paramCounter)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build advanced query: %w", err)
-	}
-
-	if clause == "" {
-		return nil, fmt.Errorf("advanced query condition produced an empty clause")
-	}
-
-	offset := (req.Page - 1) * limit
-	rowIDs, totalRecords, err := em.repository.AdvancedQueryRowIDs(ctx, clause, args, limit, offset)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute advanced query: %w", err)
-	}
-
-	records := make([]*forma.DataRecord, 0, len(rowIDs))
-	for _, rowID := range rowIDs {
-		attributes, err := em.repository.GetAttributes(ctx, req.SchemaName, rowID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get attributes for row %s: %w", rowID, err)
-		}
-
-		data, err := em.transformer.FromAttributes(ctx, attributes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to transform attributes for row %s: %w", rowID, err)
-		}
-
-		records = append(records, &forma.DataRecord{
-			SchemaName: req.SchemaName,
-			RowID:      rowID,
-			Attributes: data,
-		})
-	}
-
-	totalPages := 0
-	if totalRecords > 0 {
-		totalPages = int((totalRecords + int64(limit) - 1) / int64(limit))
-	}
-
-	result := &forma.QueryResult{
-		Data:          records,
-		TotalRecords:  int(totalRecords),
-		TotalPages:    totalPages,
-		CurrentPage:   req.Page,
-		ItemsPerPage:  limit,
-		HasNext:       req.Page < totalPages,
-		HasPrevious:   req.Page > 1,
-		ExecutionTime: time.Since(startTime),
-	}
-
-	return result, nil
 }
 
 // CrossSchemaSearch searches across multiple schemas using a single optimized query
@@ -428,94 +353,124 @@ func (em *entityManager) CrossSchemaSearch(ctx context.Context, req *forma.Cross
 		req.ItemsPerPage = em.config.Query.MaxPageSize
 	}
 
-	// Verify all schemas exist
+	startTime := time.Now()
+	tables := em.storageTables()
+
+	// Build search condition - search for the term in text values
+	// This is a simplified approach; you may want to extend this to search across multiple attributes
+	var searchCondition forma.Condition = req.Condition
+	if searchCondition == nil {
+		// If no condition provided, create a default search condition
+		// Note: This is a placeholder - you may want to implement more sophisticated search logic
+		searchCondition = &forma.CompositeCondition{
+			Logic:      forma.LogicAnd,
+			Conditions: []forma.Condition{},
+		}
+	}
+
+	type schemaContext struct {
+		name      string
+		id        int16
+		condition forma.Condition
+	}
+
+	schemaContexts := make([]schemaContext, 0, len(req.SchemaNames))
 	for _, schemaName := range req.SchemaNames {
-		_, _, err := em.registry.GetSchemaByName(schemaName)
+		schemaID, _, err := em.registry.GetSchemaByName(schemaName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get schema %s: %w", schemaName, err)
 		}
-	}
-
-	// Build search filter
-	searchFilter := forma.Filter{
-		Type:  forma.FilterContains,
-		Value: req.SearchTerm,
-		Field: forma.FilterFieldAttributeValue,
-	}
-
-	// Create filters list from map, preserving the search filter
-	filterSlice := make([]forma.Filter, 0, len(req.Filters)+1)
-	for _, filter := range req.Filters {
-		filterSlice = append(filterSlice, filter)
-	}
-	filterSlice = append(filterSlice, searchFilter)
-
-	// Execute single cross-schema query using EAV table optimization
-	startTime := time.Now()
-
-	// For cross-schema search, we need to query without a specific schema filter
-	// The search will be performed across all schemas, but filtered by the requested schema names
-	attributeQuery := &AttributeQuery{
-		Filters: filterSlice,
-		Limit:   req.ItemsPerPage,
-		Offset:  (req.Page - 1) * req.ItemsPerPage,
-	}
-
-	attributes, err := em.repository.QueryAttributes(ctx, attributeQuery)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query attributes across schemas: %w", err)
-	}
-
-	// Group attributes by rowID and schemaID
-	type entityKey struct {
-		schemaID int16
-		rowID    uuid.UUID
-	}
-	groupedByEntity := make(map[entityKey][]Attribute)
-	for _, attr := range attributes {
-		key := entityKey{schemaID: attr.SchemaID, rowID: attr.RowID}
-		groupedByEntity[key] = append(groupedByEntity[key], attr)
-	}
-
-	// Convert attribute groups to DataRecords with schema names
-	records := make([]*forma.DataRecord, 0, len(groupedByEntity))
-	schemaIDToName := make(map[int16]string)
-
-	for key, attrs := range groupedByEntity {
-		// Resolve schema name if not cached
-		schemaName, ok := schemaIDToName[key.schemaID]
-		if !ok {
-			// Find the schema name from registry
-			for _, sn := range req.SchemaNames {
-				schemaID, _, err := em.registry.GetSchemaByName(sn)
-				if err == nil && schemaID == key.schemaID {
-					schemaName = sn
-					schemaIDToName[key.schemaID] = sn
-					break
-				}
-			}
-		}
-
-		jsonData, err := em.transformer.FromAttributes(ctx, attrs)
-		if err != nil {
-			return nil, fmt.Errorf("failed to transform attributes to JSON: %w", err)
-		}
-
-		records = append(records, &forma.DataRecord{
-			SchemaName: schemaName,
-			RowID:      key.rowID,
-			Attributes: jsonData,
+		schemaContexts = append(schemaContexts, schemaContext{
+			name:      schemaName,
+			id:        schemaID,
+			condition: searchCondition,
 		})
 	}
 
-	// Get total count from query metadata
-	// Note: The total count is embedded in the query results but we need to extract it
-	// For now, calculate based on the results
-	totalRecords := int64(len(records))
-	totalPages := int((totalRecords + int64(req.ItemsPerPage) - 1) / int64(req.ItemsPerPage))
+	schemaTotals := make([]int64, len(schemaContexts))
+	for idx, schemaCtx := range schemaContexts {
+		page, err := em.repository.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+			Tables:    tables,
+			SchemaID:  schemaCtx.id,
+			Condition: schemaCtx.condition,
+			Limit:     1,
+			Offset:    0,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to count records for schema %s: %w", schemaCtx.name, err)
+		}
+		schemaTotals[idx] = page.TotalRecords
+	}
 
+	var totalRecords int64
+	for _, count := range schemaTotals {
+		totalRecords += count
+	}
+
+	if totalRecords == 0 {
+		return &forma.QueryResult{
+			Data:          []*forma.DataRecord{},
+			TotalRecords:  0,
+			TotalPages:    0,
+			CurrentPage:   req.Page,
+			ItemsPerPage:  req.ItemsPerPage,
+			HasNext:       false,
+			HasPrevious:   req.Page > 1,
+			ExecutionTime: time.Since(startTime),
+		}, nil
+	}
+
+	offset := (req.Page - 1) * req.ItemsPerPage
+	remaining := req.ItemsPerPage
+	results := make([]*forma.DataRecord, 0, req.ItemsPerPage)
+	skip := offset
+
+	for idx, schemaCtx := range schemaContexts {
+		count := int(schemaTotals[idx])
+		if skip >= count {
+			skip -= count
+			continue
+		}
+
+		schemaOffset := skip
+		skip = 0
+		avail := count - schemaOffset
+		schemaLimit := remaining
+		if avail < schemaLimit {
+			schemaLimit = avail
+		}
+		if schemaLimit <= 0 {
+			continue
+		}
+
+		page, err := em.repository.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+			Tables:    tables,
+			SchemaID:  schemaCtx.id,
+			Condition: schemaCtx.condition,
+			Limit:     schemaLimit,
+			Offset:    schemaOffset,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch records for schema %s: %w", schemaCtx.name, err)
+		}
+
+		for _, record := range page.Records {
+			dataRecord, err := em.toDataRecord(ctx, schemaCtx.name, record)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, dataRecord)
+		}
+
+		remaining -= len(page.Records)
+		if remaining <= 0 {
+			break
+		}
+	}
+
+	totalPages := int((totalRecords + int64(req.ItemsPerPage) - 1) / int64(req.ItemsPerPage))
 	return &forma.QueryResult{
-		Data:          records,
+		Data:          results,
 		TotalRecords:  int(totalRecords),
 		TotalPages:    totalPages,
 		CurrentPage:   req.Page,

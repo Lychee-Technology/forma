@@ -60,9 +60,11 @@ print_success "Environment variables configured"
 # ============================================================================
 # 2. Start PostgreSQL via Docker Compose
 # ============================================================================
-docker compose -f deploy/docker-compose.yml down --remove-orphans || true
+pushd deploy
+docker compose -f docker-compose.yml down --remove-orphans || true
 print_info "Starting PostgreSQL container..."
-docker compose -f deploy/docker-compose.yml up -d
+docker compose -f docker-compose.yml up -d
+popd
 
 # Wait for PostgreSQL to be ready
 print_info "Waiting for PostgreSQL to be ready..."

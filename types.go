@@ -9,8 +9,8 @@ import (
 )
 
 type DataRecord struct {
-	SchemaName string         `json:"schemaName"`
-	RowID      uuid.UUID      `json:"rowId"`
+	SchemaName string         `json:"schema_name"`
+	RowID      uuid.UUID      `json:"row_id"`
 	Attributes map[string]any `json:"attributes"`
 }
 
@@ -39,25 +39,19 @@ const (
 )
 
 type OrderBy struct {
-	Field     FilterField `json:"field"`
-	SortOrder SortOrder   `json:"sort_order,omitempty"`
+	Attribute string    `json:"attribute"`
+	SortOrder SortOrder `json:"sort_order,omitempty"`
 }
 
 type FilterField string
 
 const (
-	FilterFieldAttributeName  FilterField = "attr_name"
-	FilterFieldAttributeValue FilterField = "attr_value"
-	FilterFieldRowID          FilterField = "row_id"
-	FilterFieldSchemaName     FilterField = "schema_name"
+	FilterFieldAttributeName FilterField = "attr_name"
+	FilterFieldValueText     FilterField = "value_text"
+	FilterFieldValueNumeric  FilterField = "value_numeric"
+	FilterFieldRowID         FilterField = "row_id"
+	FilterFieldSchemaName    FilterField = "schema_name"
 )
-
-// Filter supports all filter types from both modules
-type Filter struct {
-	Type  FilterType  `json:"type" validate:"required"`
-	Value any         `json:"value" validate:"required"`
-	Field FilterField `json:"field,omitempty"` // For entity operations
-}
 
 // OperationType represents CRUD operations
 type OperationType string
@@ -133,30 +127,108 @@ const (
 
 // QueryRequest represents a pagination query request.
 type QueryRequest struct {
-	SchemaName   string            `json:"schema_name" validate:"required"`
-	Page         int               `json:"page" validate:"min=1"`
-	ItemsPerPage int               `json:"items_per_page" validate:"min=1,max=100"`
-	Filters      map[string]Filter `json:"filters,omitempty"`
-	SortBy       string            `json:"sort_by,omitempty"`
-	SortOrder    SortOrder         `json:"sort_order,omitempty"`
-	RowID        *uuid.UUID        `json:"row_id,omitempty"` // For entity-specific operations
+	SchemaName   string     `json:"schema_name" validate:"required"`
+	Page         int        `json:"page" validate:"min=1"`
+	ItemsPerPage int        `json:"items_per_page" validate:"min=1,max=100"`
+	Condition    Condition  `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
+	SortBy       []string   `json:"sort_by,omitempty"`
+	SortOrder    SortOrder  `json:"sort_order,omitempty"`
+	RowID        *uuid.UUID `json:"row_id,omitempty"` // For entity-specific operations
 }
 
-// CursorQueryRequest represents cursor-based pagination input.
-type CursorQueryRequest struct {
-	SchemaName string            `json:"schema_name" validate:"required"`
-	Cursor     string            `json:"cursor,omitempty"`
-	Limit      int               `json:"limit" validate:"min=1,max=100"`
-	Filters    map[string]Filter `json:"filters,omitempty"`
+// UnmarshalJSON implements custom JSON unmarshaling for QueryRequest.
+// It allows the Condition field to be either a CompositeCondition or KvCondition.
+func (r *QueryRequest) UnmarshalJSON(data []byte) error {
+	type Alias QueryRequest
+	aux := &struct {
+		Condition json.RawMessage `json:"condition,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Condition) > 0 && string(aux.Condition) != "null" {
+		cond, err := unmarshalCondition(aux.Condition)
+		if err != nil {
+			return err
+		}
+		r.Condition = cond
+	}
+
+	return nil
 }
 
-// CrossSchemaRequest represents a cross-schema search query.
+// MarshalJSON implements custom JSON marshaling for QueryRequest.
+func (r QueryRequest) MarshalJSON() ([]byte, error) {
+	type Alias QueryRequest
+	aux := &struct {
+		Condition any `json:"condition,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&r),
+	}
+
+	if r.Condition != nil {
+		aux.Condition = r.Condition
+	}
+
+	return json.Marshal(aux)
+}
+
+// CrossSchemaRequest represents a cross-schema search request
 type CrossSchemaRequest struct {
-	SchemaNames  []string          `json:"schema_names" validate:"required,min=1"`
-	SearchTerm   string            `json:"search_term" validate:"required"`
-	Page         int               `json:"page" validate:"min=1"`
-	ItemsPerPage int               `json:"items_per_page" validate:"min=1,max=100"`
-	Filters      map[string]Filter `json:"filters,omitempty"`
+	SchemaNames  []string  `json:"schema_names" validate:"required"`
+	SearchTerm   string    `json:"search_term" validate:"required"`
+	Page         int       `json:"page" validate:"min=1"`
+	ItemsPerPage int       `json:"items_per_page" validate:"min=1,max=100"`
+	Condition    Condition `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for CrossSchemaRequest.
+// It allows the Condition field to be either a CompositeCondition or KvCondition.
+func (r *CrossSchemaRequest) UnmarshalJSON(data []byte) error {
+	type Alias CrossSchemaRequest
+	aux := &struct {
+		Condition json.RawMessage `json:"condition,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Condition) > 0 && string(aux.Condition) != "null" {
+		cond, err := unmarshalCondition(aux.Condition)
+		if err != nil {
+			return err
+		}
+		r.Condition = cond
+	}
+
+	return nil
+}
+
+// MarshalJSON implements custom JSON marshaling for CrossSchemaRequest.
+func (r CrossSchemaRequest) MarshalJSON() ([]byte, error) {
+	type Alias CrossSchemaRequest
+	aux := &struct {
+		Condition any `json:"condition,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&r),
+	}
+
+	if r.Condition != nil {
+		aux.Condition = r.Condition
+	}
+
+	return json.Marshal(aux)
 }
 
 // QueryResult represents paginated query results.
@@ -179,49 +251,6 @@ type CursorQueryResult struct {
 	ExecutionTime time.Duration `json:"execution_time"`
 }
 
-// AdvancedQueryRequest represents a request payload for condition-based advanced queries.
-type AdvancedQueryRequest struct {
-	SchemaName   string              `json:"schema_name" validate:"required"`
-	Condition    *CompositeCondition `json:"condition" validate:"required"`
-	Page         int                 `json:"page"`
-	ItemsPerPage int                 `json:"items_per_page"`
-}
-
-type JSONSchema struct {
-	ID         int16                      `json:"id"`
-	Name       string                     `json:"name"`
-	Version    int                        `json:"version"`
-	Schema     string                     `json:"schema"`
-	Properties map[string]*PropertySchema `json:"properties"`
-	Required   []string                   `json:"required"`
-	CreatedAt  int64                      `json:"created_at"`
-}
-
-// PropertySchema defines the schema for a single property
-type PropertySchema struct {
-	Name       string                     `json:"name"`
-	Type       string                     `json:"type"` // "string", "integer", "number", "boolean", "array", "object", "null"
-	Format     string                     `json:"format,omitempty"`
-	Items      *PropertySchema            `json:"items,omitempty"`
-	Properties map[string]*PropertySchema `json:"properties,omitempty"`
-	Required   bool                       `json:"required"`
-	Default    any                        `json:"default,omitempty"`
-	Enum       []any                      `json:"enum,omitempty"`
-	Minimum    *float64                   `json:"minimum,omitempty"`
-	Maximum    *float64                   `json:"maximum,omitempty"`
-	MinLength  *int                       `json:"minLength,omitempty"`
-	MaxLength  *int                       `json:"maxLength,omitempty"`
-	Pattern    string                     `json:"pattern,omitempty"`
-	Relation   *RelationSchema            `json:"x-relation,omitempty"`
-	Storage    string                     `json:"x-storage,omitempty"` // "json" for free-form objects
-}
-
-// RelationSchema defines reference relationships between objects
-type RelationSchema struct {
-	Target string `json:"target"` // Target schema name
-	Type   string `json:"type"`   // "reference" for foreign key relationships
-}
-
 type Logic string
 
 const (
@@ -232,14 +261,6 @@ const (
 // --- 2. Interface (The Core) ---
 type Condition interface {
 	IsLeaf() bool
-
-	// ToSqlClauses 是将过滤器节点转换为 SQL 子句的核心方法。
-	// 它返回一个返回 row_id 集合的 SQL 子句、对应的参数以及一个错误。
-	ToSqlClauses(
-		schemaID int16,
-		cache SchemaAttributeCache,
-		paramIndex *int,
-	) (sqlClause string, args []any, err error)
 }
 
 // --- 3. Composite Condition (Non-Leaf Node) ---

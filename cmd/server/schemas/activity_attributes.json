@@ -1,0 +1,49 @@
+{
+  "id": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "type": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "direction": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_03"
+    }
+  },
+  "at": {
+    "attributeID": 4,
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "bigint_01",
+      "encoding": "unix_ms"
+    }
+  },
+  "userId": {
+    "attributeID": 5,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_04"
+    }
+  },
+  "summary": {
+    "attributeID": 6,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_05"
+    }
+  },
+  "nextFollowUpAt": {
+    "attributeID": 7,
+    "valueType": "date"
+  }
+}

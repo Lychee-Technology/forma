@@ -42,7 +42,7 @@ func (s *Server) Start(port string) error {
 
 func main() {
 	// Load configuration
-	config := forma.DefaultConfig()
+	config := internal.DefaultConfig()
 
 	// Set schema directory
 	config.Entity.SchemaDirectory = "schemas"
@@ -54,9 +54,10 @@ func main() {
 	config.Database.Username = getEnv("DB_USER", "postgres")
 	config.Database.Password = getEnv("DB_PASSWORD", "")
 	config.Database.SSLMode = getEnv("DB_SSL_MODE", "disable")
-	config.Database.TableNames = forma.TableNames{
+	config.Database.TableNames = internal.TableNames{
 		SchemaRegistry: "schema_registry",
-		EAVData:        "eav_data_2",
+		EAVData:        "eav_dev",
+		EntityMain:     "entity_main_dev",
 	}
 
 	// Initialize EntityManager and get metadata cache

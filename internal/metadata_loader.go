@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"lychee.technology/ltbase/forma"
 )
 
 // MetadataCache holds all metadata mappings for fast lookups
@@ -21,10 +20,10 @@ type MetadataCache struct {
 	schemaIDToName map[int16]string
 
 	// Attribute mappings: (schema_name, attr_name) -> AttributeMeta
-	attributeMetadata map[string]map[string]forma.AttributeMeta
+	attributeMetadata map[string]map[string]AttributeMetadata
 
 	// Schema caches for transformer
-	schemaCaches map[string]forma.SchemaAttributeCache
+	schemaCaches map[string]SchemaAttributeCache
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -32,8 +31,8 @@ func NewMetadataCache() *MetadataCache {
 	return &MetadataCache{
 		schemaNameToID:    make(map[string]int16),
 		schemaIDToName:    make(map[int16]string),
-		attributeMetadata: make(map[string]map[string]forma.AttributeMeta),
-		schemaCaches:      make(map[string]forma.SchemaAttributeCache),
+		attributeMetadata: make(map[string]map[string]AttributeMetadata),
+		schemaCaches:      make(map[string]SchemaAttributeCache),
 	}
 }
 
@@ -53,19 +52,8 @@ func (mc *MetadataCache) GetSchemaName(schemaID int16) (string, bool) {
 	return name, ok
 }
 
-// GetAttributeMeta retrieves attribute metadata (thread-safe)
-func (mc *MetadataCache) GetAttributeMeta(schemaName, attrName string) (forma.AttributeMeta, bool) {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	if attrs, ok := mc.attributeMetadata[schemaName]; ok {
-		meta, ok := attrs[attrName]
-		return meta, ok
-	}
-	return forma.AttributeMeta{}, false
-}
-
 // GetSchemaCache retrieves the schema attribute cache for a schema (thread-safe)
-func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttributeCache, bool) {
+func (mc *MetadataCache) GetSchemaCache(schemaName string) (SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	cache, ok := mc.schemaCaches[schemaName]
@@ -185,31 +173,14 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 
 		// Convert to AttributeMeta map
-		attrMap := make(map[string]forma.AttributeMeta)
-		schemaCache := make(forma.SchemaAttributeCache)
+		attrMap := make(map[string]AttributeMetadata)
+		schemaCache := make(SchemaAttributeCache)
 
 		for attrName, attrData := range rawAttributes {
-			var meta forma.AttributeMeta
-
-			// Extract attributeID
-			if id, ok := attrData["attributeID"].(float64); ok {
-				meta.AttributeID = int16(id)
-			} else {
-				return fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, attributesFile)
+			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
+			if err != nil {
+				return err
 			}
-
-			// Extract valueType
-			if vt, ok := attrData["valueType"].(string); ok {
-				meta.ValueType = forma.ValueType(vt)
-			} else {
-				return fmt.Errorf("invalid or missing valueType for attribute %s in %s", attrName, attributesFile)
-			}
-
-			// Extract insideArray (optional, defaults to false)
-			if ia, ok := attrData["insideArray"].(bool); ok {
-				meta.InsideArray = ia
-			}
-
 			attrMap[attrName] = meta
 			schemaCache[attrName] = meta
 		}

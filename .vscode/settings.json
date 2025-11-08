@@ -1,0 +1,12 @@
+{
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": false,
+    "python.testing.autoTestDiscoverOnSaveEnabled": false,
+    "python.analysis.typeCheckingMode": "off",
+    "editor.formatOnSave": true,
+    "go.formatTool": "goimports",
+    "[go]": {
+        // 指定默认 Go 格式化工具（如 gofmt, goimports 等）
+        "editor.defaultFormatter": "golang.go",
+    },
+}

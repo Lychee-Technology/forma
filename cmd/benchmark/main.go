@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,12 +37,6 @@ type options struct {
 	chunkSize    int
 	seed         int64
 	seedProvided bool
-}
-
-type AttributeMetadata struct {
-	AttrID      int16  `json:"attributeID"`
-	ValueType   string `json:"valueType"`
-	InsideArray bool   `json:"insideArray"`
 }
 
 func main() {
@@ -117,13 +110,7 @@ func main() {
 			log.Printf("[info] Cleared existing lead records for schema_id=%d", schemaID)
 		}
 
-		// Load attribute definitions
-		attrDefs, err := loadAttributeDefinitions(opts.schemaDir, "lead")
-		if err != nil {
-			log.Fatalf("failed to load lead attribute definitions: %v", err)
-		}
-
-		attrs, err := buildLeadAttributes(ctx, transformer, schemaID, opts.leadCount, random, attrDefs)
+		attrs, err := buildLeadAttributes(ctx, transformer, registry, schemaID, opts.leadCount, random)
 		if err != nil {
 			log.Fatalf("failed to build lead attributes: %v", err)
 		}
@@ -153,13 +140,7 @@ func main() {
 			log.Printf("[info] Cleared existing listing records for schema_id=%d", schemaID)
 		}
 
-		// Load attribute definitions
-		attrDefs, err := loadAttributeDefinitions(opts.schemaDir, "listing")
-		if err != nil {
-			log.Fatalf("failed to load listing attribute definitions: %v", err)
-		}
-
-		attrs, err := buildListingAttributes(ctx, transformer, schemaID, opts.listingCount, random, attrDefs)
+		attrs, err := buildListingAttributes(ctx, transformer, registry, schemaID, opts.listingCount, random)
 		if err != nil {
 			log.Fatalf("failed to build listing attributes: %v", err)
 		}
@@ -293,9 +274,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts options) error {
 		attr_id        SMALLINT NOT NULL,
 		array_indices  TEXT NOT NULL DEFAULT '',
 		value_text     TEXT,
-		value_numeric  NUMERIC,
-		value_date     TIMESTAMPTZ,
-		value_bool     BOOLEAN,
+		value_numeric  DOUBLE PRECISION,
 		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
 	)`, eavTable)
 
@@ -315,18 +294,6 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts options) error {
 	createIdxText := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_text) WHERE value_text IS NOT NULL`, idxText, eavTable)
 	if _, err := tx.Exec(ctx, createIdxText); err != nil {
 		return fmt.Errorf("create text index: %w", err)
-	}
-
-	idxDate := quoteIdentifier(makeIndexName(opts.eavTable, "date"))
-	createIdxDate := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_date) WHERE value_date IS NOT NULL`, idxDate, eavTable)
-	if _, err := tx.Exec(ctx, createIdxDate); err != nil {
-		return fmt.Errorf("create date index: %w", err)
-	}
-
-	idxBool := quoteIdentifier(makeIndexName(opts.eavTable, "bool"))
-	createIdxBool := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_bool) WHERE value_bool IS NOT NULL`, idxBool, eavTable)
-	if _, err := tx.Exec(ctx, createIdxBool); err != nil {
-		return fmt.Errorf("create bool index: %w", err)
 	}
 
 	return nil
@@ -364,14 +331,14 @@ func purgeSchema(ctx context.Context, tx pgx.Tx, eavTable string, schemaID int16
 	return nil
 }
 
-func loadAttributeDefinitions(schemaDir, schemaName string) (map[string]AttributeMetadata, error) {
+func loadAttributeDefinitions(schemaDir, schemaName string) (map[string]internal.AttributeMetadata, error) {
 	filePath := filepath.Join(schemaDir, schemaName+"_attributes.json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("read attribute definitions file %s: %w", filePath, err)
 	}
 
-	var defs map[string]AttributeMetadata
+	var defs map[string]internal.AttributeMetadata
 	if err := json.Unmarshal(data, &defs); err != nil {
 		return nil, fmt.Errorf("parse attribute definitions: %w", err)
 	}
@@ -379,7 +346,7 @@ func loadAttributeDefinitions(schemaDir, schemaName string) (map[string]Attribut
 	return defs, nil
 }
 
-func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table string, attrs []internal.Attribute, chunkSize int) error {
+func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table string, attrs []internal.EAVRecord, chunkSize int) error {
 	if len(attrs) == 0 {
 		return nil
 	}
@@ -389,7 +356,7 @@ func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table strin
 	}
 
 	tableIdent := pgx.Identifier(splitIdentifier(table))
-	columns := []string{"schema_id", "row_id", "attr_id", "array_indices", "value_text", "value_numeric", "value_date", "value_bool"}
+	columns := []string{"schema_id", "row_id", "attr_id", "array_indices", "value_text", "value_numeric"}
 
 	for start := 0; start < len(attrs); start += chunkSize {
 		end := start + chunkSize
@@ -407,8 +374,6 @@ func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table strin
 				attr.ArrayIndices,
 				attr.ValueText,
 				attr.ValueNumeric,
-				attr.ValueDate,
-				attr.ValueBool,
 			}
 		}
 
@@ -426,7 +391,7 @@ func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table strin
 	return nil
 }
 
-func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, schemaID int16, count int, r *rand.Rand, attrDefs map[string]AttributeMetadata) ([]internal.Attribute, error) {
+func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, registry internal.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
 	statuses := []string{"hot", "warm", "cold", "inactive", "converted"}
 	firstNames := []string{"Alex", "Taylor", "Jordan", "Morgan", "Casey", "Riley", "Naomi", "Ken"}
 	lastNames := []string{"Kim", "Suzuki", "Watanabe", "Sato", "Tanaka", "Kato", "Ito"}
@@ -437,7 +402,7 @@ func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, 
 	propertyTypes := []string{"apartment", "condo", "house", "townhouse", "other"}
 	preferencePool := []string{"pet-friendly", "south-facing", "high-floor", "gym", "parking", "renewed"}
 
-	attributes := make([]internal.Attribute, 0, count*40)
+	attributes := make([]internal.EAVRecord, 0, count*40)
 
 	for i := 0; i < count; i++ {
 		rowID := uuid.Must(uuid.NewV7())
@@ -501,7 +466,7 @@ func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, 
 			},
 		}
 
-		attrs, err := transformToTypedAttributes(ctx, transformer, schemaID, rowID, data, attrDefs)
+		attrs, err := transformToTypedAttributes(ctx, transformer, registry, schemaID, rowID, data)
 		if err != nil {
 			return nil, fmt.Errorf("lead %d transformation: %w", i, err)
 		}
@@ -512,7 +477,7 @@ func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, 
 	return attributes, nil
 }
 
-func buildListingAttributes(ctx context.Context, transformer internal.Transformer, schemaID int16, count int, r *rand.Rand, attrDefs map[string]AttributeMetadata) ([]internal.Attribute, error) {
+func buildListingAttributes(ctx context.Context, transformer internal.Transformer, registry internal.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
 	propertyTypes := []string{"condominium", "house", "land", "commercial"}
 	lineNames := []string{"Yamanote Line", "Chuo Line", "Ginza Line", "Hibiya Line", "Den-en-toshi Line"}
 	stationNames := []string{"Shibuya", "Shinjuku", "Meguro", "Ebisu", "Ginza", "Nakameguro"}
@@ -526,7 +491,7 @@ func buildListingAttributes(ctx context.Context, transformer internal.Transforme
 	featuresPool := []string{"south-facing", "system kitchen", "floor heating", "walk-in closet", "auto lock"}
 	landRights := []string{"freehold", "leasehold_fixed_term", "leasehold_old_law", "other"}
 
-	attributes := make([]internal.Attribute, 0, count*80)
+	attributes := make([]internal.EAVRecord, 0, count*80)
 
 	for i := 0; i < count; i++ {
 		rowID := uuid.Must(uuid.NewV7())
@@ -627,7 +592,7 @@ func buildListingAttributes(ctx context.Context, transformer internal.Transforme
 			},
 		}
 
-		attrs, err := transformToTypedAttributes(ctx, transformer, schemaID, rowID, data, attrDefs)
+		attrs, err := transformToTypedAttributes(ctx, transformer, registry, schemaID, rowID, data)
 		if err != nil {
 			return nil, fmt.Errorf("listing %d transformation: %w", i, err)
 		}
@@ -638,148 +603,29 @@ func buildListingAttributes(ctx context.Context, transformer internal.Transforme
 	return attributes, nil
 }
 
-// transformToTypedAttributes converts flattened attributes to typed attributes with attr_id
+// transformToTypedAttributes converts JSON data to EAVRecords using the standard transformer pipeline
 func transformToTypedAttributes(
 	ctx context.Context,
 	transformer internal.Transformer,
+	registry internal.SchemaRegistry,
 	schemaID int16,
 	rowID uuid.UUID,
 	data map[string]any,
-	attrDefs map[string]AttributeMetadata,
-) ([]internal.Attribute, error) {
-	// Use existing transformer to flatten the data
-	// Note: This will produce old-style Attribute structs that we'll need to adapt
-	// For now, we'll flatten manually to work with the new structure
-
-	typedAttrs := make([]internal.Attribute, 0)
-	flattenJSONToTypedAttributes(schemaID, rowID, "", data, []int{}, attrDefs, &typedAttrs)
-
-	return typedAttrs, nil
-}
-
-// flattenJSONToTypedAttributes recursively flattens JSON and creates typed attributes
-func flattenJSONToTypedAttributes(
-	schemaID int16,
-	rowID uuid.UUID,
-	prefix string,
-	data any,
-	indices []int,
-	attrDefs map[string]AttributeMetadata,
-	result *[]internal.Attribute,
-) {
-	switch v := data.(type) {
-	case map[string]any:
-		for key, value := range v {
-			newPrefix := buildPrefix(prefix, key)
-			flattenJSONToTypedAttributes(schemaID, rowID, newPrefix, value, indices, attrDefs, result)
-		}
-	case []any:
-		for i, item := range v {
-			newIndices := append(append([]int{}, indices...), i)
-			flattenJSONToTypedAttributes(schemaID, rowID, prefix, item, newIndices, attrDefs, result)
-		}
-	default:
-		// Leaf node - create typed attribute
-		if v == nil {
-			return
-		}
-
-		// Look up attribute metadata
-		meta, ok := attrDefs[prefix]
-		if !ok {
-			// Skip unknown attributes
-			return
-		}
-
-		// Convert indices to comma-separated string
-		arrayIndices := ""
-		if len(indices) > 0 {
-			indicesStr := make([]string, len(indices))
-			for i, idx := range indices {
-				indicesStr[i] = strconv.Itoa(idx)
-			}
-			arrayIndices = strings.Join(indicesStr, ",")
-		}
-
-		// Create typed attribute
-		attr := internal.Attribute{
-			SchemaID:     schemaID,
-			RowID:        rowID,
-			AttrID:       meta.AttrID,
-			ArrayIndices: arrayIndices,
-		}
-
-		// Convert value based on type
-		valueStr := fmt.Sprintf("%v", v)
-		convertValueToTypedField(&attr, valueStr, meta.ValueType)
-
-		*result = append(*result, attr)
-	}
-}
-
-// buildPrefix constructs the next part of the path
-func buildPrefix(current string, key string) string {
-	if current == "" {
-		return key
-	}
-	return current + "." + key
-}
-
-// convertValueToTypedField populates the appropriate typed field in the attribute
-func convertValueToTypedField(attr *internal.Attribute, valueStr string, valueType string) {
-	switch valueType {
-	case "text":
-		attr.ValueText = &valueStr
-	case "numeric":
-		if num, err := strconv.ParseFloat(valueStr, 64); err == nil {
-			attr.ValueNumeric = &num
-		}
-	case "date":
-		// Try multiple date formats
-		formats := []string{
-			time.RFC3339,
-			"2006-01-02",
-			"2006-01",
-		}
-		for _, format := range formats {
-			if t, err := time.Parse(format, valueStr); err == nil {
-				attr.ValueDate = &t
-				return
-			}
-		}
-	case "bool":
-		if b, err := strconv.ParseBool(valueStr); err == nil {
-			attr.ValueBool = &b
-		}
-	}
-}
-
-// parseAttrName parses an attribute name into path and indices
-// This is kept for future use if needed
-func parseAttrName(name string) (string, []int) {
-	// Pattern: "path(0, 1, 2)" or "path(0)" or "path"
-	indicesRegex := regexp.MustCompile(`\(([^)]+)\)$`)
-	match := indicesRegex.FindStringSubmatch(name)
-
-	var indices []int
-	baseName := name
-
-	if match != nil {
-		baseName = name[:len(name)-len(match[0])]
-		indicesStr := match[1]
-		indexParts := strings.Split(indicesStr, ", ")
-		for _, part := range indexParts {
-			part = strings.TrimSpace(part)
-			if idx, err := strconv.Atoi(part); err == nil {
-				indices = append(indices, idx)
-			}
-		}
+) ([]internal.EAVRecord, error) {
+	// 1. Use Transformer to convert JSON to EntityAttributes
+	entityAttrs, err := transformer.ToAttributes(ctx, schemaID, rowID, data)
+	if err != nil {
+		return nil, fmt.Errorf("transform to attributes: %w", err)
 	}
 
-	// Remove trailing "[]" markers if present
-	baseName = strings.ReplaceAll(baseName, "[]", "")
+	// 2. Use AttributeConverter to convert EntityAttributes to EAVRecords
+	converter := internal.NewAttributeConverter(registry)
+	eavRecords, err := converter.ToEAVRecords(entityAttrs, rowID)
+	if err != nil {
+		return nil, fmt.Errorf("convert to EAV records: %w", err)
+	}
 
-	return baseName, indices
+	return eavRecords, nil
 }
 
 func randomChoice(r *rand.Rand, values []string) string {

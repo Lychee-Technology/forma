@@ -9,13 +9,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"lychee.technology/ltbase/forma"
 )
 
 type SchemaRegistry interface {
-	GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error)
-	GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error)
+	GetSchemaByName(name string) (int16, SchemaAttributeCache, error)
+	GetSchemaByID(id int16) (string, SchemaAttributeCache, error)
 	ListSchemas() []string
 }
 
@@ -24,7 +22,7 @@ type fileSchemaRegistry struct {
 	schemaDir    string
 	nameToID     map[string]int16
 	idToName     map[int16]string
-	schemas      map[string]forma.SchemaAttributeCache
+	schemas      map[string]SchemaAttributeCache
 	nextSchemaID int16
 }
 
@@ -34,7 +32,7 @@ func NewFileSchemaRegistry(schemaDir string) (SchemaRegistry, error) {
 		schemaDir:    schemaDir,
 		nameToID:     make(map[string]int16),
 		idToName:     make(map[int16]string),
-		schemas:      make(map[string]forma.SchemaAttributeCache),
+		schemas:      make(map[string]SchemaAttributeCache),
 		nextSchemaID: 100,
 	}
 
@@ -83,29 +81,12 @@ func (r *fileSchemaRegistry) loadSchemas() error {
 		}
 
 		// Convert to SchemaAttributeCache
-		cache := make(forma.SchemaAttributeCache)
+		cache := make(SchemaAttributeCache)
 		for attrName, attrData := range rawAttributes {
-			var meta forma.AttributeMeta
-
-			// Extract attributeID
-			if id, ok := attrData["attributeID"].(float64); ok {
-				meta.AttributeID = int16(id)
-			} else {
-				return fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, attributesFile)
+			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
+			if err != nil {
+				return err
 			}
-
-			// Extract valueType
-			if vt, ok := attrData["valueType"].(string); ok {
-				meta.ValueType = forma.ValueType(vt)
-			} else {
-				return fmt.Errorf("invalid or missing valueType for attribute %s in %s", attrName, attributesFile)
-			}
-
-			// Extract insideArray (optional, defaults to false)
-			if ia, ok := attrData["insideArray"].(bool); ok {
-				meta.InsideArray = ia
-			}
-
 			cache[attrName] = meta
 		}
 
@@ -124,7 +105,7 @@ func (r *fileSchemaRegistry) loadSchemas() error {
 }
 
 // GetSchemaByName retrieves schema ID and schema definition by schema name
-func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error) {
+func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttributeCache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -144,7 +125,7 @@ func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAt
 }
 
 // GetSchemaByID retrieves schema name and definition by schema ID
-func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error) {
+func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -178,8 +159,8 @@ func (r *fileSchemaRegistry) ListSchemas() []string {
 }
 
 // copySchemaAttributeCache creates a deep copy of a SchemaAttributeCache
-func copySchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
-	result := make(forma.SchemaAttributeCache, len(cache))
+func copySchemaAttributeCache(cache SchemaAttributeCache) SchemaAttributeCache {
+	result := make(SchemaAttributeCache, len(cache))
 	for key, value := range cache {
 		result[key] = value
 	}

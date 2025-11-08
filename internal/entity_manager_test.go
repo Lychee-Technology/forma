@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -19,33 +21,27 @@ func TestEntityManager_Create(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
 	// Create mock repository
-	mockRepo := &mockAttributeRepository{
-		attributes: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Test data
 	testData := map[string]any{
-		"id":     "test-id-1",
-		"status": "hot",
-		"personalInfo": map[string]any{
-			"name": map[string]any{
-				"display": "John Doe",
-			},
-		},
-		"contactInfo": map[string]any{
-			"email": "john@example.com",
-		},
+		"id":        "test-id-1",
+		"type":      "call",
+		"direction": "inbound",
+		"at":        "2024-01-01T00:00:00Z",
+		"userId":    "user-1",
+		"summary":   "Initial contact with client",
 	}
 
 	// Execute
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{
-			SchemaName: "lead",
+			SchemaName: "activity",
 		},
 		Type: forma.OperationCreate,
 		Data: testData,
@@ -62,16 +58,16 @@ func TestEntityManager_Create(t *testing.T) {
 		t.Fatal("Create returned nil record")
 	}
 
-	if record.SchemaName != "lead" {
-		t.Errorf("Expected schema name 'lead', got '%s'", record.SchemaName)
+	if record.SchemaName != "activity" {
+		t.Errorf("Expected schema name 'activity', got '%s'", record.SchemaName)
 	}
 
 	if record.RowID == (uuid.UUID{}) {
 		t.Error("Expected non-zero UUID, got zero UUID")
 	}
 
-	if len(mockRepo.attributes) == 0 {
-		t.Error("Expected attributes to be inserted, but repository is empty")
+	if len(mockRepo.insertedRecords) == 0 {
+		t.Error("Expected persistent record to be inserted, but repository is empty")
 	}
 }
 
@@ -83,31 +79,33 @@ func TestEntityManager_Get(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, cache, err := registry.GetSchemaByName("lead")
+	schemaID, _, err := registry.GetSchemaByName("activity")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
 
-	// Create test attributes
 	testRowID := uuid.New()
-	testAttributes := []Attribute{
-		newSchemaAttribute(t, cache, schemaID, testRowID, "id", "", "test-id-1"),
-		newSchemaAttribute(t, cache, schemaID, testRowID, "status", "", "hot"),
+	testRecord, err := transformer.ToPersistentRecord(ctx, schemaID, testRowID, map[string]any{
+		"id":        "test-id-1",
+		"type":      "call",
+		"direction": "inbound",
+		"at":        "2024-01-01T00:00:00Z",
+		"userId":    "user-1",
+		"summary":   "Test activity",
+	})
+	if err != nil {
+		t.Fatalf("failed to build persistent record: %v", err)
 	}
-
-	mockRepo := &mockAttributeRepository{
-		attributes: map[string][]Attribute{
-			testRowID.String(): testAttributes,
-		},
-	}
+	mockRepo := newMockPersistentRecordRepository()
+	mockRepo.storeRecord(testRecord)
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Execute
 	req := &forma.QueryRequest{
-		SchemaName: "lead",
+		SchemaName: "activity",
 		RowID:      &testRowID,
 	}
 
@@ -139,11 +137,9 @@ func TestEntityManager_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	mockRepo := &mockAttributeRepository{
-		attributes: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
@@ -152,7 +148,7 @@ func TestEntityManager_Delete(t *testing.T) {
 	// Execute
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{
-			SchemaName: "lead",
+			SchemaName: "activity",
 			RowID:      testRowID,
 		},
 		Type: forma.OperationDelete,
@@ -165,8 +161,130 @@ func TestEntityManager_Delete(t *testing.T) {
 		t.Errorf("Delete failed: %v", err)
 	}
 
-	if !mockRepo.deleteEntityCalled {
+	if mockRepo.deleteCalls == 0 {
 		t.Error("Expected DeleteEntity to be called")
+	}
+}
+
+func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+
+	mockRepo := newMockPersistentRecordRepository()
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+
+	_, cache, err := registry.GetSchemaByName("activity")
+	if err != nil {
+		t.Fatalf("failed to get schema metadata: %v", err)
+	}
+
+	req := &forma.QueryRequest{
+		SchemaName:   "activity",
+		Page:         1,
+		ItemsPerPage: 10,
+		SortBy:       []string{"at"},
+		SortOrder:    forma.SortOrderDesc,
+	}
+
+	if _, err := em.Query(ctx, req); err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if mockRepo.lastQuery == nil {
+		t.Fatal("expected repository to receive attribute query")
+	}
+
+	if len(mockRepo.lastQuery.AttributeOrders) != 1 {
+		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastQuery.AttributeOrders))
+	}
+
+	meta, ok := cache["at"]
+	if !ok {
+		t.Fatal("expected at metadata in cache")
+	}
+	attrOrder := mockRepo.lastQuery.AttributeOrders[0]
+	if attrOrder.AttrID != meta.AttributeID {
+		t.Fatalf("expected attrID %d, got %d", meta.AttributeID, attrOrder.AttrID)
+	}
+	if attrOrder.ValueType != meta.ValueType {
+		t.Fatalf("expected valueType %s, got %s", meta.ValueType, attrOrder.ValueType)
+	}
+	if attrOrder.SortOrder != forma.SortOrderDesc {
+		t.Fatalf("expected sort order desc, got %s", attrOrder.SortOrder)
+	}
+}
+
+func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+
+	mockRepo := newMockPersistentRecordRepository()
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+
+	req := &forma.QueryRequest{
+		SchemaName:   "activity",
+		Page:         1,
+		ItemsPerPage: 10,
+		SortBy:       []string{"nonexistent"},
+	}
+
+	_, err = em.Query(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for invalid sort attribute, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unknown attribute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	reg, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(reg)
+	mockRepo := newMockPersistentRecordRepository()
+	em := NewEntityManager(transformer, mockRepo, reg, config)
+
+	condition := &forma.CompositeCondition{
+		Logic: forma.LogicAnd,
+		Conditions: []forma.Condition{
+			&forma.KvCondition{Attr: "type", Value: "equals:call"},
+		},
+	}
+
+	req := &forma.QueryRequest{
+		SchemaName:   "activity",
+		Page:         1,
+		ItemsPerPage: 5,
+		Condition:    condition,
+	}
+
+	if _, err := em.Query(ctx, req); err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+
+	if mockRepo.lastQuery == nil {
+		t.Fatal("expected attribute query to be captured")
+	}
+
+	if mockRepo.lastQuery.Condition != condition {
+		t.Fatal("expected attribute query to receive composite condition")
 	}
 }
 
@@ -179,7 +297,7 @@ func TestSchemaRegistry_LoadSchemas(t *testing.T) {
 	}
 
 	// Test schema retrieval by name
-	schemaID, cache, err := registry.GetSchemaByName("lead")
+	schemaID, cache, err := registry.GetSchemaByName("activity")
 	if err != nil {
 		t.Errorf("GetSchemaByName failed: %v", err)
 	}
@@ -221,7 +339,7 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 	}
 
 	// First get a schema by name to obtain its ID
-	schemaID, _, err := registry.GetSchemaByName("lead")
+	schemaID, _, err := registry.GetSchemaByName("activity")
 	if err != nil {
 		t.Fatalf("failed to get schema by name: %v", err)
 	}
@@ -232,8 +350,8 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 		t.Errorf("GetSchemaByID failed: %v", err)
 	}
 
-	if name != "lead" {
-		t.Errorf("Expected name 'lead', got '%s'", name)
+	if name != "activity" {
+		t.Errorf("Expected name 'activity', got '%s'", name)
 	}
 
 	if schema == nil {
@@ -242,74 +360,114 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 }
 
 // Mock repository for testing
-type mockAttributeRepository struct {
-	attributes                               map[string][]Attribute
-	deleteEntityCalled                       bool
-	existsEntityCalled                       bool
-	insertAttributesCalled                   bool
-	multiSchemaResult                        map[string][]Attribute
-	queryAttributesCalledWithMultipleSchemas bool
-	advancedRowIDs                           []uuid.UUID
-	advancedTotal                            int64
-	advancedErr                              error
-	advancedQueryRowIDsFunc                  func(ctx context.Context, clause string, args []any, limit, offset int) ([]uuid.UUID, int64, error)
+type mockPersistentRecordRepository struct {
+	records         map[int16]map[uuid.UUID]*PersistentRecord
+	insertedRecords []*PersistentRecord
+	deleteCalls     int
+	lastQuery       *PersistentRecordQuery
+	queryFunc       func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
 }
 
-func (m *mockAttributeRepository) InsertAttributes(ctx context.Context, attributes []Attribute) error {
-	m.insertAttributesCalled = true
-	if len(attributes) > 0 {
-		rowID := attributes[0].RowID
-		m.attributes[rowID.String()] = append(m.attributes[rowID.String()], attributes...)
+func newMockPersistentRecordRepository() *mockPersistentRecordRepository {
+	return &mockPersistentRecordRepository{
+		records: make(map[int16]map[uuid.UUID]*PersistentRecord),
+	}
+}
+
+func (m *mockPersistentRecordRepository) storeRecord(record *PersistentRecord) {
+	if record == nil {
+		return
+	}
+	if m.records[record.SchemaID] == nil {
+		m.records[record.SchemaID] = make(map[uuid.UUID]*PersistentRecord)
+	}
+	m.records[record.SchemaID][record.RowID] = record
+}
+
+func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+	m.insertedRecords = append(m.insertedRecords, record)
+	m.storeRecord(record)
+	return nil
+}
+
+func (m *mockPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+	m.storeRecord(record)
+	return nil
+}
+
+func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
+	m.deleteCalls++
+	if schemaRecords, ok := m.records[schemaID]; ok {
+		delete(schemaRecords, rowID)
 	}
 	return nil
 }
 
-func (m *mockAttributeRepository) UpdateAttributes(ctx context.Context, attributes []Attribute) error {
-	return nil
-}
-
-func (m *mockAttributeRepository) DeleteAttributes(ctx context.Context, schemaName string, rowIDs []uuid.UUID) error {
-	return nil
-}
-
-func (m *mockAttributeRepository) GetAttributes(ctx context.Context, schemaName string, rowID uuid.UUID) ([]Attribute, error) {
-	return m.attributes[rowID.String()], nil
-}
-
-func (m *mockAttributeRepository) QueryAttributes(ctx context.Context, query *AttributeQuery) ([]Attribute, error) {
-	// Return mock results
-	result := make([]Attribute, 0)
-	for _, attrs := range m.multiSchemaResult {
-		result = append(result, attrs...)
+func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+	if schemaRecords, ok := m.records[schemaID]; ok {
+		if record, ok := schemaRecords[rowID]; ok {
+			return record, nil
+		}
 	}
-	return result, nil
+	return nil, nil
 }
 
-func (m *mockAttributeRepository) ExistsEntity(ctx context.Context, schemaName string, rowID uuid.UUID) (bool, error) {
-	m.existsEntityCalled = true
-	_, exists := m.attributes[rowID.String()]
-	return exists, nil
-}
-
-func (m *mockAttributeRepository) DeleteEntity(ctx context.Context, schemaName string, rowID uuid.UUID) error {
-	m.deleteEntityCalled = true
-	delete(m.attributes, rowID.String())
-	return nil
-}
-
-func (m *mockAttributeRepository) CountEntities(ctx context.Context, schemaName string, filters []forma.Filter) (int64, error) {
-	return int64(len(m.attributes)), nil
-}
-
-func (m *mockAttributeRepository) BatchUpsertAttributes(ctx context.Context, attributes []Attribute) error {
-	return m.InsertAttributes(ctx, attributes)
-}
-
-func (m *mockAttributeRepository) AdvancedQueryRowIDs(ctx context.Context, clause string, args []any, limit, offset int) ([]uuid.UUID, int64, error) {
-	if m.advancedQueryRowIDsFunc != nil {
-		return m.advancedQueryRowIDsFunc(ctx, clause, args, limit, offset)
+func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+	m.lastQuery = query
+	if m.queryFunc != nil {
+		return m.queryFunc(ctx, query)
 	}
-	return m.advancedRowIDs, m.advancedTotal, m.advancedErr
+
+	schemaRecords := m.records[query.SchemaID]
+	rowIDs := make([]uuid.UUID, 0, len(schemaRecords))
+	for id := range schemaRecords {
+		rowIDs = append(rowIDs, id)
+	}
+
+	sort.Slice(rowIDs, func(i, j int) bool {
+		return rowIDs[i].String() < rowIDs[j].String()
+	})
+
+	total := len(rowIDs)
+	start := query.Offset
+	if start > total {
+		start = total
+	}
+	end := total
+	if query.Limit > 0 && start+query.Limit < end {
+		end = start + query.Limit
+	}
+
+	selected := make([]*PersistentRecord, 0, end-start)
+	for _, id := range rowIDs[start:end] {
+		selected = append(selected, schemaRecords[id])
+	}
+
+	var totalPages int
+	if query.Limit > 0 && total > 0 {
+		totalPages = int((int64(total) + int64(query.Limit) - 1) / int64(query.Limit))
+	}
+
+	currentPage := 1
+	if query.Limit > 0 && query.Offset > 0 {
+		currentPage = (query.Offset / query.Limit) + 1
+	}
+
+	return &PersistentRecordPage{
+		Records:      selected,
+		TotalRecords: int64(total),
+		TotalPages:   totalPages,
+		CurrentPage:  currentPage,
+	}, nil
+}
+
+func buildPersistentRecord(t *testing.T, transformer PersistentRecordTransformer, schemaID int16, rowID uuid.UUID, data map[string]any) *PersistentRecord {
+	t.Helper()
+	record, err := transformer.ToPersistentRecord(context.Background(), schemaID, rowID, data)
+	if err != nil {
+		t.Fatalf("failed to build persistent record: %v", err)
+	}
+	return record
 }
 
 // TestEntityManager_CrossSchemaSearch tests cross-schema search with single query
@@ -320,48 +478,45 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
 	// Create mock repository with multi-schema support
-	mockRepo := &mockAttributeRepository{
-		attributes:        make(map[string][]Attribute),
-		multiSchemaResult: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Setup test data for multiple schemas
-	leadSchemaID, leadCache, err := registry.GetSchemaByName("lead")
+	activitySchemaID, _, err := registry.GetSchemaByName("activity")
 	if err != nil {
-		t.Fatalf("failed to get lead schema metadata: %v", err)
-	}
-
-	listingSchemaID, listingCache, err := registry.GetSchemaByName("listing")
-	if err != nil {
-		t.Fatalf("failed to get listing schema metadata: %v", err)
+		t.Fatalf("failed to get activity schema metadata: %v", err)
 	}
 
 	rowID1 := uuid.New()
 	rowID2 := uuid.New()
 
-	mockRepo.multiSchemaResult = map[string][]Attribute{
-		"result1": {
-			newSchemaAttribute(t, leadCache, leadSchemaID, rowID1, "id", "", "lead-1"),
-			newSchemaAttribute(t, leadCache, leadSchemaID, rowID1, "status", "", "hot"),
-		},
-		"result2": {
-			newSchemaAttribute(t, listingCache, listingSchemaID, rowID2, "listingId", "", "listing-1"),
-			newSchemaAttribute(t, listingCache, listingSchemaID, rowID2, "building.address.city", "", "San Francisco"),
-		},
-	}
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, activitySchemaID, rowID1, map[string]any{
+		"id":        "activity-1",
+		"type":      "visit",
+		"direction": "outbound",
+		"at":        "2024-01-01T00:00:00Z",
+		"userId":    "user-1",
+		"summary":   "Site visit in San Francisco",
+	}))
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, activitySchemaID, rowID2, map[string]any{
+		"id":        "activity-2",
+		"type":      "call",
+		"direction": "inbound",
+		"at":        "2024-01-02T00:00:00Z",
+		"userId":    "user-2",
+		"summary":   "Phone call about San Francisco property",
+	}))
 
 	// Execute
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"lead", "listing"},
+		SchemaNames:  []string{"activity"},
 		SearchTerm:   "San Francisco",
 		Page:         1,
 		ItemsPerPage: 10,
-		Filters:      make(map[string]forma.Filter),
 	}
 
 	result, err := em.CrossSchemaSearch(ctx, req)
@@ -392,21 +547,18 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	mockRepo := &mockAttributeRepository{
-		attributes: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Test with invalid schema name
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"lead", "nonexistent_schema"},
+		SchemaNames:  []string{"activity", "nonexistent_schema"},
 		SearchTerm:   "test",
 		Page:         1,
 		ItemsPerPage: 10,
-		Filters:      make(map[string]forma.Filter),
 	}
 
 	_, err = em.CrossSchemaSearch(ctx, req)
@@ -424,11 +576,9 @@ func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	mockRepo := &mockAttributeRepository{
-		attributes: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
@@ -455,17 +605,15 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	mockRepo := &mockAttributeRepository{
-		attributes: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Test with empty search term
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"lead"},
+		SchemaNames:  []string{"activity"},
 		SearchTerm:   "",
 		Page:         1,
 		ItemsPerPage: 10,
@@ -481,8 +629,8 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 // TestEntityManager_CrossSchemaSearch_Pagination tests pagination
 func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 	ctx := context.Background()
-	config := &forma.Config{
-		Query: forma.QueryConfig{
+	config := &Config{
+		Query: QueryConfig{
 			DefaultPageSize: 10,
 			MaxPageSize:     100,
 		},
@@ -491,22 +639,18 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	mockRepo := &mockAttributeRepository{
-		attributes:        make(map[string][]Attribute),
-		multiSchemaResult: make(map[string][]Attribute),
-	}
+	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Test with page 0 (should default to 1)
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"lead"},
+		SchemaNames:  []string{"activity"},
 		SearchTerm:   "test",
 		Page:         0,
 		ItemsPerPage: 0,
-		Filters:      make(map[string]forma.Filter),
 	}
 
 	result, err := em.CrossSchemaSearch(ctx, req)
@@ -524,56 +668,57 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 	}
 }
 
-func TestEntityManager_AdvancedQuery(t *testing.T) {
+func TestEntityManager_QueryWithCondition(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
 	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewTransformer(registry)
+	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, cache, err := registry.GetSchemaByName("lead")
+	schemaID, cache, err := registry.GetSchemaByName("activity")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
 
 	rowID := uuid.New()
-	mockRepo := &mockAttributeRepository{
-		attributes: map[string][]Attribute{
-			rowID.String(): {
-				newSchemaAttribute(t, cache, schemaID, rowID, "id", "", "lead-advanced"),
-				newSchemaAttribute(t, cache, schemaID, rowID, "status", "", "hot"),
-			},
-		},
-		advancedRowIDs: []uuid.UUID{rowID},
-		advancedTotal:  1,
-	}
+	mockRepo := newMockPersistentRecordRepository()
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{
+		"id":        "activity-advanced",
+		"type":      "call",
+		"direction": "inbound",
+		"at":        "2024-01-01T00:00:00Z",
+		"userId":    "user-1",
+		"summary":   "Important call",
+	}))
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
-	req := &forma.AdvancedQueryRequest{
-		SchemaName: "lead",
+	req := &forma.QueryRequest{
+		SchemaName: "activity",
 		Condition: &forma.CompositeCondition{
 			Logic: forma.LogicAnd,
 			Conditions: []forma.Condition{
 				&forma.KvCondition{
-					Attr:  "status",
-					Value: "equals:hot",
+					Attr:  "type",
+					Value: "equals:call",
 				},
 			},
 		},
 		Page:         1,
 		ItemsPerPage: 10,
+		SortBy:       []string{"at"},
+		SortOrder:    forma.SortOrderDesc,
 	}
 
-	result, err := em.AdvancedQuery(ctx, req)
+	result, err := em.Query(ctx, req)
 	if err != nil {
-		t.Fatalf("AdvancedQuery failed: %v", err)
+		t.Fatalf("Query failed: %v", err)
 	}
 
 	if result == nil {
-		t.Fatal("AdvancedQuery returned nil result")
+		t.Fatal("Query returned nil result")
 	}
 
 	if len(result.Data) != 1 {
@@ -587,15 +732,72 @@ func TestEntityManager_AdvancedQuery(t *testing.T) {
 	if result.Data[0].RowID != rowID {
 		t.Errorf("expected rowID %s, got %s", rowID, result.Data[0].RowID)
 	}
+
+	if len(mockRepo.lastQuery.AttributeOrders) != 1 {
+		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastQuery.AttributeOrders))
+	}
+
+	atMeta, ok := cache["at"]
+	if !ok {
+		t.Fatalf("expected at metadata")
+	}
+
+	attrOrder := mockRepo.lastQuery.AttributeOrders[0]
+	if attrOrder.AttrID != atMeta.AttributeID {
+		t.Fatalf("expected attrID %d, got %d", atMeta.AttributeID, attrOrder.AttrID)
+	}
+	if attrOrder.ValueType != atMeta.ValueType {
+		t.Fatalf("expected value type %s, got %s", atMeta.ValueType, attrOrder.ValueType)
+	}
+	if attrOrder.SortOrder != forma.SortOrderDesc {
+		t.Fatalf("expected sort order desc, got %s", attrOrder.SortOrder)
+	}
 }
 
-func newSchemaAttribute(t *testing.T, cache forma.SchemaAttributeCache, schemaID int16, rowID uuid.UUID, name string, indices string, value any) Attribute {
+func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+
+	mockRepo := newMockPersistentRecordRepository()
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+
+	req := &forma.QueryRequest{
+		SchemaName: "activity",
+		Condition: &forma.CompositeCondition{
+			Logic: forma.LogicAnd,
+			Conditions: []forma.Condition{
+				&forma.KvCondition{
+					Attr:  "type",
+					Value: "equals:call",
+				},
+			},
+		},
+		SortBy: []string{"nonexistent"},
+	}
+
+	_, err = em.Query(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for invalid sort attribute, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unknown attribute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func newSchemaAttribute(t *testing.T, cache SchemaAttributeCache, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
 	meta, ok := cache[name]
 	if !ok {
 		t.Fatalf("attribute %s not found in schema %d", name, schemaID)
 	}
 
-	attr := Attribute{
+	attr := EAVRecord{
 		SchemaID:     schemaID,
 		RowID:        rowID,
 		AttrID:       meta.AttributeID,
@@ -610,9 +812,9 @@ func newSchemaAttribute(t *testing.T, cache forma.SchemaAttributeCache, schemaID
 }
 
 // Helper function to create test config
-func createTestConfig() *forma.Config {
-	return &forma.Config{
-		Query: forma.QueryConfig{
+func createTestConfig() *Config {
+	return &Config{
+		Query: QueryConfig{
 			DefaultPageSize: 50,
 			MaxPageSize:     100,
 		},

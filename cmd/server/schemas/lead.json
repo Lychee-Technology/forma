@@ -1,66 +1,148 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Lead",
-  "description": "Real estate lead data model",
+  "title": "Leads",
+  "description": "Extended lead data model for Forma ingestion",
   "type": "object",
   "required": [
     "id",
-    "personalInfo",
-    "contactInfo",
-    "status"
+    "ownerUserId",
+    "pipeline",
+    "stage",
+    "status",
+    "contact",
+    "createdAt",
+    "updatedAt"
   ],
   "properties": {
     "id": {
       "type": "string",
-      "description": "Unique customer identifier",
+      "description": "Lead identifier",
       "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "ownerUserId": {
+      "type": "string",
+      "description": "Lead owner user ID"
+    },
+    "pipeline": {
+      "type": "string",
+      "enum": [
+        "buy",
+        "rent",
+        "sell",
+        "landlord"
+      ],
+      "description": "Pipeline category"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "new",
+        "contacted",
+        "need_defined",
+        "viewing",
+        "offer",
+        "contract",
+        "closed"
+      ],
+      "description": "Pipeline stage"
     },
     "status": {
       "type": "string",
       "enum": [
-        "hot",
-        "warm",
-        "cold",
-        "inactive",
-        "converted"
+        "open",
+        "won",
+        "lost",
+        "junk"
       ],
-      "description": "Customer lead status"
+      "description": "Lead status"
     },
-    "personalInfo": {
+    "reason": {
+      "type": "string",
+      "description": "Reason for closing or disqualifying the lead"
+    },
+    "temperature": {
+      "type": "string",
+      "enum": [
+        "Hot",
+        "Warm",
+        "New",
+        "Qualified"
+      ],
+      "description": "Lead temperature tag"
+    },
+    "rating": {
+      "type": "string",
+      "description": "Internal rating label (e.g., A/B/C)",
+      "pattern": "^[A-Z]$"
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Numeric score for sorting and prioritization"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Labels for segmentation and filtering"
+    },
+    "source": {
       "type": "object",
+      "description": "Lead acquisition source",
+      "required": [
+        "channel"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "portal",
+            "walk_in",
+            "referral",
+            "phone",
+            "web_form",
+            "event",
+            "other"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Source name or platform (e.g., Suumo)"
+        },
+        "campaign": {
+          "type": "string",
+          "description": "Campaign identifier"
+        },
+        "originalLeadId": {
+          "type": "string",
+          "description": "Upstream platform lead ID"
+        }
+      }
+    },
+    "contact": {
+      "type": "object",
+      "description": "Contact information for the lead",
       "required": [
         "name"
       ],
       "properties": {
         "name": {
-          "type": "object",
-          "required": [
-            "display"
-          ],
-          "properties": {
-            "display": {
-              "type": "string",
-              "description": "Primary display name"
-            },
-            "japanese": {
-              "type": "string",
-              "description": "Japanese name representation"
-            },
-            "given": {
-              "type": "string",
-              "description": "Given name"
-            },
-            "family": {
-              "type": "string",
-              "description": "Family name"
-            }
-          }
+          "type": "string",
+          "description": "Primary name (Latin alphabet)"
         },
-        "age": {
-          "type": "integer",
-          "minimum": 18,
-          "maximum": 120,
-          "description": "Customer age in years"
+        "nameNative": {
+          "type": "string",
+          "description": "Native language name"
+        },
+        "nameKana": {
+          "type": "string",
+          "description": "Kana representation"
+        },
+        "birthday": {
+          "type": "string",
+          "format": "date",
+          "description": "Birth date (YYYY-MM-DD)"
         },
         "maritalStatus": {
           "type": "string",
@@ -73,281 +155,352 @@
           ],
           "description": "Marital status"
         },
-        "familyComposition": {
-          "type": "object",
-          "properties": {
-            "adults": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "Number of adults"
-            },
-            "children": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Number of children"
-            },
-            "other": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Other dependents"
-            }
-          }
-        }
-      }
-    },
-    "contactInfo": {
-      "type": "object",
-      "required": [
-        "email"
-      ],
-      "properties": {
+        "currentResidence": {
+          "type": "string",
+          "description": "Current residential address or area"
+        },
+        "phones": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9-+() ]+$"
+          },
+          "description": "Phone numbers"
+        },
+        "primaryPhone": {
+          "type": "string",
+          "pattern": "^[0-9-+() ]+$",
+          "description": "Preferred phone number"
+        },
         "email": {
           "type": "string",
           "format": "email",
-          "description": "Primary email address"
+          "description": "Email address"
         },
-        "phone": {
+        "lineId": {
           "type": "string",
-          "pattern": "^[0-9-+() ]+$",
-          "description": "Primary phone number"
+          "description": "LINE identifier"
         },
-        "alternatePhone": {
+        "wechatId": {
           "type": "string",
-          "pattern": "^[0-9-+() ]+$",
-          "description": "Alternate phone number"
-        },
-        "preferredContactMethod": {
-          "type": "string",
-          "enum": [
-            "email",
-            "phone",
-            "sms",
-            "line",
-            "other"
-          ],
-          "description": "Preferred method of contact"
-        }
-      }
-    },
-    "currentAddress": {
-      "type": "object",
-      "properties": {
-        "city": {
-          "type": "string",
-          "description": "City name"
-        },
-        "ward": {
-          "type": "string",
-          "description": "Ward/district (e.g., Meguro-ku)"
-        },
-        "prefecture": {
-          "type": "string",
-          "description": "Prefecture (e.g., Tokyo)"
-        },
-        "fullAddress": {
-          "type": "string",
-          "description": "Complete address string"
-        }
-      }
-    },
-    "employment": {
-      "type": "object",
-      "properties": {
-        "occupation": {
-          "type": "string",
-          "description": "Job title or occupation"
+          "description": "WeChat identifier"
         },
         "company": {
           "type": "string",
-          "description": "Company name"
+          "description": "Employer or company name"
         },
-        "employmentType": {
+        "occupation": {
           "type": "string",
-          "enum": [
-            "full-time",
-            "part-time",
-            "contract",
-            "self-employed",
-            "unemployed",
-            "retired"
-          ],
-          "description": "Type of employment"
-        },
-        "yearsEmployed": {
-          "type": "number",
-          "minimum": 0,
-          "description": "Years at current employer"
+          "description": "Occupation or title"
         },
         "annualIncome": {
-          "type": "object",
-          "properties": {
-            "amount": {
-              "type": "number",
-              "minimum": 0,
-              "description": "Annual income amount"
-            },
-            "currency": {
-              "type": "string",
-              "default": "JPY",
-              "enum": [
-                "JPY",
-                "USD",
-                "EUR"
-              ],
-              "description": "Currency code"
-            }
-          }
+          "type": "number",
+          "minimum": 0,
+          "description": "Annual income amount"
+        },
+        "annualIncomeCurrency": {
+          "type": "string",
+          "enum": [
+            "JPY",
+            "USD",
+            "EUR",
+            "CNY",
+            "HKD",
+            "KRW",
+            "SGD"
+          ],
+          "default": "JPY",
+          "description": "Income currency"
+        },
+        "employmentYear": {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100,
+          "description": "Most recent employment start year"
+        },
+        "familySize": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of family members excluding the lead"
+        },
+        "preferredLanguage": {
+          "type": "string",
+          "enum": [
+            "ja",
+            "en",
+            "zh",
+            "ko",
+            "other"
+          ],
+          "description": "Preferred communication language"
+        },
+        "preferredChannel": {
+          "type": "string",
+          "enum": [
+            "phone",
+            "line",
+            "email",
+            "sms",
+            "wechat",
+            "other"
+          ],
+          "description": "Preferred communication channel"
+        },
+        "isBlacklisted": {
+          "type": "boolean",
+          "description": "Whether the lead is blacklisted"
+        },
+        "memo": {
+          "type": "string",
+          "description": "Free-text notes about the contact"
         }
       }
     },
-    "propertyRequirements": {
+    "requirement": {
       "type": "object",
+      "description": "Property purchase or rental requirements",
       "properties": {
+        "intentType": {
+          "type": "string",
+          "enum": [
+            "buy",
+            "rent"
+          ],
+          "description": "Whether the lead intends to buy or rent"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "primary_residence",
+            "residence",
+            "investment",
+            "secondary_residence",
+            "other"
+          ],
+          "description": "Purpose of the property"
+        },
+        "propertyType": {
+          "type": "string",
+          "description": "Property type or layout code (e.g., 2LDK)"
+        },
+        "propertyTypeDescription": {
+          "type": "string",
+          "description": "Human-readable property type description"
+        },
         "budget": {
           "type": "object",
           "properties": {
             "min": {
               "type": "number",
-              "minimum": 0,
-              "description": "Minimum budget"
+              "minimum": 0
             },
             "max": {
               "type": "number",
-              "minimum": 0,
-              "description": "Maximum budget"
-            },
-            "absolute": {
-              "type": "number",
-              "minimum": 0,
-              "description": "Absolute maximum budget"
+              "minimum": 0
             },
             "currency": {
               "type": "string",
-              "default": "JPY",
               "enum": [
                 "JPY",
                 "USD",
-                "EUR"
-              ]
+                "EUR",
+                "CNY",
+                "HKD",
+                "KRW",
+                "SGD"
+              ],
+              "default": "JPY"
+            },
+            "display": {
+              "type": "string",
+              "description": "Display string for budget range"
             }
-          }
-        },
-        "desiredAreas": {
-          "type": "array",
-          "items": {
-            "type": "string"
           },
-          "description": "List of desired areas/neighborhoods"
+          "required": [
+            "currency"
+          ]
         },
-        "propertyType": {
-          "type": "string",
-          "enum": [
-            "apartment",
-            "condo",
-            "house",
-            "townhouse",
-            "land",
-            "other"
-          ],
-          "description": "Type of property"
-        },
-        "bedrooms": {
+        "size": {
           "type": "object",
           "properties": {
             "min": {
-              "type": "integer",
+              "type": "number",
               "minimum": 0
             },
             "max": {
-              "type": "integer",
+              "type": "number",
               "minimum": 0
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "sqm",
+                "tsubo",
+                "ping"
+              ],
+              "default": "sqm"
             }
           }
         },
-        "purpose": {
+        "targetMoveIn": {
           "type": "string",
-          "enum": [
-            "primary-residence",
-            "investment",
-            "vacation",
-            "business",
-            "other"
-          ],
-          "description": "Purchase purpose"
+          "format": "date",
+          "description": "Target move-in date (YYYY-MM-DD)"
         },
-        "maxStationWalkMinutes": {
+        "areas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "prefecture": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "ward": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Preferred areas"
+        },
+        "stationWalkTimeMinutes": {
           "type": "integer",
           "minimum": 0,
           "description": "Maximum walking time to station in minutes"
         },
-        "preferences": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "List of preferences (e.g., modern design, natural light)"
-        },
-        "excludeConditions": {
+        "unwantedConditions": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "description": "Conditions to avoid"
         },
-        "targetMoveInDate": {
-          "type": "string",
-          "format": "date",
-          "description": "Target move-in date (ISO 8601 format)"
+        "mustHave": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Non-negotiable requirements"
         },
-        "moveInDateFlexibility": {
+        "niceToHave": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Desired but optional features"
+        },
+        "freeText": {
           "type": "string",
-          "enum": [
-            "flexible",
-            "somewhat-flexible",
-            "fixed"
-          ],
-          "description": "Flexibility of move-in date"
+          "description": "Free-text requirement notes"
         }
       }
     },
-    "notes": {
+    "propertyInterests": {
+      "type": "array",
+      "description": "Interest records tied to properties",
+      "items": {
+        "type": "object",
+        "required": [
+          "propertyId",
+          "status"
+        ],
+        "properties": {
+          "propertyId": {
+            "type": "string"
+          },
+          "snapshot": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "address": {
+                "type": "string"
+              },
+              "price": {
+                "type": "number",
+                "minimum": 0
+              },
+              "rent": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "viewed",
+              "favorited",
+              "scheduled_viewing",
+              "viewed_on_site",
+              "offered",
+              "rejected",
+              "closed"
+            ]
+          },
+          "isPrimary": {
+            "type": "boolean"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastActivityAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "activities": {
+      "type": "array",
+      "description": "Activity timeline entries",
+      "items": {
+        "type": "string",
+        "description": "Activity ID"
+      }
+    },
+    "firstTouchAt": {
       "type": "string",
-      "description": "Additional notes and comments"
+      "format": "date-time",
+      "description": "Timestamp of first touch with the lead"
     },
-    "metadata": {
-      "type": "object",
-      "properties": {
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Record creation timestamp"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Last update timestamp"
-        },
-        "createdBy": {
-          "type": "string",
-          "description": "User who created the record"
-        },
-        "assignedAgent": {
-          "type": "string",
-          "description": "Assigned sales agent ID"
-        },
-        "source": {
-          "type": "string",
-          "enum": [
-            "web",
-            "referral",
-            "walk-in",
-            "phone",
-            "event",
-            "other"
-          ],
-          "description": "Lead source"
-        }
-      }
+    "lastContactedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the last contact"
+    },
+    "nextFollowUpAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Scheduled next follow-up time"
+    },
+    "closedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the lead was closed"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Record creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
     }
   }
 }

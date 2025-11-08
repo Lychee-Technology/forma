@@ -23,21 +23,21 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to read as single object or array
-	var rawBody interface{}
+	var rawBody any
 	if err := readJSONBody(r, &rawBody); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
 
 	// Convert to array format
-	var jsonObjects []interface{}
+	var jsonObjects []any
 	isSingleObject := false
 	switch v := rawBody.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// Single object, convert to array
-		jsonObjects = []interface{}{v}
+		jsonObjects = []any{v}
 		isSingleObject = true
-	case []interface{}:
+	case []any:
 		// Already an array
 		jsonObjects = v
 	default:
@@ -59,7 +59,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 				SchemaName: schemaName,
 				RowID:      uuid.New(),
 			},
-			Data: obj.(map[string]interface{}),
+			Data: obj.(map[string]any),
 		}
 	}
 
@@ -76,7 +76,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// If single object request, return single result with row_id
 	if isSingleObject && len(result.Successful) > 0 {
-		singleResult := map[string]interface{}{
+		singleResult := map[string]any{
 			"row_id":      result.Successful[0].RowID.String(),
 			"schema_name": result.Successful[0].SchemaName,
 			"attributes":  result.Successful[0].Attributes,
@@ -150,9 +150,9 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	page, itemsPerPage := parsePagination(queryParams)
 
-	filters, err := buildFilters(queryParams, schemaName, s.metadataCache)
+	sortFields, sortOrder, err := parseSortParams(queryParams)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filters: %v", err))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort parameters: %v", err))
 		return
 	}
 
@@ -160,7 +160,11 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		SchemaName:   schemaName,
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
-		Filters:      filters,
+	}
+
+	if len(sortFields) > 0 {
+		queryReq.SortBy = sortFields
+		queryReq.SortOrder = sortOrder
 	}
 
 	result, err := s.manager.Query(r.Context(), queryReq)
@@ -197,7 +201,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read JSON from body (can be full object or partial updates)
-	var body map[string]interface{}
+	var body map[string]any
 	if err := readJSONBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
@@ -304,7 +308,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeSuccess(w, http.StatusOK, result)
 }
 
-// handleSearch handles GET /api/v1/search?page=...&items_per_page=...&filters=...
+// handleSearch handles GET /api/v1/search?page=...&items_per_page=...&q=...
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -316,17 +320,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	page, itemsPerPage := parsePagination(queryParams)
 
 	// Get all schema names from query parameters
-	// For cross-schema search, we need to extract schema names or search across all
-	// For now, we'll extract filters which might contain schema-specific filters
-	filters, err := buildFilters(queryParams, "", s.metadataCache)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filters: %v", err))
-		return
-	}
-
 	// Use CrossSchemaRequest for cross-schema search
 	// If specific schemas are needed, they could be passed as a query parameter
-	// For this implementation, we leave SchemaNames empty or get from query if provided
 	schemaNames := []string{}
 	if schemasParam := queryParams.Get("schemas"); schemasParam != "" {
 		// Parse comma-separated schema names if provided
@@ -338,7 +333,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		SearchTerm:   queryParams.Get("q"),
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
-		Filters:      filters,
 	}
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
@@ -357,7 +351,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload forma.AdvancedQueryRequest
+	var payload forma.QueryRequest
 	if err := readJSONBody(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
@@ -373,7 +367,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.manager.AdvancedQuery(r.Context(), &payload)
+	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("advanced query failed: %v", err))
 		return

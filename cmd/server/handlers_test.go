@@ -34,15 +34,14 @@ func (m *mockEntityManager) Delete(ctx context.Context, req *forma.EntityOperati
 }
 
 func (m *mockEntityManager) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
+	if m.advancedResult != nil {
+		return m.advancedResult, m.advancedErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
 func (m *mockEntityManager) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {
 	return nil, fmt.Errorf("not implemented")
-}
-
-func (m *mockEntityManager) AdvancedQuery(ctx context.Context, req *forma.AdvancedQueryRequest) (*forma.QueryResult, error) {
-	return m.advancedResult, m.advancedErr
 }
 
 func (m *mockEntityManager) BatchCreate(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {

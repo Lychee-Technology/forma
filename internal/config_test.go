@@ -1,14 +1,12 @@
-package forma_test
+package internal
 
 import (
 	"testing"
 	"time"
-
-	"lychee.technology/ltbase/forma"
 )
 
 func TestDefaultConfig(t *testing.T) {
-	config := forma.DefaultConfig()
+	config := DefaultConfig()
 
 	// Test database defaults
 	if config.Database.Host != "localhost" {
@@ -71,61 +69,61 @@ func TestDefaultConfig(t *testing.T) {
 func TestConfigValidationDetailed(t *testing.T) {
 	tests := []struct {
 		name        string
-		config      *forma.Config
+		config      *Config
 		expectError bool
 		errorField  string
 	}{
 		{
 			name:        "valid config",
-			config:      forma.DefaultConfig(),
+			config:      DefaultConfig(),
 			expectError: false,
 		},
 		{
 			name: "invalid max connections",
-			config: &forma.Config{
-				Database:    forma.DatabaseConfig{MaxConnections: 0},
-				Query:       forma.QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
-				Performance: forma.PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
+			config: &Config{
+				Database:    DatabaseConfig{MaxConnections: 0},
+				Query:       QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
+				Performance: PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
 			},
 			expectError: true,
 			errorField:  "database.maxConnections",
 		},
 		{
 			name: "invalid page size",
-			config: &forma.Config{
-				Database:    forma.DatabaseConfig{MaxConnections: 25},
-				Query:       forma.QueryConfig{DefaultPageSize: 0, MaxPageSize: 100},
-				Performance: forma.PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
+			config: &Config{
+				Database:    DatabaseConfig{MaxConnections: 25},
+				Query:       QueryConfig{DefaultPageSize: 0, MaxPageSize: 100},
+				Performance: PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
 			},
 			expectError: true,
 			errorField:  "query.defaultPageSize",
 		},
 		{
 			name: "max page size less than default",
-			config: &forma.Config{
-				Database:    forma.DatabaseConfig{MaxConnections: 25},
-				Query:       forma.QueryConfig{DefaultPageSize: 100, MaxPageSize: 50},
-				Performance: forma.PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
+			config: &Config{
+				Database:    DatabaseConfig{MaxConnections: 25},
+				Query:       QueryConfig{DefaultPageSize: 100, MaxPageSize: 50},
+				Performance: PerformanceConfig{BatchSize: 100, MaxBatchSize: 1000},
 			},
 			expectError: true,
 			errorField:  "query.maxPageSize",
 		},
 		{
 			name: "invalid batch size",
-			config: &forma.Config{
-				Database:    forma.DatabaseConfig{MaxConnections: 25},
-				Query:       forma.QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
-				Performance: forma.PerformanceConfig{BatchSize: 0, MaxBatchSize: 1000},
+			config: &Config{
+				Database:    DatabaseConfig{MaxConnections: 25},
+				Query:       QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
+				Performance: PerformanceConfig{BatchSize: 0, MaxBatchSize: 1000},
 			},
 			expectError: true,
 			errorField:  "performance.batchSize",
 		},
 		{
 			name: "max batch size less than batch size",
-			config: &forma.Config{
-				Database:    forma.DatabaseConfig{MaxConnections: 25},
-				Query:       forma.QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
-				Performance: forma.PerformanceConfig{BatchSize: 1000, MaxBatchSize: 100},
+			config: &Config{
+				Database:    DatabaseConfig{MaxConnections: 25},
+				Query:       QueryConfig{DefaultPageSize: 50, MaxPageSize: 100},
+				Performance: PerformanceConfig{BatchSize: 1000, MaxBatchSize: 100},
 			},
 			expectError: true,
 			errorField:  "performance.maxBatchSize",
@@ -138,7 +136,7 @@ func TestConfigValidationDetailed(t *testing.T) {
 			if tt.expectError {
 				if err == nil {
 					t.Error("Expected validation error but got none")
-				} else if configErr, ok := err.(*forma.ConfigError); ok {
+				} else if configErr, ok := err.(*ConfigError); ok {
 					if configErr.Field != tt.errorField {
 						t.Errorf("Expected error field %s, got %s", tt.errorField, configErr.Field)
 					}
@@ -155,7 +153,7 @@ func TestConfigValidationDetailed(t *testing.T) {
 }
 
 func TestConfigError(t *testing.T) {
-	err := &forma.ConfigError{
+	err := &ConfigError{
 		Field:   "test.field",
 		Message: "test message",
 	}
@@ -167,14 +165,14 @@ func TestConfigError(t *testing.T) {
 }
 
 func TestCascadeRuleValidation(t *testing.T) {
-	config := forma.DefaultConfig()
+	config := DefaultConfig()
 
 	// Add cascade rules
-	config.Reference.CascadeRules = map[string]forma.CascadeRule{
+	config.Reference.CascadeRules = map[string]CascadeRule{
 		"user_profile": {
 			SourceSchema: "user",
 			TargetSchema: "profile",
-			Action:       forma.CascadeActionDelete,
+			Action:       CascadeActionDelete,
 			MaxDepth:     3,
 		},
 	}
@@ -186,7 +184,7 @@ func TestCascadeRuleValidation(t *testing.T) {
 }
 
 func TestBatchConfigDefaults(t *testing.T) {
-	config := forma.DefaultConfig()
+	config := DefaultConfig()
 
 	batch := config.Performance.Batch
 	if !batch.EnableDynamicSizing {

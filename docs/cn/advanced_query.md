@@ -41,9 +41,10 @@ if err := json.Unmarshal([]byte(jsonFilter), &rootCondition); err != nil {
 }
 
 // 4. *** 构建 SQL ***
-// 关键：初始化参数索引
-paramCounter := 0 
-filterClause, filterArgs, err := rootCondition.ToSqlClauses(mySchemaID, myCache, &paramCounter)
+// 关键：初始化参数索引，保留 $1 给 schema_id
+paramCounter := 1 
+sqlGenerator := internal.NewSQLGenerator()
+filterClause, filterArgs, err := sqlGenerator.ToSqlClauses(rootCondition, "eav_table", mySchemaID, myCache, &paramCounter)
 
 if err != nil {
 	panic(err)
@@ -53,10 +54,12 @@ if err != nil {
 // (filterClause 现在是 CTE 的基础)
 finalSql := fmt.Sprintf(`
     WITH matched_entities AS (
-        %s
+        SELECT DISTINCT e.row_id
+        FROM public.eav_data e
+        WHERE e.schema_id = $1
+          AND (%s)
     )
     SELECT row_id FROM matched_entities
-    -- 在这里添加你的 LEFT JOINs for sorting
     LIMIT 25 OFFSET 0;
 `, filterClause)
 
@@ -71,15 +74,11 @@ fmt.Println(filterArgs)
 
 --- Generated SQL ---
 WITH matched_entities AS (
-    (
-        (SELECT row_id FROM public.eav_data WHERE schema_id = $1 AND attr_id = $2 AND value_numeric > $3)
-        INTERSECT
-        (
-            (SELECT row_id FROM public.eav_data WHERE schema_id = $4 AND attr_id = $5 AND value_text = $6)
-            UNION
-            (SELECT row_id FROM public.eav_data WHERE schema_id = $7 AND attr_id = $8 AND value_text LIKE $9)
-        )
-    )
+        ((EXISTS (SELECT 1 FROM public.eav_data x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = $2 AND x.value_numeric > $3))
+         AND
+         ((EXISTS (SELECT 1 FROM public.eav_data x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = $4 AND x.value_text = $5))
+          OR
+          (EXISTS (SELECT 1 FROM public.eav_data x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = $6 AND x.value_text LIKE $7))))
 )
 SELECT row_id FROM matched_entities
 -- 在这里添加你的 LEFT JOINs for sorting
@@ -87,5 +86,5 @@ LIMIT 25 OFFSET 0;
 
 
 --- SQL Arguments ---
-[1 10 10 1 11 active 1 12 A%]
+[10 10 11 active 12 A%]
 */

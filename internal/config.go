@@ -1,4 +1,4 @@
-package forma
+package internal
 
 import (
 	"time"
@@ -7,6 +7,7 @@ import (
 // TableNames generates the table names for a specific client and project
 type TableNames struct {
 	SchemaRegistry string `json:"schemaRegistry"`
+	EntityMain     string `json:"entityMain"`
 	EAVData        string `json:"eavData"`
 }
 
