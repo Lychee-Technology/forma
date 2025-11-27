@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 // ValueType represents the type of value stored in a row of EAV table.

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"lychee.technology/ltbase/forma"
 )
 
 // integrationEnv wires together a real Postgres-backed EntityManager using the on-disk schemas.

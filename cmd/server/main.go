@@ -6,8 +6,8 @@ import (
 	"os"
 	"strconv"
 
-	"lychee.technology/ltbase/forma"
-	"lychee.technology/ltbase/forma/internal"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal"
 )
 
 // Server represents the HTTP server with EntityManager

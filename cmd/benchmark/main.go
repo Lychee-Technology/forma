@@ -18,7 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"lychee.technology/ltbase/forma/internal"
+	"github.com/lychee-technology/forma/internal"
 )
 
 type options struct {

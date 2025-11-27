@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 // handleCreate handles POST /api/v1/{schema_name}

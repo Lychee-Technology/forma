@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 // parsePath parses /api/v1/{schema_name} or /api/v1/{schema_name}/{row_id}

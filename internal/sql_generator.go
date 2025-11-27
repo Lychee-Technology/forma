@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 // parseDateValue parses a date value string and converts it based on storage encoding.

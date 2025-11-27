@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"lychee.technology/ltbase/forma"
-	"lychee.technology/ltbase/forma/internal"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal"
 )
 
 func NewEntityManager(config *internal.Config) (forma.EntityManager, *internal.MetadataCache) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 // NormalizerOptions controls pagination defaults when requests omit values.

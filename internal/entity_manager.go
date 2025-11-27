@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 type entityManager struct {

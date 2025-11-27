@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"lychee.technology/ltbase/forma"
+	"github.com/lychee-technology/forma"
 )
 
 func TestParseSortParams(t *testing.T) {
