@@ -14,7 +14,7 @@ type entityManager struct {
 	transformer PersistentRecordTransformer
 	repository  PersistentRecordRepository
 	registry    SchemaRegistry
-	config      *Config
+	config      *forma.Config
 }
 
 // NewEntityManager creates a new EntityManager instance
@@ -22,7 +22,7 @@ func NewEntityManager(
 	transformer PersistentRecordTransformer,
 	repository PersistentRecordRepository,
 	registry SchemaRegistry,
-	config *Config,
+	config *forma.Config,
 ) forma.EntityManager {
 	return &entityManager{
 		transformer: transformer,

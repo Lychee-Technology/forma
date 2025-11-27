@@ -38,19 +38,19 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 
 	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool, registry)
 
-	config := &Config{
-		Database: DatabaseConfig{
-			TableNames: TableNames{
+	config := &forma.Config{
+		Database: forma.DatabaseConfig{
+			TableNames: forma.TableNames{
 				SchemaRegistry: schemaRegistryTable,
 				EntityMain:     tables.EntityMain,
 				EAVData:        tables.EAVData,
 			},
 		},
-		Query: QueryConfig{
+		Query: forma.QueryConfig{
 			DefaultPageSize: 20,
 			MaxPageSize:     100,
 		},
-		Entity: EntityConfig{
+		Entity: forma.EntityConfig{
 			SchemaDirectory: "../cmd/server/schemas",
 		},
 	}

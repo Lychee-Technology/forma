@@ -89,6 +89,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 func (c *AttributeConverter) FromEAVRecord(record EAVRecord, valueType ValueType) (EntityAttribute, error) {
 	attr := EntityAttribute{
 		SchemaID:     record.SchemaID,
+		RowID:        record.RowID,
 		AttrID:       record.AttrID,
 		ArrayIndices: record.ArrayIndices,
 		ValueType:    valueType,

@@ -1,15 +1,8 @@
-package internal
+package forma
 
 import (
 	"time"
 )
-
-// TableNames generates the table names for a specific client and project
-type TableNames struct {
-	SchemaRegistry string `json:"schemaRegistry"`
-	EntityMain     string `json:"entityMain"`
-	EAVData        string `json:"eavData"`
-}
 
 // Config consolidates settings from both modules
 type Config struct {

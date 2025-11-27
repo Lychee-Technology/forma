@@ -629,8 +629,8 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 // TestEntityManager_CrossSchemaSearch_Pagination tests pagination
 func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 	ctx := context.Background()
-	config := &Config{
-		Query: QueryConfig{
+	config := &forma.Config{
+		Query: forma.QueryConfig{
 			DefaultPageSize: 10,
 			MaxPageSize:     100,
 		},
@@ -812,9 +812,9 @@ func newSchemaAttribute(t *testing.T, cache SchemaAttributeCache, schemaID int16
 }
 
 // Helper function to create test config
-func createTestConfig() *Config {
-	return &Config{
-		Query: QueryConfig{
+func createTestConfig() *forma.Config {
+	return &forma.Config{
+		Query: forma.QueryConfig{
 			DefaultPageSize: 50,
 			MaxPageSize:     100,
 		},

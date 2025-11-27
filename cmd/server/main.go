@@ -7,22 +7,19 @@ import (
 	"strconv"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 )
 
 // Server represents the HTTP server with EntityManager
 type Server struct {
-	manager       forma.EntityManager
-	metadataCache *internal.MetadataCache
-	mux           *http.ServeMux
+	manager forma.EntityManager
+	mux     *http.ServeMux
 }
 
 // NewServer creates a new Server instance
-func NewServer(manager forma.EntityManager, metadataCache *internal.MetadataCache) *Server {
+func NewServer(manager forma.EntityManager) *Server {
 	return &Server{
-		manager:       manager,
-		metadataCache: metadataCache,
-		mux:           http.NewServeMux(),
+		manager: manager,
+		mux:     http.NewServeMux(),
 	}
 }
 
@@ -42,7 +39,7 @@ func (s *Server) Start(port string) error {
 
 func main() {
 	// Load configuration
-	config := internal.DefaultConfig()
+	config := forma.DefaultConfig()
 
 	// Set schema directory
 	config.Entity.SchemaDirectory = "schemas"
@@ -54,16 +51,16 @@ func main() {
 	config.Database.Username = getEnv("DB_USER", "postgres")
 	config.Database.Password = getEnv("DB_PASSWORD", "")
 	config.Database.SSLMode = getEnv("DB_SSL_MODE", "disable")
-	config.Database.TableNames = internal.TableNames{
+	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_dev",
 		EntityMain:     "entity_main_dev",
 	}
 
 	// Initialize EntityManager and get metadata cache
-	manager, metadataCache := NewEntityManager(config)
+	manager := NewEntityManager(config)
 
-	server := NewServer(manager, metadataCache)
+	server := NewServer(manager)
 	server.RegisterRoutes()
 
 	port := getEnv("PORT", "8080")

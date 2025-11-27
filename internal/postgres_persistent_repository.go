@@ -1026,7 +1026,8 @@ func isMainTableColumn(name string) bool {
 
 func hasMainTableCondition(cond forma.Condition, cache SchemaAttributeCache) bool {
 	if cond == nil {
-		return false
+		// An empty condition implies no filtering; treat as having main table condition
+		return true
 	}
 	switch c := cond.(type) {
 	case *forma.CompositeCondition:

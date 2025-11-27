@@ -144,33 +144,15 @@ func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []Enti
 		return []map[string]any{}, nil
 	}
 
-	// Convert EntityAttributes back to EAVRecords to get RowID information
-	eavRecords := make([]EAVRecord, len(attributes))
-	for i, attr := range attributes {
-		// We need RowID to properly convert, but EntityAttribute doesn't have it
-		// This is a design issue - for batch operations, we need RowID in the conversion
-		// For now, we'll use a placeholder approach
-		record, err := t.converter.ToEAVRecord(attr, uuid.UUID{})
-		if err != nil {
-			return nil, fmt.Errorf("convert EntityAttribute to EAVRecord: %w", err)
-		}
-		eavRecords[i] = record
-	}
-
-	// Group by RowID
-	groupedByRowID := make(map[uuid.UUID][]EAVRecord)
-	for _, record := range eavRecords {
-		groupedByRowID[record.RowID] = append(groupedByRowID[record.RowID], record)
+	// Group by RowID directly from EntityAttribute
+	groupedByRowID := make(map[uuid.UUID][]EntityAttribute)
+	for _, attr := range attributes {
+		groupedByRowID[attr.RowID] = append(groupedByRowID[attr.RowID], attr)
 	}
 
 	// Convert each group back to JSON
 	results := make([]map[string]any, 0, len(groupedByRowID))
-	for _, records := range groupedByRowID {
-		// Convert EAVRecords to EntityAttributes
-		attrs, err := t.converter.FromEAVRecords(records)
-		if err != nil {
-			return nil, fmt.Errorf("convert EAVRecords to EntityAttributes: %w", err)
-		}
+	for _, attrs := range groupedByRowID {
 		result, err := t.FromAttributes(ctx, attrs)
 		if err != nil {
 			return nil, err

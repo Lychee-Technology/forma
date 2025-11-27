@@ -70,6 +70,7 @@ type AttributeQuery struct {
 
 type EntityAttribute struct {
 	SchemaID     int16
+	RowID        uuid.UUID // UUID v7, identifies data row
 	AttrID       int16
 	ArrayIndices string
 	ValueType    ValueType

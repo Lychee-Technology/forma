@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -192,6 +193,8 @@ func (o *Optimizer) GeneratePlan(ctx context.Context, in *Input) (*Plan, error) 
 	if in.SchemaID <= 0 {
 		return nil, fmt.Errorf("schema id must be positive")
 	}
+
+	log.Printf("Entity Main Table: %s, EAV Table: %s, Schema ID: %d", in.Tables.EntityMain, in.Tables.EAVData, in.SchemaID)
 
 	// Initialize query builder with SchemaID as $1
 	qb := &queryBuilder{
