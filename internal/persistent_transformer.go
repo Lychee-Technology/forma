@@ -6,16 +6,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
 
 type persistentRecordTransformer struct {
-	registry        SchemaRegistry
+	registry        forma.SchemaRegistry
 	jsonTransformer Transformer
 	*schemaMetadataCache
 }
 
 // NewPersistentRecordTransformer creates a new PersistentRecordTransformer instance
-func NewPersistentRecordTransformer(registry SchemaRegistry) PersistentRecordTransformer {
+func NewPersistentRecordTransformer(registry forma.SchemaRegistry) PersistentRecordTransformer {
 	return &persistentRecordTransformer{
 		registry:            registry,
 		jsonTransformer:     NewTransformer(registry),
@@ -65,7 +66,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	// Process each EAV record
 	for _, eavRecord := range eavRecords {
 		// Find the attribute metadata
-		var meta AttributeMetadata
+		var meta forma.AttributeMetadata
 		var attrName string
 		found := false
 		for name, m := range cache {
@@ -81,8 +82,8 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 			return nil, fmt.Errorf("attribute ID %d not found in schema %d", eavRecord.AttrID, schemaID)
 		}
 
-		if meta.Storage != nil && meta.Storage.ColumnBinding != nil {
-			if err := t.storeInMainColumn(record, eavRecord, meta.Storage.ColumnBinding); err != nil {
+		if meta.ColumnBinding != nil {
+			if err := t.storeInMainColumn(record, eavRecord, meta.ColumnBinding); err != nil {
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
 		} else {
@@ -109,11 +110,11 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 
 	// Process each attribute in the cache to see if it has column binding
 	for attrName, meta := range cache {
-		if meta.Storage == nil || meta.Storage.ColumnBinding == nil {
+		if meta.ColumnBinding == nil {
 			continue
 		}
 
-		attr, err := t.readFromMainColumn(record, attrName, meta, meta.Storage.ColumnBinding)
+		attr, err := t.readFromMainColumn(record, attrName, meta, meta.ColumnBinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read attribute %s from main column: %w", attrName, err)
 		}
@@ -141,17 +142,17 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	return result, nil
 }
 
-func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord, attr EAVRecord, binding *MainColumnBinding) error {
+func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord, attr EAVRecord, binding *forma.MainColumnBinding) error {
 	columnName := string(binding.ColumnName)
 
 	switch binding.Encoding {
-	case MainColumnEncodingUnixMs:
+	case forma.MainColumnEncodingUnixMs:
 		// Date stored as Unix milliseconds in bigint column
 		if attr.ValueNumeric != nil {
 			record.Int64Items[columnName] = int64(*attr.ValueNumeric)
 		}
 
-	case MainColumnEncodingBoolInt:
+	case forma.MainColumnEncodingBoolInt:
 		// Bool stored as smallint (1/0)
 		if attr.ValueNumeric != nil {
 			if *attr.ValueNumeric > 0.5 {
@@ -161,7 +162,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 			}
 		}
 
-	case MainColumnEncodingBoolText:
+	case forma.MainColumnEncodingBoolText:
 		// Bool stored as text ("1"/"0")
 		if attr.ValueNumeric != nil {
 			if *attr.ValueNumeric > 0.5 {
@@ -171,38 +172,38 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 			}
 		}
 
-	case MainColumnEncodingISO8601:
+	case forma.MainColumnEncodingISO8601:
 		// Date stored as ISO 8601 string in text column
 		if attr.ValueNumeric != nil {
 			record.TextItems[columnName] = time.UnixMilli(int64(*attr.ValueNumeric)).UTC().Format(time.RFC3339)
 		}
 
-	case MainColumnEncodingDefault:
+	case forma.MainColumnEncodingDefault:
 		fallthrough
 	default:
 		// Default encoding based on column type
 		switch binding.ColumnType() {
-		case MainColumnTypeText:
+		case forma.MainColumnTypeText:
 			if attr.ValueText != nil {
 				record.TextItems[columnName] = *attr.ValueText
 			}
 
-		case MainColumnTypeSmallint:
+		case forma.MainColumnTypeSmallint:
 			if attr.ValueNumeric != nil {
 				record.Int16Items[columnName] = int16(*attr.ValueNumeric)
 			}
 
-		case MainColumnTypeInteger:
+		case forma.MainColumnTypeInteger:
 			if attr.ValueNumeric != nil {
 				record.Int32Items[columnName] = int32(*attr.ValueNumeric)
 			}
 
-		case MainColumnTypeBigint:
+		case forma.MainColumnTypeBigint:
 			if attr.ValueNumeric != nil {
 				record.Int64Items[columnName] = int64(*attr.ValueNumeric)
 			}
 
-		case MainColumnTypeDouble:
+		case forma.MainColumnTypeDouble:
 			if attr.ValueNumeric != nil {
 				record.Float64Items[columnName] = *attr.ValueNumeric
 			}
@@ -215,7 +216,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 	return nil
 }
 
-func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, attrName string, meta AttributeMetadata, binding *MainColumnBinding) (*EAVRecord, error) {
+func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, attrName string, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, error) {
 	columnName := string(binding.ColumnName)
 
 	attr := &EAVRecord{
@@ -228,7 +229,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 	var hasValue bool
 
 	switch binding.Encoding {
-	case MainColumnEncodingUnixMs:
+	case forma.MainColumnEncodingUnixMs:
 		// Read Unix milliseconds from bigint column and convert to time
 		if val, ok := record.Int64Items[columnName]; ok {
 			t := float64(val)
@@ -236,7 +237,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 			hasValue = true
 		}
 
-	case MainColumnEncodingBoolInt:
+	case forma.MainColumnEncodingBoolInt:
 		// Read smallint (1/0) and convert to bool
 		if val, ok := record.Int16Items[columnName]; ok {
 			f := float64(val)
@@ -244,7 +245,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 			hasValue = true
 		}
 
-	case MainColumnEncodingBoolText:
+	case forma.MainColumnEncodingBoolText:
 		// Read text ("1"/"0") and convert to bool
 		if val, ok := record.TextItems[columnName]; ok {
 			if val == "1" {
@@ -257,7 +258,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 			hasValue = true
 		}
 
-	case MainColumnEncodingISO8601:
+	case forma.MainColumnEncodingISO8601:
 		// Read ISO 8601 string from text column and convert to time
 		if val, ok := record.TextItems[columnName]; ok {
 			parsedTime, err := time.Parse(time.RFC3339, val)
@@ -269,39 +270,39 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 			hasValue = true
 		}
 
-	case MainColumnEncodingDefault:
+	case forma.MainColumnEncodingDefault:
 		fallthrough
 	default:
 		// Default encoding based on column type and value type
 		switch binding.ColumnType() {
-		case MainColumnTypeText:
+		case forma.MainColumnTypeText:
 			if val, ok := record.TextItems[columnName]; ok {
 				attr.ValueText = &val
 				hasValue = true
 			}
 
-		case MainColumnTypeSmallint:
+		case forma.MainColumnTypeSmallint:
 			if val, ok := record.Int16Items[columnName]; ok {
 				f := float64(val)
 				attr.ValueNumeric = &f
 				hasValue = true
 			}
 
-		case MainColumnTypeInteger:
+		case forma.MainColumnTypeInteger:
 			if val, ok := record.Int32Items[columnName]; ok {
 				f := float64(val)
 				attr.ValueNumeric = &f
 				hasValue = true
 			}
 
-		case MainColumnTypeBigint:
+		case forma.MainColumnTypeBigint:
 			if val, ok := record.Int64Items[columnName]; ok {
 				f := float64(val)
 				attr.ValueNumeric = &f
 				hasValue = true
 			}
 
-		case MainColumnTypeDouble:
+		case forma.MainColumnTypeDouble:
 			if val, ok := record.Float64Items[columnName]; ok {
 				attr.ValueNumeric = &val
 				hasValue = true

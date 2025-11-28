@@ -38,11 +38,20 @@ func (s *Server) Start(port string) error {
 }
 
 func main() {
-	// Load configuration
-	config := forma.DefaultConfig()
+	// Set schema directory
+	schemaDir := "schemas"
+
+	// Create file-based schema registry
+	registry, err := NewFileSchemaRegistry(schemaDir)
+	if err != nil {
+		log.Fatalf("failed to create schema registry: %v", err)
+	}
+
+	// Load configuration with schema registry
+	config := forma.DefaultConfig(registry)
 
 	// Set schema directory
-	config.Entity.SchemaDirectory = "schemas"
+	config.Entity.SchemaDirectory = schemaDir
 
 	// Set database configuration from environment variables
 	config.Database.Host = getEnv("DB_HOST", "localhost")

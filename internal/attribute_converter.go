@@ -5,16 +5,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
 
 // AttributeConverter provides conversion between EntityAttribute and EAVRecord
 type AttributeConverter struct {
-	registry SchemaRegistry
+	registry forma.SchemaRegistry
 	*schemaMetadataCache
 }
 
 // NewAttributeConverter creates a new AttributeConverter instance
-func NewAttributeConverter(registry SchemaRegistry) *AttributeConverter {
+func NewAttributeConverter(registry forma.SchemaRegistry) *AttributeConverter {
 	return &AttributeConverter{
 		registry:            registry,
 		schemaMetadataCache: newSchemaMetadataCache(registry),
@@ -35,21 +36,21 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 	}
 
 	switch attr.ValueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		if strVal, ok := attr.Value.(string); ok {
 			record.ValueText = &strVal
 		} else {
 			return record, fmt.Errorf("value type mismatch: expected string for text type")
 		}
 
-	case ValueTypeSmallInt, ValueTypeInteger, ValueTypeBigInt, ValueTypeNumeric:
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		numVal, err := toFloat64ForEAV(attr.Value)
 		if err != nil {
 			return record, fmt.Errorf("convert to numeric: %w", err)
 		}
 		record.ValueNumeric = &numVal
 
-	case ValueTypeDate, ValueTypeDateTime:
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTimeForEAV(attr.Value)
 		if err != nil {
 			return record, fmt.Errorf("convert to time: %w", err)
@@ -57,7 +58,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 		unixMillis := float64(timeVal.UnixMilli())
 		record.ValueNumeric = &unixMillis
 
-	case ValueTypeUUID:
+	case forma.ValueTypeUUID:
 		if uuidVal, ok := attr.Value.(uuid.UUID); ok {
 			strVal := uuidVal.String()
 			record.ValueText = &strVal
@@ -65,7 +66,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 			return record, fmt.Errorf("value type mismatch: expected uuid.UUID for uuid type")
 		}
 
-	case ValueTypeBool:
+	case forma.ValueTypeBool:
 		boolVal, err := toBoolForEAV(attr.Value)
 		if err != nil {
 			return record, fmt.Errorf("convert to bool: %w", err)
@@ -86,7 +87,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 }
 
 // FromEAVRecord converts an EAVRecord to an EntityAttribute
-func (c *AttributeConverter) FromEAVRecord(record EAVRecord, valueType ValueType) (EntityAttribute, error) {
+func (c *AttributeConverter) FromEAVRecord(record EAVRecord, valueType forma.ValueType) (EntityAttribute, error) {
 	attr := EntityAttribute{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
@@ -197,46 +198,46 @@ func toBoolForEAV(value any) (bool, error) {
 	}
 }
 
-func extractValueFromEAVRecord(record EAVRecord, valueType ValueType) (any, error) {
+func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any, error) {
 	switch valueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		if record.ValueText == nil {
 			return nil, nil
 		}
 		return *record.ValueText, nil
 
-	case ValueTypeSmallInt:
+	case forma.ValueTypeSmallInt:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int16(*record.ValueNumeric), nil
 
-	case ValueTypeInteger:
+	case forma.ValueTypeInteger:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int32(*record.ValueNumeric), nil
 
-	case ValueTypeBigInt:
+	case forma.ValueTypeBigInt:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int64(*record.ValueNumeric), nil
 
-	case ValueTypeNumeric:
+	case forma.ValueTypeNumeric:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return *record.ValueNumeric, nil
 
-	case ValueTypeDate, ValueTypeDateTime:
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		timeVal := time.UnixMilli(int64(*record.ValueNumeric)).UTC()
 		return timeVal, nil
 
-	case ValueTypeUUID:
+	case forma.ValueTypeUUID:
 		if record.ValueText == nil {
 			return nil, nil
 		}
@@ -246,7 +247,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType ValueType) (any, erro
 		}
 		return uuidVal, nil
 
-	case ValueTypeBool:
+	case forma.ValueTypeBool:
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}

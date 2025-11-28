@@ -13,6 +13,9 @@ import (
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
 // This is the primary way for external projects to create an EntityManager instance.
 //
+// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
+// This allows callers to provide their own SchemaRegistry implementation.
+//
 // Usage:
 //
 //	import (
@@ -25,11 +28,15 @@ import (
 //	if err != nil {
 //	    // handle error
 //	}
+//
+// With custom SchemaRegistry:
+//
+//	config := forma.DefaultConfig()
+//	config.SchemaRegistry = myCustomRegistry
+//	em, err := factory.NewEntityManagerWithConfig(config, pool)
 func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
-	rows, err := pool.Query(context.Background(), `SELECT table_name
-FROM information_schema.tables
-WHERE table_schema = 'public'
-AND table_type = 'BASE TABLE';`)
+	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables 
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE';`)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify database connection: %w", err)
@@ -70,11 +77,12 @@ AND table_type = 'BASE TABLE';`)
 
 	fmt.Printf("Metadata loaded successfully: %d schemas\n\n", len(metadataCache.ListSchemas()))
 
-	// Initialize file-based schema registry (still needed for compatibility)
-	registry, err := internal.NewFileSchemaRegistry(config.Entity.SchemaDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize schema registry: %w", err)
+	// SchemaRegistry must be provided in config
+	if config.SchemaRegistry == nil {
+		return nil, fmt.Errorf("config.SchemaRegistry is required: please provide a SchemaRegistry implementation")
 	}
+	registry := config.SchemaRegistry
+	fmt.Println("Using provided SchemaRegistry implementation")
 
 	// Initialize transformer
 	transformer := internal.NewPersistentRecordTransformer(registry)

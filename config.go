@@ -6,14 +6,15 @@ import (
 
 // Config consolidates settings from both modules
 type Config struct {
-	Database    DatabaseConfig    `json:"database"`
-	Query       QueryConfig       `json:"query"`
-	Entity      EntityConfig      `json:"entity"`
-	Transaction TransactionConfig `json:"transaction"`
-	Performance PerformanceConfig `json:"performance"`
-	Logging     LoggingConfig     `json:"logging"`
-	Metrics     MetricsConfig     `json:"metrics"`
-	Reference   ReferenceConfig   `json:"reference"`
+	Database       DatabaseConfig    `json:"database"`
+	Query          QueryConfig       `json:"query"`
+	Entity         EntityConfig      `json:"entity"`
+	Transaction    TransactionConfig `json:"transaction"`
+	Performance    PerformanceConfig `json:"performance"`
+	Logging        LoggingConfig     `json:"logging"`
+	Metrics        MetricsConfig     `json:"metrics"`
+	Reference      ReferenceConfig   `json:"reference"`
+	SchemaRegistry SchemaRegistry    `json:"-"` // Custom schema registry implementation (optional)
 }
 
 // DatabaseConfig contains database connection settings
@@ -187,8 +188,9 @@ const (
 )
 
 // DefaultConfig returns a default configuration
-func DefaultConfig() *Config {
+func DefaultConfig(schemaRegistry SchemaRegistry) *Config {
 	return &Config{
+		SchemaRegistry: schemaRegistry,
 		Database: DatabaseConfig{
 			Host:            "localhost",
 			Port:            5432,

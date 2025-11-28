@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 )
 
@@ -52,7 +52,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	registry, err := internal.NewFileSchemaRegistry(opts.schemaDir)
+	registry, err := NewFileSchemaRegistry(opts.schemaDir)
 	if err != nil {
 		log.Fatalf("failed to load schema registry from %s: %v", opts.schemaDir, err)
 	}
@@ -299,7 +299,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts options) error {
 	return nil
 }
 
-func syncSchemaRegistry(ctx context.Context, tx pgx.Tx, opts options, registry internal.SchemaRegistry) (map[string]int16, error) {
+func syncSchemaRegistry(ctx context.Context, tx pgx.Tx, opts options, registry forma.SchemaRegistry) (map[string]int16, error) {
 	tableName := quoteIdentifier(opts.schemaTable)
 	mapping := make(map[string]int16)
 
@@ -329,21 +329,6 @@ func purgeSchema(ctx context.Context, tx pgx.Tx, eavTable string, schemaID int16
 		return fmt.Errorf("purge schema_id %d: %w", schemaID, err)
 	}
 	return nil
-}
-
-func loadAttributeDefinitions(schemaDir, schemaName string) (map[string]internal.AttributeMetadata, error) {
-	filePath := filepath.Join(schemaDir, schemaName+"_attributes.json")
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("read attribute definitions file %s: %w", filePath, err)
-	}
-
-	var defs map[string]internal.AttributeMetadata
-	if err := json.Unmarshal(data, &defs); err != nil {
-		return nil, fmt.Errorf("parse attribute definitions: %w", err)
-	}
-
-	return defs, nil
 }
 
 func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table string, attrs []internal.EAVRecord, chunkSize int) error {
@@ -391,7 +376,7 @@ func copyAttributesInChunks(ctx context.Context, conn *pgxpool.Conn, table strin
 	return nil
 }
 
-func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, registry internal.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
+func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, registry forma.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
 	statuses := []string{"hot", "warm", "cold", "inactive", "converted"}
 	firstNames := []string{"Alex", "Taylor", "Jordan", "Morgan", "Casey", "Riley", "Naomi", "Ken"}
 	lastNames := []string{"Kim", "Suzuki", "Watanabe", "Sato", "Tanaka", "Kato", "Ito"}
@@ -477,7 +462,7 @@ func buildLeadAttributes(ctx context.Context, transformer internal.Transformer, 
 	return attributes, nil
 }
 
-func buildListingAttributes(ctx context.Context, transformer internal.Transformer, registry internal.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
+func buildListingAttributes(ctx context.Context, transformer internal.Transformer, registry forma.SchemaRegistry, schemaID int16, count int, r *rand.Rand) ([]internal.EAVRecord, error) {
 	propertyTypes := []string{"condominium", "house", "land", "commercial"}
 	lineNames := []string{"Yamanote Line", "Chuo Line", "Ginza Line", "Hibiya Line", "Den-en-toshi Line"}
 	stationNames := []string{"Shibuya", "Shinjuku", "Meguro", "Ebisu", "Ginza", "Nakameguro"}
@@ -607,7 +592,7 @@ func buildListingAttributes(ctx context.Context, transformer internal.Transforme
 func transformToTypedAttributes(
 	ctx context.Context,
 	transformer internal.Transformer,
-	registry internal.SchemaRegistry,
+	registry forma.SchemaRegistry,
 	schemaID int16,
 	rowID uuid.UUID,
 	data map[string]any,

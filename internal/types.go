@@ -21,10 +21,10 @@ type EAVRecord struct {
 // AttributeOrder specifies how to sort by a particular attribute.
 type AttributeOrder struct {
 	AttrID          int16
-	ValueType       ValueType
+	ValueType       forma.ValueType
 	SortOrder       forma.SortOrder
-	StorageLocation AttributeStorageLocation // main or eav
-	ColumnName      string                   // main table column name if StorageLocation == main
+	StorageLocation forma.AttributeStorageLocation // main or eav
+	ColumnName      string                         // main table column name if StorageLocation == main
 }
 
 // AttrIDInt returns the attribute ID as an int (for template compatibility).
@@ -35,9 +35,9 @@ func (ao *AttributeOrder) AttrIDInt() int {
 // ValueColumn returns the EAV table column name for this attribute's value type.
 func (ao *AttributeOrder) ValueColumn() string {
 	switch ao.ValueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		return "value_text"
-	case ValueTypeNumeric:
+	case forma.ValueTypeNumeric:
 		return "value_numeric"
 	default:
 		return "value_text"
@@ -51,7 +51,7 @@ func (ao *AttributeOrder) Desc() bool {
 
 // IsMainColumn returns true if the attribute is stored in the main table.
 func (ao *AttributeOrder) IsMainColumn() bool {
-	return ao.StorageLocation == AttributeStorageLocationMain && ao.ColumnName != ""
+	return ao.StorageLocation == forma.AttributeStorageLocationMain && ao.ColumnName != ""
 }
 
 // MainColumnName returns the column name in the main table.
@@ -73,7 +73,7 @@ type EntityAttribute struct {
 	RowID        uuid.UUID // UUID v7, identifies data row
 	AttrID       int16
 	ArrayIndices string
-	ValueType    ValueType
+	ValueType    forma.ValueType
 	Value        any
 }
 
@@ -81,7 +81,7 @@ func (ea *EntityAttribute) Text() (*string, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeText {
+	if ea.ValueType != forma.ValueTypeText {
 		return nil, fmt.Errorf("expected ValueType 'text', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(string); ok {
@@ -94,7 +94,7 @@ func (ea *EntityAttribute) SmallInt() (*int16, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeSmallInt {
+	if ea.ValueType != forma.ValueTypeSmallInt {
 		return nil, fmt.Errorf("expected ValueType 'smallint', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(int16); ok {
@@ -107,7 +107,7 @@ func (ea *EntityAttribute) Integer() (*int32, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeInteger {
+	if ea.ValueType != forma.ValueTypeInteger {
 		return nil, fmt.Errorf("expected ValueType 'integer', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(int32); ok {
@@ -120,7 +120,7 @@ func (ea *EntityAttribute) BigInt() (*int64, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeBigInt {
+	if ea.ValueType != forma.ValueTypeBigInt {
 		return nil, fmt.Errorf("expected ValueType 'bigint', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(int64); ok {
@@ -133,7 +133,7 @@ func (ea *EntityAttribute) Numeric() (*float64, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeNumeric {
+	if ea.ValueType != forma.ValueTypeNumeric {
 		return nil, fmt.Errorf("expected ValueType 'numeric', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(float64); ok {
@@ -146,7 +146,7 @@ func (ea *EntityAttribute) Date() (*time.Time, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeDate {
+	if ea.ValueType != forma.ValueTypeDate {
 		return nil, fmt.Errorf("expected ValueType 'date', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(time.Time); ok {
@@ -159,7 +159,7 @@ func (ea *EntityAttribute) DateTime() (*time.Time, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeDateTime {
+	if ea.ValueType != forma.ValueTypeDateTime {
 		return nil, fmt.Errorf("expected ValueType 'datetime', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(time.Time); ok {
@@ -172,7 +172,7 @@ func (ea *EntityAttribute) UUID() (*uuid.UUID, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeUUID {
+	if ea.ValueType != forma.ValueTypeUUID {
 		return nil, fmt.Errorf("expected ValueType 'uuid', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(uuid.UUID); ok {
@@ -185,7 +185,7 @@ func (ea *EntityAttribute) Bool() (*bool, error) {
 	if ea.Value == nil {
 		return nil, nil
 	}
-	if ea.ValueType != ValueTypeBool {
+	if ea.ValueType != forma.ValueTypeBool {
 		return nil, fmt.Errorf("expected ValueType 'bool', got '%s'", ea.ValueType)
 	}
 	if v, ok := ea.Value.(bool); ok {

@@ -946,7 +946,7 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.
 	}
 
 	// Get schema cache first for checking main table conditions
-	var cache SchemaAttributeCache
+	var cache forma.SchemaAttributeCache
 	if query.SchemaID > 0 && r.metadataCache != nil {
 		if schemaName, ok := r.metadataCache.GetSchemaName(query.SchemaID); ok {
 			if cacheLocal, ok := r.metadataCache.GetSchemaCache(schemaName); ok {
@@ -1024,7 +1024,7 @@ func isMainTableColumn(name string) bool {
 	return false
 }
 
-func hasMainTableCondition(cond forma.Condition, cache SchemaAttributeCache) bool {
+func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
 	if cond == nil {
 		// An empty condition implies no filtering; treat as having main table condition
 		return true
@@ -1051,7 +1051,7 @@ func hasMainTableCondition(cond forma.Condition, cache SchemaAttributeCache) boo
 		// Check if it's an attribute with column_binding to main table
 		if cache != nil {
 			if meta, ok := cache[c.Attr]; ok {
-				if meta.Storage != nil && meta.Storage.Location == AttributeStorageLocationMain {
+				if meta.Location() == forma.AttributeStorageLocationMain {
 					return true
 				}
 			}
@@ -1073,7 +1073,7 @@ func getMainColumnDescriptor(name string) *columnDescriptor {
 
 // parseKvConditionForColumnWithMeta parses a KvCondition for a specific column name with metadata
 // The meta parameter is used to determine the encoding for date/time values
-func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, meta *AttributeMetadata) (string, any, error) {
+func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, meta *forma.AttributeMetadata) (string, any, error) {
 	parts := strings.SplitN(kv.Value, ":", 2)
 	var opStr, valStr string
 	if len(parts) == 1 {
@@ -1118,7 +1118,7 @@ func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, me
 		parsedValue = valStr
 	case columnKindSmallint, columnKindInteger, columnKindBigint, columnKindDouble:
 		// Check if this is a date/time field that needs conversion
-		if meta != nil && (meta.ValueType == ValueTypeDate || meta.ValueType == ValueTypeDateTime) {
+		if meta != nil && (meta.ValueType == forma.ValueTypeDate || meta.ValueType == forma.ValueTypeDateTime) {
 			convertedVal, err := convertDateValueForQuery(valStr, meta)
 			if err != nil {
 				return "", nil, err
@@ -1139,7 +1139,7 @@ func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, me
 // convertDateValueForQuery converts a date value string to the appropriate format for querying.
 // It supports both ISO 8601 format strings and Unix millisecond timestamps as input.
 // The output format is determined by the storage encoding in metadata.
-func convertDateValueForQuery(valStr string, meta *AttributeMetadata) (any, error) {
+func convertDateValueForQuery(valStr string, meta *forma.AttributeMetadata) (any, error) {
 	// First, try to parse as ISO 8601 format
 	parsedTime, err := time.Parse(time.RFC3339, valStr)
 	if err != nil {
@@ -1152,13 +1152,13 @@ func convertDateValueForQuery(valStr string, meta *AttributeMetadata) (any, erro
 	}
 
 	// Convert based on storage encoding
-	if meta.Storage != nil && meta.Storage.ColumnBinding != nil {
-		encoding := meta.Storage.ColumnBinding.Encoding
+	if meta.ColumnBinding != nil {
+		encoding := meta.ColumnBinding.Encoding
 		switch encoding {
-		case MainColumnEncodingUnixMs:
+		case forma.MainColumnEncodingUnixMs:
 			// Return Unix milliseconds as int64 for bigint column
 			return parsedTime.UnixMilli(), nil
-		case MainColumnEncodingISO8601:
+		case forma.MainColumnEncodingISO8601:
 			// Return ISO 8601 string for text column
 			return parsedTime.Format(time.RFC3339), nil
 		}
@@ -1181,7 +1181,7 @@ func (r *PostgresPersistentRecordRepository) buildHybridConditions(
 	var build func(c forma.Condition) (string, []any, error)
 	argCounter := initArgIndex
 
-	var cache SchemaAttributeCache
+	var cache forma.SchemaAttributeCache
 	if query.SchemaID > 0 {
 		var schemaName string
 		var ok bool
@@ -1232,15 +1232,15 @@ func (r *PostgresPersistentRecordRepository) buildHybridConditions(
 			} else if cache != nil {
 				// Check if attribute has column_binding to main table
 				if meta, ok := cache[cond.Attr]; ok {
-					if meta.Storage != nil && meta.Storage.Location == AttributeStorageLocationMain && meta.Storage.ColumnBinding != nil {
-						colName = string(meta.Storage.ColumnBinding.ColumnName)
+					if meta.ColumnBinding != nil {
+						colName = string(meta.ColumnBinding.ColumnName)
 					}
 				}
 			}
 
 			if colName != "" {
 				// Main table column query - pass metadata for date/time conversion
-				var attrMeta *AttributeMetadata
+				var attrMeta *forma.AttributeMetadata
 				if cache != nil {
 					if meta, ok := cache[cond.Attr]; ok {
 						attrMeta = &meta

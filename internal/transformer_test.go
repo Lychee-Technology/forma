@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,18 +15,18 @@ import (
 type stubSchemaRegistry struct {
 	schemaID   int16
 	schemaName string
-	cache      SchemaAttributeCache
+	cache      forma.SchemaAttributeCache
 }
 
-func newStubSchemaRegistry() SchemaRegistry {
-	cache := SchemaAttributeCache{
-		"name":               {AttributeID: 1, ValueType: ValueTypeText},
-		"age":                {AttributeID: 2, ValueType: ValueTypeNumeric},
-		"person.name":        {AttributeID: 3, ValueType: ValueTypeText},
-		"person.age":         {AttributeID: 4, ValueType: ValueTypeNumeric},
-		"items":              {AttributeID: 5, ValueType: ValueTypeText},
-		"metadata.createdAt": {AttributeID: 6, ValueType: ValueTypeDate},
-		"metadata.active":    {AttributeID: 7, ValueType: ValueTypeBool},
+func newStubSchemaRegistry() forma.SchemaRegistry {
+	cache := forma.SchemaAttributeCache{
+		"name":               {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"age":                {AttributeID: 2, ValueType: forma.ValueTypeNumeric},
+		"person.name":        {AttributeID: 3, ValueType: forma.ValueTypeText},
+		"person.age":         {AttributeID: 4, ValueType: forma.ValueTypeNumeric},
+		"items":              {AttributeID: 5, ValueType: forma.ValueTypeText},
+		"metadata.createdAt": {AttributeID: 6, ValueType: forma.ValueTypeDate},
+		"metadata.active":    {AttributeID: 7, ValueType: forma.ValueTypeBool},
 	}
 	return &stubSchemaRegistry{
 		schemaID:   100,
@@ -34,22 +35,22 @@ func newStubSchemaRegistry() SchemaRegistry {
 	}
 }
 
-func copyAttributeCache(src SchemaAttributeCache) SchemaAttributeCache {
-	dst := make(SchemaAttributeCache, len(src))
+func copyAttributeCache(src forma.SchemaAttributeCache) forma.SchemaAttributeCache {
+	dst := make(forma.SchemaAttributeCache, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
 }
 
-func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	if name != s.schemaName {
 		return 0, nil, fmt.Errorf("schema %s not found", name)
 	}
 	return s.schemaID, copyAttributeCache(s.cache), nil
 }
 
-func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error) {
 	if id != s.schemaID {
 		return "", nil, fmt.Errorf("schema id %d not found", id)
 	}
@@ -199,6 +200,10 @@ func TestTransformer_BatchRoundTrip(t *testing.T) {
 				"one",
 				"two",
 			},
+			"metadata": map[string]any{
+				"createdAt": "2024-05-01T12:00:00Z",
+				"active":    true,
+			},
 		},
 		{
 			"name": "Bob",
@@ -244,9 +249,9 @@ func TestTransformer_ValidateAgainstSchema(t *testing.T) {
 	require.Error(t, err)
 }
 
-func buildAttributeLookup(t *testing.T, registry SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
+func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
 	result := make(map[string]*EAVRecord)
-	cacheBySchema := make(map[int16]SchemaAttributeCache)
+	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)
 
 	for i := range attrs {
 		attr := attrs[i]
@@ -274,7 +279,7 @@ func buildAttributeLookup(t *testing.T, registry SchemaRegistry, attrs []EAVReco
 	return result
 }
 
-func newTestAttribute(t *testing.T, registry SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
+func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
 	_, cache, err := registry.GetSchemaByID(schemaID)
 	require.NoError(t, err)
 

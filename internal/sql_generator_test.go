@@ -43,18 +43,18 @@ func TestSQLGenerator_ToSqlClauses(t *testing.T) {
 		t.Fatalf("expected root logic to be 'and', got %s", root.Logic)
 	}
 
-	cache := SchemaAttributeCache{
-		"price": AttributeMetadata{
+	cache := forma.SchemaAttributeCache{
+		"price": forma.AttributeMetadata{
 			AttributeID: 10,
-			ValueType:   ValueTypeNumeric,
+			ValueType:   forma.ValueTypeNumeric,
 		},
-		"status": AttributeMetadata{
+		"status": forma.AttributeMetadata{
 			AttributeID: 11,
-			ValueType:   ValueTypeText,
+			ValueType:   forma.ValueTypeText,
 		},
-		"category": AttributeMetadata{
+		"category": forma.AttributeMetadata{
 			AttributeID: 12,
-			ValueType:   ValueTypeText,
+			ValueType:   forma.ValueTypeText,
 		},
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
 
 type transformer struct {
@@ -19,7 +20,7 @@ type transformer struct {
 }
 
 // NewTransformer creates a new Transformer instance backed by the provided schema registry.
-func NewTransformer(registry SchemaRegistry) Transformer {
+func NewTransformer(registry forma.SchemaRegistry) Transformer {
 	return &transformer{
 		schemaMetadataCache: newSchemaMetadataCache(registry),
 		converter:           NewAttributeConverter(registry),
@@ -227,7 +228,7 @@ func (t *transformer) flattenToAttributes(
 	path []string,
 	data any,
 	indices []int,
-	cache SchemaAttributeCache,
+	cache forma.SchemaAttributeCache,
 	result *[]EAVRecord,
 ) error {
 	switch v := data.(type) {
@@ -277,21 +278,21 @@ func (t *transformer) flattenToAttributes(
 	return nil
 }
 
-func populateTypedValue(attr *EAVRecord, value any, valueType ValueType) error {
+func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) error {
 	switch valueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		strVal, err := toString(value)
 		if err != nil {
 			return err
 		}
 		attr.ValueText = &strVal
-	case ValueTypeNumeric:
+	case forma.ValueTypeNumeric:
 		numVal, err := toFloat64(value)
 		if err != nil {
 			return err
 		}
 		attr.ValueNumeric = &numVal
-	case ValueTypeDate:
+	case forma.ValueTypeDate:
 		timeVal, err := toTime(value)
 		if err != nil {
 			return err
@@ -299,7 +300,7 @@ func populateTypedValue(attr *EAVRecord, value any, valueType ValueType) error {
 
 		unixMillis := float64(timeVal.UnixMilli())
 		attr.ValueNumeric = &unixMillis
-	case ValueTypeBool:
+	case forma.ValueTypeBool:
 		boolVal, err := toBool(value)
 		if err != nil {
 			return err
@@ -419,41 +420,6 @@ func parseIndices(indices string) ([]int, error) {
 		result[i] = value
 	}
 	return result, nil
-}
-
-func attributeValue(attr EAVRecord, valueType ValueType) (any, error) {
-	switch valueType {
-	case ValueTypeText:
-		if attr.ValueText == nil {
-			return nil, nil
-		}
-		return *attr.ValueText, nil
-	case ValueTypeNumeric:
-		if attr.ValueNumeric == nil {
-			return nil, nil
-		}
-		return *attr.ValueNumeric, nil
-	case ValueTypeDate:
-		if attr.ValueNumeric == nil {
-			return nil, nil
-		}
-		timeVal := time.UnixMilli(int64(*attr.ValueNumeric))
-		return &timeVal, nil
-	case ValueTypeBool:
-		if attr.ValueNumeric == nil {
-			return nil, nil
-		}
-		boolVal := *attr.ValueNumeric > 0.5
-		return &boolVal, nil
-	default:
-		if attr.ValueText != nil {
-			return *attr.ValueText, nil
-		}
-		if attr.ValueNumeric != nil {
-			return *attr.ValueNumeric, nil
-		}
-		return nil, nil
-	}
 }
 
 func setValueAtPath(target map[string]any, segments []string, indices []int, value any) error {

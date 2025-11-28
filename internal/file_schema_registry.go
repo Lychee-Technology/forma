@@ -9,30 +9,28 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/lychee-technology/forma"
 )
 
-type SchemaRegistry interface {
-	GetSchemaByName(name string) (int16, SchemaAttributeCache, error)
-	GetSchemaByID(id int16) (string, SchemaAttributeCache, error)
-	ListSchemas() []string
-}
-
+// fileSchemaRegistry is a file-based implementation of SchemaRegistry for testing
 type fileSchemaRegistry struct {
 	mu           sync.RWMutex
 	schemaDir    string
 	nameToID     map[string]int16
 	idToName     map[int16]string
-	schemas      map[string]SchemaAttributeCache
+	schemas      map[string]forma.SchemaAttributeCache
 	nextSchemaID int16
 }
 
-// NewFileSchemaRegistry creates a new file-based schema registry
-func NewFileSchemaRegistry(schemaDir string) (SchemaRegistry, error) {
+// NewFileSchemaRegistry creates a new file-based schema registry for testing.
+// It loads JSON schema files from the specified directory.
+func NewFileSchemaRegistry(schemaDir string) (forma.SchemaRegistry, error) {
 	registry := &fileSchemaRegistry{
 		schemaDir:    schemaDir,
 		nameToID:     make(map[string]int16),
 		idToName:     make(map[int16]string),
-		schemas:      make(map[string]SchemaAttributeCache),
+		schemas:      make(map[string]forma.SchemaAttributeCache),
 		nextSchemaID: 100,
 	}
 
@@ -81,9 +79,9 @@ func (r *fileSchemaRegistry) loadSchemas() error {
 		}
 
 		// Convert to SchemaAttributeCache
-		cache := make(SchemaAttributeCache)
+		cache := make(forma.SchemaAttributeCache)
 		for attrName, attrData := range rawAttributes {
-			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
+			meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
 			if err != nil {
 				return err
 			}
@@ -105,7 +103,7 @@ func (r *fileSchemaRegistry) loadSchemas() error {
 }
 
 // GetSchemaByName retrieves schema ID and schema definition by schema name
-func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttributeCache, error) {
+func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -120,12 +118,12 @@ func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttribut
 	}
 
 	// Return a copy to prevent external mutations
-	schemaCopy := copySchemaAttributeCache(schema)
+	schemaCopy := copyFileSchemaAttributeCache(schema)
 	return schemaID, schemaCopy, nil
 }
 
 // GetSchemaByID retrieves schema name and definition by schema ID
-func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCache, error) {
+func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -140,7 +138,7 @@ func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCac
 	}
 
 	// Return a copy to prevent external mutations
-	schemaCopy := copySchemaAttributeCache(schema)
+	schemaCopy := copyFileSchemaAttributeCache(schema)
 	return name, schemaCopy, nil
 }
 
@@ -158,11 +156,64 @@ func (r *fileSchemaRegistry) ListSchemas() []string {
 	return schemas
 }
 
-// copySchemaAttributeCache creates a deep copy of a SchemaAttributeCache
-func copySchemaAttributeCache(cache SchemaAttributeCache) SchemaAttributeCache {
-	result := make(SchemaAttributeCache, len(cache))
+// copyFileSchemaAttributeCache creates a deep copy of a SchemaAttributeCache
+func copyFileSchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
+	result := make(forma.SchemaAttributeCache, len(cache))
 	for key, value := range cache {
 		result[key] = value
 	}
 	return result
+}
+
+// parseFileAttributeMetadata converts raw JSON metadata into AttributeMetadata structs
+func parseFileAttributeMetadata(attrName string, attrData map[string]any, source string) (forma.AttributeMetadata, error) {
+	meta := forma.AttributeMetadata{AttributeName: attrName}
+
+	// Parse attributeID
+	attrIDRaw, ok := attrData["attributeID"].(float64)
+	if !ok {
+		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, source)
+	}
+	meta.AttributeID = int16(attrIDRaw)
+
+	// Parse valueType
+	valueTypeStr, ok := attrData["valueType"].(string)
+	if !ok {
+		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing valueType for attribute %s in %s", attrName, source)
+	}
+	meta.ValueType = forma.ValueType(valueTypeStr)
+
+	// Parse optional column_binding
+	if bindingRaw, exists := attrData["column_binding"]; exists {
+		binding, err := parseFileColumnBinding(bindingRaw, attrName, source)
+		if err != nil {
+			return forma.AttributeMetadata{}, err
+		}
+		meta.ColumnBinding = binding
+	}
+
+	return meta, nil
+}
+
+// parseFileColumnBinding parses column binding configuration
+func parseFileColumnBinding(raw any, attrName, source string) (*forma.MainColumnBinding, error) {
+	bindingMap, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid column_binding format for attribute %s in %s", attrName, source)
+	}
+
+	colNameStr, ok := bindingMap["col_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid or missing col_name in column_binding for attribute %s in %s", attrName, source)
+	}
+
+	binding := &forma.MainColumnBinding{
+		ColumnName: forma.MainColumn(colNameStr),
+	}
+
+	if encodingStr, ok := bindingMap["encoding"].(string); ok {
+		binding.Encoding = forma.MainColumnEncoding(encodingStr)
+	}
+
+	return binding, nil
 }

@@ -13,7 +13,7 @@ import (
 type entityManager struct {
 	transformer PersistentRecordTransformer
 	repository  PersistentRecordRepository
-	registry    SchemaRegistry
+	registry    forma.SchemaRegistry
 	config      *forma.Config
 }
 
@@ -21,7 +21,7 @@ type entityManager struct {
 func NewEntityManager(
 	transformer PersistentRecordTransformer,
 	repository PersistentRecordRepository,
-	registry SchemaRegistry,
+	registry forma.SchemaRegistry,
 	config *forma.Config,
 ) forma.EntityManager {
 	return &entityManager{
@@ -274,11 +274,11 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 			SortOrder: sortOrder,
 		}
 		// Check if attribute has column_binding to main table
-		if meta.Storage != nil && meta.Storage.Location == AttributeStorageLocationMain && meta.Storage.ColumnBinding != nil {
-			order.StorageLocation = AttributeStorageLocationMain
-			order.ColumnName = string(meta.Storage.ColumnBinding.ColumnName)
+		if meta.ColumnBinding != nil {
+			order.StorageLocation =forma.AttributeStorageLocationMain
+			order.ColumnName = string(meta.ColumnBinding.ColumnName)
 		} else {
-			order.StorageLocation = AttributeStorageLocationEAV
+			order.StorageLocation =forma.AttributeStorageLocationEAV
 		}
 		attributeOrders = append(attributeOrders, order)
 	}

@@ -791,26 +791,6 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	}
 }
 
-func newSchemaAttribute(t *testing.T, cache SchemaAttributeCache, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
-	meta, ok := cache[name]
-	if !ok {
-		t.Fatalf("attribute %s not found in schema %d", name, schemaID)
-	}
-
-	attr := EAVRecord{
-		SchemaID:     schemaID,
-		RowID:        rowID,
-		AttrID:       meta.AttributeID,
-		ArrayIndices: indices,
-	}
-
-	if err := populateTypedValue(&attr, value, meta.ValueType); err != nil {
-		t.Fatalf("failed to populate attribute %s: %v", name, err)
-	}
-
-	return attr
-}
-
 // Helper function to create test config
 func createTestConfig() *forma.Config {
 	return &forma.Config{

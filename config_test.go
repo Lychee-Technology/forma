@@ -5,8 +5,55 @@ import (
 	"time"
 )
 
+
+// mockSchemaRegistry is a mock implementation of SchemaRegistry for testing
+type mockSchemaRegistry struct {
+	schemas map[string]struct {
+		id    int16
+		cache SchemaAttributeCache
+	}
+}
+
+// NewMockSchemaRegistry creates a new mock schema registry for testing
+func NewMockSchemaRegistry() SchemaRegistry {
+	return &mockSchemaRegistry{
+		schemas: make(map[string]struct {
+			id    int16
+			cache SchemaAttributeCache
+		}),
+	}
+}
+
+// GetSchemaByName retrieves schema ID and attribute cache by schema name
+func (r *mockSchemaRegistry) GetSchemaByName(name string) (int16, SchemaAttributeCache, error) {
+	if schema, exists := r.schemas[name]; exists {
+		return schema.id, schema.cache, nil
+	}
+	return 0, nil, nil
+}
+
+// GetSchemaByID retrieves schema name and attribute cache by schema ID
+func (r *mockSchemaRegistry) GetSchemaByID(id int16) (string, SchemaAttributeCache, error) {
+	for name, schema := range r.schemas {
+		if schema.id == id {
+			return name, schema.cache, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// ListSchemas returns a list of all registered schema names
+func (r *mockSchemaRegistry) ListSchemas() []string {
+	schemas := make([]string, 0, len(r.schemas))
+	for name := range r.schemas {
+		schemas = append(schemas, name)
+	}
+	return schemas
+}
+
+
 func TestDefaultConfig(t *testing.T) {
-	config := DefaultConfig()
+	config := DefaultConfig(NewMockSchemaRegistry())
 
 	// Test database defaults
 	if config.Database.Host != "localhost" {
@@ -75,7 +122,7 @@ func TestConfigValidationDetailed(t *testing.T) {
 	}{
 		{
 			name:        "valid config",
-			config:      DefaultConfig(),
+			config:      DefaultConfig(NewMockSchemaRegistry()),
 			expectError: false,
 		},
 		{
@@ -165,7 +212,7 @@ func TestConfigError(t *testing.T) {
 }
 
 func TestCascadeRuleValidation(t *testing.T) {
-	config := DefaultConfig()
+	config := DefaultConfig(NewMockSchemaRegistry())
 
 	// Add cascade rules
 	config.Reference.CascadeRules = map[string]CascadeRule{
@@ -184,7 +231,7 @@ func TestCascadeRuleValidation(t *testing.T) {
 }
 
 func TestBatchConfigDefaults(t *testing.T) {
-	config := DefaultConfig()
+	config := DefaultConfig(NewMockSchemaRegistry())
 
 	batch := config.Performance.Batch
 	if !batch.EnableDynamicSizing {

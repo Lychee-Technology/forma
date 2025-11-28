@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,159 +15,103 @@ func newPersistentTransformerRegistry() *stubSchemaRegistry {
 	return &stubSchemaRegistry{
 		schemaID:   201,
 		schemaName: "persistent_test",
-		cache: SchemaAttributeCache{
+		cache: forma.SchemaAttributeCache{
 			"name": {
 				AttributeID: 1,
-				ValueType:   ValueTypeText,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnText01,
-						Encoding:   MainColumnEncodingDefault,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeText,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnText01,
+					Encoding:   forma.MainColumnEncodingDefault,
 				},
 			},
 			"age": {
 				AttributeID: 2,
-				ValueType:   ValueTypeNumeric,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnInteger01,
-						Encoding:   MainColumnEncodingDefault,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeNumeric,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnInteger01,
+					Encoding:   forma.MainColumnEncodingDefault,
 				},
 			},
 			"height": {
 				AttributeID: 3,
-				ValueType:   ValueTypeNumeric,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnDouble01,
-						Encoding:   MainColumnEncodingDefault,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeNumeric,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnDouble01,
+					Encoding:   forma.MainColumnEncodingDefault,
 				},
 			},
 			"createdAt": {
 				AttributeID: 4,
-				ValueType:   ValueTypeDate,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnBigint01,
-						Encoding:   MainColumnEncodingUnixMs,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeDate,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnBigint01,
+					Encoding:   forma.MainColumnEncodingUnixMs,
 				},
 			},
 			"isActiveInt": {
 				AttributeID: 5,
-				ValueType:   ValueTypeBool,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnSmallint01,
-						Encoding:   MainColumnEncodingBoolInt,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeBool,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnSmallint01,
+					Encoding:   forma.MainColumnEncodingBoolInt,
 				},
 			},
 			"isActiveText": {
 				AttributeID: 6,
-				ValueType:   ValueTypeBool,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnText02,
-						Encoding:   MainColumnEncodingBoolText,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeBool,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnText02,
+					Encoding:   forma.MainColumnEncodingBoolText,
 				},
 			},
 			"expiresAt": {
 				AttributeID: 7,
-				ValueType:   ValueTypeDate,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnText03,
-						Encoding:   MainColumnEncodingISO8601,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeDate,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnText03,
+					Encoding:   forma.MainColumnEncodingISO8601,
 				},
 			},
 			"notes": {
-				AttributeID: 8,
-				ValueType:   ValueTypeText,
-				Storage: &AttributeStorageMetadata{
-					Location:      AttributeStorageLocationEAV,
-					ColumnBinding: nil,
-					Fallback:      AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
-				},
+				AttributeID:   8,
+				ValueType:     forma.ValueTypeText,
+				ColumnBinding: nil,
 			},
 			"profile.name": {
 				AttributeID: 9,
-				ValueType:   ValueTypeText,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnText04,
-						Encoding:   MainColumnEncodingDefault,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeText,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnText04,
+					Encoding:   forma.MainColumnEncodingDefault,
 				},
 			},
 			"profile.rank": {
 				AttributeID: 10,
-				ValueType:   ValueTypeNumeric,
-				Storage: &AttributeStorageMetadata{
-					Location: AttributeStorageLocationMain,
-					ColumnBinding: &MainColumnBinding{
-						ColumnName: MainColumnSmallint02,
-						Encoding:   MainColumnEncodingDefault,
-					},
-					Fallback: AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
+				ValueType:   forma.ValueTypeNumeric,
+				ColumnBinding: &forma.MainColumnBinding{
+					ColumnName: forma.MainColumnSmallint02,
+					Encoding:   forma.MainColumnEncodingDefault,
 				},
 			},
 			"tags": {
-				AttributeID: 11,
-				ValueType:   ValueTypeText,
-				Storage: &AttributeStorageMetadata{
-					Location:      AttributeStorageLocationEAV,
-					ColumnBinding: nil,
-					Fallback:      AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
-				},
+				AttributeID:   11,
+				ValueType:     forma.ValueTypeText,
+				ColumnBinding: nil,
 			},
 			"jobs.title": {
-				AttributeID: 12,
-				ValueType:   ValueTypeText,
-				Storage: &AttributeStorageMetadata{
-					Location:      AttributeStorageLocationEAV,
-					ColumnBinding: nil,
-					Fallback:      AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
-				},
+				AttributeID:   12,
+				ValueType:     forma.ValueTypeText,
+				ColumnBinding: nil,
 			},
 			"jobs.active": {
-				AttributeID: 13,
-				ValueType:   ValueTypeBool,
-				Storage: &AttributeStorageMetadata{
-					Location:      AttributeStorageLocationEAV,
-					ColumnBinding: nil,
-					Fallback:      AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
-				},
+				AttributeID:   13,
+				ValueType:     forma.ValueTypeBool,
+				ColumnBinding: nil,
 			},
 			"metadata.updatedAt": {
-				AttributeID: 14,
-				ValueType:   ValueTypeDate,
-				Storage: &AttributeStorageMetadata{
-					Location:      AttributeStorageLocationEAV,
-					ColumnBinding: nil,
-					Fallback:      AttributeFallbackMetadata{Kind: AttributeFallbackKindNone},
-				},
+				AttributeID:   14,
+				ValueType:     forma.ValueTypeDate,
+				ColumnBinding: nil,
 			},
 		},
 	}

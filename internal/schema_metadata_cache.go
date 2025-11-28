@@ -3,26 +3,28 @@ package internal
 import (
 	"fmt"
 	"sync"
+
+	"github.com/lychee-technology/forma"
 )
 
 // schemaMetadataCache centralizes schema metadata lookup and caching so
 // multiple components can share the same implementation.
 type schemaMetadataCache struct {
-	registry    SchemaRegistry
+	registry    forma.SchemaRegistry
 	cacheMu     sync.RWMutex
-	attrCache   map[int16]SchemaAttributeCache
+	attrCache   map[int16]forma.SchemaAttributeCache
 	idNameCache map[int16]map[int16]string
 }
 
-func newSchemaMetadataCache(registry SchemaRegistry) *schemaMetadataCache {
+func newSchemaMetadataCache(registry forma.SchemaRegistry) *schemaMetadataCache {
 	return &schemaMetadataCache{
 		registry:    registry,
-		attrCache:   make(map[int16]SchemaAttributeCache),
+		attrCache:   make(map[int16]forma.SchemaAttributeCache),
 		idNameCache: make(map[int16]map[int16]string),
 	}
 }
 
-func (c *schemaMetadataCache) getSchemaMetadata(schemaID int16) (SchemaAttributeCache, map[int16]string, error) {
+func (c *schemaMetadataCache) getSchemaMetadata(schemaID int16) (forma.SchemaAttributeCache, map[int16]string, error) {
 	c.cacheMu.RLock()
 	cache, okCache := c.attrCache[schemaID]
 	idMap, okMap := c.idNameCache[schemaID]

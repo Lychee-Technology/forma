@@ -12,7 +12,7 @@ import (
 // parseDateValue parses a date value string and converts it based on storage encoding.
 // Supports both ISO 8601 format strings and Unix millisecond timestamps.
 // Returns the parsed value ready for SQL query based on the column encoding.
-func parseDateValue(valStr string, meta AttributeMetadata) (any, error) {
+func parseDateValue(valStr string, meta forma.AttributeMetadata) (any, error) {
 	// First, try to parse as ISO 8601 format
 	parsedTime, err := time.Parse(time.RFC3339, valStr)
 	if err != nil {
@@ -25,13 +25,13 @@ func parseDateValue(valStr string, meta AttributeMetadata) (any, error) {
 	}
 
 	// Convert based on storage encoding
-	if meta.Storage != nil && meta.Storage.ColumnBinding != nil {
-		encoding := meta.Storage.ColumnBinding.Encoding
+	if meta.ColumnBinding != nil {
+		encoding := meta.ColumnBinding.Encoding
 		switch encoding {
-		case MainColumnEncodingUnixMs:
+		case forma.MainColumnEncodingUnixMs:
 			// Return Unix milliseconds as int64 for bigint column
 			return parsedTime.UnixMilli(), nil
-		case MainColumnEncodingISO8601:
+		case forma.MainColumnEncodingISO8601:
 			// Return ISO 8601 string for text column
 			return parsedTime.Format(time.RFC3339), nil
 		}
@@ -54,7 +54,7 @@ func (g *SQLGenerator) ToSqlClauses(
 	condition forma.Condition,
 	eavTable string,
 	schemaID int16,
-	cache SchemaAttributeCache,
+	cache forma.SchemaAttributeCache,
 	paramIndex *int,
 ) (string, []any, error) {
 	if condition == nil {
@@ -67,7 +67,7 @@ func (g *SQLGenerator) buildCondition(
 	condition forma.Condition,
 	eavTable string,
 	schemaID int16,
-	cache SchemaAttributeCache,
+	cache forma.SchemaAttributeCache,
 	paramIndex *int,
 ) (string, []any, error) {
 	switch cond := condition.(type) {
@@ -84,7 +84,7 @@ func (g *SQLGenerator) buildComposite(
 	c *forma.CompositeCondition,
 	eavTable string,
 	schemaID int16,
-	cache SchemaAttributeCache,
+	cache forma.SchemaAttributeCache,
 	paramIndex *int,
 ) (string, []any, error) {
 	if len(c.Conditions) == 0 {
@@ -134,7 +134,7 @@ func (g *SQLGenerator) buildKv(
 	kv *forma.KvCondition,
 	eavTable string,
 	schemaID int16,
-	cache SchemaAttributeCache,
+	cache forma.SchemaAttributeCache,
 	paramIndex *int,
 ) (string, []any, error) {
 	_ = schemaID
@@ -159,23 +159,23 @@ func (g *SQLGenerator) buildKv(
 	var parsedValue any
 
 	switch meta.ValueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		valueColumn = "value_text"
 		parsedValue = valStr
-	case ValueTypeNumeric:
+	case forma.ValueTypeNumeric:
 		valueColumn = "value_numeric"
 		parsedValue = tryParseNumber(valStr)
 		if _, ok := parsedValue.(string); ok {
 			return "", nil, fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)
 		}
-	case ValueTypeDate, ValueTypeDateTime:
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		valueColumn = "value_numeric"
 		var err error
 		parsedValue, err = parseDateValue(valStr, meta)
 		if err != nil {
 			return "", nil, fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
 		}
-	case ValueTypeBool:
+	case forma.ValueTypeBool:
 		valueColumn = "value_bool"
 		parsedFloat, err := strconv.ParseFloat(valStr, 32)
 		if err != nil {
@@ -210,10 +210,10 @@ func (g *SQLGenerator) buildKv(
 		return "", nil, fmt.Errorf("unsupported operator: %s", opStr)
 	}
 
-	if meta.ValueType != ValueTypeText && sqlOp == "LIKE" {
+	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
 		return "", nil, fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)
 	}
-	if meta.ValueType == ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
+	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
 		return "", nil, fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)
 	}
 

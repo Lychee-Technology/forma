@@ -1,0 +1,59 @@
+name: Publish Go Module
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Module version tag (e.g., v1.2.3)"
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODULE_PATH: github.com/lychee-technology/forma
+      GOPROXY: https://proxy.golang.org
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          version="${{ github.event.inputs.version }}"
+          if [ -z "$version" ]; then
+            version="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$version" ]; then
+            version="$GITHUB_REF_NAME"
+          fi
+          if [ -z "$version" ]; then
+            echo "Unable to determine module version" >&2
+            exit 1
+          fi
+          echo "Publishing $version for $MODULE_PATH"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Go module endpoints
+        run: |
+          set -euo pipefail
+          version="${{ steps.resolve.outputs.version }}"
+          module="${MODULE_PATH}"
+
+          echo "Trigger proxy fetch..."
+          curl -sSf "${GOPROXY}/${module}/@v/${version}.info"
+
+          echo "Populate sum.golang.org..."
+          curl -sSf "https://sum.golang.org/lookup/${module}@${version}"
+
+          echo "Notify index.golang.org (eventually consistent)..."
+          # index.golang.org is append-only; pinging the proxy above schedules an index entry.
+          # Perform a lightweight read to ensure the service is reachable.
+          curl -sSf "https://index.golang.org/index?limit=1"

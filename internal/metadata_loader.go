@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 )
 
 // MetadataCache holds all metadata mappings for fast lookups
@@ -20,10 +21,10 @@ type MetadataCache struct {
 	schemaIDToName map[int16]string
 
 	// Attribute mappings: (schema_name, attr_name) -> AttributeMeta
-	attributeMetadata map[string]map[string]AttributeMetadata
+	attributeMetadata map[string]map[string]forma.AttributeMetadata
 
 	// Schema caches for transformer
-	schemaCaches map[string]SchemaAttributeCache
+	schemaCaches map[string]forma.SchemaAttributeCache
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -31,8 +32,8 @@ func NewMetadataCache() *MetadataCache {
 	return &MetadataCache{
 		schemaNameToID:    make(map[string]int16),
 		schemaIDToName:    make(map[int16]string),
-		attributeMetadata: make(map[string]map[string]AttributeMetadata),
-		schemaCaches:      make(map[string]SchemaAttributeCache),
+		attributeMetadata: make(map[string]map[string]forma.AttributeMetadata),
+		schemaCaches:      make(map[string]forma.SchemaAttributeCache),
 	}
 }
 
@@ -53,7 +54,7 @@ func (mc *MetadataCache) GetSchemaName(schemaID int16) (string, bool) {
 }
 
 // GetSchemaCache retrieves the schema attribute cache for a schema (thread-safe)
-func (mc *MetadataCache) GetSchemaCache(schemaName string) (SchemaAttributeCache, bool) {
+func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	cache, ok := mc.schemaCaches[schemaName]
@@ -173,8 +174,8 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 
 		// Convert to AttributeMeta map
-		attrMap := make(map[string]AttributeMetadata)
-		schemaCache := make(SchemaAttributeCache)
+		attrMap := make(map[string]forma.AttributeMetadata)
+		schemaCache := make(forma.SchemaAttributeCache)
 
 		for attrName, attrData := range rawAttributes {
 			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)

@@ -16,7 +16,7 @@ import (
 type integrationEnv struct {
 	ctx          context.Context
 	manager      forma.EntityManager
-	registry     SchemaRegistry
+	registry     forma.SchemaRegistry
 	metadata     *MetadataCache
 	tables       StorageTables
 	schemaTable  string
@@ -75,7 +75,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 }
 
 // createSchemaRegistryTable mirrors the schema registry table using IDs from the file registry.
-func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, registry SchemaRegistry) string {
+func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, registry forma.SchemaRegistry) string {
 	t.Helper()
 
 	suffix := time.Now().UnixNano()

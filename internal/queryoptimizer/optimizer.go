@@ -482,12 +482,13 @@ func (o *Optimizer) buildSortSQL(sortKeys []SortKey, tables StorageTables, qb *q
 			direction = "DESC"
 		}
 
-		if key.Storage == StorageTargetMain {
+		switch key.Storage {
+		case StorageTargetMain:
 			if key.Column != nil {
 				needMainJoin = true
 				orderClauses = append(orderClauses, fmt.Sprintf("m.%s %s", key.Column.Name, direction))
 			}
-		} else if key.Storage == StorageTargetEAV {
+		case StorageTargetEAV:
 			eavJoinCount++
 			alias := fmt.Sprintf("s%d", eavJoinCount)
 			valueCol := o.getValueColumnName(key.ValueType)
