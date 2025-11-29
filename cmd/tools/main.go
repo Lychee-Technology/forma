@@ -256,11 +256,11 @@ func runInitDB(args []string) error {
 	flags.IntVar(&opts.port, "db-port", getenvDefaultInt("DB_PORT", 5432), "database port")
 	flags.StringVar(&opts.database, "db-name", getenvDefault("DB_NAME", "forma"), "database name")
 	flags.StringVar(&opts.user, "db-user", getenvDefault("DB_USER", "postgres"), "database user")
-	flags.StringVar(&opts.password, "db-password", getenvDefault("DB_PASSWORD", ""), "database password")
+	flags.StringVar(&opts.password, "db-password", getenvDefault("DB_PASSWORD", "postgres"), "database password")
 	flags.StringVar(&opts.sslMode, "db-ssl-mode", getenvDefault("DB_SSL_MODE", "disable"), "database sslmode")
 	flags.StringVar(&opts.schemaTable, "schema-table", getenvDefault("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
-	flags.StringVar(&opts.eavTable, "eav-table", getenvDefault("EAV_TABLE", "eav_data_2"), "EAV data table name")
-	flags.StringVar(&opts.entityMain, "entity-main-table", getenvDefault("ENTITY_MAIN_TABLE", "entity_main"), "Entity main table name")
+	flags.StringVar(&opts.eavTable, "eav-table", getenvDefault("EAV_TABLE", "eav_dev"), "EAV data table name")
+	flags.StringVar(&opts.entityMain, "entity-main-table", getenvDefault("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
