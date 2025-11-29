@@ -47,7 +47,7 @@ type AttributeRegistry interface {
 
 ## Primary Table
 
-`entity main`表用于存储高频访问的属性，以提升查询性能。表名格式为`hot_attributes_<base32(client_id)>_<project_id>`。
+`entity main`表用于存储高频访问的属性，以提升查询性能。表名格式为`entity_main_<base32(client_id)>_<project_id>`。
 
 | Name              | Type             | Note         |
 | :---------------- | :--------------- | :----------- |

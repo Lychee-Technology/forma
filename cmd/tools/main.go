@@ -21,7 +21,6 @@ import (
 type attributeSpec struct {
 	AttributeID int    `json:"attributeID"`
 	ValueType   string `json:"valueType"`
-	InsideArray bool   `json:"insideArray"`
 }
 
 func main() {
@@ -163,16 +162,14 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 				}
 			case "string", "integer", "number", "boolean":
 				attributes[path] = attributeSpec{
-					ValueType:   getValueType(items),
-					InsideArray: true,
+					ValueType: getValueType(items),
 				}
 				return attributes
 			}
 		}
 	default:
 		attributes[path] = attributeSpec{
-			ValueType:   getValueType(schema),
-			InsideArray: insideArray,
+			ValueType: getValueType(schema),
 		}
 	}
 
@@ -239,6 +236,7 @@ type initDBOptions struct {
 	schemaTable string
 	eavTable    string
 	entityMain  string
+	schemaDir   string
 }
 
 func runInitDB(args []string) error {
@@ -261,6 +259,7 @@ func runInitDB(args []string) error {
 	flags.StringVar(&opts.schemaTable, "schema-table", getenvDefault("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
 	flags.StringVar(&opts.eavTable, "eav-table", getenvDefault("EAV_TABLE", "eav_dev"), "EAV data table name")
 	flags.StringVar(&opts.entityMain, "entity-main-table", getenvDefault("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
+	flags.StringVar(&opts.schemaDir, "schema-dir", getenvDefault("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -425,6 +424,67 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 		}
 	}
 
+	// Register schemas from schema directory if provided
+	if opts.schemaDir != "" {
+		if err := registerSchemas(ctx, tx, opts.schemaTable, opts.schemaDir); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// registerSchemas reads JSON schema files from the directory and inserts them into the schema registry table
+func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir string) error {
+	entries, err := os.ReadDir(schemaDir)
+	if err != nil {
+		return fmt.Errorf("read schema directory(%s): %w", schemaDir, err)
+	}
+
+	// Collect schema files (excluding *_attributes.json files)
+	var schemaFiles []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, "_attributes.json") {
+			schemaFiles = append(schemaFiles, name)
+		}
+	}
+
+	if len(schemaFiles) == 0 {
+		fmt.Printf("No schema files found in %s\n", schemaDir)
+		return nil
+	}
+
+	// Sort for deterministic schema ID assignment
+	sort.Strings(schemaFiles)
+
+	// Insert schemas into the registry table
+	quotedTable := quoteIdentifier(schemaTable)
+	for idx, file := range schemaFiles {
+		schemaName := strings.TrimSuffix(file, ".json")
+		schemaID := int16(idx + 1)
+
+		insertSQL := fmt.Sprintf(
+			`INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING`,
+			quotedTable,
+		)
+
+		result, err := tx.Exec(ctx, insertSQL, schemaName, schemaID)
+		if err != nil {
+			return fmt.Errorf("insert schema %s: %w", schemaName, err)
+		}
+
+		if result.RowsAffected() > 0 {
+			fmt.Printf("Registered schema: %s (id=%d)\n", schemaName, schemaID)
+		} else {
+			fmt.Printf("Schema already exists: %s\n", schemaName)
+		}
+	}
+
+	fmt.Printf("Registered %d schemas from %s\n", len(schemaFiles), schemaDir)
 	return nil
 }
 

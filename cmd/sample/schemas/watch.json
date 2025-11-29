@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Watch",
+  "description": "Watch data model for luxury watch marketplace",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "brand"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "description": "Watch identifier"
+    },
+    "name": {
+      "type": "string",
+      "description": "Watch name/title including brand and model details"
+    },
+    "price": {
+      "type": "object",
+      "description": "Price information",
+      "properties": {
+        "value": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Price in numeric format (null if 'Price on request')"
+        },
+        "display": {
+          "type": "string",
+          "description": "Original price display text (e.g., '$43,500' or 'Price on request')"
+        }
+      }
+    },
+    "brand": {
+      "type": "string",
+      "description": "Watch brand (e.g., Audemars Piguet, Rolex)"
+    },
+    "model": {
+      "type": "string",
+      "description": "Watch model name (e.g., Royal Oak Offshore Chronograph)"
+    },
+    "reference": {
+      "type": "string",
+      "description": "Reference number (e.g., 26237ST.OO.1000ST.01)"
+    },
+    "movement": {
+      "type": "string",
+      "enum": [
+        "Automatic",
+        "Manual",
+        "Quartz"
+      ],
+      "description": "Movement type"
+    },
+    "material": {
+      "type": "object",
+      "description": "Material information",
+      "properties": {
+        "case": {
+          "type": "string",
+          "description": "Case material (e.g., Steel, Titanium, Gold)"
+        },
+        "bracelet": {
+          "type": "string",
+          "description": "Bracelet/strap material (e.g., Steel, Rubber, Crocodile skin)"
+        }
+      }
+    },
+    "yearOfProduction": {
+      "type": "object",
+      "description": "Year of production information",
+      "properties": {
+        "year": {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100,
+          "description": "Year of production (null if unknown)"
+        },
+        "approximate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the year is approximate"
+        }
+      }
+    },
+    "condition": {
+      "type": "string",
+      "enum": [
+        "Unworn",
+        "New",
+        "Very good",
+        "Good",
+        "Fair"
+      ],
+      "description": "Watch condition"
+    },
+    "gender": {
+      "type": "string",
+      "description": "Target gender (e.g., Men's watch/Unisex, Women's watch)"
+    },
+    "size": {
+      "type": "object",
+      "description": "Watch size dimensions",
+      "properties": {
+        "width": {
+          "type": "number",
+          "description": "Watch width/diameter in mm"
+        },
+        "height": {
+          "type": "number",
+          "description": "Watch height in mm (for non-round watches)"
+        }
+      }
+    }
+  }
+}

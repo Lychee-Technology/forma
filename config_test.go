@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-
 // mockSchemaRegistry is a mock implementation of SchemaRegistry for testing
 type mockSchemaRegistry struct {
 	schemas map[string]struct {
@@ -50,7 +49,6 @@ func (r *mockSchemaRegistry) ListSchemas() []string {
 	}
 	return schemas
 }
-
 
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig(NewMockSchemaRegistry())

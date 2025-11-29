@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Communication",
+  "description": "Communication timeline entry for a lead (call, email, chat, note)",
+  "type": "object",
+  "required": [
+    "id",
+    "leadId",
+    "userId",
+    "type",
+    "at",
+    "summary"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Communication identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "leadId": {
+      "type": "string",
+      "description": "Associated lead ID"
+    },
+    "userId": {
+      "type": "string",
+      "description": "Agent or user who logged the communication"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "call",
+        "line",
+        "email",
+        "sms",
+        "wechat"
+      ],
+      "description": "Communication channel or entry type"
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "inbound",
+        "outbound"
+      ],
+      "description": "Direction of the communication (notes may omit)"
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the communication"
+    },
+    "durationMinutes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Duration in minutes for call-type communications"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short summary of the interaction"
+    },
+    "nextFollowUpAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional scheduled follow-up time derived from this communication"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Record creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    }
+  }
+}

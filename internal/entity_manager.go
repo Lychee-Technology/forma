@@ -275,10 +275,10 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 		}
 		// Check if attribute has column_binding to main table
 		if meta.ColumnBinding != nil {
-			order.StorageLocation =forma.AttributeStorageLocationMain
+			order.StorageLocation = forma.AttributeStorageLocationMain
 			order.ColumnName = string(meta.ColumnBinding.ColumnName)
 		} else {
-			order.StorageLocation =forma.AttributeStorageLocationEAV
+			order.StorageLocation = forma.AttributeStorageLocationEAV
 		}
 		attributeOrders = append(attributeOrders, order)
 	}

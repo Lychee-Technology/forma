@@ -7,20 +7,12 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/lychee-technology/forma"
 )
 
 // ErrNotImplemented is returned until the optimizer pipeline is fully implemented.
 var ErrNotImplemented = errors.New("query optimizer plan generation not implemented")
-
-// ValueType mirrors the logical attribute types defined by schemas.
-type ValueType string
-
-const (
-	ValueTypeText    ValueType = "text"
-	ValueTypeNumeric ValueType = "numeric"
-	ValueTypeDate    ValueType = "date"
-	ValueTypeBool    ValueType = "bool"
-)
 
 // AttributeFallbackKind describes lossy storage behaviors that require rewrites.
 type AttributeFallbackKind string
@@ -45,7 +37,7 @@ type ColumnRef struct {
 type AttributeBinding struct {
 	AttributeName string
 	AttributeID   int16
-	ValueType     ValueType
+	ValueType     forma.ValueType
 	Storage       StorageTarget
 	Column        *ColumnRef
 	Fallback      AttributeFallbackKind
@@ -88,7 +80,7 @@ const (
 type Predicate struct {
 	AttributeName string
 	AttributeID   int16
-	ValueType     ValueType
+	ValueType     forma.ValueType
 	Operator      PredicateOp
 	Value         any
 	Storage       StorageTarget
@@ -134,7 +126,7 @@ const (
 type SortKey struct {
 	AttributeName string
 	AttributeID   int16
-	ValueType     ValueType
+	ValueType     forma.ValueType
 	Direction     SortDirection
 	Storage       StorageTarget
 	Column        *ColumnRef
@@ -397,7 +389,7 @@ func (o *Optimizer) buildMainPredicate(pred *Predicate, qb *queryBuilder) (strin
 
 	// Handle date values based on column encoding
 	convertedValue := pred.Value
-	if pred.ValueType == ValueTypeDate {
+	if pred.ValueType == forma.ValueTypeDate {
 		if pred.Column != nil && pred.Column.Encoding != "" {
 			convertedValue = convertDateValueForStorage(pred.Value, pred.Column.Encoding)
 		}
@@ -446,15 +438,9 @@ func (o *Optimizer) buildEAVPredicate(pred *Predicate, eavTable string, qb *quer
 }
 
 // getValueColumnName returns the appropriate column name for a value type
-func (o *Optimizer) getValueColumnName(vt ValueType) string {
+func (o *Optimizer) getValueColumnName(vt forma.ValueType) string {
 	switch vt {
-	case ValueTypeText:
-		return "value_text"
-	case ValueTypeNumeric:
-		return "value_numeric"
-	case ValueTypeDate:
-		return "value_numeric"
-	case ValueTypeBool:
+	case forma.ValueTypeNumeric, forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime, forma.ValueTypeBool:
 		return "value_numeric"
 	default:
 		return "value_text"

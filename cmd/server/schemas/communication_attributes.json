@@ -1,0 +1,46 @@
+{
+  "at": {
+    "attributeID": 1,
+    "valueType": "date"
+  },
+  "createdAt": {
+    "attributeID": 2,
+    "valueType": "date"
+  },
+  "direction": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "durationMinutes": {
+    "attributeID": 4,
+    "valueType": "numeric"
+  },
+  "id": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "leadId": {
+    "attributeID": 6,
+    "valueType": "text"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 7,
+    "valueType": "date"
+  },
+  "summary": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "type": {
+    "attributeID": 9,
+    "valueType": "text"
+  },
+  "updatedAt": {
+    "attributeID": 10,
+    "valueType": "date"
+  },
+  "userId": {
+    "attributeID": 11,
+    "valueType": "text"
+  }
+}

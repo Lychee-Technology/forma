@@ -73,7 +73,7 @@ func TestSQLGenerator_ToSqlClauses(t *testing.T) {
 	}
 
 	expectedArgs := []any{
-		int16(10), int64(10),
+		int16(10), float64(10),
 		int16(11), "active",
 		int16(12), "A%",
 	}

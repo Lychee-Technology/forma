@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Visit",
+  "description": "Lead property visit (showing) record",
+  "type": "object",
+  "required": [
+    "id",
+    "leadId",
+    "userId",
+    "propertyId",
+    "scheduledStartAt",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Visit identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "leadId": {
+      "type": "string",
+      "description": "Associated lead ID"
+    },
+    "userId": {
+      "type": "string",
+      "description": "Agent conducting the visit"
+    },
+    "propertyId": {
+      "type": "string",
+      "description": "Property being visited"
+    },
+    "propertySnapshot": {
+      "type": "object",
+      "description": "Optional property snapshot to preserve historical info",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string"
+        },
+        "price": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rent": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "scheduledStartAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Scheduled start time"
+    },
+    "scheduledEndAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Scheduled end time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "visited",
+        "no_show",
+        "canceled",
+        "rescheduled"
+      ],
+      "description": "Visit status"
+    },
+    "actualStartAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Actual start time"
+    },
+    "actualEndAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Actual end time"
+    },
+    "feedback": {
+      "type": "string",
+      "description": "Client feedback or notes from the visit"
+    },
+    "attendees": {
+      "type": "array",
+      "description": "List of attendees (names or user IDs)",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nextFollowUpAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Next follow-up time derived from the visit"
+    },
+    "logs": {
+      "type": "array",
+      "description": "Visit log IDs tied to this visit",
+      "items": {
+        "type": "string",
+        "description": "Log ID"
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Record creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    }
+  }
+}

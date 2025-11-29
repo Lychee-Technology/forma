@@ -30,18 +30,18 @@ func TestEntityManager_Create(t *testing.T) {
 
 	// Test data
 	testData := map[string]any{
-		"id":        "test-id-1",
-		"type":      "call",
-		"direction": "inbound",
-		"at":        "2024-01-01T00:00:00Z",
-		"userId":    "user-1",
-		"summary":   "Initial contact with client",
+		"id":               "test-id-1",
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
 	}
 
 	// Execute
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{
-			SchemaName: "activity",
+			SchemaName: "visit",
 		},
 		Type: forma.OperationCreate,
 		Data: testData,
@@ -58,8 +58,8 @@ func TestEntityManager_Create(t *testing.T) {
 		t.Fatal("Create returned nil record")
 	}
 
-	if record.SchemaName != "activity" {
-		t.Errorf("Expected schema name 'activity', got '%s'", record.SchemaName)
+	if record.SchemaName != "visit" {
+		t.Errorf("Expected schema name 'visit', got '%s'", record.SchemaName)
 	}
 
 	if record.RowID == (uuid.UUID{}) {
@@ -81,19 +81,19 @@ func TestEntityManager_Get(t *testing.T) {
 	}
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("activity")
+	schemaID, _, err := registry.GetSchemaByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
 
 	testRowID := uuid.New()
 	testRecord, err := transformer.ToPersistentRecord(ctx, schemaID, testRowID, map[string]any{
-		"id":        "test-id-1",
-		"type":      "call",
-		"direction": "inbound",
-		"at":        "2024-01-01T00:00:00Z",
-		"userId":    "user-1",
-		"summary":   "Test activity",
+		"id":               "test-id-1",
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
 	})
 	if err != nil {
 		t.Fatalf("failed to build persistent record: %v", err)
@@ -105,7 +105,7 @@ func TestEntityManager_Get(t *testing.T) {
 
 	// Execute
 	req := &forma.QueryRequest{
-		SchemaName: "activity",
+		SchemaName: "visit",
 		RowID:      &testRowID,
 	}
 
@@ -148,7 +148,7 @@ func TestEntityManager_Delete(t *testing.T) {
 	// Execute
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{
-			SchemaName: "activity",
+			SchemaName: "visit",
 			RowID:      testRowID,
 		},
 		Type: forma.OperationDelete,
@@ -179,16 +179,16 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
-	_, cache, err := registry.GetSchemaByName("activity")
+	_, cache, err := registry.GetSchemaByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
 
 	req := &forma.QueryRequest{
-		SchemaName:   "activity",
+		SchemaName:   "visit",
 		Page:         1,
 		ItemsPerPage: 10,
-		SortBy:       []string{"at"},
+		SortBy:       []string{"scheduledStartAt"},
 		SortOrder:    forma.SortOrderDesc,
 	}
 
@@ -204,9 +204,9 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastQuery.AttributeOrders))
 	}
 
-	meta, ok := cache["at"]
+	meta, ok := cache["scheduledStartAt"]
 	if !ok {
-		t.Fatal("expected at metadata in cache")
+		t.Fatal("expected scheduledStartAt metadata in cache")
 	}
 	attrOrder := mockRepo.lastQuery.AttributeOrders[0]
 	if attrOrder.AttrID != meta.AttributeID {
@@ -234,7 +234,7 @@ func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	req := &forma.QueryRequest{
-		SchemaName:   "activity",
+		SchemaName:   "visit",
 		Page:         1,
 		ItemsPerPage: 10,
 		SortBy:       []string{"nonexistent"},
@@ -264,12 +264,12 @@ func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 	condition := &forma.CompositeCondition{
 		Logic: forma.LogicAnd,
 		Conditions: []forma.Condition{
-			&forma.KvCondition{Attr: "type", Value: "equals:call"},
+			&forma.KvCondition{Attr: "status", Value: "equals:scheduled"},
 		},
 	}
 
 	req := &forma.QueryRequest{
-		SchemaName:   "activity",
+		SchemaName:   "visit",
 		Page:         1,
 		ItemsPerPage: 5,
 		Condition:    condition,
@@ -297,7 +297,7 @@ func TestSchemaRegistry_LoadSchemas(t *testing.T) {
 	}
 
 	// Test schema retrieval by name
-	schemaID, cache, err := registry.GetSchemaByName("activity")
+	schemaID, cache, err := registry.GetSchemaByName("visit")
 	if err != nil {
 		t.Errorf("GetSchemaByName failed: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 	}
 
 	// First get a schema by name to obtain its ID
-	schemaID, _, err := registry.GetSchemaByName("activity")
+	schemaID, _, err := registry.GetSchemaByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema by name: %v", err)
 	}
@@ -350,8 +350,8 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 		t.Errorf("GetSchemaByID failed: %v", err)
 	}
 
-	if name != "activity" {
-		t.Errorf("Expected name 'activity', got '%s'", name)
+	if name != "visit" {
+		t.Errorf("Expected name 'visit', got '%s'", name)
 	}
 
 	if schema == nil {
@@ -486,34 +486,36 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Setup test data for multiple schemas
-	activitySchemaID, _, err := registry.GetSchemaByName("activity")
+	visitSchemaID, _, err := registry.GetSchemaByName("visit")
 	if err != nil {
-		t.Fatalf("failed to get activity schema metadata: %v", err)
+		t.Fatalf("failed to get visit schema metadata: %v", err)
 	}
 
 	rowID1 := uuid.New()
 	rowID2 := uuid.New()
 
-	mockRepo.storeRecord(buildPersistentRecord(t, transformer, activitySchemaID, rowID1, map[string]any{
-		"id":        "activity-1",
-		"type":      "visit",
-		"direction": "outbound",
-		"at":        "2024-01-01T00:00:00Z",
-		"userId":    "user-1",
-		"summary":   "Site visit in San Francisco",
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, visitSchemaID, rowID1, map[string]any{
+		"id":               "visit-1",
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-sf-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
+		"feedback":         "Site visit in San Francisco",
 	}))
-	mockRepo.storeRecord(buildPersistentRecord(t, transformer, activitySchemaID, rowID2, map[string]any{
-		"id":        "activity-2",
-		"type":      "call",
-		"direction": "inbound",
-		"at":        "2024-01-02T00:00:00Z",
-		"userId":    "user-2",
-		"summary":   "Phone call about San Francisco property",
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, visitSchemaID, rowID2, map[string]any{
+		"id":               "visit-2",
+		"leadId":           "lead-2",
+		"userId":           "user-2",
+		"propertyId":       "property-sf-2",
+		"scheduledStartAt": "2024-01-02T00:00:00Z",
+		"status":           "visited",
+		"feedback":         "Property viewing in San Francisco",
 	}))
 
 	// Execute
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"activity"},
+		SchemaNames:  []string{"visit"},
 		SearchTerm:   "San Francisco",
 		Page:         1,
 		ItemsPerPage: 10,
@@ -555,7 +557,7 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 
 	// Test with invalid schema name
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"activity", "nonexistent_schema"},
+		SchemaNames:  []string{"visit", "nonexistent_schema"},
 		SearchTerm:   "test",
 		Page:         1,
 		ItemsPerPage: 10,
@@ -613,7 +615,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 
 	// Test with empty search term
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"activity"},
+		SchemaNames:  []string{"visit"},
 		SearchTerm:   "",
 		Page:         1,
 		ItemsPerPage: 10,
@@ -647,7 +649,7 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 
 	// Test with page 0 (should default to 1)
 	req := &forma.CrossSchemaRequest{
-		SchemaNames:  []string{"activity"},
+		SchemaNames:  []string{"visit"},
 		SearchTerm:   "test",
 		Page:         0,
 		ItemsPerPage: 0,
@@ -677,7 +679,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 	}
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, cache, err := registry.GetSchemaByName("activity")
+	schemaID, cache, err := registry.GetSchemaByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
@@ -685,30 +687,30 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 	rowID := uuid.New()
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{
-		"id":        "activity-advanced",
-		"type":      "call",
-		"direction": "inbound",
-		"at":        "2024-01-01T00:00:00Z",
-		"userId":    "user-1",
-		"summary":   "Important call",
+		"id":               "visit-advanced",
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
 	}))
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	req := &forma.QueryRequest{
-		SchemaName: "activity",
+		SchemaName: "visit",
 		Condition: &forma.CompositeCondition{
 			Logic: forma.LogicAnd,
 			Conditions: []forma.Condition{
 				&forma.KvCondition{
-					Attr:  "type",
-					Value: "equals:call",
+					Attr:  "status",
+					Value: "equals:scheduled",
 				},
 			},
 		},
 		Page:         1,
 		ItemsPerPage: 10,
-		SortBy:       []string{"at"},
+		SortBy:       []string{"scheduledStartAt"},
 		SortOrder:    forma.SortOrderDesc,
 	}
 
@@ -737,9 +739,9 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastQuery.AttributeOrders))
 	}
 
-	atMeta, ok := cache["at"]
+	atMeta, ok := cache["scheduledStartAt"]
 	if !ok {
-		t.Fatalf("expected at metadata")
+		t.Fatalf("expected scheduledStartAt metadata")
 	}
 
 	attrOrder := mockRepo.lastQuery.AttributeOrders[0]
@@ -768,13 +770,13 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	req := &forma.QueryRequest{
-		SchemaName: "activity",
+		SchemaName: "visit",
 		Condition: &forma.CompositeCondition{
 			Logic: forma.LogicAnd,
 			Conditions: []forma.Condition{
 				&forma.KvCondition{
-					Attr:  "type",
-					Value: "equals:call",
+					Attr:  "status",
+					Value: "equals:scheduled",
 				},
 			},
 		},

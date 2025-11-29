@@ -1,0 +1,82 @@
+{
+  "actualEndAt": {
+    "attributeID": 1,
+    "valueType": "date"
+  },
+  "actualStartAt": {
+    "attributeID": 2,
+    "valueType": "date"
+  },
+  "attendees": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "createdAt": {
+    "attributeID": 4,
+    "valueType": "date"
+  },
+  "feedback": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "id": {
+    "attributeID": 6,
+    "valueType": "text"
+  },
+  "leadId": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "logs": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 9,
+    "valueType": "date"
+  },
+  "propertyId": {
+    "attributeID": 10,
+    "valueType": "text"
+  },
+  "propertySnapshot.address": {
+    "attributeID": 11,
+    "valueType": "text"
+  },
+  "propertySnapshot.code": {
+    "attributeID": 12,
+    "valueType": "text"
+  },
+  "propertySnapshot.price": {
+    "attributeID": 13,
+    "valueType": "numeric"
+  },
+  "propertySnapshot.rent": {
+    "attributeID": 14,
+    "valueType": "numeric"
+  },
+  "propertySnapshot.title": {
+    "attributeID": 15,
+    "valueType": "text"
+  },
+  "scheduledEndAt": {
+    "attributeID": 16,
+    "valueType": "date"
+  },
+  "scheduledStartAt": {
+    "attributeID": 17,
+    "valueType": "date"
+  },
+  "status": {
+    "attributeID": 18,
+    "valueType": "text"
+  },
+  "updatedAt": {
+    "attributeID": 19,
+    "valueType": "date"
+  },
+  "userId": {
+    "attributeID": 20,
+    "valueType": "text"
+  }
+}

@@ -190,7 +190,7 @@ func normalizeValue(meta AttributeBinding, opName, value string) (PredicateOp, P
 }
 
 func convertTextPattern(meta AttributeBinding, patternValue string, pattern PatternKind) (PredicateOp, PatternKind, any, error) {
-	if meta.ValueType != ValueTypeText {
+	if meta.ValueType != forma.ValueTypeText {
 		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator only supported for text attributes: %s", meta.AttributeName)
 	}
 	return PredicateOpLike, pattern, patternValue, nil
@@ -198,21 +198,21 @@ func convertTextPattern(meta AttributeBinding, patternValue string, pattern Patt
 
 func convertValue(meta AttributeBinding, op PredicateOp, raw string) (PredicateOp, PatternKind, any, error) {
 	switch meta.ValueType {
-	case ValueTypeText:
+	case forma.ValueTypeText:
 		return op, PatternKindNone, raw, nil
-	case ValueTypeNumeric:
+	case forma.ValueTypeNumeric, forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
 		value, err := parseNumeric(raw)
 		if err != nil {
 			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("invalid numeric value for '%s': %w", meta.AttributeName, err)
 		}
 		return op, PatternKindNone, value, nil
-	case ValueTypeDate:
+	case forma.ValueTypeDate:
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
 			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("invalid date value for '%s': %w", meta.AttributeName, err)
 		}
 		return op, PatternKindNone, parsed, nil
-	case ValueTypeBool:
+	case forma.ValueTypeBool:
 		if op != PredicateOpEquals && op != PredicateOpNotEquals {
 			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator '%s' is not supported for boolean attributes", op)
 		}

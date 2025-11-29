@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma"
 )
 
 func TestGeneratePlanBasic(t *testing.T) {
@@ -50,7 +52,7 @@ func TestGeneratePlanWithFilter(t *testing.T) {
 	pred := &Predicate{
 		AttributeName: "status",
 		AttributeID:   1,
-		ValueType:     ValueTypeText,
+		ValueType:     forma.ValueTypeText,
 		Operator:      PredicateOpEquals,
 		Value:         "hot",
 		Storage:       StorageTargetEAV,
@@ -77,7 +79,7 @@ func TestGeneratePlanWithFilter(t *testing.T) {
 			{
 				AttributeName: "status",
 				AttributeID:   1,
-				ValueType:     ValueTypeText,
+				ValueType:     forma.ValueTypeText,
 				Direction:     SortAsc,
 				Storage:       StorageTargetEAV,
 			},
@@ -109,7 +111,7 @@ func TestGeneratePlanWithCompositeFilter(t *testing.T) {
 	pred1 := &Predicate{
 		AttributeName: "status",
 		AttributeID:   1,
-		ValueType:     ValueTypeText,
+		ValueType:     forma.ValueTypeText,
 		Operator:      PredicateOpEquals,
 		Value:         "hot",
 		Storage:       StorageTargetEAV,
@@ -118,7 +120,7 @@ func TestGeneratePlanWithCompositeFilter(t *testing.T) {
 	pred2 := &Predicate{
 		AttributeName: "age",
 		AttributeID:   2,
-		ValueType:     ValueTypeNumeric,
+		ValueType:     forma.ValueTypeNumeric,
 		Operator:      PredicateOpGreaterThan,
 		Value:         25,
 		Storage:       StorageTargetEAV,
@@ -166,7 +168,7 @@ func TestGeneratePlan_MainTableFilter(t *testing.T) {
 	pred := &Predicate{
 		AttributeName: "score",
 		AttributeID:   10,
-		ValueType:     ValueTypeNumeric,
+		ValueType:     forma.ValueTypeNumeric,
 		Operator:      PredicateOpEquals,
 		Value:         100,
 		Storage:       StorageTargetMain,
@@ -211,7 +213,7 @@ func TestGeneratePlan_FallbackNumeric(t *testing.T) {
 	pred := &Predicate{
 		AttributeName: "amount",
 		AttributeID:   11,
-		ValueType:     ValueTypeNumeric,
+		ValueType:     forma.ValueTypeNumeric,
 		Operator:      PredicateOpEquals,
 		Value:         123.45,
 		Storage:       StorageTargetMain,
@@ -258,7 +260,7 @@ func TestGeneratePlan_SortEAV(t *testing.T) {
 			{
 				AttributeName: "custom_field",
 				AttributeID:   55,
-				ValueType:     ValueTypeText,
+				ValueType:     forma.ValueTypeText,
 				Direction:     SortDesc,
 				Storage:       StorageTargetEAV,
 			},

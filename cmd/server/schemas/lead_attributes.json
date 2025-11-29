@@ -1,402 +1,306 @@
 {
-  "id": {
+  "closedAt": {
     "attributeID": 1,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "ltbase_row_id"
-    }
+    "valueType": "date"
   },
-  "ownerUserId": {
+  "communications": {
     "attributeID": 2,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_01"
-    }
+    "valueType": "text"
   },
-  "pipeline": {
+  "contact.annualIncome": {
     "attributeID": 3,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_02"
-    }
+    "valueType": "numeric"
   },
-  "stage": {
+  "contact.annualIncomeCurrency": {
     "attributeID": 4,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_03"
-    }
+    "valueType": "text"
   },
-  "status": {
+  "contact.birthday": {
     "attributeID": 5,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_04"
-    }
+    "valueType": "date"
   },
-  "reason": {
+  "contact.company": {
     "attributeID": 6,
     "valueType": "text"
   },
-  "temperature": {
+  "contact.currentResidence": {
     "attributeID": 7,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_05"
-    }
+    "valueType": "text"
   },
-  "rating": {
+  "contact.email": {
     "attributeID": 8,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_10"
-    }
+    "valueType": "text"
   },
-  "score": {
+  "contact.employmentYear": {
     "attributeID": 9,
-    "valueType": "integer",
-    "column_binding": {
-      "col_name": "double_01"
-    }
+    "valueType": "numeric"
   },
-  "tags": {
+  "contact.familySize": {
     "attributeID": 10,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "source.channel": {
+  "contact.isBlacklisted": {
     "attributeID": 11,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_09"
-    }
+    "valueType": "bool"
   },
-  "source.name": {
+  "contact.lineId": {
     "attributeID": 12,
     "valueType": "text"
   },
-  "source.campaign": {
+  "contact.maritalStatus": {
     "attributeID": 13,
     "valueType": "text"
   },
-  "source.originalLeadId": {
+  "contact.memo": {
     "attributeID": 14,
     "valueType": "text"
   },
   "contact.name": {
     "attributeID": 15,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_06"
-    }
-  },
-  "contact.nameNative": {
-    "attributeID": 16,
     "valueType": "text"
   },
   "contact.nameKana": {
+    "attributeID": 16,
+    "valueType": "text"
+  },
+  "contact.nameNative": {
     "attributeID": 17,
     "valueType": "text"
   },
-  "contact.birthday": {
+  "contact.occupation": {
     "attributeID": 18,
-    "valueType": "date"
-  },
-  "contact.maritalStatus": {
-    "attributeID": 19,
-    "valueType": "text"
-  },
-  "contact.currentResidence": {
-    "attributeID": 20,
     "valueType": "text"
   },
   "contact.phones": {
-    "attributeID": 21,
-    "valueType": "text",
-    "insideArray": true
-  },
-  "contact.primaryPhone": {
-    "attributeID": 22,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_07"
-    }
-  },
-  "contact.email": {
-    "attributeID": 23,
-    "valueType": "text",
-    "column_binding": {
-      "col_name": "text_08"
-    }
-  },
-  "contact.lineId": {
-    "attributeID": 24,
-    "valueType": "text"
-  },
-  "contact.wechatId": {
-    "attributeID": 25,
-    "valueType": "text"
-  },
-  "contact.company": {
-    "attributeID": 26,
-    "valueType": "text"
-  },
-  "contact.occupation": {
-    "attributeID": 27,
-    "valueType": "text"
-  },
-  "contact.annualIncome": {
-    "attributeID": 28,
-    "valueType": "numeric",
-    "column_binding": {
-      "col_name": "double_04"
-    }
-  },
-  "contact.annualIncomeCurrency": {
-    "attributeID": 29,
-    "valueType": "text"
-  },
-  "contact.employmentYear": {
-    "attributeID": 30,
-    "valueType": "integer"
-  },
-  "contact.familySize": {
-    "attributeID": 31,
-    "valueType": "integer",
-    "column_binding": {
-      "col_name": "integer_02"
-    }
-  },
-  "contact.preferredLanguage": {
-    "attributeID": 32,
+    "attributeID": 19,
     "valueType": "text"
   },
   "contact.preferredChannel": {
-    "attributeID": 33,
+    "attributeID": 20,
     "valueType": "text"
   },
-  "contact.isBlacklisted": {
-    "attributeID": 34,
-    "valueType": "bool",
-    "column_binding": {
-      "col_name": "smallint_01",
-      "encoding": "bool_smallint"
-    }
+  "contact.preferredLanguage": {
+    "attributeID": 21,
+    "valueType": "text"
   },
-  "contact.memo": {
+  "contact.primaryPhone": {
+    "attributeID": 22,
+    "valueType": "text"
+  },
+  "contact.wechatId": {
+    "attributeID": 23,
+    "valueType": "text"
+  },
+  "createdAt": {
+    "attributeID": 24,
+    "valueType": "date"
+  },
+  "firstTouchAt": {
+    "attributeID": 25,
+    "valueType": "date"
+  },
+  "id": {
+    "attributeID": 26,
+    "valueType": "text"
+  },
+  "lastContactedAt": {
+    "attributeID": 27,
+    "valueType": "date"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 28,
+    "valueType": "date"
+  },
+  "ownerUserId": {
+    "attributeID": 29,
+    "valueType": "text"
+  },
+  "pipeline": {
+    "attributeID": 30,
+    "valueType": "text"
+  },
+  "propertyInterests.firstSeenAt": {
+    "attributeID": 31,
+    "valueType": "date"
+  },
+  "propertyInterests.isPrimary": {
+    "attributeID": 32,
+    "valueType": "bool"
+  },
+  "propertyInterests.lastActivityAt": {
+    "attributeID": 33,
+    "valueType": "date"
+  },
+  "propertyInterests.notes": {
+    "attributeID": 34,
+    "valueType": "text"
+  },
+  "propertyInterests.propertyId": {
     "attributeID": 35,
     "valueType": "text"
   },
-  "requirement.intentType": {
+  "propertyInterests.snapshot.address": {
     "attributeID": 36,
     "valueType": "text"
   },
-  "requirement.purpose": {
+  "propertyInterests.snapshot.code": {
     "attributeID": 37,
     "valueType": "text"
   },
-  "requirement.propertyType": {
+  "propertyInterests.snapshot.price": {
     "attributeID": 38,
-    "valueType": "text"
+    "valueType": "numeric"
   },
-  "requirement.propertyTypeDescription": {
+  "propertyInterests.snapshot.rent": {
     "attributeID": 39,
+    "valueType": "numeric"
+  },
+  "propertyInterests.snapshot.title": {
+    "attributeID": 40,
     "valueType": "text"
   },
-  "requirement.budget.min": {
-    "attributeID": 40,
-    "valueType": "numeric",
-    "column_binding": {
-      "col_name": "double_02"
-    }
-  },
-  "requirement.budget.max": {
+  "propertyInterests.status": {
     "attributeID": 41,
-    "valueType": "numeric",
-    "column_binding": {
-      "col_name": "double_03"
-    }
+    "valueType": "text"
   },
-  "requirement.budget.currency": {
+  "rating": {
     "attributeID": 42,
     "valueType": "text"
   },
-  "requirement.budget.display": {
+  "reason": {
     "attributeID": 43,
     "valueType": "text"
   },
-  "requirement.size.min": {
+  "requirement.areas.city": {
     "attributeID": 44,
-    "valueType": "numeric"
+    "valueType": "text"
   },
-  "requirement.size.max": {
+  "requirement.areas.note": {
     "attributeID": 45,
-    "valueType": "numeric"
+    "valueType": "text"
   },
-  "requirement.size.unit": {
+  "requirement.areas.prefecture": {
     "attributeID": 46,
     "valueType": "text"
   },
-  "requirement.targetMoveIn": {
+  "requirement.areas.ward": {
     "attributeID": 47,
-    "valueType": "date",
-    "column_binding": {
-      "col_name": "bigint_05",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
   },
-  "requirement.areas[].prefecture": {
+  "requirement.budget.currency": {
     "attributeID": 48,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "requirement.areas[].city": {
+  "requirement.budget.display": {
     "attributeID": 49,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "requirement.areas[].ward": {
+  "requirement.budget.max": {
     "attributeID": 50,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "requirement.areas[].note": {
+  "requirement.budget.min": {
     "attributeID": 51,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "requirement.stationWalkTimeMinutes": {
+  "requirement.freeText": {
     "attributeID": 52,
-    "valueType": "integer",
-    "column_binding": {
-      "col_name": "integer_01"
-    }
+    "valueType": "text"
   },
-  "requirement.unwantedConditions": {
+  "requirement.intentType": {
     "attributeID": 53,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
   "requirement.mustHave": {
     "attributeID": 54,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
   "requirement.niceToHave": {
     "attributeID": 55,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "requirement.freeText": {
+  "requirement.propertyType": {
     "attributeID": 56,
     "valueType": "text"
   },
-  "propertyInterests[].propertyId": {
+  "requirement.propertyTypeDescription": {
     "attributeID": 57,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "propertyInterests[].snapshot.code": {
+  "requirement.purpose": {
     "attributeID": 58,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "propertyInterests[].snapshot.title": {
+  "requirement.size.max": {
     "attributeID": 59,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "propertyInterests[].snapshot.address": {
+  "requirement.size.min": {
     "attributeID": 60,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "propertyInterests[].snapshot.price": {
+  "requirement.size.unit": {
     "attributeID": 61,
-    "valueType": "numeric",
-    "insideArray": true
+    "valueType": "text"
   },
-  "propertyInterests[].snapshot.rent": {
+  "requirement.stationWalkTimeMinutes": {
     "attributeID": 62,
-    "valueType": "numeric",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "propertyInterests[].status": {
+  "requirement.targetMoveIn": {
     "attributeID": 63,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "date"
   },
-  "propertyInterests[].isPrimary": {
+  "requirement.unwantedConditions": {
     "attributeID": 64,
-    "valueType": "bool",
-    "insideArray": true
+    "valueType": "text"
   },
-  "propertyInterests[].firstSeenAt": {
+  "score": {
     "attributeID": 65,
-    "valueType": "datetime",
-    "insideArray": true
+    "valueType": "numeric"
   },
-  "propertyInterests[].lastActivityAt": {
+  "source.campaign": {
     "attributeID": 66,
-    "valueType": "datetime",
-    "insideArray": true
+    "valueType": "text"
   },
-  "propertyInterests[].notes": {
+  "source.channel": {
     "attributeID": 67,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "activities": {
+  "source.name": {
     "attributeID": 68,
-    "valueType": "text",
-    "insideArray": true
+    "valueType": "text"
   },
-  "firstTouchAt": {
+  "source.originalLeadId": {
     "attributeID": 69,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "bigint_03",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
   },
-  "lastContactedAt": {
+  "stage": {
     "attributeID": 70,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "bigint_02",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
   },
-  "nextFollowUpAt": {
+  "status": {
     "attributeID": 71,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "bigint_01",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
   },
-  "closedAt": {
+  "tags": {
     "attributeID": 72,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "bigint_04",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
   },
-  "createdAt": {
+  "temperature": {
     "attributeID": 73,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "ltbase_created_at",
-      "encoding": "unix_ms"
-    }
+    "valueType": "text"
+  },
+  "tenantId": {
+    "attributeID": 74,
+    "valueType": "text"
   },
   "updatedAt": {
-    "attributeID": 74,
-    "valueType": "datetime",
-    "column_binding": {
-      "col_name": "ltbase_updated_at",
-      "encoding": "unix_ms"
-    }
+    "attributeID": 75,
+    "valueType": "date"
+  },
+  "visits": {
+    "attributeID": 76,
+    "valueType": "text"
   }
 }

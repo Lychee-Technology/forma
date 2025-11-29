@@ -1,0 +1,93 @@
+{
+    "id": {
+        "attributeID": 1,
+        "valueType": "smallint",
+        "column_binding": {
+            "col_name": "smallint_01"
+        }
+    },
+    "name": {
+        "attributeID": 2,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_03"
+        }
+    },
+    "price.value": {
+        "attributeID": 3,
+        "valueType": "numeric",
+        "column_binding": {
+            "col_name": "double_01"
+        }
+    },
+    "price.display": {
+        "attributeID": 4,
+        "valueType": "text"
+    },
+    "brand": {
+        "attributeID": 5,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_01"
+        }
+    },
+    "model": {
+        "attributeID": 6,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_02"
+        }
+    },
+    "reference": {
+        "attributeID": 7,
+        "valueType": "text"
+    },
+    "movement": {
+        "attributeID": 8,
+        "valueType": "text"
+    },
+    "material.case": {
+        "attributeID": 9,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_04"
+        }
+    },
+    "material.bracelet": {
+        "attributeID": 10,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_05"
+        }
+    },
+    "yearOfProduction.year": {
+        "attributeID": 11,
+        "valueType": "numeric",
+        "column_binding": {
+            "col_name": "smallint_02"
+        }
+    },
+    "yearOfProduction.approximate": {
+        "attributeID": 12,
+        "valueType": "bool"
+    },
+    "condition": {
+        "attributeID": 13,
+        "valueType": "text"
+    },
+    "gender": {
+        "attributeID": 14,
+        "valueType": "text",
+        "column_binding": {
+            "col_name": "text_06"
+        }
+    },
+    "size.width": {
+        "attributeID": 15,
+        "valueType": "numeric"
+    },
+    "size.height": {
+        "attributeID": 16,
+        "valueType": "numeric"
+    }
+}

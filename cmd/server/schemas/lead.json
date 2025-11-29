@@ -5,6 +5,7 @@
   "type": "object",
   "required": [
     "id",
+    "tenantId",
     "ownerUserId",
     "pipeline",
     "stage",
@@ -18,6 +19,10 @@
       "type": "string",
       "description": "Lead identifier",
       "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "tenantId": {
+      "type": "string",
+      "description": "Tenant/agency identifier"
     },
     "ownerUserId": {
       "type": "string",
@@ -464,12 +469,20 @@
         }
       }
     },
-    "activities": {
+    "communications": {
       "type": "array",
-      "description": "Activity timeline entries",
+      "description": "Communication timeline entry IDs (calls, emails, etc.)",
       "items": {
         "type": "string",
-        "description": "Activity ID"
+        "description": "Communication ID"
+      }
+    },
+    "visits": {
+      "type": "array",
+      "description": "Property visit IDs tied to this lead",
+      "items": {
+        "type": "string",
+        "description": "Visit ID"
       }
     },
     "firstTouchAt": {

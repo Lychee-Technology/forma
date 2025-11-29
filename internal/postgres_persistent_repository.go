@@ -1266,11 +1266,14 @@ func (r *PostgresPersistentRecordRepository) buildHybridConditions(
 					return "", nil, fmt.Errorf("schema metadata cache not available for schema_id %d", query.SchemaID)
 				}
 				gen := NewSQLGenerator()
-				pIdx := argCounter - 1
+				// SQLGenerator expects paramIndex to be the last used index, and will increment before using
+				// So we pass argCounter (which is already the last used index after main table conditions)
+				pIdx := argCounter
 				clause, args, err := gen.ToSqlClauses(cond, eavTable, query.SchemaID, cache, &pIdx)
 				if err != nil {
 					return "", nil, err
 				}
+				// pIdx now holds the last used index after SQLGenerator's operations
 				argCounter = pIdx
 
 				if useMainTableAsAnchor {

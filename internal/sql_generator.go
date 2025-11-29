@@ -164,8 +164,15 @@ func (g *SQLGenerator) buildKv(
 		parsedValue = valStr
 	case forma.ValueTypeNumeric:
 		valueColumn = "value_numeric"
-		parsedValue = tryParseNumber(valStr)
-		if _, ok := parsedValue.(string); ok {
+		parsed := tryParseNumber(valStr)
+		// Ensure the value is float64 to match the value_numeric column type
+		// This prevents PostgreSQL from failing to determine the parameter type
+		switch v := parsed.(type) {
+		case int64:
+			parsedValue = float64(v)
+		case float64:
+			parsedValue = v
+		default:
 			return "", nil, fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
