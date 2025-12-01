@@ -39,8 +39,8 @@ func (s *Server) Start(port string) error {
 
 func main() {
 	// Set schema directory
-	schemaDir := "schemas"
-
+	schemaDir := os.Getenv("SCHEMA_DIR")
+	log.Printf("schemaDir: %s", schemaDir)
 	// Create file-based schema registry
 	registry, err := NewFileSchemaRegistry(schemaDir)
 	if err != nil {
@@ -61,8 +61,8 @@ func main() {
 	config.Database.Password = getEnv("DB_PASSWORD", "")
 	config.Database.SSLMode = getEnv("DB_SSL_MODE", "disable")
 	config.Database.TableNames = forma.TableNames{
-		SchemaRegistry: "schema_registry",
-		EAVData:        "eav_dev",
+		SchemaRegistry: "schema_registry_dev",
+		EAVData:        "eav_data_dev",
 		EntityMain:     "entity_main_dev",
 	}
 

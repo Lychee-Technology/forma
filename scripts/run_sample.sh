@@ -48,13 +48,13 @@ cd "$PROJECT_DIR"
 # 1. Set environment variables
 # ============================================================================
 print_info "Setting environment variables..."
-export DB_HOST="localhost"
-export DB_PORT="5432"
-export DB_NAME="forma"
-export DB_USER="postgres"
-export DB_PASSWORD="postgres"
-export DB_SSL_MODE="disable"
-export SCHEMA_DIR="$PROJECT_DIR/cmd/sample/schemas"
+DB_HOST="localhost"
+DB_PORT="5432"
+DB_NAME="forma"
+DB_USER="postgres"
+DB_PASSWORD="postgres"
+DB_SSL_MODE="disable"
+SCHEMA_DIR="$PROJECT_DIR/cmd/sample/schemas"
 print_success "Environment variables configured"
 
 make build-all
@@ -63,9 +63,9 @@ make build-all
 # 2. Start PostgreSQL via Docker Compose
 # ============================================================================
 pushd deploy
-docker compose -f docker-compose.yml down --remove-orphans || true
+docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" down --remove-orphans || true
 print_info "Starting PostgreSQL container..."
-docker compose -f docker-compose.yml up -d
+docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" up -d
 
 # Wait for PostgreSQL to be ready
 print_info "Waiting for PostgreSQL to be ready..."
@@ -79,7 +79,7 @@ while [ $attempt -lt $max_attempts ]; do
     attempt=$((attempt + 1))
     if [ $attempt -eq $max_attempts ]; then
         print_error "PostgreSQL failed to start after $max_attempts attempts"
-        docker compose -f docker-compose.yml logs
+        docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" logs
         exit 1
     fi
     sleep 1
@@ -103,8 +103,17 @@ print_success "Database initialized with sample schemas"
 # ============================================================================
 # 3. Run the sample application
 # ============================================================================
+# Cleanup function to stop containers on exit
+cleanup() {
+    print_warning "Shutting down..."
+    print_info "Stopping PostgreSQL container..."
+    docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" down --remove-orphans 2>/dev/null || true
+    exit 0
+}
+
+# Set up trap to catch SIGINT and SIGTERM
+trap cleanup SIGINT SIGTERM
+
 print_info "Running sample ..."
 
 "$PROJECT_DIR/build/sample" -csv "$PROJECT_DIR/cmd/sample/testdata/watches-sample.csv" -db "postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME" -schema-dir "$SCHEMA_DIR"
-
- docker compose -f docker-compose.yml down --remove-orphans || true

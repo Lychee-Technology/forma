@@ -12,6 +12,7 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+SCHEMA_DIR="$PROJECT_DIR/build/schemas"
 
 # Function to print colored output
 print_info() {
@@ -34,7 +35,7 @@ print_warning() {
 cleanup() {
     print_warning "Shutting down..."
     print_info "Stopping PostgreSQL container..."
-    cd "$PROJECT_DIR" && docker compose -f deploy/docker-compose.yml down --remove-orphans 2>/dev/null || true
+    docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" down --remove-orphans 2>/dev/null || true  
     exit 0
 }
 
@@ -60,13 +61,20 @@ print_success "Environment variables configured"
 # ============================================================================
 # 2. Start PostgreSQL via Docker Compose
 # ============================================================================
-pushd deploy
-docker compose -f docker-compose.yml down --remove-orphans || true
+docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" down --remove-orphans || true
 print_info "Starting PostgreSQL container..."
-docker compose -f docker-compose.yml up -d
-popd
+docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" up -d
 
-# Wait for PostgreSQL to be ready
+# ============================================================================
+# 3. Build all components
+# ============================================================================
+# Compile Go code
+print_info "Compiling Go code..."
+make build-all
+
+# ===========================================================================
+# 4. Wait for PostgreSQL to be ready
+# ===========================================================================
 print_info "Waiting for PostgreSQL to be ready..."
 max_attempts=30
 attempt=0
@@ -78,43 +86,42 @@ while [ $attempt -lt $max_attempts ]; do
     attempt=$((attempt + 1))
     if [ $attempt -eq $max_attempts ]; then
         print_error "PostgreSQL failed to start after $max_attempts attempts"
-        docker compose -f deploy/docker-compose.yml logs
+        docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml"  logs
         exit 1
     fi
     sleep 1
 done
 
 # ============================================================================
-# 3. Detect OS and architecture, then compile Go code
+# 5. Copy JSON schema files to build directory
 # ============================================================================
-print_info "Detecting OS and architecture..."
-GOOS=$(go env GOOS)
-GOARCH=$(go env GOARCH)
-print_info "Building for: $GOOS/$GOARCH"
-
 # Create build directory
-mkdir -p build/schemas
-
-# Compile Go code
-print_info "Compiling Go code..."
-GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o build/server ./cmd/server
-print_success "Go code compiled successfully: build/server"
-
-# ============================================================================
-# 4. Copy JSON schema files to build directory
-# ============================================================================
+mkdir -p "$PROJECT_DIR/build/schemas"
 print_info "Copying JSON schema files..."
-cp cmd/server/schemas/*.json build/schemas/ 2>/dev/null || true
+cp "$PROJECT_DIR/cmd/server/schemas/*.json" "$SCHEMA_DIR/" 2>/dev/null || true
 print_success "Schema files copied to build/schemas/"
 
 # ============================================================================
-# 5. Start server process
+# 6. Initialize database
+# ============================================================================
+./build/tools init-db \
+  --db-host "$DB_HOST" \
+  --db-port "$DB_PORT" \
+  --db-name "$DB_NAME" \
+  --db-user "$DB_USER" \
+  --db-password "$DB_PASSWORD" \
+  --db-ssl-mode "$DB_SSL_MODE" \
+  --schema-table "schema_registry_dev" \
+  --eav-table "eav_data_dev" \
+  --entity-main-table "entity_main_dev" \
+  --schema-dir "$SCHEMA_DIR"
+
+# ============================================================================
+# 7. Start server process
 # ============================================================================
 print_success "All preparations complete!"
 print_info "Starting server on port $PORT..."
 print_info "Database: $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME"
 echo ""
 
-pushd "$PROJECT_DIR/build"
-./server
-popd
+SCHEMA_DIR="$SCHEMA_DIR" "$PROJECT_DIR/build/server"
