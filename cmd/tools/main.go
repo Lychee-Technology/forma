@@ -465,7 +465,7 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 	quotedTable := quoteIdentifier(schemaTable)
 	for idx, file := range schemaFiles {
 		schemaName := strings.TrimSuffix(file, ".json")
-		schemaID := int16(idx + 1)
+		schemaID := int16(idx + 100) // Start IDs from 100
 
 		insertSQL := fmt.Sprintf(
 			`INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING`,

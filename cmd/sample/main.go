@@ -109,6 +109,14 @@ func main() {
 
 	config.Entity.SchemaDirectory = *schemaDir
 
+	// Clear sample tables before import
+	logger.Printf("Clearing sample tables...")
+	_, err = pool.Exec(ctx, "TRUNCATE TABLE eav_data_sample, entity_main_sample CASCADE")
+	if err != nil {
+		logger.Fatalf("Failed to clear sample tables: %v", err)
+	}
+	logger.Printf("Sample tables cleared successfully")
+
 	// Create entity manager
 	logger.Printf("Initializing entity manager...")
 	entityManager, err := factory.NewEntityManagerWithConfig(config, pool)
