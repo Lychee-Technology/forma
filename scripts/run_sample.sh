@@ -41,9 +41,6 @@ cleanup() {
 # Set up trap to catch SIGINT and SIGTERM
 trap cleanup SIGINT SIGTERM
 
-# Change to project directory
-cd "$PROJECT_DIR"
-
 # ============================================================================
 # 1. Set environment variables
 # ============================================================================
@@ -57,15 +54,21 @@ DB_SSL_MODE="disable"
 SCHEMA_DIR="$PROJECT_DIR/cmd/sample/schemas"
 print_success "Environment variables configured"
 
-make build-all
 
 # ============================================================================
 # 2. Start PostgreSQL via Docker Compose
 # ============================================================================
-pushd deploy
 docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" down --remove-orphans || true
 print_info "Starting PostgreSQL container..."
 docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" up -d
+
+# compile all components
+
+print_info "Building all components..."
+pushd "$PROJECT_DIR"
+make clean
+make build-all
+popd
 
 # Wait for PostgreSQL to be ready
 print_info "Waiting for PostgreSQL to be ready..."
@@ -84,7 +87,6 @@ while [ $attempt -lt $max_attempts ]; do
     fi
     sleep 1
 done
-popd
 
 ./build/tools init-db \
   --db-host "$DB_HOST" \

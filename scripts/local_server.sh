@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SCHEMA_DIR="$PROJECT_DIR/build/schemas"
+SCHEMA_DIR="$PROJECT_DIR/cmd/server/schemas"
 
 # Function to print colored output
 print_info() {
@@ -42,9 +42,6 @@ cleanup() {
 # Set up trap to catch SIGINT and SIGTERM
 trap cleanup SIGINT SIGTERM
 
-# Change to project directory
-cd "$PROJECT_DIR"
-
 # ============================================================================
 # 1. Set environment variables
 # ============================================================================
@@ -70,7 +67,11 @@ docker compose -f "$PROJECT_DIR/deploy/docker-compose.yml" up -d
 # ============================================================================
 # Compile Go code
 print_info "Compiling Go code..."
+
+pushd "$PROJECT_DIR"
+make clean
 make build-all
+popd
 
 # ===========================================================================
 # 4. Wait for PostgreSQL to be ready
@@ -93,16 +94,7 @@ while [ $attempt -lt $max_attempts ]; do
 done
 
 # ============================================================================
-# 5. Copy JSON schema files to build directory
-# ============================================================================
-# Create build directory
-mkdir -p "$PROJECT_DIR/build/schemas"
-print_info "Copying JSON schema files..."
-cp "$PROJECT_DIR/cmd/server/schemas/"*.json "$SCHEMA_DIR/" 2>/dev/null || true
-print_success "Schema files copied to build/schemas/"
-
-# ============================================================================
-# 6. Initialize database
+# 5. Initialize database
 # ============================================================================
 ./build/tools init-db \
   --db-host "$DB_HOST" \
