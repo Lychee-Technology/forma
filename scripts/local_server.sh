@@ -98,7 +98,7 @@ done
 # Create build directory
 mkdir -p "$PROJECT_DIR/build/schemas"
 print_info "Copying JSON schema files..."
-cp "$PROJECT_DIR/cmd/server/schemas/*.json" "$SCHEMA_DIR/" 2>/dev/null || true
+cp "$PROJECT_DIR/cmd/server/schemas/"*.json "$SCHEMA_DIR/" 2>/dev/null || true
 print_success "Schema files copied to build/schemas/"
 
 # ============================================================================
