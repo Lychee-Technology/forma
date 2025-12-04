@@ -75,7 +75,7 @@ eav_aggregated AS (
                 'value_text', e.value_text,
                 'value_numeric', e.value_numeric,
             ) ORDER BY e.attr_id, e.array_indices
-        ) AS attributes_json
+        )::TEXT AS attributes_json
     FROM ordered o
     INNER JOIN eav_table e 
         ON e.schema_id = $1 AND e.row_id = o.row_id
@@ -84,7 +84,7 @@ eav_aggregated AS (
 -- 最终关联 main_data 和 eav_aggregated
 SELECT 
     m.*,
-    COALESCE(e.attributes_json, '[]'::json) AS attributes_json,
+    COALESCE(e.attributes_json, '[]') AS attributes_json,
     m.total AS total_records,
     ...
 FROM main_data m

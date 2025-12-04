@@ -97,7 +97,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
                         'value_text', e.value_text,
                         'value_numeric', e.value_numeric
                     ) ORDER BY e.attr_id, e.array_indices
-                ) AS attributes_json
+                )::TEXT AS attributes_json
             FROM ordered o
             INNER JOIN {{.EAVTable}} e 
                 ON e.schema_id = {{.SchemaID}} 
@@ -111,7 +111,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
             m.ltbase_updated_at,
             m.ltbase_deleted_at,
             {{.MainProjection}},
-            COALESCE(e.attributes_json, '[]'::json) AS attributes_json,
+            COALESCE(e.attributes_json, '[]') AS attributes_json,
             m.total AS total_records,
             CEIL(m.total::numeric / NULLIF({{.PageSize}}::numeric, 0)) AS total_pages,
             (FLOOR({{.Offset}}::numeric / NULLIF({{.Limit}}::numeric, 0)) + 1)::int AS current_page
