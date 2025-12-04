@@ -453,29 +453,36 @@ func setValueAtPath(target map[string]any, segments []string, indices []int, val
 		return nil
 	}
 
-	// Object array: e.g., jobs[0].title = "value"
-	// Navigate to the array container (all segments except last)
-	current := target
+	// Decide whether to keep the parent as an object (array of primitives under a field)
+	// or to build an array of objects.
+	containerParent := target
 	for i := 0; i < len(segments)-2; i++ {
 		segment := segments[i]
-		next, ok := current[segment].(map[string]any)
+		next, ok := containerParent[segment].(map[string]any)
 		if !ok || next == nil {
 			next = make(map[string]any)
-			current[segment] = next
+			containerParent[segment] = next
 		}
-		current = next
+		containerParent = next
 	}
 
-	// The second-to-last segment is the array
 	arraySegment := segments[len(segments)-2]
 	lastSegment := segments[len(segments)-1]
 
-	// Get or create array
-	arr := ensureArray(current, arraySegment)
+	if existingMap, ok := containerParent[arraySegment].(map[string]any); ok && existingMap != nil {
+		// Parent already a map (e.g., contact) – attach the array to the field instead of
+		// turning the parent into an array of objects.
+		arr := ensureArray(existingMap, lastSegment)
+		arr = setArrayValueRecursive(arr, indices, value)
+		existingMap[lastSegment] = arr
+		containerParent[arraySegment] = existingMap
+		return nil
+	}
 
-	// Set value in object within array
+	// Default: array of objects
+	arr := ensureArray(containerParent, arraySegment)
 	arr = setObjectArrayValue(arr, indices, lastSegment, value)
-	current[arraySegment] = arr
+	containerParent[arraySegment] = arr
 
 	return nil
 }

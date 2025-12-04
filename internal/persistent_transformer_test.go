@@ -290,3 +290,38 @@ func TestPersistentRecordTransformer_NilInputs(t *testing.T) {
 	_, err = transformer.FromPersistentRecord(ctx, nil)
 	require.Error(t, err)
 }
+
+func TestPersistentRecordTransformer_InjectsBaseTimestamps(t *testing.T) {
+	ctx := context.Background()
+	schemaID := int16(301)
+	registry := &stubSchemaRegistry{
+		schemaID:   schemaID,
+		schemaName: "ts_schema",
+		cache: forma.SchemaAttributeCache{
+			"createdAt": {AttributeID: 1, ValueType: forma.ValueTypeDate},
+			"updatedAt": {AttributeID: 2, ValueType: forma.ValueTypeDate},
+		},
+	}
+
+	transformer := NewPersistentRecordTransformer(registry)
+
+	created := time.Date(2024, time.January, 2, 15, 4, 5, 0, time.UTC).UnixMilli()
+	updated := created + int64(time.Minute/time.Millisecond)
+	record := &PersistentRecord{
+		SchemaID:  schemaID,
+		RowID:     uuid.Must(uuid.NewV7()),
+		CreatedAt: created,
+		UpdatedAt: updated,
+	}
+
+	attrs, err := transformer.FromPersistentRecord(ctx, record)
+	require.NoError(t, err)
+
+	createdAt, ok := attrs["createdAt"].(time.Time)
+	require.True(t, ok)
+	assert.Equal(t, created, createdAt.UnixMilli())
+
+	updatedAt, ok := attrs["updatedAt"].(time.Time)
+	require.True(t, ok)
+	assert.Equal(t, updated, updatedAt.UnixMilli())
+}

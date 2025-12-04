@@ -126,6 +126,44 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	// Add EAV attributes
 	attributes = append(attributes, record.OtherAttributes...)
 
+	// Ensure base timestamps are exposed even when not stored as attributes.
+	// Some schemas (lead, communication, visit) define createdAt/updatedAt attributes
+	// but we only persist the timestamps in ltbase_* columns. Inject them here
+	// if they aren't already present to keep GET responses complete.
+	existing := make(map[string]struct{}, len(attributes))
+	for _, attr := range attributes {
+		key := fmt.Sprintf("%d|%s", attr.AttrID, attr.ArrayIndices)
+		existing[key] = struct{}{}
+	}
+
+	addTimestampAttribute := func(attrName string, ts int64) {
+		if ts == 0 {
+			return
+		}
+		meta, ok := cache[attrName]
+		if !ok {
+			return
+		}
+		key := fmt.Sprintf("%d|", meta.AttributeID)
+		if _, found := existing[key]; found {
+			return
+		}
+		val := float64(ts)
+		attributes = append(attributes, EAVRecord{
+			SchemaID:     record.SchemaID,
+			RowID:        record.RowID,
+			AttrID:       meta.AttributeID,
+			ArrayIndices: "",
+			ValueNumeric: &val,
+		})
+	}
+
+	addTimestampAttribute("createdAt", record.CreatedAt)
+	addTimestampAttribute("updatedAt", record.UpdatedAt)
+	if record.DeletedAt != nil {
+		addTimestampAttribute("deletedAt", *record.DeletedAt)
+	}
+
 	// Convert EAVRecords to EntityAttributes
 	converter := NewAttributeConverter(t.registry)
 	entityAttributes, err := converter.FromEAVRecords(attributes)

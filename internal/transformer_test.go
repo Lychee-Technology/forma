@@ -249,6 +249,85 @@ func TestTransformer_ValidateAgainstSchema(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestTransformer_ArrayInsideObjectDoesNotClobberObject(t *testing.T) {
+	ctx := context.Background()
+	registry := &stubSchemaRegistry{
+		schemaID:   300,
+		schemaName: "contact_schema",
+		cache: forma.SchemaAttributeCache{
+			"contact.name":   {AttributeID: 1, ValueType: forma.ValueTypeText},
+			"contact.phones": {AttributeID: 2, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	transformer := NewTransformer(registry)
+	schemaID, _, err := registry.GetSchemaByName("contact_schema")
+	require.NoError(t, err)
+
+	rowID := uuid.Must(uuid.NewV7())
+	data := map[string]any{
+		"contact": map[string]any{
+			"name":   "Alice",
+			"phones": []any{"111", "222"},
+		},
+	}
+
+	attrs, err := transformer.ToAttributes(ctx, schemaID, rowID, data)
+	require.NoError(t, err)
+
+	back, err := transformer.FromAttributes(ctx, attrs)
+	require.NoError(t, err)
+
+	contact, ok := back["contact"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Alice", contact["name"])
+	assert.Equal(t, []any{"111", "222"}, contact["phones"])
+}
+
+func TestTransformer_ArrayOfObjectsStillMergesProperties(t *testing.T) {
+	ctx := context.Background()
+	registry := &stubSchemaRegistry{
+		schemaID:   301,
+		schemaName: "items_schema",
+		cache: forma.SchemaAttributeCache{
+			"items.title":  {AttributeID: 1, ValueType: forma.ValueTypeText},
+			"items.active": {AttributeID: 2, ValueType: forma.ValueTypeBool},
+		},
+	}
+
+	transformer := NewTransformer(registry)
+	schemaID, _, err := registry.GetSchemaByName("items_schema")
+	require.NoError(t, err)
+
+	rowID := uuid.Must(uuid.NewV7())
+	data := map[string]any{
+		"items": []any{
+			map[string]any{"title": "First", "active": true},
+			map[string]any{"title": "Second", "active": false},
+		},
+	}
+
+	attrs, err := transformer.ToAttributes(ctx, schemaID, rowID, data)
+	require.NoError(t, err)
+
+	back, err := transformer.FromAttributes(ctx, attrs)
+	require.NoError(t, err)
+
+	items, ok := back["items"].([]any)
+	require.True(t, ok)
+	require.Len(t, items, 2)
+
+	first, ok := items[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "First", first["title"])
+	assert.Equal(t, true, first["active"])
+
+	second, ok := items[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Second", second["title"])
+	assert.Equal(t, false, second["active"])
+}
+
 func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
 	result := make(map[string]*EAVRecord)
 	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)
