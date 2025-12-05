@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FieldMapper defines the interface for transforming a CSV field value to a Schema field value.
@@ -116,7 +117,7 @@ func (m *schemaMapper) Mappings() []FieldMapping {
 
 func (m *schemaMapper) MapRecord(csvRecord map[string]string) (map[string]any, error) {
 	result := make(map[string]any)
-
+	result["createdAt"] = time.Now()
 	for _, mapping := range m.mappings {
 		csvValue, exists := csvRecord[mapping.CSVColumn]
 
