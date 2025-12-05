@@ -99,6 +99,11 @@
       "type": "string",
       "description": "Target gender (e.g., Men's watch/Unisex, Women's watch)"
     },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the watch entry was created"
+    },
     "size": {
       "type": "object",
       "description": "Watch size dimensions",

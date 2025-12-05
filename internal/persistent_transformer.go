@@ -126,44 +126,6 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	// Add EAV attributes
 	attributes = append(attributes, record.OtherAttributes...)
 
-	// Ensure base timestamps are exposed even when not stored as attributes.
-	// Some schemas (lead, communication, visit) define createdAt/updatedAt attributes
-	// but we only persist the timestamps in ltbase_* columns. Inject them here
-	// if they aren't already present to keep GET responses complete.
-	existing := make(map[string]struct{}, len(attributes))
-	for _, attr := range attributes {
-		key := fmt.Sprintf("%d|%s", attr.AttrID, attr.ArrayIndices)
-		existing[key] = struct{}{}
-	}
-
-	addTimestampAttribute := func(attrName string, ts int64) {
-		if ts == 0 {
-			return
-		}
-		meta, ok := cache[attrName]
-		if !ok {
-			return
-		}
-		key := fmt.Sprintf("%d|", meta.AttributeID)
-		if _, found := existing[key]; found {
-			return
-		}
-		val := float64(ts)
-		attributes = append(attributes, EAVRecord{
-			SchemaID:     record.SchemaID,
-			RowID:        record.RowID,
-			AttrID:       meta.AttributeID,
-			ArrayIndices: "",
-			ValueNumeric: &val,
-		})
-	}
-
-	addTimestampAttribute("createdAt", record.CreatedAt)
-	addTimestampAttribute("updatedAt", record.UpdatedAt)
-	if record.DeletedAt != nil {
-		addTimestampAttribute("deletedAt", *record.DeletedAt)
-	}
-
 	// Convert EAVRecords to EntityAttributes
 	converter := NewAttributeConverter(t.registry)
 	entityAttributes, err := converter.FromEAVRecords(attributes)
@@ -254,7 +216,81 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 	return nil
 }
 
+// readFromMainColumn reads an attribute value from the main table columns.
+// It delegates to specialized functions based on column type.
 func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, attrName string, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, error) {
+	// First, check if this is a system column (RowID, SchemaID, timestamps)
+	if attr := t.readFromSystemColumn(record, meta, binding); attr != nil {
+		return attr, nil
+	}
+
+	// Then, try reading with special encoding
+	attr, hasValue, err := t.readWithEncoding(record, meta, binding)
+	if err != nil {
+		return nil, err
+	}
+	if hasValue {
+		return attr, nil
+	}
+
+	// Finally, try reading with default encoding
+	attr, hasValue, err = t.readWithDefaultEncoding(record, meta, binding)
+	if err != nil {
+		return nil, err
+	}
+	if hasValue {
+		return attr, nil
+	}
+
+	return nil, nil
+}
+
+// readFromSystemColumn handles reading from system columns (RowID, SchemaID, timestamps).
+// Returns nil if the column is not a system column.
+func (t *persistentRecordTransformer) readFromSystemColumn(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) *EAVRecord {
+	baseAttr := EAVRecord{
+		SchemaID:     record.SchemaID,
+		RowID:        record.RowID,
+		AttrID:       meta.AttributeID,
+		ArrayIndices: "",
+	}
+
+	switch binding.ColumnName {
+	case forma.MainColumnRowID:
+		rowIDStr := record.RowID.String()
+		baseAttr.ValueText = &rowIDStr
+		return &baseAttr
+
+	case forma.MainColumnSchemaID:
+		schemaIDFloat := float64(record.SchemaID)
+		baseAttr.ValueNumeric = &schemaIDFloat
+		return &baseAttr
+
+	case forma.MainColumnCreatedAt:
+		createdAtFloat := float64(record.CreatedAt)
+		baseAttr.ValueNumeric = &createdAtFloat
+		return &baseAttr
+
+	case forma.MainColumnUpdatedAt:
+		updatedAtFloat := float64(record.UpdatedAt)
+		baseAttr.ValueNumeric = &updatedAtFloat
+		return &baseAttr
+
+	case forma.MainColumnDeletedAt:
+		if record.DeletedAt == nil {
+			return nil
+		}
+		deletedAtFloat := float64(*record.DeletedAt)
+		baseAttr.ValueNumeric = &deletedAtFloat
+		return &baseAttr
+	}
+
+	return nil
+}
+
+// readWithEncoding handles reading values with special encodings (UnixMs, BoolInt, BoolText, ISO8601).
+// Returns (attr, hasValue, error).
+func (t *persistentRecordTransformer) readWithEncoding(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, bool, error) {
 	columnName := string(binding.ColumnName)
 
 	attr := &EAVRecord{
@@ -264,15 +300,13 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 		ArrayIndices: "",
 	}
 
-	var hasValue bool
-
 	switch binding.Encoding {
 	case forma.MainColumnEncodingUnixMs:
 		// Read Unix milliseconds from bigint column and convert to time
 		if val, ok := record.Int64Items[columnName]; ok {
-			t := float64(val)
-			attr.ValueNumeric = &t
-			hasValue = true
+			f := float64(val)
+			attr.ValueNumeric = &f
+			return attr, true, nil
 		}
 
 	case forma.MainColumnEncodingBoolInt:
@@ -280,7 +314,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 		if val, ok := record.Int16Items[columnName]; ok {
 			f := float64(val)
 			attr.ValueNumeric = &f
-			hasValue = true
+			return attr, true, nil
 		}
 
 	case forma.MainColumnEncodingBoolText:
@@ -293,7 +327,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 				b := 0.0
 				attr.ValueNumeric = &b
 			}
-			hasValue = true
+			return attr, true, nil
 		}
 
 	case forma.MainColumnEncodingISO8601:
@@ -301,59 +335,66 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 		if val, ok := record.TextItems[columnName]; ok {
 			parsedTime, err := time.Parse(time.RFC3339, val)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
+				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
 			}
 			unixMillis := float64(parsedTime.UnixMilli())
 			attr.ValueNumeric = &unixMillis
-			hasValue = true
+			return attr, true, nil
+		}
+	}
+
+	return nil, false, nil
+}
+
+// readWithDefaultEncoding handles reading values with default encoding based on column type.
+// Returns (attr, hasValue, error).
+func (t *persistentRecordTransformer) readWithDefaultEncoding(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, bool, error) {
+	columnName := string(binding.ColumnName)
+
+	attr := &EAVRecord{
+		SchemaID:     record.SchemaID,
+		RowID:        record.RowID,
+		AttrID:       meta.AttributeID,
+		ArrayIndices: "",
+	}
+
+	switch binding.ColumnType() {
+	case forma.MainColumnTypeText:
+		if val, ok := record.TextItems[columnName]; ok {
+			attr.ValueText = &val
+			return attr, true, nil
 		}
 
-	case forma.MainColumnEncodingDefault:
-		fallthrough
+	case forma.MainColumnTypeSmallint:
+		if val, ok := record.Int16Items[columnName]; ok {
+			f := float64(val)
+			attr.ValueNumeric = &f
+			return attr, true, nil
+		}
+
+	case forma.MainColumnTypeInteger:
+		if val, ok := record.Int32Items[columnName]; ok {
+			f := float64(val)
+			attr.ValueNumeric = &f
+			return attr, true, nil
+		}
+
+	case forma.MainColumnTypeBigint:
+		if val, ok := record.Int64Items[columnName]; ok {
+			f := float64(val)
+			attr.ValueNumeric = &f
+			return attr, true, nil
+		}
+
+	case forma.MainColumnTypeDouble:
+		if val, ok := record.Float64Items[columnName]; ok {
+			attr.ValueNumeric = &val
+			return attr, true, nil
+		}
+
 	default:
-		// Default encoding based on column type and value type
-		switch binding.ColumnType() {
-		case forma.MainColumnTypeText:
-			if val, ok := record.TextItems[columnName]; ok {
-				attr.ValueText = &val
-				hasValue = true
-			}
-
-		case forma.MainColumnTypeSmallint:
-			if val, ok := record.Int16Items[columnName]; ok {
-				f := float64(val)
-				attr.ValueNumeric = &f
-				hasValue = true
-			}
-
-		case forma.MainColumnTypeInteger:
-			if val, ok := record.Int32Items[columnName]; ok {
-				f := float64(val)
-				attr.ValueNumeric = &f
-				hasValue = true
-			}
-
-		case forma.MainColumnTypeBigint:
-			if val, ok := record.Int64Items[columnName]; ok {
-				f := float64(val)
-				attr.ValueNumeric = &f
-				hasValue = true
-			}
-
-		case forma.MainColumnTypeDouble:
-			if val, ok := record.Float64Items[columnName]; ok {
-				attr.ValueNumeric = &val
-				hasValue = true
-			}
-
-		default:
-			return nil, fmt.Errorf("unsupported column type: %s", binding.ColumnType())
-		}
+		return nil, false, fmt.Errorf("unsupported column type: %s", binding.ColumnType())
 	}
 
-	if !hasValue {
-		return nil, nil
-	}
-
-	return attr, nil
+	return nil, false, nil
 }

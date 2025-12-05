@@ -5,7 +5,11 @@
   },
   "createdAt": {
     "attributeID": 2,
-    "valueType": "date"
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_created_at",
+      "encoding": "unix_ms"
+    }
   },
   "direction": {
     "attributeID": 3,
@@ -37,7 +41,11 @@
   },
   "updatedAt": {
     "attributeID": 10,
-    "valueType": "date"
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_updated_at",
+      "encoding": "unix_ms"
+    }
   },
   "userId": {
     "attributeID": 11,

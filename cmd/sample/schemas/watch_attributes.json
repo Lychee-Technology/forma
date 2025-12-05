@@ -89,5 +89,13 @@
     "size.height": {
         "attributeID": 16,
         "valueType": "numeric"
-    }
+    },
+    "createdAt": {
+        "attributeID": 17,
+        "valueType": "date",
+        "column_binding": {
+            "col_name": "ltbase_created_at",
+            "encoding": "unix_ms"
+        }
+    }   
 }

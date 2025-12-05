@@ -50,6 +50,11 @@ const (
 	MainColumnDouble05   MainColumn = "double_05"
 	MainColumnUUID01     MainColumn = "uuid_01"
 	MainColumnUUID02     MainColumn = "uuid_02"
+	MainColumnCreatedAt  MainColumn = "ltbase_created_at"
+	MainColumnUpdatedAt  MainColumn = "ltbase_updated_at"
+	MainColumnDeletedAt  MainColumn = "ltbase_deleted_at"
+	MainColumnSchemaID   MainColumn = "ltbase_schema_id"
+	MainColumnRowID      MainColumn = "ltbase_row_id"
 )
 
 // MainColumnType represents the data type of a main column.
@@ -96,6 +101,12 @@ func (m *MainColumnBinding) ColumnType() MainColumnType {
 	case strings.HasPrefix(name, "double"):
 		return MainColumnTypeDouble
 	case strings.HasPrefix(name, "uuid"):
+		return MainColumnTypeUUID
+	case (m.ColumnName == MainColumnCreatedAt || m.ColumnName == MainColumnUpdatedAt || m.ColumnName == MainColumnDeletedAt):
+		return MainColumnTypeBigint
+	case m.ColumnName == MainColumnSchemaID:
+		return MainColumnTypeSmallint
+	case m.ColumnName == MainColumnRowID:
 		return MainColumnTypeUUID
 	default:
 		return MainColumnTypeText

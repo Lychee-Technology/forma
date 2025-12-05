@@ -13,7 +13,11 @@
   },
   "createdAt": {
     "attributeID": 4,
-    "valueType": "date"
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_created_at",
+      "encoding": "unix_ms"
+    }
   },
   "feedback": {
     "attributeID": 5,
@@ -73,7 +77,11 @@
   },
   "updatedAt": {
     "attributeID": 19,
-    "valueType": "date"
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_updated_at",
+      "encoding": "unix_ms"
+    }
   },
   "userId": {
     "attributeID": 20,

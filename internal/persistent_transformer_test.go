@@ -298,8 +298,14 @@ func TestPersistentRecordTransformer_InjectsBaseTimestamps(t *testing.T) {
 		schemaID:   schemaID,
 		schemaName: "ts_schema",
 		cache: forma.SchemaAttributeCache{
-			"createdAt": {AttributeID: 1, ValueType: forma.ValueTypeDate},
-			"updatedAt": {AttributeID: 2, ValueType: forma.ValueTypeDate},
+			"createdAt": {AttributeID: 1, ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumnCreatedAt,
+				Encoding:   forma.MainColumnEncodingUnixMs,
+			}},
+			"updatedAt": {AttributeID: 2, ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumnUpdatedAt,
+				Encoding:   forma.MainColumnEncodingUnixMs,
+			}},
 		},
 	}
 
