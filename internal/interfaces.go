@@ -18,6 +18,7 @@ type PersistentRecord struct {
 	Int32Items      map[string]int32
 	Int64Items      map[string]int64
 	Float64Items    map[string]float64
+	UUIDItems       map[string]uuid.UUID
 	CreatedAt       int64
 	UpdatedAt       int64
 	DeletedAt       *int64

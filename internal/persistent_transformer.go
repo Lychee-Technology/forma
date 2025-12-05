@@ -143,6 +143,13 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 }
 
 func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord, attr EAVRecord, binding *forma.MainColumnBinding) error {
+	// Ignore system column bindings - system columns can only be set internally by code
+	switch binding.ColumnName {
+	case forma.MainColumnRowID, forma.MainColumnSchemaID,
+		forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt:
+		return nil
+	}
+
 	columnName := string(binding.ColumnName)
 
 	switch binding.Encoding {
@@ -206,6 +213,15 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 		case forma.MainColumnTypeDouble:
 			if attr.ValueNumeric != nil {
 				record.Float64Items[columnName] = *attr.ValueNumeric
+			}
+		case forma.MainColumnTypeUUID:
+			if attr.ValueText != nil {
+				uuidValue, err := uuid.Parse(*attr.ValueText)
+				if err != nil {
+					return fmt.Errorf("failed to parse uuid: %w. schema id: %d, row id: %s, attr id: %d, array indices: %s, value: %s",
+						err, attr.SchemaID, attr.RowID, attr.AttrID, attr.ArrayIndices, *attr.ValueText)
+				}
+				record.UUIDItems[columnName] = uuidValue
 			}
 
 		default:
@@ -359,6 +375,11 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *Persistent
 	}
 
 	switch binding.ColumnType() {
+	case forma.MainColumnTypeUUID:
+		if val, ok := record.TextItems[columnName]; ok {
+			attr.ValueText = &val
+			return attr, true, nil
+		}
 	case forma.MainColumnTypeText:
 		if val, ok := record.TextItems[columnName]; ok {
 			attr.ValueText = &val
