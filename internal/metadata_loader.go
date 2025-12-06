@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // MetadataCache holds all metadata mappings for fast lookups
@@ -138,7 +139,7 @@ func (ml *MetadataLoader) loadSchemaRegistry(ctx context.Context, cache *Metadat
 		return fmt.Errorf("no schemas found in registry table")
 	}
 
-	fmt.Printf("Loaded %d schemas from database\n", len(cache.schemaNameToID))
+	zap.S().Infow("Loaded schemas from database", "count", len(cache.schemaNameToID))
 	return nil
 }
 
@@ -158,7 +159,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 
 		// Check if file exists
 		if _, err := os.Stat(attributesFile); os.IsNotExist(err) {
-			fmt.Printf("Warning: attribute file not found for schema '%s', skipping\n", schemaName)
+			zap.S().Warnw("attribute file not found; skipping schema", "schema", schemaName)
 			continue
 		}
 
@@ -189,7 +190,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		cache.attributeMetadata[schemaName] = attrMap
 		cache.schemaCaches[schemaName] = schemaCache
 
-		fmt.Printf("Loaded %d attributes for schema '%s'\n", len(attrMap), schemaName)
+		zap.S().Infow("Loaded attributes for schema", "count", len(attrMap), "schema", schemaName)
 	}
 
 	// Also check for any schema files without database entries
@@ -202,7 +203,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		if len(name) > len("_attributes.json") && name[len(name)-len("_attributes.json"):] == "_attributes.json" {
 			schemaName := name[:len(name)-len("_attributes.json")]
 			if _, exists := cache.schemaNameToID[schemaName]; !exists {
-				fmt.Printf("Warning: found attribute file for schema '%s' but schema not in database registry\n", schemaName)
+				zap.S().Warnw("attribute file present without registry entry", "schema", schemaName)
 			}
 		}
 	}

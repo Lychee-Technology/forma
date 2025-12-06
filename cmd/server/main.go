@@ -1,12 +1,12 @@
 package main
 
 import (
-	"log"
 	"net/http"
 	"os"
 	"strconv"
 
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // Server represents the HTTP server with EntityManager
@@ -33,18 +33,26 @@ func (s *Server) RegisterRoutes() {
 
 // Start starts the HTTP server on the given port
 func (s *Server) Start(port string) error {
-	log.Printf("Starting server on port %s", port)
+	zap.S().Infow("starting server", "port", port)
 	return http.ListenAndServe(":"+port, s.mux)
 }
 
 func main() {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer logger.Sync()
+	zap.ReplaceGlobals(logger)
+	sugar := logger.Sugar()
+
 	// Set schema directory
 	schemaDir := os.Getenv("SCHEMA_DIR")
-	log.Printf("schemaDir: %s", schemaDir)
+	sugar.Infof("schemaDir: %s", schemaDir)
 	// Create file-based schema registry
 	registry, err := NewFileSchemaRegistry(schemaDir)
 	if err != nil {
-		log.Fatalf("failed to create schema registry: %v", err)
+		sugar.Fatalf("failed to create schema registry: %v", err)
 	}
 
 	// Load configuration with schema registry
@@ -74,7 +82,7 @@ func main() {
 
 	port := getEnv("PORT", "8080")
 	if err := server.Start(port); err != nil {
-		log.Fatalf("server error: %v", err)
+		sugar.Fatalf("server error: %v", err)
 	}
 }
 

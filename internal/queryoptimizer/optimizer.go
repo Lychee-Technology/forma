@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // ErrNotImplemented is returned until the optimizer pipeline is fully implemented.
@@ -186,7 +186,7 @@ func (o *Optimizer) GeneratePlan(ctx context.Context, in *Input) (*Plan, error) 
 		return nil, fmt.Errorf("schema id must be positive")
 	}
 
-	log.Printf("Entity Main Table: %s, EAV Table: %s, Schema ID: %d", in.Tables.EntityMain, in.Tables.EAVData, in.SchemaID)
+	zap.S().Infow("optimizer inputs", "entityMainTable", in.Tables.EntityMain, "eavTable", in.Tables.EAVData, "schemaID", in.SchemaID)
 
 	// Initialize query builder with SchemaID as $1
 	qb := &queryBuilder{

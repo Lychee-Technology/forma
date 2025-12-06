@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 type PostgresPersistentRecordRepository struct {
@@ -296,7 +296,7 @@ func (r *PostgresPersistentRecordRepository) insertMainRow(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	log.Printf("insertMainRow, query: `%s`, args: `%v`", query, args)
+	zap.S().Debugw("insert main row", "query", query, "args", args)
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
 		return fmt.Errorf("insert entity_main: %w", err)
 	}
@@ -336,7 +336,7 @@ func (r *PostgresPersistentRecordRepository) insertEAVAttributes(ctx context.Con
 			sanitizeIdentifier(table),
 			valuesClause,
 		)
-		log.Printf("query: `%s`, args: `%v`", query, args)
+		zap.S().Debugw("insert EAV attributes", "query", query, "args", args)
 		if _, err := tx.Exec(ctx, query, args...); err != nil {
 			return fmt.Errorf("insert eav attributes: %w", err)
 		}
@@ -604,7 +604,7 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, limit, offset)
 
-	log.Printf("optimized query: `%s`, args: `%v`", query, queryArgs)
+	zap.S().Debugw("optimized query", "query", query, "args", queryArgs)
 
 	rows, err := r.pool.Query(ctx, query, queryArgs...)
 	if err != nil {

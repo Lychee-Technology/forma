@@ -5,11 +5,11 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // ImportError represents an error that occurred while importing a single CSV row.
@@ -46,7 +46,7 @@ type CSVImporter struct {
 	entityManager forma.EntityManager
 	mapper        CSVToSchemaMapper
 	batchSize     int
-	logger        *log.Logger
+	logger        *zap.SugaredLogger
 }
 
 // NewCSVImporter creates a new CSVImporter.
@@ -60,12 +60,16 @@ func NewCSVImporter(entityManager forma.EntityManager, mapper CSVToSchemaMapper,
 		entityManager: entityManager,
 		mapper:        mapper,
 		batchSize:     batchSize,
-		logger:        log.New(os.Stderr, "[CSVImporter] ", log.LstdFlags),
+		logger:        zap.S().Named("CSVImporter"),
 	}
 }
 
 // SetLogger sets a custom logger for the importer.
-func (i *CSVImporter) SetLogger(logger *log.Logger) {
+func (i *CSVImporter) SetLogger(logger *zap.SugaredLogger) {
+	if logger == nil {
+		i.logger = zap.S().Named("CSVImporter")
+		return
+	}
 	i.logger = logger
 }
 
@@ -109,7 +113,7 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 		}
 		if err != nil {
 			// Log CSV parsing error and continue
-			i.logger.Printf("[ERROR] Row %d: CSV parsing error: %v", rowNum, err)
+			i.logger.Errorf("row %d: CSV parsing error: %v", rowNum, err)
 			result.FailedCount++
 			result.Errors = append(result.Errors, &ImportError{
 				RowNumber: rowNum,
@@ -140,14 +144,14 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 					RawValue:   mappingErr.RawValue,
 					Reason:     mappingErr.Reason,
 				}
-				i.logger.Printf("[ERROR] %s", importErr.Error())
+				i.logger.Error(importErr.Error())
 				result.Errors = append(result.Errors, importErr)
 			} else {
 				importErr := &ImportError{
 					RowNumber: rowNum,
 					Reason:    err.Error(),
 				}
-				i.logger.Printf("[ERROR] Row %d: mapping error: %v", rowNum, err)
+				i.logger.Errorf("row %d: mapping error: %v", rowNum, err)
 				result.Errors = append(result.Errors, importErr)
 			}
 			result.FailedCount++
@@ -183,7 +187,7 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 
 	result.Duration = time.Since(startTime)
 
-	i.logger.Printf("%s", result.Summary())
+	i.logger.Infof("%s", result.Summary())
 
 	return result, nil
 }
@@ -198,7 +202,7 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 	batchResult, err := i.entityManager.BatchCreate(ctx, batchOp)
 	if err != nil {
 		// If batch creation fails entirely, log error and return 0 success
-		i.logger.Printf("[ERROR] Batch creation failed: %v", err)
+		i.logger.Errorf("batch creation failed: %v", err)
 		errors := make([]*ImportError, len(batch))
 		for idx := range batch {
 			errors[idx] = &ImportError{
@@ -227,7 +231,7 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 			RowNumber: startRowNum + rowOffset,
 			Reason:    fmt.Sprintf("%s: %s", opErr.Code, opErr.Error),
 		}
-		i.logger.Printf("[ERROR] %s", importErr.Error())
+		i.logger.Error(importErr.Error())
 		errors = append(errors, importErr)
 	}
 
@@ -287,7 +291,7 @@ func (i *CSVImporter) ImportFromReaderWithOptions(ctx context.Context, reader io
 			break
 		}
 		if err != nil {
-			i.logger.Printf("[ERROR] Row %d: CSV parsing error: %v", rowNum, err)
+			i.logger.Errorf("row %d: CSV parsing error: %v", rowNum, err)
 			result.FailedCount++
 			result.Errors = append(result.Errors, &ImportError{
 				RowNumber: rowNum,
@@ -315,14 +319,14 @@ func (i *CSVImporter) ImportFromReaderWithOptions(ctx context.Context, reader io
 					RawValue:   mappingErr.RawValue,
 					Reason:     mappingErr.Reason,
 				}
-				i.logger.Printf("[ERROR] %s", importErr.Error())
+				i.logger.Error(importErr.Error())
 				result.Errors = append(result.Errors, importErr)
 			} else {
 				importErr := &ImportError{
 					RowNumber: rowNum,
 					Reason:    err.Error(),
 				}
-				i.logger.Printf("[ERROR] Row %d: mapping error: %v", rowNum, err)
+				i.logger.Errorf("row %d: mapping error: %v", rowNum, err)
 				result.Errors = append(result.Errors, importErr)
 			}
 			result.FailedCount++
@@ -354,7 +358,7 @@ func (i *CSVImporter) ImportFromReaderWithOptions(ctx context.Context, reader io
 	}
 
 	result.Duration = time.Since(startTime)
-	i.logger.Printf("%s", result.Summary())
+	i.logger.Infof("%s", result.Summary())
 
 	return result, nil
 }

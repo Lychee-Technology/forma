@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // handleCreate handles POST /api/v1/{schema_name}
@@ -21,6 +21,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
+	zap.S().Infow("create request received", "schema", schemaName)
 
 	// Try to read as single object or array
 	var rawBody any
@@ -49,6 +50,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty array not allowed")
 		return
 	}
+	zap.S().Debugw("create payload parsed", "schema", schemaName, "records", len(jsonObjects))
 
 	// Build batch operation
 	operations := make([]forma.EntityOperation, len(jsonObjects))
@@ -73,6 +75,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch create failed: %v", err))
 		return
 	}
+	zap.S().Infow("create request completed", "schema", schemaName, "successful", len(result.Successful), "failed", len(result.Failed))
 
 	// If single object request, return single result with row_id
 	if isSingleObject && len(result.Successful) > 0 {
@@ -106,6 +109,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "row_id is required")
 		return
 	}
+	zap.S().Infow("get request received", "schema", schemaName, "rowID", rowIDStr)
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
@@ -123,6 +127,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("record not found: %v", err))
 		return
 	}
+	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowIDStr)
 
 	writeSuccess(w, http.StatusOK, record)
 }
@@ -166,12 +171,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		queryReq.SortBy = sortFields
 		queryReq.SortOrder = sortOrder
 	}
+	zap.S().Infow("query request received", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "sortBy", sortFields, "sortOrder", sortOrder)
 
 	result, err := s.manager.Query(r.Context(), queryReq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return
 	}
+	zap.S().Infow("query request completed", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
 	writeSuccess(w, http.StatusOK, result)
 }
@@ -193,6 +200,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "row_id is required")
 		return
 	}
+	zap.S().Infow("update request received", "schema", schemaName, "rowID", rowIDStr)
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
@@ -223,6 +231,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
 		return
 	}
+	zap.S().Infow("update request completed", "schema", schemaName, "rowID", rowIDStr)
 
 	writeSuccess(w, http.StatusOK, record)
 }
@@ -247,6 +256,7 @@ func (s *Server) handleSingleDelete(w http.ResponseWriter, r *http.Request, sche
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("delete failed: %v", err))
 		return
 	}
+	zap.S().Infow("delete request completed", "schema", schemaName, "rowID", rowID.String())
 
 	writeSuccess(w, http.StatusOK, result)
 }
@@ -275,6 +285,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty row_id array not allowed")
 		return
 	}
+	zap.S().Infow("batch delete request received", "schema", schemaName, "count", len(rowIDStrs))
 
 	// Convert string IDs to UUIDs and build operations
 	operations := make([]forma.EntityOperation, len(rowIDStrs))
@@ -304,6 +315,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch delete failed: %v", err))
 		return
 	}
+	zap.S().Infow("batch delete request completed", "schema", schemaName, "requested", len(rowIDStrs))
 
 	writeSuccess(w, http.StatusOK, result)
 }
@@ -334,12 +346,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
 	}
+	zap.S().Infow("search request received", "schemas", schemaNames, "searchTerm", crossSchemaReq.SearchTerm, "page", page, "itemsPerPage", itemsPerPage)
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cross-schema search failed: %v", err))
 		return
 	}
+	zap.S().Infow("search request completed", "schemas", schemaNames, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
 	writeSuccess(w, http.StatusOK, result)
 }
@@ -366,12 +380,14 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "condition is required")
 		return
 	}
+	zap.S().Infow("advanced query request received", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage)
 
 	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("advanced query failed: %v", err))
 		return
 	}
+	zap.S().Infow("advanced query request completed", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
 	writeSuccess(w, http.StatusOK, result)
 }
@@ -380,7 +396,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	log.Printf("handling path: %s", path)
+	zap.S().Infow("handling request", "path", path, "method", r.Method)
 
 	// For DELETE requests, check if path contains row_id
 	if r.Method == http.MethodDelete {

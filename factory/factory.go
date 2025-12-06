@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
+	"go.uber.org/zap"
 )
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
@@ -43,7 +44,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	}
 	defer rows.Close()
 
-	fmt.Println("Database tables:")
+	zap.S().Info("Database tables:")
 	tables := []string{}
 	for rows.Next() {
 		var tableName string
@@ -51,7 +52,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 			return nil, fmt.Errorf("failed to scan table name: %w", err)
 		}
 		tables = append(tables, tableName)
-		fmt.Printf("  - %s\n", tableName)
+		zap.S().Infow("found table", "name", tableName)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -63,7 +64,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	}
 
 	// Load metadata from database at startup
-	fmt.Println("\nLoading metadata from database...")
+	zap.S().Info("Loading metadata from database...")
 	metadataLoader := internal.NewMetadataLoader(
 		pool,
 		config.Database.TableNames.SchemaRegistry,
@@ -75,14 +76,14 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	fmt.Printf("Metadata loaded successfully: %d schemas\n\n", len(metadataCache.ListSchemas()))
+	zap.S().Infow("Metadata loaded successfully", "schemaCount", len(metadataCache.ListSchemas()))
 
 	// SchemaRegistry must be provided in config
 	if config.SchemaRegistry == nil {
 		return nil, fmt.Errorf("config.SchemaRegistry is required: please provide a SchemaRegistry implementation")
 	}
 	registry := config.SchemaRegistry
-	fmt.Println("Using provided SchemaRegistry implementation")
+	zap.S().Info("Using provided SchemaRegistry implementation")
 
 	// Initialize transformer
 	transformer := internal.NewPersistentRecordTransformer(registry)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 type attributeSpec struct {
@@ -24,7 +24,13 @@ type attributeSpec struct {
 }
 
 func main() {
-	log.SetFlags(0)
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(fmt.Errorf("failed to set up logger: %w", err))
+	}
+	defer logger.Sync()
+	zap.ReplaceGlobals(logger)
+	sugar := logger.Sugar()
 
 	if len(os.Args) < 2 {
 		printUsage()
@@ -34,34 +40,35 @@ func main() {
 	switch os.Args[1] {
 	case "generate-attributes":
 		if err := runGenerateAttributes(os.Args[2:]); err != nil {
-			log.Fatalf("generate-attributes: %v", err)
+			sugar.Fatalf("generate-attributes: %v", err)
 		}
 	case "init-db":
 		if err := runInitDB(os.Args[2:]); err != nil {
-			log.Fatalf("init-db: %v", err)
+			sugar.Fatalf("init-db: %v", err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+		sugar.Errorf("unknown command %q", os.Args[1])
 		printUsage()
 		os.Exit(1)
 	}
 }
 
 func printUsage() {
-	fmt.Println("Usage: forma-tools <command> [options]")
-	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
-	fmt.Println("  init-db               Create PostgreSQL tables and indexes for Forma")
+	logger := zap.S()
+	logger.Info("Usage: forma-tools <command> [options]")
+	logger.Info("")
+	logger.Info("Commands:")
+	logger.Info("  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
+	logger.Info("  init-db               Create PostgreSQL tables and indexes for Forma")
 }
 
 func runGenerateAttributes(args []string) error {
 	flags := flag.NewFlagSet("generate-attributes", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		fmt.Println("Usage: forma-tools generate-attributes [options]")
-		fmt.Println()
-		fmt.Println("Options:")
+		zap.S().Info("Usage: forma-tools generate-attributes [options]")
+		zap.S().Info("")
+		zap.S().Info("Options:")
 		flags.PrintDefaults()
 	}
 
@@ -95,7 +102,7 @@ func runGenerateAttributes(args []string) error {
 		return err
 	}
 
-	fmt.Printf("Generated attributes for %s -> %s\n", resolvedSchemaPath, resolvedOutputPath)
+	zap.S().Infow("Generated attributes", "schemaPath", resolvedSchemaPath, "outputPath", resolvedOutputPath)
 	return nil
 }
 
@@ -129,7 +136,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 		return err
 	}
 
-	fmt.Printf("Generated %d attributes.\n", len(sorted))
+	zap.S().Infow("Generated attributes count", "count", len(sorted))
 	return nil
 }
 
@@ -243,9 +250,9 @@ func runInitDB(args []string) error {
 	flags := flag.NewFlagSet("init-db", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		fmt.Println("Usage: forma-tools init-db [options]")
-		fmt.Println()
-		fmt.Println("Options:")
+		zap.S().Info("Usage: forma-tools init-db [options]")
+		zap.S().Info("")
+		zap.S().Info("Options:")
 		flags.PrintDefaults()
 	}
 
@@ -293,7 +300,7 @@ func initDatabase(opts initDBOptions) error {
 		return err
 	}
 
-	fmt.Println("Database initialized successfully.")
+	zap.S().Info("Database initialized successfully.")
 	return nil
 }
 
@@ -336,7 +343,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlSchema); err != nil {
 		return fmt.Errorf("ensure schema registry table: %w", err)
 	}
-	fmt.Printf("Created %s\n", opts.schemaTable)
+	zap.S().Infow("Created schema registry table", "table", opts.schemaTable)
 
 	ddlMain := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id   SMALLINT NOT NULL,
@@ -378,7 +385,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlMain); err != nil {
 		return fmt.Errorf("ensure entity main table: %w", err)
 	}
-	fmt.Printf("Created %s\n", opts.entityMain)
+	zap.S().Infow("Created entity main table", "table", opts.entityMain)
 
 	ddlEAV := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		schema_id      SMALLINT NOT NULL,
@@ -393,7 +400,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlEAV); err != nil {
 		return fmt.Errorf("ensure eav table: %w", err)
 	}
-	fmt.Printf("Created %s\n", opts.eavTable)
+	zap.S().Infow("Created EAV table", "table", opts.eavTable)
 
 	idxNumeric := quoteIdentifier(makeIndexName(opts.eavTable, "numeric"))
 	createIdxNumeric := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL`, idxNumeric, eavTable)
@@ -454,7 +461,7 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 	}
 
 	if len(schemaFiles) == 0 {
-		fmt.Printf("No schema files found in %s\n", schemaDir)
+		zap.S().Infow("No schema files found", "dir", schemaDir)
 		return nil
 	}
 
@@ -478,13 +485,13 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 		}
 
 		if result.RowsAffected() > 0 {
-			fmt.Printf("Registered schema: %s (id=%d)\n", schemaName, schemaID)
+			zap.S().Infow("Registered schema", "schema", schemaName, "id", schemaID)
 		} else {
-			fmt.Printf("Schema already exists: %s\n", schemaName)
+			zap.S().Infow("Schema already exists", "schema", schemaName)
 		}
 	}
 
-	fmt.Printf("Registered %d schemas from %s\n", len(schemaFiles), schemaDir)
+	zap.S().Infow("Registered schemas from directory", "count", len(schemaFiles), "dir", schemaDir)
 	return nil
 }
 

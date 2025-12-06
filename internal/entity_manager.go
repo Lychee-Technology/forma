@@ -3,11 +3,11 @@ package internal
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 type entityManager struct {
@@ -313,7 +313,7 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 		totalPages = int((page.TotalRecords + int64(req.ItemsPerPage) - 1) / int64(req.ItemsPerPage))
 	}
 
-	log.Printf("records: %d, total pages: %d", len(records), totalPages)
+	zap.S().Infow("query results", "records", len(records), "totalPages", totalPages)
 
 	return &forma.QueryResult{
 		Data:          records,
