@@ -21,11 +21,11 @@ type MetadataCache struct {
 	schemaNameToID map[string]int16
 	schemaIDToName map[int16]string
 
-	// Attribute mappings: (schema_name, attr_name) -> AttributeMeta
-	attributeMetadata map[string]map[string]forma.AttributeMetadata
+	// Attribute mappings: (schema_id, attr_name) -> AttributeMeta
+	attributeMetadata map[int16]map[string]forma.AttributeMetadata
 
 	// Schema caches for transformer
-	schemaCaches map[string]forma.SchemaAttributeCache
+	schemaCaches map[int16]forma.SchemaAttributeCache
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -33,8 +33,8 @@ func NewMetadataCache() *MetadataCache {
 	return &MetadataCache{
 		schemaNameToID:    make(map[string]int16),
 		schemaIDToName:    make(map[int16]string),
-		attributeMetadata: make(map[string]map[string]forma.AttributeMetadata),
-		schemaCaches:      make(map[string]forma.SchemaAttributeCache),
+		attributeMetadata: make(map[int16]map[string]forma.AttributeMetadata),
+		schemaCaches:      make(map[int16]forma.SchemaAttributeCache),
 	}
 }
 
@@ -64,7 +64,11 @@ func (mc *MetadataCache) GetSchemaName(schemaID int16) (string, bool) {
 func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
-	cache, ok := mc.schemaCaches[schemaName]
+	schemaId, ok := mc.GetSchemaID(schemaName)
+	if !ok {
+		return nil, false
+	}
+	cache, ok := mc.schemaCaches[schemaId]
 	if !ok {
 		zap.S().Warnw("schema not found in cache", "schema", schemaName, "cache_size", len(mc.schemaCaches))
 	}
@@ -174,7 +178,11 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 	defer cache.mu.Unlock()
 
 	// Load attribute metadata for each schema that exists in the registry
-	for schemaName := range cache.schemaNameToID {
+	for schemaName, schemaID := range cache.schemaNameToID {
+		zap.S().Infow("Loading attributes for schema", "schema_name", schemaName, "schema_id", schemaID)
+		if cache.attributeMetadata[schemaID] != nil && cache.schemaCaches[schemaID] != nil {
+			continue // already loaded
+		}
 		attributesFile := filepath.Join(ml.schemaDirectory, schemaName+"_attributes.json")
 
 		// Check if file exists
@@ -207,8 +215,8 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			schemaCache[attrName] = meta
 		}
 
-		cache.attributeMetadata[schemaName] = attrMap
-		cache.schemaCaches[schemaName] = schemaCache
+		cache.attributeMetadata[schemaID] = attrMap
+		cache.schemaCaches[schemaID] = schemaCache
 
 		zap.S().Infow("Loaded attributes for schema", "count", len(attrMap), "schema", schemaName)
 	}
