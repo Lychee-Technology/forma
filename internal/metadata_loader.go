@@ -59,6 +59,21 @@ func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttribut
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	cache, ok := mc.schemaCaches[schemaName]
+	if !ok {
+		zap.S().Warnw("schema not found in cache", "schema", schemaName)
+	}
+	return cache, ok
+}
+
+func (mc *MetadataCache) GetSchemaCacheByID(schemaID int16) (forma.SchemaAttributeCache, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	schemaName, ok := mc.schemaIDToName[schemaID]
+	if !ok {
+		zap.S().Warnw("schema ID not found in cache", "schema_id", schemaID)
+		return nil, false
+	}
+	cache, ok := mc.schemaCaches[schemaName]
 	return cache, ok
 }
 

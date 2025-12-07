@@ -159,10 +159,10 @@ func (g *SQLGenerator) buildKv(
 	var parsedValue any
 
 	switch meta.ValueType {
-	case forma.ValueTypeText:
+	case forma.ValueTypeText, forma.ValueTypeUUID:
 		valueColumn = "value_text"
 		parsedValue = valStr
-	case forma.ValueTypeNumeric:
+	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		valueColumn = "value_numeric"
 		parsed := tryParseNumber(valStr)
 		// Ensure the value is float64 to match the value_numeric column type
@@ -183,12 +183,16 @@ func (g *SQLGenerator) buildKv(
 			return "", nil, fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
 		}
 	case forma.ValueTypeBool:
-		valueColumn = "value_bool"
-		parsedFloat, err := strconv.ParseFloat(valStr, 32)
+		valueColumn = "value_text"
+		parsedInt, err := strconv.Atoi(valStr)
 		if err != nil {
 			return "", nil, fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)
 		}
-		parsedValue = parsedFloat > 0.5
+		if parsedInt > 0 {
+			parsedValue = "1"
+		} else {
+			parsedValue = "0"
+		}
 	default:
 		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)
 	}

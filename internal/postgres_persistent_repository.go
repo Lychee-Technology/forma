@@ -921,6 +921,7 @@ func (r *PostgresPersistentRecordRepository) GetPersistentRecord(ctx context.Con
 }
 
 func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+	zap.S().Debugw("query persistent records", "query", query)
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
 	}
@@ -948,10 +949,10 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.
 	// Get schema cache first for checking main table conditions
 	var cache forma.SchemaAttributeCache
 	if query.SchemaID > 0 && r.metadataCache != nil {
-		if schemaName, ok := r.metadataCache.GetSchemaName(query.SchemaID); ok {
-			if cacheLocal, ok := r.metadataCache.GetSchemaCache(schemaName); ok {
-				cache = cacheLocal
-			}
+		if cacheLocal, ok := r.metadataCache.GetSchemaCacheByID(query.SchemaID); ok {
+			cache = cacheLocal
+		} else {
+			return nil, fmt.Errorf("no cache for schema id %d", query.SchemaID)
 		}
 	}
 
