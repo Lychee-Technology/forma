@@ -11,6 +11,22 @@
     "attributeID": 3,
     "valueType": "text"
   },
+  "contactSnapshot.name": {
+    "attributeID": 21,
+    "valueType": "text"
+  },
+  "contactSnapshot.nameKana": {
+    "attributeID": 22,
+    "valueType": "text"
+  },
+  "contactSnapshot.nameNative": {
+    "attributeID": 23,
+    "valueType": "text"
+  },
+  "contactSnapshot.primaryPhone": {
+    "attributeID": 24,
+    "valueType": "text"
+  },
   "createdAt": {
     "attributeID": 4,
     "valueType": "date",

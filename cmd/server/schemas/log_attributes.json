@@ -1,0 +1,59 @@
+{
+  "createdAt": {
+    "attributeID": 1,
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_created_at",
+      "encoding": "unix_ms"
+    }
+  },
+  "data": {
+    "attributeID": 2,
+    "valueType": "text"
+  },
+  "id": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "ltbase_row_id"
+    }
+  },
+  "leadId": {
+    "attributeID": 4,
+    "valueType": "uuid",
+    "column_binding": {
+      "col_name": "uuid_02"
+    }
+  },
+  "noteId": {
+    "attributeID": 5,
+    "valueType": "uuid"
+  },
+  "ownerId": {
+    "attributeID": 6,
+    "valueType": "text"
+  },
+  "summary": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "type": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "updatedAt": {
+    "attributeID": 9,
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "ltbase_updated_at",
+      "encoding": "unix_ms"
+    }
+  },
+  "visitId": {
+    "attributeID": 10,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "uuid_01"
+    }
+  }
+}

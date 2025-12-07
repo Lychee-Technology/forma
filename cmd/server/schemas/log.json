@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Log",
+  "description": "Activity log record for lead visits and notes",
+  "type": "object",
+  "required": [
+    "id",
+    "leadId",
+    "ownerId",
+    "type",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Log identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "format": "uuid"
+    },
+    "leadId": {
+      "type": "string",
+      "description": "Associated lead ID",
+      "format": "uuid"
+    },
+    "visitId": {
+      "type": "string",
+      "description": "Associated visit ID (if log is tied to a visit)"
+    },
+    "noteId": {
+      "type": "string",
+      "description": "Associated note ID (if log originated from a note)"
+    },
+    "ownerId": {
+      "type": "string",
+      "description": "Owner/creator of this log entry"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Summary or transcription of the log content"
+    },
+    "type": {
+      "type": "string",
+      "description": "MIME type of the log data",
+      "enum": [
+        "audio/mp3",
+        "audio/wav",
+        "audio/webm",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/plain"
+      ]
+    },
+    "data": {
+      "type": "string",
+      "description": "Base64 encoded data content (audio, image, or text)"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Record creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    }
+  }
+}
+

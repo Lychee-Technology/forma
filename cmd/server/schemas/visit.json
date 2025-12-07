@@ -15,11 +15,35 @@
     "id": {
       "type": "string",
       "description": "Visit identifier",
-      "pattern": "^[a-zA-Z0-9_-]+$"
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "format": "uuid"
     },
     "leadId": {
       "type": "string",
-      "description": "Associated lead ID"
+      "description": "Associated lead ID",
+      "format": "uuid"
+    },
+    "contactSnapshot": {
+      "type": "object",
+      "description": "Contact snapshot to preserve lead contact info at time of visit",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Contact name in English/romanized form"
+        },
+        "nameNative": {
+          "type": "string",
+          "description": "Contact name in native script (e.g., Japanese kanji, Chinese, Korean)"
+        },
+        "nameKana": {
+          "type": "string",
+          "description": "Contact name in kana (Japanese only)"
+        },
+        "primaryPhone": {
+          "type": "string",
+          "description": "Primary phone number"
+        }
+      }
     },
     "userId": {
       "type": "string",

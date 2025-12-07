@@ -105,7 +105,7 @@
   },
   "id": {
     "attributeID": 26,
-    "valueType": "text"
+    "valueType": "uuid"
   },
   "lastContactedAt": {
     "attributeID": 27,
