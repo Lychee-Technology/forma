@@ -43,6 +43,9 @@ func (mc *MetadataCache) GetSchemaID(schemaName string) (int16, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	id, ok := mc.schemaNameToID[schemaName]
+	if !ok {
+		zap.S().Warnw("schema name not found in cache", "schema_name", schemaName, "cache_size", len(mc.schemaNameToID))
+	}
 	return id, ok
 }
 
@@ -51,6 +54,9 @@ func (mc *MetadataCache) GetSchemaName(schemaID int16) (string, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	name, ok := mc.schemaIDToName[schemaID]
+	if !ok {
+		zap.S().Warnw("schema ID not found in cache", "schema_id", schemaID, "cache_size", len(mc.schemaIDToName))
+	}
 	return name, ok
 }
 
@@ -60,7 +66,7 @@ func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttribut
 	defer mc.mu.RUnlock()
 	cache, ok := mc.schemaCaches[schemaName]
 	if !ok {
-		zap.S().Warnw("schema not found in cache", "schema", schemaName)
+		zap.S().Warnw("schema not found in cache", "schema", schemaName, "cache_size", len(mc.schemaCaches))
 	}
 	return cache, ok
 }
@@ -68,13 +74,11 @@ func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttribut
 func (mc *MetadataCache) GetSchemaCacheByID(schemaID int16) (forma.SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
-	schemaName, ok := mc.schemaIDToName[schemaID]
+	schemaName, ok := mc.GetSchemaName(schemaID)
 	if !ok {
-		zap.S().Warnw("schema ID not found in cache", "schema_id", schemaID)
 		return nil, false
 	}
-	cache, ok := mc.schemaCaches[schemaName]
-	return cache, ok
+	return mc.GetSchemaCache(schemaName) 
 }
 
 // ListSchemas returns all schema names (thread-safe)
