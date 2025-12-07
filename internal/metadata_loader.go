@@ -129,6 +129,7 @@ func (ml *MetadataLoader) loadSchemaRegistry(ctx context.Context, cache *Metadat
 
 		cache.schemaNameToID[schemaName] = schemaID
 		cache.schemaIDToName[schemaID] = schemaName
+		zap.S().Infow("Cached schema", "schema_id", schemaID, "schema_name", schemaName)
 	}
 
 	if err := rows.Err(); err != nil {

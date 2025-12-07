@@ -134,6 +134,8 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 // handleQuery handles GET /api/v1/{schema_name}?page=...&items_per_page=...&filters=...
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	zap.S().Infow("query request received", "path", r.URL.Path, "rawQuery", r.URL.RawQuery)
+
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
