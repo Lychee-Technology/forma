@@ -19,31 +19,10 @@
       "format": "uuid"
     },
     "leadId": {
-      "type": "string",
-      "description": "Associated lead ID",
-      "format": "uuid"
+      "$ref": "lead.json#/$defs/id"
     },
     "contactSnapshot": {
-      "type": "object",
-      "description": "Contact snapshot to preserve lead contact info at time of visit",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Contact name in English/romanized form"
-        },
-        "nameNative": {
-          "type": "string",
-          "description": "Contact name in native script (e.g., Japanese kanji, Chinese, Korean)"
-        },
-        "nameKana": {
-          "type": "string",
-          "description": "Contact name in kana (Japanese only)"
-        },
-        "primaryPhone": {
-          "type": "string",
-          "description": "Primary phone number"
-        }
-      }
+      "$ref": "lead.json#/$defs/contact"
     },
     "userId": {
       "type": "string",
