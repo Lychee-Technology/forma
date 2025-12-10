@@ -117,9 +117,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse attrs parameter for field projection
+	queryParams := r.URL.Query()
+	attrs := parseAttrs(queryParams)
+
 	queryReq := &forma.QueryRequest{
 		SchemaName: schemaName,
 		RowID:      &rowID,
+		Attrs:      attrs,
 	}
 
 	record, err := s.manager.Get(r.Context(), queryReq)
@@ -127,12 +132,12 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("record not found: %v", err))
 		return
 	}
-	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowIDStr)
+	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowIDStr, "attrs", attrs)
 
 	writeSuccess(w, http.StatusOK, record)
 }
 
-// handleQuery handles GET /api/v1/{schema_name}?page=...&items_per_page=...&filters=...
+// handleQuery handles GET /api/v1/{schema_name}?page=...&items_per_page=...&filters=...&attrs=...
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	zap.S().Infow("query request received", "path", r.URL.Path, "rawQuery", r.URL.RawQuery)
 
@@ -163,17 +168,21 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse attrs parameter for field projection
+	attrs := parseAttrs(queryParams)
+
 	queryReq := &forma.QueryRequest{
 		SchemaName:   schemaName,
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
+		Attrs:        attrs,
 	}
 
 	if len(sortFields) > 0 {
 		queryReq.SortBy = sortFields
 		queryReq.SortOrder = sortOrder
 	}
-	zap.S().Infow("query request received", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "sortBy", sortFields, "sortOrder", sortOrder)
+	zap.S().Infow("query request received", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "sortBy", sortFields, "sortOrder", sortOrder, "attrs", attrs)
 
 	result, err := s.manager.Query(r.Context(), queryReq)
 	if err != nil {
@@ -322,7 +331,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeSuccess(w, http.StatusOK, result)
 }
 
-// handleSearch handles GET /api/v1/search?page=...&items_per_page=...&q=...
+// handleSearch handles GET /api/v1/search?page=...&items_per_page=...&q=...&attrs=...
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -342,13 +351,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		schemaNames = append(schemaNames, schemasParam)
 	}
 
+	// Parse attrs parameter for field projection
+	attrs := parseAttrs(queryParams)
+
 	crossSchemaReq := &forma.CrossSchemaRequest{
 		SchemaNames:  schemaNames,
 		SearchTerm:   queryParams.Get("q"),
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
+		Attrs:        attrs,
 	}
-	zap.S().Infow("search request received", "schemas", schemaNames, "searchTerm", crossSchemaReq.SearchTerm, "page", page, "itemsPerPage", itemsPerPage)
+	zap.S().Infow("search request received", "schemas", schemaNames, "searchTerm", crossSchemaReq.SearchTerm, "page", page, "itemsPerPage", itemsPerPage, "attrs", attrs)
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
 	if err != nil {
@@ -360,7 +373,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeSuccess(w, http.StatusOK, result)
 }
 
-// handleAdvancedQuery handles POST /api/v1/advanced_query
+// handleAdvancedQuery handles POST /api/v1/advanced_query?attrs=...
 func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -382,7 +395,16 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "condition is required")
 		return
 	}
-	zap.S().Infow("advanced query request received", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage)
+
+	// Parse attrs from URL query parameters if not provided in body
+	// URL query params take precedence
+	queryParams := r.URL.Query()
+	urlAttrs := parseAttrs(queryParams)
+	if len(urlAttrs) > 0 {
+		payload.Attrs = urlAttrs
+	}
+
+	zap.S().Infow("advanced query request received", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage, "attrs", payload.Attrs)
 
 	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {

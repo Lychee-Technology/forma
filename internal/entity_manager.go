@@ -46,7 +46,7 @@ func (em *entityManager) storageTables() StorageTables {
 	return tables
 }
 
-func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, record *PersistentRecord) (*forma.DataRecord, error) {
+func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, record *PersistentRecord, attrs []string) (*forma.DataRecord, error) {
 	if record == nil {
 		return nil, fmt.Errorf("persistent record cannot be nil")
 	}
@@ -62,6 +62,11 @@ func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, re
 	attributes, err := em.transformer.FromPersistentRecord(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform persistent record to JSON: %w", err)
+	}
+
+	// Apply attribute filtering if attrs is specified
+	if len(attrs) > 0 {
+		attributes = FilterAttributes(attributes, attrs)
 	}
 
 	return &forma.DataRecord{
@@ -143,7 +148,7 @@ func (em *entityManager) Get(ctx context.Context, req *forma.QueryRequest) (*for
 		return nil, fmt.Errorf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	return em.toDataRecord(ctx, req.SchemaName, record)
+	return em.toDataRecord(ctx, req.SchemaName, record, req.Attrs)
 }
 
 // Update updates an existing entity
@@ -302,7 +307,7 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 
 	records := make([]*forma.DataRecord, 0, len(page.Records))
 	for _, record := range page.Records {
-		dataRecord, err := em.toDataRecord(ctx, req.SchemaName, record)
+		dataRecord, err := em.toDataRecord(ctx, req.SchemaName, record, req.Attrs)
 		if err != nil {
 			return nil, err
 		}
@@ -456,7 +461,7 @@ func (em *entityManager) CrossSchemaSearch(ctx context.Context, req *forma.Cross
 		}
 
 		for _, record := range page.Records {
-			dataRecord, err := em.toDataRecord(ctx, schemaCtx.name, record)
+			dataRecord, err := em.toDataRecord(ctx, schemaCtx.name, record, req.Attrs)
 			if err != nil {
 				return nil, err
 			}
