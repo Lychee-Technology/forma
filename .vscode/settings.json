@@ -6,7 +6,7 @@
     "editor.formatOnSave": true,
     "go.formatTool": "goimports",
     "[go]": {
-        // 指定默认 Go 格式化工具（如 gofmt, goimports 等）
         "editor.defaultFormatter": "golang.go",
     },
+    "makefile.configureOnOpen": false
 }
