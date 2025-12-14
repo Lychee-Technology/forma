@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // AttributeConverter provides conversion between EntityAttribute and EAVRecord
@@ -135,7 +136,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
-			return nil, fmt.Errorf("attribute id %d not found for schema %d", record.AttrID, record.SchemaID)
+			continue
 		}
 
 		meta := cache[attrName]
@@ -144,6 +145,11 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
 		attributes = append(attributes, attr)
+		delete(idToName, record.AttrID)
+	}
+
+	if len(idToName) > 0 {
+		zap.S().Infow("missing EAV records for attrIDs.", "idToName", idToName)
 	}
 
 	return attributes, nil
