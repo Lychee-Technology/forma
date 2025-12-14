@@ -82,7 +82,7 @@ func (mc *MetadataCache) GetSchemaCacheByID(schemaID int16) (forma.SchemaAttribu
 	if !ok {
 		return nil, false
 	}
-	return mc.GetSchemaCache(schemaName) 
+	return mc.GetSchemaCache(schemaName)
 }
 
 // ListSchemas returns all schema names (thread-safe)

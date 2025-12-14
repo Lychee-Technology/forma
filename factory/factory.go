@@ -36,8 +36,9 @@ import (
 //	config.SchemaRegistry = myCustomRegistry
 //	em, err := factory.NewEntityManagerWithConfig(config, pool)
 func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
-	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables 
-		WHERE table_schema = 'public' AND table_type = 'BASE TABLE';`)
+	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables t
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+		union SELECT table_name FROM information_schema.views v WHERE table_schema = 'public';`)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify database connection: %w", err)
@@ -96,4 +97,8 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, registry, config), nil
+}
+
+func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
+	return internal.NewFileSchemaRegistry(pool, schemaTable, schemaDir)
 }

@@ -151,10 +151,14 @@ type SchemaAttributeCache map[string]AttributeMetadata
 // SchemaRegistry provides schema lookup operations.
 // Implementations can load schemas from files, databases, or other sources.
 type SchemaRegistry interface {
-	// GetSchemaByName retrieves schema ID and attribute cache by schema name
-	GetSchemaByName(name string) (int16, SchemaAttributeCache, error)
-	// GetSchemaByID retrieves schema name and attribute cache by schema ID
-	GetSchemaByID(id int16) (string, SchemaAttributeCache, error)
+	// GetSchemaAttributeCacheByName retrieves schema ID and attribute cache by schema name
+	GetSchemaAttributeCacheByName(name string) (int16, SchemaAttributeCache, error)
+	// GetSchemaAttributeCacheByID retrieves schema name and attribute cache by schema ID
+	GetSchemaAttributeCacheByID(id int16) (string, SchemaAttributeCache, error)
 	// ListSchemas returns a list of all registered schema names
+
+	GetSchemaByName(name string) (int16, JSONSchema, error)
+	// GetSchemaAttributeCacheByID retrieves schema name and attribute cache by schema ID
+	GetSchemaByID(id int16) (string, JSONSchema, error)
 	ListSchemas() []string
 }

@@ -122,7 +122,7 @@ func TestPersistentRecordTransformer_RoundTrip(t *testing.T) {
 	registry := newPersistentTransformerRegistry()
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("persistent_test")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("persistent_test")
 	require.NoError(t, err)
 
 	rowID := uuid.Must(uuid.NewV7())
@@ -281,7 +281,7 @@ func TestPersistentRecordTransformer_NilInputs(t *testing.T) {
 	registry := newPersistentTransformerRegistry()
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("persistent_test")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("persistent_test")
 	require.NoError(t, err)
 
 	_, err = transformer.ToPersistentRecord(ctx, schemaID, uuid.Must(uuid.NewV7()), nil)

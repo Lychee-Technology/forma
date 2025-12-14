@@ -32,11 +32,10 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
+	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool)
 
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := NewFileSchemaRegistry(pool, schemaRegistryTable, "../cmd/server/schemas")
 	require.NoError(t, err)
-
-	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool, registry)
 
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
@@ -75,7 +74,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 }
 
 // createSchemaRegistryTable mirrors the schema registry table using IDs from the file registry.
-func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, registry forma.SchemaRegistry) string {
+func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
 	t.Helper()
 
 	suffix := time.Now().UnixNano()
@@ -85,8 +84,15 @@ func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.
 	_, err := pool.Exec(ctx, ddl)
 	require.NoError(t, err)
 
-	for _, name := range registry.ListSchemas() {
-		id, _, err := registry.GetSchemaByName(name)
+	schemas := map[string]int16{
+		"activity":      100,
+		"lead":          101,
+		"visit":         102,
+		"communication": 103,
+		"log":           104,
+	}
+
+	for name, id := range schemas {
 		require.NoError(t, err)
 
 		_, err = pool.Exec(ctx,

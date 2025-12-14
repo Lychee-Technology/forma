@@ -43,14 +43,14 @@ func copyAttributeCache(src forma.SchemaAttributeCache) forma.SchemaAttributeCac
 	return dst
 }
 
-func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	if name != s.schemaName {
 		return 0, nil, fmt.Errorf("schema %s not found", name)
 	}
 	return s.schemaID, copyAttributeCache(s.cache), nil
 }
 
-func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttributeCache, error) {
+func (s *stubSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
 	if id != s.schemaID {
 		return "", nil, fmt.Errorf("schema id %d not found", id)
 	}
@@ -58,7 +58,21 @@ func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.SchemaAttrib
 }
 
 func (s *stubSchemaRegistry) ListSchemas() []string {
-	return []string{s.schemaName}
+return []string{s.schemaName}
+}
+
+func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+if name != s.schemaName {
+return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
+}
+return s.schemaID, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+}
+
+func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
+if id != s.schemaID {
+return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
+}
+return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
 }
 
 func TestTransformer_ToAttributes(t *testing.T) {
@@ -66,7 +80,7 @@ func TestTransformer_ToAttributes(t *testing.T) {
 	registry := newStubSchemaRegistry()
 	transformer := NewTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("test")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
 	require.NoError(t, err)
 
 	rowID := uuid.Must(uuid.NewV7())
@@ -139,7 +153,7 @@ func TestTransformer_FromAttributes(t *testing.T) {
 	registry := newStubSchemaRegistry()
 	transformer := NewTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("test")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
 	require.NoError(t, err)
 
 	rowID := uuid.Must(uuid.NewV7())
@@ -189,7 +203,7 @@ func TestTransformer_BatchRoundTrip(t *testing.T) {
 	registry := newStubSchemaRegistry()
 	transformer := NewTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("test")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
 	require.NoError(t, err)
 
 	records := []map[string]any{
@@ -261,7 +275,7 @@ func TestTransformer_ArrayInsideObjectDoesNotClobberObject(t *testing.T) {
 	}
 
 	transformer := NewTransformer(registry)
-	schemaID, _, err := registry.GetSchemaByName("contact_schema")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("contact_schema")
 	require.NoError(t, err)
 
 	rowID := uuid.Must(uuid.NewV7())
@@ -296,7 +310,7 @@ func TestTransformer_ArrayOfObjectsStillMergesProperties(t *testing.T) {
 	}
 
 	transformer := NewTransformer(registry)
-	schemaID, _, err := registry.GetSchemaByName("items_schema")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("items_schema")
 	require.NoError(t, err)
 
 	rowID := uuid.Must(uuid.NewV7())
@@ -336,7 +350,7 @@ func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []E
 		attr := attrs[i]
 		cache, ok := cacheBySchema[attr.SchemaID]
 		if !ok {
-			_, schemaCache, err := registry.GetSchemaByID(attr.SchemaID)
+			_, schemaCache, err := registry.GetSchemaAttributeCacheByID(attr.SchemaID)
 			require.NoError(t, err)
 			cache = schemaCache
 			cacheBySchema[attr.SchemaID] = cache
@@ -359,7 +373,7 @@ func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []E
 }
 
 func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
-	_, cache, err := registry.GetSchemaByID(schemaID)
+	_, cache, err := registry.GetSchemaAttributeCacheByID(schemaID)
 	require.NoError(t, err)
 
 	meta, ok := cache[name]

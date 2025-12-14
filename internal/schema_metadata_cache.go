@@ -38,7 +38,7 @@ func (c *schemaMetadataCache) getSchemaMetadata(schemaID int16) (forma.SchemaAtt
 		return nil, nil, fmt.Errorf("schema registry is not configured")
 	}
 
-	_, schemaCache, err := c.registry.GetSchemaByID(schemaID)
+	_, schemaCache, err := c.registry.GetSchemaAttributeCacheByID(schemaID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load schema metadata for id %d: %w", schemaID, err)
 	}

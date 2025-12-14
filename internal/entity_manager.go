@@ -52,7 +52,7 @@ func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, re
 	}
 	resolvedName := schemaName
 	if resolvedName == "" {
-		name, _, err := em.registry.GetSchemaByID(record.SchemaID)
+		name, _, err := em.registry.GetSchemaAttributeCacheByID(record.SchemaID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve schema name for id %d: %w", record.SchemaID, err)
 		}
@@ -86,12 +86,13 @@ func (em *entityManager) Create(ctx context.Context, req *forma.EntityOperation)
 	}
 
 	// Get schema by name to obtain schema ID
-	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaID, _, err := em.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
 	rowID := uuid.Must(uuid.NewV7())
+	zap.S().Debugw("Creating entity", "schemaName", req.SchemaName, "schemaID", schemaID, "rowID", rowID)
 	record, err := em.transformer.ToPersistentRecord(ctx, schemaID, rowID, req.Data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform data to persistent record: %w", err)
@@ -129,7 +130,7 @@ func (em *entityManager) Get(ctx context.Context, req *forma.QueryRequest) (*for
 	}
 
 	// Verify schema exists and fetch schema ID
-	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaID, _, err := em.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -164,7 +165,7 @@ func (em *entityManager) Update(ctx context.Context, req *forma.EntityOperation)
 	}
 
 	// Get schema by name
-	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaID, _, err := em.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -217,7 +218,7 @@ func (em *entityManager) Delete(ctx context.Context, req *forma.EntityOperation)
 		return fmt.Errorf("row ID is required for delete operation")
 	}
 
-	schemaID, _, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaID, _, err := em.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -252,7 +253,7 @@ func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*f
 	}
 
 	// Verify schema exists and get attribute metadata
-	schemaId, schemaCache, err := em.registry.GetSchemaByName(req.SchemaName)
+	schemaId, schemaCache, err := em.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -376,7 +377,7 @@ func (em *entityManager) CrossSchemaSearch(ctx context.Context, req *forma.Cross
 
 	schemaContexts := make([]schemaContext, 0, len(req.SchemaNames))
 	for _, schemaName := range req.SchemaNames {
-		schemaID, _, err := em.registry.GetSchemaByName(schemaName)
+		schemaID, _, err := em.registry.GetSchemaAttributeCacheByName(schemaName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get schema %s: %w", schemaName, err)
 		}
@@ -486,7 +487,7 @@ func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperat
 	if req == nil {
 		return nil, fmt.Errorf("batch operation cannot be nil")
 	}
-
+	zap.S().Debugw("BatchCreate called", "operationCount", len(req.Operations))
 	if len(req.Operations) == 0 {
 		return &forma.BatchResult{
 			Successful: make([]*forma.DataRecord, 0),
@@ -505,6 +506,7 @@ func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperat
 	for _, op := range req.Operations {
 		record, err := em.Create(ctx, &op)
 		if err != nil {
+			zap.S().Warnw("BatchCreate operation failed", "operation", op, "error", err)
 			failed = append(failed, forma.OperationError{
 				Operation: op,
 				Error:     err.Error(),
@@ -516,7 +518,7 @@ func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperat
 	}
 
 	duration := time.Since(startTime).Microseconds()
-
+	zap.S().Debugw("BatchCreate completed", "successfulCount", len(successful), "failedCount", len(failed), "durationMicroseconds", duration)
 	return &forma.BatchResult{
 		Successful: successful,
 		Failed:     failed,
@@ -531,6 +533,7 @@ func (em *entityManager) BatchUpdate(ctx context.Context, req *forma.BatchOperat
 		return nil, fmt.Errorf("batch operation cannot be nil")
 	}
 
+	zap.S().Debugw("BatchUpdate called", "operationCount", len(req.Operations))
 	if len(req.Operations) == 0 {
 		return &forma.BatchResult{
 			Successful: make([]*forma.DataRecord, 0),

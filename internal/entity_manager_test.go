@@ -2,6 +2,8 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,12 +14,99 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
+// newFileSchemaRegistryFromDir creates a schema registry that loads schemas from
+// a directory without requiring a database connection. Schema IDs are auto-assigned
+// based on alphabetical order of schema names.
+//
+// Parameters:
+//   - schemaDir: Directory containing *_attributes.json files
+func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error) {
+	registry := &fileSchemaRegistry{
+		schemaDir:             schemaDir,
+		nameToID:              make(map[string]int16),
+		idToName:              make(map[int16]string),
+schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
+schemas:               make(map[int16]forma.JSONSchema),
+}
+
+	if err := registry.loadSchemasFromDir(); err != nil {
+		return nil, err
+	}
+
+	return registry, nil
+}
+
+// loadSchemasFromDir scans the schema directory for *_attributes.json files
+// and loads them, auto-assigning schema IDs alphabetically.
+func (r *fileSchemaRegistry) loadSchemasFromDir() error {
+	// Read directory contents
+	entries, err := os.ReadDir(r.schemaDir)
+	if err != nil {
+		return fmt.Errorf("failed to read schema directory %s: %w", r.schemaDir, err)
+	}
+
+	// Find all *_attributes.json files
+	var schemaNames []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) == ".json" && !isAttributesFile(name) {
+			// This is a schema definition file (e.g., visit.json)
+			schemaName := name[:len(name)-5] // remove .json extension
+			schemaNames = append(schemaNames, schemaName)
+		}
+	}
+
+	if len(schemaNames) == 0 {
+		return fmt.Errorf("no schema files found in directory: %s", r.schemaDir)
+	}
+
+	// Sort schema names to ensure consistent ID assignment
+	sort.Strings(schemaNames)
+
+	// Load each schema
+	for i, schemaName := range schemaNames {
+		schemaID := int16(i + 1) // IDs start at 1
+
+		// Load attribute metadata from corresponding _attributes.json file
+		attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+		attributeData, err := os.ReadFile(attributesFile)
+		if err != nil {
+			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+		}
+
+		// Parse attribute metadata JSON
+		var rawAttributes map[string]map[string]any
+		if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
+			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
+		}
+
+		// Convert to SchemaAttributeCache
+		cache := make(forma.SchemaAttributeCache)
+		for attrName, attrData := range rawAttributes {
+			meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
+			if err != nil {
+				return err
+			}
+			cache[attrName] = meta
+		}
+
+		r.nameToID[schemaName] = schemaID
+		r.idToName[schemaID] = schemaName
+		r.schemaAttributeCaches[schemaID] = cache
+	}
+
+	return nil
+}
+
 // TestEntityManager_Create tests entity creation
 func TestEntityManager_Create(t *testing.T) {
 	// Setup
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -75,13 +164,13 @@ func TestEntityManager_Create(t *testing.T) {
 func TestEntityManager_Get(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, _, err := registry.GetSchemaByName("visit")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
@@ -133,7 +222,7 @@ func TestEntityManager_Get(t *testing.T) {
 func TestEntityManager_Delete(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -169,7 +258,7 @@ func TestEntityManager_Delete(t *testing.T) {
 func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -179,7 +268,7 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
-	_, cache, err := registry.GetSchemaByName("visit")
+	_, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
@@ -223,7 +312,7 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -253,7 +342,7 @@ func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	reg, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	reg, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -291,13 +380,13 @@ func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 // TestSchemaRegistry_LoadSchemas tests schema loading
 func TestSchemaRegistry_LoadSchemas(t *testing.T) {
 	schemaDir := "../cmd/server/schemas"
-	registry, err := NewFileSchemaRegistry(schemaDir)
+	registry, err := newFileSchemaRegistryFromDir(schemaDir)
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
 
 	// Test schema retrieval by name
-	schemaID, cache, err := registry.GetSchemaByName("visit")
+	schemaID, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Errorf("GetSchemaByName failed: %v", err)
 	}
@@ -333,19 +422,19 @@ func TestSchemaRegistry_LoadSchemas(t *testing.T) {
 
 // TestSchemaRegistry_GetSchemaByID tests retrieval by ID
 func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
 
 	// First get a schema by name to obtain its ID
-	schemaID, _, err := registry.GetSchemaByName("visit")
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema by name: %v", err)
 	}
 
 	// Now retrieve by ID
-	name, schema, err := registry.GetSchemaByID(schemaID)
+	name, schema, err := registry.GetSchemaAttributeCacheByID(schemaID)
 	if err != nil {
 		t.Errorf("GetSchemaByID failed: %v", err)
 	}
@@ -474,7 +563,7 @@ func buildPersistentRecord(t *testing.T, transformer PersistentRecordTransformer
 func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -486,7 +575,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	em := NewEntityManager(transformer, mockRepo, registry, config)
 
 	// Setup test data for multiple schemas
-	visitSchemaID, _, err := registry.GetSchemaByName("visit")
+	visitSchemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get visit schema metadata: %v", err)
 	}
@@ -545,7 +634,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -574,7 +663,7 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -603,7 +692,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -637,7 +726,7 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 			MaxPageSize:     100,
 		},
 	}
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -673,13 +762,13 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 func TestEntityManager_QueryWithCondition(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
 	transformer := NewPersistentRecordTransformer(registry)
 
-	schemaID, cache, err := registry.GetSchemaByName("visit")
+	schemaID, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
 		t.Fatalf("failed to get schema metadata: %v", err)
 	}
@@ -759,7 +848,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -793,6 +882,176 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	}
 }
 
+// mockSchemaRegistry is a mock implementation of forma.SchemaRegistry for testing
+type mockSchemaRegistry struct {
+	nameToID map[string]int16
+	idToName map[int16]string
+	schemas  map[string]forma.SchemaAttributeCache
+}
+
+func newMockSchemaRegistry() *mockSchemaRegistry {
+	registry := &mockSchemaRegistry{
+		nameToID: make(map[string]int16),
+		idToName: make(map[int16]string),
+		schemas:  make(map[string]forma.SchemaAttributeCache),
+	}
+
+	// Register "visit" schema with ID 1
+	visitCache := forma.SchemaAttributeCache{
+		"actualEndAt": forma.AttributeMetadata{
+			AttributeName: "actualEndAt",
+			AttributeID:   1,
+			ValueType:     forma.ValueTypeDate,
+		},
+		"actualStartAt": forma.AttributeMetadata{
+			AttributeName: "actualStartAt",
+			AttributeID:   2,
+			ValueType:     forma.ValueTypeDate,
+		},
+		"attendees": forma.AttributeMetadata{
+			AttributeName: "attendees",
+			AttributeID:   3,
+			ValueType:     forma.ValueTypeText,
+		},
+		"createdAt": forma.AttributeMetadata{
+			AttributeName: "createdAt",
+			AttributeID:   4,
+			ValueType:     forma.ValueTypeDate,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumnCreatedAt,
+				Encoding:   forma.MainColumnEncodingUnixMs,
+			},
+		},
+		"feedback": forma.AttributeMetadata{
+			AttributeName: "feedback",
+			AttributeID:   5,
+			ValueType:     forma.ValueTypeText,
+		},
+		"id": forma.AttributeMetadata{
+			AttributeName: "id",
+			AttributeID:   6,
+			ValueType:     forma.ValueTypeText,
+		},
+		"leadId": forma.AttributeMetadata{
+			AttributeName: "leadId",
+			AttributeID:   7,
+			ValueType:     forma.ValueTypeText,
+		},
+		"logs": forma.AttributeMetadata{
+			AttributeName: "logs",
+			AttributeID:   8,
+			ValueType:     forma.ValueTypeText,
+		},
+		"nextFollowUpAt": forma.AttributeMetadata{
+			AttributeName: "nextFollowUpAt",
+			AttributeID:   9,
+			ValueType:     forma.ValueTypeDate,
+		},
+		"propertyId": forma.AttributeMetadata{
+			AttributeName: "propertyId",
+			AttributeID:   10,
+			ValueType:     forma.ValueTypeText,
+		},
+		"scheduledEndAt": forma.AttributeMetadata{
+			AttributeName: "scheduledEndAt",
+			AttributeID:   16,
+			ValueType:     forma.ValueTypeDate,
+		},
+		"scheduledStartAt": forma.AttributeMetadata{
+			AttributeName: "scheduledStartAt",
+			AttributeID:   17,
+			ValueType:     forma.ValueTypeDate,
+		},
+		"status": forma.AttributeMetadata{
+			AttributeName: "status",
+			AttributeID:   18,
+			ValueType:     forma.ValueTypeText,
+		},
+		"updatedAt": forma.AttributeMetadata{
+			AttributeName: "updatedAt",
+			AttributeID:   19,
+			ValueType:     forma.ValueTypeDate,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumnUpdatedAt,
+				Encoding:   forma.MainColumnEncodingUnixMs,
+			},
+		},
+		"userId": forma.AttributeMetadata{
+			AttributeName: "userId",
+			AttributeID:   20,
+			ValueType:     forma.ValueTypeText,
+		},
+	}
+	registry.registerSchema("visit", 1, visitCache)
+
+	return registry
+}
+
+func (m *mockSchemaRegistry) registerSchema(name string, id int16, cache forma.SchemaAttributeCache) {
+	m.nameToID[name] = id
+	m.idToName[id] = name
+	m.schemas[name] = cache
+}
+
+func (m *mockSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
+id, exists := m.nameToID[name]
+if !exists {
+return 0, nil, fmt.Errorf("schema not found: %s", name)
+}
+cache, exists := m.schemas[name]
+if !exists {
+return 0, nil, fmt.Errorf("schema data not found: %s", name)
+}
+// Return a copy to prevent external mutations
+cacheCopy := make(forma.SchemaAttributeCache, len(cache))
+for k, v := range cache {
+cacheCopy[k] = v
+}
+return id, cacheCopy, nil
+}
+
+func (m *mockSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
+name, exists := m.idToName[id]
+if !exists {
+return "", nil, fmt.Errorf("schema not found for ID: %d", id)
+}
+cache, exists := m.schemas[name]
+if !exists {
+return "", nil, fmt.Errorf("schema data not found for ID: %d", id)
+}
+// Return a copy to prevent external mutations
+cacheCopy := make(forma.SchemaAttributeCache, len(cache))
+for k, v := range cache {
+cacheCopy[k] = v
+}
+return name, cacheCopy, nil
+}
+
+func (m *mockSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+id, exists := m.nameToID[name]
+if !exists {
+return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)
+}
+return id, forma.JSONSchema{ID: id, Name: name}, nil
+}
+
+func (m *mockSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
+name, exists := m.idToName[id]
+if !exists {
+return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d", id)
+}
+return name, forma.JSONSchema{ID: id, Name: name}, nil
+}
+
+func (m *mockSchemaRegistry) ListSchemas() []string {
+	schemas := make([]string, 0, len(m.nameToID))
+	for name := range m.nameToID {
+		schemas = append(schemas, name)
+	}
+	sort.Strings(schemas)
+	return schemas
+}
+
 // Helper function to create test config
 func createTestConfig() *forma.Config {
 	return &forma.Config{
@@ -805,7 +1064,7 @@ func createTestConfig() *forma.Config {
 
 // TestFileSchemaRegistry_InvalidDirectory tests error handling for invalid directory
 func TestFileSchemaRegistry_InvalidDirectory(t *testing.T) {
-	_, err := NewFileSchemaRegistry("/nonexistent/directory")
+	_, err := newFileSchemaRegistryFromDir("/nonexistent/directory")
 	if err == nil {
 		t.Error("Expected error for invalid directory, got nil")
 	}
@@ -820,7 +1079,7 @@ func TestFileSchemaRegistry_NoSchemaFiles(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	_, err = NewFileSchemaRegistry(tmpDir)
+	_, err = newFileSchemaRegistryFromDir(tmpDir)
 	if err == nil {
 		t.Error("Expected error when no schema files found, got nil")
 	}
@@ -842,7 +1101,7 @@ func TestFileSchemaRegistry_InvalidJSON(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	_, err = NewFileSchemaRegistry(tmpDir)
+	_, err = newFileSchemaRegistryFromDir(tmpDir)
 	if err == nil {
 		t.Error("Expected error for invalid JSON, got nil")
 	}

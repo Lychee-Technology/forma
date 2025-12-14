@@ -56,6 +56,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 		Int16Items:   make(map[string]int16),
 		Int32Items:   make(map[string]int32),
 		Int64Items:   make(map[string]int64),
+		UUIDItems:    make(map[string]uuid.UUID),
 		Float64Items: make(map[string]float64),
 		UpdatedAt:    time.Now().UnixMilli(),
 	}

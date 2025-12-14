@@ -280,6 +280,13 @@ func (t *transformer) flattenToAttributes(
 
 func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) error {
 	switch valueType {
+	case forma.ValueTypeUUID:
+		uuidVal, isUUID := toUUID(value)
+		if !isUUID {
+			return fmt.Errorf("invalid UUID value: %v", value)
+		}
+		strVal := uuidVal.String()
+		attr.ValueText = &strVal
 	case forma.ValueTypeText:
 		strVal, err := toString(value)
 		if err != nil {
@@ -297,7 +304,6 @@ func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) e
 		if err != nil {
 			return err
 		}
-
 		unixMillis := float64(timeVal.UnixMilli())
 		attr.ValueNumeric = &unixMillis
 	case forma.ValueTypeBool:
@@ -357,6 +363,11 @@ func toTime(value any) (time.Time, error) {
 	case time.Time:
 		return v, nil
 	case string:
+		epoch, err := strconv.ParseInt(value.(string), 10, 64)
+		if err == nil {
+			return time.UnixMilli(epoch), nil
+		}
+
 		formats := []string{
 			time.RFC3339Nano,
 			time.RFC3339,
