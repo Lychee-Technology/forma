@@ -293,12 +293,6 @@ func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) e
 			return err
 		}
 		attr.ValueText = &strVal
-	case forma.ValueTypeUUID:
-		strVal, err := toString(value)
-		if err != nil {
-			return err
-		}
-		attr.ValueText = &strVal
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt, forma.ValueTypeInteger, forma.ValueTypeSmallInt:
 		numVal, err := toFloat64(value)
 		if err != nil {

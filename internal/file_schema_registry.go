@@ -392,9 +392,9 @@ func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 	return name, schema, nil
 }
 
-// isAttributesFile checks if a filename is an attributes file (ends with _attributes.json)
-func isAttributesFile(name string) bool {
-	return len(name) > 16 && name[len(name)-16:] == "_attributes.json"
+func hasSuffix(name, suffix string) bool {
+	suffixLen := len(suffix)
+	return len(name) > suffixLen && name[len(name)-suffixLen:] == suffix
 }
 
 // copyFileSchemaAttributeCache creates a deep copy of a SchemaAttributeCache
@@ -472,7 +472,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 	var schemaNames []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.IsDir() && len(name) > 5 && name[len(name)-5:] == ".json" && !isAttributesFile(name) {
+		if !entry.IsDir() && hasSuffix(name,  ".json") && !hasSuffix(name, "_full.json") && !hasSuffix(name, "_attributes.json") {
 			schemaName := name[:len(name)-5] // remove .json extension
 			schemaNames = append(schemaNames, schemaName)
 		}

@@ -52,7 +52,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 			continue
 		}
 		name := entry.Name()
-		if filepath.Ext(name) == ".json" && !isAttributesFile(name) {
+		if filepath.Ext(name) == ".json" && !hasSuffix(name, "_attributes.json") && !hasSuffix(name, "_full.json") {
 			// This is a schema definition file (e.g., visit.json)
 			schemaName := name[:len(name)-5] // remove .json extension
 			schemaNames = append(schemaNames, schemaName)
@@ -91,6 +91,21 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 				return err
 			}
 			cache[attrName] = meta
+		}
+
+		// Load main schema JSON file (e.g., lead.json)
+		schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
+		schemaData, err := os.ReadFile(schemaFile)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
+			}
+		} else {
+			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
+			if err != nil {
+				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
+			}
+			r.schemas[schemaID] = jsonSchema
 		}
 
 		r.nameToID[schemaName] = schemaID
@@ -163,7 +178,7 @@ func TestEntityManager_Create(t *testing.T) {
 func TestEntityManager_Create_StripsRelationFields(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
@@ -270,7 +285,7 @@ func TestEntityManager_Get(t *testing.T) {
 func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
-	registry, err := NewFileSchemaRegistry("../cmd/server/schemas")
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
