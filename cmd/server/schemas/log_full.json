@@ -18,8 +18,9 @@
       "type": "string"
     },
     "leadId": {
-      "description": "Associated lead ID",
+      "description": "Lead identifier",
       "format": "uuid",
+      "pattern": "^[a-zA-Z0-9_-]+$",
       "type": "string"
     },
     "noteId": {
@@ -53,7 +54,9 @@
       "type": "string"
     },
     "visitId": {
-      "description": "Associated visit ID (if log is tied to a visit)",
+      "description": "Visit identifier",
+      "format": "uuid",
+      "pattern": "^[a-zA-Z0-9_-]+$",
       "type": "string"
     }
   },

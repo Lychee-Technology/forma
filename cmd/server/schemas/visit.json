@@ -3,6 +3,14 @@
   "title": "Visit",
   "description": "Lead property visit (showing) record",
   "type": "object",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "description": "Visit identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "format": "uuid"
+    }
+  },
   "required": [
     "id",
     "leadId",
@@ -13,10 +21,7 @@
   ],
   "properties": {
     "id": {
-      "type": "string",
-      "description": "Visit identifier",
-      "pattern": "^[a-zA-Z0-9_-]+$",
-      "format": "uuid"
+      "$ref": "#/$defs/id"
     },
     "leadId": {
       "type": "string",
@@ -24,25 +29,9 @@
       "format": "uuid"
     },
     "contactSnapshot": {
-      "type": "object",
-      "description": "Contact snapshot to preserve lead contact info at time of visit",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Contact name in English/romanized form"
-        },
-        "nameNative": {
-          "type": "string",
-          "description": "Contact name in native script (e.g., Japanese kanji, Chinese, Korean)"
-        },
-        "nameKana": {
-          "type": "string",
-          "description": "Contact name in kana (Japanese only)"
-        },
-        "primaryPhone": {
-          "type": "string",
-          "description": "Primary phone number"
-        }
+      "$ref": "lead.json#/$defs/contact",
+      "x-foreign-key-value": {
+        "$ref": "#/properties/leadId"
       }
     },
     "userId": {
