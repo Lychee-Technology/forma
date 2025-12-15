@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 )
 
 type initDBOptions struct {
@@ -33,9 +32,9 @@ func runInitDB(args []string) error {
 	flags := flag.NewFlagSet("init-db", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		zap.S().Info("Usage: forma-tools init-db [options]")
-		zap.S().Info("")
-		zap.S().Info("Options:")
+		fmt.Println("Usage: forma-tools init-db [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
 		flags.PrintDefaults()
 	}
 
@@ -83,7 +82,7 @@ func initDatabase(opts initDBOptions) error {
 		return err
 	}
 
-	zap.S().Info("Database initialized successfully.")
+	fmt.Println("Database initialized successfully.")
 	return nil
 }
 
@@ -126,7 +125,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlSchema); err != nil {
 		return fmt.Errorf("ensure schema registry table: %w", err)
 	}
-	zap.S().Infow("Created schema registry table", "table", opts.schemaTable)
+	fmt.Printf("Created schema registry table: %s\n", opts.schemaTable)
 
 	ddlMain := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id   SMALLINT NOT NULL,
@@ -168,7 +167,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlMain); err != nil {
 		return fmt.Errorf("ensure entity main table: %w", err)
 	}
-	zap.S().Infow("Created entity main table", "table", opts.entityMain)
+	fmt.Printf("Created entity main table: %s", opts.entityMain)
 
 	ddlEAV := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		schema_id      SMALLINT NOT NULL,
@@ -183,7 +182,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	if _, err := tx.Exec(ctx, ddlEAV); err != nil {
 		return fmt.Errorf("ensure eav table: %w", err)
 	}
-	zap.S().Infow("Created EAV table", "table", opts.eavTable)
+	fmt.Printf("Created EAV table: %s\n", opts.eavTable)
 
 	idxNumeric := quoteIdentifier(makeIndexName(opts.eavTable, "numeric"))
 	createIdxNumeric := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL`, idxNumeric, eavTable)
@@ -244,7 +243,7 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 	}
 
 	if len(schemaFiles) == 0 {
-		zap.S().Infow("No schema files found", "dir", schemaDir)
+		fmt.Printf("No schema files found, dir: %s\n", schemaDir)
 		return nil
 	}
 
@@ -268,13 +267,13 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 		}
 
 		if result.RowsAffected() > 0 {
-			zap.S().Infow("Registered schema", "schema", schemaName, "id", schemaID)
+			fmt.Printf("Registered schema, name: %s, id: %d\n", schemaName, schemaID)
 		} else {
-			zap.S().Infow("Schema already exists", "schema", schemaName)
+			fmt.Printf("Schema already exists, schema name: %s\n", schemaName)
 		}
 	}
 
-	zap.S().Infow("Registered schemas from directory", "count", len(schemaFiles), "dir", schemaDir)
+	fmt.Printf("Registered schemas from directory, count: %d, dir: %s\n", len(schemaFiles), schemaDir)
 	return nil
 }
 

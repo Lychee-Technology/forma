@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"go.uber.org/zap"
 )
 
 type attributeSpec struct {
@@ -22,9 +20,9 @@ func runGenerateAttributes(args []string) error {
 	flags := flag.NewFlagSet("generate-attributes", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		zap.S().Info("Usage: forma-tools generate-attributes [options]")
-		zap.S().Info("")
-		zap.S().Info("Options:")
+		fmt.Println("Usage: forma-tools generate-attributes [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
 		flags.PrintDefaults()
 	}
 
@@ -58,7 +56,7 @@ func runGenerateAttributes(args []string) error {
 		return err
 	}
 
-	zap.S().Infow("Generated attributes", "schemaPath", resolvedSchemaPath, "outputPath", resolvedOutputPath)
+	fmt.Printf("Generated attributes, schemaPath: %s, outputPath: %s\n", resolvedSchemaPath, resolvedOutputPath)
 	return nil
 }
 
@@ -137,7 +135,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 		return err
 	}
 
-	zap.S().Infow("Generated attributes", "total", len(result), "new", len(newAttrNames), "maxID", maxID+len(newAttrNames))
+	fmt.Printf("Generated attributes total: %d, new: %d, maxID: %d\n", len(result), len(newAttrNames), maxID+len(newAttrNames))
 	return nil
 }
 

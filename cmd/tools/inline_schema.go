@@ -9,17 +9,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"go.uber.org/zap"
 )
 
 func runInlineSchema(args []string) error {
 	flags := flag.NewFlagSet("inline-schema", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		zap.S().Info("Usage: forma-tools inline-schema [options]")
-		zap.S().Info("")
-		zap.S().Info("Options:")
+		fmt.Println("Usage: forma-tools inline-schema [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
 		flags.PrintDefaults()
 	}
 
@@ -57,7 +55,7 @@ func runInlineSchema(args []string) error {
 		if err := os.WriteFile(*outputFile, encoded, 0o644); err != nil {
 			return fmt.Errorf("write output file: %w", err)
 		}
-		zap.S().Infow("Inlined schema written", "output", *outputFile)
+		fmt.Printf("Inlined schema written, output: %s\n", *outputFile)
 	}
 
 	return nil

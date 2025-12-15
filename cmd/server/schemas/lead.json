@@ -19,7 +19,8 @@
       "type": "string",
       "description": "Lead identifier",
       "pattern": "^[a-zA-Z0-9_-]+$",
-      "format": "uuid"
+      "format": "uuid",
+      "x-unique-property": true
     },
     "tenantId": {
       "type": "string",

@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Lead property visit (showing) record",
+  "properties": {
+    "actualEndAt": {
+      "description": "Actual end time",
+      "format": "date-time",
+      "type": "string"
+    },
+    "actualStartAt": {
+      "description": "Actual start time",
+      "format": "date-time",
+      "type": "string"
+    },
+    "attendees": {
+      "description": "List of attendees (names or user IDs)",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "contactSnapshot": {
+      "description": "Contact information for the lead",
+      "properties": {
+        "annualIncome": {
+          "description": "Annual income amount",
+          "minimum": 0,
+          "type": "number"
+        },
+        "annualIncomeCurrency": {
+          "default": "JPY",
+          "description": "Income currency",
+          "enum": [
+            "JPY",
+            "USD",
+            "EUR",
+            "CNY",
+            "HKD",
+            "KRW",
+            "SGD"
+          ],
+          "type": "string"
+        },
+        "birthday": {
+          "description": "Birth date (YYYY-MM-DD)",
+          "format": "date",
+          "type": "string"
+        },
+        "company": {
+          "description": "Employer or company name",
+          "type": "string"
+        },
+        "currentResidence": {
+          "description": "Current residential address or area",
+          "type": "string"
+        },
+        "email": {
+          "description": "Email address",
+          "format": "email",
+          "type": "string"
+        },
+        "employmentYear": {
+          "description": "Most recent employment start year",
+          "maximum": 2100,
+          "minimum": 1900,
+          "type": "integer"
+        },
+        "familySize": {
+          "description": "Number of family members excluding the lead",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "isBlacklisted": {
+          "description": "Whether the lead is blacklisted",
+          "type": "boolean"
+        },
+        "lineId": {
+          "description": "LINE identifier",
+          "type": "string"
+        },
+        "maritalStatus": {
+          "description": "Marital status",
+          "enum": [
+            "single",
+            "married",
+            "divorced",
+            "widowed",
+            "other"
+          ],
+          "type": "string"
+        },
+        "memo": {
+          "description": "Free-text notes about the contact",
+          "type": "string"
+        },
+        "name": {
+          "description": "Primary name (Latin alphabet)",
+          "type": "string"
+        },
+        "nameKana": {
+          "description": "Kana representation",
+          "type": "string"
+        },
+        "nameNative": {
+          "description": "Native language name",
+          "type": "string"
+        },
+        "occupation": {
+          "description": "Occupation or title",
+          "type": "string"
+        },
+        "phones": {
+          "description": "Phone numbers",
+          "items": {
+            "pattern": "^[0-9-+() ]+$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "preferredChannel": {
+          "description": "Preferred communication channel",
+          "enum": [
+            "phone",
+            "line",
+            "email",
+            "sms",
+            "wechat",
+            "other"
+          ],
+          "type": "string"
+        },
+        "preferredLanguage": {
+          "description": "Preferred communication language",
+          "enum": [
+            "ja",
+            "en",
+            "zh",
+            "ko",
+            "other"
+          ],
+          "type": "string"
+        },
+        "primaryPhone": {
+          "description": "Preferred phone number",
+          "pattern": "^[0-9-+() ]+$",
+          "type": "string"
+        },
+        "wechatId": {
+          "description": "WeChat identifier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "createdAt": {
+      "description": "Record creation timestamp",
+      "format": "date-time",
+      "type": "string"
+    },
+    "feedback": {
+      "description": "Client feedback or notes from the visit",
+      "type": "string"
+    },
+    "id": {
+      "description": "Visit identifier",
+      "format": "uuid",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "type": "string"
+    },
+    "leadId": {
+      "description": "Lead identifier",
+      "format": "uuid",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "type": "string"
+    },
+    "logs": {
+      "description": "Visit log IDs tied to this visit",
+      "items": {
+        "description": "Log ID",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "nextFollowUpAt": {
+      "description": "Next follow-up time derived from the visit",
+      "format": "date-time",
+      "type": "string"
+    },
+    "propertyId": {
+      "description": "Property being visited",
+      "type": "string"
+    },
+    "propertySnapshot": {
+      "description": "Optional property snapshot to preserve historical info",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "price": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "rent": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "scheduledEndAt": {
+      "description": "Scheduled end time",
+      "format": "date-time",
+      "type": "string"
+    },
+    "scheduledStartAt": {
+      "description": "Scheduled start time",
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "description": "Visit status",
+      "enum": [
+        "scheduled",
+        "visited",
+        "no_show",
+        "canceled",
+        "rescheduled"
+      ],
+      "type": "string"
+    },
+    "updatedAt": {
+      "description": "Last update timestamp",
+      "format": "date-time",
+      "type": "string"
+    },
+    "userId": {
+      "description": "Agent conducting the visit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "leadId",
+    "userId",
+    "propertyId",
+    "scheduledStartAt",
+    "status"
+  ],
+  "title": "Visit",
+  "type": "object"
+}
