@@ -3,12 +3,128 @@
   "title": "Leads",
   "description": "Extended lead data model for Forma ingestion",
   "type": "object",
-  "$defs": {
+  "required": [
+    "id",
+    "tenantId",
+    "ownerUserId",
+    "pipeline",
+    "stage",
+    "status",
+    "contact",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
     "id": {
       "type": "string",
       "description": "Lead identifier",
       "pattern": "^[a-zA-Z0-9_-]+$",
       "format": "uuid"
+    },
+    "tenantId": {
+      "type": "string",
+      "description": "Tenant/agency identifier"
+    },
+    "ownerUserId": {
+      "type": "string",
+      "description": "Lead owner user ID"
+    },
+    "pipeline": {
+      "type": "string",
+      "enum": [
+        "buy",
+        "rent",
+        "sell",
+        "landlord"
+      ],
+      "description": "Pipeline category"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "new",
+        "contacted",
+        "need_defined",
+        "viewing",
+        "offer",
+        "contract",
+        "closed"
+      ],
+      "description": "Pipeline stage"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "won",
+        "lost",
+        "junk"
+      ],
+      "description": "Lead status"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Reason for closing or disqualifying the lead"
+    },
+    "temperature": {
+      "type": "string",
+      "enum": [
+        "Hot",
+        "Warm",
+        "New",
+        "Qualified"
+      ],
+      "description": "Lead temperature tag"
+    },
+    "rating": {
+      "type": "string",
+      "description": "Internal rating label (e.g., A/B/C)",
+      "pattern": "^[A-Z]$"
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Numeric score for sorting and prioritization"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Labels for segmentation and filtering"
+    },
+    "source": {
+      "type": "object",
+      "description": "Lead acquisition source",
+      "required": [
+        "channel"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "portal",
+            "walk_in",
+            "referral",
+            "phone",
+            "web_form",
+            "event",
+            "other"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Source name or platform (e.g., Suumo)"
+        },
+        "campaign": {
+          "type": "string",
+          "description": "Campaign identifier"
+        },
+        "originalLeadId": {
+          "type": "string",
+          "description": "Upstream platform lead ID"
+        }
+      }
     },
     "contact": {
       "type": "object",
@@ -145,130 +261,6 @@
           "description": "Free-text notes about the contact"
         }
       }
-    }
-  },
-  "required": [
-    "id",
-    "tenantId",
-    "ownerUserId",
-    "pipeline",
-    "stage",
-    "status",
-    "contact",
-    "createdAt",
-    "updatedAt"
-  ],
-  "properties": {
-    "id": {
-      "$ref": "#/$defs/id"
-    },
-    "tenantId": {
-      "type": "string",
-      "description": "Tenant/agency identifier"
-    },
-    "ownerUserId": {
-      "type": "string",
-      "description": "Lead owner user ID"
-    },
-    "pipeline": {
-      "type": "string",
-      "enum": [
-        "buy",
-        "rent",
-        "sell",
-        "landlord"
-      ],
-      "description": "Pipeline category"
-    },
-    "stage": {
-      "type": "string",
-      "enum": [
-        "new",
-        "contacted",
-        "need_defined",
-        "viewing",
-        "offer",
-        "contract",
-        "closed"
-      ],
-      "description": "Pipeline stage"
-    },
-    "status": {
-      "type": "string",
-      "enum": [
-        "open",
-        "won",
-        "lost",
-        "junk"
-      ],
-      "description": "Lead status"
-    },
-    "reason": {
-      "type": "string",
-      "description": "Reason for closing or disqualifying the lead"
-    },
-    "temperature": {
-      "type": "string",
-      "enum": [
-        "Hot",
-        "Warm",
-        "New",
-        "Qualified"
-      ],
-      "description": "Lead temperature tag"
-    },
-    "rating": {
-      "type": "string",
-      "description": "Internal rating label (e.g., A/B/C)",
-      "pattern": "^[A-Z]$"
-    },
-    "score": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Numeric score for sorting and prioritization"
-    },
-    "tags": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Labels for segmentation and filtering"
-    },
-    "source": {
-      "type": "object",
-      "description": "Lead acquisition source",
-      "required": [
-        "channel"
-      ],
-      "properties": {
-        "channel": {
-          "type": "string",
-          "enum": [
-            "portal",
-            "walk_in",
-            "referral",
-            "phone",
-            "web_form",
-            "event",
-            "other"
-          ]
-        },
-        "name": {
-          "type": "string",
-          "description": "Source name or platform (e.g., Suumo)"
-        },
-        "campaign": {
-          "type": "string",
-          "description": "Campaign identifier"
-        },
-        "originalLeadId": {
-          "type": "string",
-          "description": "Upstream platform lead ID"
-        }
-      }
-    },
-    "contact": {
-      "$ref": "#/$defs/contact"
     },
     "requirement": {
       "type": "object",

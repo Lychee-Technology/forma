@@ -1,21 +1,13 @@
 {
   "createdAt": {
     "attributeID": 1,
-    "valueType": "date",
-    "column_binding": {
-      "col_name": "ltbase_created_at",
-      "encoding": "unix_ms"
-    }
-  },
-  "data": {
-    "attributeID": 2,
-    "valueType": "text"
+    "valueType": "date"
   },
   "id": {
     "attributeID": 3,
     "valueType": "text",
     "column_binding": {
-      "col_name": "ltbase_row_id"
+      "col_name": "text_01"
     }
   },
   "leadId": {
@@ -43,11 +35,7 @@
   },
   "updatedAt": {
     "attributeID": 9,
-    "valueType": "date",
-    "column_binding": {
-      "col_name": "ltbase_updated_at",
-      "encoding": "unix_ms"
-    }
+    "valueType": "date"
   },
   "visitId": {
     "attributeID": 10,

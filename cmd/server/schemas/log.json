@@ -51,10 +51,6 @@
         "text/plain"
       ]
     },
-    "data": {
-      "type": "string",
-      "description": "Base64 encoded data content (audio, image, or text)"
-    },
     "createdAt": {
       "type": "string",
       "format": "date-time",

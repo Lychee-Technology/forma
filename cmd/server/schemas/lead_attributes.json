@@ -93,11 +93,7 @@
   },
   "createdAt": {
     "attributeID": 24,
-    "valueType": "date",
-    "column_binding": {
-      "col_name": "ltbase_created_at",
-      "encoding": "unix_ms"
-    }
+    "valueType": "date"
   },
   "firstTouchAt": {
     "attributeID": 25,
@@ -301,11 +297,7 @@
   },
   "updatedAt": {
     "attributeID": 75,
-    "valueType": "date",
-    "column_binding": {
-      "col_name": "ltbase_updated_at",
-      "encoding": "unix_ms"
-    }
+    "valueType": "date"
   },
   "visits": {
     "attributeID": 76,
