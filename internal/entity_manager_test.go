@@ -25,9 +25,9 @@ func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error
 		schemaDir:             schemaDir,
 		nameToID:              make(map[string]int16),
 		idToName:              make(map[int16]string),
-schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
-schemas:               make(map[int16]forma.JSONSchema),
-}
+		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
+		schemas:               make(map[int16]forma.JSONSchema),
+	}
 
 	if err := registry.loadSchemasFromDir(); err != nil {
 		return nil, err
@@ -994,53 +994,53 @@ func (m *mockSchemaRegistry) registerSchema(name string, id int16, cache forma.S
 }
 
 func (m *mockSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
-id, exists := m.nameToID[name]
-if !exists {
-return 0, nil, fmt.Errorf("schema not found: %s", name)
-}
-cache, exists := m.schemas[name]
-if !exists {
-return 0, nil, fmt.Errorf("schema data not found: %s", name)
-}
-// Return a copy to prevent external mutations
-cacheCopy := make(forma.SchemaAttributeCache, len(cache))
-for k, v := range cache {
-cacheCopy[k] = v
-}
-return id, cacheCopy, nil
+	id, exists := m.nameToID[name]
+	if !exists {
+		return 0, nil, fmt.Errorf("schema not found: %s", name)
+	}
+	cache, exists := m.schemas[name]
+	if !exists {
+		return 0, nil, fmt.Errorf("schema data not found: %s", name)
+	}
+	// Return a copy to prevent external mutations
+	cacheCopy := make(forma.SchemaAttributeCache, len(cache))
+	for k, v := range cache {
+		cacheCopy[k] = v
+	}
+	return id, cacheCopy, nil
 }
 
 func (m *mockSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
-name, exists := m.idToName[id]
-if !exists {
-return "", nil, fmt.Errorf("schema not found for ID: %d", id)
-}
-cache, exists := m.schemas[name]
-if !exists {
-return "", nil, fmt.Errorf("schema data not found for ID: %d", id)
-}
-// Return a copy to prevent external mutations
-cacheCopy := make(forma.SchemaAttributeCache, len(cache))
-for k, v := range cache {
-cacheCopy[k] = v
-}
-return name, cacheCopy, nil
+	name, exists := m.idToName[id]
+	if !exists {
+		return "", nil, fmt.Errorf("schema not found for ID: %d", id)
+	}
+	cache, exists := m.schemas[name]
+	if !exists {
+		return "", nil, fmt.Errorf("schema data not found for ID: %d", id)
+	}
+	// Return a copy to prevent external mutations
+	cacheCopy := make(forma.SchemaAttributeCache, len(cache))
+	for k, v := range cache {
+		cacheCopy[k] = v
+	}
+	return name, cacheCopy, nil
 }
 
 func (m *mockSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
-id, exists := m.nameToID[name]
-if !exists {
-return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)
-}
-return id, forma.JSONSchema{ID: id, Name: name}, nil
+	id, exists := m.nameToID[name]
+	if !exists {
+		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)
+	}
+	return id, forma.JSONSchema{ID: id, Name: name}, nil
 }
 
 func (m *mockSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
-name, exists := m.idToName[id]
-if !exists {
-return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d", id)
-}
-return name, forma.JSONSchema{ID: id, Name: name}, nil
+	name, exists := m.idToName[id]
+	if !exists {
+		return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d", id)
+	}
+	return name, forma.JSONSchema{ID: id, Name: name}, nil
 }
 
 func (m *mockSchemaRegistry) ListSchemas() []string {

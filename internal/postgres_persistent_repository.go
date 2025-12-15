@@ -88,7 +88,25 @@ var entityMainColumnDescriptors = []columnDescriptor{}
 var entityMainProjection string
 
 func init() {
-	projection := make([]string, 0, len(textColumns)+len(smallintColumns)+len(integerColumns)+len(bigintColumns)+len(doubleColumns))
+	projection := make([]string, 0, 5+len(textColumns)+len(smallintColumns)+len(integerColumns)+len(bigintColumns)+len(doubleColumns)+len(uuidColumns))
+
+	// Add system fields first
+	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_schema_id", kind: columnKindSmallint})
+	projection = append(projection, "ltbase_schema_id")
+
+	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_row_id", kind: columnKindUUID})
+	projection = append(projection, "ltbase_row_id")
+
+	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_created_at", kind: columnKindBigint})
+	projection = append(projection, "ltbase_created_at")
+
+	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_updated_at", kind: columnKindBigint})
+	projection = append(projection, "ltbase_updated_at")
+
+	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_deleted_at", kind: columnKindBigint})
+	projection = append(projection, "ltbase_deleted_at")
+
+	// Add remaining text columns (skip text_01 as it's already added)
 	for _, col := range textColumns {
 		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindText})
 		projection = append(projection, col)
@@ -107,6 +125,10 @@ func init() {
 	}
 	for _, col := range doubleColumns {
 		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindDouble})
+		projection = append(projection, col)
+	}
+	for _, col := range uuidColumns {
+		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindUUID})
 		projection = append(projection, col)
 	}
 	entityMainProjection = strings.Join(projection, ", ")
@@ -415,35 +437,44 @@ func (r *PostgresPersistentRecordRepository) fetchAttributes(ctx context.Context
 }
 
 func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
-	projection := entityMainProjection
-	if projection != "" {
-		projection = ", " + projection
-	}
 	query := fmt.Sprintf(
-		"SELECT ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, ltbase_deleted_at%s FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
-		projection,
+		"SELECT %s FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+		entityMainProjection,
 		sanitizeIdentifier(table),
 	)
 
 	row := r.pool.QueryRow(ctx, query, schemaID, rowID)
 
-	var (
-		schemaVal  pgtype.Int2
-		rowVal     pgtype.UUID
-		createdVal pgtype.Int8
-		updatedVal pgtype.Int8
-		deletedVal pgtype.Int8
-	)
+	// Count columns by kind to allocate proper buffer sizes
+	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
+	for _, desc := range entityMainColumnDescriptors {
+		switch desc.kind {
+		case columnKindText:
+			textCount++
+		case columnKindSmallint:
+			smallCount++
+		case columnKindInteger:
+			intCount++
+		case columnKindBigint:
+			bigCount++
+		case columnKindDouble:
+			doubleCount++
+		case columnKindUUID:
+			uuidCount++
+		}
+	}
 
-	textVals := make([]pgtype.Text, len(textColumns))
-	smallVals := make([]pgtype.Int2, len(smallintColumns))
-	intVals := make([]pgtype.Int4, len(integerColumns))
-	bigVals := make([]pgtype.Int8, len(bigintColumns))
-	doubleVals := make([]pgtype.Float8, len(doubleColumns))
+	textVals := make([]pgtype.Text, textCount)
+	smallVals := make([]pgtype.Int2, smallCount)
+	intVals := make([]pgtype.Int4, intCount)
+	bigVals := make([]pgtype.Int8, bigCount)
+	doubleVals := make([]pgtype.Float8, doubleCount)
+	uuidVals := make([]pgtype.UUID, uuidCount)
 
-	scanArgs := []any{&schemaVal, &rowVal, &createdVal, &updatedVal, &deletedVal}
+	scanArgs := make([]any, 0, len(entityMainColumnDescriptors))
 	typeIndex := make([]int, len(entityMainColumnDescriptors))
-	textIdx, smallIdx, intIdx, bigIdx, doubleIdx := 0, 0, 0, 0, 0
+	textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
+
 	for i, desc := range entityMainColumnDescriptors {
 		switch desc.kind {
 		case columnKindText:
@@ -466,6 +497,10 @@ func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context,
 			scanArgs = append(scanArgs, &doubleVals[doubleIdx])
 			typeIndex[i] = doubleIdx
 			doubleIdx++
+		case columnKindUUID:
+			scanArgs = append(scanArgs, &uuidVals[uuidIdx])
+			typeIndex[i] = uuidIdx
+			uuidIdx++
 		}
 	}
 
@@ -476,25 +511,13 @@ func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context,
 		return nil, fmt.Errorf("select entity_main row: %w", err)
 	}
 
-	if !rowVal.Valid {
-		return nil, fmt.Errorf("entity_main row missing row_id for schema %d", schemaID)
-	}
-
 	record := &PersistentRecord{
-		SchemaID:     schemaVal.Int16,
-		RowID:        uuid.UUID(rowVal.Bytes),
 		TextItems:    make(map[string]string),
 		Int16Items:   make(map[string]int16),
 		Int32Items:   make(map[string]int32),
 		Int64Items:   make(map[string]int64),
 		Float64Items: make(map[string]float64),
-		CreatedAt:    createdVal.Int64,
-		UpdatedAt:    updatedVal.Int64,
-	}
-
-	if deletedVal.Valid {
-		val := deletedVal.Int64
-		record.DeletedAt = &val
+		UUIDItems:    make(map[string]uuid.UUID),
 	}
 
 	for i, desc := range entityMainColumnDescriptors {
@@ -507,7 +530,12 @@ func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context,
 		case columnKindSmallint:
 			val := smallVals[typeIndex[i]]
 			if val.Valid {
-				record.Int16Items[desc.name] = val.Int16
+				// Handle system fields specially
+				if desc.name == "ltbase_schema_id" {
+					record.SchemaID = val.Int16
+				} else {
+					record.Int16Items[desc.name] = val.Int16
+				}
 			}
 		case columnKindInteger:
 			val := intVals[typeIndex[i]]
@@ -517,12 +545,32 @@ func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context,
 		case columnKindBigint:
 			val := bigVals[typeIndex[i]]
 			if val.Valid {
-				record.Int64Items[desc.name] = val.Int64
+				// Handle system fields specially
+				switch desc.name {
+				case "ltbase_created_at":
+					record.CreatedAt = val.Int64
+				case "ltbase_updated_at":
+					record.UpdatedAt = val.Int64
+				case "ltbase_deleted_at":
+					record.DeletedAt = &val.Int64
+				default:
+					record.Int64Items[desc.name] = val.Int64
+				}
 			}
 		case columnKindDouble:
 			val := doubleVals[typeIndex[i]]
 			if val.Valid {
 				record.Float64Items[desc.name] = val.Float64
+			}
+		case columnKindUUID:
+			val := uuidVals[typeIndex[i]]
+			if val.Valid {
+				// Handle system field specially
+				if desc.name == "ltbase_row_id" {
+					record.RowID = uuid.UUID(val.Bytes)
+				} else {
+					record.UUIDItems[desc.name] = uuid.UUID(val.Bytes)
+				}
 			}
 		}
 	}
@@ -542,6 +590,9 @@ func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context,
 	}
 	if len(record.Float64Items) == 0 {
 		record.Float64Items = nil
+	}
+	if len(record.UUIDItems) == 0 {
+		record.UUIDItems = nil
 	}
 
 	return record, nil
@@ -641,31 +692,44 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 // entity_main columns plus JSON-aggregated EAV attributes.
 func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error) {
 	var (
-		schemaVal    pgtype.Int2
-		rowVal       pgtype.UUID
-		createdVal   pgtype.Int8
-		updatedVal   pgtype.Int8
-		deletedVal   pgtype.Int8
 		attrsJSON    []byte
 		totalRecords int64
 		totalPages   int64
 		currentPage  int32
 	)
 
-	// Prepare scan targets for entity_main columns
-	textVals := make([]pgtype.Text, len(textColumns))
-	smallVals := make([]pgtype.Int2, len(smallintColumns))
-	intVals := make([]pgtype.Int4, len(integerColumns))
-	bigVals := make([]pgtype.Int8, len(bigintColumns))
-	doubleVals := make([]pgtype.Float8, len(doubleColumns))
-
-	scanArgs := []any{
-		&schemaVal, &rowVal, &createdVal, &updatedVal, &deletedVal,
+	// Count columns by kind to allocate proper buffer sizes
+	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
+	for _, desc := range entityMainColumnDescriptors {
+		switch desc.kind {
+		case columnKindText:
+			textCount++
+		case columnKindSmallint:
+			smallCount++
+		case columnKindInteger:
+			intCount++
+		case columnKindBigint:
+			bigCount++
+		case columnKindDouble:
+			doubleCount++
+		case columnKindUUID:
+			uuidCount++
+		}
 	}
+
+	// Prepare scan targets for entity_main columns
+	textVals := make([]pgtype.Text, textCount)
+	smallVals := make([]pgtype.Int2, smallCount)
+	intVals := make([]pgtype.Int4, intCount)
+	bigVals := make([]pgtype.Int8, bigCount)
+	doubleVals := make([]pgtype.Float8, doubleCount)
+	uuidVals := make([]pgtype.UUID, uuidCount)
+
+	scanArgs := make([]any, 0, len(entityMainColumnDescriptors)+4)
 
 	// Add all entity_main column scan targets
 	typeIndex := make([]int, len(entityMainColumnDescriptors))
-	textIdx, smallIdx, intIdx, bigIdx, doubleIdx := 0, 0, 0, 0, 0
+	textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
 
 	for i, desc := range entityMainColumnDescriptors {
 		switch desc.kind {
@@ -689,6 +753,10 @@ func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*P
 			scanArgs = append(scanArgs, &doubleVals[doubleIdx])
 			typeIndex[i] = doubleIdx
 			doubleIdx++
+		case columnKindUUID:
+			scanArgs = append(scanArgs, &uuidVals[uuidIdx])
+			typeIndex[i] = uuidIdx
+			uuidIdx++
 		}
 	}
 
@@ -701,20 +769,12 @@ func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*P
 
 	// Build PersistentRecord
 	record := &PersistentRecord{
-		SchemaID:     schemaVal.Int16,
-		RowID:        uuid.UUID(rowVal.Bytes),
 		TextItems:    make(map[string]string),
 		Int16Items:   make(map[string]int16),
 		Int32Items:   make(map[string]int32),
 		Int64Items:   make(map[string]int64),
 		Float64Items: make(map[string]float64),
-		CreatedAt:    createdVal.Int64,
-		UpdatedAt:    updatedVal.Int64,
-	}
-
-	if deletedVal.Valid {
-		val := deletedVal.Int64
-		record.DeletedAt = &val
+		UUIDItems:    make(map[string]uuid.UUID),
 	}
 
 	// Populate column values
@@ -728,7 +788,12 @@ func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*P
 		case columnKindSmallint:
 			val := smallVals[typeIndex[i]]
 			if val.Valid {
-				record.Int16Items[desc.name] = val.Int16
+				// Handle system fields specially
+				if desc.name == "ltbase_schema_id" {
+					record.SchemaID = val.Int16
+				} else {
+					record.Int16Items[desc.name] = val.Int16
+				}
 			}
 		case columnKindInteger:
 			val := intVals[typeIndex[i]]
@@ -738,12 +803,32 @@ func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*P
 		case columnKindBigint:
 			val := bigVals[typeIndex[i]]
 			if val.Valid {
-				record.Int64Items[desc.name] = val.Int64
+				// Handle system fields specially
+				switch desc.name {
+				case "ltbase_created_at":
+					record.CreatedAt = val.Int64
+				case "ltbase_updated_at":
+					record.UpdatedAt = val.Int64
+				case "ltbase_deleted_at":
+					record.DeletedAt = &val.Int64
+				default:
+					record.Int64Items[desc.name] = val.Int64
+				}
 			}
 		case columnKindDouble:
 			val := doubleVals[typeIndex[i]]
 			if val.Valid {
 				record.Float64Items[desc.name] = val.Float64
+			}
+		case columnKindUUID:
+			val := uuidVals[typeIndex[i]]
+			if val.Valid {
+				// Handle system field specially
+				if desc.name == "ltbase_row_id" {
+					record.RowID = uuid.UUID(val.Bytes)
+				} else {
+					record.UUIDItems[desc.name] = uuid.UUID(val.Bytes)
+				}
 			}
 		}
 	}
@@ -801,6 +886,9 @@ func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*P
 	}
 	if len(record.Float64Items) == 0 {
 		record.Float64Items = nil
+	}
+	if len(record.UUIDItems) == 0 {
+		record.UUIDItems = nil
 	}
 
 	return record, totalRecords, nil

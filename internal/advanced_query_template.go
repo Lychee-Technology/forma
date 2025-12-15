@@ -68,11 +68,6 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
         ),
         main_data AS (
             SELECT 
-                m.ltbase_schema_id,
-                m.ltbase_row_id,
-                m.ltbase_created_at,
-                m.ltbase_updated_at,
-                m.ltbase_deleted_at,
                 {{.MainProjection}},
                 o.total
                 {{- if gt (len .SortKeys) 0 }}
@@ -105,11 +100,6 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
             GROUP BY e.row_id
         )
         SELECT 
-            m.ltbase_schema_id,
-            m.ltbase_row_id,
-            m.ltbase_created_at,
-            m.ltbase_updated_at,
-            m.ltbase_deleted_at,
             {{.MainProjection}},
             COALESCE(e.attributes_json, '[]') AS attributes_json,
             m.total AS total_records,

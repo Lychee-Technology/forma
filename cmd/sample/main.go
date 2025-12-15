@@ -8,11 +8,11 @@ import (
 	"os"
 	"time"
 
-"github.com/jackc/pgx/v5/pgxpool"
-"github.com/lychee-technology/forma"
-"github.com/lychee-technology/forma/factory"
-"github.com/lychee-technology/forma/internal"
-"go.uber.org/zap"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/factory"
+	"github.com/lychee-technology/forma/internal"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -97,12 +97,12 @@ func main() {
 	}
 	sugar.Infof("Database connected successfully")
 
-// Create schema registry
-sugar.Infof("Loading schemas from: %s", *schemaDir)
-registry, err := internal.NewFileSchemaRegistryFromDirectory(*schemaDir)
-if err != nil {
-sugar.Fatalf("Failed to create schema registry: %v", err)
-}
+	// Create schema registry
+	sugar.Infof("Loading schemas from: %s", *schemaDir)
+	registry, err := internal.NewFileSchemaRegistryFromDirectory(*schemaDir)
+	if err != nil {
+		sugar.Fatalf("Failed to create schema registry: %v", err)
+	}
 
 	// Verify schema exists
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName(*schemaName)

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/google/uuid"
@@ -132,6 +133,9 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 		return nil, err
 	}
 
+	copyIdToName := make(map[int16]string, len(idToName))
+	maps.Copy(copyIdToName, idToName)
+
 	attributes := make([]EntityAttribute, 0, len(records))
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
@@ -145,11 +149,11 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
 		attributes = append(attributes, attr)
-		delete(idToName, record.AttrID)
+		delete(copyIdToName, record.AttrID)
 	}
 
-	if len(idToName) > 0 {
-		zap.S().Infow("missing EAV records for attrIDs.", "idToName", idToName)
+	if len(copyIdToName) > 0 {
+		zap.S().Infow("missing EAV records for attrIDs.", "idToName", copyIdToName)
 	}
 
 	return attributes, nil

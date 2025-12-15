@@ -58,21 +58,21 @@ func (s *stubSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, form
 }
 
 func (s *stubSchemaRegistry) ListSchemas() []string {
-return []string{s.schemaName}
+	return []string{s.schemaName}
 }
 
 func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
-if name != s.schemaName {
-return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
-}
-return s.schemaID, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+	if name != s.schemaName {
+		return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
+	}
+	return s.schemaID, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
 }
 
 func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
-if id != s.schemaID {
-return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
-}
-return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+	if id != s.schemaID {
+		return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
+	}
+	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
 }
 
 func TestTransformer_ToAttributes(t *testing.T) {

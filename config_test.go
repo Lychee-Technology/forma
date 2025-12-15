@@ -43,29 +43,29 @@ func (r *mockSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, Sche
 
 // ListSchemas returns a list of all registered schema names
 func (r *mockSchemaRegistry) ListSchemas() []string {
-schemas := make([]string, 0, len(r.schemas))
-for name := range r.schemas {
-schemas = append(schemas, name)
-}
-return schemas
+	schemas := make([]string, 0, len(r.schemas))
+	for name := range r.schemas {
+		schemas = append(schemas, name)
+	}
+	return schemas
 }
 
 // GetSchemaByName retrieves schema ID and JSONSchema by schema name
 func (r *mockSchemaRegistry) GetSchemaByName(name string) (int16, JSONSchema, error) {
-if schema, exists := r.schemas[name]; exists {
-return schema.id, JSONSchema{ID: schema.id, Name: name}, nil
-}
-return 0, JSONSchema{}, nil
+	if schema, exists := r.schemas[name]; exists {
+		return schema.id, JSONSchema{ID: schema.id, Name: name}, nil
+	}
+	return 0, JSONSchema{}, nil
 }
 
 // GetSchemaByID retrieves schema name and JSONSchema by schema ID
 func (r *mockSchemaRegistry) GetSchemaByID(id int16) (string, JSONSchema, error) {
-for name, schema := range r.schemas {
-if schema.id == id {
-return name, JSONSchema{ID: id, Name: name}, nil
-}
-}
-return "", JSONSchema{}, nil
+	for name, schema := range r.schemas {
+		if schema.id == id {
+			return name, JSONSchema{ID: id, Name: name}, nil
+		}
+	}
+	return "", JSONSchema{}, nil
 }
 
 func TestDefaultConfig(t *testing.T) {
