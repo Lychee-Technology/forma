@@ -141,6 +141,7 @@ type QueryRequest struct {
 	SortBy       []string   `json:"sort_by,omitempty"`
 	SortOrder    SortOrder  `json:"sort_order,omitempty"`
 	RowID        *uuid.UUID `json:"row_id,omitempty"` // For entity-specific operations
+	Attrs        []string   `json:"attrs,omitempty"`  // Attributes to return (field projection)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for QueryRequest.
@@ -192,7 +193,8 @@ type CrossSchemaRequest struct {
 	SearchTerm   string    `json:"search_term" validate:"required"`
 	Page         int       `json:"page" validate:"min=1"`
 	ItemsPerPage int       `json:"items_per_page" validate:"min=1,max=100"`
-	Condition    Condition `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
+	Condition    Condition `json:"-"`               // Custom unmarshal, can be CompositeCondition or KvCondition
+	Attrs        []string  `json:"attrs,omitempty"` // Attributes to return (field projection)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for CrossSchemaRequest.

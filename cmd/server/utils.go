@@ -134,3 +134,23 @@ func readJSONBody(r *http.Request, v any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }
+
+// parseAttrs extracts the attrs parameter from query parameters.
+// attrs is a comma-separated list of attribute names (JSON paths) to return.
+// Returns nil if attrs is not specified or empty.
+func parseAttrs(queryParams url.Values) []string {
+	attrsParam := strings.TrimSpace(queryParams.Get("attrs"))
+	if attrsParam == "" {
+		return nil
+	}
+
+	var attrs []string
+	for _, attr := range strings.Split(attrsParam, ",") {
+		attr = strings.TrimSpace(attr)
+		if attr != "" {
+			attrs = append(attrs, attr)
+		}
+	}
+
+	return attrs
+}

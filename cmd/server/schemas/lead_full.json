@@ -1,0 +1,520 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Extended lead data model for Forma ingestion",
+  "properties": {
+    "closedAt": {
+      "description": "Timestamp when the lead was closed",
+      "format": "date-time",
+      "type": "string"
+    },
+    "communications": {
+      "description": "Communication timeline entry IDs (calls, emails, etc.)",
+      "items": {
+        "description": "Communication ID",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "contact": {
+      "description": "Contact information for the lead",
+      "properties": {
+        "annualIncome": {
+          "description": "Annual income amount",
+          "minimum": 0,
+          "type": "number"
+        },
+        "annualIncomeCurrency": {
+          "default": "JPY",
+          "description": "Income currency",
+          "enum": [
+            "JPY",
+            "USD",
+            "EUR",
+            "CNY",
+            "HKD",
+            "KRW",
+            "SGD"
+          ],
+          "type": "string"
+        },
+        "birthday": {
+          "description": "Birth date (YYYY-MM-DD)",
+          "format": "date",
+          "type": "string"
+        },
+        "company": {
+          "description": "Employer or company name",
+          "type": "string"
+        },
+        "currentResidence": {
+          "description": "Current residential address or area",
+          "type": "string"
+        },
+        "email": {
+          "description": "Email address",
+          "format": "email",
+          "type": "string"
+        },
+        "employmentYear": {
+          "description": "Most recent employment start year",
+          "maximum": 2100,
+          "minimum": 1900,
+          "type": "integer"
+        },
+        "familySize": {
+          "description": "Number of family members excluding the lead",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "isBlacklisted": {
+          "description": "Whether the lead is blacklisted",
+          "type": "boolean"
+        },
+        "lineId": {
+          "description": "LINE identifier",
+          "type": "string"
+        },
+        "maritalStatus": {
+          "description": "Marital status",
+          "enum": [
+            "single",
+            "married",
+            "divorced",
+            "widowed",
+            "other"
+          ],
+          "type": "string"
+        },
+        "memo": {
+          "description": "Free-text notes about the contact",
+          "type": "string"
+        },
+        "name": {
+          "description": "Primary name (Latin alphabet)",
+          "type": "string"
+        },
+        "nameKana": {
+          "description": "Kana representation",
+          "type": "string"
+        },
+        "nameNative": {
+          "description": "Native language name",
+          "type": "string"
+        },
+        "occupation": {
+          "description": "Occupation or title",
+          "type": "string"
+        },
+        "phones": {
+          "description": "Phone numbers",
+          "items": {
+            "pattern": "^[0-9-+() ]+$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "preferredChannel": {
+          "description": "Preferred communication channel",
+          "enum": [
+            "phone",
+            "line",
+            "email",
+            "sms",
+            "wechat",
+            "other"
+          ],
+          "type": "string"
+        },
+        "preferredLanguage": {
+          "description": "Preferred communication language",
+          "enum": [
+            "ja",
+            "en",
+            "zh",
+            "ko",
+            "other"
+          ],
+          "type": "string"
+        },
+        "primaryPhone": {
+          "description": "Preferred phone number",
+          "pattern": "^[0-9-+() ]+$",
+          "type": "string"
+        },
+        "wechatId": {
+          "description": "WeChat identifier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "createdAt": {
+      "description": "Record creation timestamp",
+      "format": "date-time",
+      "type": "string"
+    },
+    "firstTouchAt": {
+      "description": "Timestamp of first touch with the lead",
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "description": "Lead identifier",
+      "format": "uuid",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "type": "string"
+    },
+    "lastContactedAt": {
+      "description": "Timestamp of the last contact",
+      "format": "date-time",
+      "type": "string"
+    },
+    "nextFollowUpAt": {
+      "description": "Scheduled next follow-up time",
+      "format": "date-time",
+      "type": "string"
+    },
+    "ownerUserId": {
+      "description": "Lead owner user ID",
+      "type": "string"
+    },
+    "pipeline": {
+      "description": "Pipeline category",
+      "enum": [
+        "buy",
+        "rent",
+        "sell",
+        "landlord"
+      ],
+      "type": "string"
+    },
+    "propertyInterests": {
+      "description": "Interest records tied to properties",
+      "items": {
+        "properties": {
+          "firstSeenAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "isPrimary": {
+            "type": "boolean"
+          },
+          "lastActivityAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "propertyId": {
+            "type": "string"
+          },
+          "snapshot": {
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "price": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "rent": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "viewed",
+              "favorited",
+              "scheduled_viewing",
+              "viewed_on_site",
+              "offered",
+              "rejected",
+              "closed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "propertyId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "rating": {
+      "description": "Internal rating label (e.g., A/B/C)",
+      "pattern": "^[A-Z]$",
+      "type": "string"
+    },
+    "reason": {
+      "description": "Reason for closing or disqualifying the lead",
+      "type": "string"
+    },
+    "requirement": {
+      "description": "Property purchase or rental requirements",
+      "properties": {
+        "areas": {
+          "description": "Preferred areas",
+          "items": {
+            "properties": {
+              "city": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "prefecture": {
+                "type": "string"
+              },
+              "ward": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "budget": {
+          "properties": {
+            "currency": {
+              "default": "JPY",
+              "enum": [
+                "JPY",
+                "USD",
+                "EUR",
+                "CNY",
+                "HKD",
+                "KRW",
+                "SGD"
+              ],
+              "type": "string"
+            },
+            "display": {
+              "description": "Display string for budget range",
+              "type": "string"
+            },
+            "max": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "min": {
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "currency"
+          ],
+          "type": "object"
+        },
+        "freeText": {
+          "description": "Free-text requirement notes",
+          "type": "string"
+        },
+        "intentType": {
+          "description": "Whether the lead intends to buy or rent",
+          "enum": [
+            "buy",
+            "rent"
+          ],
+          "type": "string"
+        },
+        "mustHave": {
+          "description": "Non-negotiable requirements",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "niceToHave": {
+          "description": "Desired but optional features",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "propertyType": {
+          "description": "Property type or layout code (e.g., 2LDK)",
+          "type": "string"
+        },
+        "propertyTypeDescription": {
+          "description": "Human-readable property type description",
+          "type": "string"
+        },
+        "purpose": {
+          "description": "Purpose of the property",
+          "enum": [
+            "primary_residence",
+            "residence",
+            "investment",
+            "secondary_residence",
+            "other"
+          ],
+          "type": "string"
+        },
+        "size": {
+          "properties": {
+            "max": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "min": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "unit": {
+              "default": "sqm",
+              "enum": [
+                "sqm",
+                "tsubo",
+                "ping"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "stationWalkTimeMinutes": {
+          "description": "Maximum walking time to station in minutes",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targetMoveIn": {
+          "description": "Target move-in date (YYYY-MM-DD)",
+          "format": "date",
+          "type": "string"
+        },
+        "unwantedConditions": {
+          "description": "Conditions to avoid",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "score": {
+      "description": "Numeric score for sorting and prioritization",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "source": {
+      "description": "Lead acquisition source",
+      "properties": {
+        "campaign": {
+          "description": "Campaign identifier",
+          "type": "string"
+        },
+        "channel": {
+          "enum": [
+            "portal",
+            "walk_in",
+            "referral",
+            "phone",
+            "web_form",
+            "event",
+            "other"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "Source name or platform (e.g., Suumo)",
+          "type": "string"
+        },
+        "originalLeadId": {
+          "description": "Upstream platform lead ID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "type": "object"
+    },
+    "stage": {
+      "description": "Pipeline stage",
+      "enum": [
+        "new",
+        "contacted",
+        "need_defined",
+        "viewing",
+        "offer",
+        "contract",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "status": {
+      "description": "Lead status",
+      "enum": [
+        "open",
+        "won",
+        "lost",
+        "junk"
+      ],
+      "type": "string"
+    },
+    "tags": {
+      "description": "Labels for segmentation and filtering",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "temperature": {
+      "description": "Lead temperature tag",
+      "enum": [
+        "Hot",
+        "Warm",
+        "New",
+        "Qualified"
+      ],
+      "type": "string"
+    },
+    "tenantId": {
+      "description": "Tenant/agency identifier",
+      "type": "string"
+    },
+    "updatedAt": {
+      "description": "Last update timestamp",
+      "format": "date-time",
+      "type": "string"
+    },
+    "visits": {
+      "description": "Property visit IDs tied to this lead",
+      "items": {
+        "description": "Visit ID",
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "tenantId",
+    "ownerUserId",
+    "pipeline",
+    "stage",
+    "status",
+    "contact",
+    "createdAt",
+    "updatedAt"
+  ],
+  "title": "Leads",
+  "type": "object"
+}

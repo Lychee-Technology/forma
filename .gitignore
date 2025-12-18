@@ -35,3 +35,4 @@ deploy/data/
 .cache/
 .gocache/
 .gomodcache/
+build/

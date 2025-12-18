@@ -18,13 +18,10 @@
       "format": "uuid"
     },
     "leadId": {
-      "type": "string",
-      "description": "Associated lead ID",
-      "format": "uuid"
+      "$ref": "lead.json#/$defs/id"
     },
     "visitId": {
-      "type": "string",
-      "description": "Associated visit ID (if log is tied to a visit)"
+      "$ref": "visit.json#/$defs/id"
     },
     "noteId": {
       "type": "string",
@@ -63,4 +60,3 @@
     }
   }
 }
-

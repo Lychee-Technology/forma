@@ -52,7 +52,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 			continue
 		}
 		name := entry.Name()
-		if filepath.Ext(name) == ".json" && !isAttributesFile(name) {
+		if filepath.Ext(name) == ".json" && !hasSuffix(name, "_attributes.json") && !hasSuffix(name, "_full.json") {
 			// This is a schema definition file (e.g., visit.json)
 			schemaName := name[:len(name)-5] // remove .json extension
 			schemaNames = append(schemaNames, schemaName)
@@ -91,6 +91,21 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 				return err
 			}
 			cache[attrName] = meta
+		}
+
+		// Load main schema JSON file (e.g., lead.json)
+		schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
+		schemaData, err := os.ReadFile(schemaFile)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
+			}
+		} else {
+			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
+			if err != nil {
+				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
+			}
+			r.schemas[schemaID] = jsonSchema
 		}
 
 		r.nameToID[schemaName] = schemaID
@@ -160,6 +175,55 @@ func TestEntityManager_Create(t *testing.T) {
 	}
 }
 
+func TestEntityManager_Create_StripsRelationFields(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+	mockRepo := newMockPersistentRecordRepository()
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+
+	req := &forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
+		Type:             forma.OperationCreate,
+		Data: map[string]any{
+			"id":               "visit-rel-1",
+			"leadId":           "lead-rel-1",
+			"userId":           "user-1",
+			"propertyId":       "prop-1",
+			"scheduledStartAt": "2024-01-01T00:00:00Z",
+			"status":           "scheduled",
+			"contactSnapshot": map[string]any{
+				"name":         "Alice",
+				"primaryPhone": "123",
+			},
+		},
+	}
+
+	record, err := em.Create(ctx, req)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if _, exists := record.Attributes["contactSnapshot"]; exists {
+		t.Fatalf("contactSnapshot should be stripped from create response")
+	}
+
+	if len(mockRepo.insertedRecords) != 1 {
+		t.Fatalf("expected one record inserted, got %d", len(mockRepo.insertedRecords))
+	}
+
+	for _, attr := range mockRepo.insertedRecords[0].OtherAttributes {
+		if attr.AttrID >= 21 && attr.AttrID <= 24 {
+			t.Fatalf("contactSnapshot attribute %d should not be persisted", attr.AttrID)
+		}
+	}
+}
+
 // TestEntityManager_Get tests entity retrieval
 func TestEntityManager_Get(t *testing.T) {
 	ctx := context.Background()
@@ -215,6 +279,81 @@ func TestEntityManager_Get(t *testing.T) {
 
 	if record.Attributes["id"] != "test-id-1" {
 		t.Errorf("Expected id 'test-id-1', got '%v'", record.Attributes["id"])
+	}
+}
+
+func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+	mockRepo := newMockPersistentRecordRepository()
+
+	leadSchemaID, _, err := registry.GetSchemaByName("lead")
+	if err != nil {
+		t.Fatalf("failed to get lead schema: %v", err)
+	}
+	visitSchemaID, _, err := registry.GetSchemaByName("visit")
+	if err != nil {
+		t.Fatalf("failed to get visit schema: %v", err)
+	}
+
+	leadRowID := uuid.New()
+	leadID := uuid.New().String()
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, leadSchemaID, leadRowID, map[string]any{
+		"id":          leadID,
+		"tenantId":    "tenant-1",
+		"ownerUserId": "owner-1",
+		"pipeline":    "buy",
+		"stage":       "new",
+		"status":      "open",
+		"contact": map[string]any{
+			"name":         "Parent Lead",
+			"primaryPhone": "123-456",
+		},
+		"createdAt": "2024-01-01T00:00:00Z",
+		"updatedAt": "2024-01-02T00:00:00Z",
+	}))
+
+	visitRowID := uuid.New()
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, visitSchemaID, visitRowID, map[string]any{
+		"id":               "visit-enrich-1",
+		"leadId":           leadID,
+		"userId":           "user-1",
+		"propertyId":       "prop-1",
+		"scheduledStartAt": "2024-02-01T00:00:00Z",
+		"status":           "scheduled",
+	}))
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+
+	req := &forma.QueryRequest{SchemaName: "visit", RowID: &visitRowID}
+	record, err := em.Get(ctx, req)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	snapshot, ok := record.Attributes["contactSnapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected contactSnapshot to be populated from parent")
+	}
+	if snapshot["name"] != "Parent Lead" {
+		t.Fatalf("expected contactSnapshot.name from parent, got %v", snapshot["name"])
+	}
+	if snapshot["primaryPhone"] != "123-456" {
+		t.Fatalf("expected contactSnapshot.primaryPhone from parent, got %v", snapshot["primaryPhone"])
+	}
+
+	projectedReq := &forma.QueryRequest{SchemaName: "visit", RowID: &visitRowID, Attrs: []string{"userId"}}
+	projectedRecord, err := em.Get(ctx, projectedReq)
+	if err != nil {
+		t.Fatalf("Get with projection failed: %v", err)
+	}
+	if _, exists := projectedRecord.Attributes["contactSnapshot"]; exists {
+		t.Fatalf("contactSnapshot should be excluded when not requested")
 	}
 }
 
@@ -454,6 +593,7 @@ type mockPersistentRecordRepository struct {
 	insertedRecords []*PersistentRecord
 	deleteCalls     int
 	lastQuery       *PersistentRecordQuery
+	queries         []*PersistentRecordQuery
 	queryFunc       func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
 }
 
@@ -502,7 +642,10 @@ func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context
 }
 
 func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
-	m.lastQuery = query
+	if m.lastQuery == nil {
+		m.lastQuery = query
+	}
+	m.queries = append(m.queries, query)
 	if m.queryFunc != nil {
 		return m.queryFunc(ctx, query)
 	}
@@ -1058,6 +1201,9 @@ func createTestConfig() *forma.Config {
 		Query: forma.QueryConfig{
 			DefaultPageSize: 50,
 			MaxPageSize:     100,
+		},
+		Entity: forma.EntityConfig{
+			SchemaDirectory: "../cmd/server/schemas",
 		},
 	}
 }

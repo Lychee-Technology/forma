@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Activity timeline entry",
+  "properties": {
+    "at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "direction": {
+      "enum": [
+        "inbound",
+        "outbound"
+      ],
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "leadId": {
+      "type": "string"
+    },
+    "nextFollowUpAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "call",
+        "line",
+        "email",
+        "visit",
+        "note"
+      ],
+      "type": "string"
+    },
+    "userId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "direction",
+    "at",
+    "userId",
+    "summary"
+  ],
+  "title": "Activity",
+  "type": "object"
+}
