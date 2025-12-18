@@ -257,11 +257,9 @@ func parsePropertySchema(name string, prop map[string]any, defs map[string]any, 
 		if relType, ok := relation["type"].(string); ok {
 			schema.Relation.Type = relType
 		}
-	}
-
-	// Parse x-storage
-	if storage, ok := prop["x-storage"].(string); ok {
-		schema.Storage = storage
+		if keyProp, ok := relation["key_property"].(string); ok {
+			schema.Relation.KeyProperty = keyProp
+		}
 	}
 
 	// Parse items (for arrays)

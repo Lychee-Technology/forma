@@ -24,14 +24,12 @@
       "$ref": "#/$defs/id"
     },
     "leadId": {
-      "type": "string",
-      "description": "Associated lead ID",
-      "format": "uuid"
+      "$ref": "lead.json#/$defs/leadId"
     },
     "contactSnapshot": {
       "$ref": "lead.json#/$defs/contact",
-      "x-foreign-key-value": {
-        "$ref": "#/properties/leadId"
+      "x-relation": {
+        "key_property": "leadId"
       }
     },
     "userId": {

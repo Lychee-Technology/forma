@@ -27,11 +27,11 @@ type PropertySchema struct {
 	MaxLength  *int                       `json:"maxLength,omitempty"`
 	Pattern    string                     `json:"pattern,omitempty"`
 	Relation   *RelationSchema            `json:"x-relation,omitempty"`
-	Storage    string                     `json:"x-storage,omitempty"` // "json" for free-form objects
 }
 
 // RelationSchema defines reference relationships between objects.
 type RelationSchema struct {
-	Target string `json:"target"` // Target schema name
-	Type   string `json:"type"`   // "reference" for foreign key relationships
+	Target      string `json:"target"`                 // Target schema name
+	Type        string `json:"type"`                   // "reference" for foreign key relationships
+	KeyProperty string `json:"key_property"` // child-side foreign key attribute
 }

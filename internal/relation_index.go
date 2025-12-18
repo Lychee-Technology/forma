@@ -89,9 +89,13 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 			continue
 		}
 
-		fkPointer := firstNonEmpty(
-			stringValue(propMap["x-foreign-key-value"]),
-		)
+		var fkPointer string
+		if relMap, ok := propMap["x-relation"].(map[string]any); ok {
+			fkPointer = firstNonEmpty(
+				stringValue(relMap["key_property"]),
+			)
+		}
+		// Backward compatibility: support legacy marker if present.
 		if fkPointer == "" {
 			continue
 		}
