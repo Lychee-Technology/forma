@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/pashagolub/pgxmock/v4 v4.9.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
