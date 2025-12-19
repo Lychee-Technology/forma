@@ -1,4 +1,4 @@
-.PHONY: test build build-tools build-benchmark build-all clean all create-build-dir link
+.PHONY: test test-unit coverage build build-tools build-benchmark build-all clean all create-build-dir link
 
 # Binary names
 BINARY_SERVER=server
@@ -7,6 +7,10 @@ BINARY_SAMPLE=sample
 
 # Build directory
 BUILD_DIR=build
+
+# Coverage output
+COVERAGE_PROFILE=$(BUILD_DIR)/coverage.out
+COVERAGE_HTML=$(BUILD_DIR)/coverage.html
 
 # Platforms and architectures
 PLATFORMS=darwin-amd64 darwin-arm64 linux-amd64 linux-arm64
@@ -19,10 +23,20 @@ MAIN_SAMPLE=./cmd/sample
 # Default target
 all: test build-all
 
-# Run tests
-test:
-	@echo "Running tests..."
+# Run unit tests
+test: test-unit
+
+test-unit:
+	@echo "Running unit tests..."
 	@go test ./...
+
+# Run unit tests with coverage report
+coverage: create-build-dir
+	@echo "Running unit tests with coverage..."
+	@go test ./... -coverprofile=$(COVERAGE_PROFILE)
+	@go tool cover -func=$(COVERAGE_PROFILE)
+	@go tool cover -html=$(COVERAGE_PROFILE) -o $(COVERAGE_HTML)
+	@echo "Coverage report written to $(COVERAGE_HTML)"
 
 # Build server for all platform variants
 build-server: create-build-dir
