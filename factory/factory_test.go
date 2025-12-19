@@ -238,7 +238,6 @@ func TestCollectTablesFromPool_Success(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-
 // ---------------------------------------------------------------------------
 // Unit tests for NewEntityManagerWithConfig (uses test hooks + mock loader)
 // ---------------------------------------------------------------------------

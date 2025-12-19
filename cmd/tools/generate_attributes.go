@@ -311,19 +311,3 @@ func getValueType(schema map[string]any) string {
 	}
 }
 
-func writeAttributes(path string, attributes map[string]attributeSpec) error {
-	encoded, err := json.MarshalIndent(attributes, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal attributes: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, encoded, 0o644); err != nil {
-		return fmt.Errorf("write attributes file: %w", err)
-	}
-
-	return nil
-}
