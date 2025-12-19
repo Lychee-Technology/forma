@@ -470,7 +470,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 	var schemaNames []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.IsDir() && hasSuffix(name,  ".json") && !hasSuffix(name, "_full.json") && !hasSuffix(name, "_attributes.json") {
+		if !entry.IsDir() && hasSuffix(name, ".json") && !hasSuffix(name, "_full.json") && !hasSuffix(name, "_attributes.json") {
 			schemaName := name[:len(name)-5] // remove .json extension
 			schemaNames = append(schemaNames, schemaName)
 		}
