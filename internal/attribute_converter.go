@@ -3,6 +3,8 @@ package internal
 import (
 	"fmt"
 	"maps"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -175,6 +177,29 @@ func toFloat64ForEAV(value any) (float64, error) {
 		return float64(v), nil
 	case int64:
 		return float64(v), nil
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, fmt.Errorf("empty string")
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float: %w", err)
+		}
+		return f, nil
+	case *string:
+		if v == nil {
+			return 0, fmt.Errorf("nil string pointer")
+		}
+		s := strings.TrimSpace(*v)
+		if s == "" {
+			return 0, fmt.Errorf("empty string")
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float: %w", err)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", value)
 	}
@@ -196,6 +221,18 @@ func toTimeForEAV(value any) (time.Time, error) {
 
 func toBoolForEAV(value any) (bool, error) {
 	switch v := value.(type) {
+	case string:
+		if strings.ToLower(v) == "true" || v == "1" {
+			return true, nil
+		} else {
+			return false, nil
+		}
+	case *string:
+		if strings.ToLower(*v) == "true" || *v == "1" {
+			return true, nil
+		} else {
+			return false, nil
+		}
 	case bool:
 		return v, nil
 	case *bool:
@@ -203,6 +240,48 @@ func toBoolForEAV(value any) (bool, error) {
 			return false, fmt.Errorf("nil bool pointer")
 		}
 		return *v, nil
+	case int:
+		return v > 0, nil
+	case *int:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int16:
+		return v > 0, nil
+	case *int16:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int32:
+		return v != 0, nil
+	case *int32:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int64:
+		return v != 0, nil
+	case *int64:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case float32:
+		return v > 0.5, nil
+	case *float32:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0.5, nil
+	case float64:
+		return v > 0.5, nil
+	case *float64:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0.5, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
@@ -261,7 +340,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		return *record.ValueNumeric > 0.5, nil
+		return toBoolForEAV(record.ValueNumeric)
 
 	default:
 		// Fallback: try text first, then numeric

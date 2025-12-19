@@ -310,4 +310,3 @@ func getValueType(schema map[string]any) string {
 		return "text"
 	}
 }
-
