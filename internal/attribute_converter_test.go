@@ -191,37 +191,43 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 					t.Fatalf("expected %v (%T), got %v (%T)", want, want, got, got)
 				}
 			}
-        })
-    }
+		})
+	}
 }
 
 func TestToFloat64ForEAV(t *testing.T) {
-    tests := []struct {
-        name    string
-        input   any
-        want    float64
-        wantErr bool
-    }{
-        {"string valid", "123.45", 123.45, false},
-        {"string trimmed", "  123.45  ", 123.45, false},
-        {"string empty", "", 0, true},
-        {"string invalid", "abc", 0, true},
-        {"pointer valid", ptrString("123.45"), 123.45, false},
-        {"pointer nil", (*string)(nil), 0, true},
-        {"int", int(42), 42, false},
-    }
+	tests := []struct {
+		name    string
+		input   any
+		want    float64
+		wantErr bool
+	}{
+		{"float64", float64(1.5), 1.5, false},
+		{"float32", float32(2.5), 2.5, false},
+		{"string valid", "123.45", 123.45, false},
+		{"string trimmed", "  123.45  ", 123.45, false},
+		{"string empty", "", 0, true},
+		{"string invalid", "abc", 0, true},
+		{"pointer valid", ptrString("123.45"), 123.45, false},
+		{"pointer nil", (*string)(nil), 0, true},
+		{"int", int(42), 42, false},
+		{"int16", int16(10), 10, false},
+		{"int32", int32(20), 20, false},
+		{"int64", int64(30), 30, false},
+		{"unsupported type", []int{1, 2}, 0, true},
+	}
 
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            got, err := toFloat64ForEAV(tt.input)
-            if (err != nil) != tt.wantErr {
-                t.Fatalf("toFloat64ForEAV(%#v) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-            }
-            if !tt.wantErr && got != tt.want {
-                t.Fatalf("toFloat64ForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
-            }
-        })
-    }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := toFloat64ForEAV(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("toFloat64ForEAV(%#v) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("toFloat64ForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
 }
 
 func ptrString(val string) *string {
@@ -233,6 +239,8 @@ func ptrFloat64(val float64) *float64 {
 }
 
 func TestToBoolForEAV(t *testing.T) {
+	trueVal := true
+	falseVal := false
 	tests := []struct {
 		name    string
 		input   interface{}
@@ -247,6 +255,8 @@ func TestToBoolForEAV(t *testing.T) {
 
 		{"bool true", true, true, false},
 		{"bool false", false, false, false},
+		{"ptr bool true", &trueVal, true, false},
+		{"ptr bool false", &falseVal, false, false},
 		{"ptr bool nil", (*bool)(nil), false, true},
 
 		{"int positive", int(1), true, false},

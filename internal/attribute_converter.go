@@ -167,16 +167,46 @@ func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
 	case float64:
 		return v, nil
+	case *float64:
+		if v == nil {
+			return 0, fmt.Errorf("nil float64 pointer")
+		}
+		return *v, nil
 	case float32:
 		return float64(v), nil
+	case *float32:
+		if v == nil {
+			return 0, fmt.Errorf("nil float32 pointer")
+		}
+		return float64(*v), nil
 	case int:
 		return float64(v), nil
+	case *int:
+		if v == nil {
+			return 0, fmt.Errorf("nil int pointer")
+		}
+		return float64(*v), nil
 	case int16:
 		return float64(v), nil
+	case *int16:
+		if v == nil {
+			return 0, fmt.Errorf("nil int16 pointer")
+		}
+		return float64(*v), nil
 	case int32:
 		return float64(v), nil
+	case *int32:
+		if v == nil {
+			return 0, fmt.Errorf("nil int32 pointer")
+		}
+		return float64(*v), nil
 	case int64:
 		return float64(v), nil
+	case *int64:
+		if v == nil {
+			return 0, fmt.Errorf("nil int64 pointer")
+		}
+		return float64(*v), nil
 	case string:
 		s := strings.TrimSpace(v)
 		if s == "" {
