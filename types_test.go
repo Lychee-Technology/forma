@@ -178,11 +178,11 @@ func TestKvCondition_UnmarshalJSON(t *testing.T) {
 
 func TestUnmarshalCondition(t *testing.T) {
 	tests := []struct {
-		name         string
-		json         string
-		wantType     string // "composite" or "kv"
-		wantErr      bool
-		errSubstr    string
+		name      string
+		json      string
+		wantType  string // "composite" or "kv"
+		wantErr   bool
+		errSubstr string
 	}{
 		{
 			name:     "composite condition with logic",

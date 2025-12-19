@@ -1,11 +1,11 @@
 package queryoptimizer
 
 import (
-"strings"
-"testing"
-"time"
+	"strings"
+	"testing"
+	"time"
 
-"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma"
 )
 
 func baseAttrs() AttributeCatalog {
@@ -303,109 +303,109 @@ func TestNormalizeQuery_ResolvedAttributeNameAndInsideArray(t *testing.T) {
 }
 
 func TestNormalizeQuery_DateConversionSuccess(t *testing.T) {
-attrs := baseAttrs()
-date := time.Date(2023, 3, 14, 15, 9, 26, 0, time.UTC)
-req := &forma.QueryRequest{
-Condition: &forma.KvCondition{Attr: "created_at", Value: "eq:" + date.Format(time.RFC3339)},
-}
-in, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-pred := in.Filter.Predicate
-if pred.ValueType != forma.ValueTypeDate {
-t.Fatalf("unexpected value type %s", pred.ValueType)
-}
-if pred.Value.(time.Time) != date {
-t.Fatalf("expected parsed date %v, got %v", date, pred.Value)
-}
+	attrs := baseAttrs()
+	date := time.Date(2023, 3, 14, 15, 9, 26, 0, time.UTC)
+	req := &forma.QueryRequest{
+		Condition: &forma.KvCondition{Attr: "created_at", Value: "eq:" + date.Format(time.RFC3339)},
+	}
+	in, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	pred := in.Filter.Predicate
+	if pred.ValueType != forma.ValueTypeDate {
+		t.Fatalf("unexpected value type %s", pred.ValueType)
+	}
+	if pred.Value.(time.Time) != date {
+		t.Fatalf("expected parsed date %v, got %v", date, pred.Value)
+	}
 }
 
 func TestNormalizeConditionTree(t *testing.T) {
-attrs := baseAttrs()
+	attrs := baseAttrs()
 
-t.Run("and with kv children", func(t *testing.T) {
-cond := &forma.CompositeCondition{
-Logic: forma.LogicAnd,
-Conditions: []forma.Condition{
-&forma.KvCondition{Attr: "status", Value: "hot"},
-&forma.KvCondition{Attr: "amount", Value: "gt:10"},
-},
-}
-node, err := normalizeConditionTree(cond, attrs)
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if node.Logic != LogicOpAnd {
-t.Fatalf("expected LogicOpAnd, got %s", node.Logic)
-}
-if len(node.Children) != 2 {
-t.Fatalf("expected 2 children, got %d", len(node.Children))
-}
-p1 := node.Children[0].Predicate
-if p1 == nil || p1.Operator != PredicateOpEquals || p1.Value != "hot" {
-t.Fatalf("unexpected first predicate %+v", p1)
-}
-p2 := node.Children[1].Predicate
-if p2 == nil || p2.Operator != PredicateOpGreaterThan || p2.Value != int64(10) {
-t.Fatalf("unexpected second predicate %+v", p2)
-}
-})
+	t.Run("and with kv children", func(t *testing.T) {
+		cond := &forma.CompositeCondition{
+			Logic: forma.LogicAnd,
+			Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "status", Value: "hot"},
+				&forma.KvCondition{Attr: "amount", Value: "gt:10"},
+			},
+		}
+		node, err := normalizeConditionTree(cond, attrs)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if node.Logic != LogicOpAnd {
+			t.Fatalf("expected LogicOpAnd, got %s", node.Logic)
+		}
+		if len(node.Children) != 2 {
+			t.Fatalf("expected 2 children, got %d", len(node.Children))
+		}
+		p1 := node.Children[0].Predicate
+		if p1 == nil || p1.Operator != PredicateOpEquals || p1.Value != "hot" {
+			t.Fatalf("unexpected first predicate %+v", p1)
+		}
+		p2 := node.Children[1].Predicate
+		if p2 == nil || p2.Operator != PredicateOpGreaterThan || p2.Value != int64(10) {
+			t.Fatalf("unexpected second predicate %+v", p2)
+		}
+	})
 
-t.Run("or with nested composite", func(t *testing.T) {
-nested := &forma.CompositeCondition{
-Logic: forma.LogicAnd,
-Conditions: []forma.Condition{
-&forma.KvCondition{Attr: "amount", Value: "lt:5"},
-&forma.KvCondition{Attr: "flag", Value: "eq:true"},
-},
-}
-cond := &forma.CompositeCondition{
-Logic: forma.LogicOr,
-Conditions: []forma.Condition{
-&forma.KvCondition{Attr: "status", Value: "eq:hot"},
-nested,
-},
-}
-node, err := normalizeConditionTree(cond, attrs)
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if node.Logic != LogicOpOr || len(node.Children) != 2 {
-t.Fatalf("unexpected root node %+v", node)
-}
-if node.Children[1].Logic != LogicOpAnd || len(node.Children[1].Children) != 2 {
-t.Fatalf("unexpected nested node %+v", node.Children[1])
-}
-})
+	t.Run("or with nested composite", func(t *testing.T) {
+		nested := &forma.CompositeCondition{
+			Logic: forma.LogicAnd,
+			Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "amount", Value: "lt:5"},
+				&forma.KvCondition{Attr: "flag", Value: "eq:true"},
+			},
+		}
+		cond := &forma.CompositeCondition{
+			Logic: forma.LogicOr,
+			Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "status", Value: "eq:hot"},
+				nested,
+			},
+		}
+		node, err := normalizeConditionTree(cond, attrs)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if node.Logic != LogicOpOr || len(node.Children) != 2 {
+			t.Fatalf("unexpected root node %+v", node)
+		}
+		if node.Children[1].Logic != LogicOpAnd || len(node.Children[1].Children) != 2 {
+			t.Fatalf("unexpected nested node %+v", node.Children[1])
+		}
+	})
 
-t.Run("child error bubbles", func(t *testing.T) {
-cond := &forma.CompositeCondition{
-Logic: forma.LogicAnd,
-Conditions: []forma.Condition{
-&forma.KvCondition{Attr: "missing", Value: "eq:1"},
-},
-}
-_, err := normalizeConditionTree(cond, attrs)
-if err == nil || !strings.Contains(err.Error(), "attribute 'missing' not found in schema") {
-t.Fatalf("expected missing attribute error, got %v", err)
-}
-})
+	t.Run("child error bubbles", func(t *testing.T) {
+		cond := &forma.CompositeCondition{
+			Logic: forma.LogicAnd,
+			Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "missing", Value: "eq:1"},
+			},
+		}
+		_, err := normalizeConditionTree(cond, attrs)
+		if err == nil || !strings.Contains(err.Error(), "attribute 'missing' not found in schema") {
+			t.Fatalf("expected missing attribute error, got %v", err)
+		}
+	})
 
-t.Run("composite with no children", func(t *testing.T) {
-cond := &forma.CompositeCondition{Logic: forma.LogicAnd}
-_, err := normalizeConditionTree(cond, attrs)
-if err == nil || err.Error() != "composite condition requires children" {
-t.Fatalf("expected composite child error, got %v", err)
-}
-})
+	t.Run("composite with no children", func(t *testing.T) {
+		cond := &forma.CompositeCondition{Logic: forma.LogicAnd}
+		_, err := normalizeConditionTree(cond, attrs)
+		if err == nil || err.Error() != "composite condition requires children" {
+			t.Fatalf("expected composite child error, got %v", err)
+		}
+	})
 
-t.Run("unsupported condition type", func(t *testing.T) {
-_, err := normalizeConditionTree(&unknownCond{}, attrs)
-if err == nil || !strings.Contains(err.Error(), "unsupported condition type") {
-t.Fatalf("expected unsupported condition type error, got %v", err)
-}
-})
+	t.Run("unsupported condition type", func(t *testing.T) {
+		_, err := normalizeConditionTree(&unknownCond{}, attrs)
+		if err == nil || !strings.Contains(err.Error(), "unsupported condition type") {
+			t.Fatalf("expected unsupported condition type error, got %v", err)
+		}
+	})
 }
 
 type unknownCond struct{}
@@ -413,139 +413,139 @@ type unknownCond struct{}
 func (unknownCond) IsLeaf() bool { return true }
 
 func TestNormalizeValue(t *testing.T) {
-textMeta := AttributeBinding{AttributeName: "status", AttributeID: 1, ValueType: forma.ValueTypeText}
-numericMeta := AttributeBinding{AttributeName: "amount", AttributeID: 2, ValueType: forma.ValueTypeNumeric}
-dateMeta := AttributeBinding{AttributeName: "created_at", AttributeID: 3, ValueType: forma.ValueTypeDate}
-boolMeta := AttributeBinding{AttributeName: "flag", AttributeID: 4, ValueType: forma.ValueTypeBool}
-unsupportedMeta := AttributeBinding{AttributeName: "x", AttributeID: 5, ValueType: forma.ValueType("custom")}
+	textMeta := AttributeBinding{AttributeName: "status", AttributeID: 1, ValueType: forma.ValueTypeText}
+	numericMeta := AttributeBinding{AttributeName: "amount", AttributeID: 2, ValueType: forma.ValueTypeNumeric}
+	dateMeta := AttributeBinding{AttributeName: "created_at", AttributeID: 3, ValueType: forma.ValueTypeDate}
+	boolMeta := AttributeBinding{AttributeName: "flag", AttributeID: 4, ValueType: forma.ValueTypeBool}
+	unsupportedMeta := AttributeBinding{AttributeName: "x", AttributeID: 5, ValueType: forma.ValueType("custom")}
 
-t.Run("text equals", func(t *testing.T) {
-op, pattern, val, err := normalizeValue(textMeta, "equals", "abc")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpEquals || pattern != PatternKindNone || val != "abc" {
-t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
-}
-})
+	t.Run("text equals", func(t *testing.T) {
+		op, pattern, val, err := normalizeValue(textMeta, "equals", "abc")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpEquals || pattern != PatternKindNone || val != "abc" {
+			t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
+		}
+	})
 
-t.Run("text starts_with", func(t *testing.T) {
-op, pattern, val, err := normalizeValue(textMeta, "starts_with", "abc")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpLike || pattern != PatternKindPrefix || val != "abc%" {
-t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
-}
-})
+	t.Run("text starts_with", func(t *testing.T) {
+		op, pattern, val, err := normalizeValue(textMeta, "starts_with", "abc")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpLike || pattern != PatternKindPrefix || val != "abc%" {
+			t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
+		}
+	})
 
-t.Run("text contains", func(t *testing.T) {
-op, pattern, val, err := normalizeValue(textMeta, "contains", "abc")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpLike || pattern != PatternKindContains || val != "%abc%" {
-t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
-}
-})
+	t.Run("text contains", func(t *testing.T) {
+		op, pattern, val, err := normalizeValue(textMeta, "contains", "abc")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpLike || pattern != PatternKindContains || val != "%abc%" {
+			t.Fatalf("unexpected result op=%s pattern=%s val=%v", op, pattern, val)
+		}
+	})
 
-t.Run("numeric eq int", func(t *testing.T) {
-op, pattern, val, err := normalizeValue(numericMeta, "eq", "42")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpEquals || pattern != PatternKindNone {
-t.Fatalf("unexpected op/pattern %s/%s", op, pattern)
-}
-if v, ok := val.(int64); !ok || v != 42 {
-t.Fatalf("expected int64(42), got %v", val)
-}
-})
+	t.Run("numeric eq int", func(t *testing.T) {
+		op, pattern, val, err := normalizeValue(numericMeta, "eq", "42")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpEquals || pattern != PatternKindNone {
+			t.Fatalf("unexpected op/pattern %s/%s", op, pattern)
+		}
+		if v, ok := val.(int64); !ok || v != 42 {
+			t.Fatalf("expected int64(42), got %v", val)
+		}
+	})
 
-t.Run("numeric gt float", func(t *testing.T) {
-op, _, val, err := normalizeValue(numericMeta, "gt", "10.5")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpGreaterThan {
-t.Fatalf("unexpected op %s", op)
-}
-if v, ok := val.(float64); !ok || v != 10.5 {
-t.Fatalf("expected float64(10.5), got %v", val)
-}
-})
+	t.Run("numeric gt float", func(t *testing.T) {
+		op, _, val, err := normalizeValue(numericMeta, "gt", "10.5")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpGreaterThan {
+			t.Fatalf("unexpected op %s", op)
+		}
+		if v, ok := val.(float64); !ok || v != 10.5 {
+			t.Fatalf("expected float64(10.5), got %v", val)
+		}
+	})
 
-t.Run("numeric gte int", func(t *testing.T) {
-op, _, val, err := normalizeValue(numericMeta, "gte", "7")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpGreaterEq {
-t.Fatalf("unexpected op %s", op)
-}
-if v, ok := val.(int64); !ok || v != 7 {
-t.Fatalf("expected int64(7), got %v", val)
-}
-})
+	t.Run("numeric gte int", func(t *testing.T) {
+		op, _, val, err := normalizeValue(numericMeta, "gte", "7")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpGreaterEq {
+			t.Fatalf("unexpected op %s", op)
+		}
+		if v, ok := val.(int64); !ok || v != 7 {
+			t.Fatalf("expected int64(7), got %v", val)
+		}
+	})
 
-t.Run("numeric lte float", func(t *testing.T) {
-op, _, val, err := normalizeValue(numericMeta, "lte", "3.25")
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpLessEq {
-t.Fatalf("unexpected op %s", op)
-}
-if v, ok := val.(float64); !ok || v != 3.25 {
-t.Fatalf("expected float64(3.25), got %v", val)
-}
-})
+	t.Run("numeric lte float", func(t *testing.T) {
+		op, _, val, err := normalizeValue(numericMeta, "lte", "3.25")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpLessEq {
+			t.Fatalf("unexpected op %s", op)
+		}
+		if v, ok := val.(float64); !ok || v != 3.25 {
+			t.Fatalf("expected float64(3.25), got %v", val)
+		}
+	})
 
-t.Run("date eq", func(t *testing.T) {
-raw := "2023-03-14T15:09:26Z"
-op, pattern, val, err := normalizeValue(dateMeta, "eq", raw)
-if err != nil {
-t.Fatalf("unexpected err: %v", err)
-}
-if op != PredicateOpEquals || pattern != PatternKindNone {
-t.Fatalf("unexpected op/pattern %s/%s", op, pattern)
-}
-if v, ok := val.(time.Time); !ok || v.Format(time.RFC3339) != raw {
-t.Fatalf("expected parsed date %s, got %v", raw, val)
-}
-})
+	t.Run("date eq", func(t *testing.T) {
+		raw := "2023-03-14T15:09:26Z"
+		op, pattern, val, err := normalizeValue(dateMeta, "eq", raw)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if op != PredicateOpEquals || pattern != PatternKindNone {
+			t.Fatalf("unexpected op/pattern %s/%s", op, pattern)
+		}
+		if v, ok := val.(time.Time); !ok || v.Format(time.RFC3339) != raw {
+			t.Fatalf("expected parsed date %s, got %v", raw, val)
+		}
+	})
 
-t.Run("bool equals and not_equals", func(t *testing.T) {
-op, pattern, val, err := normalizeValue(boolMeta, "eq", "true")
-if err != nil || op != PredicateOpEquals || pattern != PatternKindNone {
-t.Fatalf("unexpected eq result op=%s pattern=%s err=%v", op, pattern, err)
-}
-if vb, ok := val.(bool); !ok || vb != true {
-t.Fatalf("expected true, got %v", val)
-}
+	t.Run("bool equals and not_equals", func(t *testing.T) {
+		op, pattern, val, err := normalizeValue(boolMeta, "eq", "true")
+		if err != nil || op != PredicateOpEquals || pattern != PatternKindNone {
+			t.Fatalf("unexpected eq result op=%s pattern=%s err=%v", op, pattern, err)
+		}
+		if vb, ok := val.(bool); !ok || vb != true {
+			t.Fatalf("expected true, got %v", val)
+		}
 
-op, pattern, val, err = normalizeValue(boolMeta, "not_equals", "false")
-if err != nil || op != PredicateOpNotEquals || pattern != PatternKindNone {
-t.Fatalf("unexpected neq result op=%s pattern=%s err=%v", op, pattern, err)
-}
-if vb, ok := val.(bool); !ok || vb != false {
-t.Fatalf("expected false, got %v", val)
-}
-})
+		op, pattern, val, err = normalizeValue(boolMeta, "not_equals", "false")
+		if err != nil || op != PredicateOpNotEquals || pattern != PatternKindNone {
+			t.Fatalf("unexpected neq result op=%s pattern=%s err=%v", op, pattern, err)
+		}
+		if vb, ok := val.(bool); !ok || vb != false {
+			t.Fatalf("expected false, got %v", val)
+		}
+	})
 
-t.Run("unsupported value type", func(t *testing.T) {
-_, _, _, err := normalizeValue(unsupportedMeta, "eq", "x")
-if err == nil || !strings.Contains(err.Error(), "unsupported value type") {
-t.Fatalf("expected unsupported value type error, got %v", err)
-}
-})
+	t.Run("unsupported value type", func(t *testing.T) {
+		_, _, _, err := normalizeValue(unsupportedMeta, "eq", "x")
+		if err == nil || !strings.Contains(err.Error(), "unsupported value type") {
+			t.Fatalf("expected unsupported value type error, got %v", err)
+		}
+	})
 
-t.Run("unsupported operator", func(t *testing.T) {
-_, _, _, err := normalizeValue(textMeta, "weird_op", "x")
-if err == nil || !strings.Contains(err.Error(), "unsupported operator") {
-t.Fatalf("expected unsupported operator error, got %v", err)
-}
-})
+	t.Run("unsupported operator", func(t *testing.T) {
+		_, _, _, err := normalizeValue(textMeta, "weird_op", "x")
+		if err == nil || !strings.Contains(err.Error(), "unsupported operator") {
+			t.Fatalf("expected unsupported operator error, got %v", err)
+		}
+	})
 }
 
 func contains(haystack, needle string) bool {
