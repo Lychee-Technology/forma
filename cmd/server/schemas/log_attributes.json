@@ -39,7 +39,7 @@
   },
   "visitId": {
     "attributeID": 10,
-    "valueType": "text",
+    "valueType": "uuid",
     "column_binding": {
       "col_name": "uuid_01"
     }

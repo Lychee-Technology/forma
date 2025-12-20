@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
@@ -96,15 +96,20 @@ func (mc *MetadataCache) ListSchemas() []string {
 	return schemas
 }
 
+// DBPool is a minimal interface for the methods MetadataLoader needs.
+type DBPool interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // MetadataLoader loads schema and attribute metadata from database and JSON files
 type MetadataLoader struct {
-	pool            *pgxpool.Pool
+	pool            DBPool
 	schemaTableName string
 	schemaDirectory string
 }
 
 // NewMetadataLoader creates a new metadata loader
-func NewMetadataLoader(pool *pgxpool.Pool, schemaTableName, schemaDirectory string) *MetadataLoader {
+func NewMetadataLoader(pool DBPool, schemaTableName, schemaDirectory string) *MetadataLoader {
 	return &MetadataLoader{
 		pool:            pool,
 		schemaTableName: schemaTableName,

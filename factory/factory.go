@@ -5,40 +5,39 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
 
-// NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
-// This is the primary way for external projects to create an EntityManager instance.
-//
-// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
-// This allows callers to provide their own SchemaRegistry implementation.
-//
-// Usage:
-//
-//	import (
-//	    "github.com/lychee-technology/forma"
-//	    "github.com/lychee-technology/forma/factory"
-//	)
-//
-//	config := forma.DefaultConfig()
-//	em, err := factory.NewEntityManagerWithConfig(config, pool)
-//	if err != nil {
-//	    // handle error
-//	}
-//
-// With custom SchemaRegistry:
-//
-//	config := forma.DefaultConfig()
-//	config.SchemaRegistry = myCustomRegistry
-//	em, err := factory.NewEntityManagerWithConfig(config, pool)
-func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
+// queryPool is a minimal interface used for querying table names.
+// It matches *pgxpool.Pool and pgxmock pools used in tests.
+type queryPool interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// metadataLoader is a minimal interface for loading metadata.
+// This allows tests to inject mock implementations.
+type metadataLoader interface {
+	LoadMetadata(ctx context.Context) (*internal.MetadataCache, error)
+}
+
+// defaultMetadataLoaderFactory is the default factory function for creating metadata loaders.
+// It can be overridden in tests for injection.
+var defaultMetadataLoaderFactory = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+	return internal.NewMetadataLoader(pool, schemaTable, schemaDir)
+}
+
+// tableCollector is a test hook for table discovery.
+var tableCollector = collectTablesFromPool
+
+// collectTablesFromPool queries information_schema for table/view names and returns the list.
+func collectTablesFromPool(pool queryPool) ([]string, error) {
 	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables t
-		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-		union SELECT table_name FROM information_schema.views v WHERE table_schema = 'public';`)
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+union SELECT table_name FROM information_schema.views v WHERE table_schema = 'public';`)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify database connection: %w", err)
@@ -59,6 +58,41 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
+	return tables, nil
+}
+
+// NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
+// This is the primary way for external projects to create an EntityManager instance.
+//
+// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
+// This allows callers to provide their own SchemaRegistry implementation.
+//
+// Usage:
+//
+// import (
+//
+//	"github.com/lychee-technology/forma"
+//	"github.com/lychee-technology/forma/factory"
+//
+// )
+//
+// config := forma.DefaultConfig()
+// em, err := factory.NewEntityManagerWithConfig(config, pool)
+//
+//	if err != nil {
+//	   // handle error
+//	}
+//
+// With custom SchemaRegistry:
+//
+// config := forma.DefaultConfig()
+// config.SchemaRegistry = myCustomRegistry
+// em, err := factory.NewEntityManagerWithConfig(config, pool)
+func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
+	tables, err := tableCollector(pool)
+	if err != nil {
+		return nil, err
+	}
 
 	if len(tables) < 2 || !slices.Contains(tables, config.Database.TableNames.SchemaRegistry) || !slices.Contains(tables, config.Database.TableNames.EAVData) {
 		return nil, fmt.Errorf("required tables are missing in the database")
@@ -66,13 +100,13 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 
 	// Load metadata from database at startup
 	zap.S().Info("Loading metadata from database...")
-	metadataLoader := internal.NewMetadataLoader(
+	loader := defaultMetadataLoaderFactory(
 		pool,
 		config.Database.TableNames.SchemaRegistry,
 		config.Entity.SchemaDirectory,
 	)
 
-	metadataCache, err := metadataLoader.LoadMetadata(context.Background())
+	metadataCache, err := loader.LoadMetadata(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}

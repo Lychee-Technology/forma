@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
@@ -334,71 +333,6 @@ func toString(value any) (string, error) {
 		return v.String(), nil
 	default:
 		return fmt.Sprintf("%v", value), nil
-	}
-}
-
-func toFloat64(value any) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case int:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case json.Number:
-		return v.Float64()
-	case string:
-		return strconv.ParseFloat(v, 64)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", value)
-	}
-}
-
-func toTime(value any) (time.Time, error) {
-	switch v := value.(type) {
-	case time.Time:
-		return v, nil
-	case string:
-		epoch, err := strconv.ParseInt(value.(string), 10, 64)
-		if err == nil {
-			return time.UnixMilli(epoch), nil
-		}
-
-		formats := []string{
-			time.RFC3339Nano,
-			time.RFC3339,
-			"2006-01-02",
-			"2006-01",
-		}
-		for _, format := range formats {
-			if parsed, err := time.Parse(format, v); err == nil {
-				return parsed, nil
-			}
-		}
-		return time.Time{}, fmt.Errorf("unsupported time format: %s", v)
-	default:
-		return time.Time{}, fmt.Errorf("cannot convert %T to time.Time", value)
-	}
-}
-
-func toBool(value any) (bool, error) {
-	switch v := value.(type) {
-	case bool:
-		return v, nil
-	case string:
-		return strconv.ParseBool(v)
-	case int:
-		return v != 0, nil
-	case int64:
-		return v != 0, nil
-	case float64:
-		return v != 0, nil
-	default:
-		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
 }
 

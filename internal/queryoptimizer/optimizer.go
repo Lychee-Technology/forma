@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
 
@@ -362,7 +363,7 @@ func (o *Optimizer) buildMainPredicate(pred *Predicate, qb *queryBuilder) (strin
 	case AttributeFallbackNumericToDouble:
 		// Rewrite equality to range for floating point comparison
 		if pred.Operator == PredicateOpEquals {
-			val, ok := toFloat64(pred.Value)
+			val, ok := internal.ToFloat64(pred.Value)
 			if !ok {
 				return "", fmt.Errorf("invalid numeric value for fallback")
 			}
@@ -507,21 +508,4 @@ func (o *Optimizer) buildSortSQL(sortKeys []SortKey, tables StorageTables, qb *q
 	orderClauses = append(orderClauses, "a.row_id ASC") // Deterministic tie-breaker
 
 	return strings.Join(orderClauses, ", "), strings.Join(joinClauses, "\n")
-}
-
-func toFloat64(v any) (float64, bool) {
-	switch val := v.(type) {
-	case float64:
-		return val, true
-	case float32:
-		return float64(val), true
-	case int:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case int32:
-		return float64(val), true
-	default:
-		return 0, false
-	}
 }

@@ -3,8 +3,9 @@ module github.com/lychee-technology/forma
 go 1.25.3
 
 require (
-	github.com/google/jsonschema-go v0.3.0
+	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
+	github.com/pashagolub/pgxmock/v4 v4.9.0
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )

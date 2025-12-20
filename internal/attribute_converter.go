@@ -1,8 +1,11 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -165,16 +168,69 @@ func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
 	case float64:
 		return v, nil
+	case *float64:
+		if v == nil {
+			return 0, fmt.Errorf("nil float64 pointer")
+		}
+		return *v, nil
 	case float32:
 		return float64(v), nil
+	case *float32:
+		if v == nil {
+			return 0, fmt.Errorf("nil float32 pointer")
+		}
+		return float64(*v), nil
 	case int:
 		return float64(v), nil
+	case *int:
+		if v == nil {
+			return 0, fmt.Errorf("nil int pointer")
+		}
+		return float64(*v), nil
 	case int16:
 		return float64(v), nil
+	case *int16:
+		if v == nil {
+			return 0, fmt.Errorf("nil int16 pointer")
+		}
+		return float64(*v), nil
 	case int32:
 		return float64(v), nil
+	case *int32:
+		if v == nil {
+			return 0, fmt.Errorf("nil int32 pointer")
+		}
+		return float64(*v), nil
 	case int64:
 		return float64(v), nil
+	case *int64:
+		if v == nil {
+			return 0, fmt.Errorf("nil int64 pointer")
+		}
+		return float64(*v), nil
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, fmt.Errorf("empty string")
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float: %w", err)
+		}
+		return f, nil
+	case *string:
+		if v == nil {
+			return 0, fmt.Errorf("nil string pointer")
+		}
+		s := strings.TrimSpace(*v)
+		if s == "" {
+			return 0, fmt.Errorf("empty string")
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float: %w", err)
+		}
+		return f, nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", value)
 	}
@@ -196,6 +252,18 @@ func toTimeForEAV(value any) (time.Time, error) {
 
 func toBoolForEAV(value any) (bool, error) {
 	switch v := value.(type) {
+	case string:
+		if strings.ToLower(v) == "true" || v == "1" {
+			return true, nil
+		} else {
+			return false, nil
+		}
+	case *string:
+		if strings.ToLower(*v) == "true" || *v == "1" {
+			return true, nil
+		} else {
+			return false, nil
+		}
 	case bool:
 		return v, nil
 	case *bool:
@@ -203,9 +271,123 @@ func toBoolForEAV(value any) (bool, error) {
 			return false, fmt.Errorf("nil bool pointer")
 		}
 		return *v, nil
+	case int:
+		return v > 0, nil
+	case *int:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int16:
+		return v > 0, nil
+	case *int16:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int32:
+		return v != 0, nil
+	case *int32:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case int64:
+		return v != 0, nil
+	case *int64:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0, nil
+	case float32:
+		return v > 0.5, nil
+	case *float32:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0.5, nil
+	case float64:
+		return v > 0.5, nil
+	case *float64:
+		if v == nil {
+			return false, fmt.Errorf("nil int pointer")
+		}
+		return *v > 0.5, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
+}
+
+func toFloat64(value any) (float64, error) {
+	switch v := value.(type) {
+	case float64:
+		return v, nil
+	case float32:
+		return float64(v), nil
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case json.Number:
+		return v.Float64()
+	case string:
+		return strconv.ParseFloat(v, 64)
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", value)
+	}
+}
+
+func toTime(value any) (time.Time, error) {
+	switch v := value.(type) {
+	case time.Time:
+		return v, nil
+	case string:
+		epoch, err := strconv.ParseInt(v, 10, 64)
+		if err == nil {
+			return time.UnixMilli(epoch), nil
+		}
+
+		formats := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02",
+			"2006-01",
+		}
+		for _, format := range formats {
+			if parsed, err := time.Parse(format, v); err == nil {
+				return parsed, nil
+			}
+		}
+		return time.Time{}, fmt.Errorf("unsupported time format: %s", v)
+	default:
+		return time.Time{}, fmt.Errorf("cannot convert %T to time.Time", value)
+	}
+}
+
+func toBool(value any) (bool, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		return strconv.ParseBool(v)
+	case int:
+		return v != 0, nil
+	case int64:
+		return v != 0, nil
+	case float64:
+		return v != 0, nil
+	default:
+		return false, fmt.Errorf("cannot convert %T to bool", value)
+	}
+}
+
+// ToFloat64Ok is an exported helper that behaves like the legacy optimizer helper:
+// it returns (float64, bool) where bool indicates success.
+func ToFloat64(v any) (float64, bool) {
+	val, err := toFloat64(v)
+	return val, err == nil
 }
 
 func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any, error) {
@@ -261,7 +443,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		return *record.ValueNumeric > 0.5, nil
+		return toBoolForEAV(record.ValueNumeric)
 
 	default:
 		// Fallback: try text first, then numeric
