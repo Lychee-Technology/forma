@@ -220,6 +220,15 @@ func buildInsertMainStatement(table string, record *PersistentRecord) (string, [
 		}
 	}
 
+	if keys, err := sortedColumnKeys(record.UUIDItems, allowedUUIDColumns); err != nil {
+		return "", nil, err
+	} else {
+		for _, key := range keys {
+			columns = append(columns, key)
+			args = append(args, record.UUIDItems[key])
+		}
+	}
+
 	placeholders := make([]string, len(columns))
 	for i := range columns {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
@@ -291,6 +300,15 @@ func buildUpdateMainStatement(table string, record *PersistentRecord) (string, [
 		for _, key := range keys {
 			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
 			args = append(args, record.Float64Items[key])
+		}
+	}
+
+	if keys, err := sortedColumnKeys(record.UUIDItems, allowedUUIDColumns); err != nil {
+		return "", nil, err
+	} else {
+		for _, key := range keys {
+			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
+			args = append(args, record.UUIDItems[key])
 		}
 	}
 

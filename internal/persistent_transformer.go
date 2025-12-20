@@ -377,8 +377,9 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *Persistent
 
 	switch binding.ColumnType() {
 	case forma.MainColumnTypeUUID:
-		if val, ok := record.TextItems[columnName]; ok {
-			attr.ValueText = &val
+		if val, ok := record.UUIDItems[columnName]; ok {
+			s := val.String()
+			attr.ValueText = &s
 			return attr, true, nil
 		}
 	case forma.MainColumnTypeText:

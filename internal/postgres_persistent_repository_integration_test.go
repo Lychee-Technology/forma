@@ -133,6 +133,9 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 	for _, col := range doubleColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s DOUBLE PRECISION", col))
 	}
+	for _, col := range uuidColumns {
+		entityColumns = append(entityColumns, fmt.Sprintf("%s UUID", col))
+	}
 
 	entityDDL := fmt.Sprintf(
 		"CREATE TABLE %s (%s, PRIMARY KEY (ltbase_schema_id, ltbase_row_id))",
