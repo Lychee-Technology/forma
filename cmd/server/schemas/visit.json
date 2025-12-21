@@ -4,7 +4,7 @@
   "description": "Lead property visit (showing) record",
   "type": "object",
   "$defs": {
-    "id": {
+    "visit_id": {
       "type": "string",
       "description": "Visit identifier",
       "pattern": "^[a-zA-Z0-9_-]+$",
@@ -21,10 +21,10 @@
   ],
   "properties": {
     "id": {
-      "$ref": "#/$defs/id"
+      "$ref": "#/$defs/visit_id"
     },
     "leadId": {
-      "$ref": "lead.json#/$defs/leadId"
+      "$ref": "lead.json#/$defs/lead_id"
     },
     "contactSnapshot": {
       "$ref": "lead.json#/$defs/contact",
@@ -109,14 +109,6 @@
       "type": "string",
       "format": "date-time",
       "description": "Next follow-up time derived from the visit"
-    },
-    "logs": {
-      "type": "array",
-      "description": "Visit log IDs tied to this visit",
-      "items": {
-        "type": "string",
-        "description": "Log ID"
-      }
     },
     "createdAt": {
       "type": "string",

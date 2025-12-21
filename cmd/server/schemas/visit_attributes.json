@@ -43,10 +43,6 @@
     "attributeID": 7,
     "valueType": "text"
   },
-  "logs": {
-    "attributeID": 8,
-    "valueType": "text"
-  },
   "nextFollowUpAt": {
     "attributeID": 9,
     "valueType": "date"

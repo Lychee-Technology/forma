@@ -14,12 +14,17 @@
     "createdAt",
     "updatedAt"
   ],
-  "properties": {
-    "id": {
+  "$defs": {
+    "lead_id": {
       "type": "string",
       "description": "Lead identifier",
       "pattern": "^[a-zA-Z0-9_-]+$",
-      "format": "uuid",
+      "format": "uuid"
+    }
+  },
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/lead_id",
       "x-unique-property": true
     },
     "tenantId": {

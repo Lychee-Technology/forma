@@ -18,18 +18,25 @@
       "format": "uuid"
     },
     "leadId": {
-      "$ref": "lead.json#/$defs/id"
+      "$ref": "lead.json#/$defs/lead_id"
     },
     "visitId": {
-      "$ref": "visit.json#/$defs/id"
+      "$ref": "visit.json#/$defs/visit_id"
     },
     "noteId": {
       "type": "string",
-      "description": "Associated note ID (if log originated from a note)"
+      "description": "Associated note ID (if log originated from a note)",
+      "x-ltbase-note-prop": "${note_id}"
+    },
+    "data": {
+      "type": "string",
+      "x-ltbase-note-prop": "${note_data}",
+      "x-ltbase-type": "virtual"
     },
     "ownerId": {
       "type": "string",
-      "description": "Owner/creator of this log entry"
+      "description": "Owner/creator of this log entry",
+      "x-ltbase-note-prop": "${owner_id}"
     },
     "summary": {
       "type": "string",

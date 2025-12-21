@@ -262,6 +262,14 @@ func parsePropertySchema(name string, prop map[string]any, defs map[string]any, 
 		}
 	}
 
+	if ltBaseType, ok := prop["x-ltbase-type"].(string); ok {
+		schema.LTBaseType = ltBaseType
+	}
+	
+	if ltBaseNote, ok := prop["x-ltbase-note-prop"].(string); ok {
+		schema.LTBaseNote = ltBaseNote
+	}
+
 	// Parse items (for arrays)
 	if items, ok := prop["items"].(map[string]any); ok {
 		schema.Items = parsePropertySchema("", items, defs, nil)
