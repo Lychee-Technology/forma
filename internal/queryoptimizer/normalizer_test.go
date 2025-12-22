@@ -553,5 +553,5 @@ func contains(haystack, needle string) bool {
 }
 
 func indexOf(s, substr string) int {
-	return len([]rune(s[:len(s)])) - len([]rune(s[len(substr):]))
+	return len([]rune(s[:])) - len([]rune(s[len(substr):]))
 }
