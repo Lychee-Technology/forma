@@ -34,8 +34,9 @@ func TestValidateTables(t *testing.T) {
 	err = validateTables(StorageTables{EntityMain: "entity", EAVData: "eav"})
 	require.NoError(t, err)
 
+	// ChangeLog is optional; writes are allowed even if ChangeLog is not provided
 	err = validateWriteTables(StorageTables{EntityMain: "entity", EAVData: "eav"})
-	require.Error(t, err)
+	require.NoError(t, err)
 
 	err = validateWriteTables(StorageTables{EntityMain: "entity", EAVData: "eav", ChangeLog: "change_log"})
 	require.NoError(t, err)

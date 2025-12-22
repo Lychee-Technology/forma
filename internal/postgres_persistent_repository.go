@@ -60,12 +60,12 @@ func validateWriteTables(tables StorageTables) error {
 		return err
 	}
 	if tables.ChangeLog == "" {
-		return fmt.Errorf("change log table name cannot be empty")
+		zap.S().Info("change log table name is empty, cdc will be disabled")
 	}
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) insertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
+func (r *PostgresPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
 	flushedAt := int64(0)
 	query := fmt.Sprintf(
 		`INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at)
@@ -110,8 +110,10 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 		return err
 	}
 
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -145,8 +147,10 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 		return err
 	}
 
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -177,10 +181,12 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 		return fmt.Errorf("delete eav attributes: %w", err)
 	}
 
-	now := r.nowMillis()
-	deletedAt := now
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		now := r.nowMillis()
+		deletedAt := now
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
