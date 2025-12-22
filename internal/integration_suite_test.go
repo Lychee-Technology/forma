@@ -43,6 +43,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 				SchemaRegistry: schemaRegistryTable,
 				EntityMain:     tables.EntityMain,
 				EAVData:        tables.EAVData,
+				ChangeLog:      tables.ChangeLog,
 			},
 		},
 		Query: forma.QueryConfig{

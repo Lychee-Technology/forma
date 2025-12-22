@@ -48,6 +48,7 @@ type TableNames struct {
 	SchemaRegistry string `json:"schemaRegistry"`
 	EntityMain     string `json:"entityMain"`
 	EAVData        string `json:"eavData"`
+	ChangeLog      string `json:"changeLog"`
 }
 
 type FilterField string

@@ -633,6 +633,7 @@ func TestTableNames_JSON(t *testing.T) {
 		SchemaRegistry: "schema_registry",
 		EntityMain:     "entity_main",
 		EAVData:        "eav_data",
+		ChangeLog:      "change_log",
 	}
 
 	data, err := json.Marshal(tableNames)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,106 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	assert.Equal(t, record.Int64Items, stored.Int64Items)
 	assert.Equal(t, record.Float64Items, stored.Float64Items)
 	assert.ElementsMatch(t, record.OtherAttributes, stored.OtherAttributes)
+
+	var (
+		flushedAt       int64
+		changeTimestamp int64
+		deletedAt       pgtype.Int8
+	)
+	query := fmt.Sprintf(`SELECT flushed_at, changed_at, deleted_at FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0`, sanitizeIdentifier(tables.ChangeLog))
+	err = pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&flushedAt, &changeTimestamp, &deletedAt)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), flushedAt)
+	assert.Equal(t, fixed.UnixMilli(), changeTimestamp)
+	assert.False(t, deletedAt.Valid)
+}
+
+func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+	tables := createTempPersistentTables(t, ctx, pool)
+
+	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	rowID := uuid.New()
+
+	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	repo.withClock(func() time.Time { return createdAt })
+	record := &PersistentRecord{
+		SchemaID: 1,
+		RowID:    rowID,
+		TextItems: map[string]string{
+			"text_01": "hello",
+		},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
+
+	updatedAt := time.Date(2024, 1, 2, 4, 5, 6, 0, time.UTC)
+	repo.withClock(func() time.Time { return updatedAt })
+	record.TextItems["text_01"] = "updated"
+	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
+
+	var (
+		changeTimestamp int64
+		deletedStamp    pgtype.Int8
+	)
+	query := fmt.Sprintf(`SELECT changed_at, deleted_at FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0`, sanitizeIdentifier(tables.ChangeLog))
+	err := pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&changeTimestamp, &deletedStamp)
+	require.NoError(t, err)
+	assert.Equal(t, updatedAt.UnixMilli(), changeTimestamp)
+	assert.False(t, deletedStamp.Valid)
+
+	deletedAt := time.Date(2024, 1, 2, 5, 6, 7, 0, time.UTC)
+	repo.withClock(func() time.Time { return deletedAt })
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, record.RowID))
+
+	err = pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&changeTimestamp, &deletedStamp)
+	require.NoError(t, err)
+	assert.Equal(t, deletedAt.UnixMilli(), changeTimestamp)
+	require.True(t, deletedStamp.Valid)
+	assert.Equal(t, deletedAt.UnixMilli(), deletedStamp.Int64)
+}
+
+func TestRunOptimizedQueryIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+	tables := createTempPersistentTables(t, ctx, pool)
+
+	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	fixed := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+
+	rowID := uuid.New()
+	record := &PersistentRecord{
+		SchemaID: 1,
+		RowID:    rowID,
+		TextItems: map[string]string{
+			"text_01": "hello",
+		},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
+
+	records, total, err := repo.runOptimizedQuery(
+		ctx,
+		tables,
+		1,
+		"1=1",
+		nil,
+		10,
+		0,
+		nil,
+		true,
+	)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, record.SchemaID, records[0].SchemaID)
+	assert.Equal(t, record.RowID, records[0].RowID)
+	assert.Equal(t, record.TextItems, records[0].TextItems)
+	assert.Nil(t, records[0].OtherAttributes)
 }
 
 func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -109,6 +210,7 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 	suffix := time.Now().UnixNano()
 	entityTable := fmt.Sprintf("entity_main_it_%d", suffix)
 	eavTable := fmt.Sprintf("eav_data_it_%d", suffix)
+	changeLogTable := fmt.Sprintf("change_log_it_%d", suffix)
 
 	entityColumns := []string{
 		"ltbase_schema_id SMALLINT NOT NULL",
@@ -154,15 +256,25 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 	_, err = pool.Exec(ctx, eavDDL)
 	require.NoError(t, err)
 
+	changeLogDDL := fmt.Sprintf(
+		`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, flushed_at BIGINT NOT NULL DEFAULT 0, changed_at BIGINT NOT NULL, deleted_at BIGINT, PRIMARY KEY (schema_id, row_id, flushed_at))`,
+		sanitizeIdentifier(changeLogTable),
+	)
+
+	_, err = pool.Exec(ctx, changeLogDDL)
+	require.NoError(t, err)
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(eavTable)))
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(entityTable)))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(changeLogTable)))
 	})
 
 	return StorageTables{
 		EntityMain: entityTable,
 		EAVData:    eavTable,
+		ChangeLog:  changeLogTable,
 	}
 }

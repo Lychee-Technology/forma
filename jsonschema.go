@@ -27,7 +27,7 @@ type PropertySchema struct {
 	MaxLength  *int                       `json:"maxLength,omitempty"`
 	Pattern    string                     `json:"pattern,omitempty"`
 	Relation   *RelationSchema            `json:"x-relation,omitempty"`
-	LTBaseType string                     `json:"x-ltbase-type,omitempty"` // "virtual" for virtual fields that are populated dynamically
+	LTBaseType string                     `json:"x-ltbase-type,omitempty"`      // "virtual" for virtual fields that are populated dynamically
 	LTBaseNote string                     `json:"x-ltbase-note-prop,omitempty"` // Reference to note field: "${note_id}", "${owner_id}", "${note_data}"
 }
 
