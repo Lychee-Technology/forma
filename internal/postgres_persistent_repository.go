@@ -151,6 +151,16 @@ func validateTables(tables StorageTables) error {
 	return nil
 }
 
+func validateWriteTables(tables StorageTables) error {
+	if err := validateTables(tables); err != nil {
+		return err
+	}
+	if tables.ChangeLog == "" {
+		return fmt.Errorf("change log table name cannot be empty")
+	}
+	return nil
+}
+
 func sortedColumnKeys[T any](source map[string]T, allowed map[string]struct{}) ([]string, error) {
 	if len(source) == 0 {
 		return nil, nil
@@ -391,6 +401,25 @@ func (r *PostgresPersistentRecordRepository) replaceEAVAttributes(ctx context.Co
 		return fmt.Errorf("delete existing eav attributes: %w", err)
 	}
 	return r.insertEAVAttributes(ctx, tx, table, attributes)
+}
+
+func (r *PostgresPersistentRecordRepository) insertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
+	flushedAt := int64(0)
+	query := fmt.Sprintf(
+		`INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (schema_id, row_id, flushed_at)
+		DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
+		sanitizeIdentifier(table),
+	)
+	var deleted any
+	if deletedAt != nil {
+		deleted = *deletedAt
+	}
+	if _, err := tx.Exec(ctx, query, schemaID, rowID, flushedAt, changedAt, deleted); err != nil {
+		return fmt.Errorf("insert change log: %w", err)
+	}
+	return nil
 }
 
 const attributesCount = 6
@@ -916,7 +945,7 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
-	if err := validateTables(tables); err != nil {
+	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
 
@@ -938,6 +967,10 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 		return err
 	}
 
+	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
@@ -949,7 +982,7 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
-	if err := validateTables(tables); err != nil {
+	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
 
@@ -969,6 +1002,10 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 		return err
 	}
 
+	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
@@ -977,7 +1014,7 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 }
 
 func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
-	if err := validateTables(tables); err != nil {
+	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
 
@@ -995,6 +1032,12 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 	if _, err := tx.Exec(ctx, deleteEAV, schemaID, rowID); err != nil {
 		return fmt.Errorf("delete eav attributes: %w", err)
+	}
+
+	now := r.nowMillis()
+	deletedAt := now
+	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

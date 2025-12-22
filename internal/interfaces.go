@@ -46,6 +46,7 @@ type PersistentRecordTransformer interface {
 type StorageTables struct {
 	EntityMain string
 	EAVData    string
+	ChangeLog  string
 }
 
 type PersistentRecordQuery struct {

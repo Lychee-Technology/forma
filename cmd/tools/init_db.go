@@ -25,6 +25,7 @@ type initDBOptions struct {
 	schemaTable string
 	eavTable    string
 	entityMain  string
+	changeLog   string
 	schemaDir   string
 }
 
@@ -48,6 +49,7 @@ func runInitDB(args []string) error {
 	flags.StringVar(&opts.schemaTable, "schema-table", getenvDefault("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
 	flags.StringVar(&opts.eavTable, "eav-table", getenvDefault("EAV_TABLE", "eav_dev"), "EAV data table name")
 	flags.StringVar(&opts.entityMain, "entity-main-table", getenvDefault("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
+	flags.StringVar(&opts.changeLog, "change-log-table", getenvDefault("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
 	flags.StringVar(&opts.schemaDir, "schema-dir", getenvDefault("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
 
 	if err := flags.Parse(args); err != nil {
@@ -116,6 +118,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	schemaTable := quoteIdentifier(opts.schemaTable)
 	eavTable := quoteIdentifier(opts.eavTable)
 	entityMain := quoteIdentifier(opts.entityMain)
+	changeLog := quoteIdentifier(opts.changeLog)
 
 	ddlSchema := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		schema_name TEXT PRIMARY KEY,
@@ -183,6 +186,20 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 		return fmt.Errorf("ensure eav table: %w", err)
 	}
 	fmt.Printf("Created EAV table: %s\n", opts.eavTable)
+
+	ddlChangeLog := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		    schema_id  SMALLINT NOT NULL,
+			row_id     UUID     NOT NULL,
+			flushed_at BIGINT   NOT NULL DEFAULT 0,
+			changed_at BIGINT   NOT NULL,
+			deleted_at BIGINT,
+			primary key (schema_id, row_id, flushed_at)
+		);`, changeLog)
+
+	if _, err := tx.Exec(ctx, ddlChangeLog); err != nil {
+		return fmt.Errorf("ensure change log table: %w", err)
+	}
+	fmt.Printf("Created change log table: %s\n", opts.changeLog)
 
 	idxNumeric := quoteIdentifier(makeIndexName(opts.eavTable, "numeric"))
 	createIdxNumeric := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL`, idxNumeric, eavTable)

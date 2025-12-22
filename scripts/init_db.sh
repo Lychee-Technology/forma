@@ -18,4 +18,5 @@ echo "Schema directory: $SCHEMA_DIR"
   --schema-table "schema_registry_$API_ID" \
   --eav-table "eav_data_$API_ID" \
   --entity-main-table "entity_main_$API_ID" \
+  --change-log-table "change_log_$API_ID" \
   --schema-dir "$SCHEMA_DIR"

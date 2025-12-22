@@ -36,3 +36,4 @@ deploy/data/
 .gocache/
 .gomodcache/
 build/
+local-only/

@@ -75,6 +75,7 @@ func main() {
 		SchemaRegistry: getEnv("SCHEMA_TABLE", "schema_registry_dev"),
 		EAVData:        getEnv("EAV_TABLE", "eav_data_dev"),
 		EntityMain:     getEnv("ENTITY_MAIN_TABLE", "entity_main_dev"),
+		ChangeLog:      getEnv("CHANGE_LOG_TABLE", "change_log_dev"),
 	}
 
 	// Create database connection pool

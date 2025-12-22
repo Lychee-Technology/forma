@@ -116,12 +116,13 @@ func main() {
 	config.Database.TableNames.EAVData = "eav_data_sample"
 	config.Database.TableNames.EntityMain = "entity_main_sample"
 	config.Database.TableNames.SchemaRegistry = "schema_registry_sample"
+	config.Database.TableNames.ChangeLog = "change_log_sample"
 
 	config.Entity.SchemaDirectory = *schemaDir
 
 	// Clear sample tables before import
 	sugar.Infof("Clearing sample tables...")
-	_, err = pool.Exec(ctx, "TRUNCATE TABLE eav_data_sample, entity_main_sample CASCADE")
+	_, err = pool.Exec(ctx, "TRUNCATE TABLE eav_data_sample, entity_main_sample, change_log_sample CASCADE")
 	if err != nil {
 		sugar.Fatalf("Failed to clear sample tables: %v", err)
 	}

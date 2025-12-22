@@ -52,6 +52,9 @@ func (em *entityManager) storageTables() StorageTables {
 	if em.config.Database.TableNames.EAVData != "" {
 		tables.EAVData = em.config.Database.TableNames.EAVData
 	}
+	if em.config.Database.TableNames.ChangeLog != "" {
+		tables.ChangeLog = em.config.Database.TableNames.ChangeLog
+	}
 	return tables
 }
 
