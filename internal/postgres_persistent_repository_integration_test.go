@@ -135,6 +135,47 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	assert.Equal(t, deletedAt.UnixMilli(), deletedStamp.Int64)
 }
 
+func TestRunOptimizedQueryIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+	tables := createTempPersistentTables(t, ctx, pool)
+
+	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	fixed := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+
+	rowID := uuid.New()
+	record := &PersistentRecord{
+		SchemaID: 1,
+		RowID:    rowID,
+		TextItems: map[string]string{
+			"text_01": "hello",
+		},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
+
+	records, total, err := repo.runOptimizedQuery(
+		ctx,
+		tables,
+		1,
+		"1=1",
+		nil,
+		10,
+		0,
+		nil,
+		true,
+	)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, record.SchemaID, records[0].SchemaID)
+	assert.Equal(t, record.RowID, records[0].RowID)
+	assert.Equal(t, record.TextItems, records[0].TextItems)
+	assert.Nil(t, records[0].OtherAttributes)
+}
+
 func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 
