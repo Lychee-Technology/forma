@@ -8,5 +8,6 @@
     "[go]": {
         "editor.defaultFormatter": "golang.go",
     },
-    "makefile.configureOnOpen": false
+    "makefile.configureOnOpen": false,
+    "kiroAgent.configureMCP": "Disabled"
 }

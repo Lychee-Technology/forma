@@ -14,6 +14,7 @@ type Config struct {
 	Logging        LoggingConfig     `json:"logging"`
 	Metrics        MetricsConfig     `json:"metrics"`
 	Reference      ReferenceConfig   `json:"reference"`
+	DuckDB         DuckDBConfig      `json:"duckdb"`
 	SchemaRegistry SchemaRegistry    `json:"-"` // Custom schema registry implementation (optional)
 }
 
@@ -152,6 +153,21 @@ type MetricsConfig struct {
 	EnableOperationMetrics   bool              `json:"enableOperationMetrics"`
 	EnableTransactionMetrics bool              `json:"enableTransactionMetrics"`
 	EnablePatternMetrics     bool              `json:"enablePatternMetrics"`
+}
+
+// DuckDBConfig contains DuckDB connection and S3 settings for federated queries
+type DuckDBConfig struct {
+	Enabled        bool     `json:"enabled"`
+	DBPath         string   `json:"dbPath"`        // path to local DuckDB file (or ":memory:")
+	MemoryLimitMB  int      `json:"memoryLimitMB"` // memory limit for DuckDB in MB
+	EnableS3       bool     `json:"enableS3"`      // enable S3/http file system
+	S3Endpoint     string   `json:"s3Endpoint"`    // custom S3 endpoint (for MinIO)
+	S3AccessKey    string   `json:"s3AccessKey"`
+	S3SecretKey    string   `json:"s3SecretKey"`
+	S3Region       string   `json:"s3Region"`
+	EnableParquet  bool     `json:"enableParquet"` // enable parquet extension
+	Extensions     []string `json:"extensions"`    // additional extensions to load
+	MaxConnections int      `json:"maxConnections"`
 }
 
 // ReferenceConfig contains reference management settings

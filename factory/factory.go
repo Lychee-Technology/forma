@@ -129,6 +129,18 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 		metadataCache,
 	)
 
+	// Initialize DuckDB client if enabled in config
+	if config != nil && config.DuckDB.Enabled {
+		zap.S().Infow("initializing DuckDB client", "dbPath", config.DuckDB.DBPath)
+		duckClient, err := internal.NewDuckDBClient(config.DuckDB)
+		if err != nil {
+			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
+		} else {
+			internal.SetDuckDBClient(duckClient)
+			zap.S().Infow("duckdb client initialized")
+		}
+	}
+
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, registry, config), nil
 }
