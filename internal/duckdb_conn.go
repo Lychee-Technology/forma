@@ -6,16 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
-	/*
-	Note: Add a DuckDB Go SQL driver dependency (for example a maintained driver)
-	and enable the blank import below to register the "duckdb" driver:
-
-	    _ "github.com/marcboeker/duckdb-go/v2"
-
-	The driver is intentionally omitted for now to avoid introducing an unavailable module.
-	*/)
+)
 
 // DuckDBClient wraps a database/sql DB opened with the DuckDB driver.
 type DuckDBClient struct {
