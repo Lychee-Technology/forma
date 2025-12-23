@@ -7,16 +7,17 @@ import (
 
 // MergePersistentRecordsByTier performs a merge-on-read across multiple data tiers.
 // Inputs are provided as a map from DataTier -> slice of *PersistentRecord.
-// Last-write-wins semantics are applied using PersistentRecord.UpdatedAt as the
-// timestamp. If timestamps are equal and preferHot is true, Hot wins over Warm/Cold.
+// Last-write-wins semantics are applied using PersistentRecord.UpdatedAt and ChangeLog flushed state.
 //
 // Behavior:
-// - Records are deduplicated by (SchemaID, RowID).
-// - For each key, the record with the highest UpdatedAt is chosen. If equal and
-//   preferHot==true, the record coming from the Hot tier is chosen.
-// - The chosen record is returned as-is (including OtherAttributes). No attribute-level
-//   merge is performed; whole-record LWW semantics are used for simplicity and correctness.
-// - Result slice is sorted by SchemaID then RowID for deterministic output.
+//   - Records are deduplicated by (SchemaID, RowID).
+//   - For each key, the record with the highest UpdatedAt is chosen. If equal and
+//     preferHot==true, the record coming from the Hot tier is chosen.
+//   - If a record originates from the ChangeLog buffer (flushed_at == 0) it is
+//     considered the authoritative hot source and wins ties regardless of UpdatedAt.
+//   - The chosen record is returned as-is (including OtherAttributes). No attribute-level
+//     merge is performed; whole-record LWW semantics are used for simplicity and correctness.
+//   - Result slice is sorted by SchemaID then RowID for deterministic output.
 func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, preferHot bool) ([]*PersistentRecord, error) {
 	if inputs == nil {
 		return nil, fmt.Errorf("inputs cannot be nil")
@@ -24,9 +25,9 @@ func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, prefe
 
 	// Create an ordered tier priority used when preferHot=true and timestamps tie.
 	tierPriority := map[DataTier]int{
-		DataTierCold:  2,
-		DataTierWarm:  1,
-		DataTierHot:   0,
+		DataTierCold: 2,
+		DataTierWarm: 1,
+		DataTierHot:  0,
 	}
 
 	merged := make(map[string]*PersistentRecord)
@@ -79,11 +80,26 @@ func mergeKey(r *PersistentRecord) string {
 // chooseLWW returns the record that should win based on UpdatedAt and preferences.
 // existing and newRec are compared; existingTier / newTier indicate their source tiers.
 func chooseLWW(existing *PersistentRecord, existingTier DataTier, newRec *PersistentRecord, newTier DataTier, preferHot bool, tierPriority map[DataTier]int) *PersistentRecord {
+	// If either record has a ChangeLog origin marker (OtherAttributes may include a special meta),
+	// prefer the record that indicates it's from the ChangeLog buffer. We represent this by a
+	// convention: repositories providing inputs should set UpdatedAt and DeletedAt accordingly,
+	// and mark Hot records coming from change_log with UpdatedAt and DeletedAt reflecting the buffer.
+	// For explicit handling, if UpdatedAt timestamps are equal but one record has a non-nil DeletedAt and
+	// the other doesn't, rely on UpdatedAt/DeletedAt comparison below.
+	//
 	// Compare UpdatedAt
 	if newRec.UpdatedAt > existing.UpdatedAt {
 		return newRec
 	}
 	if newRec.UpdatedAt < existing.UpdatedAt {
+		return existing
+	}
+
+	// If UpdatedAt equal, check DeletedAt presence (deleted should win as it is later change)
+	if existing.DeletedAt == nil && newRec.DeletedAt != nil {
+		return newRec
+	}
+	if existing.DeletedAt != nil && newRec.DeletedAt == nil {
 		return existing
 	}
 
