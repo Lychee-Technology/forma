@@ -37,6 +37,9 @@ func TestToDualClauses_SimpleKv_NoColumnBinding(t *testing.T) {
 	require.Equal(t, "name = ?", dc.DuckClause)
 	require.Equal(t, []any{"Alice"}, dc.DuckArgs)
 
+	// PgMainClause should be empty because no main column binding exists
+	require.Equal(t, "", dc.PgMainClause)
+
 	// Postgres side: should produce an EXISTS-style clause and two args (attr_id + value)
 	require.NotEmpty(t, dc.PgClause)
 	require.GreaterOrEqual(t, len(dc.PgArgs), 2)

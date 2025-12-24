@@ -8,6 +8,8 @@ var optimizedQuerySQLTemplateDuckDB = template.Must(template.New("optimizedQuery
 	"ident": func(s string) string { return `"` + s + `"` },
 }).Parse(`
         WITH
+            -- PG pushdown clause (injected for inspection / postgres_scan integration)
+            -- PG_PUSHDOWN: {{if .HasPgMainClause}}{{.PgMainClause}}{{else}}<none>{{end}}
             {{- if .HasDirtyIDs }}
             dirty_ids AS (
                 -- Injected dirty row id set (VALUES list of quoted literals)

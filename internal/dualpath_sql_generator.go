@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
@@ -355,15 +357,91 @@ func buildDuckClause(cond forma.Condition, cache forma.SchemaAttributeCache) (st
 
 		// Resolve column name using metadata; fallback to attribute name
 		colName := c.Attr
-		if meta, ok := cache[c.Attr]; ok {
+		var meta forma.AttributeMetadata
+		var hasMeta bool
+		if m, ok := cache[c.Attr]; ok {
+			meta = m
+			hasMeta = true
 			if meta.ColumnBinding != nil {
 				colName = string(meta.ColumnBinding.ColumnName)
 			}
 		}
 
-		// For simplicity return a single predicate using ? placeholder
-		clause := fmt.Sprintf("%s %s ?", colName, sqlOp)
-		return clause, []any{valStr}, nil
+		// If LIKE operator keep simple text comparison
+		if sqlOp == "LIKE" {
+			clause := fmt.Sprintf("%s %s ?", colName, sqlOp)
+			return clause, []any{valStr}, nil
+		}
+
+		// Determine value type: prefer metadata when present, otherwise detect from literal
+		valueType := forma.ValueTypeText
+		if hasMeta {
+			valueType = meta.ValueType
+		} else {
+			// detect from literal
+			if _, err := uuid.Parse(valStr); err == nil {
+				valueType = forma.ValueTypeUUID
+			} else if ls := strings.ToLower(valStr); ls == "true" || ls == "false" || ls == "1" || ls == "0" {
+				valueType = forma.ValueTypeBool
+			} else if _, err := strconv.ParseFloat(valStr, 64); err == nil {
+				valueType = forma.ValueTypeNumeric
+			} else if _, err := time.Parse(time.RFC3339Nano, valStr); err == nil {
+				valueType = forma.ValueTypeDateTime
+			} else if _, err := strconv.ParseInt(valStr, 10, 64); err == nil {
+				valueType = forma.ValueTypeNumeric
+			} else {
+				valueType = forma.ValueTypeText
+			}
+		}
+
+		// Build clause using explicit CAST when type is not text
+		if valueType == forma.ValueTypeText {
+			clause := fmt.Sprintf("%s %s ?", colName, sqlOp)
+			return clause, []any{valStr}, nil
+		}
+
+		// Use CastExpression to create CAST(? AS TYPE)
+		castExpr := CastExpression("?", valueType)
+		clause := fmt.Sprintf("%s %s %s", colName, sqlOp, castExpr)
+
+		// Parse param into typed form and normalize for DuckDB
+		var rawParam any = valStr
+		var err error
+		switch valueType {
+		case forma.ValueTypeUUID:
+			rawParam = valStr
+		case forma.ValueTypeBool:
+			if b, e := strconv.ParseBool(strings.ToLower(valStr)); e == nil {
+				rawParam = b
+			} else if valStr == "1" {
+				rawParam = true
+			} else if valStr == "0" {
+				rawParam = false
+			}
+		case forma.ValueTypeNumeric, forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+			if f, e := strconv.ParseFloat(valStr, 64); e == nil {
+				rawParam = f
+			} else {
+				return "", nil, fmt.Errorf("invalid numeric literal for %s: %s", c.Attr, valStr)
+			}
+		case forma.ValueTypeDate, forma.ValueTypeDateTime:
+			if t, e := time.Parse(time.RFC3339Nano, valStr); e == nil {
+				rawParam = t.UTC()
+			} else if i, e := strconv.ParseInt(valStr, 10, 64); e == nil {
+				rawParam = time.UnixMilli(i).UTC()
+			} else {
+				return "", nil, fmt.Errorf("invalid date literal for %s: %s", c.Attr, valStr)
+			}
+		default:
+			rawParam = valStr
+		}
+
+		param, err := ToDuckDBParam(rawParam, valueType)
+		if err != nil {
+			return "", nil, fmt.Errorf("to duckdb param: %w", err)
+		}
+
+		return clause, []any{param}, nil
 
 	default:
 		return "", nil, fmt.Errorf("unsupported condition type %T", cond)

@@ -21,17 +21,17 @@ func RenderDuckDBQuery(tpl *template.Template, params any, whereArgs []any) (str
 }
 
 // BuildDuckDBQuery prepares a DuckDB SQL string and its arguments for a federated query.
-// It generates a DuckDB WHERE clause (with optional dirty-ID exclusions), injects the
-// clause and dirty-ids template helpers into params, then renders the template and
-// returns the final SQL and combined args suitable for execution against DuckDB.
-func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID) (string, []any, error) {
-	// Build where clause with exclusions (anti-join)
-	whereClause, whereArgs, err := GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
-	if err != nil {
-		return "", nil, err
-	}
+// It accepts optional DualClauses produced by ToDualClauses; when provided it will use
+// the DuckClause and DuckArgs as the base where clause and inject PgMainClause into template
+// params so the template (or tests) can observe the pushdown fragment. Dirty-ID exclusions
+// are appended to the DuckDB clause regardless of source.
+func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	// Prepare where variables
+	var whereClause string
+	var whereArgs []any
+	var err error
 
-	// Ensure params is a map so we can inject Anchor.Condition and dirty helpers
+	// Ensure params is a map so we can inject Anchor.Condition, PgMainClause, and dirty helpers
 	m, ok := params.(map[string]any)
 	if !ok {
 		m = map[string]any{}
@@ -43,11 +43,38 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 		anchor = map[string]any{}
 		m["Anchor"] = anchor
 	}
+
+	// If dual clauses provided, prefer them; otherwise fall back to legacy generator.
+	if dual != nil && dual.DuckClause != "" {
+		whereClause = dual.DuckClause
+		whereArgs = make([]any, 0, len(dual.DuckArgs))
+		if len(dual.DuckArgs) > 0 {
+			whereArgs = append(whereArgs, dual.DuckArgs...)
+		}
+		// Append dirty exclusions
+		if len(dirtyIDs) > 0 {
+			var exclArgs []any
+			whereClause, exclArgs = AppendDirtyExclusion(whereClause, dirtyIDs)
+			whereArgs = append(whereArgs, exclArgs...)
+		}
+		anchor["Condition"] = whereClause
+
+		// Inject PgMainClause for inspection / postgres_scan integration
+		m["PgMainClause"] = dual.PgMainClause
+		m["PgMainArgs"] = dual.PgMainArgs
+		m["HasPgMainClause"] = dual.PgMainClause != ""
+
+		merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
+		return RenderDuckDBQuery(tpl, merged, whereArgs)
+	}
+
+	// Legacy path
+	whereClause, whereArgs, err = GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
+	if err != nil {
+		return "", nil, err
+	}
 	anchor["Condition"] = whereClause
 
-	// Inject HasDirtyIDs / DirtyIDsCSV for optional CTE rendering
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
-
-	// Render template and combine args (whereArgs first)
 	return RenderDuckDBQuery(tpl, merged, whereArgs)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
 
 // ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
@@ -82,7 +83,23 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	}
 
 	startTranslate := time.Now()
-	sqlStr, args, err := BuildDuckDBQuery(optimizedQuerySQLTemplateDuckDB, sqlParams, q, dirtyIDs)
+
+	// Build dual clauses (PG pushdown + DuckDB logical) if metadata cache available
+	var dualClauses *DualClauses
+	var cache forma.SchemaAttributeCache
+	if r.metadataCache != nil {
+		if c, ok := r.metadataCache.GetSchemaCacheByID(q.SchemaID); ok {
+			cache = c
+		}
+	}
+	paramIndex := 0
+	dc, err := ToDualClauses(q.Condition, sanitizeIdentifier(tables.EAVData), q.SchemaID, cache, &paramIndex)
+	if err != nil {
+		return nil, 0, fmt.Errorf("to dual clauses: %w", err)
+	}
+	dualClauses = &dc
+
+	sqlStr, args, err := BuildDuckDBQuery(optimizedQuerySQLTemplateDuckDB, sqlParams, q, dirtyIDs, dualClauses)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	if err != nil {
 		return nil, 0, fmt.Errorf("build duckdb query: %w", err)
