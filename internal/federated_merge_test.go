@@ -8,8 +8,8 @@ import (
 
 func makeRec(schema int16, id uuid.UUID, updated int64) *PersistentRecord {
 	return &PersistentRecord{
-		SchemaID: schema,
-		RowID:    id,
+		SchemaID:  schema,
+		RowID:     id,
 		UpdatedAt: updated,
 	}
 }

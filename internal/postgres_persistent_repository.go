@@ -295,3 +295,31 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.
 		CurrentPage:  currentPage,
 	}, nil
 }
+
+// FetchDirtyRowIDs returns all row_ids present in the change_log with flushed_at = 0
+// for the given schema. This can be used by federated query coordinator to exclude
+// dirty rows from columnar/duckdb reads (anti-join).
+func (r *PostgresPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
+	if changeLogTable == "" {
+		return nil, fmt.Errorf("change log table name cannot be empty")
+	}
+	query := fmt.Sprintf(`SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, sanitizeIdentifier(changeLogTable))
+	rows, err := r.pool.Query(ctx, query, schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("query dirty row ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan dirty row id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
+	}
+	return ids, nil
+}

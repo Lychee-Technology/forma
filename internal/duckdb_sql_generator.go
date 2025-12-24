@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"text/template"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
@@ -143,4 +144,35 @@ func splitOnce(s, sep string) (string, string) {
 		return "", ""
 	}
 	return s[:idx], s[idx+len(sep):]
+}
+
+// AppendDirtyExclusion adds a NOT IN clause excluding dirty row ids.
+// dirtyIDs are converted to strings for DuckDB parameterization using ? placeholders.
+func AppendDirtyExclusion(baseClause string, dirtyIDs []uuid.UUID) (string, []any) {
+	if len(dirtyIDs) == 0 {
+		return baseClause, nil
+	}
+	placeholders := make([]string, len(dirtyIDs))
+	args := make([]any, len(dirtyIDs))
+	for i, id := range dirtyIDs {
+		placeholders[i] = "?"
+		args[i] = id.String()
+	}
+	excl := fmt.Sprintf("%s AND row_id NOT IN (%s)", baseClause, joinStrings(placeholders, ","))
+	return excl, args
+}
+
+// GenerateDuckDBWhereClauseWithExclusions builds a DuckDB WHERE clause for the query
+// and appends an exclusion for dirty row ids (to be used as an anti-join).
+func GenerateDuckDBWhereClauseWithExclusions(q *FederatedAttributeQuery, dirtyIDs []uuid.UUID) (string, []any, error) {
+	where, args, err := GenerateDuckDBWhereClause(q)
+	if err != nil {
+		return "", nil, err
+	}
+	clause, exclArgs := AppendDirtyExclusion(where, dirtyIDs)
+	// Combine args: WHERE args first, then exclusion args
+	combined := make([]any, 0, len(args)+len(exclArgs))
+	combined = append(combined, args...)
+	combined = append(combined, exclArgs...)
+	return clause, combined, nil
 }

@@ -50,6 +50,7 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 	sqlParams := map[string]any{
 		"EAVTable":             sanitizeIdentifier(tables.EAVData),
 		"MainTable":            sanitizeIdentifier(tables.EntityMain),
+		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
 		"MainProjection":       entityMainProjection,
 		"SchemaID":             "$1",
 		"UseMainTableAsAnchor": useMainTableAsAnchor,

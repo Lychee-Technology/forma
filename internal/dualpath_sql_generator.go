@@ -149,36 +149,36 @@ func buildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, p
 		return "(" + strings.Join(parts, joiner) + ")", args, nil
 
 	case *forma.KvCondition:
-meta, ok := cache[c.Attr]
-if !ok {
-// unknown attribute -> cannot push
-return "", nil, nil
-}
-// parse operator and value up-front so we can return an error for unsupported operators
-opPart := ""
-valPart := ""
-if idx := strings.Index(c.Value, ":"); idx >= 0 {
-opPart = c.Value[:idx]
-valPart = c.Value[idx+1:]
-}
-opStr := "equals"
-valStr := c.Value
-if opPart != "" && valPart != "" {
-opStr = opPart
-valStr = valPart
-}
+		meta, ok := cache[c.Attr]
+		if !ok {
+			// unknown attribute -> cannot push
+			return "", nil, nil
+		}
+		// parse operator and value up-front so we can return an error for unsupported operators
+		opPart := ""
+		valPart := ""
+		if idx := strings.Index(c.Value, ":"); idx >= 0 {
+			opPart = c.Value[:idx]
+			valPart = c.Value[idx+1:]
+		}
+		opStr := "equals"
+		valStr := c.Value
+		if opPart != "" && valPart != "" {
+			opStr = opPart
+			valStr = valPart
+		}
 
-useMain, _ := classifyPredicate(c, meta)
-if !useMain {
-if meta.ColumnBinding == nil {
-// cannot push due to missing column binding, not an error
-return "", nil, nil
-}
-return "", nil, fmt.Errorf("unsupported operator: %s", opStr)
-}
-if meta.ColumnBinding == nil {
-return "", nil, nil
-}
+		useMain, _ := classifyPredicate(c, meta)
+		if !useMain {
+			if meta.ColumnBinding == nil {
+				// cannot push due to missing column binding, not an error
+				return "", nil, nil
+			}
+			return "", nil, fmt.Errorf("unsupported operator: %s", opStr)
+		}
+		if meta.ColumnBinding == nil {
+			return "", nil, nil
+		}
 
 		var sqlOp string
 		switch opStr {
