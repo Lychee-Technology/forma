@@ -3,7 +3,10 @@ package internal
 import (
 	"bytes"
 	"fmt"
+	"strconv"
+	"strings"
 	"text/template"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -104,9 +107,84 @@ func GenerateDuckDBWhereClause(q *FederatedAttributeQuery) (string, []any, error
 			}
 
 			// For initial integration, reference attribute by name directly.
-			// Proper column binding and EAV expansion will be done later.
-			clause := fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
-			return clause, []any{valStr}, nil
+			// Enhance by emitting explicit CASTs for non-text comparisons where detectable.
+			detectValueTypeFromString := func(s string) forma.ValueType {
+				// Try UUID
+				if _, err := uuid.Parse(s); err == nil {
+					return forma.ValueTypeUUID
+				}
+				// Try bool
+				ls := strings.ToLower(s)
+				if ls == "true" || ls == "false" || ls == "1" || ls == "0" {
+					return forma.ValueTypeBool
+				}
+				// Try numeric
+				if _, err := strconv.ParseFloat(s, 64); err == nil {
+					return forma.ValueTypeNumeric
+				}
+				// Try timestamp (RFC3339 or unix millis)
+				if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
+					return forma.ValueTypeDateTime
+				}
+				if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+					// ambiguous integer: treat as numeric/bigint; choose numeric for comparisons
+					return forma.ValueTypeNumeric
+				}
+				return forma.ValueTypeText
+			}
+
+			parseParam := func(s string, vt forma.ValueType) any {
+				switch vt {
+				case forma.ValueTypeUUID:
+					return s
+				case forma.ValueTypeBool:
+					b, err := strconv.ParseBool(strings.ToLower(s))
+					if err == nil {
+						return b
+					}
+					if s == "1" {
+						return true
+					}
+					if s == "0" {
+						return false
+					}
+					return s
+				case forma.ValueTypeNumeric:
+					if f, err := strconv.ParseFloat(s, 64); err == nil {
+						return f
+					}
+					return s
+				case forma.ValueTypeDate, forma.ValueTypeDateTime:
+					if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+						return t.UTC()
+					}
+					if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+						// assume epoch millis
+						return time.UnixMilli(i).UTC()
+					}
+					return s
+				default:
+					return s
+				}
+			}
+
+			// For LIKE operators, keep text comparison
+			if sqlOp == "LIKE" {
+				clause := fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
+				return clause, []any{valStr}, nil
+			}
+
+			// Detect type and emit CAST on the parameter
+			valueType := detectValueTypeFromString(valStr)
+			duckType := MapValueTypeToDuckDBType(valueType)
+			var clause string
+			if duckType == "VARCHAR" {
+				clause = fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
+			} else {
+				clause = fmt.Sprintf("%s %s CAST(? AS %s)", cond.Attr, sqlOp, duckType)
+			}
+			param := parseParam(valStr, valueType)
+			return clause, []any{param}, nil
 		default:
 			return "", nil, fmt.Errorf("unsupported condition type %T", c)
 		}
