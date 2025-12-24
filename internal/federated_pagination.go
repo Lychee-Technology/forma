@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ExecuteFederatedPaginatedQuery performs a federated fetch across Postgres (hot) and DuckDB (cold/warm),
@@ -43,13 +44,30 @@ func (r *PostgresPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Fetch from Postgres (hot)
+	startPg := time.Now()
 	pgRecs, _, err := r.runOptimizedQuery(ctx, tables, fq.SchemaID, clause, args, maxRows, 0, attributeOrders, fq.UseMainAsAnchor)
+	pgDuration := time.Since(startPg).Milliseconds()
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch postgres records: %w", err)
 	}
+	// Record Postgres source info if execution plan requested
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		dp := DataSourcePlan{
+			Tier:              DataTierHot,
+			Engine:            "postgres",
+			SQL:               "", // SQL not captured here
+			RowEstimate:       0,
+			PredicatePushdown: fq.UseMainAsAnchor,
+			ActualRows:        int64(len(pgRecs)),
+			DurationMs:        pgDuration,
+			Reason:            "postgres optimized query",
+		}
+		opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dp)
+		opts.ExecutionPlan.Timings["postgres_fetch"] = pgDuration
+	}
 
 	// Fetch from DuckDB (warm/cold)
-	duckRecs, _, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders)
+	duckRecs, _, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders, opts)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
 	}
@@ -61,9 +79,22 @@ func (r *PostgresPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 		DataTierCold: duckRecs,
 	}
 
+	startMerge := time.Now()
 	merged, err := MergePersistentRecordsByTier(inputs, fq.PreferHot)
+	mergeMs := time.Since(startMerge).Milliseconds()
 	if err != nil {
 		return nil, 0, fmt.Errorf("merge records by tier: %w", err)
+	}
+	// Record merge plan if requested
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		opts.ExecutionPlan.Merge = MergePlan{
+			Strategy:   "last-write-wins",
+			PreferHot:  fq.PreferHot,
+			DedupKeys:  []string{"SchemaID:RowID"},
+			DurationMs: mergeMs,
+			Notes:      []string{"attribute-level deduplication applied"},
+		}
+		opts.ExecutionPlan.Timings["merge"] = mergeMs
 	}
 
 	total := int64(len(merged))

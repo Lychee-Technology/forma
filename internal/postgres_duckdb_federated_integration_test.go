@@ -12,14 +12,14 @@ import (
 // Tests covering federated routing and basic DuckDB execution path handling.
 
 func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
-cfg := forma.DuckDBConfig{
-Enabled: true,
-Routing: forma.RoutingPolicy{
-Strategy:          "hybrid",
-MaxDuckDBScanRows: 5000,
-AllowS3Fallback:   true,
-},
-}
+	cfg := forma.DuckDBConfig{
+		Enabled: true,
+		Routing: forma.RoutingPolicy{
+			Strategy:          "hybrid",
+			MaxDuckDBScanRows: 5000,
+			AllowS3Fallback:   true,
+		},
+	}
 
 	// hybrid default => use duckdb
 	dec := EvaluateRoutingPolicy(cfg, nil, nil)
@@ -49,17 +49,17 @@ func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 
 	repo := NewPostgresPersistentRecordRepository(env.postgresPool, env.metadata)
 
- // Build a minimal federated query
- q := &FederatedAttributeQuery{
- 	AttributeQuery: AttributeQuery{
- 		SchemaID: 100,
- 		Limit:    10,
- 		Offset:   0,
- 	},
- }
+	// Build a minimal federated query
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			SchemaID: 100,
+			Limit:    10,
+			Offset:   0,
+		},
+	}
 
 	// Call should error when DuckDB client not available
-	_, _, err := repo.ExecuteDuckDBFederatedQuery(context.Background(), env.tables, q, q.Limit, q.Offset, nil)
+	_, _, err := repo.ExecuteDuckDBFederatedQuery(context.Background(), env.tables, q, q.Limit, q.Offset, nil, nil)
 	require.Error(t, err)
 }
 

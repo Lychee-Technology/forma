@@ -350,7 +350,20 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecordsFederated(ctx
 		// no-op for now; use schema-level defaults if added later
 		_ = routingCfg
 	}
+
+	// Initialize execution plan if requested
+	if opts != nil && opts.IncludeExecutionPlan {
+		if opts.ExecutionPlan == nil {
+			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+		}
+		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
+	}
+
 	decision := EvaluateRoutingPolicy(routingCfg, fq, opts)
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		opts.ExecutionPlan.Routing = decision
+	}
+
 	if !decision.UseDuckDB {
 		// route to Postgres-only
 		prq := &PersistentRecordQuery{
@@ -365,7 +378,7 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecordsFederated(ctx
 	}
 
 	// Attempt DuckDB federated execution.
-	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders)
+	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
 		// Fallback to Postgres-only when partial degraded mode allowed.
 		if opts != nil && opts.AllowPartialDegradedMode {
