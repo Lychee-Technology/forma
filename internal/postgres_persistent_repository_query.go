@@ -22,9 +22,7 @@ func computeTotalPages(total int64, limit int) int {
 	return int((total + int64(limit) - 1) / int64(limit))
 }
 
-// runOptimizedQuery executes an optimized single-query approach that joins entity_main
-// with aggregated EAV data, eliminating the N+1 query problem.
-func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
+func (r *PostgresPersistentRecordRepository) StreamOptimizedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	schemaID int16,
@@ -33,12 +31,13 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 	limit, offset int,
 	attributeOrders []AttributeOrder,
 	useMainTableAsAnchor bool,
-) ([]*PersistentRecord, int64, error) {
+	rowHandler func(*PersistentRecord) error,
+) (int64, error) {
 	if clause == "" {
-		return nil, 0, fmt.Errorf("query condition cannot be empty")
+		return 0, fmt.Errorf("query condition cannot be empty")
 	}
 	if schemaID <= 0 {
-		return nil, 0, fmt.Errorf("schema id must be positive")
+		return 0, fmt.Errorf("schema id must be positive")
 	}
 	if limit <= 0 {
 		limit = 50
@@ -65,7 +64,7 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 
 	query, err := renderTemplate(optimizedQuerySQLTemplate, sqlParams)
 	if err != nil {
-		return nil, 0, fmt.Errorf("build optimized query: %w", err)
+		return 0, fmt.Errorf("build optimized query: %w", err)
 	}
 
 	queryArgs := make([]any, 0, len(args)+3)
@@ -73,22 +72,21 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 	queryArgs = append(queryArgs, args...)
 	queryArgs = append(queryArgs, limit, offset)
 
-	zap.S().Debugw("optimized query", "query", query, "args", queryArgs)
+	zap.S().Debugw("optimized query (stream)", "query", query, "args", queryArgs)
 
 	rows, err := r.pool.Query(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("execute optimized query: %w", err)
+		return 0, fmt.Errorf("execute optimized query: %w", err)
 	}
 	defer rows.Close()
 
-	var records []*PersistentRecord
 	var totalRecords int64
 	totalSet := false
 
 	for rows.Next() {
 		record, total, err := r.scanOptimizedRow(rows)
 		if err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 
 		if !totalSet {
@@ -96,11 +94,52 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 			totalSet = true
 		}
 
-		records = append(records, record)
+		if rowHandler != nil {
+			if err := rowHandler(record); err != nil {
+				return totalRecords, err
+			}
+		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate optimized query rows: %w", err)
+		return 0, fmt.Errorf("iterate optimized query rows: %w", err)
+	}
+
+	return totalRecords, nil
+}
+
+// runOptimizedQuery executes an optimized single-query approach that joins entity_main
+// with aggregated EAV data, eliminating the N+1 query problem.
+func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
+	ctx context.Context,
+	tables StorageTables,
+	schemaID int16,
+	clause string,
+	args []any,
+	limit, offset int,
+	attributeOrders []AttributeOrder,
+	useMainTableAsAnchor bool,
+) ([]*PersistentRecord, int64, error) {
+	if clause == "" {
+		return nil, 0, fmt.Errorf("query condition cannot be empty")
+	}
+	if schemaID <= 0 {
+		return nil, 0, fmt.Errorf("schema id must be positive")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var records []*PersistentRecord
+	totalRecords, appendErr := r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, limit, offset, attributeOrders, useMainTableAsAnchor, func(rp *PersistentRecord) error {
+		records = append(records, rp)
+		return nil
+	})
+	if appendErr != nil {
+		return nil, 0, appendErr
 	}
 
 	return records, totalRecords, nil
