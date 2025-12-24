@@ -69,9 +69,9 @@ func (r *PostgresPersistentRecordRepository) upsertChangeLog(ctx context.Context
 	flushedAt := int64(0)
 	query := fmt.Sprintf(
 		`INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (schema_id, row_id, flushed_at)
-		DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (schema_id, row_id, flushed_at)
+DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
 		sanitizeIdentifier(table),
 	)
 	var deleted any
@@ -322,4 +322,58 @@ func (r *PostgresPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Contex
 		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
 	}
 	return ids, nil
+}
+
+// QueryPersistentRecordsFederated performs a federated query across configured data tiers.
+// Backwards compatible: hot-only hints delegate to QueryPersistentRecords.
+func (r *PostgresPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+	if fq == nil {
+		return nil, fmt.Errorf("federated query cannot be nil")
+	}
+	// If no explicit tiers or a hot-only preference is indicated, delegate to existing OLTP path.
+	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == DataTierHot) {
+		prq := &PersistentRecordQuery{
+			Tables:          tables,
+			SchemaID:        fq.SchemaID,
+			Condition:       fq.Condition,
+			AttributeOrders: fq.AttributeOrders,
+			Limit:           fq.Limit,
+			Offset:          fq.Offset,
+		}
+		return r.QueryPersistentRecords(ctx, prq)
+	}
+
+	// Attempt DuckDB federated execution.
+	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders)
+	if err != nil {
+		// Fallback to Postgres-only when partial degraded mode allowed.
+		if opts != nil && opts.AllowPartialDegradedMode {
+			prq := &PersistentRecordQuery{
+				Tables:          tables,
+				SchemaID:        fq.SchemaID,
+				Condition:       fq.Condition,
+				AttributeOrders: fq.AttributeOrders,
+				Limit:           fq.Limit,
+				Offset:          fq.Offset,
+			}
+			return r.QueryPersistentRecords(ctx, prq)
+		}
+		return nil, fmt.Errorf("duckdb federated query: %w", err)
+	}
+
+	currentPage := 1
+	limit := fq.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 0 {
+		currentPage = fq.Offset/limit + 1
+	}
+
+	return &PersistentRecordPage{
+		Records:      records,
+		TotalRecords: totalRecords,
+		TotalPages:   computeTotalPages(totalRecords, limit),
+		CurrentPage:  currentPage,
+	}, nil
 }
