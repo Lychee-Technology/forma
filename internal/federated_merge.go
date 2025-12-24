@@ -17,10 +17,10 @@ import (
 //     considered the authoritative hot source and wins ties regardless of UpdatedAt.
 //   - The chosen record is returned with OtherAttributes merged across all source
 //     tiers for that (SchemaID, RowID) with attribute-level deduplication.
-//     * Attributes are deduplicated by (AttrID, ArrayIndices).
-//     * For an attribute present in multiple source records, the attribute from the
-//       record with the latest UpdatedAt is chosen. Ties are resolved using preferHot
-//       and deterministic tier ordering.
+//   - Attributes are deduplicated by (AttrID, ArrayIndices).
+//   - For an attribute present in multiple source records, the attribute from the
+//     record with the latest UpdatedAt is chosen. Ties are resolved using preferHot
+//     and deterministic tier ordering.
 //   - Result slice is sorted by SchemaID then RowID for deterministic output.
 func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, preferHot bool) ([]*PersistentRecord, error) {
 	if inputs == nil {
