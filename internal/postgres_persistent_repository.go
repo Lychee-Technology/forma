@@ -343,6 +343,27 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecordsFederated(ctx
 		return r.QueryPersistentRecords(ctx, prq)
 	}
 
+	// Evaluate routing policy before executing
+	var routingCfg forma.DuckDBConfig
+	// Attempt to read global default if available via metadata cache - fallback to zero value
+	if r.metadataCache != nil {
+		// no-op for now; use schema-level defaults if added later
+		_ = routingCfg
+	}
+	decision := EvaluateRoutingPolicy(routingCfg, fq, opts)
+	if !decision.UseDuckDB {
+		// route to Postgres-only
+		prq := &PersistentRecordQuery{
+			Tables:          tables,
+			SchemaID:        fq.SchemaID,
+			Condition:       fq.Condition,
+			AttributeOrders: fq.AttributeOrders,
+			Limit:           fq.Limit,
+			Offset:          fq.Offset,
+		}
+		return r.QueryPersistentRecords(ctx, prq)
+	}
+
 	// Attempt DuckDB federated execution.
 	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders)
 	if err != nil {

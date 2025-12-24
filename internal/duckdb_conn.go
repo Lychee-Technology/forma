@@ -108,6 +108,18 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 		}
 	}
 
+	// Apply resource pragmas if configured
+	if cfg.MemoryLimitMB > 0 {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB)); err != nil {
+			zap.S().Warnw("duckdb: set memory_limit failed", "err", err, "memoryLimitMB", cfg.MemoryLimitMB)
+		}
+	}
+	if cfg.MaxParallelism > 0 {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA threads=%d;", cfg.MaxParallelism)); err != nil {
+			zap.S().Warnw("duckdb: set threads failed", "err", err, "maxParallelism", cfg.MaxParallelism)
+		}
+	}
+
 	client := &DuckDBClient{
 		DB:  db,
 		cfg: cfg,

@@ -157,17 +157,29 @@ type MetricsConfig struct {
 
 // DuckDBConfig contains DuckDB connection and S3 settings for federated queries
 type DuckDBConfig struct {
-	Enabled        bool     `json:"enabled"`
-	DBPath         string   `json:"dbPath"`        // path to local DuckDB file (or ":memory:")
-	MemoryLimitMB  int      `json:"memoryLimitMB"` // memory limit for DuckDB in MB
-	EnableS3       bool     `json:"enableS3"`      // enable S3/http file system
-	S3Endpoint     string   `json:"s3Endpoint"`    // custom S3 endpoint (for MinIO)
-	S3AccessKey    string   `json:"s3AccessKey"`
-	S3SecretKey    string   `json:"s3SecretKey"`
-	S3Region       string   `json:"s3Region"`
-	EnableParquet  bool     `json:"enableParquet"` // enable parquet extension
-	Extensions     []string `json:"extensions"`    // additional extensions to load
-	MaxConnections int      `json:"maxConnections"`
+	Enabled                 bool          `json:"enabled"`
+	DBPath                  string        `json:"dbPath"`        // path to local DuckDB file (or ":memory:")
+	MemoryLimitMB           int           `json:"memoryLimitMB"` // memory limit for DuckDB in MB
+	EnableS3                bool          `json:"enableS3"`      // enable S3/http file system
+	S3Endpoint              string        `json:"s3Endpoint"`    // custom S3 endpoint (for MinIO)
+	S3AccessKey             string        `json:"s3AccessKey"`
+	S3SecretKey             string        `json:"s3SecretKey"`
+	S3Region                string        `json:"s3Region"`
+	EnableParquet           bool          `json:"enableParquet"` // enable parquet extension
+	Extensions              []string      `json:"extensions"`    // additional extensions to load
+	MaxConnections          int           `json:"maxConnections"`
+	QueryTimeout            time.Duration `json:"queryTimeout"`            // per-query timeout for DuckDB access
+	MaxParallelism          int           `json:"maxParallelism"`          // max threads/pragmas for DuckDB
+	CircuitBreakerThreshold float64       `json:"circuitBreakerThreshold"` // failure rate to trip circuit breaker (0..1)
+	Routing                 RoutingPolicy `json:"routing"`                 // routing policy for federated queries
+}
+
+// RoutingPolicy defines federated query routing behavior
+type RoutingPolicy struct {
+	Strategy          string        `json:"strategy"`          // "freshness-first", "cost-first", "hybrid"
+	HotTTL            time.Duration `json:"hotTTL"`            // TTL to consider data "hot"
+	MaxDuckDBScanRows int           `json:"maxDuckDBScanRows"` // threshold for preferring cold scans
+	AllowS3Fallback   bool          `json:"allowS3Fallback"`   // allow falling back to S3/DuckDB when PG not used
 }
 
 // ReferenceConfig contains reference management settings
@@ -331,6 +343,24 @@ func DefaultConfig(schemaRegistry SchemaRegistry) *Config {
 			MaxCacheSize:     1000,
 			BatchSize:        100,
 		},
+		DuckDB: DuckDBConfig{
+			Enabled:                 false,
+			DBPath:                  ":memory:",
+			MemoryLimitMB:           0,
+			EnableS3:                false,
+			EnableParquet:           false,
+			Extensions:              []string{},
+			MaxConnections:          1,
+			QueryTimeout:            30 * time.Second,
+			MaxParallelism:          1,
+			CircuitBreakerThreshold: 0.5,
+			Routing: RoutingPolicy{
+				Strategy:          "hybrid",
+				HotTTL:            5 * time.Minute,
+				MaxDuckDBScanRows: 100000,
+				AllowS3Fallback:   true,
+			},
+		},
 	}
 }
 
@@ -355,6 +385,32 @@ func (c *Config) Validate() error {
 
 	if c.Performance.MaxBatchSize < c.Performance.BatchSize {
 		return &ConfigError{Field: "performance.maxBatchSize", Message: "must be greater than or equal to batchSize"}
+	}
+
+	// DuckDB specific validation
+	if c.DuckDB.MemoryLimitMB < 0 {
+		return &ConfigError{Field: "duckdb.memoryLimitMB", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.Enabled && c.DuckDB.MaxConnections <= 0 {
+		return &ConfigError{Field: "duckdb.maxConnections", Message: "must be greater than 0 when duckdb enabled"}
+	}
+	if c.DuckDB.QueryTimeout < 0 {
+		return &ConfigError{Field: "duckdb.queryTimeout", Message: "must be greater than or equal to 0"}
+	}
+	allowed := map[string]bool{
+		"freshness-first": true,
+		"cost-first":      true,
+		"hybrid":          true,
+		"":                true,
+	}
+	if !allowed[c.DuckDB.Routing.Strategy] {
+		return &ConfigError{Field: "duckdb.routing.strategy", Message: "invalid routing strategy"}
+	}
+	if c.DuckDB.Routing.HotTTL < 0 {
+		return &ConfigError{Field: "duckdb.routing.hotTTL", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.Routing.MaxDuckDBScanRows < 0 {
+		return &ConfigError{Field: "duckdb.routing.maxDuckDBScanRows", Message: "must be greater than or equal to 0"}
 	}
 
 	return nil
