@@ -99,7 +99,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	}
 	dualClauses = &dc
 
-	sqlStr, args, err := BuildDuckDBQuery(optimizedQuerySQLTemplateDuckDB, sqlParams, q, dirtyIDs, dualClauses)
+	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, dualClauses)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	if err != nil {
 		return nil, 0, fmt.Errorf("build duckdb query: %w", err)
