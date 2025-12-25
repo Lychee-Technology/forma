@@ -79,6 +79,7 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb client not available")
 	}
 
+	// Fetch dirty ids + record metrics
 	// Fetch dirty IDs from Postgres change_log (flushed_at = 0) if change log table configured
 	var dirtyIDs []uuid.UUID
 	if tables.ChangeLog != "" {
@@ -86,6 +87,21 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		dirtyIDs, err = r.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
 		if err != nil {
 			return 0, fmt.Errorf("fetch dirty ids: %w", err)
+		}
+
+		// Emit basic PG-side metric for dirty set size (useful for tuning)
+		EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
+
+		// If execution plan requested, record a DataSourcePlan for the dirty-id scan
+		if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+			dpDirty := DataSourcePlan{
+				Tier:        DataTierHot,
+				Engine:      "postgres",
+				SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sanitizeIdentifier(tables.ChangeLog)),
+				RowEstimate: int64(len(dirtyIDs)),
+				Reason:      "dirty id set fetched",
+			}
+			opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dpDirty)
 		}
 	}
 
@@ -121,8 +137,26 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("to dual clauses: %w", err)
 	}
 
+	// Record Postgres pushdown fragment in execution plan (if requested).
+	// This captures the pushdown predicate sent to postgres_scan so operators can
+	// inspect pushdown effectiveness and SQL snippets in the plan.
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		pgDP := DataSourcePlan{
+			Tier:              DataTierHot,
+			Engine:            "postgres",
+			SQL:               dc.PgMainClause,
+			RowEstimate:       0,
+			PredicatePushdown: dc.PgMainClause != "",
+			ActualRows:        0,
+			DurationMs:        0,
+			Reason:            "pushdown fragment",
+		}
+		opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, pgDP)
+	}
+
 	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
+	EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
 		return 0, fmt.Errorf("build duckdb query: %w", err)
 	}
@@ -154,6 +188,9 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("execute duckdb query: %w", err)
 	}
 	defer rows.Close()
+
+	// start streaming timer (processing/serialization)
+	startStream := time.Now()
 
 	// Prepare scan buffers based on entityMainColumnDescriptors
 	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
@@ -388,6 +425,46 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		}
 		opts.ExecutionPlan.Timings["duckdb_fetch"] = qMs
 		opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
+
+		// emit telemetry
+		EmitLatency(ctx, "execution", qMs)
+		streamMs := time.Since(startStream).Milliseconds()
+		EmitLatency(ctx, "streaming", streamMs)
+
+		// row counts
+		EmitRowCount(ctx, "duckdb", rowCount)
+
+		// Compute pushdown efficiency if we have postgres-side numbers available (best-effort).
+		// Definition: PG_Scan_Rows / Final_Result_Rows
+		var pgRows int64
+		var finalRows int64
+		// find any postgres source entries
+		for _, src := range opts.ExecutionPlan.Sources {
+			if src.Engine == "postgres" {
+				if src.ActualRows > 0 {
+					pgRows += src.ActualRows
+				} else if src.RowEstimate > 0 {
+					pgRows += src.RowEstimate
+				}
+			}
+		}
+		// fallback: use dirtyIDs size as a proxy if no other pg rows recorded
+		if pgRows == 0 {
+			pgRows = int64(len(dirtyIDs))
+		}
+		if totalRecords > 0 {
+			finalRows = totalRecords
+		} else {
+			finalRows = rowCount
+		}
+		if finalRows <= 0 {
+			finalRows = 1
+		}
+		ratio := float64(pgRows) / float64(finalRows)
+		EmitPushdownEfficiency(ctx, q.SchemaID, ratio)
+		if opts.ExecutionPlan != nil {
+			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
+		}
 	}
 
 	return totalRecords, nil

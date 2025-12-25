@@ -26,7 +26,7 @@ This implementation plan builds upon the existing PostgreSQL EAV query infrastru
   - _Requirements: 1.1, 1.2, 5.1, 5.2, 5.3_
 
 - [ ] 5. Observability and execution plans
-  - Emit Prometheus metrics: fed_query_latency_histogram (translation/execution/streaming), fed_query_row_count (PG vs S3/DuckDB), fed_query_pushdown_efficiency.
+  - Emit opentelemetry metrics: fed_query_latency_histogram (translation/execution/streaming), fed_query_row_count (PG vs S3/DuckDB), fed_query_pushdown_efficiency.
   - Expand execution plan reporting with row estimates, pushdown status, degraded-mode notes, and per-source timings.
   - _Requirements: 6.2, 6.3, 6.5_
 
