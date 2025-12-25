@@ -8,21 +8,23 @@ import (
 
 // RoutingDecision indicates which tiers to query and whether to prefer DuckDB.
 type RoutingDecision struct {
-	Tiers        []DataTier
-	UseDuckDB    bool
-	Reason       string
-	MaxScanRows  int
-	QueryTimeout time.Duration
+	Tiers           []DataTier
+	UseDuckDB       bool
+	Reason          string
+	MaxScanRows     int
+	QueryTimeout    time.Duration
+	AllowS3Fallback bool
 }
 
 // EvaluateRoutingPolicy makes a routing decision based on config, query hints and options.
 func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) RoutingDecision {
 	dec := RoutingDecision{
-		Tiers:        []DataTier{DataTierHot, DataTierWarm, DataTierCold},
-		UseDuckDB:    cfg.Enabled,
-		Reason:       "default",
-		MaxScanRows:  cfg.Routing.MaxDuckDBScanRows,
-		QueryTimeout: cfg.QueryTimeout,
+		Tiers:           []DataTier{DataTierHot, DataTierWarm, DataTierCold},
+		UseDuckDB:       cfg.Enabled,
+		Reason:          "default",
+		MaxScanRows:     cfg.Routing.MaxDuckDBScanRows,
+		QueryTimeout:    cfg.QueryTimeout,
+		AllowS3Fallback: cfg.Routing.AllowS3Fallback,
 	}
 
 	// Honor explicit PreferredTiers
@@ -37,7 +39,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 		return dec
 	}
 
-	// Simple strategy switch
+	// Strategy-based heuristics
 	switch cfg.Routing.Strategy {
 	case "freshness-first":
 		// prefer hot only if PreferHot or recent TTL required
@@ -68,12 +70,6 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 	default:
 		// unknown strategy: keep defaults
 		dec.Reason = "unknown strategy - default"
-	}
-
-	// Respect allow fallback
-	if !cfg.Routing.AllowS3Fallback {
-		dec.UseDuckDB = false
-		dec.Reason = "s3 fallback disabled"
 	}
 
 	// Allow options to override timeout/parallelism via QueryTimeout
