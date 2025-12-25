@@ -31,8 +31,32 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	attributeOrders []AttributeOrder,
 	opts *FederatedQueryOptions,
 ) ([]*PersistentRecord, int64, error) {
+	// Backwards-compatible wrapper that uses the streaming iterator internally
+	var recs []*PersistentRecord
+	total, err := r.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(rp *PersistentRecord) error {
+		recs = append(recs, rp)
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return recs, total, nil
+}
+
+// StreamDuckDBFederatedQuery streams DuckDB federated query results using a rowHandler callback.
+// It reuses the same rowHandler semantics as Postgres' StreamOptimizedQuery to avoid loading the
+// entire result set into memory.
+func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
+	ctx context.Context,
+	tables StorageTables,
+	q *FederatedAttributeQuery,
+	limit, offset int,
+	attributeOrders []AttributeOrder,
+	opts *FederatedQueryOptions,
+	rowHandler func(*PersistentRecord) error,
+) (int64, error) {
 	if q == nil {
-		return nil, 0, fmt.Errorf("query cannot be nil")
+		return 0, fmt.Errorf("query cannot be nil")
 	}
 
 	// Execution plan instrumentation (if requested)
@@ -41,7 +65,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		if opts.ExecutionPlan == nil {
 			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
 		}
-		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "ExecuteDuckDBFederatedQuery started")
+		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "StreamDuckDBFederatedQuery started")
 	}
 
 	// Acquire DuckDB client
@@ -52,7 +76,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 			opts.ExecutionPlan.Timings["duckdb_fetch"] = 0
 			opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
 		}
-		return nil, 0, fmt.Errorf("duckdb client not available")
+		return 0, fmt.Errorf("duckdb client not available")
 	}
 
 	// Fetch dirty IDs from Postgres change_log (flushed_at = 0) if change log table configured
@@ -61,7 +85,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		var err error
 		dirtyIDs, err = r.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
 		if err != nil {
-			return nil, 0, fmt.Errorf("fetch dirty ids: %w", err)
+			return 0, fmt.Errorf("fetch dirty ids: %w", err)
 		}
 	}
 
@@ -85,7 +109,6 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	startTranslate := time.Now()
 
 	// Build dual clauses (PG pushdown + DuckDB logical) if metadata cache available
-	var dualClauses *DualClauses
 	var cache forma.SchemaAttributeCache
 	if r.metadataCache != nil {
 		if c, ok := r.metadataCache.GetSchemaCacheByID(q.SchemaID); ok {
@@ -95,14 +118,13 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	paramIndex := 0
 	dc, err := ToDualClauses(q.Condition, sanitizeIdentifier(tables.EAVData), q.SchemaID, cache, &paramIndex)
 	if err != nil {
-		return nil, 0, fmt.Errorf("to dual clauses: %w", err)
+		return 0, fmt.Errorf("to dual clauses: %w", err)
 	}
-	dualClauses = &dc
 
-	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, dualClauses)
+	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	if err != nil {
-		return nil, 0, fmt.Errorf("build duckdb query: %w", err)
+		return 0, fmt.Errorf("build duckdb query: %w", err)
 	}
 	// Record translation info in execution plan if requested
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
@@ -129,7 +151,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 			opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
 			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, fmt.Sprintf("duckdb query failed: %v", err))
 		}
-		return nil, 0, fmt.Errorf("execute duckdb query: %w", err)
+		return 0, fmt.Errorf("execute duckdb query: %w", err)
 	}
 	defer rows.Close()
 
@@ -159,9 +181,10 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	doubleVals := make([]sql.NullFloat64, doubleCount)
 	uuidVals := make([]sql.NullString, uuidCount)
 
-	var records []*PersistentRecord
 	var totalRecords int64
 	totalSet := false
+
+	rowCount := int64(0)
 
 	for rows.Next() {
 		scanArgs := make([]any, 0, len(entityMainColumnDescriptors)+4)
@@ -208,7 +231,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		scanArgs = append(scanArgs, &attrsJSON, &totalRec, &totalPages, &currentPage)
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return nil, 0, fmt.Errorf("scan duckdb row: %w", err)
+			return 0, fmt.Errorf("scan duckdb row: %w", err)
 		}
 
 		// Build PersistentRecord
@@ -288,7 +311,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		if attrsJSON.Valid && attrsJSON.String != "" && attrsJSON.String != "[]" {
 			var attributes []map[string]interface{}
 			if err := json.Unmarshal([]byte(attrsJSON.String), &attributes); err != nil {
-				return nil, 0, fmt.Errorf("unmarshal attributes json: %w", err)
+				return 0, fmt.Errorf("unmarshal attributes json: %w", err)
 			}
 			record.OtherAttributes = make([]EAVRecord, 0, len(attributes))
 			for _, attrObj := range attributes {
@@ -339,11 +362,18 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 			totalSet = true
 		}
 
-		records = append(records, record)
+		// invoke handler
+		if rowHandler != nil {
+			if err := rowHandler(record); err != nil {
+				return 0, err
+			}
+		}
+
+		rowCount++
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate duckdb rows: %w", err)
+		return 0, fmt.Errorf("iterate duckdb rows: %w", err)
 	}
 
 	// finalize execution plan for duckdb
@@ -352,7 +382,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		if len(opts.ExecutionPlan.Sources) > 0 {
 			idx := len(opts.ExecutionPlan.Sources) - 1
 			dp := opts.ExecutionPlan.Sources[idx]
-			dp.ActualRows = int64(len(records))
+			dp.ActualRows = rowCount
 			dp.DurationMs = qMs
 			opts.ExecutionPlan.Sources[idx] = dp
 		}
@@ -360,5 +390,5 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 		opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
 	}
 
-	return records, totalRecords, nil
+	return totalRecords, nil
 }
