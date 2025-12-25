@@ -1,6 +1,6 @@
 module github.com/lychee-technology/forma
 
-go 1.25.3
+go 1.25.5
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.5.4
