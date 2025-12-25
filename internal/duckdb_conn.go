@@ -17,9 +17,6 @@ type DuckDBClient struct {
 	cfg forma.DuckDBConfig
 }
 
-// global client accessor for simple wiring during initial integration.
-var globalDuckDBClient *DuckDBClient
-
 // ValidateDuckDBConfig performs basic sanity checks on user-provided DuckDB configuration.
 func ValidateDuckDBConfig(cfg forma.DuckDBConfig) error {
 	if !cfg.Enabled {
@@ -224,15 +221,4 @@ func (c *DuckDBClient) HealthCheck(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// SetDuckDBClient stores a global client for other packages to access during initial integration.
-// Prefer explicit dependency injection for long-term design; this is a pragmatic first step.
-func SetDuckDBClient(c *DuckDBClient) {
-	globalDuckDBClient = c
-}
-
-// GetDuckDBClient returns the global client if set.
-func GetDuckDBClient() *DuckDBClient {
-	return globalDuckDBClient
 }

@@ -17,28 +17,30 @@ type persistentRecordPool interface {
 	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 }
 
-type PostgresPersistentRecordRepository struct {
+type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *MetadataCache
+	duckDBClient  *DuckDBClient
 	nowFunc       func() time.Time
 }
 
-func NewPostgresPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache) *PostgresPersistentRecordRepository {
-	return &PostgresPersistentRecordRepository{
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient) *DBPersistentRecordRepository {
+	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
+		duckDBClient:  nil,
 		nowFunc:       time.Now,
 	}
 }
 
-func (r *PostgresPersistentRecordRepository) withClock(now func() time.Time) {
+func (r *DBPersistentRecordRepository) withClock(now func() time.Time) {
 	if now == nil {
 		return
 	}
 	r.nowFunc = now
 }
 
-func (r *PostgresPersistentRecordRepository) nowMillis() int64 {
+func (r *DBPersistentRecordRepository) nowMillis() int64 {
 	if r.nowFunc == nil {
 		return time.Now().UnixMilli()
 	}
@@ -65,13 +67,13 @@ func validateWriteTables(tables StorageTables) error {
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
+func (r *DBPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
 	flushedAt := int64(0)
 	query := fmt.Sprintf(
 		`INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (schema_id, row_id, flushed_at)
-DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (schema_id, row_id, flushed_at)
+			DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
 		sanitizeIdentifier(table),
 	)
 	var deleted any
@@ -84,7 +86,7 @@ DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -123,7 +125,7 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -160,7 +162,7 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
@@ -196,7 +198,7 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
 	if err := validateTables(tables); err != nil {
 		return nil, err
 	}
@@ -218,7 +220,7 @@ func (r *PostgresPersistentRecordRepository) GetPersistentRecord(ctx context.Con
 	return record, nil
 }
 
-func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
 	zap.S().Debugw("query persistent records", "query", query)
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
@@ -299,7 +301,7 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.
 // FetchDirtyRowIDs returns all row_ids present in the change_log with flushed_at = 0
 // for the given schema. This can be used by federated query coordinator to exclude
 // dirty rows from columnar/duckdb reads (anti-join).
-func (r *PostgresPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
+func (r *DBPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
 	if changeLogTable == "" {
 		return nil, fmt.Errorf("change log table name cannot be empty")
 	}
@@ -326,7 +328,7 @@ func (r *PostgresPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Contex
 
 // QueryPersistentRecordsFederated performs a federated query across configured data tiers.
 // Backwards compatible: hot-only hints delegate to QueryPersistentRecords.
-func (r *PostgresPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
 	}

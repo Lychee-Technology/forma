@@ -50,7 +50,7 @@ func TestStreamOptimizedQuery_RowHandlerInvokedPerRow(t *testing.T) {
 
 	mock.ExpectQuery(`SELECT .*`).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 
 	counter := 0
 	var captured []*PersistentRecord
@@ -89,7 +89,7 @@ func TestScanOptimizedRow_EmptyAttributes_NilMaps(t *testing.T) {
 
 	mock.ExpectQuery(`SELECT .*`).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 
 	var recs []*PersistentRecord
 	total, err := repo.StreamOptimizedQuery(context.Background(), StorageTables{EntityMain: "entity_main", EAVData: "eav"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *PersistentRecord) error {

@@ -37,7 +37,7 @@ func buildAttributeValuesClause(attributes []EAVRecord) (string, []any, error) {
 	return strings.Join(values, ", "), args, nil
 }
 
-func (r *PostgresPersistentRecordRepository) insertEAVAttributes(ctx context.Context, tx pgx.Tx, table string, attributes []EAVRecord) error {
+func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, tx pgx.Tx, table string, attributes []EAVRecord) error {
 	if len(attributes) == 0 {
 		return nil
 	}
@@ -68,7 +68,7 @@ func (r *PostgresPersistentRecordRepository) insertEAVAttributes(ctx context.Con
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) replaceEAVAttributes(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []EAVRecord) error {
+func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []EAVRecord) error {
 	deleteQuery := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(table))
 	if _, err := tx.Exec(ctx, deleteQuery, schemaID, rowID); err != nil {
 		return fmt.Errorf("delete existing eav attributes: %w", err)
@@ -76,7 +76,7 @@ func (r *PostgresPersistentRecordRepository) replaceEAVAttributes(ctx context.Co
 	return r.insertEAVAttributes(ctx, tx, table, attributes)
 }
 
-func (r *PostgresPersistentRecordRepository) fetchAttributes(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) ([]EAVRecord, error) {
+func (r *DBPersistentRecordRepository) fetchAttributes(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) ([]EAVRecord, error) {
 	query := fmt.Sprintf(
 		"SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM %s WHERE schema_id = $1 AND row_id = $2",
 		sanitizeIdentifier(table),

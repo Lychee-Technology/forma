@@ -60,7 +60,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	require.NoError(t, err)
 
 	transformer := NewPersistentRecordTransformer(registry)
-	repo := NewPostgresPersistentRecordRepository(pool, metadataCache)
+	repo := NewDBPersistentRecordRepository(pool, metadataCache, nil)
 	manager := NewEntityManager(transformer, repo, registry, config)
 
 	return &integrationEnv{

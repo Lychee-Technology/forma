@@ -22,7 +22,7 @@ func computeTotalPages(total int64, limit int) int {
 	return int((total + int64(limit) - 1) / int64(limit))
 }
 
-func (r *PostgresPersistentRecordRepository) StreamOptimizedQuery(
+func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	schemaID int16,
@@ -110,7 +110,7 @@ func (r *PostgresPersistentRecordRepository) StreamOptimizedQuery(
 
 // runOptimizedQuery executes an optimized single-query approach that joins entity_main
 // with aggregated EAV data, eliminating the N+1 query problem.
-func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
+func (r *DBPersistentRecordRepository) runOptimizedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	schemaID int16,
@@ -147,7 +147,7 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 
 // scanOptimizedRow scans a single row from the optimized query that includes
 // entity_main columns plus JSON-aggregated EAV attributes.
-func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error) {
+func (r *DBPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error) {
 	var (
 		attrsJSON    []byte
 		totalRecords int64
@@ -486,7 +486,7 @@ func convertDateValueForQuery(valStr string, meta *forma.AttributeMetadata) (any
 	return parsedTime.UnixMilli(), nil
 }
 
-func (r *PostgresPersistentRecordRepository) buildHybridConditions(
+func (r *DBPersistentRecordRepository) buildHybridConditions(
 	eavTable, mainTable string,
 	query AttributeQuery,
 	initArgIndex int,

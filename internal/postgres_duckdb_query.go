@@ -23,7 +23,7 @@ import (
 //   - total_records (bigint)
 //   - total_pages (bigint)
 //   - current_page (int)
-func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
+func (r *DBPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	q *FederatedAttributeQuery,
@@ -46,7 +46,7 @@ func (r *PostgresPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 // StreamDuckDBFederatedQuery streams DuckDB federated query results using a rowHandler callback.
 // It reuses the same rowHandler semantics as Postgres' StreamOptimizedQuery to avoid loading the
 // entire result set into memory.
-func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
+func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	q *FederatedAttributeQuery,
@@ -69,7 +69,7 @@ func (r *PostgresPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	}
 
 	// Acquire DuckDB client
-	duck := GetDuckDBClient()
+	duck := r.duckDBClient
 	if duck == nil || duck.DB == nil {
 		if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "duckdb client unavailable")

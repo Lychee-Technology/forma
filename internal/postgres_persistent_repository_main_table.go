@@ -193,7 +193,7 @@ func buildUpdateMainStatement(table string, record *PersistentRecord) (string, [
 	return query, args, nil
 }
 
-func (r *PostgresPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
 	query, args, err := buildInsertMainStatement(table, record)
 	if err != nil {
 		return err
@@ -205,7 +205,7 @@ func (r *PostgresPersistentRecordRepository) insertMainRow(ctx context.Context, 
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
 	query, args, err := buildUpdateMainStatement(table, record)
 	if err != nil {
 		return err
@@ -216,7 +216,7 @@ func (r *PostgresPersistentRecordRepository) updateMainRow(ctx context.Context, 
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (r *DBPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
 	query := fmt.Sprintf(
 		"SELECT %s FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
 		entityMainProjection,

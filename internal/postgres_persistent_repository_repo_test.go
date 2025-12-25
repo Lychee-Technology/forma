@@ -19,7 +19,7 @@ func TestInsertPersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	fixed := time.Date(2024, 3, 4, 5, 6, 7, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -76,7 +76,7 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -134,7 +134,7 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	fixed := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -162,7 +162,7 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 }
 
 func TestInsertUpdatePersistentRecordNilRecord(t *testing.T) {
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 
 	err := repo.InsertPersistentRecord(context.Background(), StorageTables{}, nil)
 	require.Error(t, err)
@@ -188,7 +188,7 @@ func TestGetPersistentRecordNotFound(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	record, err := repo.GetPersistentRecord(ctx, StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
 	require.NoError(t, err)
 	assert.Nil(t, record)
@@ -237,7 +237,7 @@ func TestGetPersistentRecordWithAttributes(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(attrRows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	record, err := repo.GetPersistentRecord(ctx, StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -282,7 +282,7 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 50, 0).WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	page, err := repo.QueryPersistentRecords(ctx, &PersistentRecordQuery{
 		Tables:   StorageTables{EntityMain: "main_table", EAVData: "eav_table"},
 		SchemaID: 1,
@@ -301,7 +301,7 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 
 func TestQueryPersistentRecordsMissingCache(t *testing.T) {
 	cache := NewMetadataCache()
-	repo := NewPostgresPersistentRecordRepository(nil, cache)
+	repo := NewDBPersistentRecordRepository(nil, cache, nil)
 
 	_, err := repo.QueryPersistentRecords(context.Background(), &PersistentRecordQuery{
 		Tables:   StorageTables{EntityMain: "main_table", EAVData: "eav_table"},

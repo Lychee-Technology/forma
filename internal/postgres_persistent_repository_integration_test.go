@@ -25,7 +25,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil)
 	fixed := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -95,7 +95,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil)
 	rowID := uuid.New()
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -142,7 +142,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewPostgresPersistentRecordRepository(pool, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil)
 	fixed := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 

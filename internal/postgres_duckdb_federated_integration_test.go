@@ -45,9 +45,7 @@ func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 	env := setupIntegrationEnv(t)
 
 	// Ensure no global DuckDB client is set
-	SetDuckDBClient(nil)
-
-	repo := NewPostgresPersistentRecordRepository(env.postgresPool, env.metadata)
+	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata, nil)
 
 	// Build a minimal federated query
 	q := &FederatedAttributeQuery{
@@ -84,9 +82,6 @@ func TestNewDuckDBClient_HealthCheck(t *testing.T) {
 	duck, err := NewDuckDBClient(cfg)
 	require.NoError(t, err)
 	defer duck.Close()
-
-	// Set global for callers that rely on global accessor
-	SetDuckDBClient(duck)
 
 	// Basic health check
 	require.NoError(t, duck.HealthCheck(context.Background()))

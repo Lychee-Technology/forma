@@ -57,7 +57,7 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -96,7 +96,7 @@ func TestLoadMainRecordNotFound(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	assert.Nil(t, record)
@@ -131,7 +131,7 @@ func TestInsertAndUpdateMainRow(t *testing.T) {
 		WithArgs(updateArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 	require.NoError(t, repo.insertMainRow(ctx, mock, "entity_main", record))
 	require.NoError(t, repo.updateMainRow(ctx, mock, "entity_main", record))
 

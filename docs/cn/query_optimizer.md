@@ -1,6 +1,6 @@
 # 查询优化器
 
-本文设计一个基于 JSON Schema 与 Metadata 的查询优化器，生成可直接在 PostgreSQL/AWS DSQL 上执行的高性能 SQL。优化器的输出是「SQL + 参数 + 所需元数据」，可供 `PostgresPersistentRecordRepository` 或未来的查询服务直接使用。
+本文设计一个基于 JSON Schema 与 Metadata 的查询优化器，生成可直接在 PostgreSQL/AWS DSQL 上执行的高性能 SQL。优化器的输出是「SQL + 参数 + 所需元数据」，可供 `DbPersistentRecordRepository` 或未来的查询服务直接使用。
 
 ## 目标与输入输出
 - **输入**：用户提交的查询（JSON 形式的条件/排序/分页）、Schema Metadata（属性到存储位置/列的映射、attr_id、值类型及 fallback 编码）、运行时统计信息（可选）。

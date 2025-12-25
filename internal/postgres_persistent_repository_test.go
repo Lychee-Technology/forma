@@ -15,7 +15,7 @@ import (
 )
 
 func TestWithClockAndNowMillis(t *testing.T) {
-	repo := NewPostgresPersistentRecordRepository(nil, nil)
+	repo := NewDBPersistentRecordRepository(nil, nil, nil)
 	fixed := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -311,7 +311,7 @@ func TestHasMainTableCondition(t *testing.T) {
 }
 
 func TestBuildHybridConditionsMainColumn(t *testing.T) {
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 	query := AttributeQuery{
 		SchemaID:  1,
 		Condition: &forma.KvCondition{Attr: "text_01", Value: "hello"},
@@ -339,7 +339,7 @@ func TestBuildHybridConditionsMainColumn(t *testing.T) {
 }
 
 func TestRunOptimizedQueryValidation(t *testing.T) {
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 
 	_, _, err := repo.runOptimizedQuery(
 		context.Background(),
@@ -374,7 +374,7 @@ func TestRunOptimizedQueryWithMockPool(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)

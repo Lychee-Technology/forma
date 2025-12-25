@@ -2,7 +2,7 @@
 
 ## Overview
 
-This implementation plan builds upon the existing PostgreSQL EAV query infrastructure to add federated query capabilities with DuckDB. The approach extends the current `PostgresPersistentRecordRepository` with a new federated query engine that can seamlessly query both PostgreSQL (hot data) and DuckDB/S3 (warm/cold data) simultaneously.
+This implementation plan builds upon the existing PostgreSQL EAV query infrastructure to add federated query capabilities with DuckDB. The approach extends the current `DbPersistentRecordRepository` with a new federated query engine that can seamlessly query both PostgreSQL (hot data) and DuckDB/S3 (warm/cold data) simultaneously.
 
 ## Tasks
 

@@ -13,7 +13,7 @@ import (
 // Notes:
 // - This is an MVP coordinator: it caps per-source fetches (opts.MaxRows or default) to avoid OOM.
 // - For very large result sets a keys-only two-phase approach should be implemented later.
-func (r *PostgresPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
+func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	fq *FederatedAttributeQuery,
