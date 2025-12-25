@@ -20,6 +20,28 @@ type DuckDBClient struct {
 // global client accessor for simple wiring during initial integration.
 var globalDuckDBClient *DuckDBClient
 
+// ValidateDuckDBConfig performs basic sanity checks on user-provided DuckDB configuration.
+func ValidateDuckDBConfig(cfg forma.DuckDBConfig) error {
+	if !cfg.Enabled {
+		// disabled is acceptable; nothing to validate
+		return nil
+	}
+	if cfg.MemoryLimitMB < 0 {
+		return fmt.Errorf("invalid memory_limit_mb: must be >= 0")
+	}
+	if cfg.MaxParallelism < 0 {
+		return fmt.Errorf("invalid max_parallelism: must be >= 0")
+	}
+	if cfg.MaxConnections < 1 {
+		return fmt.Errorf("max_connections must be >= 1")
+	}
+	if cfg.QueryTimeout <= 0 {
+		return fmt.Errorf("query_timeout must be > 0")
+	}
+	// DBPath may be empty (in-memory), so no strict check here
+	return nil
+}
+
 // NewDuckDBClient creates and configures a DuckDB client according to the provided config.
 // It attempts to load common extensions (httpfs/parquet) and configure S3 access via PRAGMA when requested.
 func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
@@ -135,13 +157,16 @@ func (c *DuckDBClient) Close() error {
 	return c.DB.Close()
 }
 
-// HealthCheck performs a simple query to validate the DuckDB connection.
+// HealthCheck performs a simple query to validate the DuckDB connection and basic runtime pragmas.
 func (c *DuckDBClient) HealthCheck(ctx context.Context) error {
 	if c == nil || c.DB == nil {
 		return fmt.Errorf("duckdb client not initialized")
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+
+	// Basic liveliness check
 	row := c.DB.QueryRowContext(ctx, "SELECT 1;")
 	var v int
 	if err := row.Scan(&v); err != nil {
@@ -150,6 +175,54 @@ func (c *DuckDBClient) HealthCheck(ctx context.Context) error {
 	if v != 1 {
 		return fmt.Errorf("unexpected duckdb health result: %d", v)
 	}
+
+	// Best-effort validation of configured pragmas
+	if c.cfg.MemoryLimitMB > 0 {
+		var mem string
+		if err := c.DB.QueryRowContext(ctx, "PRAGMA memory_limit;").Scan(&mem); err != nil {
+			zap.S().Warnw("duckdb: memory_limit pragma query failed (non-fatal)", "err", err)
+		} else {
+			if mem == "" {
+				zap.S().Warnw("duckdb: memory_limit pragma returned empty (non-fatal)")
+			}
+		}
+	}
+
+	if c.cfg.MaxParallelism > 0 {
+		var threads int
+		if err := c.DB.QueryRowContext(ctx, "PRAGMA threads;").Scan(&threads); err != nil {
+			zap.S().Warnw("duckdb: threads pragma query failed (non-fatal)", "err", err)
+		} else {
+			if threads <= 0 {
+				zap.S().Warnw("duckdb: threads pragma invalid (non-fatal)", "threads", threads)
+			}
+		}
+	}
+
+	// Verify S3-related pragmas if S3 is enabled or S3 config provided (best-effort)
+	if c.cfg.EnableS3 {
+		// If an endpoint or region was configured, confirm the PRAGMA returns a value (may be empty if not set)
+		if c.cfg.S3Endpoint != "" {
+			var ep string
+			if err := c.DB.QueryRowContext(ctx, "PRAGMA s3_endpoint;").Scan(&ep); err != nil {
+				zap.S().Warnw("duckdb: s3_endpoint pragma query failed", "err", err)
+			}
+		}
+		if c.cfg.S3Region != "" {
+			var reg string
+			if err := c.DB.QueryRowContext(ctx, "PRAGMA s3_region;").Scan(&reg); err != nil {
+				zap.S().Warnw("duckdb: s3_region pragma query failed", "err", err)
+			}
+		}
+	}
+
+	// Parquet availability is best-effort checked via a benign pragma; failure to surface is non-fatal.
+	if c.cfg.EnableParquet {
+		if _, err := c.DB.ExecContext(ctx, "PRAGMA compile_options;"); err != nil {
+			zap.S().Warnw("duckdb: parquet availability check failed (non-fatal)", "err", err)
+		}
+	}
+
 	return nil
 }
 
