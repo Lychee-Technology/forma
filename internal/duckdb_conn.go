@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -95,22 +96,28 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 
 		// Set S3 PRAGMA values if provided
 		if cfg.S3AccessKey != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA s3_access_key='%s';", cfg.S3AccessKey)); err != nil {
-				zap.S().Warnw("duckdb: set s3_access_key failed", "err", err)
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey)); err != nil {
+				zap.S().Warnw("duckdb: set s3_access_key_id failed", "err", err)
 			}
 		}
 		if cfg.S3SecretKey != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA s3_secret_key='%s';", cfg.S3SecretKey)); err != nil {
-				zap.S().Warnw("duckdb: set s3_secret_key failed", "err", err)
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey)); err != nil {
+				zap.S().Warnw("duckdb: set s3_secret_access_key failed", "err", err)
 			}
 		}
 		if cfg.S3Region != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA s3_region='%s';", cfg.S3Region)); err != nil {
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
 				zap.S().Warnw("duckdb: set s3_region failed", "err", err)
 			}
 		}
 		if cfg.S3Endpoint != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA s3_endpoint='%s';", cfg.S3Endpoint)); err != nil {
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_endpoint='%s';", strings.TrimPrefix(cfg.S3Endpoint, "http://"))); err != nil {
+				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
+			}
+			if _, err := db.ExecContext(ctx, "SET s3_use_ssl=false;"); err != nil {
+				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
+			}
+			if _, err := db.ExecContext(ctx, "SET s3_url_style='path';"); err != nil {
 				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
 			}
 		}

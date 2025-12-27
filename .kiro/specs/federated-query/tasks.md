@@ -2,48 +2,48 @@
 
 ## Overview
 
-This implementation plan builds upon the existing PostgreSQL EAV query infrastructure to add federated query capabilities with DuckDB. The approach extends the current `DbPersistentRecordRepository` with a new federated query engine that can seamlessly query both PostgreSQL (hot data) and DuckDB/S3 (warm/cold data) simultaneously.
+This plan decomposes the federated-query E2E testing方案 into smaller, independently runnable tasks. Each task should leave the codebase compiling (e.g., `go test ./...` succeeds) even if other tasks are incomplete.
 
 ## Tasks
 
-- [ ] 1. Dual-path translation and pushdown
-  - Implement metadata-aware translator that emits both PostgreSQL pushdown clauses (entity_main) and DuckDB logical fragments, covering operators and type casts (UUID, numeric, date/time).
-  - Integrate translation into BuildDuckDBQuery and Postgres paths so postgres_scan receives physical column predicates; add unit/property tests for translation and pushdown separation.
-  - _Requirements: 2.1, 2.2, 4.1_
+- [ ] 1. E2E test harness & fixtures
+  - Add a minimal harness to boot DuckDB with postgres_scanner/httpfs and connect to test PostgreSQL/MinIO (or in-memory mocks if available).
+  - Create reusable fixtures: base/delta Parquet files plus PG change_log/entity_main/eav_data seeds for row_id 1–5 as described in design.md.
+  - Deliverable compiles with harness + fixture loaders, even if no scenarios assert yet.
 
-- [ ] 2. Federated DuckDB execution pipeline (S3 + PG)
-  - Extend DuckDB SQL template to include dirty_ids CTE, s3_source via read_parquet (path templating), pg_source via postgres_scan with pushdown, anti-join, UNION ALL, QUALIFY ROW_NUMBER() LWW, soft-delete filter, and logical filters.
-  - Align PG/DuckDB types with explicit CASTs to match Parquet schema; add tests for anti-join, deduplication, and pagination correctness.
-  - _Requirements: 1.4, 3.1, 3.2, 7.4_
+- [ ] 2. Mixed read, anti-join & LWW correctness
+  - Implement an E2E test that issues the canonical filter (age>18, name prefix, tag=developer) through the real Search API path.
+  - Assert returned row_ids {1,2,4,5} with row_id 3 excluded; verify QUALIFY ROW_NUMBER() and deleted_ts handling.
+  - Leaves harness + single scenario test green.
 
-- [ ] 3. Streaming result processing
-  - Add streaming iterator for DuckDB results (no full slice) and reuse Postgres streaming semantics; ensure pagination uses deduped order and PersistentRecord format remains consistent.
-  - _Requirements: 4.2, 8.1, 8.4_
+- [ ] 3. Predicate pushdown coverage
+  - Add an E2E that inspects PG scan row counts/plan (e.g., metrics/log capture) to prove entity_main predicates are pushed down.
+  - Include a control case without pushdown to compare fed_query_pushdown_efficiency.
 
-- [ ] 4. Routing, degraded modes, and resilience
-  - Enhance routing thresholds and PreferHot/MaxRows handling; respect AllowS3Fallback semantics and include tier selection in plans.
-  - Implement circuit breaker (e.g., 5 failures/30s) and degraded modes: PG-only fallback when S3/DuckDB unavailable; S3-only with eventual consistency flag; emit warnings/metadata.
-  - _Requirements: 1.1, 1.2, 5.1, 5.2, 5.3_
+- [ ] 4. EAV filter + type casting alignment
+  - Add E2E ensuring tag (attr_id=205) filtering happens in DuckDB and matches EAV data; include UUID/text/integer cast alignment with Parquet schema.
+  - Validate no precision/overflow regressions.
 
-- [ ] 5. Observability and execution plans
-  - Emit opentelemetry metrics: fed_query_latency_histogram (translation/execution/streaming), fed_query_row_count (PG vs S3/DuckDB), fed_query_pushdown_efficiency.
-  - Expand execution plan reporting with row estimates, pushdown status, degraded-mode notes, and per-source timings.
-  - _Requirements: 6.2, 6.3, 6.5_
+- [ ] 5. Sorting & pagination stability
+  - Add E2E asserting created_at DESC order with LIMIT/OFFSET after deduplication; ensure deterministic pagination across runs.
 
-- [ ] 6. Integration tests and health checks
-  - Add end-to-end federated query tests covering anti-join, routing decisions, degraded paths, streaming, and pagination; include S3/parquet path rendering.
-  - Strengthen DuckDB/PostgreSQL/S3 health checks and configuration validation.
-  - _Requirements: 1.1, 6.1, 6.4_
+- [ ] 6. Streaming large result sets
+  - Build a high-row-count fixture and assert the HTTP/DB iterator streams rows without loading all results; confirm latency histogram “streaming” bucket emits.
 
-- [ ] 7. Final checkpoint - core federated query functionality complete
-  - Ensure all tests pass; confirm API compatibility and documentation updates.
+- [ ] 7. Degraded modes
+  - Add E2Es for S3 unavailable (PG-only with partial_result=true) and PG unavailable (S3-only when consistency=eventual else 503).
+  - Assert warning metadata/log entries are emitted.
+
+- [ ] 8. Circuit breaker & fallback routing
+  - Simulate 5 consecutive failures (timeout/OOM) to trip the breaker; assert storage=['olap'] is rejected and optional storage=['oltp'] fallback is used.
+
+- [ ] 9. Security/escaping checks
+  - Add filters with special characters/LIKE wildcards and assert both $PG_WHERE_CLAUSE and $LOGICAL_WHERE_CLAUSE are safely escaped with correct results.
+
+- [ ] 10. Observability assertions
+  - Add E2E hooks to collect and assert fed_query_latency_histogram, fed_query_row_count (S3 vs PG), and pushdown efficiency metrics per scenario.
 
 ## Notes
 
-- Tasks marked with `*` are optional and can be skipped for faster MVP
-- Each task references specific requirements for traceability
-- Checkpoints ensure incremental validation
-- Property tests validate universal correctness properties
-- Unit tests validate specific examples and edge cases
-- The implementation builds incrementally on existing PostgreSQL query infrastructure
-- DuckDB integration is designed to be non-intrusive to existing OLTP operations
+- Tasks can be executed in any order; each should maintain a compiling codebase even if other scenarios are pending.
+- Prefer reuse of harness/fixtures to minimize duplication across E2Es.

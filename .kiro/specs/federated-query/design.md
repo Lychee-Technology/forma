@@ -246,7 +246,7 @@ LIMIT $PAGE_SIZE OFFSET $OFFSET;
 
 ## **8. Observability**
 
-The following metrics MUST be emitted to Prometheus:
+The following metrics MUST be emitted to opentelemetry:
 
 * fed_query_latency_histogram: Labeled by {stage: "translation", "execution", "streaming"}.  
 * fed_query_row_count: Count of rows returned by S3 vs. PG (helps tune compaction frequency).  
