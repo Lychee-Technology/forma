@@ -14,6 +14,7 @@ import (
 type attributeSpec struct {
 	AttributeID int    `json:"attributeID"`
 	ValueType   string `json:"valueType"`
+	Required    bool   `json:"required,omitempty"`
 }
 
 func runGenerateAttributes(args []string) error {
@@ -72,7 +73,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 	}
 
 	// Extract attributes from the schema
-	newAttributes := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	newAttributes := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	// Load existing attributes file if it exists
 	existingAttrs, err := loadExistingAttributes(outputPath)
@@ -115,6 +116,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 		if spec, exists := newAttributes[name]; exists {
 			// Attribute still exists in schema: update valueType if changed
 			existingData["valueType"] = spec.ValueType
+			applyRequiredFlag(existingData, spec.Required)
 		}
 		// Keep the attribute regardless of whether it exists in the new schema
 		result[name] = existingData
@@ -128,6 +130,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 				"attributeID": newIDMap[name],
 				"valueType":   spec.ValueType,
 			}
+			applyRequiredFlag(result[name], spec.Required)
 		}
 	}
 
@@ -235,8 +238,9 @@ func formatJSONValue(v any) string {
 	}
 }
 
-func traverseSchema(schema map[string]any, path string, insideArray bool, attributes map[string]attributeSpec) map[string]attributeSpec {
+func traverseSchema(schema map[string]any, path string, insideArray bool, attributes map[string]attributeSpec, isRequired bool) map[string]attributeSpec {
 	if properties, ok := schema["properties"].(map[string]any); ok {
+		requiredProps := getRequiredProperties(schema)
 		for key, raw := range properties {
 			child, ok := raw.(map[string]any)
 			if !ok {
@@ -249,7 +253,7 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			} else {
 				newPath = path + "." + key
 			}
-			traverseSchema(child, newPath, insideArray, attributes)
+			traverseSchema(child, newPath, insideArray, attributes, requiredProps[key])
 		}
 		return attributes
 	}
@@ -260,11 +264,12 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			switch getSchemaType(items) {
 			case "object":
 				if _, ok := items["properties"]; ok {
-					return traverseSchema(items, path, true, attributes)
+					return traverseSchema(items, path, true, attributes, false)
 				}
 			case "string", "integer", "number", "boolean":
 				attributes[path] = attributeSpec{
 					ValueType: getValueType(items),
+					Required:  isRequired,
 				}
 				return attributes
 			}
@@ -272,10 +277,43 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 	default:
 		attributes[path] = attributeSpec{
 			ValueType: getValueType(schema),
+			Required:  isRequired,
 		}
 	}
 
 	return attributes
+}
+
+func getRequiredProperties(schema map[string]any) map[string]bool {
+	raw, ok := schema["required"]
+	if !ok {
+		return nil
+	}
+
+	result := make(map[string]bool)
+
+	switch vals := raw.(type) {
+	case []any:
+		for _, v := range vals {
+			if key, ok := v.(string); ok {
+				result[key] = true
+			}
+		}
+	case []string:
+		for _, key := range vals {
+			result[key] = true
+		}
+	}
+
+	return result
+}
+
+func applyRequiredFlag(attrData map[string]any, required bool) {
+	if required {
+		attrData["required"] = true
+		return
+	}
+	delete(attrData, "required")
 }
 
 func getSchemaType(node map[string]any) string {

@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -386,6 +388,42 @@ func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int1
 		ArrayIndices: indices,
 	}
 
-	require.NoError(t, populateTypedValue(&attr, value, meta.ValueType))
+	set, err := populateTypedValue(&attr, name, value, meta)
+	require.NoError(t, err)
+	require.True(t, set)
 	return attr
+}
+
+func TestPopulateTypedValueRequired(t *testing.T) {
+	attr := EAVRecord{}
+	meta := forma.AttributeMetadata{
+		AttributeID: 1,
+		ValueType:   forma.ValueTypeUUID,
+		Required:    true,
+	}
+
+	set, err := populateTypedValue(&attr, "id", "not-a-uuid", meta)
+	require.Error(t, err)
+	assert.False(t, set)
+	assert.Nil(t, attr.ValueText)
+}
+
+func TestPopulateTypedValueOptionalSkipsOnError(t *testing.T) {
+	attr := EAVRecord{}
+	meta := forma.AttributeMetadata{
+		AttributeID: 2,
+		ValueType:   forma.ValueTypeUUID,
+		Required:    false,
+	}
+
+	buf := &bytes.Buffer{}
+	original := log.Writer()
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(original) })
+
+	set, err := populateTypedValue(&attr, "optional", "not-a-uuid", meta)
+	require.NoError(t, err)
+	assert.False(t, set)
+	assert.Nil(t, attr.ValueText)
+	assert.Contains(t, buf.String(), "optional")
 }

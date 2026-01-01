@@ -157,6 +157,16 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 
 	if len(copyIdToName) > 0 {
 		zap.S().Infow("missing EAV records for attrIDs.", "idToName", copyIdToName)
+		for missingAttrID, missingAttrName := range copyIdToName {
+			metadata, ok := cache[missingAttrName]
+			if !ok {
+				zap.S().Warnw("missing attribute metadata for missing EAV record", "attrID", missingAttrID, "attrName", missingAttrName)
+				continue
+			}
+			if metadata.Required {
+				return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
+			}
+		}
 	}
 
 	return attributes, nil

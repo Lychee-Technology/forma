@@ -31,9 +31,11 @@ go.work.sum
 # .idea/
 # .vscode/
 deploy/data/
+deploy/rustfs/
 .DS_Store
 .cache/
 .gocache/
 .gomodcache/
 build/
 local-only/
+*.parquet

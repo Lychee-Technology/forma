@@ -24,6 +24,14 @@ func parseAttributeMetadata(attrName string, attrData map[string]any, source str
 	}
 	meta.ValueType = forma.ValueType(valueType)
 
+	if requiredRaw, ok := attrData["required"]; ok {
+		required, ok := requiredRaw.(bool)
+		if !ok {
+			return forma.AttributeMetadata{}, fmt.Errorf("invalid required flag for attribute %s in %s", attrName, source)
+		}
+		meta.Required = required
+	}
+
 	binding, err := extractMainColumnBinding(attrName, attrData, source)
 	if err != nil {
 		return forma.AttributeMetadata{}, err

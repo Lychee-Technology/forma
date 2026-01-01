@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 type transformer struct {
@@ -258,7 +260,8 @@ func (t *transformer) flattenToAttributes(
 		attrName := strings.Join(path, ".")
 		meta, ok := cache[attrName]
 		if !ok {
-			return fmt.Errorf("attribute '%s' not defined for schema %d", attrName, schemaID)
+			zap.S().Warnw("attribute '%s' not defined for schema %d", attrName, schemaID)
+			return nil
 		}
 
 		attr := EAVRecord{
@@ -268,47 +271,58 @@ func (t *transformer) flattenToAttributes(
 			ArrayIndices: joinIndices(indices),
 		}
 
-		if err := populateTypedValue(&attr, v, meta.ValueType); err != nil {
+		set, err := populateTypedValue(&attr, attrName, v, meta)
+		if err != nil {
 			return fmt.Errorf("convert value for attribute '%s': %w", attrName, err)
 		}
 
-		*result = append(*result, attr)
+		if set {
+			*result = append(*result, attr)
+		}
 	}
 	return nil
 }
 
-func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) error {
-	switch valueType {
+func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
+	handleConversionError := func(err error) (bool, error) {
+		if meta.Required {
+			return false, err
+		}
+		log.Printf("skip optional attribute %s (id %d): %v", attrName, meta.AttributeID, err)
+		return false, nil
+	}
+
+	switch meta.ValueType {
 	case forma.ValueTypeUUID:
 		uuidVal, isUUID := toUUID(value)
 		if !isUUID {
-			return fmt.Errorf("invalid UUID value: %v", value)
+			return handleConversionError(fmt.Errorf("invalid UUID value: %v", value))
 		}
 		strVal := uuidVal.String()
 		attr.ValueText = &strVal
 	case forma.ValueTypeText:
 		strVal, err := toString(value)
 		if err != nil {
-			return err
+			return handleConversionError(err)
 		}
 		attr.ValueText = &strVal
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt, forma.ValueTypeInteger, forma.ValueTypeSmallInt:
 		numVal, err := toFloat64(value)
 		if err != nil {
-			return err
+			return handleConversionError(err)
 		}
 		attr.ValueNumeric = &numVal
 	case forma.ValueTypeDate:
 		timeVal, err := toTime(value)
 		if err != nil {
-			return err
+			return handleConversionError(err)
 		}
 		unixMillis := float64(timeVal.UnixMilli())
 		attr.ValueNumeric = &unixMillis
 	case forma.ValueTypeBool:
 		boolVal, err := toBool(value)
 		if err != nil {
-			return err
+			return handleConversionError(err)
 		}
 		var floatBool float64
 		if boolVal {
@@ -318,9 +332,10 @@ func populateTypedValue(attr *EAVRecord, value any, valueType forma.ValueType) e
 		}
 		attr.ValueNumeric = &floatBool
 	default:
-		return fmt.Errorf("unsupported value type '%s'", valueType)
+		return handleConversionError(fmt.Errorf("unsupported value type '%s'", meta.ValueType))
 	}
-	return nil
+
+	return true, nil
 }
 
 func toString(value any) (string, error) {

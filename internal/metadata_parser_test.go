@@ -31,6 +31,7 @@ func TestParseAttributeMetadata(t *testing.T) {
 			expect: func(t *testing.T, meta forma.AttributeMetadata) {
 				assert.Equal(t, int16(1), meta.AttributeID)
 				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
+				assert.False(t, meta.Required)
 				if assert.NotNil(t, meta.ColumnBinding) {
 					assert.Equal(t, forma.MainColumn("text_01"), meta.ColumnBinding.ColumnName)
 					assert.Equal(t, forma.MainColumnEncodingBoolText, meta.ColumnBinding.Encoding)
@@ -47,7 +48,22 @@ func TestParseAttributeMetadata(t *testing.T) {
 			expect: func(t *testing.T, meta forma.AttributeMetadata) {
 				assert.Equal(t, int16(2), meta.AttributeID)
 				assert.Equal(t, forma.ValueType("integer"), meta.ValueType)
+				assert.False(t, meta.Required)
 				assert.Nil(t, meta.ColumnBinding)
+			},
+		},
+		{
+			name:     "success with required flag",
+			attrName: "baz",
+			attrData: map[string]any{
+				"attributeID": 3.0,
+				"valueType":   "text",
+				"required":    true,
+			},
+			expect: func(t *testing.T, meta forma.AttributeMetadata) {
+				assert.Equal(t, int16(3), meta.AttributeID)
+				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
+				assert.True(t, meta.Required)
 			},
 		},
 		{
@@ -61,6 +77,16 @@ func TestParseAttributeMetadata(t *testing.T) {
 			attrName:  "missingValueType",
 			attrData:  map[string]any{"attributeID": 3.0},
 			expectErr: "valueType",
+		},
+		{
+			name:     "error invalid required flag",
+			attrName: "badRequired",
+			attrData: map[string]any{
+				"attributeID": 5.0,
+				"valueType":   "text",
+				"required":    "yes",
+			},
+			expectErr: "required",
 		},
 		{
 			name:     "error from binding parsing",

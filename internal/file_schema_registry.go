@@ -430,6 +430,14 @@ func parseFileAttributeMetadata(attrName string, attrData map[string]any, source
 	}
 	meta.ValueType = forma.ValueType(valueTypeStr)
 
+	if requiredRaw, exists := attrData["required"]; exists {
+		required, ok := requiredRaw.(bool)
+		if !ok {
+			return forma.AttributeMetadata{}, fmt.Errorf("invalid required flag for attribute %s in %s", attrName, source)
+		}
+		meta.Required = required
+	}
+
 	// Parse optional column_binding
 	if bindingRaw, exists := attrData["column_binding"]; exists {
 		binding, err := parseFileColumnBinding(bindingRaw, attrName, source)

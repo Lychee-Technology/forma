@@ -59,9 +59,6 @@ func validateWriteTables(tables StorageTables) error {
 	if err := validateTables(tables); err != nil {
 		return err
 	}
-	if tables.ChangeLog == "" {
-		return fmt.Errorf("change log table name cannot be empty")
-	}
 	return nil
 }
 
@@ -110,8 +107,10 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 		return err
 	}
 
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -144,9 +143,10 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
 		return err
 	}
-
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -179,8 +179,10 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 
 	now := r.nowMillis()
 	deletedAt := now
-	if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
-		return err
+	if tables.ChangeLog != "" {
+		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

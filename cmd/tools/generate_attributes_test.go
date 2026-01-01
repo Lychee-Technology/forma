@@ -249,7 +249,7 @@ func TestTraverseSchemaSimpleProperties(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	if len(result) != 3 {
 		t.Fatalf("expected 3 attributes, got %d", len(result))
@@ -289,7 +289,7 @@ func TestTraverseSchemaNestedObjects(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 attributes, got %d", len(result))
@@ -324,7 +324,7 @@ func TestTraverseSchemaDeepNesting(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	if _, ok := result["level1.level2.value"]; !ok {
 		t.Errorf("deeply nested path not found")
@@ -345,7 +345,7 @@ func TestTraverseSchemaArrayOfStrings(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	if attr, ok := result["tags"]; !ok {
 		t.Errorf("tags attribute not found")
@@ -376,13 +376,62 @@ func TestTraverseSchemaArrayOfObjects(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	expectedPaths := []string{"contacts.email", "contacts.phone"}
 	for _, path := range expectedPaths {
 		if _, ok := result[path]; !ok {
 			t.Errorf("expected path %q not found", path)
 		}
+	}
+}
+
+func TestTraverseSchemaMarksRequiredProperties(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"name",
+		},
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type": "string",
+			},
+			"nickname": map[string]any{
+				"type": "string",
+			},
+			"contact": map[string]any{
+				"type": "object",
+				"required": []any{
+					"email",
+				},
+				"properties": map[string]any{
+					"email": map[string]any{
+						"type": "string",
+					},
+					"phone": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+	}
+
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+
+	if attr := result["name"]; !attr.Required {
+		t.Errorf("expected name to be required")
+	}
+
+	if attr := result["nickname"]; attr.Required {
+		t.Errorf("expected nickname to be optional")
+	}
+
+	if attr := result["contact.email"]; !attr.Required {
+		t.Errorf("expected contact.email to be required")
+	}
+
+	if attr := result["contact.phone"]; attr.Required {
+		t.Errorf("expected contact.phone to be optional")
 	}
 }
 
@@ -745,6 +794,112 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	}
 }
 
+func TestGenerateAttributesJSONMarksRequiredAttributes(t *testing.T) {
+	tempDir := t.TempDir()
+	schemaPath := filepath.Join(tempDir, "schema.json")
+	outputPath := filepath.Join(tempDir, "attributes.json")
+
+	schema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"name",
+		},
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+			"age":  map[string]any{"type": "integer"},
+		},
+	}
+	schemaData, _ := json.Marshal(schema)
+	os.WriteFile(schemaPath, schemaData, 0o644)
+
+	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	data, _ := os.ReadFile(outputPath)
+	var result map[string]map[string]any
+	json.Unmarshal(data, &result)
+
+	if required, ok := result["name"]["required"].(bool); !ok || !required {
+		t.Errorf("expected required flag for name attribute, got %v", result["name"]["required"])
+	}
+
+	if _, ok := result["age"]["required"]; ok {
+		t.Errorf("did not expect required flag for age attribute")
+	}
+}
+
+func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
+	tempDir := t.TempDir()
+	schemaPath := filepath.Join(tempDir, "schema.json")
+	outputPath := filepath.Join(tempDir, "attributes.json")
+
+	initialSchema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"name",
+		},
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+			"age":  map[string]any{"type": "integer"},
+		},
+	}
+	schemaData, _ := json.Marshal(initialSchema)
+	os.WriteFile(schemaPath, schemaData, 0o644)
+
+	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	data, _ := os.ReadFile(outputPath)
+	var firstResult map[string]map[string]any
+	json.Unmarshal(data, &firstResult)
+
+	if required, ok := firstResult["name"]["required"].(bool); !ok || !required {
+		t.Fatalf("expected name to be required after first generation")
+	}
+
+	nameID := int(firstResult["name"]["attributeID"].(float64))
+	ageID := int(firstResult["age"]["attributeID"].(float64))
+
+	updatedSchema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"age",
+		},
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+			"age":  map[string]any{"type": "integer"},
+		},
+	}
+	schemaData, _ = json.Marshal(updatedSchema)
+	os.WriteFile(schemaPath, schemaData, 0o644)
+
+	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+		t.Fatalf("expected no error on regeneration, got %v", err)
+	}
+
+	data, _ = os.ReadFile(outputPath)
+	var secondResult map[string]map[string]any
+	json.Unmarshal(data, &secondResult)
+
+	if _, ok := secondResult["name"]["required"]; ok {
+		t.Errorf("expected name to no longer be required")
+	}
+
+	if required, ok := secondResult["age"]["required"].(bool); !ok || !required {
+		t.Errorf("expected age to become required")
+	}
+
+	if newNameID := int(secondResult["name"]["attributeID"].(float64)); newNameID != nameID {
+		t.Errorf("expected name attribute ID to remain the same, got %d (was %d)", newNameID, nameID)
+	}
+
+	if newAgeID := int(secondResult["age"]["attributeID"].(float64)); newAgeID != ageID {
+		t.Errorf("expected age attribute ID to remain the same, got %d (was %d)", newAgeID, ageID)
+	}
+}
+
 // TestGenerateAttributesJSONMaxIDCalculation tests correct maxID calculation
 func TestGenerateAttributesJSONMaxIDCalculation(t *testing.T) {
 	tempDir := t.TempDir()
@@ -971,7 +1126,7 @@ func TestTraverseSchemaEmptySchema(t *testing.T) {
 		"type": "object",
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec))
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
 
 	// Schema with object type but no properties should still add the root path as an attribute
 	// since it falls through to the default case
