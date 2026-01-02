@@ -35,9 +35,7 @@ func (ao *AttributeOrder) AttrIDInt() int {
 // ValueColumn returns the EAV table column name for this attribute's value type.
 func (ao *AttributeOrder) ValueColumn() string {
 	switch ao.ValueType {
-	case forma.ValueTypeText:
-		return "value_text"
-	case forma.ValueTypeNumeric:
+	case forma.ValueTypeNumeric, forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime, forma.ValueTypeBool:
 		return "value_numeric"
 	default:
 		return "value_text"
