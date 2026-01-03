@@ -260,7 +260,7 @@ func (t *transformer) flattenToAttributes(
 		attrName := strings.Join(path, ".")
 		meta, ok := cache[attrName]
 		if !ok {
-			zap.S().Warnw("attribute '%s' not defined for schema %d", attrName, schemaID)
+			zap.S().Warnf("attribute '%s' not defined for schema %d", attrName, schemaID)
 			return nil
 		}
 
