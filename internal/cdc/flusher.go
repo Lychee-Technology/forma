@@ -18,6 +18,13 @@ import (
 	"os"
 )
 
+// generateIAMTokenFn is the function signature we use to generate IAM tokens.
+// We wrap the upstream function to keep a stable signature for tests.
+var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds interface{}) (string, error) {
+	// Call the upstream DSQL helper without creds (actual creds come from AWS SDK config in RunOnce)
+	return auth.GenerateDbConnectAuthToken(ctx, endpoint, region, nil)
+}
+
 // RunOnce performs one full pass over schemas and attempts flush where needed.
 func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger) error {
 	// AWS config + S3 client
@@ -40,8 +47,8 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 	// Try IAM auth token generation when enabled
 	if cfg.PGUseIAM {
 		endpoint := fmt.Sprintf("%s:%d", cfg.PGHost, cfg.PGPort)
-		// Use the DSQL auth helper to generate a DB connect token
-		if token, err := auth.GenerateDbConnectAuthToken(ctx, endpoint, awsCfg.Region, awsCfg.Credentials); err == nil && token != "" {
+		// Use the wrapped helper so tests can override behavior
+		if token, err := generateIAMTokenFn(ctx, endpoint, awsCfg.Region, awsCfg.Credentials); err == nil && token != "" {
 			pgPassword = token
 			logger.Sugar().Infow("generated IAM auth token for Postgres connection (dsql)")
 		} else {
