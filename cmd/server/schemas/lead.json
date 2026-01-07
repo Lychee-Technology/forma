@@ -136,9 +136,21 @@
       "type": "object",
       "description": "Contact information for the lead",
       "required": [
-        "name"
+        "isAnonymous"
       ],
       "properties": {
+        "isAnonymous": {
+          "type": "boolean",
+          "description": "Whether the contact is anonymous"
+        },
+        "contactCode": {
+          "type": "string",
+          "description": "Code for the contact when it is anonymous"
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Nickname for the contact. Used when the contact is anonymous."
+        },
         "name": {
           "type": "string",
           "description": "Primary name (Latin alphabet)"
