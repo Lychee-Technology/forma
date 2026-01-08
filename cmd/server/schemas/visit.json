@@ -11,14 +11,7 @@
       "format": "uuid"
     }
   },
-  "required": [
-    "id",
-    "leadId",
-    "userId",
-    "propertyId",
-    "scheduledStartAt",
-    "status"
-  ],
+  "required": [],
   "properties": {
     "id": {
       "$ref": "#/$defs/visit_id"

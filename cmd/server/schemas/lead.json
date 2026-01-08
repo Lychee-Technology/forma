@@ -3,17 +3,7 @@
   "title": "Leads",
   "description": "Extended lead data model for Forma ingestion",
   "type": "object",
-  "required": [
-    "id",
-    "tenantId",
-    "ownerUserId",
-    "pipeline",
-    "stage",
-    "status",
-    "contact",
-    "createdAt",
-    "updatedAt"
-  ],
+  "required": [],
   "$defs": {
     "lead_id": {
       "type": "string",
@@ -102,9 +92,7 @@
     "source": {
       "type": "object",
       "description": "Lead acquisition source",
-      "required": [
-        "channel"
-      ],
+      "required": [],
       "properties": {
         "channel": {
           "type": "string",
@@ -135,9 +123,7 @@
     "contact": {
       "type": "object",
       "description": "Contact information for the lead",
-      "required": [
-        "isAnonymous"
-      ],
+      "required": [],
       "properties": {
         "isAnonymous": {
           "type": "boolean",
@@ -340,9 +326,7 @@
               "description": "Display string for budget range"
             }
           },
-          "required": [
-            "currency"
-          ]
+          "required": []
         },
         "size": {
           "type": "object",
@@ -429,10 +413,7 @@
       "description": "Interest records tied to properties",
       "items": {
         "type": "object",
-        "required": [
-          "propertyId",
-          "status"
-        ],
+        "required": [],
         "properties": {
           "propertyId": {
             "type": "string"

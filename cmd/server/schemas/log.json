@@ -3,13 +3,7 @@
   "title": "Log",
   "description": "Activity log record for lead visits and notes",
   "type": "object",
-  "required": [
-    "id",
-    "leadId",
-    "ownerId",
-    "type",
-    "createdAt"
-  ],
+  "required": [],
   "properties": {
     "id": {
       "type": "string",
