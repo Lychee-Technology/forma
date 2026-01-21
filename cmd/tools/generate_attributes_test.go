@@ -249,7 +249,7 @@ func TestTraverseSchemaSimpleProperties(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	if len(result) != 3 {
 		t.Fatalf("expected 3 attributes, got %d", len(result))
@@ -289,7 +289,7 @@ func TestTraverseSchemaNestedObjects(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 attributes, got %d", len(result))
@@ -324,7 +324,7 @@ func TestTraverseSchemaDeepNesting(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	if _, ok := result["level1.level2.value"]; !ok {
 		t.Errorf("deeply nested path not found")
@@ -345,7 +345,7 @@ func TestTraverseSchemaArrayOfStrings(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	if attr, ok := result["tags"]; !ok {
 		t.Errorf("tags attribute not found")
@@ -376,7 +376,7 @@ func TestTraverseSchemaArrayOfObjects(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	expectedPaths := []string{"contacts.email", "contacts.phone"}
 	for _, path := range expectedPaths {
@@ -391,6 +391,7 @@ func TestTraverseSchemaMarksRequiredProperties(t *testing.T) {
 		"type": "object",
 		"required": []any{
 			"name",
+			"contact",
 		},
 		"properties": map[string]any{
 			"name": map[string]any{
@@ -416,7 +417,7 @@ func TestTraverseSchemaMarksRequiredProperties(t *testing.T) {
 		},
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	if attr := result["name"]; !attr.Required {
 		t.Errorf("expected name to be required")
@@ -432,6 +433,37 @@ func TestTraverseSchemaMarksRequiredProperties(t *testing.T) {
 
 	if attr := result["contact.phone"]; attr.Required {
 		t.Errorf("expected contact.phone to be optional")
+	}
+}
+
+func TestTraverseSchemaSkipsRequiredWhenParentOptional(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"name",
+		},
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type": "string",
+			},
+			"contact": map[string]any{
+				"type": "object",
+				"required": []any{
+					"email",
+				},
+				"properties": map[string]any{
+					"email": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+	}
+
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
+
+	if attr := result["contact.email"]; attr.Required {
+		t.Errorf("expected contact.email to be optional when contact is optional")
 	}
 }
 
@@ -1126,7 +1158,7 @@ func TestTraverseSchemaEmptySchema(t *testing.T) {
 		"type": "object",
 	}
 
-	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	// Schema with object type but no properties should still add the root path as an attribute
 	// since it falls through to the default case

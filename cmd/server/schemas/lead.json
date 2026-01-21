@@ -10,7 +10,6 @@
     "pipeline",
     "stage",
     "status",
-    "contact",
     "createdAt",
     "updatedAt"
   ],
@@ -103,7 +102,6 @@
       "type": "object",
       "description": "Lead acquisition source",
       "required": [
-        "channel"
       ],
       "properties": {
         "channel": {
@@ -136,7 +134,6 @@
       "type": "object",
       "description": "Contact information for the lead",
       "required": [
-        "isAnonymous"
       ],
       "properties": {
         "isAnonymous": {

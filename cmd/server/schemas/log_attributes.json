@@ -21,8 +21,7 @@
     "valueType": "text",
     "column_binding": {
       "col_name": "uuid_02"
-    },
-    "required": true
+    }
   },
   "noteId": {
     "attributeID": 5,

@@ -73,7 +73,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 	}
 
 	// Extract attributes from the schema
-	newAttributes := traverseSchema(schema, "", false, make(map[string]attributeSpec), false)
+	newAttributes := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
 	// Load existing attributes file if it exists
 	existingAttrs, err := loadExistingAttributes(outputPath)
@@ -238,7 +238,7 @@ func formatJSONValue(v any) string {
 	}
 }
 
-func traverseSchema(schema map[string]any, path string, insideArray bool, attributes map[string]attributeSpec, isRequired bool) map[string]attributeSpec {
+func traverseSchema(schema map[string]any, path string, insideArray bool, attributes map[string]attributeSpec, pathRequired bool) map[string]attributeSpec {
 	if properties, ok := schema["properties"].(map[string]any); ok {
 		requiredProps := getRequiredProperties(schema)
 		for key, raw := range properties {
@@ -253,7 +253,8 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			} else {
 				newPath = path + "." + key
 			}
-			traverseSchema(child, newPath, insideArray, attributes, requiredProps[key])
+			childRequired := pathRequired && requiredProps[key]
+			traverseSchema(child, newPath, insideArray, attributes, childRequired)
 		}
 		return attributes
 	}
@@ -264,12 +265,13 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			switch getSchemaType(items) {
 			case "object":
 				if _, ok := items["properties"]; ok {
+					// Arrays can be empty; item fields are only required when items exist.
 					return traverseSchema(items, path, true, attributes, false)
 				}
 			case "string", "integer", "number", "boolean":
 				attributes[path] = attributeSpec{
 					ValueType: getValueType(items),
-					Required:  isRequired,
+					Required:  pathRequired,
 				}
 				return attributes
 			}
@@ -277,7 +279,7 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 	default:
 		attributes[path] = attributeSpec{
 			ValueType: getValueType(schema),
-			Required:  isRequired,
+			Required:  pathRequired,
 		}
 	}
 
