@@ -23,6 +23,10 @@
     "attributeID": 6,
     "valueType": "text"
   },
+  "contact.contactCode": {
+    "attributeID": 77,
+    "valueType": "text"
+  },
   "contact.currentResidence": {
     "attributeID": 7,
     "valueType": "text"
@@ -38,6 +42,10 @@
   "contact.familySize": {
     "attributeID": 10,
     "valueType": "numeric"
+  },
+  "contact.isAnonymous": {
+    "attributeID": 78,
+    "valueType": "bool"
   },
   "contact.isBlacklisted": {
     "attributeID": 11,
@@ -67,6 +75,10 @@
     "attributeID": 17,
     "valueType": "text"
   },
+  "contact.nickname": {
+    "attributeID": 79,
+    "valueType": "text"
+  },
   "contact.occupation": {
     "attributeID": 18,
     "valueType": "text"
@@ -93,7 +105,8 @@
   },
   "createdAt": {
     "attributeID": 24,
-    "valueType": "date"
+    "valueType": "date",
+    "required": true
   },
   "firstTouchAt": {
     "attributeID": 25,
@@ -101,7 +114,8 @@
   },
   "id": {
     "attributeID": 26,
-    "valueType": "uuid"
+    "valueType": "text",
+    "required": true
   },
   "lastContactedAt": {
     "attributeID": 27,
@@ -113,11 +127,13 @@
   },
   "ownerUserId": {
     "attributeID": 29,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "pipeline": {
     "attributeID": 30,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "propertyInterests.firstSeenAt": {
     "attributeID": 31,
@@ -277,11 +293,13 @@
   },
   "stage": {
     "attributeID": 70,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "status": {
     "attributeID": 71,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "tags": {
     "attributeID": 72,
@@ -293,11 +311,13 @@
   },
   "tenantId": {
     "attributeID": 74,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "updatedAt": {
     "attributeID": 75,
-    "valueType": "date"
+    "valueType": "date",
+    "required": true
   },
   "visits": {
     "attributeID": 76,

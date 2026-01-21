@@ -39,3 +39,4 @@ deploy/rustfs/
 build/
 local-only/
 internal/e2e_harness/e2e_artifacts
+*.parquet

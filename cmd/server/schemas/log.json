@@ -5,7 +5,6 @@
   "type": "object",
   "required": [
     "id",
-    "leadId",
     "ownerId",
     "type",
     "createdAt"

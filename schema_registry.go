@@ -118,6 +118,7 @@ type AttributeMetadata struct {
 	AttributeName string             `json:"attr_name"`  // attr_name, JSON Path
 	AttributeID   int16              `json:"attr_id"`    // attr_id
 	ValueType     ValueType          `json:"value_type"` // 'text', 'numeric', 'date', 'bool'
+	Required      bool               `json:"required,omitempty"`
 	ColumnBinding *MainColumnBinding `json:"column_binding,omitempty"`
 }
 

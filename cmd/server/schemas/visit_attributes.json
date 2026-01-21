@@ -37,11 +37,13 @@
   },
   "id": {
     "attributeID": 6,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "leadId": {
     "attributeID": 7,
-    "valueType": "text"
+    "valueType": "text",
+    "required": true
   },
   "nextFollowUpAt": {
     "attributeID": 9,
