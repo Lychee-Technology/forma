@@ -9,6 +9,7 @@ import (
 )
 
 // MapValueTypeToDuckDBType maps forma.ValueType to a DuckDB SQL type string.
+// For LIST types, returns the element type only (caller must wrap in LIST(...) if needed).
 func MapValueTypeToDuckDBType(v forma.ValueType) string {
 	switch v {
 	case forma.ValueTypeText:
@@ -28,10 +29,26 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 		return "TIMESTAMP"
 	case forma.ValueTypeBool:
 		return "BOOLEAN"
+	case forma.ValueTypeList:
+		// LIST is a container type; typically used as LIST(element_type).
+		// Return VARCHAR as default element type; caller can override.
+		return "VARCHAR"
 	default:
 		// Fallback to VARCHAR for unknown types
 		return "VARCHAR"
 	}
+}
+
+// MapValueTypeToListDuckDBType returns the DuckDB LIST type for an array of the given element type.
+// e.g., ValueTypeText -> "LIST(VARCHAR)", ValueTypeInteger -> "LIST(INTEGER)"
+func MapValueTypeToListDuckDBType(elementType forma.ValueType) string {
+	elemDuckType := MapValueTypeToDuckDBType(elementType)
+	return "LIST(" + elemDuckType + ")"
+}
+
+// IsListType returns true if the ValueType represents a list/array.
+func IsListType(v forma.ValueType) bool {
+	return v == forma.ValueTypeList
 }
 
 // CastExpression returns a DuckDB-safe CAST expression for a column or expression.

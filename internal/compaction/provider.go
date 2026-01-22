@@ -1,0 +1,69 @@
+package compaction
+
+import (
+	"context"
+	"fmt"
+	"io/fs"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/manifest"
+)
+
+// ManifestProvider adapts manifest.Store + resolver to FileProvider.
+type ManifestProvider struct {
+	Store    manifest.Store
+	Resolver manifest.PathResolver
+}
+
+// NewManifestProvider creates a ManifestProvider from a ManifestConfig and Store.
+// Use this to wire up the provider from configuration.
+func NewManifestProvider(cfg cdc.ManifestConfig, store manifest.Store) *ManifestProvider {
+	return &ManifestProvider{
+		Store: store,
+		Resolver: manifest.PathResolver{
+			Prefix:       cfg.Prefix,
+			PathTemplate: cfg.PathTemplate,
+		},
+	}
+}
+
+// NewS3ManifestProvider creates a ManifestProvider backed by S3.
+func NewS3ManifestProvider(cfg cdc.ManifestConfig, s3Client *s3.Client) *ManifestProvider {
+	store := &manifest.S3Store{
+		Client: s3Client,
+		Bucket: cfg.Bucket,
+	}
+	return NewManifestProvider(cfg, store)
+}
+
+// NewFSManifestProvider creates a ManifestProvider backed by local filesystem.
+// Useful for testing and local development.
+func NewFSManifestProvider(cfg cdc.ManifestConfig, rootFS fs.FS) *ManifestProvider {
+	store := &manifest.FSStore{
+		Root: rootFS,
+	}
+	return NewManifestProvider(cfg, store)
+}
+
+func (p *ManifestProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
+	if p == nil || p.Store == nil {
+		return nil, "", fmt.Errorf("manifest provider not configured")
+	}
+	path, err := p.Resolver.Resolve(schemaID)
+	if err != nil {
+		return nil, "", err
+	}
+	return manifest.Load(ctx, p.Store, path)
+}
+
+func (p *ManifestProvider) SaveManifest(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error) {
+	if p == nil || p.Store == nil {
+		return "", fmt.Errorf("manifest provider not configured")
+	}
+	path, err := p.Resolver.Resolve(schemaID)
+	if err != nil {
+		return "", err
+	}
+	return manifest.Save(ctx, p.Store, path, m, etag)
+}

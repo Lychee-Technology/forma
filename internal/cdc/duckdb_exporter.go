@@ -15,6 +15,7 @@ import (
 type DuckExporter struct {
 	DB     *sql.DB
 	Logger *zap.Logger
+	Config CDCConfig // keep config for compression settings
 }
 
 // NewDuckExporter opens a DuckDB connection and configures pragmas and extensions.
@@ -28,13 +29,14 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 	// configure pragmas and extensions
 	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	pragmas := []string{
-		fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.DuckDBMemoryMB),
-		fmt.Sprintf("PRAGMA threads=%d;", cfg.DuckDBThreads),
+	if cfg.DuckMemLimit != "" {
+		if _, err := db.ExecContext(ctx2, fmt.Sprintf("PRAGMA memory_limit='%s';", cfg.DuckMemLimit)); err != nil {
+			logger.Sugar().Warnw("duckdb pragma failed", "pragma", "memory_limit", "err", err)
+		}
 	}
-	for _, p := range pragmas {
-		if _, err := db.ExecContext(ctx2, p); err != nil {
-			logger.Sugar().Warnw("duckdb pragma failed", "pragma", p, "err", err)
+	if cfg.DuckThreads > 0 {
+		if _, err := db.ExecContext(ctx2, fmt.Sprintf("PRAGMA threads=%d;", cfg.DuckThreads)); err != nil {
+			logger.Sugar().Warnw("duckdb pragma failed", "pragma", "threads", "err", err)
 		}
 	}
 	// attempt to install/load extensions
@@ -65,19 +67,27 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 		}
 	}
 	if cfg.S3Endpoint != "" {
-		ep := strings.TrimPrefix(cfg.S3Endpoint, "http://")
+		ep := strings.TrimPrefix(strings.TrimPrefix(cfg.S3Endpoint, "https://"), "http://")
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_endpoint='%s';", ep)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_endpoint failed", "err", err)
 		}
-		if _, err := db.ExecContext(ctx2, "SET s3_use_ssl=false;"); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_use_ssl failed", "err", err)
-		}
+	}
+	// Configure SSL
+	sslVal := "true"
+	if !cfg.S3UseSSL {
+		sslVal = "false"
+	}
+	if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_use_ssl=%s;", sslVal)); err != nil {
+		logger.Sugar().Warnw("duckdb set s3_use_ssl failed", "err", err)
+	}
+	// Configure URL style (path vs virtual-hosted)
+	if cfg.S3UsePath {
 		if _, err := db.ExecContext(ctx2, "SET s3_url_style='path';"); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_url_style failed", "err", err)
 		}
 	}
 
-	return &DuckExporter{DB: db, Logger: logger}, nil
+	return &DuckExporter{DB: db, Logger: logger, Config: cfg}, nil
 }
 
 // ExportSnapshotToTmp builds an export SQL and runs COPY to the provided s3TmpPath.
@@ -86,6 +96,16 @@ func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, pgConnStr string
 	// Escape single quotes in the connection string and s3 path before embedding
 	pgEsc := strings.ReplaceAll(pgConnStr, "'", "''")
 	s3Esc := strings.ReplaceAll(s3TmpPath, "'", "''")
+
+	// Build compression clause from config
+	compression := e.Config.ParquetCompression
+	if compression == "" {
+		compression = DefaultParquetCompression
+	}
+	compressionLevel := e.Config.ParquetCompressionLevel
+	if compressionLevel <= 0 {
+		compressionLevel = DefaultParquetCompressionLevel
+	}
 
 	// Build SQL using postgres_scan to read change_log/entity_main/eav_data and pivot EAV.
 	// This is a simplified projection; adapt as needed to match production projection.
@@ -105,10 +125,11 @@ JOIN postgres_scan('%s', 'entity_main', 'ltbase_schema_id = %d') m
 LEFT JOIN postgres_scan('%s', 'eav_data', 'schema_id = %d') e
   ON cl.row_id = e.row_id
 GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01
-) TO '%s' (FORMAT PARQUET, COMPRESSION 'ZSTD');
-`, pgEsc, schemaID, snapshotTS, pgEsc, schemaID, pgEsc, schemaID, s3Esc)
+) TO '%s' (FORMAT PARQUET, COMPRESSION '%s', COMPRESSION_LEVEL %d);
+`, pgEsc, schemaID, snapshotTS, pgEsc, schemaID, pgEsc, schemaID, s3Esc,
+		strings.ToUpper(compression), compressionLevel)
 
-	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", sql[:400])
+	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", sql[:min(400, len(sql))])
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	if _, err := e.DB.ExecContext(ctx2, sql); err != nil {

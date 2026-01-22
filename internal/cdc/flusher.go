@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/dsql/auth"
@@ -21,26 +22,44 @@ import (
 // generateIAMTokenFn is the function signature we use to generate IAM tokens.
 // We wrap the upstream function to keep a stable signature for tests.
 var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds interface{}) (string, error) {
-	// Call the upstream DSQL helper without creds (actual creds come from AWS SDK config in RunOnce)
-	return auth.GenerateDbConnectAuthToken(ctx, endpoint, region, nil)
+	var cp aws.CredentialsProvider
+	if c, ok := creds.(aws.CredentialsProvider); ok {
+		cp = c
+	}
+	return auth.GenerateDbConnectAuthToken(ctx, endpoint, region, cp)
+}
+
+// S3ObjectClient is a minimal interface for copy + delete used by the CDC flusher.
+type S3ObjectClient interface {
+	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
 // RunOnce performs one full pass over schemas and attempts flush where needed.
-func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger) error {
+// Caller may provide an S3ObjectClient; when nil, AWS config will be loaded from
+// environment (still respecting cfg.S3Region).
+func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger) error {
+	var region string
+	var credProvider aws.CredentialsProvider
 	// AWS config + S3 client
-	awsCfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return fmt.Errorf("load aws config: %w", err)
+	if s3Client == nil {
+		awsCfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			return fmt.Errorf("load aws config: %w", err)
+		}
+		if cfg.S3Region != "" {
+			awsCfg.Region = cfg.S3Region
+		}
+		if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
+			awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
+		}
+		region = awsCfg.Region
+		credProvider = awsCfg.Credentials
+		s3Client = s3.NewFromConfig(awsCfg)
+	} else {
+		region = cfg.S3Region
+		credProvider = aws.AnonymousCredentials{}
 	}
-	// override region if provided
-	if cfg.S3Region != "" {
-		awsCfg.Region = cfg.S3Region
-	}
-	if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
-		// ensure credentials provider from env used explicitly
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
-	}
-	s3Client := s3.NewFromConfig(awsCfg)
 
 	// Build PG connection (sql.DB) - we need a connection for locks and marking
 	pgPassword := cfg.PGPassword
@@ -48,7 +67,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 	if cfg.PGUseIAM {
 		endpoint := fmt.Sprintf("%s:%d", cfg.PGHost, cfg.PGPort)
 		// Use the wrapped helper so tests can override behavior
-		if token, err := generateIAMTokenFn(ctx, endpoint, awsCfg.Region, awsCfg.Credentials); err == nil && token != "" {
+		if token, err := generateIAMTokenFn(ctx, endpoint, region, credProvider); err == nil && token != "" {
 			pgPassword = token
 			logger.Sugar().Infow("generated IAM auth token for Postgres connection (dsql)")
 		} else {
@@ -72,8 +91,13 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 	}
 	defer duck.DB.Close()
 
+	tableName := cfg.ChangeLogTable
+	if tableName == "" {
+		tableName = "change_log"
+	}
+
 	// enumerate schemas with unflushed rows
-	rows, err := db.QueryContext(ctx, "SELECT DISTINCT schema_id FROM change_log WHERE flushed_at = 0")
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT DISTINCT schema_id FROM %s WHERE flushed_at = 0", sanitizeIdentifier(tableName)))
 	if err != nil {
 		return fmt.Errorf("query distinct schema ids: %w", err)
 	}
@@ -104,7 +128,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 		func() {
 			defer ReleaseSchemaLock(ctx, db, schemaID)
 
-			cnt, oldest, err := GetChangeLogStats(ctx, db, "change_log", schemaID)
+			cnt, oldest, err := GetChangeLogStats(ctx, db, tableName, schemaID)
 			if err != nil {
 				logger.Sugar().Errorw("get changelog stats failed", "err", err)
 				return
@@ -115,7 +139,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 			}
 			nowMs := time.Now().UnixMilli()
 			should := false
-			if cnt >= cfg.MinRecords {
+			if cfg.MinRecords > 0 && cnt >= int64(cfg.MinRecords) {
 				should = true
 			}
 			if oldest > 0 && nowMs-oldest >= cfg.MaxAgeMs {
@@ -126,7 +150,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 				return
 			}
 			// select batch
-			ids, snapshot, err := SelectBatchRowIDs(ctx, db, "change_log", schemaID, cfg.BatchSize)
+			ids, snapshot, err := SelectBatchRowIDs(ctx, db, tableName, schemaID, cfg.BatchSize)
 			if err != nil {
 				logger.Sugar().Errorw("select batch failed", "err", err)
 				return
@@ -161,7 +185,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, dryRun bool, logger *zap.Logger
 				return
 			}
 			flushedAt := time.Now().UnixMilli()
-			rowsUpdated, err := MarkFlushed(ctx, db, "change_log", schemaID, snapshot, flushedAt)
+			rowsUpdated, err := MarkFlushed(ctx, db, tableName, schemaID, snapshot, flushedAt)
 			if err != nil {
 				logger.Sugar().Errorw("mark flushed failed", "err", err)
 				return

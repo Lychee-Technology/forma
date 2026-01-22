@@ -345,3 +345,53 @@ func TestToDuckDBParam_UnknownType_ReturnsAsIs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, val, result)
 }
+
+// ============================================================================
+// Tests for LIST type support
+// ============================================================================
+
+func TestMapValueTypeToDuckDBType_ListType(t *testing.T) {
+	// LIST type should return VARCHAR (default element type)
+	result := MapValueTypeToDuckDBType(forma.ValueTypeList)
+	require.Equal(t, "VARCHAR", result)
+}
+
+func TestMapValueTypeToListDuckDBType_TextElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeText)
+	require.Equal(t, "LIST(VARCHAR)", result)
+}
+
+func TestMapValueTypeToListDuckDBType_IntegerElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeInteger)
+	require.Equal(t, "LIST(INTEGER)", result)
+}
+
+func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeBigInt)
+	require.Equal(t, "LIST(BIGINT)", result)
+}
+
+func TestMapValueTypeToListDuckDBType_DoubleElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeNumeric)
+	require.Equal(t, "LIST(DOUBLE)", result)
+}
+
+func TestMapValueTypeToListDuckDBType_BoolElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeBool)
+	require.Equal(t, "LIST(BOOLEAN)", result)
+}
+
+func TestMapValueTypeToListDuckDBType_TimestampElement(t *testing.T) {
+	result := MapValueTypeToListDuckDBType(forma.ValueTypeDateTime)
+	require.Equal(t, "LIST(TIMESTAMP)", result)
+}
+
+func TestIsListType_True(t *testing.T) {
+	require.True(t, IsListType(forma.ValueTypeList))
+}
+
+func TestIsListType_False(t *testing.T) {
+	require.False(t, IsListType(forma.ValueTypeText))
+	require.False(t, IsListType(forma.ValueTypeInteger))
+	require.False(t, IsListType(forma.ValueTypeBool))
+}
