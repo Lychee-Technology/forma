@@ -219,147 +219,197 @@ const (
 func DefaultConfig(schemaRegistry SchemaRegistry) *Config {
 	return &Config{
 		SchemaRegistry: schemaRegistry,
-		Database: DatabaseConfig{
-			Host:            "localhost",
-			Port:            5432,
-			MaxConnections:  25,
-			MaxIdleConns:    5,
-			ConnMaxLifetime: 5 * time.Minute,
-			ConnMaxIdleTime: 5 * time.Minute,
-			Timeout:         30 * time.Second,
-		},
-		Query: QueryConfig{
-			DefaultTimeout:     30 * time.Second,
-			MaxRows:            10000,
-			DefaultPageSize:    50,
-			MaxPageSize:        100,
-			EnableQueryPlan:    true,
-			EnableOptimization: true,
-			CacheQueryPlans:    true,
-			QueryPlanCacheTTL:  1 * time.Hour,
-		},
-		Entity: EntityConfig{
-			EnableReferenceValidation: true,
-			EnableCascadeDelete:       false,
-			BatchSize:                 100,
-			CacheEnabled:              true,
-			CacheTTL:                  5 * time.Minute,
-			MaxEntitySize:             1024 * 1024, // 1MB
-			EnableVersioning:          true,
-		},
-		Transaction: TransactionConfig{
-			DefaultTimeout:           30 * time.Second,
-			MaxTimeout:               5 * time.Minute,
-			MaxRetryAttempts:         3,
-			RetryAttempts:            3,
-			RetryDelay:               100 * time.Millisecond,
-			IsolationLevel:           "READ_COMMITTED",
-			EnableDeadlockDetection:  true,
-			DeadlockCheckInterval:    5 * time.Second,
-			DeadlockMaxWaitTime:      30 * time.Second,
-			SlowTransactionThreshold: 2 * time.Second,
-			MinSuccessRate:           95.0,
-			MaxAverageDuration:       1 * time.Second,
-			MaxConnectionPoolUsage:   80.0,
-		},
-		Performance: PerformanceConfig{
-			EnableMonitoring:          true,
-			SlowQueryThreshold:        1 * time.Second,
-			SlowOperationThreshold:    2 * time.Second,
-			MetricsCollectionInterval: 30 * time.Second,
-			BatchSize:                 100,
-			MaxBatchSize:              1000,
-			Batch: BatchConfig{
-				EnableDynamicSizing:      true,
-				EnableParallelProcessing: true,
-				EnableBatchStreaming:     true,
-				ParallelThreshold:        50,
-				StreamingThreshold:       500,
-				MaxParallelWorkers:       4,
-				StreamingChunkSize:       100,
-				StreamingDelay:           10,
-				MaxComplexityPerBatch:    500,
-				AttributeComplexityScore: 1,
-				OptimalChunkSize:         10,
-			},
+		Database:       defaultDatabaseConfig(),
+		Query:          defaultQueryConfig(),
+		Entity:         defaultEntityConfig(),
+		Transaction:    defaultTransactionConfig(),
+		Performance:    defaultPerformanceConfig(),
+		Logging:        defaultLoggingConfig(),
+		Metrics:        defaultMetricsConfig(),
+		Reference:      defaultReferenceConfig(),
+		DuckDB:         defaultDuckDBConfig(),
+	}
+}
 
-			// Unified monitoring defaults
-			MaxMetricsHistory:      10000,
-			MaxAlertsHistory:       1000,
-			MaxRecommendations:     100,
-			EnableAlerting:         true,
-			EnableRecommendations:  true,
-			AlertingInterval:       1 * time.Minute,
-			RecommendationInterval: 5 * time.Minute,
+// defaultDatabaseConfig returns default database configuration.
+func defaultDatabaseConfig() DatabaseConfig {
+	return DatabaseConfig{
+		Host:            "localhost",
+		Port:            5432,
+		MaxConnections:  25,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 5 * time.Minute,
+		ConnMaxIdleTime: 5 * time.Minute,
+		Timeout:         30 * time.Second,
+	}
+}
 
-			// Memory monitoring defaults
-			EnableMemoryMonitoring: true,
-			MemoryThreshold:        100 * 1024 * 1024, // 100MB
+// defaultQueryConfig returns default query configuration.
+func defaultQueryConfig() QueryConfig {
+	return QueryConfig{
+		DefaultTimeout:     30 * time.Second,
+		MaxRows:            10000,
+		DefaultPageSize:    50,
+		MaxPageSize:        100,
+		EnableQueryPlan:    true,
+		EnableOptimization: true,
+		CacheQueryPlans:    true,
+		QueryPlanCacheTTL:  1 * time.Hour,
+	}
+}
 
-			// Correlation tracking defaults
-			EnableCorrelationTracking: true,
-			CorrelationTTL:            1 * time.Hour,
-		},
-		Logging: LoggingConfig{
-			Level:                  "info",
-			Format:                 "json",
-			EnableStructured:       true,
-			EnablePerformance:      true,
-			EnableQueryLogging:     false,
-			LogSlowQueries:         true,
-			SlowQueryThreshold:     1 * time.Second,
-			MaxLogSize:             100 * 1024 * 1024, // 100MB
-			LogRotation:            true,
-			SanitizeParameters:     true,
-			LogQueries:             false,
-			LogErrors:              true,
-			LogSecurityEvents:      true,
-			LogPerformanceWarnings: true,
-			LogAllOperations:       false,
-			EnableDetailedLogging:  true,
-		},
-		Metrics: MetricsConfig{
-			Enabled:                  true,
-			Provider:                 "prometheus",
-			CollectionInterval:       30 * time.Second,
-			EnableHistograms:         true,
-			EnableCounters:           true,
-			EnableGauges:             true,
-			Namespace:                "dataplane",
-			MaxSamples:               10000,
-			EnableOperationMetrics:   true,
-			EnableTransactionMetrics: true,
-			EnablePatternMetrics:     true,
-		},
-		Reference: ReferenceConfig{
-			ValidateOnCreate: true,
-			ValidateOnUpdate: true,
-			CheckIntegrity:   true,
-			CascadeDelete:    false,
-			CascadeUpdate:    false,
-			MaxCascadeDepth:  5,
-			EnableCaching:    true,
-			CacheTTL:         5 * time.Minute,
-			MaxCacheSize:     1000,
-			BatchSize:        100,
-		},
-		DuckDB: DuckDBConfig{
-			Enabled:                 false,
-			DBPath:                  ":memory:",
-			MemoryLimitMB:           0,
-			EnableS3:                false,
-			EnableParquet:           false,
-			Extensions:              []string{},
-			MaxConnections:          1,
-			QueryTimeout:            30 * time.Second,
-			MaxParallelism:          1,
-			CircuitBreakerThreshold: 0.5,
-			Routing: RoutingPolicy{
-				Strategy:          "hybrid",
-				HotTTL:            5 * time.Minute,
-				MaxDuckDBScanRows: 100000,
-				AllowS3Fallback:   true,
-			},
+// defaultEntityConfig returns default entity configuration.
+func defaultEntityConfig() EntityConfig {
+	return EntityConfig{
+		EnableReferenceValidation: true,
+		EnableCascadeDelete:       false,
+		BatchSize:                 100,
+		CacheEnabled:              true,
+		CacheTTL:                  5 * time.Minute,
+		MaxEntitySize:             1024 * 1024, // 1MB
+		EnableVersioning:          true,
+	}
+}
+
+// defaultTransactionConfig returns default transaction configuration.
+func defaultTransactionConfig() TransactionConfig {
+	return TransactionConfig{
+		DefaultTimeout:           30 * time.Second,
+		MaxTimeout:               5 * time.Minute,
+		MaxRetryAttempts:         3,
+		RetryAttempts:            3,
+		RetryDelay:               100 * time.Millisecond,
+		IsolationLevel:           "READ_COMMITTED",
+		EnableDeadlockDetection:  true,
+		DeadlockCheckInterval:    5 * time.Second,
+		DeadlockMaxWaitTime:      30 * time.Second,
+		SlowTransactionThreshold: 2 * time.Second,
+		MinSuccessRate:           95.0,
+		MaxAverageDuration:       1 * time.Second,
+		MaxConnectionPoolUsage:   80.0,
+	}
+}
+
+// defaultPerformanceConfig returns default performance configuration.
+func defaultPerformanceConfig() PerformanceConfig {
+	return PerformanceConfig{
+		EnableMonitoring:          true,
+		SlowQueryThreshold:        1 * time.Second,
+		SlowOperationThreshold:    2 * time.Second,
+		MetricsCollectionInterval: 30 * time.Second,
+		BatchSize:                 100,
+		MaxBatchSize:              1000,
+		Batch:                     defaultBatchConfig(),
+
+		// Unified monitoring defaults
+		MaxMetricsHistory:      10000,
+		MaxAlertsHistory:       1000,
+		MaxRecommendations:     100,
+		EnableAlerting:         true,
+		EnableRecommendations:  true,
+		AlertingInterval:       1 * time.Minute,
+		RecommendationInterval: 5 * time.Minute,
+
+		// Memory monitoring defaults
+		EnableMemoryMonitoring: true,
+		MemoryThreshold:        100 * 1024 * 1024, // 100MB
+
+		// Correlation tracking defaults
+		EnableCorrelationTracking: true,
+		CorrelationTTL:            1 * time.Hour,
+	}
+}
+
+// defaultBatchConfig returns default batch configuration.
+func defaultBatchConfig() BatchConfig {
+	return BatchConfig{
+		EnableDynamicSizing:      true,
+		EnableParallelProcessing: true,
+		EnableBatchStreaming:     true,
+		ParallelThreshold:        50,
+		StreamingThreshold:       500,
+		MaxParallelWorkers:       4,
+		StreamingChunkSize:       100,
+		StreamingDelay:           10,
+		MaxComplexityPerBatch:    500,
+		AttributeComplexityScore: 1,
+		OptimalChunkSize:         10,
+	}
+}
+
+// defaultLoggingConfig returns default logging configuration.
+func defaultLoggingConfig() LoggingConfig {
+	return LoggingConfig{
+		Level:                  "info",
+		Format:                 "json",
+		EnableStructured:       true,
+		EnablePerformance:      true,
+		EnableQueryLogging:     false,
+		LogSlowQueries:         true,
+		SlowQueryThreshold:     1 * time.Second,
+		MaxLogSize:             100 * 1024 * 1024, // 100MB
+		LogRotation:            true,
+		SanitizeParameters:     true,
+		LogQueries:             false,
+		LogErrors:              true,
+		LogSecurityEvents:      true,
+		LogPerformanceWarnings: true,
+		LogAllOperations:       false,
+		EnableDetailedLogging:  true,
+	}
+}
+
+// defaultMetricsConfig returns default metrics configuration.
+func defaultMetricsConfig() MetricsConfig {
+	return MetricsConfig{
+		Enabled:                  true,
+		Provider:                 "prometheus",
+		CollectionInterval:       30 * time.Second,
+		EnableHistograms:         true,
+		EnableCounters:           true,
+		EnableGauges:             true,
+		Namespace:                "dataplane",
+		MaxSamples:               10000,
+		EnableOperationMetrics:   true,
+		EnableTransactionMetrics: true,
+		EnablePatternMetrics:     true,
+	}
+}
+
+// defaultReferenceConfig returns default reference configuration.
+func defaultReferenceConfig() ReferenceConfig {
+	return ReferenceConfig{
+		ValidateOnCreate: true,
+		ValidateOnUpdate: true,
+		CheckIntegrity:   true,
+		CascadeDelete:    false,
+		CascadeUpdate:    false,
+		MaxCascadeDepth:  5,
+		EnableCaching:    true,
+		CacheTTL:         5 * time.Minute,
+		MaxCacheSize:     1000,
+		BatchSize:        100,
+	}
+}
+
+// defaultDuckDBConfig returns default DuckDB configuration.
+func defaultDuckDBConfig() DuckDBConfig {
+	return DuckDBConfig{
+		Enabled:                 false,
+		DBPath:                  ":memory:",
+		MemoryLimitMB:           0,
+		EnableS3:                false,
+		EnableParquet:           false,
+		Extensions:              []string{},
+		MaxConnections:          1,
+		QueryTimeout:            30 * time.Second,
+		MaxParallelism:          1,
+		CircuitBreakerThreshold: 0.5,
+		Routing: RoutingPolicy{
+			Strategy:          "hybrid",
+			HotTTL:            5 * time.Minute,
+			MaxDuckDBScanRows: 100000,
+			AllowS3Fallback:   true,
 		},
 	}
 }

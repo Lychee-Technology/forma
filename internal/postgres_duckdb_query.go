@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -59,53 +58,88 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("query cannot be nil")
 	}
 
-	// Execution plan instrumentation (if requested)
-	startTotal := time.Now()
-	if opts != nil && opts.IncludeExecutionPlan {
-		if opts.ExecutionPlan == nil {
-			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
-		}
-		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "StreamDuckDBFederatedQuery started")
-	}
+	// Initialize execution plan tracking
+	planCtx := newDuckDBExecutionPlanContext(opts)
 
 	// Acquire DuckDB client
 	duck := r.duckDBClient
 	if duck == nil || duck.DB == nil {
-		if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "duckdb client unavailable")
-			opts.ExecutionPlan.Timings["duckdb_fetch"] = 0
-			opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
-		}
+		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb client not available")
 	}
 
-	// Fetch dirty ids + record metrics
-	// Fetch dirty IDs from Postgres change_log (flushed_at = 0) if change log table configured
-	var dirtyIDs []uuid.UUID
-	if tables.ChangeLog != "" {
-		var err error
-		dirtyIDs, err = r.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
-		if err != nil {
-			return 0, fmt.Errorf("fetch dirty ids: %w", err)
-		}
-
-		// Emit basic PG-side metric for dirty set size (useful for tuning)
-		EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
-
-		// If execution plan requested, record a DataSourcePlan for the dirty-id scan
-		if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-			dpDirty := DataSourcePlan{
-				Tier:        DataTierHot,
-				Engine:      "postgres",
-				SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sanitizeIdentifier(tables.ChangeLog)),
-				RowEstimate: int64(len(dirtyIDs)),
-				Reason:      "dirty id set fetched",
-			}
-			opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dpDirty)
-		}
+	// Fetch dirty IDs and record in execution plan
+	dirtyIDs, err := r.fetchAndRecordDirtyIDs(ctx, tables, q.SchemaID, planCtx)
+	if err != nil {
+		return 0, err
 	}
 
-	// Build template params (matching advanced duckdb template expectations)
+	// Build and execute the query
+	sqlStr, args, translateMs, err := r.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, planCtx)
+	if err != nil {
+		return 0, err
+	}
+
+	// Record translation in plan
+	planCtx.recordTranslation(sqlStr, translateMs, q.UseMainAsAnchor)
+
+	// Execute query
+	planCtx.recordQueryStart()
+	rows, err := duck.DB.QueryContext(ctx, sqlStr, args...)
+	if err != nil {
+		planCtx.recordQueryFailure(err)
+		return 0, fmt.Errorf("execute duckdb query: %w", err)
+	}
+	defer rows.Close()
+
+	// Stream and process rows
+	totalRecords, rowCount, err := r.streamDuckDBRows(ctx, rows, rowHandler)
+	if err != nil {
+		return 0, err
+	}
+
+	// Finalize execution plan
+	r.finalizeDuckDBExecutionPlan(ctx, planCtx, dirtyIDs, totalRecords, rowCount)
+
+	return totalRecords, nil
+}
+
+// fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.
+func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
+	ctx context.Context,
+	tables StorageTables,
+	schemaID int16,
+	planCtx *duckDBExecutionPlanContext,
+) ([]uuid.UUID, error) {
+	if tables.ChangeLog == "" {
+		return nil, nil
+	}
+
+	dirtyIDs, err := r.FetchDirtyRowIDs(ctx, tables.ChangeLog, schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch dirty ids: %w", err)
+	}
+
+	// Emit metric for dirty set size
+	EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
+
+	// Record in execution plan
+	planCtx.recordDirtyIDSource(tables.ChangeLog, schemaID, len(dirtyIDs))
+
+	return dirtyIDs, nil
+}
+
+// buildDuckDBQueryWithPlan builds the DuckDB query with execution plan recording.
+func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
+	ctx context.Context,
+	tables StorageTables,
+	q *FederatedAttributeQuery,
+	dirtyIDs []uuid.UUID,
+	attributeOrders []AttributeOrder,
+	limit, offset int,
+	planCtx *duckDBExecutionPlanContext,
+) (string, []any, int64, error) {
+	// Build template params
 	sqlParams := map[string]any{
 		"EAVTable":             sanitizeIdentifier(tables.EAVData),
 		"MainTable":            sanitizeIdentifier(tables.EntityMain),
@@ -134,275 +168,63 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	paramIndex := 0
 	dc, err := ToDualClauses(q.Condition, sanitizeIdentifier(tables.EAVData), q.SchemaID, cache, &paramIndex)
 	if err != nil {
-		return 0, fmt.Errorf("to dual clauses: %w", err)
+		return "", nil, 0, fmt.Errorf("to dual clauses: %w", err)
 	}
 
-	// Record Postgres pushdown fragment in execution plan (if requested).
-	// This captures the pushdown predicate sent to postgres_scan so operators can
-	// inspect pushdown effectiveness and SQL snippets in the plan.
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		pgDP := DataSourcePlan{
-			Tier:              DataTierHot,
-			Engine:            "postgres",
-			SQL:               dc.PgMainClause,
-			RowEstimate:       0,
-			PredicatePushdown: dc.PgMainClause != "",
-			ActualRows:        0,
-			DurationMs:        0,
-			Reason:            "pushdown fragment",
-		}
-		opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, pgDP)
-	}
+	// Record Postgres pushdown fragment
+	planCtx.recordPushdownFragment(dc.PgMainClause)
 
 	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
-		return 0, fmt.Errorf("build duckdb query: %w", err)
-	}
-	// Record translation info in execution plan if requested
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		dp := DataSourcePlan{
-			Tier:              DataTierCold,
-			Engine:            "duckdb",
-			SQL:               sqlStr,
-			RowEstimate:       0,
-			PredicatePushdown: q.UseMainAsAnchor,
-			ActualRows:        0,
-			DurationMs:        0,
-			Reason:            "duckdb template rendered",
-		}
-		opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dp)
-		opts.ExecutionPlan.Timings["translate"] = translateMs
+		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
 	}
 
-	startQuery := time.Now()
-	rows, err := duck.DB.QueryContext(ctx, sqlStr, args...)
-	if err != nil {
-		// record failed fetch timing
-		if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-			opts.ExecutionPlan.Timings["duckdb_fetch"] = time.Since(startQuery).Milliseconds()
-			opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
-			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, fmt.Sprintf("duckdb query failed: %v", err))
-		}
-		return 0, fmt.Errorf("execute duckdb query: %w", err)
-	}
-	defer rows.Close()
+	return sqlStr, args, translateMs, nil
+}
 
-	// start streaming timer (processing/serialization)
-	startStream := time.Now()
-
-	// Prepare scan buffers based on entityMainColumnDescriptors
-	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
-	for _, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
-			textCount++
-		case columnKindSmallint:
-			smallCount++
-		case columnKindInteger:
-			intCount++
-		case columnKindBigint:
-			bigCount++
-		case columnKindDouble:
-			doubleCount++
-		case columnKindUUID:
-			uuidCount++
-		}
-	}
-
-	textVals := make([]sql.NullString, textCount)
-	smallVals := make([]sql.NullInt64, smallCount)
-	intVals := make([]sql.NullInt64, intCount)
-	bigVals := make([]sql.NullInt64, bigCount)
-	doubleVals := make([]sql.NullFloat64, doubleCount)
-	uuidVals := make([]sql.NullString, uuidCount)
+// streamDuckDBRows iterates through DuckDB rows and invokes the handler.
+func (r *DBPersistentRecordRepository) streamDuckDBRows(
+	ctx context.Context,
+	rows *sql.Rows,
+	rowHandler func(*PersistentRecord) error,
+) (int64, int64, error) {
+	buffers := newDuckDBScanBuffers()
 
 	var totalRecords int64
 	totalSet := false
-
 	rowCount := int64(0)
 
 	for rows.Next() {
-		scanArgs := make([]any, 0, len(entityMainColumnDescriptors)+4)
-		textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
-
-		for _, desc := range entityMainColumnDescriptors {
-			switch desc.kind {
-			case columnKindText:
-				scanArgs = append(scanArgs, &textVals[textIdx])
-				textIdx++
-			case columnKindSmallint, columnKindInteger, columnKindBigint:
-				// use NullInt64 for all integer kinds (casting later)
-				switch desc.kind {
-				case columnKindSmallint:
-					scanArgs = append(scanArgs, &smallVals[smallIdx])
-					smallIdx++
-				case columnKindInteger:
-					scanArgs = append(scanArgs, &intVals[intIdx])
-					intIdx++
-				case columnKindBigint:
-					scanArgs = append(scanArgs, &bigVals[bigIdx])
-					bigIdx++
-				}
-			case columnKindDouble:
-				scanArgs = append(scanArgs, &doubleVals[doubleIdx])
-				doubleIdx++
-			case columnKindUUID:
-				// DuckDB will typically return UUID as text; use NullString and parse
-				scanArgs = append(scanArgs, &uuidVals[uuidIdx])
-				uuidIdx++
-			default:
-				// fallback to NullString
-				var ns sql.NullString
-				scanArgs = append(scanArgs, &ns)
-			}
-		}
-
-		// attributes_json, total_records, total_pages, current_page
-		var attrsJSON sql.NullString
-		var totalPages sql.NullInt64
-		var currentPage sql.NullInt64
-		var totalRec sql.NullInt64
-
-		scanArgs = append(scanArgs, &attrsJSON, &totalRec, &totalPages, &currentPage)
+		scanArgs, attrsJSON, totalRec, _, _ := buffers.buildScanArgs()
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, fmt.Errorf("scan duckdb row: %w", err)
+			return 0, 0, fmt.Errorf("scan duckdb row: %w", err)
 		}
 
-		// Build PersistentRecord
-		record := &PersistentRecord{
-			TextItems:    make(map[string]string),
-			Int16Items:   make(map[string]int16),
-			Int32Items:   make(map[string]int32),
-			Int64Items:   make(map[string]int64),
-			Float64Items: make(map[string]float64),
-			UUIDItems:    make(map[string]uuid.UUID),
-		}
-
-		textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx = 0, 0, 0, 0, 0, 0
-		for i, desc := range entityMainColumnDescriptors {
-			switch desc.kind {
-			case columnKindText:
-				val := textVals[textIdx]
-				if val.Valid {
-					record.TextItems[desc.name] = val.String
-				}
-				textIdx++
-			case columnKindSmallint:
-				val := smallVals[smallIdx]
-				if val.Valid {
-					if desc.name == "ltbase_schema_id" {
-						record.SchemaID = int16(val.Int64)
-					} else {
-						record.Int16Items[desc.name] = int16(val.Int64)
-					}
-				}
-				smallIdx++
-			case columnKindInteger:
-				val := intVals[intIdx]
-				if val.Valid {
-					record.Int32Items[desc.name] = int32(val.Int64)
-				}
-				intIdx++
-			case columnKindBigint:
-				val := bigVals[bigIdx]
-				if val.Valid {
-					// Handle known system columns
-					switch desc.name {
-					case "ltbase_created_at":
-						record.CreatedAt = val.Int64
-					case "ltbase_updated_at":
-						record.UpdatedAt = val.Int64
-					case "ltbase_deleted_at":
-						record.DeletedAt = &val.Int64
-					default:
-						record.Int64Items[desc.name] = val.Int64
-					}
-				}
-				bigIdx++
-			case columnKindDouble:
-				val := doubleVals[doubleIdx]
-				if val.Valid {
-					record.Float64Items[desc.name] = val.Float64
-				}
-				doubleIdx++
-			case columnKindUUID:
-				val := uuidVals[uuidIdx]
-				if val.Valid {
-					if parsed, err := uuid.Parse(val.String); err == nil {
-						if desc.name == "ltbase_row_id" {
-							record.RowID = parsed
-						} else {
-							record.UUIDItems[desc.name] = parsed
-						}
-					}
-				}
-				uuidIdx++
-			}
-			_ = i // keep linter happy if needed
-		}
+		// Build record from buffers
+		record := buffers.buildRecordFromBuffers()
 
 		// Parse attributes JSON
-		if attrsJSON.Valid && attrsJSON.String != "" && attrsJSON.String != "[]" {
-			var attributes []map[string]interface{}
-			if err := json.Unmarshal([]byte(attrsJSON.String), &attributes); err != nil {
-				return 0, fmt.Errorf("unmarshal attributes json: %w", err)
-			}
-			record.OtherAttributes = make([]EAVRecord, 0, len(attributes))
-			for _, attrObj := range attributes {
-				attr := EAVRecord{
-					SchemaID: int16(attrObj["schema_id"].(float64)),
-					AttrID:   int16(attrObj["attr_id"].(float64)),
-				}
-				if rowIDStr, ok := attrObj["row_id"].(string); ok {
-					if parsedUUID, err := uuid.Parse(rowIDStr); err == nil {
-						attr.RowID = parsedUUID
-					}
-				}
-				if indices, ok := attrObj["array_indices"].(string); ok {
-					attr.ArrayIndices = indices
-				}
-				if valueText, ok := attrObj["value_text"].(string); ok {
-					attr.ValueText = &valueText
-				}
-				if valueNumeric, ok := attrObj["value_numeric"].(float64); ok {
-					attr.ValueNumeric = &valueNumeric
-				}
-				record.OtherAttributes = append(record.OtherAttributes, attr)
+		if attrsJSON.Valid {
+			if err := parseDuckDBAttributesJSON(attrsJSON.String, record); err != nil {
+				return 0, 0, err
 			}
 		}
 
 		// Clean up empty maps
-		if len(record.TextItems) == 0 {
-			record.TextItems = nil
-		}
-		if len(record.Int16Items) == 0 {
-			record.Int16Items = nil
-		}
-		if len(record.Int32Items) == 0 {
-			record.Int32Items = nil
-		}
-		if len(record.Int64Items) == 0 {
-			record.Int64Items = nil
-		}
-		if len(record.Float64Items) == 0 {
-			record.Float64Items = nil
-		}
-		if len(record.UUIDItems) == 0 {
-			record.UUIDItems = nil
-		}
+		cleanupEmptyMaps(record)
 
 		if !totalSet && totalRec.Valid {
 			totalRecords = totalRec.Int64
 			totalSet = true
 		}
 
-		// invoke handler
+		// Invoke handler
 		if rowHandler != nil {
 			if err := rowHandler(record); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 
@@ -410,62 +232,78 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	}
 
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate duckdb rows: %w", err)
+		return 0, 0, fmt.Errorf("iterate duckdb rows: %w", err)
 	}
 
-	// finalize execution plan for duckdb
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		qMs := time.Since(startQuery).Milliseconds()
-		if len(opts.ExecutionPlan.Sources) > 0 {
-			idx := len(opts.ExecutionPlan.Sources) - 1
-			dp := opts.ExecutionPlan.Sources[idx]
-			dp.ActualRows = rowCount
-			dp.DurationMs = qMs
-			opts.ExecutionPlan.Sources[idx] = dp
-		}
-		opts.ExecutionPlan.Timings["duckdb_fetch"] = qMs
-		opts.ExecutionPlan.Timings["total"] = time.Since(startTotal).Milliseconds()
+	return totalRecords, rowCount, nil
+}
 
-		// emit telemetry
-		EmitLatency(ctx, "execution", qMs)
-		streamMs := time.Since(startStream).Milliseconds()
-		EmitLatency(ctx, "streaming", streamMs)
+// finalizeDuckDBExecutionPlan completes the execution plan with timing and metrics.
+func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
+	ctx context.Context,
+	planCtx *duckDBExecutionPlanContext,
+	dirtyIDs []uuid.UUID,
+	totalRecords int64,
+	rowCount int64,
+) {
+	if planCtx.opts == nil || !planCtx.opts.IncludeExecutionPlan || planCtx.opts.ExecutionPlan == nil {
+		return
+	}
 
-		// row counts
-		EmitRowCount(ctx, "duckdb", rowCount)
+	qMs := time.Since(planCtx.startQuery).Milliseconds()
 
-		// Compute pushdown efficiency if we have postgres-side numbers available (best-effort).
-		// Definition: PG_Scan_Rows / Final_Result_Rows
-		var pgRows int64
-		var finalRows int64
-		// find any postgres source entries
-		for _, src := range opts.ExecutionPlan.Sources {
-			if src.Engine == "postgres" {
-				if src.ActualRows > 0 {
-					pgRows += src.ActualRows
-				} else if src.RowEstimate > 0 {
-					pgRows += src.RowEstimate
-				}
+	// Update the last source with actual rows and duration
+	if len(planCtx.opts.ExecutionPlan.Sources) > 0 {
+		idx := len(planCtx.opts.ExecutionPlan.Sources) - 1
+		dp := planCtx.opts.ExecutionPlan.Sources[idx]
+		dp.ActualRows = rowCount
+		dp.DurationMs = qMs
+		planCtx.opts.ExecutionPlan.Sources[idx] = dp
+	}
+
+	planCtx.opts.ExecutionPlan.Timings["duckdb_fetch"] = qMs
+	planCtx.opts.ExecutionPlan.Timings["total"] = time.Since(planCtx.startTotal).Milliseconds()
+
+	// Emit telemetry
+	EmitLatency(ctx, "execution", qMs)
+	streamMs := time.Since(planCtx.startQuery).Milliseconds() - qMs
+	if streamMs < 0 {
+		streamMs = 0
+	}
+	EmitLatency(ctx, "streaming", streamMs)
+	EmitRowCount(ctx, "duckdb", rowCount)
+
+	// Compute pushdown efficiency
+	pgRows := computePgRowCount(planCtx.opts.ExecutionPlan, dirtyIDs)
+	finalRows := totalRecords
+	if finalRows <= 0 {
+		finalRows = rowCount
+	}
+	if finalRows <= 0 {
+		finalRows = 1
+	}
+	ratio := float64(pgRows) / float64(finalRows)
+	EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
+
+	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
+		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
+}
+
+// computePgRowCount calculates the Postgres row count from execution plan sources.
+func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
+	var pgRows int64
+	for _, src := range plan.Sources {
+		if src.Engine == "postgres" {
+			if src.ActualRows > 0 {
+				pgRows += src.ActualRows
+			} else if src.RowEstimate > 0 {
+				pgRows += src.RowEstimate
 			}
 		}
-		// fallback: use dirtyIDs size as a proxy if no other pg rows recorded
-		if pgRows == 0 {
-			pgRows = int64(len(dirtyIDs))
-		}
-		if totalRecords > 0 {
-			finalRows = totalRecords
-		} else {
-			finalRows = rowCount
-		}
-		if finalRows <= 0 {
-			finalRows = 1
-		}
-		ratio := float64(pgRows) / float64(finalRows)
-		EmitPushdownEfficiency(ctx, q.SchemaID, ratio)
-		if opts.ExecutionPlan != nil {
-			opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
-		}
 	}
-
-	return totalRecords, nil
+	// Fallback: use dirtyIDs size as a proxy
+	if pgRows == 0 {
+		pgRows = int64(len(dirtyIDs))
+	}
+	return pgRows
 }

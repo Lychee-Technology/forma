@@ -127,6 +127,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDB() error {
 				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
 			}
 		} else {
+			// parseJSONSchemaFile is in schema_parser.go
 			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
 			if err != nil {
 				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
@@ -139,172 +140,6 @@ func (r *fileSchemaRegistry) loadSchemasFromDB() error {
 		r.schemaAttributeCaches[schemaID] = cache
 	}
 
-	return nil
-}
-
-// parseJSONSchemaFile parses a JSON Schema file and converts it to forma.JSONSchema structure
-func parseJSONSchemaFile(data []byte, schemaID int16, schemaName string) (forma.JSONSchema, error) {
-	var rawSchema map[string]any
-	if err := json.Unmarshal(data, &rawSchema); err != nil {
-		return forma.JSONSchema{}, fmt.Errorf("failed to unmarshal JSON schema: %w", err)
-	}
-
-	jsonSchema := forma.JSONSchema{
-		ID:         schemaID,
-		Name:       schemaName,
-		Schema:     string(data),
-		Properties: make(map[string]*forma.PropertySchema),
-	}
-
-	// Parse required fields
-	if required, ok := rawSchema["required"].([]any); ok {
-		for _, r := range required {
-			if s, ok := r.(string); ok {
-				jsonSchema.Required = append(jsonSchema.Required, s)
-			}
-		}
-	}
-
-	// Parse properties
-	if properties, ok := rawSchema["properties"].(map[string]any); ok {
-		defs := make(map[string]any)
-		if d, ok := rawSchema["$defs"].(map[string]any); ok {
-			defs = d
-		}
-		for propName, propValue := range properties {
-			if propMap, ok := propValue.(map[string]any); ok {
-				propSchema := parsePropertySchema(propName, propMap, defs, jsonSchema.Required)
-				jsonSchema.Properties[propName] = propSchema
-			}
-		}
-	}
-
-	return jsonSchema, nil
-}
-
-// parsePropertySchema parses a single property from JSON Schema
-func parsePropertySchema(name string, prop map[string]any, defs map[string]any, requiredFields []string) *forma.PropertySchema {
-	// Handle $ref
-	if ref, ok := prop["$ref"].(string); ok {
-		// Resolve $ref (e.g., "#/$defs/id")
-		resolved := resolveRef(ref, defs)
-		if resolved != nil {
-			prop = resolved
-		}
-	}
-
-	schema := &forma.PropertySchema{
-		Name: name,
-	}
-
-	// Check if this field is required
-	for _, r := range requiredFields {
-		if r == name {
-			schema.Required = true
-			break
-		}
-	}
-
-	// Parse type
-	if t, ok := prop["type"].(string); ok {
-		schema.Type = t
-	}
-
-	// Parse format
-	if f, ok := prop["format"].(string); ok {
-		schema.Format = f
-	}
-
-	// Parse pattern
-	if p, ok := prop["pattern"].(string); ok {
-		schema.Pattern = p
-	}
-
-	// Parse enum
-	if e, ok := prop["enum"].([]any); ok {
-		schema.Enum = e
-	}
-
-	// Parse default
-	if d, exists := prop["default"]; exists {
-		schema.Default = d
-	}
-
-	// Parse minimum/maximum
-	if min, ok := prop["minimum"].(float64); ok {
-		schema.Minimum = &min
-	}
-	if max, ok := prop["maximum"].(float64); ok {
-		schema.Maximum = &max
-	}
-
-	// Parse minLength/maxLength
-	if minLen, ok := prop["minLength"].(float64); ok {
-		v := int(minLen)
-		schema.MinLength = &v
-	}
-	if maxLen, ok := prop["maxLength"].(float64); ok {
-		v := int(maxLen)
-		schema.MaxLength = &v
-	}
-
-	// Parse x-relation
-	if relation, ok := prop["x-relation"].(map[string]any); ok {
-		schema.Relation = &forma.RelationSchema{}
-		if target, ok := relation["target"].(string); ok {
-			schema.Relation.Target = target
-		}
-		if relType, ok := relation["type"].(string); ok {
-			schema.Relation.Type = relType
-		}
-		if keyProp, ok := relation["key_property"].(string); ok {
-			schema.Relation.KeyProperty = keyProp
-		}
-	}
-
-	if ltBaseType, ok := prop["x-ltbase-type"].(string); ok {
-		schema.LTBaseType = ltBaseType
-	}
-
-	if ltBaseNote, ok := prop["x-ltbase-note-prop"].(string); ok {
-		schema.LTBaseNote = ltBaseNote
-	}
-
-	// Parse items (for arrays)
-	if items, ok := prop["items"].(map[string]any); ok {
-		schema.Items = parsePropertySchema("", items, defs, nil)
-	}
-
-	// Parse nested properties (for objects)
-	if nestedProps, ok := prop["properties"].(map[string]any); ok {
-		schema.Properties = make(map[string]*forma.PropertySchema)
-		nestedRequired := []string{}
-		if nr, ok := prop["required"].([]any); ok {
-			for _, r := range nr {
-				if s, ok := r.(string); ok {
-					nestedRequired = append(nestedRequired, s)
-				}
-			}
-		}
-		for nestedName, nestedValue := range nestedProps {
-			if nestedMap, ok := nestedValue.(map[string]any); ok {
-				schema.Properties[nestedName] = parsePropertySchema(nestedName, nestedMap, defs, nestedRequired)
-			}
-		}
-	}
-
-	return schema
-}
-
-// resolveRef resolves a JSON Schema $ref reference
-func resolveRef(ref string, defs map[string]any) map[string]any {
-	// Handle "#/$defs/xxx" format
-	if len(ref) > 8 && ref[:8] == "#/$defs/" {
-		defName := ref[8:]
-		if def, ok := defs[defName].(map[string]any); ok {
-			return def
-		}
-	}
 	return nil
 }
 
@@ -412,43 +247,7 @@ func copyFileSchemaAttributeCache(cache forma.SchemaAttributeCache) forma.Schema
 	return result
 }
 
-// parseFileAttributeMetadata converts raw JSON metadata into AttributeMetadata structs
-func parseFileAttributeMetadata(attrName string, attrData map[string]any, source string) (forma.AttributeMetadata, error) {
-	meta := forma.AttributeMetadata{AttributeName: attrName}
-
-	// Parse attributeID
-	attrIDRaw, ok := attrData["attributeID"].(float64)
-	if !ok {
-		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, source)
-	}
-	meta.AttributeID = int16(attrIDRaw)
-
-	// Parse valueType
-	valueTypeStr, ok := attrData["valueType"].(string)
-	if !ok {
-		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing valueType for attribute %s in %s", attrName, source)
-	}
-	meta.ValueType = forma.ValueType(valueTypeStr)
-
-	if requiredRaw, exists := attrData["required"]; exists {
-		required, ok := requiredRaw.(bool)
-		if !ok {
-			return forma.AttributeMetadata{}, fmt.Errorf("invalid required flag for attribute %s in %s", attrName, source)
-		}
-		meta.Required = required
-	}
-
-	// Parse optional column_binding
-	if bindingRaw, exists := attrData["column_binding"]; exists {
-		binding, err := parseFileColumnBinding(bindingRaw, attrName, source)
-		if err != nil {
-			return forma.AttributeMetadata{}, err
-		}
-		meta.ColumnBinding = binding
-	}
-
-	return meta, nil
-}
+// parseFileAttributeMetadata and parseFileColumnBinding are implemented in schema_parser.go
 
 // NewFileSchemaRegistryFromDirectory creates a schema registry that scans
 // a directory for schema files and auto-assigns IDs (starting from 100).
@@ -552,27 +351,4 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 	}
 
 	return nil
-}
-
-// parseFileColumnBinding parses column binding configuration
-func parseFileColumnBinding(raw any, attrName, source string) (*forma.MainColumnBinding, error) {
-	bindingMap, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("invalid column_binding format for attribute %s in %s", attrName, source)
-	}
-
-	colNameStr, ok := bindingMap["col_name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid or missing col_name in column_binding for attribute %s in %s", attrName, source)
-	}
-
-	binding := &forma.MainColumnBinding{
-		ColumnName: forma.MainColumn(colNameStr),
-	}
-
-	if encodingStr, ok := bindingMap["encoding"].(string); ok {
-		binding.Encoding = forma.MainColumnEncoding(encodingStr)
-	}
-
-	return binding, nil
 }

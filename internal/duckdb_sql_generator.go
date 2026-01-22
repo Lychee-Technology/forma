@@ -137,157 +137,173 @@ func GenerateDuckDBWhereClause(q *FederatedAttributeQuery) (string, []any, error
 	if q == nil || q.Condition == nil {
 		return "1=1", nil, nil
 	}
+	return generateDuckDBCondition(q.Condition)
+}
 
-	var build func(c forma.Condition) (string, []any, error)
+// generateDuckDBCondition recursively builds DuckDB WHERE clause from a condition tree.
+func generateDuckDBCondition(c forma.Condition) (string, []any, error) {
+	switch cond := c.(type) {
+	case *forma.CompositeCondition:
+		return generateDuckDBCompositeCondition(cond)
+	case *forma.KvCondition:
+		return generateDuckDBKvCondition(cond)
+	default:
+		return "", nil, fmt.Errorf("unsupported condition type %T", c)
+	}
+}
 
-	build = func(c forma.Condition) (string, []any, error) {
-		switch cond := c.(type) {
-		case *forma.CompositeCondition:
-			if len(cond.Conditions) == 0 {
-				return "1=1", nil, nil
-			}
-			parts := make([]string, 0, len(cond.Conditions))
-			args := []any{}
-			joiner := " AND "
-			if cond.Logic == forma.LogicOr {
-				joiner = " OR "
-			}
-			for _, child := range cond.Conditions {
-				p, a, err := build(child)
-				if err != nil {
-					return "", nil, err
-				}
-				if p != "" {
-					parts = append(parts, fmt.Sprintf("(%s)", p))
-					args = append(args, a...)
-				}
-			}
-			if len(parts) == 0 {
-				return "1=1", nil, nil
-			}
-			return fmt.Sprintf("%s", joinStrings(parts, joiner)), args, nil
-		case *forma.KvCondition:
-			// kv format: "op:value" or "value" (defaults to equals)
-			opPart, valPart := splitOnce(cond.Value, ":")
-			opStr := "equals"
-			valStr := cond.Value
-			if opPart != "" && valPart != "" {
-				opStr = opPart
-				valStr = valPart
-			}
-			var sqlOp string
-			switch opStr {
-			case "equals":
-				sqlOp = "="
-			case "gt":
-				sqlOp = ">"
-			case "gte":
-				sqlOp = ">="
-			case "lt":
-				sqlOp = "<"
-			case "lte":
-				sqlOp = "<="
-			case "not_equals":
-				sqlOp = "!="
-			case "starts_with":
-				sqlOp = "LIKE"
-				valStr = valStr + "%"
-			case "contains":
-				sqlOp = "LIKE"
-				valStr = "%" + valStr + "%"
-			default:
-				return "", nil, fmt.Errorf("unsupported operator: %s", opStr)
-			}
+// generateDuckDBCompositeCondition handles CompositeCondition for DuckDB WHERE generation.
+func generateDuckDBCompositeCondition(cond *forma.CompositeCondition) (string, []any, error) {
+	if len(cond.Conditions) == 0 {
+		return "1=1", nil, nil
+	}
 
-			// For initial integration, reference attribute by name directly.
-			// Enhance by emitting explicit CASTs for non-text comparisons where detectable.
-			detectValueTypeFromString := func(s string) forma.ValueType {
-				// Try UUID
-				if _, err := uuid.Parse(s); err == nil {
-					return forma.ValueTypeUUID
-				}
-				// Try bool
-				ls := strings.ToLower(s)
-				if ls == "true" || ls == "false" || ls == "1" || ls == "0" {
-					return forma.ValueTypeBool
-				}
-				// Try numeric
-				if _, err := strconv.ParseFloat(s, 64); err == nil {
-					return forma.ValueTypeNumeric
-				}
-				// Try timestamp (RFC3339 or unix millis)
-				if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
-					return forma.ValueTypeDateTime
-				}
-				if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-					// ambiguous integer: treat as numeric/bigint; choose numeric for comparisons
-					return forma.ValueTypeNumeric
-				}
-				return forma.ValueTypeText
-			}
+	parts := make([]string, 0, len(cond.Conditions))
+	args := []any{}
+	joiner := " AND "
+	if cond.Logic == forma.LogicOr {
+		joiner = " OR "
+	}
 
-			parseParam := func(s string, vt forma.ValueType) any {
-				switch vt {
-				case forma.ValueTypeUUID:
-					return s
-				case forma.ValueTypeBool:
-					b, err := strconv.ParseBool(strings.ToLower(s))
-					if err == nil {
-						return b
-					}
-					if s == "1" {
-						return true
-					}
-					if s == "0" {
-						return false
-					}
-					return s
-				case forma.ValueTypeNumeric:
-					if f, err := strconv.ParseFloat(s, 64); err == nil {
-						return f
-					}
-					return s
-				case forma.ValueTypeDate, forma.ValueTypeDateTime:
-					if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-						return t.UTC()
-					}
-					if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-						// assume epoch millis
-						return time.UnixMilli(i).UTC()
-					}
-					return s
-				default:
-					return s
-				}
-			}
-
-			// For LIKE operators, keep text comparison
-			if sqlOp == "LIKE" {
-				clause := fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
-				return clause, []any{valStr}, nil
-			}
-
-			// Detect type and emit CAST on the parameter
-			valueType := detectValueTypeFromString(valStr)
-			duckType := MapValueTypeToDuckDBType(valueType)
-			var clause string
-			if duckType == "VARCHAR" {
-				clause = fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
-			} else {
-				clause = fmt.Sprintf("%s %s CAST(? AS %s)", cond.Attr, sqlOp, duckType)
-			}
-			param := parseParam(valStr, valueType)
-			return clause, []any{param}, nil
-		default:
-			return "", nil, fmt.Errorf("unsupported condition type %T", c)
+	for _, child := range cond.Conditions {
+		p, a, err := generateDuckDBCondition(child)
+		if err != nil {
+			return "", nil, err
+		}
+		if p != "" {
+			parts = append(parts, fmt.Sprintf("(%s)", p))
+			args = append(args, a...)
 		}
 	}
 
-	where, args, err := build(q.Condition)
+	if len(parts) == 0 {
+		return "1=1", nil, nil
+	}
+	return fmt.Sprintf("%s", joinStrings(parts, joiner)), args, nil
+}
+
+// generateDuckDBKvCondition handles KvCondition for DuckDB WHERE generation.
+func generateDuckDBKvCondition(cond *forma.KvCondition) (string, []any, error) {
+	// Parse operator and value
+	opPart, valPart := splitOnce(cond.Value, ":")
+	opStr := "equals"
+	valStr := cond.Value
+	if opPart != "" && valPart != "" {
+		opStr = opPart
+		valStr = valPart
+	}
+
+	// Convert to SQL operator
+	sqlOp, valStr, err := duckDBSQLOperator(opStr, valStr)
 	if err != nil {
 		return "", nil, err
 	}
-	return where, args, nil
+
+	// For LIKE operators, keep text comparison
+	if sqlOp == "LIKE" {
+		clause := fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
+		return clause, []any{valStr}, nil
+	}
+
+	// Detect type and emit CAST on the parameter
+	valueType := detectDuckDBValueType(valStr)
+	duckType := MapValueTypeToDuckDBType(valueType)
+
+	var clause string
+	if duckType == "VARCHAR" {
+		clause = fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
+	} else {
+		clause = fmt.Sprintf("%s %s CAST(? AS %s)", cond.Attr, sqlOp, duckType)
+	}
+
+	param := parseDuckDBParamValue(valStr, valueType)
+	return clause, []any{param}, nil
+}
+
+// duckDBSQLOperator converts a DSL operator to SQL operator and modifies value for LIKE patterns.
+func duckDBSQLOperator(op, value string) (string, string, error) {
+	switch op {
+	case "equals":
+		return "=", value, nil
+	case "gt":
+		return ">", value, nil
+	case "gte":
+		return ">=", value, nil
+	case "lt":
+		return "<", value, nil
+	case "lte":
+		return "<=", value, nil
+	case "not_equals":
+		return "!=", value, nil
+	case "starts_with":
+		return "LIKE", value + "%", nil
+	case "contains":
+		return "LIKE", "%" + value + "%", nil
+	default:
+		return "", "", fmt.Errorf("unsupported operator: %s", op)
+	}
+}
+
+// detectDuckDBValueType infers the forma.ValueType from a string literal.
+func detectDuckDBValueType(s string) forma.ValueType {
+	// Try UUID
+	if _, err := uuid.Parse(s); err == nil {
+		return forma.ValueTypeUUID
+	}
+	// Try bool
+	ls := strings.ToLower(s)
+	if ls == "true" || ls == "false" || ls == "1" || ls == "0" {
+		return forma.ValueTypeBool
+	}
+	// Try numeric
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return forma.ValueTypeNumeric
+	}
+	// Try timestamp (RFC3339 or unix millis)
+	if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return forma.ValueTypeDateTime
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		// ambiguous integer: treat as numeric/bigint; choose numeric for comparisons
+		return forma.ValueTypeNumeric
+	}
+	return forma.ValueTypeText
+}
+
+// parseDuckDBParamValue parses a string value into a typed Go value for DuckDB parameters.
+func parseDuckDBParamValue(s string, vt forma.ValueType) any {
+	switch vt {
+	case forma.ValueTypeUUID:
+		return s
+	case forma.ValueTypeBool:
+		b, err := strconv.ParseBool(strings.ToLower(s))
+		if err == nil {
+			return b
+		}
+		if s == "1" {
+			return true
+		}
+		if s == "0" {
+			return false
+		}
+		return s
+	case forma.ValueTypeNumeric:
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
+		}
+		return s
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.UTC()
+		}
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			// assume epoch millis
+			return time.UnixMilli(i).UTC()
+		}
+		return s
+	default:
+		return s
+	}
 }
 
 // helper: join strings
