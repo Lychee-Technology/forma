@@ -1,0 +1,26 @@
+{
+  "name": "forma-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests for Forma CDC and Federated Query",
+  "type": "module",
+  "scripts": {
+    "register-schemas": "bun run scripts/register-schemas.ts",
+    "gen-data": "bun run scripts/gen-data.ts",
+    "cdc-flush": "bun run scripts/cdc-flush.ts",
+    "federated-check": "bun run scripts/federated-check.ts",
+    "build-k6": "bunx esbuild k6/scenarios.ts --bundle --format=esm --target=es2020 --platform=neutral --external:k6 --external:'k6/*' --outfile=k6/dist/bundle.js",
+    "k6-smoke": "k6 run --out json=reports/k6-smoke.json -e SCENARIO=smoke k6/dist/bundle.js",
+    "k6-full": "k6 run --out json=reports/k6-full.json -e SCENARIO=full k6/dist/bundle.js",
+    "k6-perf": "k6 run --out json=reports/k6-perf.json -e SCENARIO=perf k6/dist/bundle.js",
+    "test": "bun run register-schemas && bun run gen-data && bun run cdc-flush && bun run federated-check"
+  },
+  "dependencies": {
+    "postgres": "^3.4.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/k6": "^0.49.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}
