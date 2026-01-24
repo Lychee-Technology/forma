@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-01-24T00:08:02.132Z",
+  "config": {
+    "pgHost": "localhost",
+    "pgPort": 5432,
+    "pgDatabase": "forma",
+    "pgSslMode": "disable",
+    "s3Bucket": "forma-cdc",
+    "s3Prefix": "delta",
+    "s3Endpoint": "http://localhost:19000",
+    "minRecords": 1000,
+    "maxAgeMs": 60000,
+    "batchSize": 10000,
+    "dryRun": false
+  },
+  "execution": {
+    "exitCode": 0,
+    "duration_ms": 643,
+    "stdout": "",
+    "stderr": "{\"level\":\"info\",\"ts\":1769213282.186562,\"caller\":\"tools/cdc_flush.go:121\",\"msg\":\"starting CDC flush\",\"bucket\":\"forma-cdc\",\"prefix\":\"delta\",\"dry_run\":false}\n{\"level\":\"info\",\"ts\":1769213282.503041,\"caller\":\"cdc/flusher.go:163\",\"msg\":\"processing schema\",\"schema_id\":101}\n{\"level\":\"info\",\"ts\":1769213282.539859,\"caller\":\"cdc/flusher.go:249\",\"msg\":\"export snapshot\",\"schema_id\":101,\"snapshot_ts\":1769213282539,\"tmp\":\"s3://forma-cdc/delta/delta/101/_tmp/019bed54-48eb-7cdc-aed3-8d38ec9c1394.parquet\",\"pgConnForDuck\":\"host=localhost port=5432 user=postgres password=postgres dbname=forma sslmode=disable\"}\n{\"level\":\"info\",\"ts\":1769213282.54014,\"caller\":\"cdc/duckdb_exporter.go:160\",\"msg\":\"duckdb export sql\",\"sql_preview\":\"PRAGMA memory_limit='2048MB';\\nATTACH IF NOT EXISTS 'host=localhost port=5432 user=postgres password=postgres dbname=forma sslmode=disable' AS pg_db (TYPE postgres, READ_ONLY);\\n\\nCOPY (\\nSELECT\\n  m.ltbase_row_id AS row_id,\\n  m.ltbase_created_at AS created_at,\\n  cl.changed_at AS ver_ts,\\n  cl.deleted_at AS deleted_ts,\\n  CAST(m.text_01 AS VARCHAR) AS name,\\n  CAST(m.integer_01 AS INTEGER) AS age,\\n  MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag\\nFROM postgres_query('pg_db', 'SELECT schema_id, row_id, changed_at, deleted_at FROM change_log_dev WHERE schema_id = 101 AND flushed_at = 0 AND changed_at <= 1769213282539') cl\\nJOIN postgres_query('pg_db', 'SELECT ltbase_row_id, ltbase_schema_id, ltbase_created_at, text_01, integer_01 FROM entity_main WHERE ltbase_schema_id = 101') m\\n  ON cl.row_id = m.ltbase_row_id\\nLEFT JOIN postgres_query('pg_db', 'SELECT schema_id, row_id, attr_id, value_text FROM eav_data WHERE schema_id = 101') e\\n  ON cl.row_id = e.row_id\\nGROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01\\n) TO 's3://forma-cdc/delta/delta/101/_tmp/019bed54-48eb-7cdc-aed3-8d38ec9c1394.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 3);\\n\",\"cl_query\":\"SELECT schema_id, row_id, changed_at, deleted_at FROM change_log_dev WHERE schema_id = 101 AND flushed_at = 0 AND changed_at <= 1769213282539\",\"m_query\":\"SELECT ltbase_row_id, ltbase_schema_id, ltbase_created_at, text_01, integer_01 FROM entity_main WHERE ltbase_schema_id = 101\",\"e_query\":\"SELECT schema_id, row_id, attr_id, value_text FROM eav_data WHERE schema_id = 101\"}\n{\"level\":\"info\",\"ts\":1769213282.648432,\"caller\":\"cdc/flusher.go:274\",\"msg\":\"flush completed\",\"schema_id\":101,\"rows_flushed\":10000,\"final_key\":\"delta/delta/101/019bed54-48eb-7ce0-86bc-3ff59009c5ab.parquet\"}\n{\"level\":\"info\",\"ts\":1769213282.64916,\"caller\":\"cdc/flusher.go:163\",\"msg\":\"processing schema\",\"schema_id\":102}\n{\"level\":\"info\",\"ts\":1769213282.682029,\"caller\":\"cdc/flusher.go:249\",\"msg\":\"export snapshot\",\"schema_id\":102,\"snapshot_ts\":1769213282682,\"tmp\":\"s3://forma-cdc/delta/delta/102/_tmp/019bed54-497a-7052-abf5-3d186f22e939.parquet\",\"pgConnForDuck\":\"host=localhost port=5432 user=postgres password=postgres dbname=forma sslmode=disable\"}\n{\"level\":\"info\",\"ts\":1769213282.682057,\"caller\":\"cdc/duckdb_exporter.go:160\",\"msg\":\"duckdb export sql\",\"sql_preview\":\"PRAGMA memory_limit='2048MB';\\nATTACH IF NOT EXISTS 'host=localhost port=5432 user=postgres password=postgres dbname=forma sslmode=disable' AS pg_db (TYPE postgres, READ_ONLY);\\n\\nCOPY (\\nSELECT\\n  m.ltbase_row_id AS row_id,\\n  m.ltbase_created_at AS created_at,\\n  cl.changed_at AS ver_ts,\\n  cl.deleted_at AS deleted_ts,\\n  CAST(m.text_01 AS VARCHAR) AS name,\\n  CAST(m.integer_01 AS INTEGER) AS age,\\n  MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag\\nFROM postgres_query('pg_db', 'SELECT schema_id, row_id, changed_at, deleted_at FROM change_log_dev WHERE schema_id = 102 AND flushed_at = 0 AND changed_at <= 1769213282682') cl\\nJOIN postgres_query('pg_db', 'SELECT ltbase_row_id, ltbase_schema_id, ltbase_created_at, text_01, integer_01 FROM entity_main WHERE ltbase_schema_id = 102') m\\n  ON cl.row_id = m.ltbase_row_id\\nLEFT JOIN postgres_query('pg_db', 'SELECT schema_id, row_id, attr_id, value_text FROM eav_data WHERE schema_id = 102') e\\n  ON cl.row_id = e.row_id\\nGROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01\\n) TO 's3://forma-cdc/delta/delta/102/_tmp/019bed54-497a-7052-abf5-3d186f22e939.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 3);\\n\",\"cl_query\":\"SELECT schema_id, row_id, changed_at, deleted_at FROM change_log_dev WHERE schema_id = 102 AND flushed_at = 0 AND changed_at <= 1769213282682\",\"m_query\":\"SELECT ltbase_row_id, ltbase_schema_id, ltbase_created_at, text_01, integer_01 FROM entity_main WHERE ltbase_schema_id = 102\",\"e_query\":\"SELECT schema_id, row_id, attr_id, value_text FROM eav_data WHERE schema_id = 102\"}\n{\"level\":\"info\",\"ts\":1769213282.760229,\"caller\":\"cdc/flusher.go:274\",\"msg\":\"flush completed\",\"schema_id\":102,\"rows_flushed\":10000,\"final_key\":\"delta/delta/102/019bed54-497a-7055-8fe8-057b63d0e381.parquet\"}\n{\"level\":\"info\",\"ts\":1769213282.7645829,\"caller\":\"tools/cdc_flush.go:130\",\"msg\":\"CDC flush completed\"}\n"
+  },
+  "result": {
+    "success": true,
+    "rowsFlushed": 10000,
+    "schemasProcessed": 2,
+    "parquetFiles": [
+      "delta/101/019bed54-48eb-7ce0-86bc-3ff59009c5ab.parquet",
+      "delta/102/019bed54-497a-7055-8fe8-057b63d0e381.parquet"
+    ]
+  }
+}

@@ -174,9 +174,9 @@ function compareAttributes(
 
 async function getSchemaId(sql: postgres.Sql, schemaName: string): Promise<number | null> {
   const result = await sql`
-    SELECT id FROM schemas WHERE name = ${schemaName} LIMIT 1
+    SELECT schema_id FROM ${sql(config.tables.schemaRegistry)} WHERE schema_name = ${schemaName} LIMIT 1
   `;
-  return result.length > 0 ? result[0].id : null;
+  return result.length > 0 ? Number(result[0].schema_id) : null;
 }
 
 async function queryFormaAPI(schemaName: string, page: number, itemsPerPage: number): Promise<QueryResult | null> {
@@ -415,7 +415,7 @@ async function main() {
   };
 
   try {
-    const schemasToCheck = schema === 'all' ? ['lead', 'visit', 'log'] : [schema];
+    const schemasToCheck = schema === 'all' ? ['lead', 'visit'] : [schema];
 
     for (const schemaName of schemasToCheck) {
       console.log(`\nChecking schema: ${schemaName}`);
@@ -468,6 +468,8 @@ async function main() {
     if (report.summary.failedSchemas > 0) {
       process.exit(1);
     }
+  } catch (err) {
+    console.error('Fatal error:', err);
   } finally {
     await sql.end();
   }

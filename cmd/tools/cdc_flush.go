@@ -23,6 +23,7 @@ func runCDCFlush(args []string) error {
 	pgPassword := fs.String("pg-password", "", "PostgreSQL password (or set PGPASSWORD env)")
 	pgDB := fs.String("pg-db", "forma", "PostgreSQL database")
 	pgUseIAM := fs.Bool("pg-use-iam", false, "Use IAM authentication for PostgreSQL")
+	pgSSLMode := fs.String("pg-ssl-mode", getenvDefault("PG_SSL_MODE", "require"), "PostgreSQL sslmode")
 
 	// Change log settings
 	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
@@ -76,6 +77,7 @@ func runCDCFlush(args []string) error {
 		PGPassword:              password,
 		PGDB:                    *pgDB,
 		PGUseIAM:                *pgUseIAM,
+		PGSSLMode:               *pgSSLMode,
 		DuckDBPath:              *duckDBPath,
 		DuckThreads:             *duckThreads,
 		DuckMemLimit:            *duckMemLimit,

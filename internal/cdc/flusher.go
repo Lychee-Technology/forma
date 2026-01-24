@@ -113,8 +113,12 @@ func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, 
 		}
 	}
 
-	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=require",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB)
+	sslMode := cfg.PGSSLMode
+	if sslMode == "" {
+		sslMode = DefaultPGSSLMode
+	}
+	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
 
 	db, err := sql.Open("postgres", pgConnStr)
 	if err != nil {
@@ -236,9 +240,13 @@ func executeFlush(
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, tmpKey)
 
 	// Export snapshot
-	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=require",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB)
-	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "tmp", s3TmpPath)
+	sslMode := cfg.PGSSLMode
+	if sslMode == "" {
+		sslMode = DefaultPGSSLMode
+	}
+	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
+	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "tmp", s3TmpPath, "pgConnForDuck", pgConnForDuck)
 
 	if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot); err != nil {
 		logger.Sugar().Errorw("duck export failed", "err", err)

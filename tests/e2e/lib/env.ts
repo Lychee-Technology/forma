@@ -60,10 +60,12 @@ export interface Config {
     user: string;
     password: string;
     database: string;
+    sslMode: string;
   };
 
   // Table names
   tables: {
+    schemaRegistry: string;
     entityMain: string;
     eavData: string;
     changeLog: string;
@@ -108,9 +110,11 @@ export function loadConfig(): Config {
       user: getEnv('PG_USER', 'postgres'),
       password: getEnv('PG_PASSWORD', 'postgres'),
       database: getEnv('PG_DB', 'forma'),
+      sslMode: getEnv('PG_SSL_MODE', 'disable'),
     },
 
     tables: {
+      schemaRegistry: getEnv('SCHEMA_TABLE', 'schema_registry_dev'),
       entityMain: getEnv('ENTITY_MAIN_TABLE', 'entity_main_dev'),
       eavData: getEnv('EAV_TABLE', 'eav_data_dev'),
       changeLog: getEnv('CHANGE_LOG_TABLE', 'change_log_dev'),

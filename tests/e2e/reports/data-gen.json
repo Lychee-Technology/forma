@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-01-24T00:07:14.061Z",
+  "config": {
+    "baseUrl": "http://localhost:8080",
+    "tenantId": "test-tenant",
+    "datasetSize": 10000,
+    "batchSize": 500
+  },
+  "results": [
+    {
+      "schema": "lead",
+      "requested": 10000,
+      "succeeded": 10000,
+      "failed": 0,
+      "duration_ms": 27075,
+      "errors": []
+    },
+    {
+      "schema": "visit",
+      "requested": 10000,
+      "succeeded": 10000,
+      "failed": 0,
+      "duration_ms": 20957,
+      "errors": []
+    }
+  ],
+  "summary": {
+    "total_requested": 20000,
+    "total_succeeded": 20000,
+    "total_failed": 0,
+    "total_duration_ms": 48032
+  }
+}

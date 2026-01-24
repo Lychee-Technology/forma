@@ -18,6 +18,7 @@ interface CDCFlushReport {
     pgHost: string;
     pgPort: number;
     pgDatabase: string;
+    pgSslMode: string;
     s3Bucket: string;
     s3Prefix: string;
     s3Endpoint: string;
@@ -57,6 +58,7 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
       pgHost: config.pg.host,
       pgPort: config.pg.port,
       pgDatabase: config.pg.database,
+      pgSslMode: config.pg.sslMode,
       s3Bucket: config.s3.bucket,
       s3Prefix: config.s3.prefix,
       s3Endpoint: config.s3.endpoint,
@@ -84,6 +86,7 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     '--pg-user', config.pg.user,
     '--pg-password', config.pg.password,
     '--pg-db', config.pg.database,
+    '--pg-ssl-mode', config.pg.sslMode,
     '--change-log-table', config.tables.changeLog,
     '--s3-bucket', config.s3.bucket,
     '--s3-prefix', config.s3.prefix,

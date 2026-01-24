@@ -12,21 +12,15 @@ End-to-end tests for validating Forma's CDC (Change Data Capture) and Federated 
 ## Quick Start
 
 ```bash
-# 1. Start local infrastructure
-cd deploy && docker compose up -d
+# 1. Start the Forma server
+./scripts/local_server.sh &
 
-# 2. Build CDC tools
-make build-tools
-
-# 3. Start the Forma server
-make run-server
-
-# 4. Setup E2E tests
+# 2. Setup E2E tests
 cd tests/e2e
 cp .env.example .env
 bun install
 
-# 5. Run full E2E suite
+# 3. Run full E2E suite
 bun run test
 ```
 
@@ -148,6 +142,7 @@ See `.env.example` for all available configuration options:
 | `PG_USER` | `postgres` | Postgres user |
 | `PG_PASSWORD` | `postgres` | Postgres password |
 | `PG_DB` | `forma` | Postgres database |
+| `PG_SSL_MODE` | `disable` | Postgres sslmode (disable, require, verify-full) |
 | `S3_ENDPOINT` | `http://localhost:19000` | S3/RustFS endpoint |
 | `S3_BUCKET` | `forma-cdc` | S3 bucket for CDC data |
 | `DATASET_SIZE` | `10000` | Default dataset size |

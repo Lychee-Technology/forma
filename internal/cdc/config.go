@@ -21,6 +21,7 @@ type CDCConfig struct {
 	PGPassword string
 	PGDB       string
 	PGUseIAM   bool
+	PGSSLMode  string
 
 	// DuckDB export options
 	DuckDBPath              string        // optional on-disk duckdb; empty for :memory:
@@ -76,6 +77,7 @@ const (
 	DefaultMaxRetries              = 5
 	DefaultBaseBackoffMs           = 100
 	DefaultMaxBackoffMs            = 10000
+	DefaultPGSSLMode               = "require"
 )
 
 // WithDefaults returns a copy of CDCConfig with missing fields set to defaults.
@@ -106,6 +108,9 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 	}
 	if c.ChangeLogTable == "" {
 		c.ChangeLogTable = "change_log"
+	}
+	if c.PGSSLMode == "" {
+		c.PGSSLMode = DefaultPGSSLMode
 	}
 	return c
 }

@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-01-24T00:07:13.886Z",
+  "schemas": [
+    {
+      "name": "lead",
+      "status": "already_exists"
+    },
+    {
+      "name": "visit",
+      "status": "already_exists"
+    },
+    {
+      "name": "log",
+      "status": "already_exists"
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "registered": 0,
+    "skipped": 3,
+    "errors": 0
+  }
+}
