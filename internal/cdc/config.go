@@ -30,6 +30,8 @@ type CDCConfig struct {
 	QueryTimeout            time.Duration // timeout for duckdb export
 	ParquetCompression      string        // e.g. "zstd"
 	ParquetCompressionLevel int           // codec level if supported
+	EstimatedRowBytes       int           // rough row size estimate for batch sizing
+	MaxBatchBytes           int64         // optional cap to limit batch size by bytes
 
 	// S3
 	S3Bucket   string
@@ -68,8 +70,10 @@ type ManifestConfig struct {
 const (
 	DefaultParquetCompression      = "zstd"
 	DefaultParquetCompressionLevel = 3
-	DefaultMinRecords              = 1000
-	DefaultMaxAgeMs                = 60000 // 1 minute
+	DefaultMinRecords              = 20000
+	DefaultMaxAgeMs                = 3600000 // 1 hour
+	DefaultEstimatedRowBytes       = 1024
+	DefaultMaxBatchBytes           = int64(50 * 1024 * 1024)
 	DefaultBatchSize               = 10000
 	DefaultTargetBaseSizeMB        = 256
 	DefaultMaxDeltaSizeMB          = 50
@@ -105,6 +109,12 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 	}
 	if c.QueryTimeout <= 0 {
 		c.QueryTimeout = 5 * time.Minute
+	}
+	if c.EstimatedRowBytes <= 0 {
+		c.EstimatedRowBytes = DefaultEstimatedRowBytes
+	}
+	if c.MaxBatchBytes <= 0 {
+		c.MaxBatchBytes = DefaultMaxBatchBytes
 	}
 	if c.ChangeLogTable == "" {
 		c.ChangeLogTable = "change_log"

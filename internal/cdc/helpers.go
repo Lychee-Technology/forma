@@ -94,6 +94,33 @@ func MarkFlushed(ctx context.Context, db *sql.DB, table string, schemaID int16, 
 	return affected, nil
 }
 
+// MarkFlushedIDs updates flushed_at for specific row_ids. Use when batching by IDs rather than snapshot cutoff.
+func MarkFlushedIDs(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, flushedAt int64) (int64, error) {
+	if table == "" {
+		table = "change_log"
+	}
+	if len(rowIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, 0, len(rowIDs))
+	args := make([]any, 0, len(rowIDs)+2)
+	args = append(args, flushedAt, schemaID)
+	for i, id := range rowIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+3))
+		args = append(args, id)
+	}
+	query := fmt.Sprintf("UPDATE %s SET flushed_at = $1 WHERE schema_id = $2 AND flushed_at = 0 AND row_id IN (%s)", sanitizeIdentifier(table), strings.Join(placeholders, ","))
+	res, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("mark flushed by ids: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	return affected, nil
+}
+
 // CopyTmpToFinal copies a parquet file from tmp key to final key and deletes tmp.
 func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, finalKey string, logger *zap.Logger) error {
 	if client == nil {

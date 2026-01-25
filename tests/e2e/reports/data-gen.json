@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-01-24T00:07:14.061Z",
+  "timestamp": "2026-01-24T07:38:19.734Z",
   "config": {
     "baseUrl": "http://localhost:8080",
     "tenantId": "test-tenant",
@@ -12,7 +12,7 @@
       "requested": 10000,
       "succeeded": 10000,
       "failed": 0,
-      "duration_ms": 27075,
+      "duration_ms": 21732,
       "errors": []
     },
     {
@@ -20,7 +20,7 @@
       "requested": 10000,
       "succeeded": 10000,
       "failed": 0,
-      "duration_ms": 20957,
+      "duration_ms": 14219,
       "errors": []
     }
   ],
@@ -28,6 +28,6 @@
     "total_requested": 20000,
     "total_succeeded": 20000,
     "total_failed": 0,
-    "total_duration_ms": 48032
+    "total_duration_ms": 35951
   }
 }

@@ -173,6 +173,7 @@ function compareAttributes(
 }
 
 async function getSchemaId(sql: postgres.Sql, schemaName: string): Promise<number | null> {
+  console.log(`    Fetching schema ID for '${schemaName}', table name: ${config.tables.schemaRegistry}`);
   const result = await sql`
     SELECT schema_id FROM ${sql(config.tables.schemaRegistry)} WHERE schema_name = ${schemaName} LIMIT 1
   `;
@@ -207,7 +208,7 @@ async function queryPostgresDirectly(
     FROM ${sql(config.tables.entityMain)} em
     JOIN ${sql(config.tables.eavData)} ed ON em.row_id = ed.row_id
     WHERE em.schema_id = ${schemaId}
-      AND em.deleted_at IS NULL
+      AND em.ltbase_deleted_at IS NULL
     GROUP BY em.row_id
     ORDER BY em.created_at DESC
     LIMIT ${limit}
@@ -224,7 +225,7 @@ async function getPostgresCount(sql: postgres.Sql, schemaId: number): Promise<nu
   const result = await sql`
     SELECT COUNT(*) as count 
     FROM ${sql(config.tables.entityMain)} 
-    WHERE schema_id = ${schemaId} AND deleted_at IS NULL
+    WHERE ltbase_schema_id = ${schemaId} AND deleted_at IS NULL
   `;
   return parseInt(result[0].count as string, 10);
 }
@@ -235,6 +236,7 @@ async function compareSchema(
   sampleSize: number,
   fullScan: boolean
 ): Promise<ComparisonResult> {
+  console.log(`  Comparing schema: ${schemaName}`);
   const result: ComparisonResult = {
     schema: schemaName,
     timestamp: new Date().toISOString(),

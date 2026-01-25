@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,6 +14,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 	"os"
 )
@@ -37,8 +37,9 @@ type S3ObjectClient interface {
 
 // RunOnce performs one full pass over schemas and attempts flush where needed.
 // Caller may provide an S3ObjectClient; when nil, AWS config will be loaded from
-// environment (still respecting cfg.S3Region).
-func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger) error {
+// environment (still respecting cfg.S3Region). Optional schemaRegistry enables
+// schema-aware projections in DuckDB export.
+func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
 	// Setup AWS credentials and S3 client
 	region, credProvider, s3Client, err := setupAWSClient(ctx, cfg, s3Client)
 	if err != nil {
@@ -73,7 +74,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// Process each schema
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		processSchema(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger)
+		processSchema(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry)
 	}
 
 	return nil
@@ -159,6 +160,7 @@ func processSchema(
 	pgPassword string,
 	dryRun bool,
 	logger *zap.Logger,
+	schemaRegistry forma.SchemaRegistry,
 ) {
 	logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
@@ -191,7 +193,7 @@ func processSchema(
 	}
 
 	// Execute flush
-	executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger)
+	executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry)
 }
 
 // shouldFlush determines if flush thresholds are met.
@@ -218,6 +220,7 @@ func executeFlush(
 	pgPassword string,
 	dryRun bool,
 	logger *zap.Logger,
+	schemaRegistry forma.SchemaRegistry,
 ) {
 	// Select batch
 	ids, snapshot, err := SelectBatchRowIDs(ctx, db, tableName, schemaID, cfg.BatchSize)
@@ -233,10 +236,8 @@ func executeFlush(
 	// Build paths
 	tmpUUID := uuid.Must(uuid.NewV7()).String()
 	finalUUID := uuid.Must(uuid.NewV7()).String()
-	tmpKey := strings.TrimSuffix(cfg.S3Prefix, "/") +
-		fmt.Sprintf("/delta/%d/_tmp/%s.parquet", schemaID, tmpUUID)
-	finalKey := strings.TrimSuffix(cfg.S3Prefix, "/") +
-		fmt.Sprintf("/delta/%d/%s.parquet", schemaID, finalUUID)
+	tmpKey := BuildTempPath(cfg.S3Prefix, schemaID, tmpUUID)
+	finalKey := BuildDeltaPath(cfg.S3Prefix, schemaID, finalUUID)
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, tmpKey)
 
 	// Export snapshot
@@ -248,7 +249,25 @@ func executeFlush(
 		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
 	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "tmp", s3TmpPath, "pgConnForDuck", pgConnForDuck)
 
-	if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot); err != nil {
+	var attrCache forma.SchemaAttributeCache
+	if schemaRegistry != nil {
+		if _, cache, err := schemaRegistry.GetSchemaAttributeCacheByID(schemaID); err != nil {
+			logger.Sugar().Warnw("schema registry lookup failed, using generic projection", "schema_id", schemaID, "err", err)
+		} else {
+			attrCache = cache
+		}
+	}
+
+	batchIDs := ids
+	if cfg.MaxBatchBytes > 0 && cfg.EstimatedRowBytes > 0 {
+		maxRows := int(cfg.MaxBatchBytes / int64(cfg.EstimatedRowBytes))
+		if maxRows > 0 && len(batchIDs) > maxRows {
+			logger.Sugar().Infow("truncating batch to fit byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "to_rows", maxRows)
+			batchIDs = batchIDs[:maxRows]
+		}
+	}
+
+	if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot, batchIDs, attrCache); err != nil {
 		logger.Sugar().Errorw("duck export failed", "err", err)
 		return
 	}
@@ -266,7 +285,7 @@ func executeFlush(
 	}
 
 	flushedAt := time.Now().UnixMilli()
-	rowsUpdated, err := MarkFlushed(ctx, db, tableName, schemaID, snapshot, flushedAt)
+	rowsUpdated, err := MarkFlushedIDs(ctx, db, tableName, schemaID, batchIDs, flushedAt)
 	if err != nil {
 		logger.Sugar().Errorw("mark flushed failed", "err", err)
 		return

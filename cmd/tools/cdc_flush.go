@@ -9,6 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"go.uber.org/zap"
 )
@@ -27,9 +30,11 @@ func runCDCFlush(args []string) error {
 
 	// Change log settings
 	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
-	minRecords := fs.Int("min-records", 1000, "Minimum records before flush")
-	maxAgeMs := fs.Int64("max-age-ms", 60000, "Maximum age in ms before flush")
+	minRecords := fs.Int("min-records", 20000, "Minimum records before flush")
+	maxAgeMs := fs.Int64("max-age-ms", 3600000, "Maximum age in ms before flush")
 	batchSize := fs.Int("batch-size", 10000, "Maximum batch size per flush")
+	estimatedRowBytes := fs.Int("estimated-row-bytes", 0, "Estimated bytes per row for batch sizing (0 to use default)")
+	maxBatchBytes := fs.Int64("max-batch-bytes", 0, "Max batch size in bytes (0 to use default)")
 
 	// DuckDB settings
 	duckDBPath := fs.String("duckdb-path", "", "DuckDB path (empty for :memory:)")
@@ -48,6 +53,10 @@ func runCDCFlush(args []string) error {
 	// Compression
 	parquetCompression := fs.String("parquet-compression", "zstd", "Parquet compression codec")
 	parquetCompressionLevel := fs.Int("parquet-compression-level", 3, "Parquet compression level")
+
+	// Schema registry (optional)
+	schemaRegistryTable := fs.String("schema-registry-table", "", "Schema registry table name (optional)")
+	schemaDir := fs.String("schema-dir", "", "Directory with *_attributes.json files (required if schema-registry-table is set)")
 
 	// Control
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual flush)")
@@ -71,6 +80,8 @@ func runCDCFlush(args []string) error {
 		MinRecords:              *minRecords,
 		MaxAgeMs:                *maxAgeMs,
 		BatchSize:               *batchSize,
+		EstimatedRowBytes:       *estimatedRowBytes,
+		MaxBatchBytes:           *maxBatchBytes,
 		PGHost:                  *pgHost,
 		PGPort:                  *pgPort,
 		PGUser:                  *pgUser,
@@ -99,8 +110,28 @@ func runCDCFlush(args []string) error {
 	}
 	defer logger.Sync()
 
-	// Create S3 client
 	ctx := context.Background()
+
+	// Optional schema registry
+	var schemaRegistry forma.SchemaRegistry
+	if *schemaRegistryTable != "" || *schemaDir != "" {
+		if *schemaRegistryTable == "" || *schemaDir == "" {
+			return fmt.Errorf("both --schema-registry-table and --schema-dir are required when either is set")
+		}
+		connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, cfg.PGSSLMode)
+		pool, err := pgxpool.New(ctx, connStr)
+		if err != nil {
+			return fmt.Errorf("create schema registry pool: %w", err)
+		}
+		defer pool.Close()
+		reg, err := internal.NewFileSchemaRegistry(pool, *schemaRegistryTable, *schemaDir)
+		if err != nil {
+			return fmt.Errorf("create schema registry: %w", err)
+		}
+		schemaRegistry = reg
+	}
+
+	// Create S3 client
 	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.S3Region))
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
@@ -123,7 +154,7 @@ func runCDCFlush(args []string) error {
 		zap.String("prefix", cfg.S3Prefix),
 		zap.Bool("dry_run", *dryRun))
 
-	if err := cdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger); err != nil {
+	if err := cdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, schemaRegistry); err != nil {
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 

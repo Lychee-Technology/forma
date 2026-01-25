@@ -25,6 +25,8 @@ interface CDCFlushReport {
     minRecords: number;
     maxAgeMs: number;
     batchSize: number;
+    schemaRegistryTable: string;
+    schemaDir: string;
     dryRun: boolean;
   };
   execution: {
@@ -65,6 +67,8 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
       minRecords: config.cdc.minRecords,
       maxAgeMs: config.cdc.maxAgeMs,
       batchSize: config.cdc.batchSize,
+      schemaRegistryTable: config.tables.schemaRegistry,
+      schemaDir: config.schemaDir,
       dryRun,
     },
     execution: {
@@ -97,6 +101,8 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     '--min-records', String(config.cdc.minRecords),
     '--max-age-ms', String(config.cdc.maxAgeMs),
     '--batch-size', String(config.cdc.batchSize),
+    '--schema-registry-table', config.tables.schemaRegistry,
+    '--schema-dir', config.schemaDir,
   ];
 
   if (dryRun) {
