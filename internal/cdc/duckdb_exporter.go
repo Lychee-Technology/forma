@@ -131,8 +131,14 @@ func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID 
 	if changeLog == "" {
 		changeLog = "change_log"
 	}
-	entityMain := "entity_main"
-	eavData := "eav_data"
+	entityMain := sanitizeIdentifier(cfg.EntityMainTable)
+	if entityMain == "" {
+		entityMain = "entity_main"
+	}
+	eavData := sanitizeIdentifier(cfg.EAVDataTable)
+	if eavData == "" {
+		eavData = "eav_data"
+	}
 
 	rowList := quoteUUIDList(rowIDs)
 	clFilter := fmt.Sprintf("row_id IN (%s)", rowList)

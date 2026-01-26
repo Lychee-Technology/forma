@@ -79,3 +79,28 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 		t.Fatalf("cl query malformed: %s", clQuery)
 	}
 }
+
+func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
+	cfg := CDCConfig{
+		ChangeLogTable:  "change_log_dev",
+		EntityMainTable: "entity_main_dev",
+		EAVDataTable:    "eav_data_dev",
+	}
+	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
+
+	sql, clQuery, mQuery, eQuery, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, nil)
+	if err != nil {
+		t.Fatalf("buildExportSQL returned error: %v", err)
+	}
+
+	if !strings.Contains(clQuery, "FROM change_log_dev") {
+		t.Fatalf("change log query not using custom table name: %s", clQuery)
+	}
+	if !strings.Contains(mQuery, "FROM entity_main_dev") {
+		t.Fatalf("main query not using custom table name: %s", mQuery)
+	}
+	if !strings.Contains(eQuery, "FROM eav_data_dev") {
+		t.Fatalf("eav query not using custom table name: %s", eQuery)
+	}
+	_ = sql
+}

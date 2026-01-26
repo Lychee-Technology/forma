@@ -6,8 +6,10 @@ import "time"
 // S3 client is injected separately via RunOnce parameter to allow callers to
 // provide either AWS or MinIO implementations.
 type CDCConfig struct {
-	// Change log table
-	ChangeLogTable string
+	// Table names
+	ChangeLogTable  string
+	EntityMainTable string
+	EAVDataTable    string
 
 	// Thresholds
 	MinRecords int   // flush when unflushed rows >= MinRecords
@@ -118,6 +120,12 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 	}
 	if c.ChangeLogTable == "" {
 		c.ChangeLogTable = "change_log"
+	}
+	if c.EntityMainTable == "" {
+		c.EntityMainTable = "entity_main"
+	}
+	if c.EAVDataTable == "" {
+		c.EAVDataTable = "eav_data"
 	}
 	if c.PGSSLMode == "" {
 		c.PGSSLMode = DefaultPGSSLMode

@@ -92,6 +92,8 @@ export interface Config {
     minRecords: number;
     maxAgeMs: number;
     batchSize: number;
+    estimatedRowBytes: number;
+    maxBatchBytes: number;
   };
 
   // Paths
@@ -138,6 +140,8 @@ export function loadConfig(): Config {
       minRecords: getEnvInt('CDC_MIN_RECORDS', 1000),
       maxAgeMs: getEnvInt('CDC_MAX_AGE_MS', 60000),
       batchSize: getEnvInt('CDC_BATCH_SIZE', 10000),
+      estimatedRowBytes: getEnvInt('CDC_EST_ROW_BYTES', 0),
+      maxBatchBytes: parseInt(getEnv('CDC_MAX_BATCH_BYTES', '0'), 10),
     },
 
     toolsPath: resolve(__dirname, '..', getEnv('TOOLS_PATH', '../../build/tools')),

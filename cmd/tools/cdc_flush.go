@@ -30,6 +30,8 @@ func runCDCFlush(args []string) error {
 
 	// Change log settings
 	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
+	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table name")
+	eavDataTable := fs.String("eav-table", "eav_data", "EAV data table name")
 	minRecords := fs.Int("min-records", 20000, "Minimum records before flush")
 	maxAgeMs := fs.Int64("max-age-ms", 3600000, "Maximum age in ms before flush")
 	batchSize := fs.Int("batch-size", 10000, "Maximum batch size per flush")
@@ -68,6 +70,9 @@ func runCDCFlush(args []string) error {
 	if *s3Bucket == "" {
 		return fmt.Errorf("--s3-bucket is required")
 	}
+	if (*schemaRegistryTable == "") != (*schemaDir == "") {
+		return fmt.Errorf("both --schema-registry-table and --schema-dir are required together")
+	}
 
 	// Get password from env if not provided
 	password := *pgPassword
@@ -77,6 +82,8 @@ func runCDCFlush(args []string) error {
 
 	cfg := cdc.CDCConfig{
 		ChangeLogTable:          *changeLogTable,
+		EntityMainTable:         *entityMainTable,
+		EAVDataTable:            *eavDataTable,
 		MinRecords:              *minRecords,
 		MaxAgeMs:                *maxAgeMs,
 		BatchSize:               *batchSize,
@@ -104,7 +111,7 @@ func runCDCFlush(args []string) error {
 	}.WithDefaults()
 
 	// Create logger
-	logger, err := zap.NewProduction()
+	logger, err := zap.NewDevelopment()
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
@@ -114,10 +121,7 @@ func runCDCFlush(args []string) error {
 
 	// Optional schema registry
 	var schemaRegistry forma.SchemaRegistry
-	if *schemaRegistryTable != "" || *schemaDir != "" {
-		if *schemaRegistryTable == "" || *schemaDir == "" {
-			return fmt.Errorf("both --schema-registry-table and --schema-dir are required when either is set")
-		}
+	if *schemaRegistryTable != "" {
 		connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, cfg.PGSSLMode)
 		pool, err := pgxpool.New(ctx, connStr)
 		if err != nil {

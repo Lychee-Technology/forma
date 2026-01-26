@@ -72,14 +72,14 @@ const generatedVisitIds: string[] = [];
 function generateLead(seq: number): Record<string, unknown> {
   const id = uuid();
   generatedLeadIds.push(id);
-  
+
   const now = new Date().toISOString();
-  const pipelines = ['buy', 'rent', 'sell', 'landlord'] as const;
-  const stages = ['new', 'contacted', 'need_defined', 'viewing', 'offer', 'contract', 'closed'] as const;
-  const statuses = ['open', 'won', 'lost', 'junk'] as const;
-  const temperatures = ['Hot', 'Warm', 'New', 'Qualified'] as const;
-  const channels = ['portal', 'walk_in', 'referral', 'phone', 'web_form', 'event', 'other'] as const;
-  const languages = ['ja', 'en', 'zh', 'ko', 'other'] as const;
+  const pipelines: string[] = ['buy', 'rent', 'sell', 'landlord'] as const;
+  const stages: string[] = ['new', 'contacted', 'need_defined', 'viewing', 'offer', 'contract', 'closed'] as const;
+  const statuses: string[] = ['open', 'won', 'lost', 'junk'] as const;
+  const temperatures: string[] = ['Hot', 'Warm', 'New', 'Qualified'] as const;
+  const channels: string[] = ['portal', 'walk_in', 'referral', 'phone', 'web_form', 'event', 'other'] as const;
+  const languages: string[] = ['ja', 'en', 'zh', 'ko', 'other'] as const;
 
   return {
     id,
@@ -138,9 +138,9 @@ function generateLead(seq: number): Record<string, unknown> {
 function generateVisit(seq: number): Record<string, unknown> {
   const id = uuid();
   generatedVisitIds.push(id);
-  
+
   const now = new Date().toISOString();
-  const statuses = ['scheduled', 'visited', 'no_show', 'canceled', 'rescheduled'] as const;
+  const statuses: string[] = ['scheduled', 'visited', 'no_show', 'canceled', 'rescheduled'] as const;
 
   // Use a random existing lead ID or generate a placeholder
   const leadId = generatedLeadIds.length > 0
@@ -174,7 +174,7 @@ function generateVisit(seq: number): Record<string, unknown> {
 // Log payload generator
 function generateLog(seq: number): Record<string, unknown> {
   const now = new Date().toISOString();
-  const types = ['audio/mp3', 'audio/wav', 'image/jpeg', 'image/png', 'text/plain'] as const;
+  const types: string[] = ['audio/mp3', 'audio/wav', 'image/jpeg', 'image/png', 'text/plain'] as const;
 
   // Use random existing IDs or generate placeholders
   const leadId = generatedLeadIds.length > 0 ? randomElement(generatedLeadIds) : undefined;
@@ -198,7 +198,7 @@ function generateLog(seq: number): Record<string, unknown> {
 // Batch create entities
 async function createBatch(schemaName: string, entities: Record<string, unknown>[]): Promise<{ succeeded: number; failed: number; errors: string[] }> {
   const response = await post(`/api/v1/${schemaName}`, entities);
-  
+
   if (response.ok) {
     // Check for partial success in batch response
     const data = response.data as { Successful?: unknown[]; Failed?: { Error: string }[] } | null;
@@ -210,7 +210,7 @@ async function createBatch(schemaName: string, entities: Record<string, unknown>
     }
     return { succeeded: entities.length, failed: 0, errors: [] };
   }
-  
+
   return { succeeded: 0, failed: entities.length, errors: [response.error ?? `HTTP ${response.status}`] };
 }
 
@@ -222,31 +222,31 @@ async function generateData(
   generator: (seq: number) => Record<string, unknown>
 ): Promise<{ schema: string; requested: number; succeeded: number; failed: number; duration_ms: number; errors: string[] }> {
   console.log(`\nGenerating ${count} ${schemaName} records in batches of ${batchSize}...`);
-  
+
   const startTime = Date.now();
   let totalSucceeded = 0;
   let totalFailed = 0;
   const allErrors: string[] = [];
-  
+
   for (let offset = 0; offset < count; offset += batchSize) {
     const batchCount = Math.min(batchSize, count - offset);
     const batch: Record<string, unknown>[] = [];
-    
+
     for (let i = 0; i < batchCount; i++) {
       batch.push(generator(offset + i + 1));
     }
-    
+
     const result = await createBatch(schemaName, batch);
     totalSucceeded += result.succeeded;
     totalFailed += result.failed;
     allErrors.push(...result.errors.slice(0, 5)); // Keep first 5 errors per batch
-    
+
     const progress = Math.min(100, Math.round(((offset + batchCount) / count) * 100));
     process.stdout.write(`\r  Progress: ${progress}% (${offset + batchCount}/${count}) - Success: ${totalSucceeded}, Failed: ${totalFailed}`);
   }
-  
+
   console.log(''); // New line after progress
-  
+
   return {
     schema: schemaName,
     requested: count,
@@ -283,7 +283,7 @@ interface DataGenReport {
 
 async function main() {
   const { schema, count, batchSize } = parseArgs();
-  
+
   console.log('='.repeat(60));
   console.log('Forma E2E: Data Generation');
   console.log('='.repeat(60));
@@ -311,10 +311,10 @@ async function main() {
   };
 
   const schemasToGenerate = schema === 'all' ? ['lead', 'visit'] : [schema];
-  
+
   for (const schemaName of schemasToGenerate) {
     let generator: (seq: number) => Record<string, unknown>;
-    
+
     switch (schemaName) {
       case 'lead':
         generator = generateLead;
@@ -329,14 +329,14 @@ async function main() {
         console.error(`Unknown schema: ${schemaName}`);
         continue;
     }
-    
+
     const result = await generateData(schemaName, count, batchSize, generator);
     report.results.push(result);
     report.summary.total_requested += result.requested;
     report.summary.total_succeeded += result.succeeded;
     report.summary.total_failed += result.failed;
     report.summary.total_duration_ms += result.duration_ms;
-    
+
     console.log(`  Completed: ${result.succeeded}/${result.requested} in ${result.duration_ms}ms`);
     if (result.errors.length > 0) {
       console.log(`  Errors (first ${Math.min(5, result.errors.length)}):`);

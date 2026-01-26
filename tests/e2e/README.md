@@ -82,6 +82,10 @@ bun run cdc-flush
 bun run cdc-flush -- --dry-run
 ```
 
+Notes:
+- Schema registry is required: set `SCHEMA_TABLE` and `SCHEMA_DIR` in `.env` so the CDC tools can generate schema-aware parquet.
+- Optional: tune `CDC_EST_ROW_BYTES` and `CDC_MAX_BATCH_BYTES` to split batches by estimated file size (targets 10–50MB).
+
 ### Federated Check
 
 Validates data consistency between Forma API and direct Postgres queries:
@@ -143,10 +147,14 @@ See `.env.example` for all available configuration options:
 | `PG_PASSWORD` | `postgres` | Postgres password |
 | `PG_DB` | `forma` | Postgres database |
 | `PG_SSL_MODE` | `disable` | Postgres sslmode (disable, require, verify-full) |
+| `SCHEMA_TABLE` | `schema_registry_dev` | Schema registry table for CDC/schema-aware export |
+| `SCHEMA_DIR` | `../../cmd/server/schemas` | Directory containing schema JSON files |
 | `S3_ENDPOINT` | `http://localhost:19000` | S3/RustFS endpoint |
 | `S3_BUCKET` | `forma-cdc` | S3 bucket for CDC data |
 | `DATASET_SIZE` | `10000` | Default dataset size |
 | `BATCH_SIZE` | `500` | Default batch size |
+| `CDC_EST_ROW_BYTES` | `0` | Estimated bytes per row (0 to auto) for CDC batch sizing |
+| `CDC_MAX_BATCH_BYTES` | `0` | Max bytes per CDC batch (0 to auto) |
 
 ## Reports
 

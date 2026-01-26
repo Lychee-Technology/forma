@@ -92,6 +92,8 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     '--pg-db', config.pg.database,
     '--pg-ssl-mode', config.pg.sslMode,
     '--change-log-table', config.tables.changeLog,
+    '--entity-main-table', config.tables.entityMain,
+    '--eav-table', config.tables.eavData,
     '--s3-bucket', config.s3.bucket,
     '--s3-prefix', config.s3.prefix,
     '--s3-endpoint', config.s3.endpoint,
@@ -104,6 +106,13 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     '--schema-registry-table', config.tables.schemaRegistry,
     '--schema-dir', config.schemaDir,
   ];
+
+  if (config.cdc.estimatedRowBytes > 0) {
+    args.push('--estimated-row-bytes', String(config.cdc.estimatedRowBytes));
+  }
+  if (config.cdc.maxBatchBytes > 0) {
+    args.push('--max-batch-bytes', String(config.cdc.maxBatchBytes));
+  }
 
   if (dryRun) {
     args.push('--dry-run');

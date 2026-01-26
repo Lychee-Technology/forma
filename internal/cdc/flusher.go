@@ -40,6 +40,9 @@ type S3ObjectClient interface {
 // environment (still respecting cfg.S3Region). Optional schemaRegistry enables
 // schema-aware projections in DuckDB export.
 func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
+	if schemaRegistry == nil {
+		return fmt.Errorf("schema registry is required for CDC export")
+	}
 	// Setup AWS credentials and S3 client
 	region, credProvider, s3Client, err := setupAWSClient(ctx, cfg, s3Client)
 	if err != nil {
@@ -259,12 +262,40 @@ func executeFlush(
 	}
 
 	batchIDs := ids
+	maxRows := 0
 	if cfg.MaxBatchBytes > 0 && cfg.EstimatedRowBytes > 0 {
-		maxRows := int(cfg.MaxBatchBytes / int64(cfg.EstimatedRowBytes))
-		if maxRows > 0 && len(batchIDs) > maxRows {
-			logger.Sugar().Infow("truncating batch to fit byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "to_rows", maxRows)
-			batchIDs = batchIDs[:maxRows]
+		maxRows = int(cfg.MaxBatchBytes / int64(cfg.EstimatedRowBytes))
+	}
+
+	if maxRows > 0 && len(batchIDs) > maxRows {
+		logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
+		for start := 0; start < len(batchIDs); start += maxRows {
+			end := start + maxRows
+			if end > len(batchIDs) {
+				end = len(batchIDs)
+			}
+			sub := batchIDs[start:end]
+			if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot, sub, attrCache); err != nil {
+				logger.Sugar().Errorw("duck export failed", "err", err)
+				return
+			}
+			if err := CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, tmpKey, finalKey, logger); err != nil {
+				logger.Sugar().Errorw("s3 copy tmp->final failed", "err", err)
+				return
+			}
+			if dryRun {
+				logger.Sugar().Infow("dry-run: skipping mark flushed", "schema_id", schemaID)
+				return
+			}
+			flushedAt := time.Now().UnixMilli()
+			rowsUpdated, err := MarkFlushedIDs(ctx, db, tableName, schemaID, sub, flushedAt)
+			if err != nil {
+				logger.Sugar().Errorw("mark flushed failed", "err", err)
+				return
+			}
+			logger.Sugar().Infow("flush chunk completed", "schema_id", schemaID, "rows_flushed", rowsUpdated, "chunk_size", len(sub))
 		}
+		return
 	}
 
 	if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot, batchIDs, attrCache); err != nil {
