@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,8 +16,8 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
-	"os"
 )
 
 // generateIAMTokenFn is the function signature we use to generate IAM tokens.
@@ -35,6 +36,13 @@ type S3ObjectClient interface {
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
+// S3FullClient extends S3ObjectClient with GetObject and PutObject for manifest operations.
+type S3FullClient interface {
+	S3ObjectClient
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
+
 // RunOnce performs one full pass over schemas and attempts flush where needed.
 // Caller may provide an S3ObjectClient; when nil, AWS config will be loaded from
 // environment (still respecting cfg.S3Region). Optional schemaRegistry enables
@@ -44,9 +52,23 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		return fmt.Errorf("schema registry is required for CDC export")
 	}
 	// Setup AWS credentials and S3 client
-	region, credProvider, s3Client, err := setupAWSClient(ctx, cfg, s3Client)
+	region, credProvider, fullS3Client, err := setupAWSClient(ctx, cfg, s3Client)
 	if err != nil {
 		return err
+	}
+
+	// Setup manifest store if configured
+	var manifestStore manifest.Store
+	var manifestResolver manifest.PathResolver
+	if cfg.ManifestTemplate != "" {
+		manifestStore = &manifest.S3Store{
+			Client: fullS3Client,
+			Bucket: cfg.S3Bucket,
+		}
+		manifestResolver = manifest.PathResolver{
+			Prefix:       cfg.ManifestPrefix,
+			PathTemplate: cfg.ManifestTemplate,
+		}
 	}
 
 	// Setup Postgres connection
@@ -77,18 +99,14 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// Process each schema
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		processSchema(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry)
+		processSchema(ctx, db, duck, fullS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver)
 	}
 
 	return nil
 }
 
 // setupAWSClient initializes the AWS credentials and S3 client.
-func setupAWSClient(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient) (string, aws.CredentialsProvider, S3ObjectClient, error) {
-	if s3Client != nil {
-		return cfg.S3Region, aws.AnonymousCredentials{}, s3Client, nil
-	}
-
+func setupAWSClient(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient) (string, aws.CredentialsProvider, *s3.Client, error) {
 	awsCfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)
@@ -99,7 +117,19 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient)
 	if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
 		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
 	}
-	return awsCfg.Region, awsCfg.Credentials, s3.NewFromConfig(awsCfg), nil
+
+	// Build S3 client options
+	var fullClient *s3.Client
+	if cfg.S3Endpoint != "" {
+		fullClient = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+			o.BaseEndpoint = &cfg.S3Endpoint
+			o.UsePathStyle = cfg.S3UsePath
+		})
+	} else {
+		fullClient = s3.NewFromConfig(awsCfg)
+	}
+
+	return awsCfg.Region, awsCfg.Credentials, fullClient, nil
 }
 
 // setupPostgresConnection creates a Postgres connection, potentially using IAM auth.
@@ -164,6 +194,8 @@ func processSchema(
 	dryRun bool,
 	logger *zap.Logger,
 	schemaRegistry forma.SchemaRegistry,
+	manifestStore manifest.Store,
+	manifestResolver manifest.PathResolver,
 ) {
 	logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
@@ -196,7 +228,7 @@ func processSchema(
 	}
 
 	// Execute flush
-	executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry)
+	executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver)
 }
 
 // shouldFlush determines if flush thresholds are met.
@@ -224,6 +256,8 @@ func executeFlush(
 	dryRun bool,
 	logger *zap.Logger,
 	schemaRegistry forma.SchemaRegistry,
+	manifestStore manifest.Store,
+	manifestResolver manifest.PathResolver,
 ) {
 	// Select batch
 	ids, snapshot, err := SelectBatchRowIDs(ctx, db, tableName, schemaID, cfg.BatchSize)
@@ -275,16 +309,24 @@ func executeFlush(
 				end = len(batchIDs)
 			}
 			sub := batchIDs[start:end]
-			if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot, sub, attrCache); err != nil {
+
+			// Generate new UUIDs for each chunk
+			chunkTmpUUID := uuid.Must(uuid.NewV7()).String()
+			chunkFinalUUID := uuid.Must(uuid.NewV7()).String()
+			chunkTmpKey := BuildTempPath(cfg.S3Prefix, schemaID, chunkTmpUUID)
+			chunkFinalKey := BuildDeltaPath(cfg.S3Prefix, schemaID, chunkFinalUUID)
+			chunkS3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, chunkTmpKey)
+
+			if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, chunkS3TmpPath, schemaID, snapshot, sub, attrCache); err != nil {
 				logger.Sugar().Errorw("duck export failed", "err", err)
 				return
 			}
-			if err := CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, tmpKey, finalKey, logger); err != nil {
+			if err := CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, chunkTmpKey, chunkFinalKey, logger); err != nil {
 				logger.Sugar().Errorw("s3 copy tmp->final failed", "err", err)
 				return
 			}
 			if dryRun {
-				logger.Sugar().Infow("dry-run: skipping mark flushed", "schema_id", schemaID)
+				logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", schemaID)
 				return
 			}
 			flushedAt := time.Now().UnixMilli()
@@ -293,6 +335,15 @@ func executeFlush(
 				logger.Sugar().Errorw("mark flushed failed", "err", err)
 				return
 			}
+
+			// Update manifest if configured
+			if manifestStore != nil {
+				if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, chunkFinalKey, "delta", sub, flushedAt, logger); err != nil {
+					logger.Sugar().Errorw("manifest update failed", "err", err)
+					// Don't return - the flush succeeded, manifest is non-critical
+				}
+			}
+
 			logger.Sugar().Infow("flush chunk completed", "schema_id", schemaID, "rows_flushed", rowsUpdated, "chunk_size", len(sub))
 		}
 		return
@@ -311,7 +362,7 @@ func executeFlush(
 
 	// Mark flushed
 	if dryRun {
-		logger.Sugar().Infow("dry-run: skipping mark flushed", "schema_id", schemaID)
+		logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", schemaID)
 		return
 	}
 
@@ -321,8 +372,61 @@ func executeFlush(
 		logger.Sugar().Errorw("mark flushed failed", "err", err)
 		return
 	}
+
+	// Update manifest if configured
+	if manifestStore != nil {
+		if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, finalKey, "delta", batchIDs, flushedAt, logger); err != nil {
+			logger.Sugar().Errorw("manifest update failed", "err", err)
+			// Don't return - the flush succeeded, manifest is non-critical
+		}
+	}
+
 	logger.Sugar().Infow("flush completed", "schema_id", schemaID, "rows_flushed", rowsUpdated, "final_key", finalKey)
 
 	// Suppress unused variable warning
 	_ = ids
+}
+
+// updateManifest appends a file entry to the schema's manifest.
+func updateManifest(
+	ctx context.Context,
+	store manifest.Store,
+	resolver manifest.PathResolver,
+	schemaID int16,
+	filePath string,
+	tier string,
+	rowIDs []uuid.UUID,
+	createdAt int64,
+	logger *zap.Logger,
+) error {
+	if store == nil {
+		return nil
+	}
+
+	manifestPath, err := resolver.Resolve(schemaID)
+	if err != nil {
+		return fmt.Errorf("resolve manifest path: %w", err)
+	}
+
+	// Build file entry
+	entry := manifest.FileEntry{
+		Tier:       tier,
+		Path:       filePath,
+		RowCount:   int64(len(rowIDs)),
+		CreatedMin: createdAt,
+		CreatedMax: createdAt,
+	}
+
+	// Set row ID bounds if available
+	if len(rowIDs) > 0 {
+		entry.RowIDMin = rowIDs[0].String()
+		entry.RowIDMax = rowIDs[len(rowIDs)-1].String()
+	}
+
+	if err := manifest.AppendFile(ctx, store, manifestPath, schemaID, entry); err != nil {
+		return fmt.Errorf("append to manifest: %w", err)
+	}
+
+	logger.Sugar().Infow("manifest updated", "schema_id", schemaID, "manifest_path", manifestPath, "file_path", filePath, "tier", tier)
+	return nil
 }

@@ -52,6 +52,10 @@ func runCDCFlush(args []string) error {
 	s3UseSSL := fs.Bool("s3-use-ssl", true, "Use SSL for S3")
 	s3UsePath := fs.Bool("s3-use-path", false, "Use path-style S3 addressing")
 
+	// Manifest settings (optional - enables manifest tracking)
+	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
+	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
+
 	// Compression
 	parquetCompression := fs.String("parquet-compression", "zstd", "Parquet compression codec")
 	parquetCompressionLevel := fs.Int("parquet-compression-level", 3, "Parquet compression level")
@@ -108,6 +112,8 @@ func runCDCFlush(args []string) error {
 		S3Region:                *s3Region,
 		S3UseSSL:                *s3UseSSL,
 		S3UsePath:               *s3UsePath,
+		ManifestPrefix:          *manifestPrefix,
+		ManifestTemplate:        *manifestTemplate,
 	}.WithDefaults()
 
 	// Create logger
@@ -156,6 +162,7 @@ func runCDCFlush(args []string) error {
 	logger.Info("starting CDC flush",
 		zap.String("bucket", cfg.S3Bucket),
 		zap.String("prefix", cfg.S3Prefix),
+		zap.String("manifest_template", cfg.ManifestTemplate),
 		zap.Bool("dry_run", *dryRun))
 
 	if err := cdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, schemaRegistry); err != nil {

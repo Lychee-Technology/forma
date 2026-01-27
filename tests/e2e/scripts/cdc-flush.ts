@@ -114,6 +114,9 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     args.push('--max-batch-bytes', String(config.cdc.maxBatchBytes));
   }
 
+  // Enable manifest tracking
+  args.push('--manifest-template', 'manifest/{{.SchemaID}}.json');
+
   if (dryRun) {
     args.push('--dry-run');
   }

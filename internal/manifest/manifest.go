@@ -119,3 +119,56 @@ func Decode(r io.Reader) (*Manifest, error) {
 	}
 	return &m, nil
 }
+
+// LoadOrCreate loads an existing manifest or creates a new empty one for the schema.
+// Returns the manifest, etag (empty if new), and any error.
+func LoadOrCreate(ctx context.Context, st Store, path string, schemaID int16) (*Manifest, string, error) {
+	m, etag, err := Load(ctx, st, path)
+	if err == nil {
+		return m, etag, nil
+	}
+	// If file doesn't exist, create new manifest
+	// Most S3-compatible stores return an error containing "NoSuchKey" or "not found"
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist") {
+		return &Manifest{
+			SchemaID: schemaID,
+			Version:  0,
+			Files:    []FileEntry{},
+		}, "", nil
+	}
+	return nil, "", err
+}
+
+// AppendFile adds a FileEntry to the manifest and saves it.
+// Uses optimistic locking via etag to handle concurrent updates.
+func AppendFile(ctx context.Context, st Store, path string, schemaID int16, entry FileEntry) error {
+	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	m.Files = append(m.Files, entry)
+	_, err = Save(ctx, st, path, m, etag)
+	if err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	return nil
+}
+
+// AppendFiles adds multiple FileEntry items to the manifest and saves it.
+// Uses optimistic locking via etag to handle concurrent updates.
+func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, entries []FileEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	m.Files = append(m.Files, entries...)
+	_, err = Save(ctx, st, path, m, etag)
+	if err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	return nil
+}

@@ -35,6 +35,10 @@ type CDCConfig struct {
 	EstimatedRowBytes       int           // rough row size estimate for batch sizing
 	MaxBatchBytes           int64         // optional cap to limit batch size by bytes
 
+	// Init-specific options (cdc-init base file export)
+	TargetFileSizeMB int // target parquet file size in MB (0 = use BatchSize)
+	MaxBatchSize     int // maximum rows per batch to cap memory usage
+
 	// S3
 	S3Bucket   string
 	S3Prefix   string // prefix inside bucket for delta files
@@ -42,6 +46,10 @@ type CDCConfig struct {
 	S3Region   string
 	S3UseSSL   bool
 	S3UsePath  bool // path style addressing
+
+	// Manifest (optional - when set, flush updates manifest after export)
+	ManifestPrefix   string // root prefix for manifests in S3
+	ManifestTemplate string // path template, e.g. "manifest/{{.SchemaID}}.json"
 }
 
 // CompactionConfig controls Base/Delta maintenance.
@@ -78,6 +86,8 @@ const (
 	DefaultMaxBatchBytes           = int64(50 * 1024 * 1024)
 	DefaultBatchSize               = 10000
 	DefaultTargetBaseSizeMB        = 256
+	DefaultTargetFileSizeMB        = 256
+	DefaultMaxBatchSize            = 10000000 // 10M rows max
 	DefaultMaxDeltaSizeMB          = 50
 	DefaultDirtyRatioPct           = 5
 	DefaultMaxRetries              = 5
@@ -117,6 +127,9 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 	}
 	if c.MaxBatchBytes <= 0 {
 		c.MaxBatchBytes = DefaultMaxBatchBytes
+	}
+	if c.MaxBatchSize <= 0 {
+		c.MaxBatchSize = DefaultMaxBatchSize
 	}
 	if c.ChangeLogTable == "" {
 		c.ChangeLogTable = "change_log"

@@ -7,6 +7,8 @@
     "register-schemas": "bun run scripts/register-schemas.ts",
     "gen-data": "bun run scripts/gen-data.ts",
     "cdc-flush": "bun run scripts/cdc-flush.ts",
+    "cdc-init": "bun run scripts/cdc-init.ts",
+    "compactor": "bun run scripts/compactor.ts",
     "federated-check": "bun run scripts/federated-check.ts",
     "build-k6": "bunx esbuild k6/scenarios.ts --bundle --format=esm --target=es2020 --platform=neutral --external:k6 --external:'k6/*' --outfile=k6/dist/bundle.js",
     "k6-smoke": "k6 run --out json=reports/k6-smoke.json -e SCENARIO=smoke k6/dist/bundle.js",

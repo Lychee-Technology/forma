@@ -35,3 +35,16 @@ func BuildTempPath(prefix string, schemaID int16, fileUUID string) string {
 	trimmed := strings.TrimSuffix(prefix, "/")
 	return fmt.Sprintf("%s/%d/_tmp/%s.parquet", trimmed, schemaID, fileUUID)
 }
+
+// BuildBasePath returns the canonical base file path for a schema.
+// Base files use min/max row_id naming to indicate the row range covered.
+func BuildBasePath(prefix string, schemaID int16, minRowID, maxRowID string) string {
+	trimmed := strings.TrimSuffix(prefix, "/")
+	return fmt.Sprintf("%s/%d/%s_%s.parquet", trimmed, schemaID, minRowID, maxRowID)
+}
+
+// BuildBaseTempPath returns the temp path for a base file during init.
+func BuildBaseTempPath(prefix string, schemaID int16, fileUUID string) string {
+	trimmed := strings.TrimSuffix(prefix, "/")
+	return fmt.Sprintf("%s/%d/_tmp/%s.parquet", trimmed, schemaID, fileUUID)
+}
