@@ -46,7 +46,9 @@ func TestRunGenerateAttributesWithSchemaName(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
 	args := []string{
 		"-schema-dir", tempDir,
@@ -80,7 +82,9 @@ func TestRunGenerateAttributesWithSchemaFile(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
 	args := []string{
 		"-schema-file", schemaPath,
@@ -112,7 +116,9 @@ func TestRunGenerateAttributesDefaultOutputPath(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
 	args := []string{
 		"-schema-file", schemaPath,
@@ -499,7 +505,9 @@ func TestLoadExistingAttributesValidFile(t *testing.T) {
 	}
 
 	data, _ := json.Marshal(attrs)
-	os.WriteFile(attrPath, data, 0o644)
+	if err := os.WriteFile(attrPath, data, 0o644); err != nil {
+		t.Fatalf("failed to write attributes file: %v", err)
+	}
 
 	result, err := loadExistingAttributes(attrPath)
 	if err != nil {
@@ -520,7 +528,9 @@ func TestLoadExistingAttributesInvalidJSON(t *testing.T) {
 	tempDir := t.TempDir()
 	attrPath := filepath.Join(tempDir, "invalid.json")
 
-	os.WriteFile(attrPath, []byte("{invalid json"), 0o644)
+	if err := os.WriteFile(attrPath, []byte("{invalid json"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
 
 	_, err := loadExistingAttributes(attrPath)
 	if err == nil || !strings.Contains(err.Error(), "parse existing attributes JSON") {
@@ -643,7 +653,9 @@ func TestGenerateAttributesJSONNewFile(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
 	err := generateAttributesJSON(schemaPath, outputPath)
 	if err != nil {
@@ -653,7 +665,9 @@ func TestGenerateAttributesJSONNewFile(t *testing.T) {
 	// Load and verify output
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 attributes, got %d", len(result))
@@ -687,14 +701,18 @@ func TestGenerateAttributesJSONPreserveExistingIDs(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema1)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Read first generation result
 	data, _ := os.ReadFile(outputPath)
 	var firstResult map[string]map[string]any
-	json.Unmarshal(data, &firstResult)
+	if err := json.Unmarshal(data, &firstResult); err != nil {
+		t.Fatalf("failed to unmarshal first result: %v", err)
+	}
 
 	originalNameID := int(firstResult["name"]["attributeID"].(float64))
 	originalAgeID := int(firstResult["age"]["attributeID"].(float64))
@@ -709,14 +727,18 @@ func TestGenerateAttributesJSONPreserveExistingIDs(t *testing.T) {
 		},
 	}
 	schemaData, _ = json.Marshal(schema2)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Read second generation result
 	data, _ = os.ReadFile(outputPath)
 	var secondResult map[string]map[string]any
-	json.Unmarshal(data, &secondResult)
+	if err := json.Unmarshal(data, &secondResult); err != nil {
+		t.Fatalf("failed to unmarshal second result: %v", err)
+	}
 
 	// Check that original IDs are preserved
 	if newNameID := int(secondResult["name"]["attributeID"].(float64)); newNameID != originalNameID {
@@ -750,9 +772,9 @@ func TestGenerateAttributesJSONRemoveAttributeFromSchema(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema1)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Now remove one attribute from schema
 	schema2 := map[string]any{
@@ -763,14 +785,16 @@ func TestGenerateAttributesJSONRemoveAttributeFromSchema(t *testing.T) {
 		},
 	}
 	schemaData, _ = json.Marshal(schema2)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Verify that email is still in the attributes file
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
 
 	if _, ok := result["email"]; !ok {
 		t.Errorf("removed attribute 'email' should still exist in attributes file")
@@ -797,9 +821,9 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema1)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Update schema to add date format
 	schema2 := map[string]any{
@@ -812,14 +836,16 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 		},
 	}
 	schemaData, _ = json.Marshal(schema2)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Verify value type was updated
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
 
 	if valueType, ok := result["createdAt"]["valueType"].(string); !ok || valueType != "date" {
 		t.Errorf("expected valueType to be updated to 'date', got %v", result["createdAt"]["valueType"])
@@ -842,7 +868,7 @@ func TestGenerateAttributesJSONMarksRequiredAttributes(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
 	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -850,7 +876,9 @@ func TestGenerateAttributesJSONMarksRequiredAttributes(t *testing.T) {
 
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
 
 	if required, ok := result["name"]["required"].(bool); !ok || !required {
 		t.Errorf("expected required flag for name attribute, got %v", result["name"]["required"])
@@ -877,7 +905,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(initialSchema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
 	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -885,7 +913,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 
 	data, _ := os.ReadFile(outputPath)
 	var firstResult map[string]map[string]any
-	json.Unmarshal(data, &firstResult)
+	_ = json.Unmarshal(data, &firstResult)
 
 	if required, ok := firstResult["name"]["required"].(bool); !ok || !required {
 		t.Fatalf("expected name to be required after first generation")
@@ -905,7 +933,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 		},
 	}
 	schemaData, _ = json.Marshal(updatedSchema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
 	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
 		t.Fatalf("expected no error on regeneration, got %v", err)
@@ -913,7 +941,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 
 	data, _ = os.ReadFile(outputPath)
 	var secondResult map[string]map[string]any
-	json.Unmarshal(data, &secondResult)
+	_ = json.Unmarshal(data, &secondResult)
 
 	if _, ok := secondResult["name"]["required"]; ok {
 		t.Errorf("expected name to no longer be required")
@@ -945,7 +973,7 @@ func TestGenerateAttributesJSONMaxIDCalculation(t *testing.T) {
 		"attr3": {"attributeID": 7, "valueType": "text"},
 	}
 	attrData, _ := json.Marshal(existingAttrs)
-	os.WriteFile(outputPath, attrData, 0o644)
+	_ = os.WriteFile(outputPath, attrData, 0o644)
 
 	// Create schema with new attributes
 	schema := map[string]any{
@@ -956,14 +984,14 @@ func TestGenerateAttributesJSONMaxIDCalculation(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	// Verify new IDs start after maxID (10)
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	_ = json.Unmarshal(data, &result)
 
 	newID1 := int(result["newAttr1"]["attributeID"].(float64))
 	newID2 := int(result["newAttr2"]["attributeID"].(float64))
@@ -995,7 +1023,7 @@ func TestGenerateAttributesJSONInvalidJSON(t *testing.T) {
 	schemaPath := filepath.Join(tempDir, "schema.json")
 	outputPath := filepath.Join(tempDir, "attributes.json")
 
-	os.WriteFile(schemaPath, []byte("{invalid json"), 0o644)
+	_ = os.WriteFile(schemaPath, []byte("{invalid json"), 0o644)
 
 	err := generateAttributesJSON(schemaPath, outputPath)
 	if err == nil || !strings.Contains(err.Error(), "parse schema JSON") {
@@ -1067,7 +1095,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema1)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
 	err := generateAttributesJSON(schemaPath, outputPath)
 	if err != nil {
@@ -1076,7 +1104,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 
 	data, _ := os.ReadFile(outputPath)
 	var result1 map[string]map[string]any
-	json.Unmarshal(data, &result1)
+	_ = json.Unmarshal(data, &result1)
 
 	idFromFirstGen := int(result1["id"]["attributeID"].(float64))
 	nameFromFirstGen := int(result1["name"]["attributeID"].(float64))
@@ -1090,7 +1118,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 		},
 	}
 	schemaData, _ = json.Marshal(schema2)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
 	err = generateAttributesJSON(schemaPath, outputPath)
 	if err != nil {
@@ -1099,7 +1127,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 
 	data, _ = os.ReadFile(outputPath)
 	var result2 map[string]map[string]any
-	json.Unmarshal(data, &result2)
+	_ = json.Unmarshal(data, &result2)
 
 	// Step 3: Verify
 	if len(result2) != 3 {
@@ -1183,13 +1211,13 @@ func TestGenerateAttributesJSONNewAttributesAreSorted(t *testing.T) {
 		},
 	}
 	schemaData, _ := json.Marshal(schema)
-	os.WriteFile(schemaPath, schemaData, 0o644)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath)
 
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
-	json.Unmarshal(data, &result)
+	_ = json.Unmarshal(data, &result)
 
 	// Get the IDs for each attribute
 	appleID := int(result["apple"]["attributeID"].(float64))

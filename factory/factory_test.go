@@ -196,9 +196,9 @@ func createTempTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (sc
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", schemaRegistryTable))
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", entityMainTable))
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", eavDataTable))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", schemaRegistryTable))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", entityMainTable))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", eavDataTable))
 	})
 
 	return schemaRegistryTable, entityMainTable, eavDataTable
@@ -508,7 +508,7 @@ func TestNewEntityManagerWithConfig_NilPool(t *testing.T) {
 
 	// This will panic with nil pool - we verify the function doesn't handle nil gracefully
 	assert.Panics(t, func() {
-		NewEntityManagerWithConfig(config, nil)
+		_, _ = NewEntityManagerWithConfig(config, nil)
 	})
 }
 
@@ -537,7 +537,7 @@ func TestNewFileSchemaRegistry_Integration_Success(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	})
 
 	// Insert schemas
@@ -598,7 +598,7 @@ func TestNewFileSchemaRegistry_Integration_EmptyRegistry(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	})
 
 	// Don't insert any schemas
@@ -631,7 +631,7 @@ func TestNewFileSchemaRegistry_Integration_InvalidDirectory(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	})
 
 	// Insert a schema
@@ -669,7 +669,7 @@ func TestNewFileSchemaRegistry_Integration_MissingAttributesFile(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	})
 
 	// Insert a schema
@@ -692,6 +692,6 @@ func TestNewFileSchemaRegistry_Integration_MissingAttributesFile(t *testing.T) {
 func TestNewFileSchemaRegistry_NilPool(t *testing.T) {
 	// This will panic with nil pool
 	assert.Panics(t, func() {
-		NewFileSchemaRegistry(nil, "test_table", t.TempDir())
+		_, _ = NewFileSchemaRegistry(nil, "test_table", t.TempDir())
 	})
 }

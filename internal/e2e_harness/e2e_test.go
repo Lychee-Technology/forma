@@ -19,13 +19,13 @@ func TestE2EHarnessMinimal(t *testing.T) {
 	if _, err := h.StartPostgres(ctx); err != nil {
 		t.Fatalf("start postgres: %v", err)
 	}
-	defer h.StopPostgres(ctx)
+	defer func() { _ = h.StopPostgres(ctx) }()
 
 	// Start S3
 	if _, err := h.StartS3(ctx); err != nil {
 		t.Fatalf("start rustfs: %v", err)
 	}
-	defer h.StopS3(ctx)
+	defer func() { _ = h.StopS3(ctx) }()
 
 	// Start DuckDB
 	cfg := forma.DuckDBConfig{
@@ -40,7 +40,7 @@ func TestE2EHarnessMinimal(t *testing.T) {
 	if err := h.StartDuckDB(cfg); err != nil {
 		t.Fatalf("start duckdb: %v", err)
 	}
-	defer h.StopDuckDB()
+	defer func() { _ = h.StopDuckDB() }()
 
 	// Seed Postgres
 	if err := SeedPostgres(ctx, h.PGDB); err != nil {

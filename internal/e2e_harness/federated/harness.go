@@ -37,7 +37,6 @@ type FederatedTestHarness struct {
 
 	// Internal clients
 	s3Client *s3.Client
-	repo     *internal.DBPersistentRecordRepository
 	tables   internal.StorageTables
 	logger   *zap.Logger
 
@@ -194,7 +193,7 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 
 	// Initialize database schema
 	if err := h.initDatabaseSchema(ctx); err != nil {
-		h.Cleanup(ctx)
+		_ = h.Cleanup(ctx)
 		return nil, fmt.Errorf("init database schema: %w", err)
 	}
 
@@ -208,7 +207,7 @@ func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
 	}
 
 	if _, err := base.StartS3(ctx); err != nil {
-		base.StopPostgres(ctx)
+		_ = base.StopPostgres(ctx)
 		return fmt.Errorf("start s3: %w", err)
 	}
 
@@ -227,8 +226,8 @@ func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
 		MaxParallelism: 4,
 	}
 	if err := base.StartDuckDB(duckCfg); err != nil {
-		base.StopS3(ctx)
-		base.StopPostgres(ctx)
+		_ = base.StopS3(ctx)
+		_ = base.StopPostgres(ctx)
 		return fmt.Errorf("start duckdb: %w", err)
 	}
 
@@ -254,13 +253,13 @@ func createS3Client(ctx context.Context, endpoint string) (*s3.Client, error) {
 // cleanupContainers stops all containers in reverse order.
 func cleanupContainers(ctx context.Context, base *e2e_harness.TestHarness) {
 	if base.Duck != nil {
-		base.StopDuckDB()
+		_ = base.StopDuckDB()
 	}
 	if base.S3Container != nil {
-		base.StopS3(ctx)
+		_ = base.StopS3(ctx)
 	}
 	if base.PGContainer != nil {
-		base.StopPostgres(ctx)
+		_ = base.StopPostgres(ctx)
 	}
 }
 

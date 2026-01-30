@@ -36,7 +36,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to build logger: %w", err))
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)
 	sugar := logger.Sugar()
 

@@ -142,7 +142,7 @@ func WriteParquetFiles(ctx context.Context, duck *internal.DuckDBClient, outDir 
 			return "", "", err
 		}
 	}
-	f.Sync()
+	_ = f.Sync()
 
 	baseParquet := filepath.Join(outDir, "base.parquet")
 	deltaParquet := filepath.Join(outDir, "delta.parquet")

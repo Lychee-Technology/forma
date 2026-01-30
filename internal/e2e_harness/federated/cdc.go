@@ -79,7 +79,9 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]uuid.U
 	var rowIDs []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan row id: %w", err)
+		}
 		rowIDs = append(rowIDs, id)
 	}
 	return rowIDs, nil
@@ -157,7 +159,9 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 			var name sql.NullString
 			var version sql.NullInt64
 
-			rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version)
+			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+				return nil, fmt.Errorf("scan row: %w", err)
+			}
 
 			rec := TestRecord{
 				RowID:     uuid.MustParse(rowID),
@@ -179,7 +183,7 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 // deleteDeltaFiles deletes the specified delta files from S3.
 func (h *FederatedTestHarness) deleteDeltaFiles(ctx context.Context, deltaFiles []string) {
 	for _, f := range deltaFiles {
-		h.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		_, _ = h.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(h.S3Bucket),
 			Key:    aws.String(f),
 		})
@@ -199,7 +203,7 @@ func (h *FederatedTestHarness) GetChangeLogStats(ctx context.Context) (count int
 // CountUnflushedRecords returns the count of unflushed records.
 func (h *FederatedTestHarness) CountUnflushedRecords(ctx context.Context) int {
 	var count int
-	h.PGDB.QueryRowContext(ctx, `
+	_ = h.PGDB.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM change_log WHERE schema_id = $1 AND flushed_at = 0
 	`, h.SchemaID).Scan(&count)
 	return count

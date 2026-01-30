@@ -72,11 +72,6 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 		dec.Reason = "unknown strategy - default"
 	}
 
-	// Allow options to override timeout/parallelism via QueryTimeout
-	if opts != nil && opts.Parallelism > 0 {
-		// no-op here; caller may translate to pragmas
-	}
-
 	// If DuckDB is disabled by decision, ensure tiers reflect that
 	if !dec.UseDuckDB {
 		dec.Tiers = []DataTier{DataTierHot}

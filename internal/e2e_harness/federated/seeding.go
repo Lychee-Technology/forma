@@ -251,12 +251,12 @@ func (h *FederatedTestHarness) ClearAllData(ctx context.Context) error {
 	for _, t := range tables {
 		if _, err := h.PGDB.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 OR ltbase_schema_id = $1", t), h.SchemaID); err != nil {
 			// Ignore errors for tables with different column names
-			h.PGDB.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", t))
+			_, _ = h.PGDB.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", t))
 		}
 	}
 
 	// Clear S3
-	h.deleteS3Prefix(ctx, h.S3Prefix)
+	_ = h.deleteS3Prefix(ctx, h.S3Prefix)
 	h.seededRecords = make(map[string][]TestRecord)
 	return nil
 }

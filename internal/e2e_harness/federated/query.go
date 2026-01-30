@@ -146,60 +146,6 @@ func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.
 	}
 }
 
-// buildFederatedQuerySQL builds the federated query SQL (legacy version with all tiers).
-func (h *FederatedTestHarness) buildFederatedQuerySQL(baseFiles, deltaFiles string, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
-	rowIDFilter := buildRowIDFilter(opts)
-	pgConnStr := h.buildPGConnString()
-
-	query := fmt.Sprintf(`
-		WITH combined AS (
-			-- Tier 1: S3 Base Files
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, 'base' as tier
-			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s
-
-			UNION ALL
-
-			-- Tier 2: S3 Delta Files
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, 'delta' as tier
-			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s
-
-			UNION ALL
-
-			-- Tier 3: Postgres Hot Buffer
-			SELECT 
-				cl.row_id::VARCHAR as row_id,
-				cl.schema_id,
-				cl.changed_at,
-				cl.deleted_at,
-				'' as name,
-				0 as version,
-				'hot' as tier
-			FROM postgres_scan('%s', 'public', 'change_log') cl
-			WHERE cl.flushed_at = 0 
-				AND cl.schema_id = %d
-				AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
-				%s
-		),
-		deduplicated AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
-			FROM combined
-		)
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version
-		FROM deduplicated
-		WHERE rn = 1
-		ORDER BY row_id
-		LIMIT %d OFFSET %d
-	`, baseFiles, dirtyExclusion, rowIDFilter,
-		deltaFiles, dirtyExclusion, rowIDFilter,
-		pgConnStr, h.SchemaID, rowIDFilter,
-		opts.Limit, opts.Offset)
-
-	return query
-}
-
 // buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
@@ -364,7 +310,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 
 	// Get total count
 	var total int64
-	h.PGDB.QueryRowContext(ctx, `
+	_ = h.PGDB.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM entity_main 
 		WHERE ltbase_schema_id = $1 AND (ltbase_deleted_at IS NULL OR ltbase_deleted_at = 0)
 	`, h.SchemaID).Scan(&total)

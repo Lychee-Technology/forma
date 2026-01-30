@@ -286,7 +286,7 @@ func buildDuckKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache) (
 	}
 
 	// Determine value type
-	valueType := forma.ValueTypeText
+	var valueType forma.ValueType
 	if hasMeta {
 		valueType = meta.ValueType
 	} else {

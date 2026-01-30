@@ -209,7 +209,7 @@ func processSchema(
 		logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return
 	}
-	defer ReleaseSchemaLock(ctx, db, schemaID)
+	defer func() { _ = ReleaseSchemaLock(ctx, db, schemaID) }()
 
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, db, tableName, schemaID)

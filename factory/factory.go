@@ -127,7 +127,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	var duckClient *internal.DuckDBClient = nil
 
 	// Initialize DuckDB client if enabled in config
-	if config != nil && config.DuckDB.Enabled {
+	if config.DuckDB.Enabled {
 		zap.S().Infow("initializing DuckDB client", "dbPath", config.DuckDB.DBPath)
 		duckClient, err = internal.NewDuckDBClient(config.DuckDB)
 		if err != nil {

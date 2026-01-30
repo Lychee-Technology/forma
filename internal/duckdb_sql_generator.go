@@ -179,7 +179,7 @@ func generateDuckDBCompositeCondition(cond *forma.CompositeCondition) (string, [
 	if len(parts) == 0 {
 		return "1=1", nil, nil
 	}
-	return fmt.Sprintf("%s", joinStrings(parts, joiner)), args, nil
+	return joinStrings(parts, joiner), args, nil
 }
 
 // generateDuckDBKvCondition handles KvCondition for DuckDB WHERE generation.

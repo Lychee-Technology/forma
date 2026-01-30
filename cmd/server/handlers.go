@@ -12,13 +12,13 @@ import (
 // handleCreate handles POST /api/v1/{schema_name}
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	schemaName, _, err := parsePath(r.URL.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
 	zap.S().Infow("create request received", "schema", schemaName)
@@ -26,7 +26,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// Try to read as single object or array
 	var rawBody any
 	if err := readJSONBody(r, &rawBody); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
 
@@ -42,12 +42,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		// Already an array
 		jsonObjects = v
 	default:
-		writeError(w, http.StatusBadRequest, "body must be an object or array")
+		_ = writeError(w, http.StatusBadRequest, "body must be an object or array")
 		return
 	}
 
 	if len(jsonObjects) == 0 {
-		writeError(w, http.StatusBadRequest, "empty array not allowed")
+		_ = writeError(w, http.StatusBadRequest, "empty array not allowed")
 		return
 	}
 	zap.S().Debugw("create payload parsed", "schema", schemaName, "records", len(jsonObjects))
@@ -72,7 +72,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchCreate(r.Context(), batchOp)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch create failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch create failed: %v", err))
 		return
 	}
 	zap.S().Infow("create request completed", "schema", schemaName, "successful", len(result.Successful), "failed", len(result.Failed))
@@ -84,36 +84,36 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			"schema_name": result.Successful[0].SchemaName,
 			"attributes":  result.Successful[0].Attributes,
 		}
-		writeSuccess(w, http.StatusCreated, singleResult)
+		_ = writeSuccess(w, http.StatusCreated, singleResult)
 		return
 	}
 
 	// Return batch result
-	writeSuccess(w, http.StatusCreated, result)
+	_ = writeSuccess(w, http.StatusCreated, result)
 }
 
 // handleGet handles GET /api/v1/{schema_name}/{row_id}
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
 
 	if rowIDStr == "" {
-		writeError(w, http.StatusBadRequest, "row_id is required")
+		_ = writeError(w, http.StatusBadRequest, "row_id is required")
 		return
 	}
 	zap.S().Infow("get request received", "schema", schemaName, "rowID", rowIDStr)
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
 		return
 	}
 
@@ -129,12 +129,12 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	record, err := s.manager.Get(r.Context(), queryReq)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("record not found: %v", err))
+		_ = writeError(w, http.StatusNotFound, fmt.Sprintf("record not found: %v", err))
 		return
 	}
 	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowIDStr, "attrs", attrs)
 
-	writeSuccess(w, http.StatusOK, record)
+	_ = writeSuccess(w, http.StatusOK, record)
 }
 
 // handleQuery handles GET /api/v1/{schema_name}?page=...&items_per_page=...&filters=...&attrs=...
@@ -142,13 +142,13 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	zap.S().Infow("query request received", "path", r.URL.Path, "rawQuery", r.URL.RawQuery)
 
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
 
@@ -164,7 +164,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	sortFields, sortOrder, err := parseSortParams(queryParams)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort parameters: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort parameters: %v", err))
 		return
 	}
 
@@ -186,43 +186,43 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), queryReq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return
 	}
 	zap.S().Infow("query request completed", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
-	writeSuccess(w, http.StatusOK, result)
+	_ = writeSuccess(w, http.StatusOK, result)
 }
 
 // handleUpdate handles PUT /api/v1/{schema_name}/{row_id}
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
 
 	if rowIDStr == "" {
-		writeError(w, http.StatusBadRequest, "row_id is required")
+		_ = writeError(w, http.StatusBadRequest, "row_id is required")
 		return
 	}
 	zap.S().Infow("update request received", "schema", schemaName, "rowID", rowIDStr)
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
 		return
 	}
 
 	// Read JSON from body (can be full object or partial updates)
 	var body map[string]any
 	if err := readJSONBody(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
 
@@ -239,12 +239,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	record, err := s.manager.Update(r.Context(), operation)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
 		return
 	}
 	zap.S().Infow("update request completed", "schema", schemaName, "rowID", rowIDStr)
 
-	writeSuccess(w, http.StatusOK, record)
+	_ = writeSuccess(w, http.StatusOK, record)
 }
 
 // handleSingleDelete handles DELETE for a single row_id
@@ -264,36 +264,36 @@ func (s *Server) handleSingleDelete(w http.ResponseWriter, r *http.Request, sche
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("delete failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("delete failed: %v", err))
 		return
 	}
 	zap.S().Infow("delete request completed", "schema", schemaName, "rowID", rowID.String())
 
-	writeSuccess(w, http.StatusOK, result)
+	_ = writeSuccess(w, http.StatusOK, result)
 }
 
 // handleDelete handles DELETE /api/v1/{schema_name}
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	schemaName, _, err := parsePath(r.URL.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 		return
 	}
 
 	// Read array of row IDs from body
 	var rowIDStrs []string
 	if err := readJSONBody(r, &rowIDStrs); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
 
 	if len(rowIDStrs) == 0 {
-		writeError(w, http.StatusBadRequest, "empty row_id array not allowed")
+		_ = writeError(w, http.StatusBadRequest, "empty row_id array not allowed")
 		return
 	}
 	zap.S().Infow("batch delete request received", "schema", schemaName, "count", len(rowIDStrs))
@@ -303,7 +303,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	for i, idStr := range rowIDStrs {
 		rowID, err := parseUUID(idStr)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id at index %d: %v", i, err))
+			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id at index %d: %v", i, err))
 			return
 		}
 
@@ -323,18 +323,18 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch delete failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch delete failed: %v", err))
 		return
 	}
 	zap.S().Infow("batch delete request completed", "schema", schemaName, "requested", len(rowIDStrs))
 
-	writeSuccess(w, http.StatusOK, result)
+	_ = writeSuccess(w, http.StatusOK, result)
 }
 
 // handleSearch handles GET /api/v1/search?page=...&items_per_page=...&q=...&attrs=...
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -365,34 +365,34 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cross-schema search failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("cross-schema search failed: %v", err))
 		return
 	}
 	zap.S().Infow("search request completed", "schemas", schemaNames, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
-	writeSuccess(w, http.StatusOK, result)
+	_ = writeSuccess(w, http.StatusOK, result)
 }
 
 // handleAdvancedQuery handles POST /api/v1/advanced_query?attrs=...
 func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var payload forma.QueryRequest
 	if err := readJSONBody(r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
 
 	if payload.SchemaName == "" {
-		writeError(w, http.StatusBadRequest, "schema_name is required")
+		_ = writeError(w, http.StatusBadRequest, "schema_name is required")
 		return
 	}
 
 	if payload.Condition == nil {
-		writeError(w, http.StatusBadRequest, "condition is required")
+		_ = writeError(w, http.StatusBadRequest, "condition is required")
 		return
 	}
 
@@ -408,12 +408,12 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("advanced query failed: %v", err))
+		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("advanced query failed: %v", err))
 		return
 	}
 	zap.S().Infow("advanced query request completed", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
 
-	writeSuccess(w, http.StatusOK, result)
+	_ = writeSuccess(w, http.StatusOK, result)
 }
 
 // apiHandler is the main router that dispatches to specific handlers
@@ -426,7 +426,7 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		schemaName, rowIDStr, err := parsePath(path)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
 			return
 		}
 
@@ -434,7 +434,7 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		if rowIDStr != "" {
 			rowID, err := parseUUID(rowIDStr)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+				_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
 				return
 			}
 			s.handleSingleDelete(w, r, schemaName, rowID)
@@ -453,6 +453,6 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleDelete(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

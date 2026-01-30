@@ -121,7 +121,7 @@ func runCDCFlush(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	ctx := context.Background()
 

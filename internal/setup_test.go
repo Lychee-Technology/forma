@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	zap.ReplaceGlobals(logger)
 

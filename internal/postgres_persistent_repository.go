@@ -102,7 +102,7 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx) // no-op if committed
+	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
 	if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 		return err
@@ -139,7 +139,7 @@ func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
 	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 		return err
@@ -171,7 +171,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
 	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", sanitizeIdentifier(tables.EntityMain))
 	if _, err := tx.Exec(ctx, deleteMain, schemaID, rowID); err != nil {

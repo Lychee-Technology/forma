@@ -66,7 +66,7 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 	defer f.Close()
 
 	// Header
-	f.WriteString("row_id,schema_id,changed_at,deleted_at,name,version\n")
+	_, _ = f.WriteString("row_id,schema_id,changed_at,deleted_at,name,version\n")
 
 	for _, r := range records {
 		name := ""
@@ -80,7 +80,7 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 
 		line := fmt.Sprintf("%s,%d,%d,%d,%s,%d\n",
 			r.RowID.String(), r.SchemaID, r.ChangedAt, r.DeletedAt, name, version)
-		f.WriteString(line)
+		_, _ = f.WriteString(line)
 	}
 
 	return nil
@@ -142,7 +142,7 @@ func (h *FederatedTestHarness) ReadParquetMetadata(ctx context.Context, s3Key st
 
 	meta := &ParquetMetadata{}
 	if rows.Next() {
-		rows.Scan(&meta.RowCount, &meta.RowIDMin, &meta.RowIDMax, &meta.CreatedMin, &meta.CreatedMax)
+		_ = rows.Scan(&meta.RowCount, &meta.RowIDMin, &meta.RowIDMax, &meta.CreatedMin, &meta.CreatedMax)
 	}
 
 	// Get file size
@@ -168,7 +168,7 @@ func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string
 	}
 
 	for _, obj := range resp.Contents {
-		h.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		_, _ = h.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(h.S3Bucket),
 			Key:    obj.Key,
 		})
