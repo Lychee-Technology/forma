@@ -1,0 +1,26 @@
+name: forma-infra
+runtime: go
+description: Forma Infrastructure as Code - AWS Serverless Deployment with Aurora DSQL
+
+# Configuration options for this project
+config:
+  # AWS region
+  aws:region:
+    description: AWS region to deploy to
+    default: us-east-2
+  
+  # Environment name
+  forma-infra:environment:
+    description: Deployment environment (dev, prod)
+    
+  # Note: Lambda function is managed by the CD workflow, not Pulumi.
+  # Lambda configuration (memory, timeout, env vars) is set in the CD workflow.
+  # This allows Lambda to be deployed from GitHub Release artifacts without
+  # requiring infrastructure changes.
+  
+  # Aurora DSQL is fully serverless and requires no database configuration.
+  # - Database: always "postgres"
+  # - User: always "admin"
+  # - Authentication: IAM auth tokens (no passwords)
+  # - Storage: automatically managed
+  # - Scaling: automatic

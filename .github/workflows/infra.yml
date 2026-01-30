@@ -1,0 +1,109 @@
+name: Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to manage'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      action:
+        description: 'Pulumi action to perform'
+        required: true
+        type: choice
+        options:
+          - preview
+          - up
+          - destroy
+      confirm_destroy:
+        description: 'Type "destroy" to confirm destruction (only required for destroy action)'
+        required: false
+        default: ''
+
+env:
+  GO_VERSION: '1.25.6'
+  AWS_REGION: us-east-2
+
+jobs:
+  infrastructure:
+    name: ${{ inputs.action }} - ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: infra-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate destroy confirmation
+        if: inputs.action == 'destroy'
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "destroy" ]; then
+            echo "::error::You must type 'destroy' to confirm destruction"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Pulumi
+        uses: pulumi/actions@v5
+
+      - name: Download Go dependencies
+        working-directory: ./infra
+        run: go mod download
+
+      - name: Pulumi Login
+        working-directory: ./infra
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+        run: pulumi login s3://${{ secrets.PULUMI_STATE_BUCKET }}
+
+      - name: Pulumi ${{ inputs.action }}
+        working-directory: ./infra
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+        run: |
+          if [ "${{ inputs.action }}" == "preview" ]; then
+            pulumi preview --stack ${{ inputs.environment }} --diff
+          elif [ "${{ inputs.action }}" == "up" ]; then
+            pulumi up --stack ${{ inputs.environment }} --yes
+          elif [ "${{ inputs.action }}" == "destroy" ]; then
+            pulumi destroy --stack ${{ inputs.environment }} --yes
+          fi
+
+      - name: Export outputs
+        if: inputs.action == 'up'
+        working-directory: ./infra
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+        run: |
+          echo "## Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Get all outputs
+          pulumi stack output --stack ${{ inputs.environment }} --json | jq -r 'to_entries[] | "| \(.key) | `\(.value)` |"' >> $GITHUB_STEP_SUMMARY
+
+      - name: Summary
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

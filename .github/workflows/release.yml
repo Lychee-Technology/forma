@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  GO_VERSION: '1.25.6'
+  DUCKDB_STATIC_VERSION: 'v1.4.4_2'
+
+jobs:
+  build-and-release:
+    name: Build and Upload to Release
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write  # Required for uploading release assets
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download DuckDB static library
+        run: |
+          mkdir -p libs
+          curl -L -o /tmp/duckdb.tar.xz \
+            "https://github.com/Lychee-Technology/duckdb-static/releases/download/${{ env.DUCKDB_STATIC_VERSION }}/libduckdb_bundle-arm64.tar.xz"
+          tar -xJf /tmp/duckdb.tar.xz -C libs
+          ls -la libs/
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Build Lambda binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: arm64
+          CGO_CPPFLAGS: "-DDUCKDB_STATIC_BUILD"
+          CGO_LDFLAGS: "-L${{ github.workspace }}/libs -lduckdb_bundle -lstdc++ -lm -lcurl -lssl -lcrypto -lpthread"
+        run: |
+          # Build with version information
+          VERSION="${{ github.ref_name }}"
+          go build -tags=duckdb_use_static_lib \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o bootstrap ./cmd/lambda
+          
+          file bootstrap
+          ls -lh bootstrap
+
+      - name: Create deployment package
+        run: |
+          zip -j lambda-arm64.zip bootstrap
+          ls -lh lambda-arm64.zip
+          
+          # Create checksum
+          sha256sum lambda-arm64.zip > lambda-arm64.zip.sha256
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Upload Lambda zip and checksum to the release
+          gh release upload "${{ github.ref_name }}" \
+            lambda-arm64.zip \
+            lambda-arm64.zip.sha256 \
+            --clobber
+
+      - name: Release summary
+        run: |
+          echo "## Release Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact:** lambda-arm64.zip" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "gh release download ${{ github.ref_name }} --pattern 'lambda-arm64.zip'" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

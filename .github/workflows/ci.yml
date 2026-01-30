@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.25.6'
+  DUCKDB_STATIC_VERSION: 'v1.4.4_2'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04-arm
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: forma_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: test
+          DB_PASSWORD: test
+          DB_NAME: forma_test
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+  build-lambda:
+    name: Build Lambda (ARM64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download DuckDB static library
+        run: |
+          mkdir -p libs
+          curl -L -o /tmp/duckdb.tar.xz \
+            "https://github.com/Lychee-Technology/duckdb-static/releases/download/${{ env.DUCKDB_STATIC_VERSION }}/libduckdb_bundle-arm64.tar.xz"
+          tar -xJf /tmp/duckdb.tar.xz -C libs
+          ls -la libs/
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Build Lambda binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: arm64
+          CGO_CPPFLAGS: "-DDUCKDB_STATIC_BUILD"
+          CGO_LDFLAGS: "-L${{ github.workspace }}/libs -lduckdb_bundle -lstdc++ -lm -lcurl -lssl -lcrypto -lpthread"
+        run: |
+          go build -tags=duckdb_use_static_lib -ldflags="-s -w" -o bootstrap ./cmd/lambda
+          file bootstrap
+          ls -lh bootstrap
+
+      - name: Create deployment package
+        run: |
+          zip -j lambda.zip bootstrap
+          ls -lh lambda.zip
+
+      - name: Upload Lambda artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-${{ github.sha }}
+          path: lambda.zip
+          retention-days: 7
+
+  infra-validate:
+    name: Validate Pulumi Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Validate infra Go code
+        working-directory: ./infra
+        run: |
+          go mod download
+          go build -o /dev/null .

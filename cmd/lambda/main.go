@@ -1,0 +1,264 @@
+// Package main provides the AWS Lambda entry point for the Forma API server.
+// It uses aws-lambda-go-api-proxy to adapt the existing HTTP handlers to Lambda's
+// API Gateway v2 (HTTP API) event format.
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/config"
+	dsqlauth "github.com/aws/aws-sdk-go-v2/feature/dsql/auth"
+	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/factory"
+	"github.com/lychee-technology/forma/internal"
+	"go.uber.org/zap"
+)
+
+var (
+	httpAdapter *httpadapter.HandlerAdapterV2
+	pool        *pgxpool.Pool
+)
+
+// Server represents the HTTP server with EntityManager
+type Server struct {
+	manager forma.EntityManager
+	mux     *http.ServeMux
+}
+
+// NewServer creates a new Server instance
+func NewServer(manager forma.EntityManager) *Server {
+	return &Server{
+		manager: manager,
+		mux:     http.NewServeMux(),
+	}
+}
+
+// RegisterRoutes registers all API routes
+func (s *Server) RegisterRoutes() {
+	// Health check endpoint
+	s.mux.HandleFunc("/health", s.handleHealth)
+	// API routes - use custom path matching in handlers
+	s.mux.HandleFunc("/api/v1/advanced_query", s.handleAdvancedQuery)
+	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
+	s.mux.HandleFunc("/api/v1/", s.apiHandler)
+}
+
+// Handler returns the HTTP handler for use with Lambda adapter
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
+func init() {
+	// Initialize logger
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	zap.ReplaceGlobals(logger)
+	sugar := logger.Sugar()
+
+	sugar.Info("initializing Lambda handler")
+
+	// Get configuration from environment variables
+	schemaDir := os.Getenv("SCHEMA_DIR")
+	if schemaDir == "" {
+		schemaDir = "/var/task/schemas"
+	}
+	sugar.Infof("schemaDir: %s", schemaDir)
+
+	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
+	dsqlEndpoint := os.Getenv("DSQL_ENDPOINT")
+	if dsqlEndpoint != "" {
+		// Aurora DSQL mode - use IAM authentication
+		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
+		pool, err = createDSQLPool(dsqlEndpoint)
+	} else {
+		// Traditional PostgreSQL mode - use password authentication
+		dbConfig := forma.DatabaseConfig{
+			Host:            getEnv("DB_HOST", "localhost"),
+			Port:            getEnvInt("DB_PORT", 5432),
+			Database:        getEnv("DB_NAME", "forma"),
+			Username:        getEnv("DB_USER", "postgres"),
+			Password:        getEnv("DB_PASSWORD", ""),
+			SSLMode:         getEnv("DB_SSL_MODE", "require"),
+			MaxConnections:  getEnvInt("DB_MAX_CONNECTIONS", 10), // Lower for Lambda
+			MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 2),
+			ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second,
+			ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second,
+			Timeout:         time.Duration(getEnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second,
+		}
+		pool, err = createDatabasePoolFromConfig(dbConfig)
+	}
+	if err != nil {
+		sugar.Fatalf("failed to create database pool: %v", err)
+	}
+
+	// Table names configuration
+	tableNames := forma.TableNames{
+		SchemaRegistry: getEnv("SCHEMA_TABLE", "schema_registry"),
+		EAVData:        getEnv("EAV_TABLE", "eav_data"),
+		EntityMain:     getEnv("ENTITY_MAIN_TABLE", "entity_main"),
+		ChangeLog:      getEnv("CHANGE_LOG_TABLE", "change_log"),
+	}
+
+	// Create file-based schema registry from database
+	registry, err := internal.NewFileSchemaRegistry(pool, tableNames.SchemaRegistry, schemaDir)
+	if err != nil {
+		sugar.Fatalf("failed to create schema registry: %v", err)
+	}
+
+	// Load configuration with schema registry
+	formaConfig := forma.DefaultConfig(registry)
+
+	// Set schema directory
+	formaConfig.Entity.SchemaDirectory = schemaDir
+
+	// Set database configuration
+	formaConfig.Database.TableNames = tableNames
+
+	// Initialize EntityManager using factory
+	manager, err := factory.NewEntityManagerWithConfig(formaConfig, pool)
+	if err != nil {
+		sugar.Fatalf("failed to create entity manager: %v", err)
+	}
+
+	// Create server and register routes
+	server := NewServer(manager)
+	server.RegisterRoutes()
+
+	// Create HTTP adapter for API Gateway v2
+	httpAdapter = httpadapter.NewV2(server.Handler())
+
+	sugar.Info("Lambda handler initialized successfully")
+}
+
+// handler is the Lambda handler function
+func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	return httpAdapter.ProxyWithContext(ctx, req)
+}
+
+func main() {
+	lambda.Start(handler)
+}
+
+// createDatabasePoolFromConfig creates a PostgreSQL connection pool from config
+func createDatabasePoolFromConfig(dbConfig forma.DatabaseConfig) (*pgxpool.Pool, error) {
+	connString := fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		dbConfig.Username,
+		dbConfig.Password,
+		dbConfig.Host,
+		dbConfig.Port,
+		dbConfig.Database,
+		dbConfig.SSLMode,
+	)
+
+	poolConfig, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse connection string: %w", err)
+	}
+
+	poolConfig.MaxConns = int32(dbConfig.MaxConnections)
+	poolConfig.MinConns = int32(dbConfig.MaxIdleConns)
+	poolConfig.MaxConnLifetime = dbConfig.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = dbConfig.ConnMaxIdleTime
+	poolConfig.ConnConfig.ConnectTimeout = dbConfig.Timeout
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+	}
+
+	// Test the connection
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := pool.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	return pool, nil
+}
+
+// createDSQLPool creates a connection pool for Aurora DSQL using IAM authentication.
+// DSQL requires IAM auth tokens instead of passwords, and always uses:
+// - Database: postgres (fixed)
+// - User: admin (default admin user)
+// - SSL: required
+func createDSQLPool(endpoint string) (*pgxpool.Pool, error) {
+	ctx := context.Background()
+
+	// Load AWS configuration
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(getEnv("AWS_REGION", "us-east-2")))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Generate IAM auth token for DSQL
+	// The token is valid for 15 minutes to 7 days (default: 15 minutes)
+	token, err := dsqlauth.GenerateDBConnectAdminAuthToken(ctx, endpoint, awsCfg.Region, awsCfg.Credentials)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate DSQL auth token: %w", err)
+	}
+
+	// Build connection string for DSQL
+	// DSQL always uses: database=postgres, user=admin, sslmode=require
+	connString := fmt.Sprintf(
+		"postgres://admin:%s@%s:5432/postgres?sslmode=require",
+		url.QueryEscape(token),
+		endpoint,
+	)
+
+	poolConfig, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DSQL connection string: %w", err)
+	}
+
+	// Configure pool for Lambda - use conservative settings
+	poolConfig.MaxConns = int32(getEnvInt("DB_MAX_CONNECTIONS", 10))
+	poolConfig.MinConns = int32(getEnvInt("DB_MAX_IDLE_CONNS", 2))
+	poolConfig.MaxConnLifetime = time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second
+	poolConfig.MaxConnIdleTime = time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second
+	poolConfig.ConnConfig.ConnectTimeout = time.Duration(getEnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DSQL connection pool: %w", err)
+	}
+
+	// Test the connection
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := pool.Ping(pingCtx); err != nil {
+		return nil, fmt.Errorf("failed to ping DSQL database: %w", err)
+	}
+
+	return pool, nil
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}

@@ -1,9 +1,10 @@
-.PHONY: test test-unit coverage build build-tools build-benchmark build-all clean all create-build-dir link
+.PHONY: test test-unit coverage build build-tools build-benchmark build-all build-lambda clean all create-build-dir link
 
 # Binary names
 BINARY_SERVER=server
 BINARY_TOOLS=tools
 BINARY_SAMPLE=sample
+BINARY_LAMBDA=bootstrap
 
 # Build directory
 BUILD_DIR=build
@@ -16,6 +17,7 @@ COVERAGE_HTML=$(BUILD_DIR)/coverage.html
 MAIN_SERVER=./cmd/server
 MAIN_TOOLS=./cmd/tools
 MAIN_SAMPLE=./cmd/sample
+MAIN_LAMBDA=./cmd/lambda
 
 GOOS=$(shell go env GOOS)
 GOARCH=$(shell go env GOARCH)
@@ -55,6 +57,20 @@ build-sample: create-build-dir
 	@echo "Building $(GOOS)-$(GOARCH) -> $(BUILD_DIR)/$(BINARY_SAMPLE)-$(GOOS)-$(GOARCH)"
 	@go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_SAMPLE)-$(GOOS)-$(GOARCH) $(MAIN_SAMPLE)
 	@echo "Sample build complete."
+
+# Build Lambda function for AWS Lambda (ARM64, Amazon Linux 2023)
+# Note: This target is for local testing. For CI/CD, use the GitHub Actions workflow
+# which builds in an Amazon Linux 2023 ARM container for CGO compatibility.
+build-lambda: create-build-dir
+	@echo "Building Lambda function for linux-arm64 -> $(BUILD_DIR)/$(BINARY_LAMBDA)"
+	@CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_LAMBDA) $(MAIN_LAMBDA)
+	@echo "Lambda build complete."
+
+# Build Lambda ZIP package (requires linux-arm64 build)
+build-lambda-zip: build-lambda
+	@echo "Creating Lambda deployment package..."
+	@cd $(BUILD_DIR) && zip -j lambda.zip $(BINARY_LAMBDA)
+	@echo "Lambda ZIP package created: $(BUILD_DIR)/lambda.zip"
 
 # Build all binaries (server, tools, sample)
 build-all: build-server build-tools build-sample link
