@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-01-27T01:36:22.825Z",
+  "config": {
+    "s3Bucket": "forma-cdc",
+    "s3Endpoint": "http://localhost:19000",
+    "manifestPrefix": "",
+    "manifestTemplate": "manifest/{{.SchemaID}}.json",
+    "targetBaseSizeMB": 256,
+    "maxDeltaSizeMB": 50,
+    "dirtyRatioPct": 5,
+    "dataPrefix": "data"
+  },
+  "schemas": [
+    {
+      "schemaId": 101,
+      "success": true,
+      "exitCode": 0,
+      "duration_ms": 23,
+      "stdout": "",
+      "stderr": "{\"level\":\"info\",\"ts\":1769477782.8400588,\"caller\":\"tools/compactor.go:110\",\"msg\":\"starting compaction\",\"schema_id\":101,\"bucket\":\"forma-cdc\"}\n{\"level\":\"info\",\"ts\":1769477782.847369,\"caller\":\"tools/compactor.go:118\",\"msg\":\"compaction completed\"}\n"
+    },
+    {
+      "schemaId": 102,
+      "success": true,
+      "exitCode": 0,
+      "duration_ms": 23,
+      "stdout": "",
+      "stderr": "{\"level\":\"info\",\"ts\":1769477782.863286,\"caller\":\"tools/compactor.go:110\",\"msg\":\"starting compaction\",\"schema_id\":102,\"bucket\":\"forma-cdc\"}\n{\"level\":\"info\",\"ts\":1769477782.870463,\"caller\":\"tools/compactor.go:118\",\"msg\":\"compaction completed\"}\n"
+    }
+  ],
+  "summary": {
+    "totalSchemas": 2,
+    "successCount": 2,
+    "failCount": 0,
+    "totalDuration_ms": 47
+  }
+}

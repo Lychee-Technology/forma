@@ -693,6 +693,21 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 	}, nil
 }
 
+func (m *mockPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+	if fq == nil {
+		return nil, fmt.Errorf("federated query cannot be nil")
+	}
+	prq := &PersistentRecordQuery{
+		Tables:          tables,
+		SchemaID:        fq.SchemaID,
+		Condition:       fq.Condition,
+		AttributeOrders: fq.AttributeOrders,
+		Limit:           fq.Limit,
+		Offset:          fq.Offset,
+	}
+	return m.QueryPersistentRecords(ctx, prq)
+}
+
 func buildPersistentRecord(t *testing.T, transformer PersistentRecordTransformer, schemaID int16, rowID uuid.UUID, data map[string]any) *PersistentRecord {
 	t.Helper()
 	record, err := transformer.ToPersistentRecord(context.Background(), schemaID, rowID, data)

@@ -17,6 +17,7 @@ const (
 	ValueTypeDateTime ValueType = "datetime" // for JSON attributes with format `date-time`
 	ValueTypeUUID     ValueType = "uuid"
 	ValueTypeBool     ValueType = "bool"
+	ValueTypeList     ValueType = "list" // array type stored as DuckDB LIST in parquet
 )
 
 // MainColumn represents column names in the main entity table.

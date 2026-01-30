@@ -24,6 +24,21 @@ func main() {
 		if err := runInlineSchema(os.Args[2:]); err != nil {
 			fmt.Printf("inline-schema: %v\n", err)
 		}
+	case "cdc-flush":
+		if err := runCDCFlush(os.Args[2:]); err != nil {
+			fmt.Printf("cdc-flush: %v\n", err)
+			os.Exit(1)
+		}
+	case "cdc-init":
+		if err := runCDCInit(os.Args[2:]); err != nil {
+			fmt.Printf("cdc-init: %v\n", err)
+			os.Exit(1)
+		}
+	case "compactor":
+		if err := runCompactor(os.Args[2:]); err != nil {
+			fmt.Printf("compactor: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Printf("unknown command %q\n", os.Args[1])
 		printUsage()
@@ -38,4 +53,7 @@ func printUsage() {
 	fmt.Println("  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
 	fmt.Println("  init-db               Create PostgreSQL tables and indexes for Forma")
 	fmt.Println("  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
+	fmt.Println("  cdc-flush             Run CDC change_log flush to S3 parquet files")
+	fmt.Println("  cdc-init              Initialize S3 parquet base files from existing data")
+	fmt.Println("  compactor             Run compaction on parquet files for a schema")
 }

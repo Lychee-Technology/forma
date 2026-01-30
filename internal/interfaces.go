@@ -44,9 +44,10 @@ type PersistentRecordTransformer interface {
 }
 
 type StorageTables struct {
-	EntityMain string
-	EAVData    string
-	ChangeLog  string
+	EntityMain     string
+	EAVData        string
+	ChangeLog      string
+	SchemaRegistry string
 }
 
 type PersistentRecordQuery struct {
@@ -71,4 +72,10 @@ type PersistentRecordRepository interface {
 	DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error
 	GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error)
 	QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+
+	// QueryPersistentRecordsFederated performs a federated query across configured data tiers
+	// (Postgres hot and DuckDB/S3 warm/cold). Implementations MUST preserve backwards
+	// compatibility for OLTP-only callers: if the federated query hints indicate hot-only
+	// execution, this SHOULD delegate to QueryPersistentRecords.
+	QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
 }

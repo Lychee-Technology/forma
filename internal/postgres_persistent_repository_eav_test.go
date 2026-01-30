@@ -16,7 +16,7 @@ func TestInsertEAVAttributesNoop(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 	require.NoError(t, repo.insertEAVAttributes(ctx, mock, "eav_table", nil))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -42,7 +42,7 @@ func TestInsertEAVAttributesExecutesBatch(t *testing.T) {
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", int64(len(attrs))))
 
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 	require.NoError(t, repo.insertEAVAttributes(ctx, mock, "eav_table", attrs))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -66,7 +66,7 @@ func TestReplaceEAVAttributes(t *testing.T) {
 		WithArgs(int16(1), rowID, int16(10), "", &text, (*float64)(nil)).
 		WillReturnResult(pgxmock.NewResult("INSERT", int64(len(attrs))))
 
-	repo := &PostgresPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{}
 	require.NoError(t, repo.replaceEAVAttributes(ctx, mock, "eav_table", 1, rowID, attrs))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -88,7 +88,7 @@ func TestFetchAttributes(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewPostgresPersistentRecordRepository(mock, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
 	attrs, err := repo.fetchAttributes(ctx, "eav_table", 1, rowID)
 	require.NoError(t, err)
 	require.Len(t, attrs, 2)

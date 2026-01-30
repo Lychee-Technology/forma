@@ -15,6 +15,13 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
             FROM {{.EAVTable}} t
             WHERE t.schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
             {{- end }}
+            {{- if .ChangeLogTable }}
+            UNION
+            -- Include real-time buffer rows from change_log (flushed_at = 0)
+            SELECT cl.row_id
+            FROM {{.ChangeLogTable}} cl
+            WHERE cl.schema_id = {{.SchemaID}} AND cl.flushed_at = 0
+            {{- end }}
         ),
         keys AS (
             SELECT

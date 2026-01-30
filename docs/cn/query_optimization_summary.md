@@ -99,7 +99,7 @@ LEFT JOIN eav_aggregated e ON e.row_id = m.ltbase_row_id;
 ### 2. 新增 `runOptimizedQuery` 方法
 
 ```go
-func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
+func (r *DbPersistentRecordRepository) runOptimizedQuery(
     ctx context.Context,
     tables StorageTables,
     schemaID int16,
@@ -118,7 +118,7 @@ func (r *PostgresPersistentRecordRepository) runOptimizedQuery(
 ### 3. 新增 `scanOptimizedRow` 方法
 
 ```go
-func (r *PostgresPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error)
+func (r *DbPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error)
 ```
 
 **职责**：
@@ -151,7 +151,7 @@ if len(attrsJSON) > 0 && string(attrsJSON) != "[]" {
 ### 4. 更新 `QueryPersistentRecords` 方法
 
 ```go
-func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(...) (*PersistentRecordPage, error) {
+func (r *DbPersistentRecordRepository) QueryPersistentRecords(...) (*PersistentRecordPage, error) {
     // ... 前置检查和条件构建 ...
     
     // 使用优化的单一查询方法

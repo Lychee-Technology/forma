@@ -17,28 +17,30 @@ type persistentRecordPool interface {
 	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 }
 
-type PostgresPersistentRecordRepository struct {
+type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *MetadataCache
+	duckDBClient  *DuckDBClient
 	nowFunc       func() time.Time
 }
 
-func NewPostgresPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache) *PostgresPersistentRecordRepository {
-	return &PostgresPersistentRecordRepository{
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient) *DBPersistentRecordRepository {
+	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
+		duckDBClient:  nil,
 		nowFunc:       time.Now,
 	}
 }
 
-func (r *PostgresPersistentRecordRepository) withClock(now func() time.Time) {
+func (r *DBPersistentRecordRepository) withClock(now func() time.Time) {
 	if now == nil {
 		return
 	}
 	r.nowFunc = now
 }
 
-func (r *PostgresPersistentRecordRepository) nowMillis() int64 {
+func (r *DBPersistentRecordRepository) nowMillis() int64 {
 	if r.nowFunc == nil {
 		return time.Now().UnixMilli()
 	}
@@ -59,16 +61,19 @@ func validateWriteTables(tables StorageTables) error {
 	if err := validateTables(tables); err != nil {
 		return err
 	}
+	if tables.ChangeLog == "" {
+		zap.S().Info("change log table name is empty, cdc will be disabled")
+	}
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) insertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
+func (r *DBPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
 	flushedAt := int64(0)
 	query := fmt.Sprintf(
 		`INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (schema_id, row_id, flushed_at)
-		DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (schema_id, row_id, flushed_at)
+			DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at`,
 		sanitizeIdentifier(table),
 	)
 	var deleted any
@@ -81,7 +86,7 @@ func (r *PostgresPersistentRecordRepository) insertChangeLog(ctx context.Context
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -108,7 +113,7 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 	}
 
 	if tables.ChangeLog != "" {
-		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
 			return err
 		}
 	}
@@ -120,7 +125,7 @@ func (r *PostgresPersistentRecordRepository) InsertPersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -143,8 +148,9 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
 		return err
 	}
+
 	if tables.ChangeLog != "" {
-		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
 			return err
 		}
 	}
@@ -156,7 +162,7 @@ func (r *PostgresPersistentRecordRepository) UpdatePersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
@@ -177,10 +183,10 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 		return fmt.Errorf("delete eav attributes: %w", err)
 	}
 
-	now := r.nowMillis()
-	deletedAt := now
 	if tables.ChangeLog != "" {
-		if err := r.insertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
+		now := r.nowMillis()
+		deletedAt := now
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
 			return err
 		}
 	}
@@ -192,7 +198,7 @@ func (r *PostgresPersistentRecordRepository) DeletePersistentRecord(ctx context.
 	return nil
 }
 
-func (r *PostgresPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
 	if err := validateTables(tables); err != nil {
 		return nil, err
 	}
@@ -214,7 +220,7 @@ func (r *PostgresPersistentRecordRepository) GetPersistentRecord(ctx context.Con
 	return record, nil
 }
 
-func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
 	zap.S().Debugw("query persistent records", "query", query)
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
@@ -282,6 +288,122 @@ func (r *PostgresPersistentRecordRepository) QueryPersistentRecords(ctx context.
 	currentPage := 1
 	if limit > 0 {
 		currentPage = offset/limit + 1
+	}
+
+	return &PersistentRecordPage{
+		Records:      records,
+		TotalRecords: totalRecords,
+		TotalPages:   computeTotalPages(totalRecords, limit),
+		CurrentPage:  currentPage,
+	}, nil
+}
+
+// FetchDirtyRowIDs returns all row_ids present in the change_log with flushed_at = 0
+// for the given schema. This can be used by federated query coordinator to exclude
+// dirty rows from columnar/duckdb reads (anti-join).
+func (r *DBPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
+	if changeLogTable == "" {
+		return nil, fmt.Errorf("change log table name cannot be empty")
+	}
+	query := fmt.Sprintf(`SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, sanitizeIdentifier(changeLogTable))
+	rows, err := r.pool.Query(ctx, query, schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("query dirty row ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan dirty row id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
+	}
+	return ids, nil
+}
+
+// QueryPersistentRecordsFederated performs a federated query across configured data tiers.
+// Backwards compatible: hot-only hints delegate to QueryPersistentRecords.
+func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+	if fq == nil {
+		return nil, fmt.Errorf("federated query cannot be nil")
+	}
+	// If no explicit tiers or a hot-only preference is indicated, delegate to existing OLTP path.
+	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == DataTierHot) {
+		prq := &PersistentRecordQuery{
+			Tables:          tables,
+			SchemaID:        fq.SchemaID,
+			Condition:       fq.Condition,
+			AttributeOrders: fq.AttributeOrders,
+			Limit:           fq.Limit,
+			Offset:          fq.Offset,
+		}
+		return r.QueryPersistentRecords(ctx, prq)
+	}
+
+	// Evaluate routing policy before executing
+	var routingCfg forma.DuckDBConfig
+	// Attempt to read global default if available via metadata cache - fallback to zero value
+	if r.metadataCache != nil {
+		// no-op for now; use schema-level defaults if added later
+		_ = routingCfg
+	}
+
+	// Initialize execution plan if requested
+	if opts != nil && opts.IncludeExecutionPlan {
+		if opts.ExecutionPlan == nil {
+			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+		}
+		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
+	}
+
+	decision := EvaluateRoutingPolicy(routingCfg, fq, opts)
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		opts.ExecutionPlan.Routing = decision
+	}
+
+	if !decision.UseDuckDB {
+		// route to Postgres-only
+		prq := &PersistentRecordQuery{
+			Tables:          tables,
+			SchemaID:        fq.SchemaID,
+			Condition:       fq.Condition,
+			AttributeOrders: fq.AttributeOrders,
+			Limit:           fq.Limit,
+			Offset:          fq.Offset,
+		}
+		return r.QueryPersistentRecords(ctx, prq)
+	}
+
+	// Attempt DuckDB federated execution.
+	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
+	if err != nil {
+		// Fallback to Postgres-only when partial degraded mode allowed.
+		if opts != nil && opts.AllowPartialDegradedMode {
+			prq := &PersistentRecordQuery{
+				Tables:          tables,
+				SchemaID:        fq.SchemaID,
+				Condition:       fq.Condition,
+				AttributeOrders: fq.AttributeOrders,
+				Limit:           fq.Limit,
+				Offset:          fq.Offset,
+			}
+			return r.QueryPersistentRecords(ctx, prq)
+		}
+		return nil, fmt.Errorf("duckdb federated query: %w", err)
+	}
+
+	currentPage := 1
+	limit := fq.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 0 {
+		currentPage = fq.Offset/limit + 1
 	}
 
 	return &PersistentRecordPage{

@@ -38,4 +38,7 @@ deploy/rustfs/
 .gomodcache/
 build/
 local-only/
+!local-only/rfc/
+internal/e2e_harness/e2e_artifacts
 *.parquet
+node_modules/

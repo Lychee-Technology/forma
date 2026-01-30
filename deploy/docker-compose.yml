@@ -17,3 +17,25 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - forma-local
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: forma-s3-local
+    ports:
+      - '19000:9000'
+      - '19001:9001'
+    volumes:
+      - './rustfs/s3:/data'
+      - './rustfs/log:/log'
+    environment:
+      - RUSTFS_ACCESS_KEY=minio
+      - RUSTFS_SECRET_KEY=minio_password
+      - RUSTFS_CONSOLE_ENABLE=true
+    networks:
+      - forma-local
+
+networks:
+  forma-local:
+    driver: bridge
+    name: forma-local
