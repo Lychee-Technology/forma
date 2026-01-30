@@ -25,27 +25,19 @@ go test -v ./internal/e2e_harness/federated/... -tags=e2e -short
 
 The E2E harness tests validate a **three-tier federated query architecture**:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Federated Query                              │
-│   SELECT * FROM (base UNION ALL delta UNION ALL hot) QUALIFY ...    │
-└─────────────────────────────────────────────────────────────────────┘
-                                   │
-          ┌────────────────────────┼────────────────────────┐
-          │                        │                        │
-          ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   S3 Base       │    │   S3 Delta      │    │ Postgres Hot    │
-│   (Parquet)     │    │   (Parquet)     │    │ Buffer          │
-├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ - Oldest data   │    │ - Recent flushes│    │ - Unflushed     │
-│ - Compacted     │    │ - Pre-compaction│    │ - Real-time     │
-│ - Read-only     │    │ - Append-only   │    │ - Read-write    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-        ▲                      ▲                      │
-        │                       │                       │
-        └───────────────────────┴───────────────────────┘
-                      Compaction        CDC Flush
+```mermaid
+flowchart TB
+    subgraph FQ["Federated Query"]
+        SQL["SELECT * FROM (base UNION ALL delta UNION ALL hot) QUALIFY ..."]
+    end
+    
+    FQ --> Base
+    FQ --> Delta
+    FQ --> Hot
+    
+    Base["<b>S3 Base (Parquet)</b><p>• Oldest data</p><p>• Compacted</p><p>• Read-only</p>"]
+    Delta["<b>S3 Delta (Parquet)</b><p>• Recent flushes</p><p>• Pre-compaction</p><p>• Append-only</p>"]
+    Hot["<b>Postgres Hot Buffer</b><p>• Unflushed</p><p>• Real-time</p><p>• Read-write</p>"]
 ```
 
 ### Tier Descriptions
@@ -62,6 +54,38 @@ The E2E harness tests validate a **three-tier federated query architecture**:
 2. **CDC Flush** moves data from Hot Buffer to Delta (S3 Parquet)
 3. **Compaction** merges Delta files into Base files
 4. **Queries** federate across all three tiers with deduplication
+
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant PG as Postgres<br/>(Hot Buffer)
+    participant CDC as CDC Flusher
+    participant S3Delta as S3 Delta<br/>(Parquet)
+    participant Compactor as Compactor
+    participant S3Base as S3 Base<br/>(Parquet)
+
+    Note over Client,S3Base: Write Flow
+    
+    Client->>PG: INSERT/UPDATE/DELETE
+    PG-->>Client: OK (unflushed)
+    
+    Note over PG,S3Delta: CDC Flush Triggers:<br/>• Records > 10,000<br/>• Oldest record > 1 hour
+    
+    CDC->>PG: Acquire Advisory Lock
+    CDC->>PG: SELECT unflushed records
+    PG-->>CDC: Return pending records
+    CDC->>S3Delta: Write Parquet file
+    S3Delta-->>CDC: OK
+    CDC->>PG: UPDATE flushed_at timestamp
+    CDC->>PG: Release Advisory Lock
+    
+    Note over S3Delta,S3Base: Compaction Trigger:<br/>• Dirty Ratio > 5%
+    
+    Compactor->>S3Delta: Read Delta files
+    Compactor->>S3Base: Read Base files
+    Compactor->>S3Base: Merge and write new Base file
+    Compactor->>S3Delta: Delete merged Delta files
+```
 
 ## Test Categories
 
