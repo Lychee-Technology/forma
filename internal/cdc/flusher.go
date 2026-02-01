@@ -330,21 +330,30 @@ func executeFlush(
 				return
 			}
 			flushedAt := time.Now().UnixMilli()
-			rowsUpdated, err := MarkFlushedIDs(ctx, db, tableName, schemaID, sub, flushedAt)
+			updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, db, tableName, schemaID, sub, snapshot, flushedAt)
 			if err != nil {
 				logger.Sugar().Errorw("mark flushed failed", "err", err)
 				return
 			}
 
+			if len(updatedIDs) == 0 {
+				logger.Sugar().Infow("flush chunk marked zero rows; possible concurrent updates", "schema_id", schemaID, "chunk_size", len(sub))
+				continue
+			}
+
 			// Update manifest if configured
 			if manifestStore != nil {
-				if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, chunkFinalKey, "delta", sub, flushedAt, logger); err != nil {
+				if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, chunkFinalKey, "delta", updatedIDs, flushedAt, logger); err != nil {
 					logger.Sugar().Errorw("manifest update failed", "err", err)
 					// Don't return - the flush succeeded, manifest is non-critical
 				}
 			}
 
-			logger.Sugar().Infow("flush chunk completed", "schema_id", schemaID, "rows_flushed", rowsUpdated, "chunk_size", len(sub))
+			if len(updatedIDs) < len(sub) {
+				logger.Sugar().Infow("flush chunk marked fewer rows than batch; possible concurrent updates", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "chunk_size", len(sub))
+			}
+
+			logger.Sugar().Infow("flush chunk completed", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "chunk_size", len(sub))
 		}
 		return
 	}
@@ -367,21 +376,30 @@ func executeFlush(
 	}
 
 	flushedAt := time.Now().UnixMilli()
-	rowsUpdated, err := MarkFlushedIDs(ctx, db, tableName, schemaID, batchIDs, flushedAt)
+	updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, db, tableName, schemaID, batchIDs, snapshot, flushedAt)
 	if err != nil {
 		logger.Sugar().Errorw("mark flushed failed", "err", err)
 		return
 	}
 
+	if len(updatedIDs) == 0 {
+		logger.Sugar().Infow("flush marked zero rows; possible concurrent updates", "schema_id", schemaID, "batch_size", len(batchIDs))
+		return
+	}
+
 	// Update manifest if configured
 	if manifestStore != nil {
-		if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, finalKey, "delta", batchIDs, flushedAt, logger); err != nil {
+		if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, finalKey, "delta", updatedIDs, flushedAt, logger); err != nil {
 			logger.Sugar().Errorw("manifest update failed", "err", err)
 			// Don't return - the flush succeeded, manifest is non-critical
 		}
 	}
 
-	logger.Sugar().Infow("flush completed", "schema_id", schemaID, "rows_flushed", rowsUpdated, "final_key", finalKey)
+	if len(updatedIDs) < len(batchIDs) {
+		logger.Sugar().Infow("flush marked fewer rows than batch; possible concurrent updates", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs))
+	}
+
+	logger.Sugar().Infow("flush completed", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "final_key", finalKey)
 
 	// Suppress unused variable warning
 	_ = ids
@@ -419,8 +437,9 @@ func updateManifest(
 
 	// Set row ID bounds if available
 	if len(rowIDs) > 0 {
-		entry.RowIDMin = rowIDs[0].String()
-		entry.RowIDMax = rowIDs[len(rowIDs)-1].String()
+		rowIDMin, rowIDMax := minMaxRowID(rowIDs)
+		entry.RowIDMin = rowIDMin
+		entry.RowIDMax = rowIDMax
 	}
 
 	if err := manifest.AppendFile(ctx, store, manifestPath, schemaID, entry); err != nil {
@@ -429,4 +448,22 @@ func updateManifest(
 
 	logger.Sugar().Infow("manifest updated", "schema_id", schemaID, "manifest_path", manifestPath, "file_path", filePath, "tier", tier)
 	return nil
+}
+
+func minMaxRowID(rowIDs []uuid.UUID) (string, string) {
+	if len(rowIDs) == 0 {
+		return "", ""
+	}
+	minID := rowIDs[0].String()
+	maxID := minID
+	for _, id := range rowIDs[1:] {
+		s := id.String()
+		if s < minID {
+			minID = s
+		}
+		if s > maxID {
+			maxID = s
+		}
+	}
+	return minID, maxID
 }
