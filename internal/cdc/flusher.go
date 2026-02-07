@@ -438,8 +438,8 @@ func updateManifest(
 	// Set row ID bounds if available
 	if len(rowIDs) > 0 {
 		rowIDMin, rowIDMax := minMaxRowID(rowIDs)
-		entry.RowIDMin = rowIDMin
-		entry.RowIDMax = rowIDMax
+		entry.RowIDMin = rowIDMin.String()
+		entry.RowIDMax = rowIDMax.String()
 	}
 
 	if err := manifest.AppendFile(ctx, store, manifestPath, schemaID, entry); err != nil {
@@ -450,19 +450,27 @@ func updateManifest(
 	return nil
 }
 
-func minMaxRowID(rowIDs []uuid.UUID) (string, string) {
-	if len(rowIDs) == 0 {
-		return "", ""
+func minMaxRowID(rowIDs []uuid.UUID) (uuid.UUID, uuid.UUID) {
+	rowIDsSize := len(rowIDs)
+	if rowIDsSize == 0 {
+		return uuid.Nil, uuid.Nil
 	}
-	minID := rowIDs[0].String()
+	if rowIDsSize == 1 {
+		return rowIDs[0], rowIDs[0]
+	}
+	minID := rowIDs[0]
+	minIDTime := minID.Time()
 	maxID := minID
+	maxIDTime := minIDTime
 	for _, id := range rowIDs[1:] {
-		s := id.String()
-		if s < minID {
-			minID = s
+		idTime := id.Time()
+		if idTime < minIDTime {
+			minID = id
+			minIDTime = idTime
 		}
-		if s > maxID {
-			maxID = s
+		if idTime > maxIDTime {
+			maxID = id
+			maxIDTime = idTime
 		}
 	}
 	return minID, maxID
