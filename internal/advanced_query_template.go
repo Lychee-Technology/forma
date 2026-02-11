@@ -5,24 +5,43 @@ import "text/template"
 var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
-        WITH anchor AS (
-            {{- if .UseMainTableAsAnchor }}
-            SELECT m.ltbase_row_id AS row_id
-            FROM {{.MainTable}} m
-            WHERE m.ltbase_schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
-            {{- else }}
-            SELECT DISTINCT t.row_id
-            FROM {{.EAVTable}} t
-            WHERE t.schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
-            {{- end }}
-            {{- if .ChangeLogTable }}
-            UNION
-            -- Include real-time buffer rows from change_log (flushed_at = 0)
-            SELECT cl.row_id
-            FROM {{.ChangeLogTable}} cl
-            WHERE cl.schema_id = {{.SchemaID}} AND cl.flushed_at = 0
-            {{- end }}
-        ),
+	        WITH anchor AS (
+	            {{- if .UseMainTableAsAnchor }}
+	            SELECT m.ltbase_row_id AS row_id
+	            FROM {{.MainTable}} m
+	            WHERE m.ltbase_schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
+	            {{- else }}
+	            SELECT DISTINCT t.row_id
+	            FROM {{.EAVTable}} t
+	            WHERE t.schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
+	            {{- end }}
+	            {{- if .ChangeLogTable }}
+	            UNION
+	            -- Include real-time buffer rows from change_log (flushed_at = 0)
+	            -- while preserving the same anchor filter semantics.
+	            SELECT cl.row_id
+	            FROM {{.ChangeLogTable}} cl
+	            WHERE cl.schema_id = {{.SchemaID}}
+	                AND cl.flushed_at = 0
+	                {{- if .UseMainTableAsAnchor }}
+	                AND EXISTS (
+	                    SELECT 1
+	                    FROM {{.MainTable}} m
+	                    WHERE m.ltbase_schema_id = {{.SchemaID}}
+	                        AND m.ltbase_row_id = cl.row_id
+	                        AND {{.Anchor.Condition}}
+	                )
+	                {{- else }}
+	                AND EXISTS (
+	                    SELECT 1
+	                    FROM {{.EAVTable}} t
+	                    WHERE t.schema_id = {{.SchemaID}}
+	                        AND t.row_id = cl.row_id
+	                        AND {{.Anchor.Condition}}
+	                )
+	                {{- end }}
+	            {{- end }}
+	        ),
         keys AS (
             SELECT
                 a.row_id
