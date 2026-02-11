@@ -19,21 +19,27 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
 	            UNION
 	            -- Include real-time buffer rows from change_log (flushed_at = 0)
 	            -- while preserving the same anchor filter semantics.
-	            {{- if .UseMainTableAsAnchor }}
 	            SELECT cl.row_id
 	            FROM {{.ChangeLogTable}} cl
-	            INNER JOIN {{.MainTable}} m
-	                ON m.ltbase_schema_id = {{.SchemaID}}
-	                AND m.ltbase_row_id = cl.row_id
-	            WHERE cl.schema_id = {{.SchemaID}} AND cl.flushed_at = 0 AND {{.Anchor.Condition}}
-	            {{- else }}
-	            SELECT DISTINCT cl.row_id
-	            FROM {{.ChangeLogTable}} cl
-	            INNER JOIN {{.EAVTable}} t
-	                ON t.schema_id = {{.SchemaID}}
-	                AND t.row_id = cl.row_id
-	            WHERE cl.schema_id = {{.SchemaID}} AND cl.flushed_at = 0 AND {{.Anchor.Condition}}
-	            {{- end }}
+	            WHERE cl.schema_id = {{.SchemaID}}
+	                AND cl.flushed_at = 0
+	                {{- if .UseMainTableAsAnchor }}
+	                AND EXISTS (
+	                    SELECT 1
+	                    FROM {{.MainTable}} m
+	                    WHERE m.ltbase_schema_id = {{.SchemaID}}
+	                        AND m.ltbase_row_id = cl.row_id
+	                        AND {{.Anchor.Condition}}
+	                )
+	                {{- else }}
+	                AND EXISTS (
+	                    SELECT 1
+	                    FROM {{.EAVTable}} t
+	                    WHERE t.schema_id = {{.SchemaID}}
+	                        AND t.row_id = cl.row_id
+	                        AND {{.Anchor.Condition}}
+	                )
+	                {{- end }}
 	            {{- end }}
 	        ),
         keys AS (
