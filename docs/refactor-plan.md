@@ -269,3 +269,115 @@
   - 与同文件其他指针分支处理风格不一致（多数已有 `nil` 校验）。
 - 重构方向:
   - 统一 pointer-input guard 规范，集中到转换 helper 层。
+
+## 基于 ai_review_guideline 的再次审查（Round 3）
+- 参考: `/Users/ruoshi/code/github/forma/docs/ai_review_guideline.md`
+
+### 22) `P0` Runtime Safety: `handleCreate` 对数组元素做不安全断言，恶意/错误请求可触发 panic
+- Smell: `Primitive Obsession`, `Defensive Programming` 缺失
+- 证据:
+  - `cmd/server/handlers.go:64`
+  - `cmd/lambda/handlers.go:76`
+- 说明:
+  - body 为数组时，仅校验 `rawBody` 是 `[]any`，但未校验每个元素是 `map[string]any`。
+  - 请求如 `[1,2]` 会在 `obj.(map[string]any)` 处触发 panic。
+- 重构方向:
+  - 对每个元素做类型检查，失败时返回 `400`（含 index 信息），禁止不安全断言。
+
+### 23) `P0` Contract Violation: `BatchOperation.Atomic` 被公开承诺但未实现事务语义
+- Smell: `Inappropriate Intimacy`（API 契约与实现脱节）, `Divergent Change`
+- 证据:
+  - `types.go:92`（注释声明 atomic 表示事务语义）
+  - `cmd/server/handlers.go:70`（调用方默认传 `Atomic: true`）
+  - `internal/entity_manager_batch.go:33`
+  - `internal/entity_manager_batch.go:77`
+  - `internal/entity_manager_batch.go:119`
+- 说明:
+  - 3 个 batch 方法都逐条执行并允许部分成功，没有根据 `req.Atomic` 切换为全成全败。
+  - 这会导致客户端误以为“原子提交”，实际产生部分写入。
+- 重构方向:
+  - 显式实现事务 batch 路径，或在未支持时拒绝 `Atomic=true` 并返回清晰错误。
+
+### 24) `P1` API Correctness: `/search` 参数解析与错误码映射存在行为缺陷
+- Smell: `Duplicate Code`, `Shotgun Surgery`
+- 证据:
+  - `cmd/server/handlers.go:349`（注释写“comma-separated”）
+  - `cmd/server/handlers.go:351`（实际未 split，仅 append 原字符串）
+  - `internal/entity_manager_query.go:172`（强制 `schema names` 非空）
+  - `cmd/server/handlers.go:368`（参数错误返回 `500`）
+- 说明:
+  - `schemas=a,b` 当前会被当作单个 schema。
+  - 未传 `schemas` 或 `q` 触发验证错误时，handler 返回 `500` 而非 `400`。
+- 重构方向:
+  - 规范化 query 参数解析（split + trim + 去重）并将请求验证错误映射为 `4xx`。
+
+### 25) `P1` Dependency Injection Broken: DuckDB client 构造参数被丢弃
+- Smell: `Speculative Generality`, `Inappropriate Intimacy`
+- 证据:
+  - `internal/postgres_persistent_repository.go:27`
+  - `internal/postgres_persistent_repository.go:31`
+- 说明:
+  - 构造函数接收 `duckDBClient`，但结构体字段固定写成 `nil`。
+  - 配置启用 DuckDB 后，仓库层仍可能走到“client not available”分支。
+- 重构方向:
+  - 正确注入并保存 `duckDBClient`，补回归测试覆盖“启用 DuckDB 时可执行 federated 查询”。
+
+### 26) `P1` Runtime Safety: UUID 转换对 `*uuid.UUID` 缺少 nil 保护
+- Smell: `Defensive Programming` 缺失
+- 证据:
+  - `internal/utils.go:45`
+  - `internal/utils.go:46`
+  - `internal/transformer.go:296`
+- 说明:
+  - `toUUID` 在 `case *uuid.UUID` 分支直接解引用；若传入 `nil` 指针会 panic。
+  - 该函数在属性转换路径被直接调用。
+- 重构方向:
+  - 添加 nil guard，与同函数 `*string` 分支保持一致错误处理模式。
+
+### 27) `P1` Configuration Contract: `entityManager` 允许 `nil config`，但查询路径会直接解引用
+- Smell: `Inappropriate Intimacy`, `Fragile Design`
+- 证据:
+  - `internal/entity_manager.go:27`（构造阶段允许 `config == nil`）
+  - `internal/entity_manager_query.go:27`
+  - `internal/entity_manager_query.go:30`
+- 说明:
+  - Query/CrossSchemaSearch 直接使用 `em.config.Query...`，在 `config=nil` 时会 panic。
+  - 构造契约与运行时假设不一致。
+- 重构方向:
+  - 构造函数 fail-fast（拒绝 nil config）或注入默认配置并在查询入口做防御式校验。
+
+### 28) `P1` Resource/Coupling: `cmd/server` 启动路径创建了两套 DB 连接池
+- Smell: `Middle Man`, `Data Clumps`, `Rigid Coupling`
+- 证据:
+  - `cmd/server/main.go:82`
+  - `cmd/server/main.go:105`
+  - `cmd/server/factory.go:14`
+  - `cmd/server/factory.go:19`
+- 说明:
+  - `main` 先创建 pool 用于 registry；随后 `NewEntityManager` 又创建新 pool。
+  - 运行期持有两套连接池，连接数与配置管理复杂度上升。
+- 重构方向:
+  - 使用单一 pool 贯通 registry + manager，连接池在组合根统一创建与生命周期管理。
+
+### 29) `P2` Error Semantics: HTTP 层把不同类型错误统一映射，降低可观测性
+- Smell: `Divergent Change`
+- 证据:
+  - `cmd/server/handlers.go:132`（Get 任何错误都当 404）
+  - `cmd/server/handlers.go:189`（Query 任何错误都当 500）
+  - `cmd/server/handlers.go:368`（Search 验证类错误也当 500）
+- 说明:
+  - 业务不存在、参数错误、后端故障被混淆，客户端与监控都难以正确判断问题类型。
+- 重构方向:
+  - 引入错误分类（validation/not-found/conflict/internal）并统一状态码映射策略。
+
+### 30) `P2` API Clarity: Create 路径生成了两次 RowID，调用语义不清晰
+- Smell: `Speculative Generality`, `Message Chains`
+- 证据:
+  - `cmd/server/handlers.go:62`
+  - `cmd/lambda/handlers.go:74`
+  - `internal/entity_manager_crud.go:32`
+- 说明:
+  - handler 在 `EntityOperation` 里先写 `RowID`，但 `Create` 内部总是重新生成 `uuid.NewV7()`。
+  - API 看起来支持 caller 提供 row_id，实际会被覆盖，容易产生误解。
+- 重构方向:
+  - 明确单一 ID 生成策略：要么由 caller 提供并校验，要么完全由服务端生成并移除无效赋值。
