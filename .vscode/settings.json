@@ -9,6 +9,13 @@
         "GOCACHE": "${workspaceFolder}/.gocache",
         "GOFLAGS": "-buildvcs=false"
     },
+    "go.buildFlags": [
+        "-buildvcs=false"
+    ],
+    "terminal.integrated.env.osx": {
+        "GOCACHE": "${workspaceFolder}/.gocache",
+        "GOFLAGS": "-buildvcs=false"
+    },
     "[go]": {
         "editor.defaultFormatter": "golang.go",
     },
