@@ -80,6 +80,7 @@ func TestParseCSVParam(t *testing.T) {
 		{name: "multiple trimmed", input: "lead, visit , user", want: []string{"lead", "visit", "user"}},
 		{name: "deduplicated", input: "lead,visit,lead", want: []string{"lead", "visit"}},
 		{name: "skip empty parts", input: "lead,, ,visit", want: []string{"lead", "visit"}},
+		{name: "quoted comma value", input: `lead,"visit,user",lead`, want: []string{"lead", "visit,user"}},
 	}
 
 	for _, tt := range tests {

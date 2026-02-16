@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -166,19 +167,29 @@ func parseCSVParam(raw string) []string {
 		return nil
 	}
 
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for _, part := range parts {
-		v := strings.TrimSpace(part)
-		if v == "" {
-			continue
+	reader := csv.NewReader(strings.NewReader(raw))
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil
+	}
+
+	values := make([]string, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		for _, field := range record {
+			v := strings.TrimSpace(field)
+			if v == "" {
+				continue
+			}
+			if _, exists := seen[v]; exists {
+				continue
+			}
+			seen[v] = struct{}{}
+			values = append(values, v)
 		}
-		if _, exists := seen[v]; exists {
-			continue
-		}
-		seen[v] = struct{}{}
-		values = append(values, v)
 	}
 
 	if len(values) == 0 {
