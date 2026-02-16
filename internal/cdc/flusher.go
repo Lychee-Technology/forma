@@ -52,8 +52,14 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	if schemaRegistry == nil {
 		return fmt.Errorf("schema registry is required for CDC export")
 	}
-	// Setup AWS credentials and S3 client
-	region, credProvider, fullS3Client, err := setupAWSClient(ctx, cfg)
+	// Setup AWS credentials and default S3 client.
+	region, credProvider, defaultS3Client, err := setupAWSClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	requireFullS3 := cfg.ManifestTemplate != ""
+	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
 	if err != nil {
 		return err
 	}
@@ -63,7 +69,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	var manifestResolver manifest.PathResolver
 	if cfg.ManifestTemplate != "" {
 		manifestStore = &manifest.S3Store{
-			Client: fullS3Client,
+			Client: activeFullS3Client,
 			Bucket: cfg.S3Bucket,
 		}
 		manifestResolver = manifest.PathResolver{
@@ -101,7 +107,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	var schemaErrs []error
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		if err := processSchema(ctx, db, duck, fullS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
+		if err := processSchema(ctx, db, duck, activeS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
 			logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
 			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
 		}
@@ -138,6 +144,29 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	}
 
 	return awsCfg.Region, awsCfg.Credentials, fullClient, nil
+}
+
+func resolveS3Clients(
+	provided S3ObjectClient,
+	fallback S3FullClient,
+	requireFull bool,
+) (S3ObjectClient, S3FullClient, error) {
+	if provided == nil {
+		if fallback == nil {
+			return nil, nil, fmt.Errorf("s3 client is required")
+		}
+		return fallback, fallback, nil
+	}
+
+	fullClient, ok := provided.(S3FullClient)
+	if !ok {
+		if requireFull {
+			return nil, nil, fmt.Errorf("manifest requires S3FullClient when custom s3 client is provided")
+		}
+		return provided, nil, nil
+	}
+
+	return provided, fullClient, nil
 }
 
 // setupPostgresConnection creates a Postgres connection, potentially using IAM auth.

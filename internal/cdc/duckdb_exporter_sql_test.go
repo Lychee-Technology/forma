@@ -93,13 +93,13 @@ func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
 		t.Fatalf("buildExportSQL returned error: %v", err)
 	}
 
-	if !strings.Contains(clQuery, "FROM change_log_dev") {
+	if !strings.Contains(clQuery, `FROM "change_log_dev"`) {
 		t.Fatalf("change log query not using custom table name: %s", clQuery)
 	}
-	if !strings.Contains(mQuery, "FROM entity_main_dev") {
+	if !strings.Contains(mQuery, `FROM "entity_main_dev"`) {
 		t.Fatalf("main query not using custom table name: %s", mQuery)
 	}
-	if !strings.Contains(eQuery, "FROM eav_data_dev") {
+	if !strings.Contains(eQuery, `FROM "eav_data_dev"`) {
 		t.Fatalf("eav query not using custom table name: %s", eQuery)
 	}
 	_ = sql

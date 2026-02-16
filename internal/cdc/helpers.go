@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	formainternal "github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
 
@@ -156,8 +157,5 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 
 // sanitizeIdentifier performs a minimal whitelist for table names.
 func sanitizeIdentifier(name string) string {
-	if name == "" {
-		return ""
-	}
-	return strings.ReplaceAll(name, "`", "")
+	return formainternal.SanitizeIdentifier(name)
 }

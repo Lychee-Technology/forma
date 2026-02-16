@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,28 @@ type inMemoryManifestStore struct {
 	loadErr error
 	saveErr error
 	saved   int
+}
+
+type objectOnlyS3Client struct{}
+
+func (c *objectOnlyS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	return &s3.CopyObjectOutput{}, nil
+}
+
+func (c *objectOnlyS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	return &s3.DeleteObjectOutput{}, nil
+}
+
+type fullS3ClientMock struct {
+	objectOnlyS3Client
+}
+
+func (c *fullS3ClientMock) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	return &s3.GetObjectOutput{}, nil
+}
+
+func (c *fullS3ClientMock) PutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	return &s3.PutObjectOutput{}, nil
 }
 
 func newInMemoryManifestStore() *inMemoryManifestStore {
@@ -55,6 +78,44 @@ func TestRunOnce_RequiresSchemaRegistry(t *testing.T) {
 	err := RunOnce(context.Background(), CDCConfig{}, nil, false, zap.NewNop(), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema registry is required")
+}
+
+func TestResolveS3Clients_UsesFallbackWhenCustomClientNotProvided(t *testing.T) {
+	fallback := &fullS3ClientMock{}
+
+	objectClient, fullClient, err := resolveS3Clients(nil, fallback, false)
+	require.NoError(t, err)
+	require.Same(t, fallback, objectClient)
+	require.Same(t, fallback, fullClient)
+}
+
+func TestResolveS3Clients_AcceptsObjectOnlyClientWhenFullNotRequired(t *testing.T) {
+	customObjectClient := &objectOnlyS3Client{}
+	fallback := &fullS3ClientMock{}
+
+	objectClient, fullClient, err := resolveS3Clients(customObjectClient, fallback, false)
+	require.NoError(t, err)
+	require.Same(t, customObjectClient, objectClient)
+	require.Nil(t, fullClient)
+}
+
+func TestResolveS3Clients_RejectsObjectOnlyClientWhenFullRequired(t *testing.T) {
+	customObjectClient := &objectOnlyS3Client{}
+	fallback := &fullS3ClientMock{}
+
+	_, _, err := resolveS3Clients(customObjectClient, fallback, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "manifest requires S3FullClient")
+}
+
+func TestResolveS3Clients_UsesCustomFullClientWhenProvided(t *testing.T) {
+	customFullClient := &fullS3ClientMock{}
+	fallback := &fullS3ClientMock{}
+
+	objectClient, fullClient, err := resolveS3Clients(customFullClient, fallback, true)
+	require.NoError(t, err)
+	require.Same(t, customFullClient, objectClient)
+	require.Same(t, customFullClient, fullClient)
 }
 
 func TestSetupPostgresConnection_UsesIAMToken(t *testing.T) {

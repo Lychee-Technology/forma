@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // operatorValuePair holds a parsed operator and value from a kv condition value string.
@@ -19,28 +20,18 @@ type operatorValuePair struct {
 // parseOperatorValue extracts operator and value from "op:value" format.
 // If no colon is found, defaults to "equals" operator with full string as value.
 func parseOperatorValue(kvValue string) operatorValuePair {
-	if idx := strings.Index(kvValue, ":"); idx >= 0 {
-		opPart := kvValue[:idx]
-		valPart := kvValue[idx+1:]
-		if opPart != "" && valPart != "" {
-			return operatorValuePair{op: opPart, value: valPart}
-		}
-	}
-	return operatorValuePair{op: "equals", value: kvValue}
+	parsed := conditionexpr.ParseOperatorValueLenient(kvValue)
+	return operatorValuePair{op: parsed.Operator, value: parsed.Value}
 }
 
 // parseOperatorValueStrict validates "op:value" format when a separator is present.
 // It returns an error when either side is empty to avoid ambiguous predicates.
 func parseOperatorValueStrict(kvValue string) (operatorValuePair, error) {
-	if idx := strings.Index(kvValue, ":"); idx >= 0 {
-		opPart := kvValue[:idx]
-		valPart := kvValue[idx+1:]
-		if opPart == "" || valPart == "" {
-			return operatorValuePair{}, fmt.Errorf("invalid KvCondition value format: %s", kvValue)
-		}
-		return operatorValuePair{op: opPart, value: valPart}, nil
+	parsed, err := conditionexpr.ParseOperatorValueStrict(kvValue)
+	if err != nil {
+		return operatorValuePair{}, err
 	}
-	return operatorValuePair{op: "equals", value: kvValue}, nil
+	return operatorValuePair{op: parsed.Operator, value: parsed.Value}, nil
 }
 
 // sqlOperatorResult holds the SQL operator and possibly modified value for LIKE patterns.
@@ -52,26 +43,14 @@ type sqlOperatorResult struct {
 // toSQLOperator converts a string operator to SQL operator syntax.
 // For LIKE operators, it also modifies the value to include wildcards.
 func toSQLOperator(op, value string) (sqlOperatorResult, error) {
-	switch op {
-	case "equals":
-		return sqlOperatorResult{sqlOp: "=", value: value}, nil
-	case "gt":
-		return sqlOperatorResult{sqlOp: ">", value: value}, nil
-	case "gte":
-		return sqlOperatorResult{sqlOp: ">=", value: value}, nil
-	case "lt":
-		return sqlOperatorResult{sqlOp: "<", value: value}, nil
-	case "lte":
-		return sqlOperatorResult{sqlOp: "<=", value: value}, nil
-	case "not_equals":
-		return sqlOperatorResult{sqlOp: "!=", value: value}, nil
-	case "starts_with":
-		return sqlOperatorResult{sqlOp: "LIKE", value: value + "%"}, nil
-	case "contains":
-		return sqlOperatorResult{sqlOp: "LIKE", value: "%" + value + "%"}, nil
-	default:
-		return sqlOperatorResult{}, fmt.Errorf("unsupported operator: %s", op)
+	normalized, err := conditionexpr.ToSQLOperator(op, value)
+	if err != nil {
+		return sqlOperatorResult{}, err
 	}
+	return sqlOperatorResult{
+		sqlOp: normalized.SQLOperator,
+		value: normalized.Value,
+	}, nil
 }
 
 // convertPgMainValue converts a string value to the appropriate Go type based on attribute metadata.

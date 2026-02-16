@@ -27,6 +27,30 @@ func sortedColumnKeys[T any](source map[string]T, allowed map[string]struct{}) (
 	return keys, nil
 }
 
+func appendInsertColumnsAndArgs[T any](columns *[]string, args *[]any, source map[string]T, allowed map[string]struct{}) error {
+	keys, err := sortedColumnKeys(source, allowed)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		*columns = append(*columns, key)
+		*args = append(*args, source[key])
+	}
+	return nil
+}
+
+func appendUpdateAssignmentsAndArgs[T any](assignments *[]string, args *[]any, source map[string]T, allowed map[string]struct{}) error {
+	keys, err := sortedColumnKeys(source, allowed)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		*assignments = append(*assignments, fmt.Sprintf("%s = $%d", key, len(*args)+1))
+		*args = append(*args, source[key])
+	}
+	return nil
+}
+
 func buildInsertMainStatement(table string, record *PersistentRecord) (string, []any, error) {
 	columns := []string{"ltbase_schema_id", "ltbase_row_id", "ltbase_created_at", "ltbase_updated_at"}
 	args := []any{record.SchemaID, record.RowID, record.CreatedAt, record.UpdatedAt}
@@ -36,58 +60,23 @@ func buildInsertMainStatement(table string, record *PersistentRecord) (string, [
 		args = append(args, *record.DeletedAt)
 	}
 
-	if keys, err := sortedColumnKeys(record.TextItems, allowedTextColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.TextItems, allowedTextColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.TextItems[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int16Items, allowedSmallintColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.Int16Items, allowedSmallintColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.Int16Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int32Items, allowedIntegerColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.Int32Items, allowedIntegerColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.Int32Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int64Items, allowedBigintColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.Int64Items, allowedBigintColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.Int64Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Float64Items, allowedDoubleColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.Float64Items, allowedDoubleColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.Float64Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.UUIDItems, allowedUUIDColumns); err != nil {
+	if err := appendInsertColumnsAndArgs(&columns, &args, record.UUIDItems, allowedUUIDColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			columns = append(columns, key)
-			args = append(args, record.UUIDItems[key])
-		}
 	}
 
 	placeholders := make([]string, len(columns))
@@ -119,58 +108,23 @@ func buildUpdateMainStatement(table string, record *PersistentRecord) (string, [
 	assignments = append(assignments, fmt.Sprintf("ltbase_deleted_at = $%d", len(args)+1))
 	args = append(args, deleted)
 
-	if keys, err := sortedColumnKeys(record.TextItems, allowedTextColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.TextItems, allowedTextColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.TextItems[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int16Items, allowedSmallintColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int16Items, allowedSmallintColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.Int16Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int32Items, allowedIntegerColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int32Items, allowedIntegerColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.Int32Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Int64Items, allowedBigintColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int64Items, allowedBigintColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.Int64Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.Float64Items, allowedDoubleColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Float64Items, allowedDoubleColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.Float64Items[key])
-		}
 	}
-
-	if keys, err := sortedColumnKeys(record.UUIDItems, allowedUUIDColumns); err != nil {
+	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.UUIDItems, allowedUUIDColumns); err != nil {
 		return "", nil, err
-	} else {
-		for _, key := range keys {
-			assignments = append(assignments, fmt.Sprintf("%s = $%d", key, len(args)+1))
-			args = append(args, record.UUIDItems[key])
-		}
 	}
 
 	if len(assignments) == 0 {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // NormalizerOptions controls pagination defaults when requests omit values.
@@ -156,21 +156,15 @@ func normalizeKvPredicate(kv *forma.KvCondition, attrs AttributeCatalog) (*Predi
 }
 
 func parseOperatorValue(raw string) (string, string) {
-	parts := strings.SplitN(raw, ":", 2)
-	if len(parts) == 1 {
-		return "equals", parts[0]
-	}
-	if parts[0] == "" {
-		return "equals", parts[1]
-	}
-	return parts[0], parts[1]
+	parsed := conditionexpr.ParseOperatorValueEqualsOnEmptyOperator(raw)
+	return parsed.Operator, parsed.Value
 }
 
 func normalizeValue(meta AttributeBinding, opName, value string) (PredicateOp, PatternKind, any, error) {
-	switch opName {
-	case "equals", "eq":
+	switch conditionexpr.CanonicalOperator(opName) {
+	case "equals":
 		return convertValue(meta, PredicateOpEquals, value)
-	case "not_equals", "neq":
+	case "not_equals":
 		return convertValue(meta, PredicateOpNotEquals, value)
 	case "gt":
 		return convertValue(meta, PredicateOpGreaterThan, value)
@@ -207,7 +201,7 @@ func convertValue(meta AttributeBinding, op PredicateOp, raw string) (PredicateO
 		}
 		return op, PatternKindNone, value, nil
 	case forma.ValueTypeDate:
-		parsed, err := time.Parse(time.RFC3339, raw)
+		parsed, err := conditionexpr.ParseRFC3339OrUnixMs(raw)
 		if err != nil {
 			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("invalid date value for '%s': %w", meta.AttributeName, err)
 		}
@@ -227,13 +221,7 @@ func convertValue(meta AttributeBinding, op PredicateOp, raw string) (PredicateO
 }
 
 func parseNumeric(raw string) (any, error) {
-	if i, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		return i, nil
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return f, nil
-	}
-	return nil, fmt.Errorf("value '%s' is not numeric", raw)
+	return conditionexpr.ParseNumeric(raw)
 }
 
 func convertLogic(logic forma.Logic) (LogicOp, error) {

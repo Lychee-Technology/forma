@@ -18,7 +18,7 @@ func tryParseNumber(s string) any {
 	return s
 }
 
-func sanitizeIdentifier(name string) string {
+func SanitizeIdentifier(name string) string {
 	if name == "" {
 		return ""
 	}
@@ -35,6 +35,10 @@ func sanitizeIdentifier(name string) string {
 		clean = []string{name}
 	}
 	return pgx.Identifier(clean).Sanitize()
+}
+
+func sanitizeIdentifier(name string) string {
+	return SanitizeIdentifier(name)
 }
 
 func toUUID(obj any) (uuid.UUID, bool) {

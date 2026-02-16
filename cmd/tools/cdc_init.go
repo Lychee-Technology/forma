@@ -179,7 +179,16 @@ func runCDCInit(args []string) error {
 		zap.Bool("dry_run", *dryRun),
 		zap.Bool("auto_estimate_row_bytes", autoEstimateRowBytes))
 
-	if err := runInit(ctx, cfg, s3Client, *schemaRegistryTable, *schemaIDFilter, *dryRun, autoEstimateRowBytes, logger, schemaRegistry); err != nil {
+	if err := runInit(ctx, initRunOptions{
+		cfg:                  cfg,
+		s3Client:             s3Client,
+		schemaRegistryTable:  *schemaRegistryTable,
+		schemaIDFilter:       *schemaIDFilter,
+		dryRun:               *dryRun,
+		autoEstimateRowBytes: autoEstimateRowBytes,
+		logger:               logger,
+		schemaRegistry:       schemaRegistry,
+	}); err != nil {
 		return fmt.Errorf("CDC init failed: %w", err)
 	}
 
@@ -199,6 +208,22 @@ type initRunContext struct {
 	dryRun               bool
 	autoEstimateRowBytes bool
 	pgConnStr            string
+}
+
+type initRunOptions struct {
+	cfg                  cdc.CDCConfig
+	s3Client             *s3.Client
+	schemaRegistryTable  string
+	schemaIDFilter       int
+	dryRun               bool
+	autoEstimateRowBytes bool
+	logger               *zap.Logger
+	schemaRegistry       forma.SchemaRegistry
+}
+
+type initRunSummary struct {
+	totalRowsExported int64
+	totalFilesCreated int
 }
 
 type schemaInitState struct {
@@ -276,49 +301,60 @@ func (c *initRunContext) close() {
 }
 
 // runInit performs the initialization export for all or a specific schema.
-func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schemaRegistryTable string, schemaIDFilter int, dryRun bool, autoEstimateRowBytes bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
-	runCtx, err := newInitRunContext(ctx, cfg, s3Client, dryRun, autoEstimateRowBytes, logger, schemaRegistry)
+func runInit(ctx context.Context, opts initRunOptions) error {
+	runCtx, err := newInitRunContext(
+		ctx,
+		opts.cfg,
+		opts.s3Client,
+		opts.dryRun,
+		opts.autoEstimateRowBytes,
+		opts.logger,
+		opts.schemaRegistry,
+	)
 	if err != nil {
 		return err
 	}
 	defer runCtx.close()
 
-	schemaIDs, err := getSchemaIDsToInit(ctx, runCtx.db, schemaRegistryTable, schemaIDFilter)
+	schemaIDs, err := getSchemaIDsToInit(ctx, runCtx.db, opts.schemaRegistryTable, opts.schemaIDFilter)
 	if err != nil {
 		return err
 	}
 
 	if len(schemaIDs) == 0 {
-		logger.Info("no schemas to initialize")
+		opts.logger.Info("no schemas to initialize")
 		return nil
 	}
 
-	logger.Info("schemas to initialize", zap.Int("count", len(schemaIDs)), zap.Any("schema_ids", schemaIDs))
+	opts.logger.Info("schemas to initialize", zap.Int("count", len(schemaIDs)), zap.Any("schema_ids", schemaIDs))
 
-	totalRowsExported := int64(0)
-	totalFilesCreated := 0
+	summary, schemaErr := processInitSchemas(ctx, runCtx, schemaIDs)
+	opts.logger.Info("CDC init summary",
+		zap.Int64("total_rows_exported", summary.totalRowsExported),
+		zap.Int("total_files_created", summary.totalFilesCreated))
+	return schemaErr
+}
+
+func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs []int64) (initRunSummary, error) {
+	summary := initRunSummary{}
 	var schemaErrors []error
 
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
 		rowsExported, filesCreated, err := initSchema(ctx, runCtx, schemaID)
 		if err != nil {
-			logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Error(err))
+			runCtx.logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Error(err))
 			schemaErrors = append(schemaErrors, fmt.Errorf("schema %d: %w", schemaID, err))
 			continue
 		}
-		totalRowsExported += rowsExported
-		totalFilesCreated += filesCreated
+		summary.totalRowsExported += rowsExported
+		summary.totalFilesCreated += filesCreated
 	}
-
-	logger.Info("CDC init summary",
-		zap.Int64("total_rows_exported", totalRowsExported),
-		zap.Int("total_files_created", totalFilesCreated))
 
 	if len(schemaErrors) > 0 {
-		return errors.Join(schemaErrors...)
+		return summary, errors.Join(schemaErrors...)
 	}
-	return nil
+	return summary, nil
 }
 
 // getSchemaIDsToInit returns the list of schema IDs to initialize.
@@ -565,10 +601,7 @@ func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, sc
 
 // sanitizeIdentifier performs a minimal whitelist for table names.
 func sanitizeIdentifier(name string) string {
-	if name == "" {
-		return ""
-	}
-	return fmt.Sprintf(`"%s"`, name)
+	return internal.SanitizeIdentifier(name)
 }
 
 // estimateRowSizeBytes estimates the average row size in bytes based on schema attributes.

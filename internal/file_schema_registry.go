@@ -53,6 +53,52 @@ func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir str
 	return registry, nil
 }
 
+func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int16) (forma.SchemaAttributeCache, *forma.JSONSchema, error) {
+	attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+	attributeData, err := os.ReadFile(attributesFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+	}
+
+	var rawAttributes map[string]map[string]any
+	if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
+	}
+
+	cache := make(forma.SchemaAttributeCache)
+	for attrName, attrData := range rawAttributes {
+		meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
+		if err != nil {
+			return nil, nil, err
+		}
+		cache[attrName] = meta
+	}
+
+	schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
+	schemaData, err := os.ReadFile(schemaFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
+		}
+		return cache, nil, nil
+	}
+
+	jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
+	}
+	return cache, &jsonSchema, nil
+}
+
+func (r *fileSchemaRegistry) registerSchema(schemaName string, schemaID int16, cache forma.SchemaAttributeCache, schema *forma.JSONSchema) {
+	r.nameToID[schemaName] = schemaID
+	r.idToName[schemaID] = schemaName
+	r.schemaAttributeCaches[schemaID] = cache
+	if schema != nil {
+		r.schemas[schemaID] = *schema
+	}
+}
+
 // loadSchemasFromDB reads schema mappings from the database and loads attribute
 // definitions from JSON files on disk.
 func (r *fileSchemaRegistry) loadSchemasFromDB() error {
@@ -95,49 +141,11 @@ func (r *fileSchemaRegistry) loadSchemasFromDB() error {
 		schemaName := mapping.name
 		schemaID := mapping.id
 
-		// Load attribute metadata from corresponding _attributes.json file
-		attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
-		attributeData, err := os.ReadFile(attributesFile)
+		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+			return err
 		}
-
-		// Parse attribute metadata JSON into a temporary structure
-		var rawAttributes map[string]map[string]any
-		if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
-			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
-		}
-
-		// Convert to SchemaAttributeCache
-		cache := make(forma.SchemaAttributeCache)
-		for attrName, attrData := range rawAttributes {
-			meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
-			if err != nil {
-				return err
-			}
-			cache[attrName] = meta
-		}
-
-		// Load main schema JSON file (e.g., lead.json)
-		schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
-		schemaData, err := os.ReadFile(schemaFile)
-		if err != nil {
-			// Schema file is optional, skip if not found
-			if !os.IsNotExist(err) {
-				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
-			}
-		} else {
-			// parseJSONSchemaFile is in schema_parser.go
-			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
-			if err != nil {
-				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
-			}
-			r.schemas[schemaID] = jsonSchema
-		}
-
-		r.nameToID[schemaName] = schemaID
-		r.idToName[schemaID] = schemaName
-		r.schemaAttributeCaches[schemaID] = cache
+		r.registerSchema(schemaName, schemaID, cache, schema)
 	}
 
 	return nil
@@ -299,50 +307,13 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 
 	// Load and register each schema
 	for _, schemaName := range schemaNames {
-		// Load attribute metadata from corresponding _attributes.json file
-		attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
-		attributeData, err := os.ReadFile(attributesFile)
-		if err != nil {
-			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
-		}
-
-		// Parse attribute metadata JSON into a temporary structure
-		var rawAttributes map[string]map[string]any
-		if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
-			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
-		}
-
-		// Convert to SchemaAttributeCache
-		cache := make(forma.SchemaAttributeCache)
-		for attrName, attrData := range rawAttributes {
-			meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
-			if err != nil {
-				return err
-			}
-			cache[attrName] = meta
-		}
-
 		schemaID := nextSchemaID
 
-		// Load main schema JSON file (e.g., lead.json)
-		schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
-		schemaData, err := os.ReadFile(schemaFile)
+		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			// Schema file is optional, skip if not found
-			if !os.IsNotExist(err) {
-				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
-			}
-		} else {
-			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
-			if err != nil {
-				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
-			}
-			r.schemas[schemaID] = jsonSchema
+			return err
 		}
-
-		r.nameToID[schemaName] = schemaID
-		r.idToName[schemaID] = schemaName
-		r.schemaAttributeCaches[schemaID] = cache
+		r.registerSchema(schemaName, schemaID, cache, schema)
 		nextSchemaID++
 	}
 

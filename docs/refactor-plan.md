@@ -12,10 +12,15 @@
 ## 执行进度（2026-02-16）
 - `DONE` #1 共享 HTTP API 层：已提取到 `internal/httpapi`，`cmd/server` 与 `cmd/lambda` 复用。
 - `DONE` #2 启动与连接池重复：已提取 `internal/bootstrap`；server/lambda 共用 env/config/pool 构建逻辑。
-- `PARTIAL` #3 CDC flush/init 长方法：`flusher` 已引入 `flushBatchExecutor`，chunk/single 统一复用同一导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext` 并拆分为 prepare/process/export/manifest 步骤。仍可继续收敛 `runInit` 的编排复杂度与参数传递。
+- `PARTIAL` #3 CDC flush/init 长方法：`flusher` 已引入 `flushBatchExecutor`，chunk/single 统一复用同一导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext`，并将 `runInit` 参数折叠为 `initRunOptions`、拆分 `processInitSchemas` 编排函数。仍可继续下沉 schema 查询/批次循环细节以进一步缩短顶层流程。
 - `DONE` #4 DuckDB 导出 SQL 重复：已提取共享 builder（`resolveExportSQLOptions`/`buildMainEntityQuery`/`buildEAVQuery`/`buildSchemaDrivenProjection`），`buildExportSQL` 与 `buildBaseExportSQL` 复用同一投影与 EAV 聚合逻辑。
-- `PARTIAL` #5 条件解析重复：`internal` 包内已统一 `toSQLOperator` 映射与 `parseOperatorValueStrict`，并复用 `parseDateValue` 收敛日期转换；`queryoptimizer` 侧仍保留独立归一化语义，待下一步按 IR 契约继续收敛。
+- `DONE` #5 条件解析重复：已提取共享 `internal/conditionexpr`（`op:value` 解析、operator 规范化、SQL operator 映射、numeric/date 字面量解析），`internal` 与 `queryoptimizer` 复用同一基础语义，减少并行实现与漂移风险。
+- `DONE` #7 `sanitizeIdentifier` 语义收敛：已统一到 `internal.SanitizeIdentifier`，`internal/cdc` 与 `cmd/tools/cdc_init` 复用同一实现，消除三份不一致逻辑。
+- `DONE` #8 主表 SQL 构建重复：`buildInsertMainStatement/buildUpdateMainStatement` 已提取共享字段追加器（insert/update），消除六类 map 遍历重复模板。
+- `DONE` #9 batch CRUD 重复：非原子 `BatchCreate/BatchUpdate/BatchDelete` 已收敛到共享 `executeBestEffortBatch` 管线，统一失败收集与耗时统计。
+- `DONE` #10 schema registry 加载重复：`fileSchemaRegistry` 已提取 `loadSchemaArtifacts + registerSchema`，DB 模式与目录模式复用同一 artifacts 加载管线。
 - `DONE` #13 CDC 错误上抛：`processSchema/executeFlush` 已改为返回 error，`RunOnce` 聚合 schema 级错误并返回。
+- `DONE` #16 接口契约一致性：`RunOnce` 现已真实使用传入 `s3Client`（不再忽略注入），并在启用 manifest 时校验 full client 能力（Get/Put）；`manifest.S3Store` 已收敛为最小 S3 client 接口。
 - `DONE` #22 Create payload 防 panic：数组元素类型已逐项校验，错误返回 `400`。
 - `DONE` #23 `BatchOperation.Atomic` 契约：已实现原子 batch 事务路径（非“名义 atomic”）。
 - `DONE` #24 `/search` 解析与错误码：`schemas` 支持 split/trim/dedupe，缺参返回 `400`。

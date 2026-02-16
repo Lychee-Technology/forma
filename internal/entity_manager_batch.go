@@ -25,6 +25,45 @@ func emptyBatchResult() *forma.BatchResult {
 	}
 }
 
+type batchOperationExecutor func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
+
+func (em *entityManager) executeBestEffortBatch(
+	ctx context.Context,
+	req *forma.BatchOperation,
+	operationName string,
+	errorCode string,
+	executor batchOperationExecutor,
+) (*forma.BatchResult, error) {
+	startTime := time.Now()
+
+	successful := make([]*forma.DataRecord, 0, len(req.Operations))
+	failed := make([]forma.OperationError, 0)
+
+	for _, operation := range req.Operations {
+		op := operation
+		record, err := executor(ctx, &op)
+		if err != nil {
+			zap.S().Warnw(operationName+" operation failed", "operation", op, "error", err)
+			failed = append(failed, forma.OperationError{
+				Operation: op,
+				Error:     err.Error(),
+				Code:      errorCode,
+			})
+			continue
+		}
+		successful = append(successful, record)
+	}
+
+	duration := time.Since(startTime).Microseconds()
+	zap.S().Debugw(operationName+" completed", "successfulCount", len(successful), "failedCount", len(failed), "durationMicroseconds", duration)
+	return &forma.BatchResult{
+		Successful: successful,
+		Failed:     failed,
+		TotalCount: len(req.Operations),
+		Duration:   duration,
+	}, nil
+}
+
 // BatchCreate creates multiple entities.
 func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {
 	if err := validateBatchOperation(req); err != nil {
@@ -38,33 +77,7 @@ func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperat
 		return em.batchCreateAtomic(ctx, req)
 	}
 
-	startTime := time.Now()
-
-	successful := make([]*forma.DataRecord, 0)
-	failed := make([]forma.OperationError, 0)
-
-	for _, op := range req.Operations {
-		record, err := em.Create(ctx, &op)
-		if err != nil {
-			zap.S().Warnw("BatchCreate operation failed", "operation", op, "error", err)
-			failed = append(failed, forma.OperationError{
-				Operation: op,
-				Error:     err.Error(),
-				Code:      "CREATE_FAILED",
-			})
-		} else {
-			successful = append(successful, record)
-		}
-	}
-
-	duration := time.Since(startTime).Microseconds()
-	zap.S().Debugw("BatchCreate completed", "successfulCount", len(successful), "failedCount", len(failed), "durationMicroseconds", duration)
-	return &forma.BatchResult{
-		Successful: successful,
-		Failed:     failed,
-		TotalCount: len(req.Operations),
-		Duration:   duration,
-	}, nil
+	return em.executeBestEffortBatch(ctx, req, "BatchCreate", "CREATE_FAILED", em.Create)
 }
 
 // BatchUpdate updates multiple entities.
@@ -81,32 +94,7 @@ func (em *entityManager) BatchUpdate(ctx context.Context, req *forma.BatchOperat
 		return em.batchUpdateAtomic(ctx, req)
 	}
 
-	startTime := time.Now()
-
-	successful := make([]*forma.DataRecord, 0)
-	failed := make([]forma.OperationError, 0)
-
-	for _, op := range req.Operations {
-		record, err := em.Update(ctx, &op)
-		if err != nil {
-			failed = append(failed, forma.OperationError{
-				Operation: op,
-				Error:     err.Error(),
-				Code:      "UPDATE_FAILED",
-			})
-		} else {
-			successful = append(successful, record)
-		}
-	}
-
-	duration := time.Since(startTime).Microseconds()
-
-	return &forma.BatchResult{
-		Successful: successful,
-		Failed:     failed,
-		TotalCount: len(req.Operations),
-		Duration:   duration,
-	}, nil
+	return em.executeBestEffortBatch(ctx, req, "BatchUpdate", "UPDATE_FAILED", em.Update)
 }
 
 // BatchDelete deletes multiple entities.
@@ -123,35 +111,15 @@ func (em *entityManager) BatchDelete(ctx context.Context, req *forma.BatchOperat
 		return em.batchDeleteAtomic(ctx, req)
 	}
 
-	startTime := time.Now()
-
-	successful := make([]*forma.DataRecord, 0)
-	failed := make([]forma.OperationError, 0)
-
-	for _, op := range req.Operations {
-		err := em.Delete(ctx, &op)
-		if err != nil {
-			failed = append(failed, forma.OperationError{
-				Operation: op,
-				Error:     err.Error(),
-				Code:      "DELETE_FAILED",
-			})
-		} else {
-			successful = append(successful, &forma.DataRecord{
-				SchemaName: op.SchemaName,
-				RowID:      op.RowID,
-			})
+	return em.executeBestEffortBatch(ctx, req, "BatchDelete", "DELETE_FAILED", func(execCtx context.Context, op *forma.EntityOperation) (*forma.DataRecord, error) {
+		if err := em.Delete(execCtx, op); err != nil {
+			return nil, err
 		}
-	}
-
-	duration := time.Since(startTime).Microseconds()
-
-	return &forma.BatchResult{
-		Successful: successful,
-		Failed:     failed,
-		TotalCount: len(req.Operations),
-		Duration:   duration,
-	}, nil
+		return &forma.DataRecord{
+			SchemaName: op.SchemaName,
+			RowID:      op.RowID,
+		}, nil
+	})
 }
 
 func (em *entityManager) atomicRepository() (AtomicBatchPersistentRecordRepository, error) {

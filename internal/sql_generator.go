@@ -7,21 +7,16 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // parseDateValue parses a date value string and converts it based on storage encoding.
 // Supports both ISO 8601 format strings and Unix millisecond timestamps.
 // Returns the parsed value ready for SQL query based on the column encoding.
 func parseDateValue(valStr string, meta forma.AttributeMetadata) (any, error) {
-	// First, try to parse as ISO 8601 format
-	parsedTime, err := time.Parse(time.RFC3339, valStr)
+	parsedTime, err := conditionexpr.ParseRFC3339OrUnixMs(valStr)
 	if err != nil {
-		// Try parsing as Unix milliseconds
-		parsedInt64, err := strconv.ParseInt(valStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid date value: expected ISO 8601 format or unix milliseconds, got '%s'", valStr)
-		}
-		parsedTime = time.UnixMilli(parsedInt64)
+		return nil, err
 	}
 
 	// Convert based on storage encoding

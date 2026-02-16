@@ -305,20 +305,40 @@ func TestNormalizeQuery_ResolvedAttributeNameAndInsideArray(t *testing.T) {
 func TestNormalizeQuery_DateConversionSuccess(t *testing.T) {
 	attrs := baseAttrs()
 	date := time.Date(2023, 3, 14, 15, 9, 26, 0, time.UTC)
-	req := &forma.QueryRequest{
-		Condition: &forma.KvCondition{Attr: "created_at", Value: "eq:" + date.Format(time.RFC3339)},
-	}
-	in, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	pred := in.Filter.Predicate
-	if pred.ValueType != forma.ValueTypeDate {
-		t.Fatalf("unexpected value type %s", pred.ValueType)
-	}
-	if pred.Value.(time.Time) != date {
-		t.Fatalf("expected parsed date %v, got %v", date, pred.Value)
-	}
+	t.Run("rfc3339", func(t *testing.T) {
+		req := &forma.QueryRequest{
+			Condition: &forma.KvCondition{Attr: "created_at", Value: "eq:" + date.Format(time.RFC3339)},
+		}
+		in, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		pred := in.Filter.Predicate
+		if pred.ValueType != forma.ValueTypeDate {
+			t.Fatalf("unexpected value type %s", pred.ValueType)
+		}
+		if pred.Value.(time.Time) != date {
+			t.Fatalf("expected parsed date %v, got %v", date, pred.Value)
+		}
+	})
+
+	t.Run("unix_ms", func(t *testing.T) {
+		req := &forma.QueryRequest{
+			Condition: &forma.KvCondition{Attr: "created_at", Value: "eq:1700000000000"},
+		}
+		in, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		pred := in.Filter.Predicate
+		parsed, ok := pred.Value.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", pred.Value)
+		}
+		if parsed.UnixMilli() != 1700000000000 {
+			t.Fatalf("unexpected unix ms %d", parsed.UnixMilli())
+		}
+	})
 }
 
 func TestNormalizeConditionTree(t *testing.T) {
