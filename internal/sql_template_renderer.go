@@ -31,14 +31,12 @@ func (r *SQLRenderer) Param(v any) string {
 var identRegex = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // Ident validates a SQL identifier (table/column) and returns it quoted.
-// If the identifier is invalid, Ident panics (templates should not pass
-// untrusted strings to Ident; callers can recover or validate before use).
-func (r *SQLRenderer) Ident(name string) string {
+func (r *SQLRenderer) Ident(name string) (string, error) {
 	if !identRegex.MatchString(name) {
-		panic(fmt.Sprintf("invalid SQL identifier: %q", name))
+		return "", fmt.Errorf("invalid SQL identifier: %q", name)
 	}
 	// Double-quote to be safe for SQL identifiers.
-	return `"` + name + `"`
+	return `"` + name + `"`, nil
 }
 
 // Render executes tpl with data while providing the template functions:
@@ -55,7 +53,7 @@ func (r *SQLRenderer) Render(tpl *template.Template, data any) (string, []any, e
 
 	funcs := template.FuncMap{
 		"param": func(v any) string { return r.Param(v) },
-		"ident": func(s string) string { return r.Ident(s) },
+		"ident": func(s string) (string, error) { return r.Ident(s) },
 		"cast": func(col string, typeName string) string {
 			// Map common type name strings to DuckDB types.
 			var mapType = func(n string) string {

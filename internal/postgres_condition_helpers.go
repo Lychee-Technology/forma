@@ -2,9 +2,7 @@ package internal
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/lychee-technology/forma"
 )
@@ -89,24 +87,11 @@ func parseOperatorAndValue(value string) (string, string) {
 
 // operatorToSQL converts a string operator to its SQL equivalent
 func operatorToSQL(opStr string) (string, error) {
-	switch opStr {
-	case "equals":
-		return "=", nil
-	case "gt":
-		return ">", nil
-	case "gte":
-		return ">=", nil
-	case "lt":
-		return "<", nil
-	case "lte":
-		return "<=", nil
-	case "not_equals":
-		return "!=", nil
-	case "starts_with", "contains":
-		return "LIKE", nil
-	default:
-		return "", fmt.Errorf("unsupported operator: %s", opStr)
+	sqlOp, err := toSQLOperator(opStr, "")
+	if err != nil {
+		return "", err
 	}
+	return sqlOp.sqlOp, nil
 }
 
 // parseColumnValue parses and converts a value string based on column type
@@ -131,40 +116,9 @@ func parseColumnValue(desc *columnDescriptor, valStr string, meta *forma.Attribu
 // It supports both ISO 8601 format strings and Unix millisecond timestamps as input.
 // The output format is determined by the storage encoding in metadata.
 func convertDateValueForQuery(valStr string, meta *forma.AttributeMetadata) (any, error) {
-	parsedTime, err := parseDateString(valStr)
-	if err != nil {
-		return nil, err
+	if meta == nil {
+		emptyMeta := forma.AttributeMetadata{}
+		return parseDateValue(valStr, emptyMeta)
 	}
-
-	return convertTimeToStorageFormat(parsedTime, meta), nil
-}
-
-// parseDateString parses a date value from either ISO 8601 or Unix milliseconds
-func parseDateString(valStr string) (time.Time, error) {
-	// First, try to parse as ISO 8601 format
-	parsedTime, err := time.Parse(time.RFC3339, valStr)
-	if err != nil {
-		// Try parsing as Unix milliseconds
-		parsedInt64, parseErr := strconv.ParseInt(valStr, 10, 64)
-		if parseErr != nil {
-			return time.Time{}, fmt.Errorf("invalid date value: expected ISO 8601 format or unix milliseconds, got '%s'", valStr)
-		}
-		return time.UnixMilli(parsedInt64), nil
-	}
-	return parsedTime, nil
-}
-
-// convertTimeToStorageFormat converts a time.Time to the appropriate storage format
-func convertTimeToStorageFormat(t time.Time, meta *forma.AttributeMetadata) any {
-	if meta.ColumnBinding != nil {
-		encoding := meta.ColumnBinding.Encoding
-		switch encoding {
-		case forma.MainColumnEncodingUnixMs:
-			return t.UnixMilli()
-		case forma.MainColumnEncodingISO8601:
-			return t.Format(time.RFC3339)
-		}
-	}
-	// Default: return as Unix milliseconds
-	return t.UnixMilli()
+	return parseDateValue(valStr, *meta)
 }

@@ -6,10 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -21,6 +18,8 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
 	"github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/httpapi"
 	"go.uber.org/zap"
 )
 
@@ -28,35 +27,6 @@ var (
 	httpAdapter *httpadapter.HandlerAdapterV2
 	pool        *pgxpool.Pool
 )
-
-// Server represents the HTTP server with EntityManager
-type Server struct {
-	manager forma.EntityManager
-	mux     *http.ServeMux
-}
-
-// NewServer creates a new Server instance
-func NewServer(manager forma.EntityManager) *Server {
-	return &Server{
-		manager: manager,
-		mux:     http.NewServeMux(),
-	}
-}
-
-// RegisterRoutes registers all API routes
-func (s *Server) RegisterRoutes() {
-	// Health check endpoint
-	s.mux.HandleFunc("/health", s.handleHealth)
-	// API routes - use custom path matching in handlers
-	s.mux.HandleFunc("/api/v1/advanced_query", s.handleAdvancedQuery)
-	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
-	s.mux.HandleFunc("/api/v1/", s.apiHandler)
-}
-
-// Handler returns the HTTP handler for use with Lambda adapter
-func (s *Server) Handler() http.Handler {
-	return s.mux
-}
 
 func init() {
 	// Initialize logger
@@ -70,46 +40,46 @@ func init() {
 	sugar.Info("initializing Lambda handler")
 
 	// Get configuration from environment variables
-	schemaDir := os.Getenv("SCHEMA_DIR")
+	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	if schemaDir == "" {
 		schemaDir = "/var/task/schemas"
 	}
 	sugar.Infof("schemaDir: %s", schemaDir)
 
 	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
-	dsqlEndpoint := os.Getenv("DSQL_ENDPOINT")
+	dsqlEndpoint := bootstrap.Env("DSQL_ENDPOINT", "")
 	if dsqlEndpoint != "" {
 		// Aurora DSQL mode - use IAM authentication
 		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
 		pool, err = createDSQLPool(dsqlEndpoint)
 	} else {
 		// Traditional PostgreSQL mode - use password authentication
-		dbConfig := forma.DatabaseConfig{
-			Host:            getEnv("DB_HOST", "localhost"),
-			Port:            getEnvInt("DB_PORT", 5432),
-			Database:        getEnv("DB_NAME", "forma"),
-			Username:        getEnv("DB_USER", "postgres"),
-			Password:        getEnv("DB_PASSWORD", ""),
-			SSLMode:         getEnv("DB_SSL_MODE", "require"),
-			MaxConnections:  getEnvInt("DB_MAX_CONNECTIONS", 10), // Lower for Lambda
-			MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 2),
-			ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second,
-			ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second,
-			Timeout:         time.Duration(getEnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second,
-		}
-		pool, err = createDatabasePoolFromConfig(dbConfig)
+		dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+			Host:                   "localhost",
+			Port:                   5432,
+			Database:               "forma",
+			Username:               "postgres",
+			Password:               "",
+			SSLMode:                "require",
+			MaxConnections:         10,
+			MaxIdleConns:           2,
+			ConnMaxLifetimeSeconds: 300,
+			ConnMaxIdleTimeSeconds: 60,
+			TimeoutSeconds:         30,
+		})
+		pool, err = bootstrap.NewPostgresPoolFromConfig(dbConfig)
 	}
 	if err != nil {
 		sugar.Fatalf("failed to create database pool: %v", err)
 	}
 
 	// Table names configuration
-	tableNames := forma.TableNames{
-		SchemaRegistry: getEnv("SCHEMA_TABLE", "schema_registry"),
-		EAVData:        getEnv("EAV_TABLE", "eav_data"),
-		EntityMain:     getEnv("ENTITY_MAIN_TABLE", "entity_main"),
-		ChangeLog:      getEnv("CHANGE_LOG_TABLE", "change_log"),
-	}
+	tableNames := bootstrap.TableNamesFromEnv(forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+		ChangeLog:      "change_log",
+	})
 
 	// Create file-based schema registry from database
 	registry, err := internal.NewFileSchemaRegistry(pool, tableNames.SchemaRegistry, schemaDir)
@@ -133,8 +103,9 @@ func init() {
 	}
 
 	// Create server and register routes
-	server := NewServer(manager)
-	server.RegisterRoutes()
+	server := httpapi.NewServer(manager, httpapi.Options{
+		EnableHealth: true,
+	})
 
 	// Create HTTP adapter for API Gateway v2
 	httpAdapter = httpadapter.NewV2(server.Handler())
@@ -151,45 +122,6 @@ func main() {
 	lambda.Start(handler)
 }
 
-// createDatabasePoolFromConfig creates a PostgreSQL connection pool from config
-func createDatabasePoolFromConfig(dbConfig forma.DatabaseConfig) (*pgxpool.Pool, error) {
-	connString := fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		dbConfig.Username,
-		dbConfig.Password,
-		dbConfig.Host,
-		dbConfig.Port,
-		dbConfig.Database,
-		dbConfig.SSLMode,
-	)
-
-	poolConfig, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection string: %w", err)
-	}
-
-	poolConfig.MaxConns = int32(dbConfig.MaxConnections)
-	poolConfig.MinConns = int32(dbConfig.MaxIdleConns)
-	poolConfig.MaxConnLifetime = dbConfig.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = dbConfig.ConnMaxIdleTime
-	poolConfig.ConnConfig.ConnectTimeout = dbConfig.Timeout
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
-	}
-
-	// Test the connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	return pool, nil
-}
-
 // createDSQLPool creates a connection pool for Aurora DSQL using IAM authentication.
 // DSQL requires IAM auth tokens instead of passwords, and always uses:
 // - Database: postgres (fixed)
@@ -199,7 +131,7 @@ func createDSQLPool(endpoint string) (*pgxpool.Pool, error) {
 	ctx := context.Background()
 
 	// Load AWS configuration
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(getEnv("AWS_REGION", "us-east-2")))
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(bootstrap.Env("AWS_REGION", "us-east-2")))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -225,11 +157,11 @@ func createDSQLPool(endpoint string) (*pgxpool.Pool, error) {
 	}
 
 	// Configure pool for Lambda - use conservative settings
-	poolConfig.MaxConns = int32(getEnvInt("DB_MAX_CONNECTIONS", 10))
-	poolConfig.MinConns = int32(getEnvInt("DB_MAX_IDLE_CONNS", 2))
-	poolConfig.MaxConnLifetime = time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second
-	poolConfig.MaxConnIdleTime = time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second
-	poolConfig.ConnConfig.ConnectTimeout = time.Duration(getEnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
+	poolConfig.MaxConns = int32(bootstrap.EnvInt("DB_MAX_CONNECTIONS", 10))
+	poolConfig.MinConns = int32(bootstrap.EnvInt("DB_MAX_IDLE_CONNS", 2))
+	poolConfig.MaxConnLifetime = time.Duration(bootstrap.EnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second
+	poolConfig.MaxConnIdleTime = time.Duration(bootstrap.EnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second
+	poolConfig.ConnConfig.ConnectTimeout = time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -245,20 +177,4 @@ func createDSQLPool(endpoint string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
-	}
-	return defaultValue
 }

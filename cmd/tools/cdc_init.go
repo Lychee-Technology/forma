@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -186,9 +187,38 @@ func runCDCInit(args []string) error {
 	return nil
 }
 
-// runInit performs the initialization export for all or a specific schema.
-func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schemaRegistryTable string, schemaIDFilter int, dryRun bool, autoEstimateRowBytes bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
-	// Setup Postgres connection
+type initRunContext struct {
+	cfg                  cdc.CDCConfig
+	db                   *sql.DB
+	duck                 *cdc.DuckExporter
+	s3Client             cdc.S3ObjectClient
+	schemaRegistry       forma.SchemaRegistry
+	manifestStore        manifest.Store
+	manifestResolver     manifest.PathResolver
+	logger               *zap.Logger
+	dryRun               bool
+	autoEstimateRowBytes bool
+	pgConnStr            string
+}
+
+type schemaInitState struct {
+	schemaID     int16
+	attrCache    forma.SchemaAttributeCache
+	batchSize    int
+	fileEntries  []manifest.FileEntry
+	rowsExported int64
+	filesCreated int
+}
+
+func newInitRunContext(
+	ctx context.Context,
+	cfg cdc.CDCConfig,
+	s3Client *s3.Client,
+	dryRun bool,
+	autoEstimateRowBytes bool,
+	logger *zap.Logger,
+	schemaRegistry forma.SchemaRegistry,
+) (*initRunContext, error) {
 	sslMode := cfg.PGSSLMode
 	if sslMode == "" {
 		sslMode = "require"
@@ -198,33 +228,62 @@ func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schema
 
 	db, err := sql.Open("postgres", pgConnStr)
 	if err != nil {
-		return fmt.Errorf("open pg: %w", err)
+		return nil, fmt.Errorf("open pg: %w", err)
 	}
-	defer db.Close()
 
-	// Setup DuckDB exporter
 	duck, err := cdc.NewDuckExporter(ctx, cfg, os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), logger)
 	if err != nil {
-		return fmt.Errorf("new duck exporter: %w", err)
+		_ = db.Close()
+		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
-	defer duck.DB.Close()
 
-	// Setup manifest store if configured
-	var manifestStore manifest.Store
-	var manifestResolver manifest.PathResolver
+	runCtx := &initRunContext{
+		cfg:                  cfg,
+		db:                   db,
+		duck:                 duck,
+		s3Client:             s3Client,
+		schemaRegistry:       schemaRegistry,
+		logger:               logger,
+		dryRun:               dryRun,
+		autoEstimateRowBytes: autoEstimateRowBytes,
+		pgConnStr:            pgConnStr,
+	}
+
 	if cfg.ManifestTemplate != "" {
-		manifestStore = &manifest.S3Store{
+		runCtx.manifestStore = &manifest.S3Store{
 			Client: s3Client,
 			Bucket: cfg.S3Bucket,
 		}
-		manifestResolver = manifest.PathResolver{
+		runCtx.manifestResolver = manifest.PathResolver{
 			Prefix:       cfg.ManifestPrefix,
 			PathTemplate: cfg.ManifestTemplate,
 		}
 	}
 
-	// Get schemas to process
-	schemaIDs, err := getSchemaIDsToInit(ctx, db, schemaRegistryTable, schemaIDFilter)
+	return runCtx, nil
+}
+
+func (c *initRunContext) close() {
+	if c == nil {
+		return
+	}
+	if c.duck != nil && c.duck.DB != nil {
+		_ = c.duck.DB.Close()
+	}
+	if c.db != nil {
+		_ = c.db.Close()
+	}
+}
+
+// runInit performs the initialization export for all or a specific schema.
+func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schemaRegistryTable string, schemaIDFilter int, dryRun bool, autoEstimateRowBytes bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
+	runCtx, err := newInitRunContext(ctx, cfg, s3Client, dryRun, autoEstimateRowBytes, logger, schemaRegistry)
+	if err != nil {
+		return err
+	}
+	defer runCtx.close()
+
+	schemaIDs, err := getSchemaIDsToInit(ctx, runCtx.db, schemaRegistryTable, schemaIDFilter)
 	if err != nil {
 		return err
 	}
@@ -236,15 +295,16 @@ func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schema
 
 	logger.Info("schemas to initialize", zap.Int("count", len(schemaIDs)), zap.Any("schema_ids", schemaIDs))
 
-	// Process each schema
 	totalRowsExported := int64(0)
 	totalFilesCreated := 0
+	var schemaErrors []error
 
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		rowsExported, filesCreated, err := initSchema(ctx, db, duck, s3Client, cfg, schemaID, pgConnStr, dryRun, autoEstimateRowBytes, logger, schemaRegistry, manifestStore, manifestResolver)
+		rowsExported, filesCreated, err := initSchema(ctx, runCtx, schemaID)
 		if err != nil {
 			logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Error(err))
+			schemaErrors = append(schemaErrors, fmt.Errorf("schema %d: %w", schemaID, err))
 			continue
 		}
 		totalRowsExported += rowsExported
@@ -255,6 +315,9 @@ func runInit(ctx context.Context, cfg cdc.CDCConfig, s3Client *s3.Client, schema
 		zap.Int64("total_rows_exported", totalRowsExported),
 		zap.Int("total_files_created", totalFilesCreated))
 
+	if len(schemaErrors) > 0 {
+		return errors.Join(schemaErrors...)
+	}
 	return nil
 }
 
@@ -288,164 +351,171 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 }
 
 // initSchema exports all existing data for a single schema to S3 base files.
-func initSchema(
-	ctx context.Context,
-	db *sql.DB,
-	duck *cdc.DuckExporter,
-	s3Client cdc.S3ObjectClient,
-	cfg cdc.CDCConfig,
-	schemaID int16,
-	pgConnStr string,
-	dryRun bool,
-	autoEstimateRowBytes bool,
-	logger *zap.Logger,
-	schemaRegistry forma.SchemaRegistry,
-	manifestStore manifest.Store,
-	manifestResolver manifest.PathResolver,
-) (int64, int, error) {
-	logger.Info("initializing schema", zap.Int16("schema_id", schemaID))
-
-	// Get total row count
-	totalRows, err := getEntityMainCount(ctx, db, cfg.EntityMainTable, schemaID)
+func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
+	state, err := prepareSchemaInit(ctx, runCtx, schemaID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("get row count: %w", err)
+		return 0, 0, err
 	}
-
-	if totalRows == 0 {
-		logger.Info("no rows to export", zap.Int16("schema_id", schemaID))
+	if state == nil {
 		return 0, 0, nil
 	}
 
-	logger.Info("rows to export", zap.Int16("schema_id", schemaID), zap.Int64("total_rows", totalRows))
-
-	// Get schema attribute cache
-	var attrCache forma.SchemaAttributeCache
-	if schemaRegistry != nil {
-		if _, cache, err := schemaRegistry.GetSchemaAttributeCacheByID(schemaID); err != nil {
-			logger.Warn("schema registry lookup failed, using generic projection", zap.Int16("schema_id", schemaID), zap.Error(err))
-		} else {
-			attrCache = cache
-		}
+	if err := processSchemaBatches(ctx, runCtx, state); err != nil {
+		return state.rowsExported, state.filesCreated, err
 	}
 
-	// Calculate optimal batch size for target file size
-	batchSize := cfg.BatchSize
-	if cfg.TargetFileSizeMB > 0 {
-		// Use provided estimate or calculate from schema if autoEstimateRowBytes is true
-		rowBytes := cfg.EstimatedRowBytes
-		if autoEstimateRowBytes {
-			rowBytes = estimateRowSizeBytes(attrCache)
-		}
-		batchSize = calculateBatchSize(cfg.TargetFileSizeMB, rowBytes, cfg.MaxBatchSize)
-		logger.Info("calculated batch size for target file size",
-			zap.Int16("schema_id", schemaID),
-			zap.Int("target_file_size_mb", cfg.TargetFileSizeMB),
-			zap.Int("estimated_row_bytes", rowBytes),
-			zap.Int("calculated_batch_size", batchSize))
+	updateSchemaManifest(ctx, runCtx, state)
+
+	runCtx.logger.Info("schema init completed",
+		zap.Int16("schema_id", schemaID),
+		zap.Int64("total_rows_exported", state.rowsExported),
+		zap.Int("total_files_created", state.filesCreated))
+
+	return state.rowsExported, state.filesCreated, nil
+}
+
+func prepareSchemaInit(ctx context.Context, runCtx *initRunContext, schemaID int16) (*schemaInitState, error) {
+	runCtx.logger.Info("initializing schema", zap.Int16("schema_id", schemaID))
+
+	totalRows, err := getEntityMainCount(ctx, runCtx.db, runCtx.cfg.EntityMainTable, schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("get row count: %w", err)
+	}
+	if totalRows == 0 {
+		runCtx.logger.Info("no rows to export", zap.Int16("schema_id", schemaID))
+		return nil, nil
+	}
+	runCtx.logger.Info("rows to export", zap.Int16("schema_id", schemaID), zap.Int64("total_rows", totalRows))
+
+	state := &schemaInitState{
+		schemaID: schemaID,
+	}
+	state.attrCache = resolveSchemaAttrCache(runCtx, schemaID)
+	state.batchSize = resolveInitBatchSize(runCtx, schemaID, state.attrCache)
+	return state, nil
+}
+
+func resolveSchemaAttrCache(runCtx *initRunContext, schemaID int16) forma.SchemaAttributeCache {
+	if runCtx.schemaRegistry == nil {
+		return nil
+	}
+	_, cache, err := runCtx.schemaRegistry.GetSchemaAttributeCacheByID(schemaID)
+	if err != nil {
+		runCtx.logger.Warn("schema registry lookup failed, using generic projection", zap.Int16("schema_id", schemaID), zap.Error(err))
+		return nil
+	}
+	return cache
+}
+
+func resolveInitBatchSize(runCtx *initRunContext, schemaID int16, attrCache forma.SchemaAttributeCache) int {
+	batchSize := runCtx.cfg.BatchSize
+	if runCtx.cfg.TargetFileSizeMB <= 0 {
+		return batchSize
 	}
 
-	// Collect file entries for manifest update
-	var fileEntries []manifest.FileEntry
+	rowBytes := runCtx.cfg.EstimatedRowBytes
+	if runCtx.autoEstimateRowBytes {
+		rowBytes = estimateRowSizeBytes(attrCache)
+	}
+	batchSize = calculateBatchSize(runCtx.cfg.TargetFileSizeMB, rowBytes, runCtx.cfg.MaxBatchSize)
+	runCtx.logger.Info("calculated batch size for target file size",
+		zap.Int16("schema_id", schemaID),
+		zap.Int("target_file_size_mb", runCtx.cfg.TargetFileSizeMB),
+		zap.Int("estimated_row_bytes", rowBytes),
+		zap.Int("calculated_batch_size", batchSize))
+	return batchSize
+}
 
-	// Process in batches
-	var rowsExported int64
-	var filesCreated int
+func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	offset := 0
-
 	for {
-		// Select batch of row IDs
-		rowIDs, err := selectEntityMainBatch(ctx, db, cfg.EntityMainTable, schemaID, offset, batchSize)
+		rowIDs, err := selectEntityMainBatch(ctx, runCtx.db, runCtx.cfg.EntityMainTable, state.schemaID, offset, state.batchSize)
 		if err != nil {
-			return rowsExported, filesCreated, fmt.Errorf("select batch: %w", err)
+			return fmt.Errorf("select batch: %w", err)
 		}
-
 		if len(rowIDs) == 0 {
 			break
 		}
-
-		// Determine min/max row_id for file naming
-		minRowID := rowIDs[0].String()
-		maxRowID := rowIDs[len(rowIDs)-1].String()
-
-		// Build paths
-		tmpUUID := uuid.Must(uuid.NewV7()).String()
-		tmpKey := cdc.BuildBaseTempPath(cfg.S3Prefix, schemaID, tmpUUID)
-		finalKey := cdc.BuildBasePath(cfg.S3Prefix, schemaID, minRowID, maxRowID)
-		s3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, tmpKey)
-
-		logger.Info("exporting batch",
-			zap.Int16("schema_id", schemaID),
-			zap.Int("batch_size", len(rowIDs)),
-			zap.String("min_row_id", minRowID),
-			zap.String("max_row_id", maxRowID),
-			zap.String("tmp_path", s3TmpPath),
-			zap.String("final_key", finalKey))
-
-		if dryRun {
-			logger.Info("dry-run: skipping export", zap.Int16("schema_id", schemaID), zap.Int("batch_size", len(rowIDs)))
-			rowsExported += int64(len(rowIDs))
-			filesCreated++
-			offset += batchSize
-			continue
+		if err := exportSchemaBatch(ctx, runCtx, state, rowIDs); err != nil {
+			return err
 		}
+		offset += state.batchSize
+	}
+	return nil
+}
 
-		// Export to tmp
-		if err := duck.ExportBaseFileToTmp(ctx, pgConnStr, s3TmpPath, schemaID, rowIDs, attrCache); err != nil {
-			return rowsExported, filesCreated, fmt.Errorf("export batch: %w", err)
-		}
+func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {
+	minRowID := rowIDs[0].String()
+	maxRowID := rowIDs[len(rowIDs)-1].String()
 
-		// Copy tmp -> final
-		if err := cdc.CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, tmpKey, finalKey, logger); err != nil {
-			return rowsExported, filesCreated, fmt.Errorf("copy tmp->final: %w", err)
-		}
+	tmpUUID := uuid.Must(uuid.NewV7()).String()
+	tmpKey := cdc.BuildBaseTempPath(runCtx.cfg.S3Prefix, state.schemaID, tmpUUID)
+	finalKey := cdc.BuildBasePath(runCtx.cfg.S3Prefix, state.schemaID, minRowID, maxRowID)
+	s3TmpPath := fmt.Sprintf("s3://%s/%s", runCtx.cfg.S3Bucket, tmpKey)
 
-		// Collect file entry for manifest
-		createdAt := time.Now().UnixMilli()
-		fileEntries = append(fileEntries, manifest.FileEntry{
-			Tier:       "base",
-			Path:       finalKey,
-			RowIDMin:   minRowID,
-			RowIDMax:   maxRowID,
-			RowCount:   int64(len(rowIDs)),
-			CreatedMin: createdAt,
-			CreatedMax: createdAt,
-		})
+	runCtx.logger.Info("exporting batch",
+		zap.Int16("schema_id", state.schemaID),
+		zap.Int("batch_size", len(rowIDs)),
+		zap.String("min_row_id", minRowID),
+		zap.String("max_row_id", maxRowID),
+		zap.String("tmp_path", s3TmpPath),
+		zap.String("final_key", finalKey))
 
-		rowsExported += int64(len(rowIDs))
-		filesCreated++
-		offset += batchSize
-
-		logger.Info("batch completed",
-			zap.Int16("schema_id", schemaID),
-			zap.Int64("rows_exported", rowsExported),
-			zap.Int("files_created", filesCreated),
-			zap.String("final_key", finalKey))
+	if runCtx.dryRun {
+		runCtx.logger.Info("dry-run: skipping export", zap.Int16("schema_id", state.schemaID), zap.Int("batch_size", len(rowIDs)))
+		state.rowsExported += int64(len(rowIDs))
+		state.filesCreated++
+		return nil
 	}
 
-	// Update manifest with all file entries if configured and not dry-run
-	if manifestStore != nil && len(fileEntries) > 0 && !dryRun {
-		manifestPath, err := manifestResolver.Resolve(schemaID)
-		if err != nil {
-			logger.Error("failed to resolve manifest path", zap.Int16("schema_id", schemaID), zap.Error(err))
-		} else {
-			if err := manifest.AppendFiles(ctx, manifestStore, manifestPath, schemaID, fileEntries); err != nil {
-				logger.Error("failed to update manifest", zap.Int16("schema_id", schemaID), zap.Error(err))
-				// Don't fail - the export succeeded, manifest is non-critical
-			} else {
-				logger.Info("manifest updated",
-					zap.Int16("schema_id", schemaID),
-					zap.String("manifest_path", manifestPath),
-					zap.Int("files_added", len(fileEntries)))
-			}
-		}
+	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.pgConnStr, s3TmpPath, state.schemaID, rowIDs, state.attrCache); err != nil {
+		return fmt.Errorf("export batch: %w", err)
+	}
+	if err := cdc.CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, tmpKey, finalKey, runCtx.logger); err != nil {
+		return fmt.Errorf("copy tmp->final: %w", err)
 	}
 
-	logger.Info("schema init completed",
-		zap.Int16("schema_id", schemaID),
-		zap.Int64("total_rows_exported", rowsExported),
-		zap.Int("total_files_created", filesCreated))
+	createdAt := time.Now().UnixMilli()
+	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
+		Tier:       "base",
+		Path:       finalKey,
+		RowIDMin:   minRowID,
+		RowIDMax:   maxRowID,
+		RowCount:   int64(len(rowIDs)),
+		CreatedMin: createdAt,
+		CreatedMax: createdAt,
+	})
 
-	return rowsExported, filesCreated, nil
+	state.rowsExported += int64(len(rowIDs))
+	state.filesCreated++
+
+	runCtx.logger.Info("batch completed",
+		zap.Int16("schema_id", state.schemaID),
+		zap.Int64("rows_exported", state.rowsExported),
+		zap.Int("files_created", state.filesCreated),
+		zap.String("final_key", finalKey))
+	return nil
+}
+
+func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) {
+	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
+		return
+	}
+
+	manifestPath, err := runCtx.manifestResolver.Resolve(state.schemaID)
+	if err != nil {
+		runCtx.logger.Error("failed to resolve manifest path", zap.Int16("schema_id", state.schemaID), zap.Error(err))
+		return
+	}
+	if err := manifest.AppendFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, state.fileEntries); err != nil {
+		runCtx.logger.Error("failed to update manifest", zap.Int16("schema_id", state.schemaID), zap.Error(err))
+		// Don't fail - the export succeeded, manifest is non-critical.
+		return
+	}
+	runCtx.logger.Info("manifest updated",
+		zap.Int16("schema_id", state.schemaID),
+		zap.String("manifest_path", manifestPath),
+		zap.Int("files_added", len(state.fileEntries)))
 }
 
 // getEntityMainCount returns the total number of non-deleted rows for a schema.

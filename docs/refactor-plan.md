@@ -9,6 +9,23 @@
 - `P1`：中优先级，建议在下一轮代码整理中处理。
 - `P2`：低优先级，可在相关模块变更时顺手收敛。
 
+## 执行进度（2026-02-16）
+- `DONE` #1 共享 HTTP API 层：已提取到 `internal/httpapi`，`cmd/server` 与 `cmd/lambda` 复用。
+- `DONE` #2 启动与连接池重复：已提取 `internal/bootstrap`；server/lambda 共用 env/config/pool 构建逻辑。
+- `PARTIAL` #3 CDC flush/init 长方法：`flusher` 已引入 `flushBatchExecutor`，chunk/single 统一复用同一导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext` 并拆分为 prepare/process/export/manifest 步骤。仍可继续收敛 `runInit` 的编排复杂度与参数传递。
+- `DONE` #4 DuckDB 导出 SQL 重复：已提取共享 builder（`resolveExportSQLOptions`/`buildMainEntityQuery`/`buildEAVQuery`/`buildSchemaDrivenProjection`），`buildExportSQL` 与 `buildBaseExportSQL` 复用同一投影与 EAV 聚合逻辑。
+- `PARTIAL` #5 条件解析重复：`internal` 包内已统一 `toSQLOperator` 映射与 `parseOperatorValueStrict`，并复用 `parseDateValue` 收敛日期转换；`queryoptimizer` 侧仍保留独立归一化语义，待下一步按 IR 契约继续收敛。
+- `DONE` #13 CDC 错误上抛：`processSchema/executeFlush` 已改为返回 error，`RunOnce` 聚合 schema 级错误并返回。
+- `DONE` #22 Create payload 防 panic：数组元素类型已逐项校验，错误返回 `400`。
+- `DONE` #23 `BatchOperation.Atomic` 契约：已实现原子 batch 事务路径（非“名义 atomic”）。
+- `DONE` #24 `/search` 解析与错误码：`schemas` 支持 split/trim/dedupe，缺参返回 `400`。
+- `DONE` #25 DuckDB 依赖注入：repository 已正确保留构造参数中的 `duckDBClient`。
+- `DONE` #26 UUID 指针空值保护：`toUUID(*uuid.UUID=nil)` 不再 panic。
+- `DONE` #28 server 双连接池：已改为单 pool 贯通 schema registry + entity manager。
+- `DONE` #30 Create RowID 语义：handler 不再预写 RowID，统一由服务端生成。
+- `DONE` #14 panic 使用：已移除 `cmd/server/factory.go` panic 路径，并将 `SQLRenderer.Ident` 改为 error 返回（不再 panic）。
+- `DONE` #29 HTTP 错误语义：`internal/httpapi` 已统一 manager error 分类（`400/404/409/500`），不再把多类错误压成单一状态码。
+
 ## Findings
 
 ### 1) `P0` Duplicate Code + Divergent Change: HTTP 处理器在 `cmd/server` 和 `cmd/lambda` 基本镜像复制

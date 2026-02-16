@@ -1,0 +1,64 @@
+package bootstrap
+
+import (
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/lychee-technology/forma"
+)
+
+type DBDefaults struct {
+	Host                   string
+	Port                   int
+	Database               string
+	Username               string
+	Password               string
+	SSLMode                string
+	MaxConnections         int
+	MaxIdleConns           int
+	ConnMaxLifetimeSeconds int
+	ConnMaxIdleTimeSeconds int
+	TimeoutSeconds         int
+}
+
+func Env(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func EnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func DatabaseConfigFromEnv(defaults DBDefaults) forma.DatabaseConfig {
+	return forma.DatabaseConfig{
+		Host:            Env("DB_HOST", defaults.Host),
+		Port:            EnvInt("DB_PORT", defaults.Port),
+		Database:        Env("DB_NAME", defaults.Database),
+		Username:        Env("DB_USER", defaults.Username),
+		Password:        Env("DB_PASSWORD", defaults.Password),
+		SSLMode:         Env("DB_SSL_MODE", defaults.SSLMode),
+		MaxConnections:  EnvInt("DB_MAX_CONNECTIONS", defaults.MaxConnections),
+		MaxIdleConns:    EnvInt("DB_MAX_IDLE_CONNS", defaults.MaxIdleConns),
+		ConnMaxLifetime: time.Duration(EnvInt("DB_CONN_MAX_LIFETIME_SECONDS", defaults.ConnMaxLifetimeSeconds)) * time.Second,
+		ConnMaxIdleTime: time.Duration(EnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", defaults.ConnMaxIdleTimeSeconds)) * time.Second,
+		Timeout:         time.Duration(EnvInt("DB_TIMEOUT_SECONDS", defaults.TimeoutSeconds)) * time.Second,
+	}
+}
+
+func TableNamesFromEnv(defaults forma.TableNames) forma.TableNames {
+	return forma.TableNames{
+		SchemaRegistry: Env("SCHEMA_TABLE", defaults.SchemaRegistry),
+		EAVData:        Env("EAV_TABLE", defaults.EAVData),
+		EntityMain:     Env("ENTITY_MAIN_TABLE", defaults.EntityMain),
+		ChangeLog:      Env("CHANGE_LOG_TABLE", defaults.ChangeLog),
+	}
+}

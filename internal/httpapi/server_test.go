@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"bytes"
@@ -16,6 +16,8 @@ import (
 type mockEntityManager struct {
 	advancedResult    *forma.QueryResult
 	advancedErr       error
+	getResult         *forma.DataRecord
+	getErr            error
 	batchCreateResult *forma.BatchResult
 	batchCreateErr    error
 	batchCreateReq    *forma.BatchOperation
@@ -29,6 +31,9 @@ func (m *mockEntityManager) Create(ctx context.Context, req *forma.EntityOperati
 }
 
 func (m *mockEntityManager) Get(ctx context.Context, req *forma.QueryRequest) (*forma.DataRecord, error) {
+	if m.getResult != nil || m.getErr != nil {
+		return m.getResult, m.getErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -41,7 +46,7 @@ func (m *mockEntityManager) Delete(ctx context.Context, req *forma.EntityOperati
 }
 
 func (m *mockEntityManager) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
-	if m.advancedResult != nil {
+	if m.advancedResult != nil || m.advancedErr != nil {
 		return m.advancedResult, m.advancedErr
 	}
 	return nil, fmt.Errorf("not implemented")
@@ -188,5 +193,88 @@ func TestHandleSearchParsesCSVSchemas(t *testing.T) {
 	}
 	if manager.crossSchemaReq.SearchTerm != "john" {
 		t.Fatalf("expected trimmed search term 'john', got %q", manager.crossSchemaReq.SearchTerm)
+	}
+}
+
+func TestClassifyManagerError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{name: "not found", err: fmt.Errorf("entity not found"), wantStatus: http.StatusNotFound},
+		{name: "validation", err: fmt.Errorf("schema name is required"), wantStatus: http.StatusBadRequest},
+		{name: "conflict", err: fmt.Errorf("duplicate key"), wantStatus: http.StatusConflict},
+		{name: "internal", err: fmt.Errorf("db timeout"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyManagerError(tt.err)
+			if got != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, got)
+			}
+		})
+	}
+}
+
+func TestHandleGetErrorMapping(t *testing.T) {
+	rowID := uuid.New()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{name: "not found", err: fmt.Errorf("entity not found"), wantStatus: http.StatusNotFound},
+		{name: "internal", err: fmt.Errorf("db timeout"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				manager: &mockEntityManager{getErr: tt.err},
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/lead/"+rowID.String(), nil)
+			rec := httptest.NewRecorder()
+			server.handleGet(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
+			}
+		})
+	}
+}
+
+func TestHandleQueryMapsValidationErrors(t *testing.T) {
+	server := &Server{
+		manager: &mockEntityManager{
+			advancedErr: fmt.Errorf("cannot sort by unknown attribute 'x'"),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/lead", nil)
+	rec := httptest.NewRecorder()
+	server.handleQuery(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleSearchMapsConflictErrors(t *testing.T) {
+	server := &Server{
+		manager: &mockEntityManager{
+			crossSchemaErr: fmt.Errorf("duplicate request conflict"),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?schemas=lead&q=john", nil)
+	rec := httptest.NewRecorder()
+	server.handleSearch(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d", rec.Code)
 	}
 }

@@ -3,6 +3,7 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -97,9 +98,16 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 
 	// Process each schema
+	var schemaErrs []error
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		processSchema(ctx, db, duck, fullS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver)
+		if err := processSchema(ctx, db, duck, fullS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
+			logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
+			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
+		}
+	}
+	if len(schemaErrs) > 0 {
+		return errors.Join(schemaErrs...)
 	}
 
 	return nil
@@ -196,39 +204,40 @@ func processSchema(
 	schemaRegistry forma.SchemaRegistry,
 	manifestStore manifest.Store,
 	manifestResolver manifest.PathResolver,
-) {
+) error {
 	logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
 	// Try advisory lock
 	locked, err := AcquireSchemaLock(ctx, db, schemaID)
 	if err != nil {
-		logger.Sugar().Errorw("acquire lock failed", "schema_id", schemaID, "err", err)
-		return
+		return fmt.Errorf("acquire schema lock: %w", err)
 	}
 	if !locked {
 		logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
-		return
+		return nil
 	}
 	defer func() { _ = ReleaseSchemaLock(ctx, db, schemaID) }()
 
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, db, tableName, schemaID)
 	if err != nil {
-		logger.Sugar().Errorw("get changelog stats failed", "err", err)
-		return
+		return fmt.Errorf("get changelog stats: %w", err)
 	}
 	if cnt == 0 {
 		logger.Sugar().Infow("no unflushed rows", "schema_id", schemaID)
-		return
+		return nil
 	}
 
 	if !shouldFlush(cfg, cnt, oldest) {
 		logger.Sugar().Infow("skip flush: thresholds not met", "schema_id", schemaID, "cnt", cnt, "oldest", oldest)
-		return
+		return nil
 	}
 
 	// Execute flush
-	executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver)
+	if err := executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
+		return fmt.Errorf("execute flush: %w", err)
+	}
+	return nil
 }
 
 // shouldFlush determines if flush thresholds are met.
@@ -241,6 +250,74 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 		return true
 	}
 	return false
+}
+
+type flushBatchExecutor struct {
+	ctx              context.Context
+	db               *sql.DB
+	duck             *DuckExporter
+	s3Client         S3ObjectClient
+	cfg              CDCConfig
+	tableName        string
+	schemaID         int16
+	snapshot         int64
+	pgConnForDuck    string
+	attrCache        forma.SchemaAttributeCache
+	dryRun           bool
+	logger           *zap.Logger
+	manifestStore    manifest.Store
+	manifestResolver manifest.PathResolver
+}
+
+func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
+	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
+
+	if err := e.duck.ExportSnapshotToTmp(e.ctx, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
+	}
+
+	if err := CopyTmpToFinal(e.ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {
+		return fmt.Errorf("copy tmp to final (%s): %w", batchKind, err)
+	}
+
+	if e.dryRun {
+		e.logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", e.schemaID)
+		return nil
+	}
+
+	flushedAt := time.Now().UnixMilli()
+	updatedIDs, err := MarkFlushedIDsAtSnapshot(e.ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
+	if err != nil {
+		return fmt.Errorf("mark flushed at snapshot (%s): %w", batchKind, err)
+	}
+
+	if len(updatedIDs) == 0 {
+		e.logger.Sugar().Infow("flush batch marked zero rows; possible concurrent updates", "schema_id", e.schemaID, "batch_kind", batchKind, "batch_size", len(batchIDs))
+		return nil
+	}
+
+	if e.manifestStore != nil {
+		if err := updateManifest(e.ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, e.logger); err != nil {
+			e.logger.Sugar().Errorw("manifest update failed", "err", err)
+			// Don't return - the flush succeeded, manifest is non-critical.
+		}
+	}
+
+	if len(updatedIDs) < len(batchIDs) {
+		e.logger.Sugar().Infow("flush batch marked fewer rows than requested; possible concurrent updates", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs))
+	}
+
+	e.logger.Sugar().Infow("flush batch completed", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs), "final_key", finalKey)
+	return nil
+}
+
+func buildFlushS3Keys(cfg CDCConfig, schemaID int16) (string, string) {
+	tmpUUID := uuid.Must(uuid.NewV7()).String()
+	finalUUID := uuid.Must(uuid.NewV7()).String()
+
+	tmpKey := BuildTempPath(cfg.S3Prefix, schemaID, tmpUUID)
+	finalKey := BuildDeltaPath(cfg.S3Prefix, schemaID, finalUUID)
+	return tmpKey, finalKey
 }
 
 // executeFlush performs the actual flush operation.
@@ -258,33 +335,24 @@ func executeFlush(
 	schemaRegistry forma.SchemaRegistry,
 	manifestStore manifest.Store,
 	manifestResolver manifest.PathResolver,
-) {
-	// Select batch
+) error {
 	ids, snapshot, err := SelectBatchRowIDs(ctx, db, tableName, schemaID, cfg.BatchSize)
 	if err != nil {
-		logger.Sugar().Errorw("select batch failed", "err", err)
-		return
+		return fmt.Errorf("select batch row ids: %w", err)
 	}
 	if len(ids) == 0 {
 		logger.Sugar().Infow("no rows in batch", "schema_id", schemaID)
-		return
+		return nil
 	}
 
-	// Build paths
-	tmpUUID := uuid.Must(uuid.NewV7()).String()
-	finalUUID := uuid.Must(uuid.NewV7()).String()
-	tmpKey := BuildTempPath(cfg.S3Prefix, schemaID, tmpUUID)
-	finalKey := BuildDeltaPath(cfg.S3Prefix, schemaID, finalUUID)
-	s3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, tmpKey)
-
-	// Export snapshot
+	// Build postgres connection string for DuckDB postgres_query.
 	sslMode := cfg.PGSSLMode
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
 	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
-	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "tmp", s3TmpPath, "pgConnForDuck", pgConnForDuck)
+	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuck)
 
 	var attrCache forma.SchemaAttributeCache
 	if schemaRegistry != nil {
@@ -295,6 +363,23 @@ func executeFlush(
 		}
 	}
 
+	executor := &flushBatchExecutor{
+		ctx:              ctx,
+		db:               db,
+		duck:             duck,
+		s3Client:         s3Client,
+		cfg:              cfg,
+		tableName:        tableName,
+		schemaID:         schemaID,
+		snapshot:         snapshot,
+		pgConnForDuck:    pgConnForDuck,
+		attrCache:        attrCache,
+		dryRun:           dryRun,
+		logger:           logger,
+		manifestStore:    manifestStore,
+		manifestResolver: manifestResolver,
+	}
+
 	batchIDs := ids
 	maxRows := 0
 	if cfg.MaxBatchBytes > 0 && cfg.EstimatedRowBytes > 0 {
@@ -303,106 +388,38 @@ func executeFlush(
 
 	if maxRows > 0 && len(batchIDs) > maxRows {
 		logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
-		for start := 0; start < len(batchIDs); start += maxRows {
-			end := start + maxRows
-			if end > len(batchIDs) {
-				end = len(batchIDs)
-			}
-			sub := batchIDs[start:end]
+		return executeFlushInChunks(executor, batchIDs, maxRows)
+	}
 
-			// Generate new UUIDs for each chunk
-			chunkTmpUUID := uuid.Must(uuid.NewV7()).String()
-			chunkFinalUUID := uuid.Must(uuid.NewV7()).String()
-			chunkTmpKey := BuildTempPath(cfg.S3Prefix, schemaID, chunkTmpUUID)
-			chunkFinalKey := BuildDeltaPath(cfg.S3Prefix, schemaID, chunkFinalUUID)
-			chunkS3TmpPath := fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, chunkTmpKey)
+	return executeFlushSingle(executor, batchIDs)
+}
 
-			if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, chunkS3TmpPath, schemaID, snapshot, sub, attrCache); err != nil {
-				logger.Sugar().Errorw("duck export failed", "err", err)
-				return
-			}
-			if err := CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, chunkTmpKey, chunkFinalKey, logger); err != nil {
-				logger.Sugar().Errorw("s3 copy tmp->final failed", "err", err)
-				return
-			}
-			if dryRun {
-				logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", schemaID)
-				return
-			}
-			flushedAt := time.Now().UnixMilli()
-			updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, db, tableName, schemaID, sub, snapshot, flushedAt)
-			if err != nil {
-				logger.Sugar().Errorw("mark flushed failed", "err", err)
-				return
-			}
-
-			if len(updatedIDs) == 0 {
-				logger.Sugar().Infow("flush chunk marked zero rows; possible concurrent updates", "schema_id", schemaID, "chunk_size", len(sub))
-				continue
-			}
-
-			// Update manifest if configured
-			if manifestStore != nil {
-				if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, chunkFinalKey, "delta", updatedIDs, flushedAt, logger); err != nil {
-					logger.Sugar().Errorw("manifest update failed", "err", err)
-					// Don't return - the flush succeeded, manifest is non-critical
-				}
-			}
-
-			if len(updatedIDs) < len(sub) {
-				logger.Sugar().Infow("flush chunk marked fewer rows than batch; possible concurrent updates", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "chunk_size", len(sub))
-			}
-
-			logger.Sugar().Infow("flush chunk completed", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "chunk_size", len(sub))
+func executeFlushInChunks(
+	executor *flushBatchExecutor,
+	batchIDs []uuid.UUID,
+	maxRows int,
+) error {
+	for start := 0; start < len(batchIDs); start += maxRows {
+		end := start + maxRows
+		if end > len(batchIDs) {
+			end = len(batchIDs)
 		}
-		return
-	}
+		sub := batchIDs[start:end]
 
-	if err := duck.ExportSnapshotToTmp(ctx, pgConnForDuck, s3TmpPath, schemaID, snapshot, batchIDs, attrCache); err != nil {
-		logger.Sugar().Errorw("duck export failed", "err", err)
-		return
-	}
-
-	// Copy tmp -> final
-	if err := CopyTmpToFinal(ctx, s3Client, cfg.S3Bucket, tmpKey, finalKey, logger); err != nil {
-		logger.Sugar().Errorw("s3 copy tmp->final failed", "err", err)
-		return
-	}
-
-	// Mark flushed
-	if dryRun {
-		logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", schemaID)
-		return
-	}
-
-	flushedAt := time.Now().UnixMilli()
-	updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, db, tableName, schemaID, batchIDs, snapshot, flushedAt)
-	if err != nil {
-		logger.Sugar().Errorw("mark flushed failed", "err", err)
-		return
-	}
-
-	if len(updatedIDs) == 0 {
-		logger.Sugar().Infow("flush marked zero rows; possible concurrent updates", "schema_id", schemaID, "batch_size", len(batchIDs))
-		return
-	}
-
-	// Update manifest if configured
-	if manifestStore != nil {
-		if err := updateManifest(ctx, manifestStore, manifestResolver, schemaID, finalKey, "delta", updatedIDs, flushedAt, logger); err != nil {
-			logger.Sugar().Errorw("manifest update failed", "err", err)
-			// Don't return - the flush succeeded, manifest is non-critical
+		chunkTmpKey, chunkFinalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)
+		if err := executor.executeBatch(sub, chunkTmpKey, chunkFinalKey, "chunk"); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if len(updatedIDs) < len(batchIDs) {
-		logger.Sugar().Infow("flush marked fewer rows than batch; possible concurrent updates", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs))
-	}
-
-	logger.Sugar().Infow("flush completed", "schema_id", schemaID, "rows_flushed", len(updatedIDs), "final_key", finalKey)
-
-	// Suppress unused variable warning
-	_ = ids
+func executeFlushSingle(
+	executor *flushBatchExecutor,
+	batchIDs []uuid.UUID,
+) error {
+	tmpKey, finalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)
+	return executor.executeBatch(batchIDs, tmpKey, finalKey, "batch")
 }
 
 // updateManifest appends a file entry to the schema's manifest.

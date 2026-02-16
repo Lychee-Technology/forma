@@ -45,56 +45,19 @@ func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schem
 	pgEsc := escapeLiteral(pgConnStr)
 	s3Esc := escapeLiteral(s3TmpPath)
 
-	entityMain := sanitizeIdentifier(cfg.EntityMainTable)
-	if entityMain == "" {
-		entityMain = "entity_main"
-	}
-	eavData := sanitizeIdentifier(cfg.EAVDataTable)
-	if eavData == "" {
-		eavData = "eav_data"
-	}
+	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
 
 	rowList := quoteUUIDList(rowIDs)
 	mFilter := fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
 	eFilter := fmt.Sprintf("row_id IN (%s)", rowList)
 
-	compression := cfg.ParquetCompression
-	if compression == "" {
-		compression = DefaultParquetCompression
-	}
-	compressionLevel := cfg.ParquetCompressionLevel
-	if compressionLevel <= 0 {
-		compressionLevel = DefaultParquetCompressionLevel
-	}
-	memoryLimit := cfg.DuckMemLimit
-	if memoryLimit == "" {
-		memoryLimit = "8GB" // Larger default for base file export
-	}
+	opts := resolveExportSQLOptions(cfg, "8GB") // Larger default for base file export
 
 	// Fallback to generic projection when no schema metadata is provided.
 	if len(attrCache) == 0 {
-		mColumns := []string{
-			"ltbase_row_id",
-			"ltbase_schema_id",
-			"ltbase_created_at",
-			"ltbase_updated_at",
-			"ltbase_deleted_at",
-			"text_01", "text_02", "text_03", "text_04", "text_05",
-			"text_06", "text_07", "text_08", "text_09", "text_10",
-			"smallint_01", "smallint_02", "smallint_03",
-			"integer_01", "integer_02", "integer_03",
-			"bigint_01", "bigint_02", "bigint_03", "bigint_04", "bigint_05",
-			"double_01", "double_02", "double_03", "double_04", "double_05",
-			"uuid_01", "uuid_02",
-		}
-		mQuery := fmt.Sprintf(
-			"SELECT %s FROM %s WHERE ltbase_schema_id = %d AND ltbase_deleted_at IS NULL AND %s",
-			strings.Join(mColumns, ", "), entityMain, schemaID, mFilter,
-		)
-		eQuery := fmt.Sprintf(
-			"SELECT schema_id, row_id, attr_id, value_text FROM %s WHERE schema_id = %d AND %s",
-			eavData, schemaID, eFilter,
-		)
+		mColumns := defaultBaseMainColumns()
+		mQuery := buildMainEntityQuery(entityMain, schemaID, mColumns, mFilter, true)
+		eQuery := buildEAVQuery(eavData, schemaID, eFilter, nil)
 
 		mQueryEsc := escapeLiteral(mQuery)
 		eQueryEsc := escapeLiteral(eQuery)
@@ -125,66 +88,16 @@ LEFT JOIN (
   GROUP BY row_id
 ) e ON m.ltbase_row_id = e.row_id
 ) TO '%s' (FORMAT PARQUET, COMPRESSION '%s', COMPRESSION_LEVEL %d);
-`, memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eQueryEsc, s3Esc,
-			strings.ToUpper(compression), compressionLevel)
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eQueryEsc, s3Esc,
+			strings.ToUpper(opts.compression), opts.compressionLevel)
 
 		return sql, mQuery, eQuery, nil
 	}
 
 	// Schema-driven projection path
-	mainColumns := []string{
-		"ltbase_row_id",
-		"ltbase_schema_id",
-		"ltbase_created_at",
-		"ltbase_updated_at",
-		"ltbase_deleted_at",
-	}
-	mainColSet := map[string]struct{}{
-		"ltbase_row_id":     {},
-		"ltbase_schema_id":  {},
-		"ltbase_created_at": {},
-		"ltbase_updated_at": {},
-		"ltbase_deleted_at": {},
-	}
-
-	mainProjections := []string{}
-	eavAgg := []string{}
-	eavSelect := []string{}
-	eavAttrIDs := []int16{}
-
-	for _, attrName := range sortedAttrKeys(attrCache) {
-		meta := attrCache[attrName]
-		alias := safeColumnAlias(attrName)
-		if meta.ColumnBinding != nil {
-			colName := string(meta.ColumnBinding.ColumnName)
-			if _, ok := mainColSet[colName]; !ok {
-				mainColumns = append(mainColumns, colName)
-				mainColSet[colName] = struct{}{}
-			}
-			expr := castMainValue("m."+colName, meta)
-			mainProjections = append(mainProjections, fmt.Sprintf("%s AS %s", expr, alias))
-			continue
-		}
-
-		castExpr := castEAVValue(meta)
-		eavAgg = append(eavAgg, fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END) AS %s", meta.AttributeID, castExpr, alias))
-		eavSelect = append(eavSelect, fmt.Sprintf("e.%s", alias))
-		eavAttrIDs = append(eavAttrIDs, meta.AttributeID)
-	}
-
-	mQuery := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE ltbase_schema_id = %d AND ltbase_deleted_at IS NULL AND %s",
-		strings.Join(mainColumns, ", "), entityMain, schemaID, mFilter,
-	)
-
-	attrFilter := ""
-	if len(eavAttrIDs) > 0 {
-		attrFilter = fmt.Sprintf(" AND attr_id IN (%s)", joinInt16(eavAttrIDs))
-	}
-	eQuery := fmt.Sprintf(
-		"SELECT schema_id, row_id, attr_id, value_text FROM %s WHERE schema_id = %d AND %s%s",
-		eavData, schemaID, eFilter, attrFilter,
-	)
+	projection := buildSchemaDrivenProjection(attrCache)
+	mQuery := buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, true)
+	eQuery := buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
 
 	mQueryEsc := escapeLiteral(mQuery)
 	eQueryEsc := escapeLiteral(eQuery)
@@ -199,14 +112,10 @@ LEFT JOIN (
 		"m.ltbase_updated_at",
 		"m.ltbase_deleted_at",
 	}
-	mainSelectCols = append(mainSelectCols, mainProjections...)
-	mainSelectCols = append(mainSelectCols, eavSelect...)
+	mainSelectCols = append(mainSelectCols, projection.mainProjections...)
+	mainSelectCols = append(mainSelectCols, projection.eavSelect...)
 
-	eAggCols := []string{"row_id"}
-	if len(eavAgg) > 0 {
-		eAggCols = append(eAggCols, eavAgg...)
-	}
-	eAggSQL := fmt.Sprintf("SELECT %s FROM postgres_query('pg_db', '%s') GROUP BY row_id", strings.Join(eAggCols, ",\n    "), eQueryEsc)
+	eAggSQL := buildEAVAggregationSQL(eQueryEsc, projection.eavAgg)
 
 	sql := fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
@@ -219,8 +128,8 @@ LEFT JOIN (
   %s
 ) e ON m.ltbase_row_id = e.row_id
 ) TO '%s' (FORMAT PARQUET, COMPRESSION '%s', COMPRESSION_LEVEL %d);
-`, memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eAggSQL, s3Esc,
-		strings.ToUpper(compression), compressionLevel)
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eAggSQL, s3Esc,
+		strings.ToUpper(opts.compression), opts.compressionLevel)
 
 	return sql, mQuery, eQuery, nil
 }

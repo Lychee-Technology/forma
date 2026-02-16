@@ -29,6 +29,20 @@ func parseOperatorValue(kvValue string) operatorValuePair {
 	return operatorValuePair{op: "equals", value: kvValue}
 }
 
+// parseOperatorValueStrict validates "op:value" format when a separator is present.
+// It returns an error when either side is empty to avoid ambiguous predicates.
+func parseOperatorValueStrict(kvValue string) (operatorValuePair, error) {
+	if idx := strings.Index(kvValue, ":"); idx >= 0 {
+		opPart := kvValue[:idx]
+		valPart := kvValue[idx+1:]
+		if opPart == "" || valPart == "" {
+			return operatorValuePair{}, fmt.Errorf("invalid KvCondition value format: %s", kvValue)
+		}
+		return operatorValuePair{op: opPart, value: valPart}, nil
+	}
+	return operatorValuePair{op: "equals", value: kvValue}, nil
+}
+
 // sqlOperatorResult holds the SQL operator and possibly modified value for LIKE patterns.
 type sqlOperatorResult struct {
 	sqlOp string

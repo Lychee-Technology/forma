@@ -1,46 +1,15 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"net/http"
-	"os"
-	"strconv"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/factory"
 	"github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/httpapi"
 	"go.uber.org/zap"
 )
-
-// Server represents the HTTP server with EntityManager
-type Server struct {
-	manager forma.EntityManager
-	mux     *http.ServeMux
-}
-
-// NewServer creates a new Server instance
-func NewServer(manager forma.EntityManager) *Server {
-	return &Server{
-		manager: manager,
-		mux:     http.NewServeMux(),
-	}
-}
-
-// RegisterRoutes registers all API routes
-func (s *Server) RegisterRoutes() {
-	// API routes - use custom path matching in handlers
-	s.mux.HandleFunc("/api/v1/advanced_query", s.handleAdvancedQuery)
-	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
-	s.mux.HandleFunc("/api/v1/", s.apiHandler)
-}
-
-// Start starts the HTTP server on the given port
-func (s *Server) Start(port string) error {
-	zap.S().Infow("starting server", "port", port)
-	return http.ListenAndServe(":"+port, s.mux)
-}
 
 func main() {
 	logger, err := zap.NewProduction()
@@ -52,34 +21,34 @@ func main() {
 	sugar := logger.Sugar()
 
 	// Get configuration from environment variables
-	schemaDir := os.Getenv("SCHEMA_DIR")
+	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	sugar.Infof("schemaDir: %s", schemaDir)
 
 	// Database configuration
-	dbConfig := forma.DatabaseConfig{
-		Host:            getEnv("DB_HOST", "localhost"),
-		Port:            getEnvInt("DB_PORT", 5432),
-		Database:        getEnv("DB_NAME", "forma"),
-		Username:        getEnv("DB_USER", "postgres"),
-		Password:        getEnv("DB_PASSWORD", ""),
-		SSLMode:         getEnv("DB_SSL_MODE", "disable"),
-		MaxConnections:  getEnvInt("DB_MAX_CONNECTIONS", 25),
-		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
-		ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 3600)) * time.Second,
-		ConnMaxIdleTime: time.Duration(getEnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 300)) * time.Second,
-		Timeout:         time.Duration(getEnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second,
-	}
+	dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+		Host:                   "localhost",
+		Port:                   5432,
+		Database:               "forma",
+		Username:               "postgres",
+		Password:               "",
+		SSLMode:                "disable",
+		MaxConnections:         25,
+		MaxIdleConns:           5,
+		ConnMaxLifetimeSeconds: 3600,
+		ConnMaxIdleTimeSeconds: 300,
+		TimeoutSeconds:         30,
+	})
 
 	// Table names configuration
-	tableNames := forma.TableNames{
-		SchemaRegistry: getEnv("SCHEMA_TABLE", "schema_registry_dev"),
-		EAVData:        getEnv("EAV_TABLE", "eav_data_dev"),
-		EntityMain:     getEnv("ENTITY_MAIN_TABLE", "entity_main_dev"),
-		ChangeLog:      getEnv("CHANGE_LOG_TABLE", "change_log_dev"),
-	}
+	tableNames := bootstrap.TableNamesFromEnv(forma.TableNames{
+		SchemaRegistry: "schema_registry_dev",
+		EAVData:        "eav_data_dev",
+		EntityMain:     "entity_main_dev",
+		ChangeLog:      "change_log_dev",
+	})
 
 	// Create database connection pool
-	pool, err := createDatabasePoolFromConfig(dbConfig)
+	pool, err := bootstrap.NewPostgresPoolFromConfig(dbConfig)
 	if err != nil {
 		sugar.Fatalf("failed to create database pool: %v", err)
 	}
@@ -100,70 +69,19 @@ func main() {
 	// Set database configuration
 	config.Database = dbConfig
 	config.Database.TableNames = tableNames
+	config.SchemaRegistry = registry
 
-	// Initialize EntityManager
-	manager := NewEntityManager(config)
+	// Initialize EntityManager with the same pool used by schema registry.
+	manager, err := factory.NewEntityManagerWithConfig(config, pool)
+	if err != nil {
+		sugar.Fatalf("failed to create entity manager: %v", err)
+	}
 
-	server := NewServer(manager)
-	server.RegisterRoutes()
+	server := httpapi.NewServer(manager, httpapi.Options{})
 
-	port := getEnv("PORT", "8080")
-	if err := server.Start(port); err != nil {
+	port := bootstrap.Env("PORT", "8080")
+	zap.S().Infow("starting server", "port", port)
+	if err := http.ListenAndServe(":"+port, server.Handler()); err != nil {
 		sugar.Fatalf("server error: %v", err)
 	}
-}
-
-// createDatabasePoolFromConfig creates a PostgreSQL connection pool from config
-func createDatabasePoolFromConfig(config forma.DatabaseConfig) (*pgxpool.Pool, error) {
-	connString := fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		config.Username,
-		config.Password,
-		config.Host,
-		config.Port,
-		config.Database,
-		config.SSLMode,
-	)
-
-	poolConfig, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection string: %w", err)
-	}
-
-	poolConfig.MaxConns = int32(config.MaxConnections)
-	poolConfig.MinConns = int32(config.MaxIdleConns)
-	poolConfig.MaxConnLifetime = config.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
-	poolConfig.ConnConfig.ConnectTimeout = config.Timeout
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
-	}
-
-	// Test the connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	return pool, nil
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
-	}
-	return defaultValue
 }

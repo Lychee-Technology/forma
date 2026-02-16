@@ -144,16 +144,12 @@ func (g *SQLGenerator) buildKv(
 		return "", nil, fmt.Errorf("attribute not found in cache: %s", kv.Attr)
 	}
 
-	parts := strings.SplitN(kv.Value, ":", 2)
-	var opStr, valStr string
-	if len(parts) == 1 {
-		opStr, valStr = "equals", kv.Value
-	} else {
-		opStr, valStr = parts[0], parts[1]
-		if opStr == "" || valStr == "" {
-			return "", nil, fmt.Errorf("invalid KvCondition value format: %s", kv.Value)
-		}
+	operator, err := parseOperatorValueStrict(kv.Value)
+	if err != nil {
+		return "", nil, err
 	}
+	opStr := operator.op
+	valStr := operator.value
 
 	var valueColumn string
 	var parsedValue any
@@ -197,28 +193,13 @@ func (g *SQLGenerator) buildKv(
 		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)
 	}
 
-	var sqlOp string
-	switch opStr {
-	case "equals":
-		sqlOp = "="
-	case "gt":
-		sqlOp = ">"
-	case "gte":
-		sqlOp = ">="
-	case "lt":
-		sqlOp = "<"
-	case "lte":
-		sqlOp = "<="
-	case "not_equals":
-		sqlOp = "!="
-	case "starts_with":
-		sqlOp = "LIKE"
-		parsedValue = valStr + "%"
-	case "contains":
-		sqlOp = "LIKE"
-		parsedValue = "%" + valStr + "%"
-	default:
-		return "", nil, fmt.Errorf("unsupported operator: %s", opStr)
+	sqlOperator, err := toSQLOperator(opStr, valStr)
+	if err != nil {
+		return "", nil, err
+	}
+	sqlOp := sqlOperator.sqlOp
+	if sqlOp == "LIKE" {
+		parsedValue = sqlOperator.value
 	}
 
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
