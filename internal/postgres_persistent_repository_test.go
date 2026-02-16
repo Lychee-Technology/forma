@@ -27,6 +27,12 @@ func TestWithClockAndNowMillis(t *testing.T) {
 	assert.Equal(t, fixed.UnixMilli(), got)
 }
 
+func TestNewDBPersistentRecordRepository_AssignsDuckDBClient(t *testing.T) {
+	duck := &DuckDBClient{}
+	repo := NewDBPersistentRecordRepository(nil, nil, duck)
+	require.Same(t, duck, repo.duckDBClient)
+}
+
 func TestValidateTables(t *testing.T) {
 	err := validateTables(StorageTables{})
 	require.Error(t, err)

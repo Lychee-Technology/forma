@@ -82,6 +82,7 @@ func TestToUUID(t *testing.T) {
 	}{
 		{name: "uuid value", input: u, expect: u, ok: true},
 		{name: "uuid pointer", input: &uPtr, expect: uPtr, ok: true},
+		{name: "uuid pointer nil", input: (*uuid.UUID)(nil), expect: uuid.Nil, ok: false},
 		{name: "string valid", input: validStr, expect: u, ok: true},
 		{name: "string pointer valid", input: validStrPtr, expect: u, ok: true},
 		{name: "string invalid", input: invalidStr, expect: uuid.Nil, ok: false},

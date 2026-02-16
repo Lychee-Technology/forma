@@ -28,7 +28,7 @@ func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *M
 	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
-		duckDBClient:  nil,
+		duckDBClient:  duckDBClient,
 		nowFunc:       time.Now,
 	}
 }

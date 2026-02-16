@@ -161,6 +161,103 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
+	fixed := time.Date(2024, 6, 7, 8, 9, 10, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+	fixedMillis := fixed.UnixMilli()
+
+	rowID1 := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	rowID2 := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	records := []*PersistentRecord{
+		{SchemaID: 1, RowID: rowID1, TextItems: map[string]string{"text_01": "one"}},
+		{SchemaID: 1, RowID: rowID2, TextItems: map[string]string{"text_01": "two"}},
+	}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	expected1 := *records[0]
+	expected1.CreatedAt = fixedMillis
+	expected1.UpdatedAt = fixedMillis
+	insertQuery1, insertArgs1, err := buildInsertMainStatement(tables.EntityMain, &expected1)
+	require.NoError(t, err)
+
+	expected2 := *records[1]
+	expected2.CreatedAt = fixedMillis
+	expected2.UpdatedAt = fixedMillis
+	insertQuery2, insertArgs2, err := buildInsertMainStatement(tables.EntityMain, &expected2)
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("^" + regexp.QuoteMeta(insertQuery1) + "$").
+		WithArgs(insertArgs1...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`^INSERT INTO "change_log"`).
+		WithArgs(int16(1), rowID1, int64(0), fixedMillis, nil).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("^" + regexp.QuoteMeta(insertQuery2) + "$").
+		WithArgs(insertArgs2...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`^INSERT INTO "change_log"`).
+		WithArgs(int16(1), rowID2, int64(0), fixedMillis, nil).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+	mock.ExpectRollback()
+
+	err = repo.BatchInsertPersistentRecords(ctx, tables, records)
+	require.NoError(t, err)
+	assert.Equal(t, fixedMillis, records[0].CreatedAt)
+	assert.Equal(t, fixedMillis, records[0].UpdatedAt)
+	assert.Equal(t, fixedMillis, records[1].CreatedAt)
+	assert.Equal(t, fixedMillis, records[1].UpdatedAt)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBatchDeletePersistentRecordsRollsBackOnError(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil)
+
+	rowID1 := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	rowID2 := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	keys := []PersistentRecordKey{
+		{SchemaID: 1, RowID: rowID1},
+		{SchemaID: 1, RowID: rowID2},
+	}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: ""}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID1).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec(`^DELETE FROM "eav_table"`).
+		WithArgs(int16(1), rowID1).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID2).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec(`^DELETE FROM "eav_table"`).
+		WithArgs(int16(1), rowID2).
+		WillReturnError(assert.AnError)
+	mock.ExpectRollback()
+
+	err = repo.BatchDeletePersistentRecords(ctx, tables, keys)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "key[1]")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestInsertUpdatePersistentRecordNilRecord(t *testing.T) {
 	repo := &DBPersistentRecordRepository{}
 

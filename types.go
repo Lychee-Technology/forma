@@ -89,7 +89,7 @@ type EntityOperation struct {
 // BatchOperation represents batch entity operations
 type BatchOperation struct {
 	Operations []EntityOperation `json:"operations"`
-	Atomic     bool              `json:"atomic"` // Whether to use transactions
+	Atomic     bool              `json:"atomic"` // Request all-or-nothing execution; may be rejected when unsupported.
 }
 
 // BatchResult represents results from batch operations

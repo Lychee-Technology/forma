@@ -43,6 +43,9 @@ func toUUID(obj any) (uuid.UUID, bool) {
 		// 已经是 uuid.UUID 类型
 		return v, true
 	case *uuid.UUID:
+		if v == nil {
+			return uuid.Nil, false
+		}
 		return *v, true
 	case string:
 		// 尝试解析字符串

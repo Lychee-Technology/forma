@@ -66,6 +66,11 @@ type PersistentRecordPage struct {
 	CurrentPage  int
 }
 
+type PersistentRecordKey struct {
+	SchemaID int16
+	RowID    uuid.UUID
+}
+
 type PersistentRecordRepository interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
 	UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
@@ -78,4 +83,10 @@ type PersistentRecordRepository interface {
 	// compatibility for OLTP-only callers: if the federated query hints indicate hot-only
 	// execution, this SHOULD delegate to QueryPersistentRecords.
 	QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
+}
+
+type AtomicBatchPersistentRecordRepository interface {
+	BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error
+	BatchUpdatePersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error
+	BatchDeletePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey) error
 }

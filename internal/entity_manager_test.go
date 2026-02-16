@@ -589,12 +589,15 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 
 // Mock repository for testing
 type mockPersistentRecordRepository struct {
-	records         map[int16]map[uuid.UUID]*PersistentRecord
-	insertedRecords []*PersistentRecord
-	deleteCalls     int
-	lastQuery       *PersistentRecordQuery
-	queries         []*PersistentRecordQuery
-	queryFunc       func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+	records            map[int16]map[uuid.UUID]*PersistentRecord
+	insertedRecords    []*PersistentRecord
+	deleteCalls        int
+	lastQuery          *PersistentRecordQuery
+	queries            []*PersistentRecordQuery
+	queryFunc          func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+	atomicInsertFailAt int
+	atomicUpdateFailAt int
+	atomicDeleteFailAt int
 }
 
 func newMockPersistentRecordRepository() *mockPersistentRecordRepository {
@@ -706,6 +709,72 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecordsFederated(ctx con
 		Offset:          fq.Offset,
 	}
 	return m.QueryPersistentRecords(ctx, prq)
+}
+
+func cloneRecordStore(src map[int16]map[uuid.UUID]*PersistentRecord) map[int16]map[uuid.UUID]*PersistentRecord {
+	cloned := make(map[int16]map[uuid.UUID]*PersistentRecord, len(src))
+	for schemaID, schemaRecords := range src {
+		inner := make(map[uuid.UUID]*PersistentRecord, len(schemaRecords))
+		for rowID, record := range schemaRecords {
+			inner[rowID] = record
+		}
+		cloned[schemaID] = inner
+	}
+	return cloned
+}
+
+func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+	snapshot := cloneRecordStore(m.records)
+	insertedCount := len(m.insertedRecords)
+
+	for i, record := range records {
+		if m.atomicInsertFailAt > 0 && i+1 == m.atomicInsertFailAt {
+			m.records = snapshot
+			m.insertedRecords = m.insertedRecords[:insertedCount]
+			return fmt.Errorf("forced atomic insert failure at index %d", i)
+		}
+		if err := m.InsertPersistentRecord(ctx, tables, record); err != nil {
+			m.records = snapshot
+			m.insertedRecords = m.insertedRecords[:insertedCount]
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+	snapshot := cloneRecordStore(m.records)
+
+	for i, record := range records {
+		if m.atomicUpdateFailAt > 0 && i+1 == m.atomicUpdateFailAt {
+			m.records = snapshot
+			return fmt.Errorf("forced atomic update failure at index %d", i)
+		}
+		if err := m.UpdatePersistentRecord(ctx, tables, record); err != nil {
+			m.records = snapshot
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey) error {
+	snapshot := cloneRecordStore(m.records)
+	deleteCalls := m.deleteCalls
+
+	for i, key := range keys {
+		if m.atomicDeleteFailAt > 0 && i+1 == m.atomicDeleteFailAt {
+			m.records = snapshot
+			m.deleteCalls = deleteCalls
+			return fmt.Errorf("forced atomic delete failure at index %d", i)
+		}
+		if err := m.DeletePersistentRecord(ctx, tables, key.SchemaID, key.RowID); err != nil {
+			m.records = snapshot
+			m.deleteCalls = deleteCalls
+			return err
+		}
+	}
+	return nil
 }
 
 func buildPersistentRecord(t *testing.T, transformer PersistentRecordTransformer, schemaID int16, rowID uuid.UUID, data map[string]any) *PersistentRecord {

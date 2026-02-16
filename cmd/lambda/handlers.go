@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -42,24 +43,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to array format
-	var jsonObjects []any
-	isSingleObject := false
-	switch v := rawBody.(type) {
-	case map[string]any:
-		// Single object, convert to array
-		jsonObjects = []any{v}
-		isSingleObject = true
-	case []any:
-		// Already an array
-		jsonObjects = v
-	default:
-		_ = writeError(w, http.StatusBadRequest, "body must be an object or array")
-		return
-	}
-
-	if len(jsonObjects) == 0 {
-		_ = writeError(w, http.StatusBadRequest, "empty array not allowed")
+	jsonObjects, isSingleObject, err := parseCreateObjects(rawBody)
+	if err != nil {
+		_ = writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	zap.S().Debugw("create payload parsed", "schema", schemaName, "records", len(jsonObjects))
@@ -71,9 +57,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			Type: forma.OperationCreate,
 			EntityIdentifier: forma.EntityIdentifier{
 				SchemaName: schemaName,
-				RowID:      uuid.New(),
 			},
-			Data: obj.(map[string]any),
+			Data: obj,
 		}
 	}
 
@@ -354,13 +339,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	page, itemsPerPage := parsePagination(queryParams)
 
-	// Get all schema names from query parameters
-	// Use CrossSchemaRequest for cross-schema search
-	// If specific schemas are needed, they could be passed as a query parameter
-	schemaNames := []string{}
-	if schemasParam := queryParams.Get("schemas"); schemasParam != "" {
-		// Parse comma-separated schema names if provided
-		schemaNames = append(schemaNames, schemasParam)
+	schemaNames := parseCSVParam(queryParams.Get("schemas"))
+	searchTerm := strings.TrimSpace(queryParams.Get("q"))
+
+	if len(schemaNames) == 0 {
+		_ = writeError(w, http.StatusBadRequest, "schemas query parameter is required")
+		return
+	}
+	if searchTerm == "" {
+		_ = writeError(w, http.StatusBadRequest, "q query parameter is required")
+		return
 	}
 
 	// Parse attrs parameter for field projection
@@ -368,7 +356,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	crossSchemaReq := &forma.CrossSchemaRequest{
 		SchemaNames:  schemaNames,
-		SearchTerm:   queryParams.Get("q"),
+		SearchTerm:   searchTerm,
 		Page:         page,
 		ItemsPerPage: itemsPerPage,
 		Attrs:        attrs,

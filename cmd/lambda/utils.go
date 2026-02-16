@@ -135,6 +135,58 @@ func readJSONBody(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
+// parseCreateObjects parses create payloads that can be either a single object or an object array.
+func parseCreateObjects(rawBody any) ([]map[string]any, bool, error) {
+	switch v := rawBody.(type) {
+	case map[string]any:
+		return []map[string]any{v}, true, nil
+	case []any:
+		if len(v) == 0 {
+			return nil, false, fmt.Errorf("empty array not allowed")
+		}
+
+		objects := make([]map[string]any, len(v))
+		for i, item := range v {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				return nil, false, fmt.Errorf("body[%d] must be an object", i)
+			}
+			objects[i] = obj
+		}
+		return objects, false, nil
+	default:
+		return nil, false, fmt.Errorf("body must be an object or array")
+	}
+}
+
+// parseCSVParam parses comma-separated query params, trims values, and removes duplicates.
+func parseCSVParam(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		if _, exists := seen[v]; exists {
+			continue
+		}
+		seen[v] = struct{}{}
+		values = append(values, v)
+	}
+
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
 // parseAttrs extracts the attrs parameter from query parameters.
 // attrs is a comma-separated list of attribute names (JSON paths) to return.
 // Returns nil if attrs is not specified or empty.
