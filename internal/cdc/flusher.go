@@ -53,7 +53,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		return fmt.Errorf("schema registry is required for CDC export")
 	}
 	// Setup AWS credentials and S3 client
-	region, credProvider, fullS3Client, err := setupAWSClient(ctx, cfg, s3Client)
+	region, credProvider, fullS3Client, err := setupAWSClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 }
 
 // setupAWSClient initializes the AWS credentials and S3 client.
-func setupAWSClient(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient) (string, aws.CredentialsProvider, *s3.Client, error) {
+func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.CredentialsProvider, *s3.Client, error) {
 	awsCfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)

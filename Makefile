@@ -21,7 +21,9 @@ MAIN_LAMBDA=./cmd/lambda
 
 # Keep the Go build cache inside the workspace to avoid permission errors in restricted environments.
 GOCACHE?=$(CURDIR)/.gocache
-GOENV=GOCACHE=$(GOCACHE)
+# Disable VCS stamping by default to prevent stat-cache permission warnings in sandboxed builds.
+GOFLAGS?=-buildvcs=false
+GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)"
 
 GOOS=$(shell $(GOENV) go env GOOS)
 GOARCH=$(shell $(GOENV) go env GOARCH)
@@ -47,19 +49,19 @@ coverage: create-build-dir
 # Build server for current platform
 build-server: create-build-dir
 	@echo "Building $(GOOS)-$(GOARCH) -> $(BUILD_DIR)/$(BINARY_SERVER)-$(GOOS)-$(GOARCH)"
-	@CGO_ENABLED=1 $(GOENV) go build -buildvcs=false -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_SERVER)-$(GOOS)-$(GOARCH) $(MAIN_SERVER)
+	@CGO_ENABLED=1 $(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_SERVER)-$(GOOS)-$(GOARCH) $(MAIN_SERVER)
 	@echo "Server build complete."
 
 # Build tools for current platform
 build-tools: create-build-dir
 	@echo "Building $(GOOS)-$(GOARCH) -> $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH)"
-	@$(GOENV) go build -buildvcs=false -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH) $(MAIN_TOOLS)
+	@$(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH) $(MAIN_TOOLS)
 	@echo "Tools build complete."
 
 # Build sample for current platform
 build-sample: create-build-dir
 	@echo "Building $(GOOS)-$(GOARCH) -> $(BUILD_DIR)/$(BINARY_SAMPLE)-$(GOOS)-$(GOARCH)"
-	@$(GOENV) go build -buildvcs=false -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_SAMPLE)-$(GOOS)-$(GOARCH) $(MAIN_SAMPLE)
+	@$(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_SAMPLE)-$(GOOS)-$(GOARCH) $(MAIN_SAMPLE)
 	@echo "Sample build complete."
 
 # Build Lambda function for AWS Lambda (ARM64, Amazon Linux 2023)
@@ -67,7 +69,7 @@ build-sample: create-build-dir
 # which builds in an Amazon Linux 2023 ARM container for CGO compatibility.
 build-lambda: create-build-dir
 	@echo "Building Lambda function for linux-arm64 -> $(BUILD_DIR)/$(BINARY_LAMBDA)"
-	@CGO_ENABLED=1 GOOS=linux GOARCH=arm64 $(GOENV) go build -buildvcs=false -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_LAMBDA) $(MAIN_LAMBDA)
+	@CGO_ENABLED=1 GOOS=linux GOARCH=arm64 $(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_LAMBDA) $(MAIN_LAMBDA)
 	@echo "Lambda build complete."
 
 # Build Lambda ZIP package (requires linux-arm64 build)

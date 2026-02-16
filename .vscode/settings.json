@@ -5,6 +5,10 @@
     "python.analysis.typeCheckingMode": "off",
     "editor.formatOnSave": true,
     "go.formatTool": "goimports",
+    "go.toolsEnvVars": {
+        "GOCACHE": "${workspaceFolder}/.gocache",
+        "GOFLAGS": "-buildvcs=false"
+    },
     "[go]": {
         "editor.defaultFormatter": "golang.go",
     },
