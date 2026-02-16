@@ -23,7 +23,7 @@ Pure unit-test-level assertions are out of scope.
 - Go 1.21+
 - Docker / Docker Compose
 - PostgreSQL (local default: `localhost:5432/forma`)
-- S3-compatible storage (commonly MinIO/RustFS locally)
+- S3-compatible storage (commonly RustFS locally)
 - DuckDB (embedded via service/tooling)
 - Bun (for `tests/e2e`)
 - k6 (for load testing)

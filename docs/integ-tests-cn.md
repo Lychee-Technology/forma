@@ -23,7 +23,7 @@
 - Go 1.21+
 - Docker / Docker Compose
 - PostgreSQL（本地默认：`localhost:5432/forma`）
-- S3 兼容存储（本地常用 MinIO/RustFS）
+- S3 兼容存储（本地常用 RustFS）
 - DuckDB（由服务或工具链内嵌使用）
 - Bun（用于 `tests/e2e`）
 - k6（用于压测场景）
