@@ -224,7 +224,7 @@ func newDuckDBExecutionPlanContext(opts *FederatedQueryOptions) *duckDBExecution
 }
 
 // recordDirtyIDSource records the dirty ID source in the execution plan.
-func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, schemaID int16, dirtyCount int) {
+func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, dirtyCount int) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}

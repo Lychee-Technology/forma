@@ -115,7 +115,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 			continue
 		}
 
-		attr, err := t.readFromMainColumn(record, attrName, meta, meta.ColumnBinding)
+		attr, err := t.readFromMainColumn(record, meta, meta.ColumnBinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read attribute %s from main column: %w", attrName, err)
 		}
@@ -235,7 +235,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 
 // readFromMainColumn reads an attribute value from the main table columns.
 // It delegates to specialized functions based on column type.
-func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, attrName string, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, error) {
+func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, error) {
 	// First, check if this is a system column (RowID, SchemaID, timestamps)
 	if attr := t.readFromSystemColumn(record, meta, binding); attr != nil {
 		return attr, nil

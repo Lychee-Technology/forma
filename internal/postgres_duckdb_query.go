@@ -32,7 +32,7 @@ func (r *DBPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 ) ([]*PersistentRecord, int64, error) {
 	// Backwards-compatible wrapper that uses the streaming iterator internally
 	var recs []*PersistentRecord
-	total, err := r.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(rp *PersistentRecord) error {
+	total, err := r.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *PersistentRecord) error {
 		recs = append(recs, rp)
 		return nil
 	})
@@ -52,7 +52,7 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	limit, offset int,
 	attributeOrders []AttributeOrder,
 	opts *FederatedQueryOptions,
-	rowHandler func(*PersistentRecord) error,
+	rowHandler func(context.Context, *PersistentRecord) error,
 ) (int64, error) {
 	if q == nil {
 		return 0, fmt.Errorf("query cannot be nil")
@@ -124,7 +124,7 @@ func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
 	EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
-	planCtx.recordDirtyIDSource(tables.ChangeLog, schemaID, len(dirtyIDs))
+	planCtx.recordDirtyIDSource(tables.ChangeLog, len(dirtyIDs))
 
 	return dirtyIDs, nil
 }
@@ -188,7 +188,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 func (r *DBPersistentRecordRepository) streamDuckDBRows(
 	ctx context.Context,
 	rows *sql.Rows,
-	rowHandler func(*PersistentRecord) error,
+	rowHandler func(context.Context, *PersistentRecord) error,
 ) (int64, int64, error) {
 	buffers := newDuckDBScanBuffers()
 
@@ -223,7 +223,7 @@ func (r *DBPersistentRecordRepository) streamDuckDBRows(
 
 		// Invoke handler
 		if rowHandler != nil {
-			if err := rowHandler(record); err != nil {
+			if err := rowHandler(ctx, record); err != nil {
 				return 0, 0, err
 			}
 		}

@@ -8,6 +8,12 @@
 *.so
 *.dylib
 
+# Ignore binary files
+/tools
+/server
+/lambda
+/sample
+
 # Test binary, built with `go test -c`
 *.test
 

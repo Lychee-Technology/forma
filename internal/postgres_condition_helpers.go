@@ -57,9 +57,10 @@ func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, me
 	}
 
 	// Adjust value for pattern operators
-	if opStr == "starts_with" {
+	switch opStr {
+	case "starts_with":
 		valStr = valStr + "%"
-	} else if opStr == "contains" {
+	case "contains":
 		valStr = "%" + valStr + "%"
 	}
 
