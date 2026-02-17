@@ -38,7 +38,7 @@ func ToDualClauses(
 
 	// Postgres EAV side: reuse existing SQL generator for full condition
 	pgGen := NewSQLGenerator()
-	pgClause, pgArgs, err := pgGen.ToSqlClauses(condition, eavTable, schemaID, cache, paramIndex)
+	pgClause, pgArgs, err := pgGen.ToSQLClauses(condition, eavTable, schemaID, cache, paramIndex)
 	if err != nil {
 		return DualClauses{}, fmt.Errorf("pg sql generation: %w", err)
 	}

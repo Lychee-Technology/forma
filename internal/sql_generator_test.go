@@ -8,7 +8,7 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-func TestSQLGenerator_ToSqlClauses(t *testing.T) {
+func TestSQLGenerator_ToSQLClauses(t *testing.T) {
 	jsonFilter := `
 {
     "l": "and",
@@ -60,7 +60,7 @@ func TestSQLGenerator_ToSqlClauses(t *testing.T) {
 
 	paramCounter := 1
 	sqlGenerator := NewSQLGenerator()
-	sqlClause, args, err := sqlGenerator.ToSqlClauses(&root, "eav_table", 1, cache, &paramCounter)
+	sqlClause, args, err := sqlGenerator.ToSQLClauses(&root, "eav_table", 1, cache, &paramCounter)
 	if err != nil {
 		t.Fatalf("failed to convert composite condition to SQL: %v", err)
 	}

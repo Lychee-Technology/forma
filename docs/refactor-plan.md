@@ -19,8 +19,12 @@
 - `DONE` #8 主表 SQL 构建重复：`buildInsertMainStatement/buildUpdateMainStatement` 已提取共享字段追加器（insert/update），消除六类 map 遍历重复模板。
 - `DONE` #9 batch CRUD 重复：非原子 `BatchCreate/BatchUpdate/BatchDelete` 已收敛到共享 `executeBestEffortBatch` 管线，统一失败收集与耗时统计。
 - `DONE` #10 schema registry 加载重复：`fileSchemaRegistry` 已提取 `loadSchemaArtifacts + registerSchema`，DB 模式与目录模式复用同一 artifacts 加载管线。
+- `DONE` #11 `QueryRequest/CrossSchemaRequest` 编解码重复：已提取共享 condition JSON helper（`unmarshalConditionField`/`marshalWithConditionField`），移除重复 marshal/unmarshal 模板代码。
 - `DONE` #13 CDC 错误上抛：`processSchema/executeFlush` 已改为返回 error，`RunOnce` 聚合 schema 级错误并返回。
 - `DONE` #16 接口契约一致性：`RunOnce` 现已真实使用传入 `s3Client`（不再忽略注入），并在启用 manifest 时校验 full client 能力（Get/Put）；`manifest.S3Store` 已收敛为最小 S3 client 接口。
+- `DONE` #17 If 扁平化（证据点）：`postgres_persistent_repository_main_table` 中原 `if err != nil { ... } else { ... }` 模式已改为 early-return + 共享追加器，去除多层 `else`。
+- `DONE` #19 命名一致性：`SQLGenerator` 已新增规范命名 `ToSQLClauses` 并完成内部调用迁移，保留 `ToSqlClauses` 兼容转发以避免破坏现有调用。
+- `DONE` #20 SQL 渲染器类型映射重复：`SQLRenderer` 已收敛到共享 DuckDB 类型/参数转换能力（`MapValueTypeToDuckDBType`/`CastExpression`/`ToDuckDBParam`），移除 Render 内联重复 switch 映射。
 - `DONE` #22 Create payload 防 panic：数组元素类型已逐项校验，错误返回 `400`。
 - `DONE` #23 `BatchOperation.Atomic` 契约：已实现原子 batch 事务路径（非“名义 atomic”）。
 - `DONE` #24 `/search` 解析与错误码：`schemas` 支持 split/trim/dedupe，缺参返回 `400`。

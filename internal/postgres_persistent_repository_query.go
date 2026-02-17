@@ -274,7 +274,7 @@ func (b *hybridConditionBuilder) buildEAVCondition(cond *forma.KvCondition) (str
 	}
 	gen := NewSQLGenerator()
 	pIdx := b.argCounter
-	clause, args, err := gen.ToSqlClauses(cond, b.eavTable, b.schemaID, b.cache, &pIdx)
+	clause, args, err := gen.ToSQLClauses(cond, b.eavTable, b.schemaID, b.cache, &pIdx)
 	if err != nil {
 		return "", nil, err
 	}

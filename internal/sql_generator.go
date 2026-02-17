@@ -44,8 +44,8 @@ func NewSQLGenerator() *SQLGenerator {
 	return &SQLGenerator{}
 }
 
-// ToSqlClauses builds the SQL clause and arguments for a condition tree.
-func (g *SQLGenerator) ToSqlClauses(
+// ToSQLClauses builds the SQL clause and arguments for a condition tree.
+func (g *SQLGenerator) ToSQLClauses(
 	condition forma.Condition,
 	eavTable string,
 	schemaID int16,
@@ -56,6 +56,17 @@ func (g *SQLGenerator) ToSqlClauses(
 		return "", nil, nil
 	}
 	return g.buildCondition(condition, eavTable, schemaID, cache, paramIndex)
+}
+
+// ToSqlClauses is kept for backward compatibility.
+func (g *SQLGenerator) ToSqlClauses(
+	condition forma.Condition,
+	eavTable string,
+	schemaID int16,
+	cache forma.SchemaAttributeCache,
+	paramIndex *int,
+) (string, []any, error) {
+	return g.ToSQLClauses(condition, eavTable, schemaID, cache, paramIndex)
 }
 
 func (g *SQLGenerator) buildCondition(

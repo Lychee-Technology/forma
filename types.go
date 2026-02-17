@@ -145,26 +145,59 @@ type QueryRequest struct {
 	Attrs        []string   `json:"attrs,omitempty"`  // Attributes to return (field projection)
 }
 
+func unmarshalConditionField(data []byte) (Condition, bool, error) {
+	var aux struct {
+		Condition json.RawMessage `json:"condition,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return nil, false, err
+	}
+	if len(aux.Condition) == 0 || string(aux.Condition) == "null" {
+		return nil, false, nil
+	}
+
+	cond, err := unmarshalCondition(aux.Condition)
+	if err != nil {
+		return nil, false, err
+	}
+	return cond, true, nil
+}
+
+func marshalWithConditionField(base any, condition Condition) ([]byte, error) {
+	baseJSON, err := json.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	if condition == nil {
+		return baseJSON, nil
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(baseJSON, &payload); err != nil {
+		return nil, err
+	}
+
+	conditionJSON, err := json.Marshal(condition)
+	if err != nil {
+		return nil, err
+	}
+	payload["condition"] = conditionJSON
+	return json.Marshal(payload)
+}
+
 // UnmarshalJSON implements custom JSON unmarshaling for QueryRequest.
 // It allows the Condition field to be either a CompositeCondition or KvCondition.
 func (r *QueryRequest) UnmarshalJSON(data []byte) error {
 	type Alias QueryRequest
-	aux := &struct {
-		Condition json.RawMessage `json:"condition,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(r),
-	}
-
-	if err := json.Unmarshal(data, aux); err != nil {
+	if err := json.Unmarshal(data, (*Alias)(r)); err != nil {
 		return err
 	}
 
-	if len(aux.Condition) > 0 && string(aux.Condition) != "null" {
-		cond, err := unmarshalCondition(aux.Condition)
-		if err != nil {
-			return err
-		}
+	cond, hasCondition, err := unmarshalConditionField(data)
+	if err != nil {
+		return err
+	}
+	if hasCondition {
 		r.Condition = cond
 	}
 
@@ -174,18 +207,7 @@ func (r *QueryRequest) UnmarshalJSON(data []byte) error {
 // MarshalJSON implements custom JSON marshaling for QueryRequest.
 func (r QueryRequest) MarshalJSON() ([]byte, error) {
 	type Alias QueryRequest
-	aux := &struct {
-		Condition any `json:"condition,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(&r),
-	}
-
-	if r.Condition != nil {
-		aux.Condition = r.Condition
-	}
-
-	return json.Marshal(aux)
+	return marshalWithConditionField((*Alias)(&r), r.Condition)
 }
 
 // CrossSchemaRequest represents a cross-schema search request
@@ -202,22 +224,15 @@ type CrossSchemaRequest struct {
 // It allows the Condition field to be either a CompositeCondition or KvCondition.
 func (r *CrossSchemaRequest) UnmarshalJSON(data []byte) error {
 	type Alias CrossSchemaRequest
-	aux := &struct {
-		Condition json.RawMessage `json:"condition,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(r),
-	}
-
-	if err := json.Unmarshal(data, aux); err != nil {
+	if err := json.Unmarshal(data, (*Alias)(r)); err != nil {
 		return err
 	}
 
-	if len(aux.Condition) > 0 && string(aux.Condition) != "null" {
-		cond, err := unmarshalCondition(aux.Condition)
-		if err != nil {
-			return err
-		}
+	cond, hasCondition, err := unmarshalConditionField(data)
+	if err != nil {
+		return err
+	}
+	if hasCondition {
 		r.Condition = cond
 	}
 
@@ -227,18 +242,7 @@ func (r *CrossSchemaRequest) UnmarshalJSON(data []byte) error {
 // MarshalJSON implements custom JSON marshaling for CrossSchemaRequest.
 func (r CrossSchemaRequest) MarshalJSON() ([]byte, error) {
 	type Alias CrossSchemaRequest
-	aux := &struct {
-		Condition any `json:"condition,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(&r),
-	}
-
-	if r.Condition != nil {
-		aux.Condition = r.Condition
-	}
-
-	return json.Marshal(aux)
+	return marshalWithConditionField((*Alias)(&r), r.Condition)
 }
 
 // QueryResult represents paginated query results.

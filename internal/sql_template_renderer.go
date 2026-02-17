@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"strings"
 	"text/template"
 
 	"github.com/lychee-technology/forma"
@@ -30,6 +31,31 @@ func (r *SQLRenderer) Param(v any) string {
 
 var identRegex = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
+func valueTypeFromTemplateTypeName(typeName string) forma.ValueType {
+	switch strings.ToLower(strings.TrimSpace(typeName)) {
+	case "uuid":
+		return forma.ValueTypeUUID
+	case "smallint":
+		return forma.ValueTypeSmallInt
+	case "integer", "int":
+		return forma.ValueTypeInteger
+	case "bigint":
+		return forma.ValueTypeBigInt
+	case "numeric", "double":
+		return forma.ValueTypeNumeric
+	case "date":
+		return forma.ValueTypeDate
+	case "datetime", "timestamp":
+		return forma.ValueTypeDateTime
+	case "bool", "boolean":
+		return forma.ValueTypeBool
+	case "text", "varchar", "value_text":
+		return forma.ValueTypeText
+	default:
+		return forma.ValueTypeText
+	}
+}
+
 // Ident validates a SQL identifier (table/column) and returns it quoted.
 func (r *SQLRenderer) Ident(name string) (string, error) {
 	if !identRegex.MatchString(name) {
@@ -55,84 +81,20 @@ func (r *SQLRenderer) Render(tpl *template.Template, data any) (string, []any, e
 		"param": func(v any) string { return r.Param(v) },
 		"ident": func(s string) (string, error) { return r.Ident(s) },
 		"cast": func(col string, typeName string) string {
-			// Map common type name strings to DuckDB types.
-			var mapType = func(n string) string {
-				switch n {
-				case "text", "Text", "varchar", "VARCHAR", "value_text", "VALUE_TEXT":
-					return "VARCHAR"
-				case "uuid", "UUID":
-					return "VARCHAR"
-				case "smallint", "SmallInt":
-					return "SMALLINT"
-				case "integer", "Integer", "int", "INT":
-					return "INTEGER"
-				case "bigint", "BigInt":
-					return "BIGINT"
-				case "numeric", "Numeric", "double", "DOUBLE":
-					return "DOUBLE"
-				case "date", "datetime", "Date", "DateTime", "timestamp":
-					return "TIMESTAMP"
-				case "bool", "boolean", "Bool", "BOOLEAN":
-					return "BOOLEAN"
-				default:
-					return "VARCHAR"
-				}
-			}
-			return fmt.Sprintf("CAST(%s AS %s)", col, mapType(typeName))
+			valueType := valueTypeFromTemplateTypeName(typeName)
+			return CastExpression(col, valueType)
 		},
 		"param_cast": func(v any, typeName string) string {
-			// Convert value according to typeName then append as param, returning "?".
-			var toType = func(val any, n string) (any, error) {
-				switch n {
-				case "uuid", "UUID":
-					return ToDuckDBParam(val, forma.ValueTypeUUID)
-				case "smallint", "SmallInt":
-					return ToDuckDBParam(val, forma.ValueTypeSmallInt)
-				case "integer", "Integer", "int", "INT":
-					return ToDuckDBParam(val, forma.ValueTypeInteger)
-				case "bigint", "BigInt":
-					return ToDuckDBParam(val, forma.ValueTypeBigInt)
-				case "numeric", "Numeric", "double", "DOUBLE":
-					return ToDuckDBParam(val, forma.ValueTypeNumeric)
-				case "date":
-					return ToDuckDBParam(val, forma.ValueTypeDate)
-				case "datetime", "timestamp":
-					return ToDuckDBParam(val, forma.ValueTypeDateTime)
-				case "bool", "boolean", "Bool", "BOOLEAN":
-					return ToDuckDBParam(val, forma.ValueTypeBool)
-				case "text", "Text":
-					return ToDuckDBParam(val, forma.ValueTypeText)
-				default:
-					return ToDuckDBParam(val, forma.ValueTypeText)
-				}
-			}
-			conv, err := toType(v, typeName)
+			valueType := valueTypeFromTemplateTypeName(typeName)
+			conv, err := ToDuckDBParam(v, valueType)
 			if err != nil {
 				return r.Param(v)
 			}
 			return r.Param(conv)
 		},
 		"duck_type": func(typeName string) string {
-			switch typeName {
-			case "text":
-				return "VARCHAR"
-			case "uuid":
-				return "VARCHAR"
-			case "smallint":
-				return "SMALLINT"
-			case "integer":
-				return "INTEGER"
-			case "bigint":
-				return "BIGINT"
-			case "numeric":
-				return "DOUBLE"
-			case "date", "datetime", "timestamp":
-				return "TIMESTAMP"
-			case "bool", "boolean":
-				return "BOOLEAN"
-			default:
-				return "VARCHAR"
-			}
+			valueType := valueTypeFromTemplateTypeName(typeName)
+			return MapValueTypeToDuckDBType(valueType)
 		},
 	}
 	tplClone = tplClone.Funcs(funcs)
