@@ -1,4 +1,4 @@
-.PHONY: test test-unit coverage build build-tools build-benchmark build-all build-lambda clean all create-build-dir link
+.PHONY: test test-unit lint coverage build build-tools build-benchmark build-all build-lambda clean all create-build-dir link
 
 # Binary names
 BINARY_SERVER=server
@@ -37,6 +37,13 @@ test: test-unit
 test-unit:
 	@echo "Running unit tests..."
 	@$(GOENV) go test ./...
+
+# Run linter (same as CI lint job)
+lint:
+	@echo "Installing golangci-lint..."
+	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@echo "Running golangci-lint..."
+	@PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --timeout=5m
 
 # Run unit tests with coverage report
 coverage: create-build-dir

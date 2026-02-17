@@ -25,12 +25,10 @@ import (
 
 var (
 	httpAdapter *httpadapter.HandlerAdapterV2
-	pool        *pgxpool.Pool
 )
 
 type lambdaRuntime struct {
 	adapter *httpadapter.HandlerAdapterV2
-	pool    *pgxpool.Pool
 }
 
 func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRuntime, error) {
@@ -113,7 +111,6 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	sugar.Info("Lambda handler initialized successfully")
 	return &lambdaRuntime{
 		adapter: httpAdapter,
-		pool:    dbPool,
 	}, nil
 }
 
@@ -147,7 +144,6 @@ func main() {
 		sugar.Fatalf("failed to bootstrap lambda runtime: %v", err)
 	}
 	httpAdapter = runtime.adapter
-	pool = runtime.pool
 
 	lambda.Start(handler)
 }
