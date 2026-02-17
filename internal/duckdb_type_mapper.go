@@ -107,56 +107,19 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 			return nil, fmt.Errorf("cannot convert %T to BOOLEAN param", value)
 		}
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
-		// Normalize numeric inputs to float64 for driver compatibility where appropriate.
-		switch n := value.(type) {
-		case float64:
-			return n, nil
-		case *float64:
-			if n == nil {
-				return nil, nil
-			}
-			return *n, nil
-		case float32:
-			return float64(n), nil
-		case *float32:
-			if n == nil {
-				return nil, nil
-			}
-			return float64(*n), nil
-		case int:
-			return float64(n), nil
-		case *int:
-			if n == nil {
-				return nil, nil
-			}
-			return float64(*n), nil
-		case int16:
-			return float64(n), nil
-		case *int16:
-			if n == nil {
-				return nil, nil
-			}
-			return float64(*n), nil
-		case int32:
-			return float64(n), nil
-		case *int32:
-			if n == nil {
-				return nil, nil
-			}
-			return float64(*n), nil
-		case int64:
-			return float64(n), nil
-		case *int64:
-			if n == nil {
-				return nil, nil
-			}
-			return float64(*n), nil
-		case string:
+		if n, ok := value.(string); ok {
 			// leave parsing to caller; return string so it can be param-parsed by template renderer if desired
 			return n, nil
-		default:
+		}
+
+		numeric, isNil, err := toOptionalFloat64Param(value)
+		if err != nil {
 			return nil, fmt.Errorf("cannot convert %T to numeric param", value)
 		}
+		if isNil {
+			return nil, nil
+		}
+		return numeric, nil
 	case forma.ValueTypeText:
 		switch s := value.(type) {
 		case string:
@@ -172,5 +135,58 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	default:
 		// Fallback: return as-is
 		return value, nil
+	}
+}
+
+func toOptionalFloat64Param(value any) (float64, bool, error) {
+	switch v := value.(type) {
+	case *float64:
+		num, err := derefPointer(v, "float64")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	case *float32:
+		num, err := derefPointer(v, "float32")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	case *int:
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	case *int16:
+		num, err := derefPointer(v, "int16")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	case *int32:
+		num, err := derefPointer(v, "int32")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	case *int64:
+		num, err := derefPointer(v, "int64")
+		if err != nil {
+			return 0, true, nil
+		}
+		parsed, parseErr := toFloat64(num)
+		return parsed, false, parseErr
+	default:
+		num, err := toFloat64(value)
+		if err != nil {
+			return 0, false, err
+		}
+		return num, false, nil
 	}
 }

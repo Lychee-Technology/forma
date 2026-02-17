@@ -9,19 +9,20 @@
 - `P1`：中优先级，建议在下一轮代码整理中处理。
 - `P2`：低优先级，可在相关模块变更时顺手收敛。
 
-## 执行进度（2026-02-16）
+## 执行进度（2026-02-17）
 - `DONE` #1 共享 HTTP API 层：已提取到 `internal/httpapi`，`cmd/server` 与 `cmd/lambda` 复用。
 - `DONE` #2 启动与连接池重复：已提取 `internal/bootstrap`；server/lambda 共用 env/config/pool 构建逻辑。
 - `DONE` #3 CDC flush/init 长方法：`flusher` 已引入 `schemaFlushContext + flushBatchExecutor`，将 schema 处理参数簇收敛为上下文对象并统一 chunk/single 的导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext`，将 `runInit` 参数折叠为 `initRunOptions`、拆分 `processInitSchemas`，并将批次循环/批次导出下沉为 `iterateSchemaBatches + exportSchemaBatch` 子流程。
 - `DONE` #4 DuckDB 导出 SQL 重复：已提取共享 builder（`resolveExportSQLOptions`/`buildMainEntityQuery`/`buildEAVQuery`/`buildSchemaDrivenProjection`），`buildExportSQL` 与 `buildBaseExportSQL` 复用同一投影与 EAV 聚合逻辑。
 - `DONE` #5 条件解析重复：已提取共享 `internal/conditionexpr`（`op:value` 解析、operator 规范化、SQL operator 映射、numeric/date 字面量解析），`internal` 与 `queryoptimizer` 复用同一基础语义，减少并行实现与漂移风险。
-- `PARTIAL` #6 类型转换去重：已新增共享 `bool <-> numeric` 与 `time <-> unix_millis(float64)` helper（`boolToFloat64/float64ToBool/timeToUnixMillisFloat64/unixMillisFloat64ToTimeUTC`），并在 `attribute_converter`、`transformer`、`persistent_transformer` 收敛重复转换分支；其余 `any + switch` 转换路径仍待继续抽象。
+- `PARTIAL` #6 类型转换去重：已新增共享 `bool <-> numeric` 与 `time <-> unix_millis(float64)` helper（`boolToFloat64/float64ToBool/timeToUnixMillisFloat64/unixMillisFloat64ToTimeUTC`），并在 `attribute_converter`、`transformer`、`persistent_transformer` 收敛重复转换分支；`toFloat64ForEAV` 已复用 `toFloat64 + parseTrimmedFloat64`，`toBoolForEAV/toFloat64ForEAV/toTimeForEAV` 的空指针分支已统一到 `derefPointer`；`duckdb_type_mapper` 的 numeric 参数转换已收敛到 `toOptionalFloat64Param`。其余 `any + switch` 转换路径仍待继续抽象。
 - `DONE` #7 `sanitizeIdentifier` 语义收敛：已统一到 `internal.SanitizeIdentifier`，`internal/cdc` 与 `cmd/tools/cdc_init` 复用同一实现，消除三份不一致逻辑。
 - `DONE` #8 主表 SQL 构建重复：`buildInsertMainStatement/buildUpdateMainStatement` 已提取共享字段追加器（insert/update），消除六类 map 遍历重复模板。
 - `DONE` #9 batch CRUD 重复：非原子 `BatchCreate/BatchUpdate/BatchDelete` 已收敛到共享 `executeBestEffortBatch` 管线，统一失败收集与耗时统计。
 - `DONE` #10 schema registry 加载重复：`fileSchemaRegistry` 已提取 `loadSchemaArtifacts + registerSchema`，DB 模式与目录模式复用同一 artifacts 加载管线。
 - `DONE` #11 `QueryRequest/CrossSchemaRequest` 编解码重复：已提取共享 condition JSON helper（`unmarshalConditionField`/`marshalWithConditionField`），移除重复 marshal/unmarshal 模板代码。
 - `DONE` #13 CDC 错误上抛：`processSchema/executeFlush` 已改为返回 error，`RunOnce` 聚合 schema 级错误并返回。
+- `DONE` #14 panic 使用：已移除 `cmd/server/factory.go` panic 路径，并将 `SQLRenderer.Ident` 改为 error 返回（不再 panic）。
 - `DONE` #15 Lambda init 重型启动：`cmd/lambda` 已将重型初始化从 `init()` 迁移为显式 `bootstrapLambda()` + `main` 错误处理路径，并补充 handler 未初始化保护分支。
 - `DONE` #16 接口契约一致性：`RunOnce` 现已真实使用传入 `s3Client`（不再忽略注入），并在启用 manifest 时校验 full client 能力（Get/Put）；`manifest.S3Store` 已收敛为最小 S3 client 接口。
 - `DONE` #17 If 扁平化（证据点）：`postgres_persistent_repository_main_table` 中原 `if err != nil { ... } else { ... }` 模式已改为 early-return + 共享追加器，去除多层 `else`。
@@ -36,9 +37,8 @@
 - `DONE` #26 UUID 指针空值保护：`toUUID(*uuid.UUID=nil)` 不再 panic。
 - `DONE` #27 config 契约一致性：`NewEntityManager` 对 `nil config` 已改为默认配置回退（不再让查询路径潜在空指针），并补充 `nil config` 查询回归测试。
 - `DONE` #28 server 双连接池：已改为单 pool 贯通 schema registry + entity manager。
-- `DONE` #30 Create RowID 语义：handler 不再预写 RowID，统一由服务端生成。
-- `DONE` #14 panic 使用：已移除 `cmd/server/factory.go` panic 路径，并将 `SQLRenderer.Ident` 改为 error 返回（不再 panic）。
 - `DONE` #29 HTTP 错误语义：`internal/httpapi` 已统一 manager error 分类（`400/404/409/500`），不再把多类错误压成单一状态码。
+- `DONE` #30 Create RowID 语义：handler 不再预写 RowID，统一由服务端生成。
 
 ## Findings
 

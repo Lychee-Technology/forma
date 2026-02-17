@@ -171,73 +171,52 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 
 func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
-	case float64:
-		return v, nil
 	case *float64:
-		if v == nil {
-			return 0, fmt.Errorf("nil float64 pointer")
+		num, err := derefPointer(v, "float64")
+		if err != nil {
+			return 0, err
 		}
-		return *v, nil
-	case float32:
-		return float64(v), nil
+		return toFloat64(num)
 	case *float32:
-		if v == nil {
-			return 0, fmt.Errorf("nil float32 pointer")
+		num, err := derefPointer(v, "float32")
+		if err != nil {
+			return 0, err
 		}
-		return float64(*v), nil
-	case int:
-		return float64(v), nil
+		return toFloat64(num)
 	case *int:
-		if v == nil {
-			return 0, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return 0, err
 		}
-		return float64(*v), nil
-	case int16:
-		return float64(v), nil
+		return toFloat64(num)
 	case *int16:
-		if v == nil {
-			return 0, fmt.Errorf("nil int16 pointer")
+		num, err := derefPointer(v, "int16")
+		if err != nil {
+			return 0, err
 		}
-		return float64(*v), nil
-	case int32:
-		return float64(v), nil
+		return toFloat64(num)
 	case *int32:
-		if v == nil {
-			return 0, fmt.Errorf("nil int32 pointer")
+		num, err := derefPointer(v, "int32")
+		if err != nil {
+			return 0, err
 		}
-		return float64(*v), nil
-	case int64:
-		return float64(v), nil
+		return toFloat64(num)
 	case *int64:
-		if v == nil {
-			return 0, fmt.Errorf("nil int64 pointer")
+		num, err := derefPointer(v, "int64")
+		if err != nil {
+			return 0, err
 		}
-		return float64(*v), nil
+		return toFloat64(num)
 	case string:
-		s := strings.TrimSpace(v)
-		if s == "" {
-			return 0, fmt.Errorf("empty string")
-		}
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return 0, fmt.Errorf("parse float: %w", err)
-		}
-		return f, nil
+		return parseTrimmedFloat64(v)
 	case *string:
-		if v == nil {
-			return 0, fmt.Errorf("nil string pointer")
-		}
-		s := strings.TrimSpace(*v)
-		if s == "" {
-			return 0, fmt.Errorf("empty string")
-		}
-		f, err := strconv.ParseFloat(s, 64)
+		str, err := derefPointer(v, "string")
 		if err != nil {
-			return 0, fmt.Errorf("parse float: %w", err)
+			return 0, err
 		}
-		return f, nil
+		return parseTrimmedFloat64(str)
 	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", value)
+		return toFloat64(value)
 	}
 }
 
@@ -246,10 +225,11 @@ func toTimeForEAV(value any) (time.Time, error) {
 	case time.Time:
 		return v, nil
 	case *time.Time:
-		if v == nil {
-			return time.Time{}, fmt.Errorf("nil time pointer")
+		timeValue, err := derefPointer(v, "time")
+		if err != nil {
+			return time.Time{}, err
 		}
-		return *v, nil
+		return timeValue, nil
 	default:
 		return time.Time{}, fmt.Errorf("cannot convert %T to time.Time", value)
 	}
@@ -258,72 +238,96 @@ func toTimeForEAV(value any) (time.Time, error) {
 func toBoolForEAV(value any) (bool, error) {
 	switch v := value.(type) {
 	case string:
-		if strings.ToLower(v) == "true" || v == "1" {
-			return true, nil
-		} else {
-			return false, nil
-		}
+		return isTrueStringForEAV(v), nil
 	case *string:
-		if v == nil {
-			return false, fmt.Errorf("nil string pointer")
+		str, err := derefPointer(v, "string")
+		if err != nil {
+			return false, err
 		}
-		if strings.ToLower(*v) == "true" || *v == "1" {
-			return true, nil
-		} else {
-			return false, nil
-		}
+		return isTrueStringForEAV(str), nil
 	case bool:
 		return v, nil
 	case *bool:
-		if v == nil {
-			return false, fmt.Errorf("nil bool pointer")
+		booleanValue, err := derefPointer(v, "bool")
+		if err != nil {
+			return false, err
 		}
-		return *v, nil
+		return booleanValue, nil
 	case int:
 		return v > 0, nil
 	case *int:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return *v > 0, nil
+		return num > 0, nil
 	case int16:
 		return v > 0, nil
 	case *int16:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return *v > 0, nil
+		return num > 0, nil
 	case int32:
 		return v != 0, nil
 	case *int32:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return *v > 0, nil
+		return num > 0, nil
 	case int64:
 		return v != 0, nil
 	case *int64:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return *v > 0, nil
+		return num > 0, nil
 	case float32:
 		return float64ToBool(float64(v)), nil
 	case *float32:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return float64ToBool(float64(*v)), nil
+		return float64ToBool(float64(num)), nil
 	case float64:
 		return float64ToBool(v), nil
 	case *float64:
-		if v == nil {
-			return false, fmt.Errorf("nil int pointer")
+		num, err := derefPointer(v, "int")
+		if err != nil {
+			return false, err
 		}
-		return float64ToBool(*v), nil
+		return float64ToBool(num), nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
+}
+
+func derefPointer[T any](value *T, typeName string) (T, error) {
+	if value == nil {
+		var zero T
+		return zero, fmt.Errorf("nil %s pointer", typeName)
+	}
+	return *value, nil
+}
+
+func isTrueStringForEAV(value string) bool {
+	return strings.ToLower(value) == "true" || value == "1"
+}
+
+func parseTrimmedFloat64(value string) (float64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty string")
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse float: %w", err)
+	}
+	return parsed, nil
 }
 
 func toFloat64(value any) (float64, error) {
@@ -333,6 +337,8 @@ func toFloat64(value any) (float64, error) {
 	case float32:
 		return float64(v), nil
 	case int:
+		return float64(v), nil
+	case int16:
 		return float64(v), nil
 	case int64:
 		return float64(v), nil
