@@ -5,7 +5,7 @@ on:
     tags: ['v*']
 
 env:
-  GO_VERSION: '1.25.6'
+  GO_VERSION: '1.26.0'
   DUCKDB_STATIC_VERSION: 'v1.4.4_2'
 
 jobs:
