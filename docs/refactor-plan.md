@@ -15,12 +15,13 @@
 - `DONE` #3 CDC flush/init 长方法：`flusher` 已引入 `schemaFlushContext + flushBatchExecutor`，将 schema 处理参数簇收敛为上下文对象并统一 chunk/single 的导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext`，将 `runInit` 参数折叠为 `initRunOptions`、拆分 `processInitSchemas`，并将批次循环/批次导出下沉为 `iterateSchemaBatches + exportSchemaBatch` 子流程。
 - `DONE` #4 DuckDB 导出 SQL 重复：已提取共享 builder（`resolveExportSQLOptions`/`buildMainEntityQuery`/`buildEAVQuery`/`buildSchemaDrivenProjection`），`buildExportSQL` 与 `buildBaseExportSQL` 复用同一投影与 EAV 聚合逻辑。
 - `DONE` #5 条件解析重复：已提取共享 `internal/conditionexpr`（`op:value` 解析、operator 规范化、SQL operator 映射、numeric/date 字面量解析），`internal` 与 `queryoptimizer` 复用同一基础语义，减少并行实现与漂移风险。
-- `PARTIAL` #6 类型转换去重：已新增共享 `bool <-> numeric` 与 `time <-> unix_millis(float64)` helper（`boolToFloat64/float64ToBool/timeToUnixMillisFloat64/unixMillisFloat64ToTimeUTC`），并在 `attribute_converter`、`transformer`、`persistent_transformer` 收敛重复转换分支；`toFloat64ForEAV` 已复用 `toFloat64 + parseTrimmedFloat64`，`toBoolForEAV/toFloat64ForEAV/toTimeForEAV` 的空指针分支已统一到 `derefPointer`；`duckdb_type_mapper` 的 numeric 参数转换已收敛到 `toOptionalFloat64Param`。其余 `any + switch` 转换路径仍待继续抽象。
+- `DONE` #6 类型转换去重：已新增共享 `bool <-> numeric` 与 `time <-> unix_millis(float64)` helper（`boolToFloat64/float64ToBool/timeToUnixMillisFloat64/unixMillisFloat64ToTimeUTC`），并在 `attribute_converter`、`transformer`、`persistent_transformer` 收敛重复转换分支；`toFloat64ForEAV` 已复用 `toFloat64 + parseTrimmedFloat64`，`toBoolForEAV/toFloat64ForEAV/toTimeForEAV` 的空指针分支已统一到 `derefPointer`，并抽出 `boolFromPositive/boolFromNonZero`；`duckdb_type_mapper` 的 numeric/指针参数转换已收敛到 `toOptionalFloat64Param + requiredFloat64FromPointer/optionalFloat64FromPointer/optionalPointerValue` 共享路径。
 - `DONE` #7 `sanitizeIdentifier` 语义收敛：已统一到 `internal.SanitizeIdentifier`，`internal/cdc` 与 `cmd/tools/cdc_init` 复用同一实现，消除三份不一致逻辑。
 - `DONE` #8 主表 SQL 构建重复：`buildInsertMainStatement/buildUpdateMainStatement` 已提取共享字段追加器（insert/update），消除六类 map 遍历重复模板。
 - `DONE` #9 batch CRUD 重复：非原子 `BatchCreate/BatchUpdate/BatchDelete` 已收敛到共享 `executeBestEffortBatch` 管线，统一失败收集与耗时统计。
 - `DONE` #10 schema registry 加载重复：`fileSchemaRegistry` 已提取 `loadSchemaArtifacts + registerSchema`，DB 模式与目录模式复用同一 artifacts 加载管线。
 - `DONE` #11 `QueryRequest/CrossSchemaRequest` 编解码重复：已提取共享 condition JSON helper（`unmarshalConditionField`/`marshalWithConditionField`），移除重复 marshal/unmarshal 模板代码。
+- `DONE` #12 Large Class：已将 `Query/CrossSchemaSearch` 下沉到 `entityQueryService`，`Create/Get/Update/Delete` 下沉到 `entityCRUDService`，`BatchCreate/BatchUpdate/BatchDelete` 下沉到 `entityBatchService`，`relations` 聚合下沉到 `entityRelationService`，`entityManager` 收敛为组合与委托入口。
 - `DONE` #13 CDC 错误上抛：`processSchema/executeFlush` 已改为返回 error，`RunOnce` 聚合 schema 级错误并返回。
 - `DONE` #14 panic 使用：已移除 `cmd/server/factory.go` panic 路径，并将 `SQLRenderer.Ident` 改为 error 返回（不再 panic）。
 - `DONE` #15 Lambda init 重型启动：`cmd/lambda` 已将重型初始化从 `init()` 迁移为显式 `bootstrapLambda()` + `main` 错误处理路径，并补充 handler 未初始化保护分支。

@@ -172,41 +172,17 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
 	case *float64:
-		num, err := derefPointer(v, "float64")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "float64")
 	case *float32:
-		num, err := derefPointer(v, "float32")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "float32")
 	case *int:
-		num, err := derefPointer(v, "int")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "int")
 	case *int16:
-		num, err := derefPointer(v, "int16")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "int16")
 	case *int32:
-		num, err := derefPointer(v, "int32")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "int32")
 	case *int64:
-		num, err := derefPointer(v, "int64")
-		if err != nil {
-			return 0, err
-		}
-		return toFloat64(num)
+		return requiredFloat64FromPointer(v, "int64")
 	case string:
 		return parseTrimmedFloat64(v)
 	case *string:
@@ -254,41 +230,41 @@ func toBoolForEAV(value any) (bool, error) {
 		}
 		return booleanValue, nil
 	case int:
-		return v > 0, nil
+		return boolFromPositive(v), nil
 	case *int:
 		num, err := derefPointer(v, "int")
 		if err != nil {
 			return false, err
 		}
-		return num > 0, nil
+		return boolFromPositive(num), nil
 	case int16:
-		return v > 0, nil
+		return boolFromPositive(v), nil
 	case *int16:
-		num, err := derefPointer(v, "int")
+		num, err := derefPointer(v, "int16")
 		if err != nil {
 			return false, err
 		}
-		return num > 0, nil
+		return boolFromPositive(num), nil
 	case int32:
-		return v != 0, nil
+		return boolFromNonZero(v), nil
 	case *int32:
-		num, err := derefPointer(v, "int")
+		num, err := derefPointer(v, "int32")
 		if err != nil {
 			return false, err
 		}
-		return num > 0, nil
+		return boolFromPositive(num), nil
 	case int64:
-		return v != 0, nil
+		return boolFromNonZero(v), nil
 	case *int64:
-		num, err := derefPointer(v, "int")
+		num, err := derefPointer(v, "int64")
 		if err != nil {
 			return false, err
 		}
-		return num > 0, nil
+		return boolFromPositive(num), nil
 	case float32:
 		return float64ToBool(float64(v)), nil
 	case *float32:
-		num, err := derefPointer(v, "int")
+		num, err := derefPointer(v, "float32")
 		if err != nil {
 			return false, err
 		}
@@ -296,7 +272,7 @@ func toBoolForEAV(value any) (bool, error) {
 	case float64:
 		return float64ToBool(v), nil
 	case *float64:
-		num, err := derefPointer(v, "int")
+		num, err := derefPointer(v, "float64")
 		if err != nil {
 			return false, err
 		}
@@ -312,6 +288,14 @@ func derefPointer[T any](value *T, typeName string) (T, error) {
 		return zero, fmt.Errorf("nil %s pointer", typeName)
 	}
 	return *value, nil
+}
+
+func boolFromPositive[T ~int | ~int16 | ~int32 | ~int64](value T) bool {
+	return value > 0
+}
+
+func boolFromNonZero[T ~int32 | ~int64](value T) bool {
+	return value != 0
 }
 
 func isTrueStringForEAV(value string) bool {

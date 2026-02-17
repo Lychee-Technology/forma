@@ -72,10 +72,11 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case uuid.UUID:
 			return t.String(), nil
 		case *uuid.UUID:
-			if t == nil {
+			uuidValue, isNil := optionalPointerValue(t)
+			if isNil {
 				return nil, nil
 			}
-			return t.String(), nil
+			return uuidValue.String(), nil
 		case string:
 			return t, nil
 		default:
@@ -87,10 +88,11 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case time.Time:
 			return t.UTC(), nil
 		case *time.Time:
-			if t == nil {
+			timeValue, isNil := optionalPointerValue(t)
+			if isNil {
 				return nil, nil
 			}
-			return t.UTC(), nil
+			return timeValue.UTC(), nil
 		default:
 			return nil, fmt.Errorf("cannot convert %T to TIMESTAMP param", value)
 		}
@@ -99,10 +101,11 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case bool:
 			return b, nil
 		case *bool:
-			if b == nil {
+			boolValue, isNil := optionalPointerValue(b)
+			if isNil {
 				return nil, nil
 			}
-			return *b, nil
+			return boolValue, nil
 		default:
 			return nil, fmt.Errorf("cannot convert %T to BOOLEAN param", value)
 		}
@@ -125,10 +128,11 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case string:
 			return s, nil
 		case *string:
-			if s == nil {
+			textValue, isNil := optionalPointerValue(s)
+			if isNil {
 				return nil, nil
 			}
-			return *s, nil
+			return textValue, nil
 		default:
 			return nil, fmt.Errorf("cannot convert %T to text param", value)
 		}
@@ -141,47 +145,17 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 func toOptionalFloat64Param(value any) (float64, bool, error) {
 	switch v := value.(type) {
 	case *float64:
-		num, err := derefPointer(v, "float64")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	case *float32:
-		num, err := derefPointer(v, "float32")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	case *int:
-		num, err := derefPointer(v, "int")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	case *int16:
-		num, err := derefPointer(v, "int16")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	case *int32:
-		num, err := derefPointer(v, "int32")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	case *int64:
-		num, err := derefPointer(v, "int64")
-		if err != nil {
-			return 0, true, nil
-		}
-		parsed, parseErr := toFloat64(num)
-		return parsed, false, parseErr
+		return optionalFloat64FromPointer(v)
 	default:
 		num, err := toFloat64(value)
 		if err != nil {
