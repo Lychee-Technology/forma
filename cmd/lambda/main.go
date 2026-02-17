@@ -28,16 +28,16 @@ var (
 	pool        *pgxpool.Pool
 )
 
-func init() {
-	// Initialize logger
-	logger, err := zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
-	zap.ReplaceGlobals(logger)
-	sugar := logger.Sugar()
+type lambdaRuntime struct {
+	adapter *httpadapter.HandlerAdapterV2
+	pool    *pgxpool.Pool
+}
 
-	sugar.Info("initializing Lambda handler")
+func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRuntime, error) {
+	var (
+		dbPool *pgxpool.Pool
+		err    error
+	)
 
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
@@ -51,7 +51,7 @@ func init() {
 	if dsqlEndpoint != "" {
 		// Aurora DSQL mode - use IAM authentication
 		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
-		pool, err = createDSQLPool(dsqlEndpoint)
+		dbPool, err = createDSQLPool(dsqlEndpoint)
 	} else {
 		// Traditional PostgreSQL mode - use password authentication
 		dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
@@ -67,10 +67,10 @@ func init() {
 			ConnMaxIdleTimeSeconds: 60,
 			TimeoutSeconds:         30,
 		})
-		pool, err = bootstrap.NewPostgresPoolFromConfig(dbConfig)
+		dbPool, err = bootstrap.NewPostgresPoolFromConfig(dbConfig)
 	}
 	if err != nil {
-		sugar.Fatalf("failed to create database pool: %v", err)
+		return nil, fmt.Errorf("failed to create database pool: %w", err)
 	}
 
 	// Table names configuration
@@ -82,9 +82,9 @@ func init() {
 	})
 
 	// Create file-based schema registry from database
-	registry, err := internal.NewFileSchemaRegistry(pool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := internal.NewFileSchemaRegistry(dbPool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
-		sugar.Fatalf("failed to create schema registry: %v", err)
+		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
 
 	// Load configuration with schema registry
@@ -97,9 +97,9 @@ func init() {
 	formaConfig.Database.TableNames = tableNames
 
 	// Initialize EntityManager using factory
-	manager, err := factory.NewEntityManagerWithConfig(formaConfig, pool)
+	manager, err := factory.NewEntityManagerWithConfig(formaConfig, dbPool)
 	if err != nil {
-		sugar.Fatalf("failed to create entity manager: %v", err)
+		return nil, fmt.Errorf("failed to create entity manager: %w", err)
 	}
 
 	// Create server and register routes
@@ -111,14 +111,44 @@ func init() {
 	httpAdapter = httpadapter.NewV2(server.Handler())
 
 	sugar.Info("Lambda handler initialized successfully")
+	return &lambdaRuntime{
+		adapter: httpAdapter,
+		pool:    dbPool,
+	}, nil
 }
 
 // handler is the Lambda handler function
 func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	if httpAdapter == nil {
+		return events.APIGatewayV2HTTPResponse{
+			StatusCode: 500,
+			Body:       `{"error":"lambda handler not initialized"}`,
+			Headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+		}, nil
+	}
 	return httpAdapter.ProxyWithContext(ctx, req)
 }
 
 func main() {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = logger.Sync() }()
+	zap.ReplaceGlobals(logger)
+	sugar := logger.Sugar()
+
+	sugar.Info("initializing Lambda handler")
+
+	runtime, err := bootstrapLambda(context.Background(), sugar)
+	if err != nil {
+		sugar.Fatalf("failed to bootstrap lambda runtime: %v", err)
+	}
+	httpAdapter = runtime.adapter
+	pool = runtime.pool
+
 	lambda.Start(handler)
 }
 

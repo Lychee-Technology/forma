@@ -269,6 +269,9 @@ func toBoolForEAV(value any) (bool, error) {
 			return false, nil
 		}
 	case *string:
+		if v == nil {
+			return false, fmt.Errorf("nil string pointer")
+		}
 		if strings.ToLower(*v) == "true" || *v == "1" {
 			return true, nil
 		} else {

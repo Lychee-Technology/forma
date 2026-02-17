@@ -235,6 +235,15 @@ type schemaInitState struct {
 	filesCreated int
 }
 
+type schemaBatchExport struct {
+	rowIDs    []uuid.UUID
+	minRowID  string
+	maxRowID  string
+	tmpKey    string
+	finalKey  string
+	s3TmpPath string
+}
+
 func newInitRunContext(
 	ctx context.Context,
 	cfg cdc.CDCConfig,
@@ -480,7 +489,7 @@ func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *sc
 	return nil
 }
 
-func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {
+func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) schemaBatchExport {
 	minRowID := rowIDs[0].String()
 	maxRowID := rowIDs[len(rowIDs)-1].String()
 
@@ -489,47 +498,62 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 	finalKey := cdc.BuildBasePath(runCtx.cfg.S3Prefix, state.schemaID, minRowID, maxRowID)
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", runCtx.cfg.S3Bucket, tmpKey)
 
+	return schemaBatchExport{
+		rowIDs:    rowIDs,
+		minRowID:  minRowID,
+		maxRowID:  maxRowID,
+		tmpKey:    tmpKey,
+		finalKey:  finalKey,
+		s3TmpPath: s3TmpPath,
+	}
+}
+
+func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64) {
+	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
+		Tier:       "base",
+		Path:       batch.finalKey,
+		RowIDMin:   batch.minRowID,
+		RowIDMax:   batch.maxRowID,
+		RowCount:   int64(len(batch.rowIDs)),
+		CreatedMin: createdAt,
+		CreatedMax: createdAt,
+	})
+	state.rowsExported += int64(len(batch.rowIDs))
+	state.filesCreated++
+}
+
+func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {
+	batch := buildSchemaBatchExport(runCtx, state, rowIDs)
+
 	runCtx.logger.Info("exporting batch",
 		zap.Int16("schema_id", state.schemaID),
-		zap.Int("batch_size", len(rowIDs)),
-		zap.String("min_row_id", minRowID),
-		zap.String("max_row_id", maxRowID),
-		zap.String("tmp_path", s3TmpPath),
-		zap.String("final_key", finalKey))
+		zap.Int("batch_size", len(batch.rowIDs)),
+		zap.String("min_row_id", batch.minRowID),
+		zap.String("max_row_id", batch.maxRowID),
+		zap.String("tmp_path", batch.s3TmpPath),
+		zap.String("final_key", batch.finalKey))
 
 	if runCtx.dryRun {
-		runCtx.logger.Info("dry-run: skipping export", zap.Int16("schema_id", state.schemaID), zap.Int("batch_size", len(rowIDs)))
-		state.rowsExported += int64(len(rowIDs))
+		runCtx.logger.Info("dry-run: skipping export", zap.Int16("schema_id", state.schemaID), zap.Int("batch_size", len(batch.rowIDs)))
+		state.rowsExported += int64(len(batch.rowIDs))
 		state.filesCreated++
 		return nil
 	}
 
-	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.pgConnStr, s3TmpPath, state.schemaID, rowIDs, state.attrCache); err != nil {
+	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache); err != nil {
 		return fmt.Errorf("export batch: %w", err)
 	}
-	if err := cdc.CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, tmpKey, finalKey, runCtx.logger); err != nil {
+	if err := cdc.CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, batch.tmpKey, batch.finalKey, runCtx.logger); err != nil {
 		return fmt.Errorf("copy tmp->final: %w", err)
 	}
 
-	createdAt := time.Now().UnixMilli()
-	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
-		Tier:       "base",
-		Path:       finalKey,
-		RowIDMin:   minRowID,
-		RowIDMax:   maxRowID,
-		RowCount:   int64(len(rowIDs)),
-		CreatedMin: createdAt,
-		CreatedMax: createdAt,
-	})
-
-	state.rowsExported += int64(len(rowIDs))
-	state.filesCreated++
+	recordSchemaBatchResult(state, batch, time.Now().UnixMilli())
 
 	runCtx.logger.Info("batch completed",
 		zap.Int16("schema_id", state.schemaID),
 		zap.Int64("rows_exported", state.rowsExported),
 		zap.Int("files_created", state.filesCreated),
-		zap.String("final_key", finalKey))
+		zap.String("final_key", batch.finalKey))
 	return nil
 }
 

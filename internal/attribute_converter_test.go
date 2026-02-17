@@ -241,6 +241,8 @@ func ptrFloat64(val float64) *float64 {
 func TestToBoolForEAV(t *testing.T) {
 	trueVal := true
 	falseVal := false
+	trueStr := "true"
+	zeroStr := "0"
 	tests := []struct {
 		name    string
 		input   interface{}
@@ -252,6 +254,9 @@ func TestToBoolForEAV(t *testing.T) {
 		{"string one", "1", true, false},
 		{"string zero", "0", false, false},
 		{"string unknown", "maybe", false, false},
+		{"ptr string true", &trueStr, true, false},
+		{"ptr string zero", &zeroStr, false, false},
+		{"ptr string nil", (*string)(nil), false, true},
 
 		{"bool true", true, true, false},
 		{"bool false", false, false, false},
