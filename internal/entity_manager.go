@@ -23,8 +23,13 @@ func NewEntityManager(
 	registry forma.SchemaRegistry,
 	config *forma.Config,
 ) forma.EntityManager {
+	if config == nil {
+		config = forma.DefaultConfig(registry)
+		zap.S().Warn("entity manager config is nil; falling back to default config")
+	}
+
 	var relationIdx *RelationIndex
-	if config != nil {
+	if config.Entity.SchemaDirectory != "" {
 		idx, err := LoadRelationIndex(config.Entity.SchemaDirectory)
 		if err != nil {
 			zap.S().Warnw("failed to load schema relations", "error", err)

@@ -472,6 +472,17 @@ func resolveInitBatchSize(runCtx *initRunContext, schemaID int16, attrCache form
 }
 
 func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
+	return iterateSchemaBatches(ctx, runCtx, state, func(rowIDs []uuid.UUID) error {
+		return exportSchemaBatch(ctx, runCtx, state, rowIDs)
+	})
+}
+
+func iterateSchemaBatches(
+	ctx context.Context,
+	runCtx *initRunContext,
+	state *schemaInitState,
+	onBatch func(rowIDs []uuid.UUID) error,
+) error {
 	offset := 0
 	for {
 		rowIDs, err := selectEntityMainBatch(ctx, runCtx.db, runCtx.cfg.EntityMainTable, state.schemaID, offset, state.batchSize)
@@ -479,14 +490,14 @@ func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *sc
 			return fmt.Errorf("select batch: %w", err)
 		}
 		if len(rowIDs) == 0 {
-			break
+			return nil
 		}
-		if err := exportSchemaBatch(ctx, runCtx, state, rowIDs); err != nil {
+
+		if err := onBatch(rowIDs); err != nil {
 			return err
 		}
 		offset += state.batchSize
 	}
-	return nil
 }
 
 func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) schemaBatchExport {

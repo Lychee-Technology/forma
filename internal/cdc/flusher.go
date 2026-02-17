@@ -104,10 +104,24 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 
 	// Process each schema
+	flushCtx := &schemaFlushContext{
+		db:               db,
+		duck:             duck,
+		s3Client:         activeS3Client,
+		cfg:              cfg,
+		tableName:        tableName,
+		pgPassword:       pgPassword,
+		dryRun:           dryRun,
+		logger:           logger,
+		schemaRegistry:   schemaRegistry,
+		manifestStore:    manifestStore,
+		manifestResolver: manifestResolver,
+	}
+
 	var schemaErrs []error
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		if err := processSchema(ctx, db, duck, activeS3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
+		if err := flushCtx.processSchema(ctx, schemaID); err != nil {
 			logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
 			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
 		}
@@ -218,52 +232,52 @@ func getUnflushedSchemaIDs(ctx context.Context, db *sql.DB, tableName string) ([
 	return schemaIDs, nil
 }
 
+type schemaFlushContext struct {
+	db               *sql.DB
+	duck             *DuckExporter
+	s3Client         S3ObjectClient
+	cfg              CDCConfig
+	tableName        string
+	pgPassword       string
+	dryRun           bool
+	logger           *zap.Logger
+	schemaRegistry   forma.SchemaRegistry
+	manifestStore    manifest.Store
+	manifestResolver manifest.PathResolver
+}
+
 // processSchema handles the flush process for a single schema.
-func processSchema(
-	ctx context.Context,
-	db *sql.DB,
-	duck *DuckExporter,
-	s3Client S3ObjectClient,
-	cfg CDCConfig,
-	tableName string,
-	schemaID int16,
-	pgPassword string,
-	dryRun bool,
-	logger *zap.Logger,
-	schemaRegistry forma.SchemaRegistry,
-	manifestStore manifest.Store,
-	manifestResolver manifest.PathResolver,
-) error {
-	logger.Sugar().Infow("processing schema", "schema_id", schemaID)
+func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) error {
+	c.logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
 	// Try advisory lock
-	locked, err := AcquireSchemaLock(ctx, db, schemaID)
+	locked, err := AcquireSchemaLock(ctx, c.db, schemaID)
 	if err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
 	if !locked {
-		logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
+		c.logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return nil
 	}
-	defer func() { _ = ReleaseSchemaLock(ctx, db, schemaID) }()
+	defer func() { _ = ReleaseSchemaLock(ctx, c.db, schemaID) }()
 
 	// Check if flush is needed
-	cnt, oldest, err := GetChangeLogStats(ctx, db, tableName, schemaID)
+	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
 	if err != nil {
 		return fmt.Errorf("get changelog stats: %w", err)
 	}
 	if cnt == 0 {
-		logger.Sugar().Infow("no unflushed rows", "schema_id", schemaID)
+		c.logger.Sugar().Infow("no unflushed rows", "schema_id", schemaID)
 		return nil
 	}
 
-	if !shouldFlush(cfg, cnt, oldest) {
-		logger.Sugar().Infow("skip flush: thresholds not met", "schema_id", schemaID, "cnt", cnt, "oldest", oldest)
+	if !shouldFlush(c.cfg, cnt, oldest) {
+		c.logger.Sugar().Infow("skip flush: thresholds not met", "schema_id", schemaID, "cnt", cnt, "oldest", oldest)
 		return nil
 	}
 
 	// Execute flush
-	if err := executeFlush(ctx, db, duck, s3Client, cfg, tableName, schemaID, pgPassword, dryRun, logger, schemaRegistry, manifestStore, manifestResolver); err != nil {
+	if err := c.executeFlush(ctx, schemaID); err != nil {
 		return fmt.Errorf("execute flush: %w", err)
 	}
 	return nil
@@ -350,43 +364,29 @@ func buildFlushS3Keys(cfg CDCConfig, schemaID int16) (string, string) {
 }
 
 // executeFlush performs the actual flush operation.
-func executeFlush(
-	ctx context.Context,
-	db *sql.DB,
-	duck *DuckExporter,
-	s3Client S3ObjectClient,
-	cfg CDCConfig,
-	tableName string,
-	schemaID int16,
-	pgPassword string,
-	dryRun bool,
-	logger *zap.Logger,
-	schemaRegistry forma.SchemaRegistry,
-	manifestStore manifest.Store,
-	manifestResolver manifest.PathResolver,
-) error {
-	ids, snapshot, err := SelectBatchRowIDs(ctx, db, tableName, schemaID, cfg.BatchSize)
+func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) error {
+	ids, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("select batch row ids: %w", err)
 	}
 	if len(ids) == 0 {
-		logger.Sugar().Infow("no rows in batch", "schema_id", schemaID)
+		c.logger.Sugar().Infow("no rows in batch", "schema_id", schemaID)
 		return nil
 	}
 
 	// Build postgres connection string for DuckDB postgres_query.
-	sslMode := cfg.PGSSLMode
+	sslMode := c.cfg.PGSSLMode
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
 	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
-	logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuck)
+		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.pgPassword, c.cfg.PGDB, sslMode)
+	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuck)
 
 	var attrCache forma.SchemaAttributeCache
-	if schemaRegistry != nil {
-		if _, cache, err := schemaRegistry.GetSchemaAttributeCacheByID(schemaID); err != nil {
-			logger.Sugar().Warnw("schema registry lookup failed, using generic projection", "schema_id", schemaID, "err", err)
+	if c.schemaRegistry != nil {
+		if _, cache, err := c.schemaRegistry.GetSchemaAttributeCacheByID(schemaID); err != nil {
+			c.logger.Sugar().Warnw("schema registry lookup failed, using generic projection", "schema_id", schemaID, "err", err)
 		} else {
 			attrCache = cache
 		}
@@ -394,29 +394,29 @@ func executeFlush(
 
 	executor := &flushBatchExecutor{
 		ctx:              ctx,
-		db:               db,
-		duck:             duck,
-		s3Client:         s3Client,
-		cfg:              cfg,
-		tableName:        tableName,
+		db:               c.db,
+		duck:             c.duck,
+		s3Client:         c.s3Client,
+		cfg:              c.cfg,
+		tableName:        c.tableName,
 		schemaID:         schemaID,
 		snapshot:         snapshot,
 		pgConnForDuck:    pgConnForDuck,
 		attrCache:        attrCache,
-		dryRun:           dryRun,
-		logger:           logger,
-		manifestStore:    manifestStore,
-		manifestResolver: manifestResolver,
+		dryRun:           c.dryRun,
+		logger:           c.logger,
+		manifestStore:    c.manifestStore,
+		manifestResolver: c.manifestResolver,
 	}
 
 	batchIDs := ids
 	maxRows := 0
-	if cfg.MaxBatchBytes > 0 && cfg.EstimatedRowBytes > 0 {
-		maxRows = int(cfg.MaxBatchBytes / int64(cfg.EstimatedRowBytes))
+	if c.cfg.MaxBatchBytes > 0 && c.cfg.EstimatedRowBytes > 0 {
+		maxRows = int(c.cfg.MaxBatchBytes / int64(c.cfg.EstimatedRowBytes))
 	}
 
 	if maxRows > 0 && len(batchIDs) > maxRows {
-		logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
+		c.logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
 		return executeFlushInChunks(executor, batchIDs, maxRows)
 	}
 

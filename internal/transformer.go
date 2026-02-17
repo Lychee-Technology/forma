@@ -316,19 +316,14 @@ func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.
 		if err != nil {
 			return handleConversionError(err)
 		}
-		unixMillis := float64(timeVal.UnixMilli())
+		unixMillis := timeToUnixMillisFloat64(timeVal)
 		attr.ValueNumeric = &unixMillis
 	case forma.ValueTypeBool:
 		boolVal, err := toBool(value)
 		if err != nil {
 			return handleConversionError(err)
 		}
-		var floatBool float64
-		if boolVal {
-			floatBool = 1.0
-		} else {
-			floatBool = 0.0
-		}
+		floatBool := boolToFloat64(boolVal)
 		attr.ValueNumeric = &floatBool
 	default:
 		return handleConversionError(fmt.Errorf("unsupported value type '%s'", meta.ValueType))

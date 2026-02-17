@@ -163,7 +163,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 	case forma.MainColumnEncodingBoolInt:
 		// Bool stored as smallint (1/0)
 		if attr.ValueNumeric != nil {
-			if *attr.ValueNumeric > 0.5 {
+			if float64ToBool(*attr.ValueNumeric) {
 				record.Int16Items[columnName] = 1
 			} else {
 				record.Int16Items[columnName] = 0
@@ -173,7 +173,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 	case forma.MainColumnEncodingBoolText:
 		// Bool stored as text ("1"/"0")
 		if attr.ValueNumeric != nil {
-			if *attr.ValueNumeric > 0.5 {
+			if float64ToBool(*attr.ValueNumeric) {
 				record.TextItems[columnName] = "1"
 			} else {
 				record.TextItems[columnName] = "0"
@@ -183,7 +183,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 	case forma.MainColumnEncodingISO8601:
 		// Date stored as ISO 8601 string in text column
 		if attr.ValueNumeric != nil {
-			record.TextItems[columnName] = time.UnixMilli(int64(*attr.ValueNumeric)).UTC().Format(time.RFC3339)
+			record.TextItems[columnName] = unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339)
 		}
 
 	case forma.MainColumnEncodingDefault:
@@ -337,13 +337,8 @@ func (t *persistentRecordTransformer) readWithEncoding(record *PersistentRecord,
 	case forma.MainColumnEncodingBoolText:
 		// Read text ("1"/"0") and convert to bool
 		if val, ok := record.TextItems[columnName]; ok {
-			if val == "1" {
-				b := 1.0
-				attr.ValueNumeric = &b
-			} else {
-				b := 0.0
-				attr.ValueNumeric = &b
-			}
+			b := boolToFloat64(val == "1")
+			attr.ValueNumeric = &b
 			return attr, true, nil
 		}
 
@@ -354,7 +349,7 @@ func (t *persistentRecordTransformer) readWithEncoding(record *PersistentRecord,
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
 			}
-			unixMillis := float64(parsedTime.UnixMilli())
+			unixMillis := timeToUnixMillisFloat64(parsedTime)
 			attr.ValueNumeric = &unixMillis
 			return attr, true, nil
 		}

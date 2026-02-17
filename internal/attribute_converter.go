@@ -60,7 +60,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 		if err != nil {
 			return record, fmt.Errorf("convert to time: %w", err)
 		}
-		unixMillis := float64(timeVal.UnixMilli())
+		unixMillis := timeToUnixMillisFloat64(timeVal)
 		record.ValueNumeric = &unixMillis
 
 	case forma.ValueTypeUUID:
@@ -76,12 +76,7 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 		if err != nil {
 			return record, fmt.Errorf("convert to bool: %w", err)
 		}
-		var floatBool float64
-		if boolVal {
-			floatBool = 1.0
-		} else {
-			floatBool = 0.0
-		}
+		floatBool := boolToFloat64(boolVal)
 		record.ValueNumeric = &floatBool
 
 	default:
@@ -313,19 +308,19 @@ func toBoolForEAV(value any) (bool, error) {
 		}
 		return *v > 0, nil
 	case float32:
-		return v > 0.5, nil
+		return float64ToBool(float64(v)), nil
 	case *float32:
 		if v == nil {
 			return false, fmt.Errorf("nil int pointer")
 		}
-		return *v > 0.5, nil
+		return float64ToBool(float64(*v)), nil
 	case float64:
-		return v > 0.5, nil
+		return float64ToBool(v), nil
 	case *float64:
 		if v == nil {
 			return false, fmt.Errorf("nil int pointer")
 		}
-		return *v > 0.5, nil
+		return float64ToBool(*v), nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
@@ -439,7 +434,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		timeVal := time.UnixMilli(int64(*record.ValueNumeric)).UTC()
+		timeVal := unixMillisFloat64ToTimeUTC(*record.ValueNumeric)
 		return timeVal, nil
 
 	case forma.ValueTypeUUID:

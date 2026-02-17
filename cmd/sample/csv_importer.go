@@ -43,7 +43,7 @@ func (r *ImportResult) Summary() string {
 
 // CSVImporter handles importing CSV data into a schema using the EntityManager.
 type CSVImporter struct {
-	entityManager forma.EntityManager
+	entityManager forma.EntityBatchCreator
 	mapper        CSVToSchemaMapper
 	batchSize     int
 	logger        *zap.SugaredLogger
@@ -52,7 +52,7 @@ type CSVImporter struct {
 // NewCSVImporter creates a new CSVImporter.
 // batchSize determines how many records are batched together for insertion.
 // If batchSize <= 0, defaults to 100.
-func NewCSVImporter(entityManager forma.EntityManager, mapper CSVToSchemaMapper, batchSize int) *CSVImporter {
+func NewCSVImporter(entityManager forma.EntityBatchCreator, mapper CSVToSchemaMapper, batchSize int) *CSVImporter {
 	if batchSize <= 0 {
 		batchSize = 100
 	}

@@ -1109,6 +1109,38 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	}
 }
 
+func TestEntityManager_QueryWithNilConfigUsesDefaults(t *testing.T) {
+	ctx := context.Background()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+	mockRepo := newMockPersistentRecordRepository()
+
+	em := NewEntityManager(transformer, mockRepo, registry, nil)
+
+	req := &forma.QueryRequest{
+		SchemaName: "visit",
+		Page:       0,
+		Condition: &forma.KvCondition{
+			Attr:  "status",
+			Value: "equals:scheduled",
+		},
+	}
+
+	result, err := em.Query(ctx, req)
+	if err != nil {
+		t.Fatalf("query failed with nil config: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if req.ItemsPerPage != 50 {
+		t.Fatalf("expected default items_per_page=50, got %d", req.ItemsPerPage)
+	}
+}
+
 // Helper function to create test config
 func createTestConfig() *forma.Config {
 	return &forma.Config{

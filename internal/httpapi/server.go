@@ -17,13 +17,19 @@ type Options struct {
 	EnableHealth bool
 }
 
+type Manager interface {
+	forma.EntityWriter
+	forma.EntityReader
+	forma.EntityBatchOperator
+}
+
 type Server struct {
-	manager forma.EntityManager
+	manager Manager
 	mux     *http.ServeMux
 	opts    Options
 }
 
-func NewServer(manager forma.EntityManager, opts Options) *Server {
+func NewServer(manager Manager, opts Options) *Server {
 	server := &Server{
 		manager: manager,
 		mux:     http.NewServeMux(),
