@@ -32,6 +32,14 @@ func (m *mockProvider) SaveManifest(ctx context.Context, schemaID int16, mani *m
 	if m.saveErr != nil {
 		return "", m.saveErr
 	}
+	if mani != nil {
+		mani.UpdatedAtMs = time.Now().UnixMilli()
+		if mani.Version == 0 {
+			mani.Version = 1
+		} else {
+			mani.Version++
+		}
+	}
 	m.manifest = mani
 	m.savedEtag = "new-etag"
 	return m.savedEtag, nil
@@ -125,6 +133,75 @@ func TestCompactor_RunOnce_PromotsDeltas(t *testing.T) {
 	for _, f := range provider.manifest.Files {
 		require.Equal(t, "base", f.Tier)
 	}
+	require.Equal(t, "new-etag", provider.savedEtag)
+	require.Equal(t, int64(2), provider.manifest.Version)
+}
+
+func TestCompactor_RunOnce_PromotesDeltasCaseInsensitiveTier(t *testing.T) {
+	logger := zap.NewNop()
+	// FilterByTier is case-insensitive, so compactor must also promote DELTA entries.
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "DELTA", Path: "delta_upper.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
+		},
+	}
+	provider := &mockProvider{manifest: m, etag: "etag-1"}
+
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:         1,
+			TargetBaseSizeMB: 256,
+		},
+		Provider: provider,
+	}
+
+	err := c.RunOnce(context.Background())
+	require.NoError(t, err)
+
+	require.Equal(t, "base", provider.manifest.Files[0].Tier)
+	require.Equal(t, "new-etag", provider.savedEtag)
+	require.Equal(t, int64(2), provider.manifest.Version)
+}
+
+func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *testing.T) {
+	logger := zap.NewNop()
+	// Force needsRewrite=true (delta/base rows = 100/1000 = 10% > 5%)
+	// while keeping needsPromotion=false (10MB < 256MB).
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "base", Path: "base.parquet", SizeBytes: 300 * 1024 * 1024, RowCount: 1000},
+			{Tier: "delta", Path: "delta.parquet", SizeBytes: 10 * 1024 * 1024, RowCount: 100},
+		},
+	}
+	provider := &mockProvider{manifest: m, etag: "etag-1"}
+
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:         1,
+			TargetBaseSizeMB: 256,
+			DirtyRatioPct:    5,
+		},
+		Provider: provider,
+	}
+
+	err := c.RunOnce(context.Background())
+	require.NoError(t, err)
+
+	// Rewrite is not implemented yet, so manifest should not be persisted.
+	require.Equal(t, "", provider.savedEtag)
+	require.Equal(t, int64(1), provider.manifest.Version)
+
+	// No rewrite/promotion happened in current implementation.
+	require.Equal(t, "base", provider.manifest.Files[0].Tier)
+	require.Equal(t, "delta", provider.manifest.Files[1].Tier)
 }
 
 func TestCompactor_RunOnce_LoadManifestError(t *testing.T) {
