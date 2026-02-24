@@ -19,7 +19,7 @@ func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, pgConnStr string
 		return err
 	}
 
-	e.Logger.Sugar().Infow("duckdb base export sql", "sql_preview", sql, "m_query", mQuery, "e_query", eQuery)
+	e.Logger.Sugar().Infow("duckdb base export sql", "sql_preview", redactConnStr(sql), "m_query", mQuery, "e_query", eQuery)
 	timeout := e.Config.QueryTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute

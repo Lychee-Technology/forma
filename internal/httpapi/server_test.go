@@ -206,6 +206,10 @@ func TestClassifyManagerError(t *testing.T) {
 		{name: "validation", err: fmt.Errorf("schema name is required"), wantStatus: http.StatusBadRequest},
 		{name: "conflict", err: fmt.Errorf("duplicate key"), wantStatus: http.StatusConflict},
 		{name: "internal", err: fmt.Errorf("db timeout"), wantStatus: http.StatusInternalServerError},
+		// Sentinel error checks — wrapped errors must route via errors.Is.
+		{name: "sentinel not found", err: fmt.Errorf("wrap: %w", forma.ErrNotFound), wantStatus: http.StatusNotFound},
+		{name: "sentinel conflict", err: fmt.Errorf("wrap: %w", forma.ErrConflict), wantStatus: http.StatusConflict},
+		{name: "sentinel invalid input", err: fmt.Errorf("wrap: %w", forma.ErrInvalidInput), wantStatus: http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

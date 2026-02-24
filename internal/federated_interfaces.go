@@ -115,10 +115,20 @@ type DataSourcePlan struct {
 	Reason string
 }
 
+// MergeStrategy describes the strategy used to reconcile records from multiple
+// data tiers during a federated merge-on-read operation.
+type MergeStrategy string
+
+const (
+	// MergeStrategyLastWriteWins selects the attribute value from the tier with
+	// the most recent write timestamp. This is the default merge strategy.
+	MergeStrategyLastWriteWins MergeStrategy = "last-write-wins"
+)
+
 // MergePlan describes merge-on-read semantics used to combine tiered results.
 type MergePlan struct {
-	// Strategy name, e.g., "last-write-wins"
-	Strategy string
+	// Strategy name, e.g., MergeStrategyLastWriteWins.
+	Strategy MergeStrategy
 
 	// PreferHot indicates whether preferHot tiebreaker was used.
 	PreferHot bool

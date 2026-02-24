@@ -13,6 +13,11 @@ import (
 // numbers and makes it easy to change in one place.
 const defaultPageSize = 50
 
+// federatedMaxRows is the default per-source fetch cap used by federated
+// queries when no explicit MaxRows option is provided. Keeping it here
+// alongside defaultPageSize avoids magic numbers in federated_pagination.go.
+const federatedMaxRows = 10000
+
 func tryParseNumber(s string) any {
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
@@ -260,7 +260,7 @@ func newInitRunContext(
 	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, sslMode)
 
-	db, err := sql.Open("postgres", pgConnStr)
+	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
 		return nil, fmt.Errorf("open pg: %w", err)
 	}

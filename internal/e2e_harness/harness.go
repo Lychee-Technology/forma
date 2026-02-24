@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	"github.com/testcontainers/testcontainers-go"
@@ -57,7 +57,7 @@ func (h *TestHarness) StartPostgres(ctx context.Context) (string, error) {
 	h.PGDSN = dsn
 
 	// Open DB connection
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return "", err
 	}

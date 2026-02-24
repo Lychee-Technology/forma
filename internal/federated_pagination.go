@@ -38,7 +38,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Determine per-source fetch cap
-	maxRows := 10000
+	maxRows := federatedMaxRows
 	if opts != nil && opts.MaxRows > 0 {
 		maxRows = opts.MaxRows
 	}
@@ -88,7 +88,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	// Record merge plan if requested
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		opts.ExecutionPlan.Merge = MergePlan{
-			Strategy:   "last-write-wins",
+			Strategy:   MergeStrategyLastWriteWins,
 			PreferHot:  fq.PreferHot,
 			DedupKeys:  []string{"SchemaID:RowID"},
 			DurationMs: mergeMs,

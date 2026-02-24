@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 
@@ -287,7 +286,7 @@ func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.
 		if meta.Required {
 			return false, err
 		}
-		log.Printf("skip optional attribute %s (id %d): %v", attrName, meta.AttributeID, err)
+		zap.S().Warnw("skip optional attribute", "attribute", attrName, "attributeID", meta.AttributeID, "err", err)
 		return false, nil
 	}
 

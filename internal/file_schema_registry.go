@@ -159,12 +159,12 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, 
 
 	schemaID, exists := r.nameToID[name]
 	if !exists {
-		return 0, nil, fmt.Errorf("schema not found: %s", name)
+		return 0, nil, fmt.Errorf("schema not found: %s: %w", name, forma.ErrNotFound)
 	}
 
 	schema, exists := r.schemaAttributeCaches[schemaID]
 	if !exists {
-		return 0, nil, fmt.Errorf("schema data not found: %s", name)
+		return 0, nil, fmt.Errorf("schema data not found: %s: %w", name, forma.ErrNotFound)
 	}
 
 	// Return a copy to prevent external mutations
@@ -179,12 +179,12 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, form
 
 	name, exists := r.idToName[id]
 	if !exists {
-		return "", nil, fmt.Errorf("schema not found for ID: %d", id)
+		return "", nil, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
 	}
 
 	schema, exists := r.schemaAttributeCaches[id]
 	if !exists {
-		return "", nil, fmt.Errorf("schema data not found for ID: %d", id)
+		return "", nil, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
 	}
 
 	// Return a copy to prevent external mutations
@@ -213,12 +213,12 @@ func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSche
 
 	schemaID, exists := r.nameToID[name]
 	if !exists {
-		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)
+		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s: %w", name, forma.ErrNotFound)
 	}
 
 	schema, exists := r.schemas[schemaID]
 	if !exists {
-		return 0, forma.JSONSchema{}, fmt.Errorf("schema data not found: %s", name)
+		return 0, forma.JSONSchema{}, fmt.Errorf("schema data not found: %s: %w", name, forma.ErrNotFound)
 	}
 
 	return schemaID, schema, nil
@@ -231,12 +231,12 @@ func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 
 	name, exists := r.idToName[id]
 	if !exists {
-		return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d", id)
+		return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
 	}
 
 	schema, exists := r.schemas[id]
 	if !exists {
-		return "", forma.JSONSchema{}, fmt.Errorf("schema data not found for ID: %d", id)
+		return "", forma.JSONSchema{}, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
 	}
 
 	return name, schema, nil

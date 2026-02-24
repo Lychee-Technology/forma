@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,18 @@ import (
 	formainternal "github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
+
+// reConnPassword matches the password= key-value pair in a libpq-style connection string,
+// including the quoted form used inside DuckDB ATTACH statements.
+// It handles both  password=value  and  password='value'  forms.
+var reConnPassword = regexp.MustCompile(`(?i)(password=)'?[^' \t\r\n;,)]*'?`)
+
+// redactConnStr replaces any password value in a connection string (or an SQL
+// string that embeds one) with "***REDACTED***".  It is safe to call on any
+// string that may or may not contain a password.
+func redactConnStr(s string) string {
+	return reConnPassword.ReplaceAllString(s, "${1}***REDACTED***")
+}
 
 // AcquireSchemaLock tries to grab an advisory lock for the schema to avoid
 // concurrent flush/compaction on the same schema.

@@ -18,19 +18,19 @@ type NormalizerOptions struct {
 // NormalizeQuery converts a QueryRequest into the optimizer Input IR.
 func NormalizeQuery(req *forma.QueryRequest, schemaID int16, schemaName string, tables StorageTables, attrs AttributeCatalog, opts NormalizerOptions) (*Input, error) {
 	if req == nil {
-		return nil, fmt.Errorf("query request cannot be nil")
+		return nil, fmt.Errorf("query request cannot be nil: %w", forma.ErrInvalidInput)
 	}
 	if req.Condition == nil {
-		return nil, fmt.Errorf("query condition is required")
+		return nil, fmt.Errorf("query condition is required: %w", forma.ErrInvalidInput)
 	}
 	if len(attrs) == 0 {
-		return nil, fmt.Errorf("attribute catalog cannot be empty")
+		return nil, fmt.Errorf("attribute catalog cannot be empty: %w", forma.ErrInvalidInput)
 	}
 	if schemaName == "" {
 		schemaName = req.SchemaName
 	}
 	if schemaName == "" {
-		return nil, fmt.Errorf("schema name is required")
+		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
 	}
 
 	limit := req.ItemsPerPage
@@ -61,7 +61,7 @@ func NormalizeQuery(req *forma.QueryRequest, schemaID int16, schemaName string, 
 	for _, attrName := range req.SortBy {
 		attrName = strings.TrimSpace(attrName)
 		if attrName == "" {
-			return nil, fmt.Errorf("sort attribute name cannot be empty")
+			return nil, fmt.Errorf("sort attribute name cannot be empty: %w", forma.ErrInvalidInput)
 		}
 
 		meta, ok := attrs[attrName]
@@ -95,7 +95,7 @@ func normalizeConditionTree(cond forma.Condition, attrs AttributeCatalog) (*Filt
 	switch typed := cond.(type) {
 	case *forma.CompositeCondition:
 		if len(typed.Conditions) == 0 {
-			return nil, fmt.Errorf("composite condition requires children")
+			return nil, fmt.Errorf("composite condition requires children: %w", forma.ErrInvalidInput)
 		}
 
 		logic, err := convertLogic(typed.Logic)
@@ -122,14 +122,14 @@ func normalizeConditionTree(cond forma.Condition, attrs AttributeCatalog) (*Filt
 		return &FilterNode{Predicate: predicate}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported condition type %T", cond)
+		return nil, fmt.Errorf("unsupported condition type %T: %w", cond, forma.ErrInvalidInput)
 	}
 }
 
 func normalizeKvPredicate(kv *forma.KvCondition, attrs AttributeCatalog) (*Predicate, error) {
 	meta, ok := attrs[kv.Attr]
 	if !ok {
-		return nil, fmt.Errorf("attribute '%s' not found in schema", kv.Attr)
+		return nil, fmt.Errorf("attribute '%s' not found in schema: %w", kv.Attr, forma.ErrInvalidInput)
 	}
 
 	opName, valStr := parseOperatorValue(kv.Value)
@@ -176,13 +176,13 @@ func normalizeValue(meta AttributeBinding, opName, value string) (PredicateOp, P
 	case "contains":
 		return convertTextPattern(meta, "%"+value+"%", PatternKindContains)
 	default:
-		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("unsupported operator '%s'", opName)
+		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("unsupported operator '%s': %w", opName, forma.ErrInvalidInput)
 	}
 }
 
 func convertTextPattern(meta AttributeBinding, patternValue string, pattern PatternKind) (PredicateOp, PatternKind, any, error) {
 	if meta.ValueType != forma.ValueTypeText {
-		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator only supported for text attributes: %s", meta.AttributeName)
+		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator only supported for text attributes: %s: %w", meta.AttributeName, forma.ErrInvalidInput)
 	}
 	return PredicateOpLike, pattern, patternValue, nil
 }
@@ -205,7 +205,7 @@ func convertValue(meta AttributeBinding, op PredicateOp, raw string) (PredicateO
 		return op, PatternKindNone, parsed, nil
 	case forma.ValueTypeBool:
 		if op != PredicateOpEquals && op != PredicateOpNotEquals {
-			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator '%s' is not supported for boolean attributes", op)
+			return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("operator '%s' is not supported for boolean attributes: %w", op, forma.ErrInvalidInput)
 		}
 		val, err := strconv.ParseBool(raw)
 		if err != nil {
@@ -213,7 +213,7 @@ func convertValue(meta AttributeBinding, op PredicateOp, raw string) (PredicateO
 		}
 		return op, PatternKindNone, val, nil
 	default:
-		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("unsupported value type '%s'", meta.ValueType)
+		return PredicateOp(""), PatternKindNone, nil, fmt.Errorf("unsupported value type '%s': %w", meta.ValueType, forma.ErrInvalidInput)
 	}
 }
 
@@ -228,7 +228,7 @@ func convertLogic(logic forma.Logic) (LogicOp, error) {
 	case forma.LogicOr:
 		return LogicOpOr, nil
 	default:
-		return "", fmt.Errorf("unsupported logic operator '%s'", logic)
+		return "", fmt.Errorf("unsupported logic operator '%s': %w", logic, forma.ErrInvalidInput)
 	}
 }
 

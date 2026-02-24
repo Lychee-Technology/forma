@@ -61,34 +61,13 @@ union SELECT table_name FROM information_schema.views v WHERE table_schema = 'pu
 	return tables, nil
 }
 
-// NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
-// This is the primary way for external projects to create an EntityManager instance.
+// NewEntityManagerWithConfigContext creates a new EntityManager using the provided
+// context, configuration, and database pool. It is the canonical implementation;
+// use this when you need to control the context used during initialisation (e.g.
+// to propagate cancellation or deadlines to the startup queries).
 //
-// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
-// This allows callers to provide their own SchemaRegistry implementation.
-//
-// Usage:
-//
-// import (
-//
-//	"github.com/lychee-technology/forma"
-//	"github.com/lychee-technology/forma/factory"
-//
-// )
-//
-// config := forma.DefaultConfig()
-// em, err := factory.NewEntityManagerWithConfig(config, pool)
-//
-//	if err != nil {
-//	   // handle error
-//	}
-//
-// With custom SchemaRegistry:
-//
-// config := forma.DefaultConfig()
-// config.SchemaRegistry = myCustomRegistry
-// em, err := factory.NewEntityManagerWithConfig(config, pool)
-func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
+// See NewEntityManagerWithConfig for usage examples.
+func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
 	tables, err := tableCollector(pool)
 	if err != nil {
 		return nil, err
@@ -106,7 +85,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 		config.Entity.SchemaDirectory,
 	)
 
-	metadataCache, err := loader.LoadMetadata(context.Background())
+	metadataCache, err := loader.LoadMetadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
@@ -144,6 +123,37 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, registry, config), nil
+}
+
+// NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
+// This is the primary way for external projects to create an EntityManager instance.
+//
+// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
+// This allows callers to provide their own SchemaRegistry implementation.
+//
+// Usage:
+//
+// import (
+//
+//	"github.com/lychee-technology/forma"
+//	"github.com/lychee-technology/forma/factory"
+//
+// )
+//
+// config := forma.DefaultConfig(registry)
+// em, err := factory.NewEntityManagerWithConfig(config, pool)
+//
+//	if err != nil {
+//	   // handle error
+//	}
+//
+// With custom SchemaRegistry:
+//
+// config := forma.DefaultConfig(registry)
+// config.SchemaRegistry = myCustomRegistry
+// em, err := factory.NewEntityManagerWithConfig(config, pool)
+func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
+	return NewEntityManagerWithConfigContext(context.Background(), config, pool)
 }
 
 func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {

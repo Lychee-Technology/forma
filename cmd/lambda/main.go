@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -131,7 +132,8 @@ func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.AP
 func main() {
 	logger, err := zap.NewProduction()
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)

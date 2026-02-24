@@ -9,8 +9,21 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
+
+// classifyPgError converts well-known PostgreSQL error codes to sentinel errors.
+// Currently handles:
+//   - 23505 unique_violation → forma.ErrConflict
+func classifyPgError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%s: %w", pgErr.Detail, forma.ErrConflict)
+	}
+	return err
+}
 
 func sortedColumnKeys[T any](source map[string]T, allowed map[string]struct{}) ([]string, error) {
 	if len(source) == 0 {
@@ -153,7 +166,7 @@ func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx
 	}
 	zap.S().Debugw("insert main row", "query", query, "args", args)
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
-		return fmt.Errorf("insert entity_main: %w", err)
+		return fmt.Errorf("insert entity_main: %w", classifyPgError(err))
 	}
 	return nil
 }

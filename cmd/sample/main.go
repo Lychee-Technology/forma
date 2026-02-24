@@ -34,7 +34,8 @@ func main() {
 	}
 	logger, err := cfg.Build()
 	if err != nil {
-		panic(fmt.Errorf("failed to build logger: %w", err))
+		fmt.Fprintf(os.Stderr, "failed to build logger: %v\n", err)
+		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)

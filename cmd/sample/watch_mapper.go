@@ -39,7 +39,7 @@ func (m *toPriceMapper) Map(csvValue string) (any, error) {
 
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid price format: %v", err)
+		return nil, fmt.Errorf("invalid price format: %w", err)
 	}
 	return f, nil
 }

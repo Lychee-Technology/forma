@@ -40,7 +40,7 @@ func newEntityBatchService(em *entityManager) *entityBatchService {
 
 func validateBatchOperation(req *forma.BatchOperation) error {
 	if req == nil {
-		return fmt.Errorf("batch operation cannot be nil")
+		return fmt.Errorf("batch operation cannot be nil: %w", forma.ErrInvalidInput)
 	}
 	return nil
 }
@@ -177,10 +177,10 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 
 	for i, op := range req.Operations {
 		if op.SchemaName == "" {
-			return nil, fmt.Errorf("operation[%d]: schema name is required", i)
+			return nil, fmt.Errorf("operation[%d]: schema name is required: %w", i, forma.ErrInvalidInput)
 		}
 		if op.Data == nil {
-			return nil, fmt.Errorf("operation[%d]: data is required for create operation", i)
+			return nil, fmt.Errorf("operation[%d]: data is required for create operation: %w", i, forma.ErrInvalidInput)
 		}
 
 		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
@@ -237,13 +237,13 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 	for i, op := range req.Operations {
 		if op.SchemaName == "" {
-			return nil, fmt.Errorf("operation[%d]: schema name is required", i)
+			return nil, fmt.Errorf("operation[%d]: schema name is required: %w", i, forma.ErrInvalidInput)
 		}
 		if op.RowID == (uuid.UUID{}) {
-			return nil, fmt.Errorf("operation[%d]: row id is required for update operation", i)
+			return nil, fmt.Errorf("operation[%d]: row id is required for update operation: %w", i, forma.ErrInvalidInput)
 		}
 		if op.Updates == nil {
-			return nil, fmt.Errorf("operation[%d]: updates are required for update operation", i)
+			return nil, fmt.Errorf("operation[%d]: updates are required for update operation: %w", i, forma.ErrInvalidInput)
 		}
 
 		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
@@ -256,7 +256,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			return nil, fmt.Errorf("operation[%d]: failed to load existing record: %w", i, err)
 		}
 		if existingRecord == nil {
-			return nil, fmt.Errorf("operation[%d]: entity not found: %s/%s", i, op.SchemaName, op.RowID)
+			return nil, fmt.Errorf("operation[%d]: entity not found: %s/%s: %w", i, op.SchemaName, op.RowID, forma.ErrNotFound)
 		}
 
 		existingData, err := s.transformer.FromPersistentRecord(ctx, existingRecord)
@@ -310,10 +310,10 @@ func (s *entityBatchService) batchDeleteAtomic(ctx context.Context, req *forma.B
 
 	for i, op := range req.Operations {
 		if op.SchemaName == "" {
-			return nil, fmt.Errorf("operation[%d]: schema name is required", i)
+			return nil, fmt.Errorf("operation[%d]: schema name is required: %w", i, forma.ErrInvalidInput)
 		}
 		if op.RowID == (uuid.UUID{}) {
-			return nil, fmt.Errorf("operation[%d]: row id is required for delete operation", i)
+			return nil, fmt.Errorf("operation[%d]: row id is required for delete operation: %w", i, forma.ErrInvalidInput)
 		}
 
 		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)

@@ -117,7 +117,7 @@ func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, pgConnStr string
 		return err
 	}
 
-	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", sql, "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
+	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", redactConnStr(sql), "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
 	timeout := e.Config.QueryTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute

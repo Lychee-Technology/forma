@@ -41,7 +41,7 @@ func (m *toIntMapper) Map(csvValue string) (any, error) {
 	}
 	i, err := strconv.Atoi(v)
 	if err != nil {
-		return nil, fmt.Errorf("invalid integer format: %v", err)
+		return nil, fmt.Errorf("invalid integer format: %w", err)
 	}
 	return i, nil
 }
@@ -61,7 +61,7 @@ func (m *toInt64Mapper) Map(csvValue string) (any, error) {
 	}
 	i, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid int64 format: %v", err)
+		return nil, fmt.Errorf("invalid int64 format: %w", err)
 	}
 	return i, nil
 }
@@ -81,7 +81,7 @@ func (m *toFloat64Mapper) Map(csvValue string) (any, error) {
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid float64 format: %v", err)
+		return nil, fmt.Errorf("invalid float64 format: %w", err)
 	}
 	return f, nil
 }
@@ -127,7 +127,7 @@ func (m *toDateMapper) Map(csvValue string) (any, error) {
 	}
 	t, err := time.Parse(m.layout, v)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date format (expected %s): %v", m.layout, err)
+		return nil, fmt.Errorf("invalid date format (expected %s): %w", m.layout, err)
 	}
 	// Return date string in ISO format for JSON compatibility
 	return t.Format("2006-01-02"), nil
@@ -154,7 +154,7 @@ func (m *toDateTimeMapper) Map(csvValue string) (any, error) {
 	}
 	t, err := time.Parse(m.layout, v)
 	if err != nil {
-		return nil, fmt.Errorf("invalid datetime format (expected %s): %v", m.layout, err)
+		return nil, fmt.Errorf("invalid datetime format (expected %s): %w", m.layout, err)
 	}
 	// Return datetime string in ISO8601 format for JSON compatibility
 	return t.Format(time.RFC3339), nil

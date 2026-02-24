@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
@@ -14,7 +16,8 @@ import (
 func main() {
 	logger, err := zap.NewProduction()
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)

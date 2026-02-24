@@ -38,18 +38,18 @@ func newEntityQueryService(em *entityManager) *entityQueryService {
 
 func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
 	if s.config == nil {
-		return nil, fmt.Errorf("entity manager config is required")
+		return nil, fmt.Errorf("entity manager config is required: %w", forma.ErrInvalidInput)
 	}
 	if s.registry == nil || s.repository == nil || s.toDataRecord == nil || s.enrichDataRecords == nil {
-		return nil, fmt.Errorf("entity query service is not initialized")
+		return nil, fmt.Errorf("entity query service is not initialized: %w", forma.ErrInvalidInput)
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("query request cannot be nil")
+		return nil, fmt.Errorf("query request cannot be nil: %w", forma.ErrInvalidInput)
 	}
 
 	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required")
+		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
 	}
 
 	if req.Page < 1 {
@@ -147,10 +147,10 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 
 func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {
 	if s.config == nil {
-		return nil, fmt.Errorf("entity manager config is required")
+		return nil, fmt.Errorf("entity manager config is required: %w", forma.ErrInvalidInput)
 	}
 	if s.registry == nil || s.repository == nil || s.toDataRecord == nil || s.enrichDataRecords == nil {
-		return nil, fmt.Errorf("entity query service is not initialized")
+		return nil, fmt.Errorf("entity query service is not initialized: %w", forma.ErrInvalidInput)
 	}
 
 	if err := s.validateCrossSchemaRequest(req); err != nil {
@@ -205,13 +205,13 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 // validateCrossSchemaRequest validates the cross schema search request parameters.
 func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRequest) error {
 	if req == nil {
-		return fmt.Errorf("cross schema request cannot be nil")
+		return fmt.Errorf("cross schema request cannot be nil: %w", forma.ErrInvalidInput)
 	}
 	if len(req.SchemaNames) == 0 {
-		return fmt.Errorf("schema names are required")
+		return fmt.Errorf("schema names are required: %w", forma.ErrInvalidInput)
 	}
 	if req.SearchTerm == "" {
-		return fmt.Errorf("search term is required")
+		return fmt.Errorf("search term is required: %w", forma.ErrInvalidInput)
 	}
 	if req.Page < 1 {
 		req.Page = 1
