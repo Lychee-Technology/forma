@@ -10,12 +10,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+//go:fix inline
 func ptr[T any](t T) *T {
-	return &t
+	return new(t)
 }
 
 func TestInsertPersistentRecordIntegration(t *testing.T) {
@@ -25,7 +27,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
 	fixed := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -49,8 +51,8 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 			"double_01": 3.14,
 		},
 		OtherAttributes: []EAVRecord{
-			{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: ptr("foo")},
-			{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: ptr(99.0)},
+			{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: new("foo")},
+			{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: new(99.0)},
 		},
 	}
 
@@ -95,7 +97,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
 	rowID := uuid.New()
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -142,7 +144,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil)
+	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
 	fixed := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 

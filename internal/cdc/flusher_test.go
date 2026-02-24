@@ -123,7 +123,7 @@ func TestSetupPostgresConnection_UsesIAMToken(t *testing.T) {
 	defer func() { generateIAMTokenFn = orig }()
 
 	const token = "iam-token"
-	generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds interface{}) (string, error) {
+	generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds any) (string, error) {
 		return token, nil
 	}
 
@@ -147,7 +147,7 @@ func TestSetupPostgresConnection_FallsBackToPGPassword(t *testing.T) {
 	orig := generateIAMTokenFn
 	defer func() { generateIAMTokenFn = orig }()
 
-	generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds interface{}) (string, error) {
+	generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds any) (string, error) {
 		return "", errors.New("token unavailable")
 	}
 

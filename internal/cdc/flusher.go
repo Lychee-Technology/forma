@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
@@ -23,7 +23,7 @@ import (
 
 // generateIAMTokenFn is the function signature we use to generate IAM tokens.
 // We wrap the upstream function to keep a stable signature for tests.
-var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds interface{}) (string, error) {
+var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds any) (string, error) {
 	var cp aws.CredentialsProvider
 	if c, ok := creds.(aws.CredentialsProvider); ok {
 		cp = c
@@ -85,8 +85,17 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer db.Close()
 
-	// Setup DuckDB exporter
-	duck, err := NewDuckExporter(ctx, cfg, os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), logger)
+	// Setup DuckDB exporter — credentials come from config fields; if not set,
+	// NewDuckExporter will use empty strings and DuckDB inherits the environment.
+	s3Key := cfg.S3AccessKeyID
+	s3Secret := cfg.S3SecretAccessKey
+	if s3Key == "" {
+		s3Key = os.Getenv("AWS_ACCESS_KEY_ID")
+	}
+	if s3Secret == "" {
+		s3Secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	}
+	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, logger)
 	if err != nil {
 		return fmt.Errorf("new duck exporter: %w", err)
 	}
@@ -142,8 +151,11 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	if cfg.S3Region != "" {
 		awsCfg.Region = cfg.S3Region
 	}
-	if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
+	if cfg.S3AccessKeyID != "" {
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, "")
+	} else if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
+		// Fall back to environment variables when not set in config.
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(envKey, os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
 	}
 
 	// Build S3 client options
@@ -205,7 +217,7 @@ func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, 
 	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
 
-	db, err := sql.Open("postgres", pgConnStr)
+	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
 		return nil, "", fmt.Errorf("open pg: %w", err)
 	}
@@ -381,7 +393,9 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 	}
 	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.pgPassword, c.cfg.PGDB, sslMode)
-	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuck)
+	pgConnForDuckLoggable := fmt.Sprintf("host=%s port=%d user=%s password=***REDACTED*** dbname=%s sslmode=%s",
+		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.cfg.PGDB, sslMode)
+	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuckLoggable)
 
 	var attrCache forma.SchemaAttributeCache
 	if c.schemaRegistry != nil {
@@ -429,10 +443,7 @@ func executeFlushInChunks(
 	maxRows int,
 ) error {
 	for start := 0; start < len(batchIDs); start += maxRows {
-		end := start + maxRows
-		if end > len(batchIDs) {
-			end = len(batchIDs)
-		}
+		end := min(start+maxRows, len(batchIDs))
 		sub := batchIDs[start:end]
 
 		chunkTmpKey, chunkFinalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)

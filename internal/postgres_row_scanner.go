@@ -197,7 +197,7 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 		return nil
 	}
 
-	var attributes []map[string]interface{}
+	var attributes []map[string]any
 	if err := json.Unmarshal(attrsJSON, &attributes); err != nil {
 		return fmt.Errorf("unmarshal attributes json: %w", err)
 	}
@@ -212,7 +212,7 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 }
 
 // parseEAVAttribute converts a JSON object to an EAVRecord
-func parseEAVAttribute(attrObj map[string]interface{}) EAVRecord {
+func parseEAVAttribute(attrObj map[string]any) EAVRecord {
 	attr := EAVRecord{
 		SchemaID: int16(attrObj["schema_id"].(float64)),
 		AttrID:   int16(attrObj["attr_id"].(float64)),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -249,9 +250,7 @@ func hasSuffix(name, suffix string) bool {
 // copyFileSchemaAttributeCache creates a deep copy of a SchemaAttributeCache
 func copyFileSchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
 	result := make(forma.SchemaAttributeCache, len(cache))
-	for key, value := range cache {
-		result[key] = value
-	}
+	maps.Copy(result, cache)
 	return result
 }
 

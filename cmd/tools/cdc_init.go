@@ -369,11 +369,11 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 // getSchemaIDsToInit returns the list of schema IDs to initialize.
 func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable string, schemaIDFilter int) ([]int64, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if schemaIDFilter > 0 {
 		query = fmt.Sprintf("SELECT schema_id FROM %s WHERE schema_id = $1", sanitizeIdentifier(schemaRegistryTable))
-		args = []interface{}{schemaIDFilter}
+		args = []any{schemaIDFilter}
 	} else {
 		query = fmt.Sprintf("SELECT schema_id FROM %s ORDER BY schema_id", sanitizeIdentifier(schemaRegistryTable))
 	}
@@ -690,12 +690,9 @@ func calculateBatchSize(targetFileSizeMB int, estimatedRowBytes int, maxBatchSiz
 	}
 
 	targetBytes := int64(targetFileSizeMB) * 1024 * 1024
-	batchSize := int(targetBytes / int64(estimatedRowBytes))
-
-	// Cap at maxBatchSize to avoid memory issues
-	if batchSize > maxBatchSize {
-		batchSize = maxBatchSize
-	}
+	batchSize := min(
+		// Cap at maxBatchSize to avoid memory issues
+		int(targetBytes/int64(estimatedRowBytes)), maxBatchSize)
 	// Minimum batch size
 	if batchSize < 1000 {
 		batchSize = 1000

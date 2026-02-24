@@ -55,22 +55,38 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 	}
 	// set S3 pragmas if provided
 	if s3AccessKey != "" {
+		if err := validateS3Credential("s3_access_key_id", s3AccessKey); err != nil {
+			db.Close()
+			return nil, err
+		}
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_access_key_id='%s';", s3AccessKey)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_access_key_id failed", "err", err)
 		}
 	}
 	if s3Secret != "" {
+		if err := validateS3Credential("s3_secret_access_key", s3Secret); err != nil {
+			db.Close()
+			return nil, err
+		}
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_secret_access_key='%s';", s3Secret)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_secret_access_key failed", "err", err)
 		}
 	}
 	if cfg.S3Region != "" {
+		if err := validateS3Credential("s3_region", cfg.S3Region); err != nil {
+			db.Close()
+			return nil, err
+		}
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_region failed", "err", err)
 		}
 	}
 	if cfg.S3Endpoint != "" {
 		ep := strings.TrimPrefix(strings.TrimPrefix(cfg.S3Endpoint, "https://"), "http://")
+		if err := validateS3Credential("s3_endpoint", ep); err != nil {
+			db.Close()
+			return nil, err
+		}
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_endpoint='%s';", ep)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_endpoint failed", "err", err)
 		}

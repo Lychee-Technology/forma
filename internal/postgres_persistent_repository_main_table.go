@@ -101,7 +101,7 @@ func buildUpdateMainStatement(table string, record *PersistentRecord) (string, [
 	assignments = append(assignments, fmt.Sprintf("ltbase_updated_at = $%d", len(args)+1))
 	args = append(args, record.UpdatedAt)
 
-	var deleted interface{}
+	var deleted any
 	if record.DeletedAt != nil {
 		deleted = *record.DeletedAt
 	}

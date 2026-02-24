@@ -266,10 +266,7 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 
 	// Emit telemetry
 	EmitLatency(ctx, "execution", qMs)
-	streamMs := time.Since(planCtx.startQuery).Milliseconds() - qMs
-	if streamMs < 0 {
-		streamMs = 0
-	}
+	streamMs := max(time.Since(planCtx.startQuery).Milliseconds()-qMs, 0)
 	EmitLatency(ctx, "streaming", streamMs)
 	EmitRowCount(ctx, "duckdb", rowCount)
 

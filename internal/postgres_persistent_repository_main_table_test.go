@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,7 +58,7 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -96,7 +97,7 @@ func TestLoadMainRecordNotFound(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil)
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	assert.Nil(t, record)

@@ -313,10 +313,7 @@ func (s *entityQueryService) fetchCrossSchemaResults(
 		schemaOffset := skip
 		skip = 0
 		avail := count - schemaOffset
-		schemaLimit := remaining
-		if avail < schemaLimit {
-			schemaLimit = avail
-		}
+		schemaLimit := min(avail, remaining)
 		if schemaLimit <= 0 {
 			continue
 		}

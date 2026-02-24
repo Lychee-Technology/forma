@@ -41,20 +41,20 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 
 	// Strategy-based heuristics
 	switch cfg.Routing.Strategy {
-	case "freshness-first":
+	case forma.RoutingStrategyFreshnessFirst:
 		// prefer hot only if PreferHot or recent TTL required
 		if fq != nil && fq.PreferHot {
 			dec.UseDuckDB = false
 			dec.Tiers = []DataTier{DataTierHot}
 			dec.Reason = "prefer hot"
 		}
-	case "cost-first":
+	case forma.RoutingStrategyCostFirst:
 		// prefer DuckDB for large scans
 		if opts != nil && opts.MaxRows > 0 && opts.MaxRows > cfg.Routing.MaxDuckDBScanRows {
 			dec.UseDuckDB = true
 			dec.Reason = "cost-first large scan"
 		}
-	case "hybrid":
+	case forma.RoutingStrategyHybrid:
 		// hybrid: use duckdb unless PreferHot or small MaxRows
 		if fq != nil && fq.PreferHot {
 			dec.UseDuckDB = false

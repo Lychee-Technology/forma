@@ -100,10 +100,7 @@ func (c *Compactor) compactSchemaWithRetry(ctx context.Context, schemaID int16, 
 // computeBackoff returns exponential backoff with jitter.
 func computeBackoff(attempt int, base, max time.Duration) time.Duration {
 	// 2^attempt * base, capped at max
-	backoff := base * (1 << attempt)
-	if backoff > max {
-		backoff = max
-	}
+	backoff := min(base*(1<<attempt), max)
 	// Add jitter: 0.5 to 1.5 of computed backoff
 	jitter := 0.5 + rand.Float64()
 	return time.Duration(float64(backoff) * jitter)

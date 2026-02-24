@@ -8,6 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// defaultPageSize is the fallback page size used when the caller supplies a
+// non-positive limit.  Centralising the value here avoids scattered magic
+// numbers and makes it easy to change in one place.
+const defaultPageSize = 50
+
 func tryParseNumber(s string) any {
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i

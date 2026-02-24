@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"testing"
 	"time"
 
@@ -39,9 +40,7 @@ func newStubSchemaRegistry() forma.SchemaRegistry {
 
 func copyAttributeCache(src forma.SchemaAttributeCache) forma.SchemaAttributeCache {
 	dst := make(forma.SchemaAttributeCache, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
+	maps.Copy(dst, src)
 	return dst
 }
 

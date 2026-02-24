@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	require.NoError(t, err)
 
 	transformer := NewPersistentRecordTransformer(registry)
-	repo := NewDBPersistentRecordRepository(pool, metadataCache, nil)
+	repo := NewDBPersistentRecordRepository(pool, metadataCache, nil, forma.DuckDBConfig{})
 	manager := NewEntityManager(transformer, repo, registry, config)
 
 	return &integrationEnv{
@@ -123,9 +124,7 @@ func activityPayload(activityType string, extra map[string]any) map[string]any {
 		"nextFollowUpAt": time.Now().Add(24 * time.Hour),
 	}
 
-	for k, v := range extra {
-		payload[k] = v
-	}
+	maps.Copy(payload, extra)
 
 	return payload
 }

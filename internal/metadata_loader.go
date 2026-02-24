@@ -202,7 +202,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
 		}
 
-		var rawAttributes map[string]map[string]interface{}
+		var rawAttributes map[string]map[string]any
 		if err := json.Unmarshal(data, &rawAttributes); err != nil {
 			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
 		}

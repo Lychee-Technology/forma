@@ -40,6 +40,20 @@ func ValidateDuckDBConfig(cfg forma.DuckDBConfig) error {
 	return nil
 }
 
+// validateS3Credential checks that an S3 credential value is safe to embed in a DuckDB SET
+// statement. DuckDB's PRAGMA/SET does not support parameterized queries, so we validate
+// the value against an allowlist of characters instead.
+// Rejected characters: single-quote ('), double-quote ("), semicolon (;), and backslash (\).
+func validateS3Credential(name, value string) error {
+	const forbidden = `'";\ `
+	for _, ch := range forbidden {
+		if strings.ContainsRune(value, ch) {
+			return fmt.Errorf("S3 credential %q contains forbidden character %q; DuckDB SET does not support parameterized queries", name, string(ch))
+		}
+	}
+	return nil
+}
+
 // NewDuckDBClient creates and configures a DuckDB client according to the provided config.
 // It attempts to load common extensions (httpfs/parquet) and configure S3 access via PRAGMA when requested.
 func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
@@ -71,20 +85,39 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 		return nil, fmt.Errorf("ping duckdb: %w", err)
 	}
 
-	// Load and configure extensions
-	if len(cfg.Extensions) > 0 {
-		for _, ext := range cfg.Extensions {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("INSTALL %s;", ext)); err != nil {
-				zap.S().Warnw("duckdb: install extension failed", "extension", ext, "err", err)
-				continue
-			}
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("LOAD %s;", ext)); err != nil {
-				zap.S().Warnw("duckdb: load extension failed", "extension", ext, "err", err)
-			}
+	if err := configureExtensions(ctx, db, cfg); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	if err := configureS3(ctx, db, cfg); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	if err := applyResourcePragmas(ctx, db, cfg); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &DuckDBClient{DB: db, cfg: cfg}, nil
+}
+
+// configureExtensions installs and loads user-specified extensions, plus httpfs (when S3
+// is enabled) and parquet (when parquet is enabled).
+func configureExtensions(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
+	// User-supplied extensions
+	for _, ext := range cfg.Extensions {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSTALL %s;", ext)); err != nil {
+			zap.S().Warnw("duckdb: install extension failed", "extension", ext, "err", err)
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("LOAD %s;", ext)); err != nil {
+			zap.S().Warnw("duckdb: load extension failed", "extension", ext, "err", err)
 		}
 	}
 
-	// Common extensions
+	// httpfs — required for S3 access
 	if cfg.EnableS3 {
 		if _, err := db.ExecContext(ctx, "INSTALL httpfs;"); err == nil {
 			if _, err := db.ExecContext(ctx, "LOAD httpfs;"); err != nil {
@@ -93,37 +126,9 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 		} else {
 			zap.S().Warnw("duckdb: install httpfs failed", "err", err)
 		}
-
-		// Set S3 PRAGMA values if provided
-		if cfg.S3AccessKey != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey)); err != nil {
-				zap.S().Warnw("duckdb: set s3_access_key_id failed", "err", err)
-			}
-		}
-		if cfg.S3SecretKey != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey)); err != nil {
-				zap.S().Warnw("duckdb: set s3_secret_access_key failed", "err", err)
-			}
-		}
-		if cfg.S3Region != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
-				zap.S().Warnw("duckdb: set s3_region failed", "err", err)
-			}
-		}
-		if cfg.S3Endpoint != "" {
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_endpoint='%s';", strings.TrimPrefix(cfg.S3Endpoint, "http://"))); err != nil {
-				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
-			}
-			if _, err := db.ExecContext(ctx, "SET s3_use_ssl=false;"); err != nil {
-				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
-			}
-			if _, err := db.ExecContext(ctx, "SET s3_url_style='path';"); err != nil {
-				zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
-			}
-		}
 	}
 
-	// Parquet extension
+	// parquet extension
 	if cfg.EnableParquet {
 		if _, err := db.ExecContext(ctx, "INSTALL parquet;"); err == nil {
 			if _, err := db.ExecContext(ctx, "LOAD parquet;"); err != nil {
@@ -134,7 +139,62 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 		}
 	}
 
-	// Apply resource pragmas if configured
+	return nil
+}
+
+// configureS3 sets DuckDB S3 PRAGMA values when S3 is enabled in the config.
+// Returns an error (and expects the caller to close the DB) if a credential fails
+// the character-denylist validation.
+func configureS3(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
+	if !cfg.EnableS3 {
+		return nil
+	}
+
+	if cfg.S3AccessKey != "" {
+		if err := validateS3Credential("s3_access_key_id", cfg.S3AccessKey); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey)); err != nil {
+			zap.S().Warnw("duckdb: set s3_access_key_id failed", "err", err)
+		}
+	}
+	if cfg.S3SecretKey != "" {
+		if err := validateS3Credential("s3_secret_access_key", cfg.S3SecretKey); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey)); err != nil {
+			zap.S().Warnw("duckdb: set s3_secret_access_key failed", "err", err)
+		}
+	}
+	if cfg.S3Region != "" {
+		if err := validateS3Credential("s3_region", cfg.S3Region); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
+			zap.S().Warnw("duckdb: set s3_region failed", "err", err)
+		}
+	}
+	if cfg.S3Endpoint != "" {
+		endpoint := strings.TrimPrefix(cfg.S3Endpoint, "http://")
+		if err := validateS3Credential("s3_endpoint", endpoint); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_endpoint='%s';", endpoint)); err != nil {
+			zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
+		}
+		if _, err := db.ExecContext(ctx, "SET s3_use_ssl=false;"); err != nil {
+			zap.S().Warnw("duckdb: set s3_use_ssl failed", "err", err)
+		}
+		if _, err := db.ExecContext(ctx, "SET s3_url_style='path';"); err != nil {
+			zap.S().Warnw("duckdb: set s3_url_style failed", "err", err)
+		}
+	}
+
+	return nil
+}
+
+// applyResourcePragmas sets memory_limit and thread-count pragmas when the config requests them.
+func applyResourcePragmas(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
 	if cfg.MemoryLimitMB > 0 {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB)); err != nil {
 			zap.S().Warnw("duckdb: set memory_limit failed", "err", err, "memoryLimitMB", cfg.MemoryLimitMB)
@@ -145,12 +205,7 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 			zap.S().Warnw("duckdb: set threads failed", "err", err, "maxParallelism", cfg.MaxParallelism)
 		}
 	}
-
-	client := &DuckDBClient{
-		DB:  db,
-		cfg: cfg,
-	}
-	return client, nil
+	return nil
 }
 
 // Close closes the underlying DuckDB DB.

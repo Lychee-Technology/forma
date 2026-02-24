@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -152,7 +153,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	attrs := parseAttrs(r.URL.Query())
+	s.executeGet(w, r, schemaName, rowID, attrs)
+}
 
+// executeGet performs the actual Get manager call and writes the response.
+// Extracted so that handleQuery can invoke the same logic without re-entering
+// handleGet through the http.Handler interface (re-entry pattern).
+func (s *Server) executeGet(w http.ResponseWriter, r *http.Request, schemaName string, rowID uuid.UUID, attrs []string) {
 	queryReq := &forma.QueryRequest{
 		SchemaName: schemaName,
 		RowID:      &rowID,
@@ -169,7 +176,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		_ = writeError(w, status, fmt.Sprintf("%s: %v", msg, err))
 		return
 	}
-	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowIDStr, "attrs", attrs)
+	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowID.String(), "attrs", attrs)
 
 	_ = writeSuccess(w, http.StatusOK, record)
 }
@@ -190,7 +197,13 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rowIDStr != "" {
-		s.handleGet(w, r)
+		rowID, err := parseUUID(rowIDStr)
+		if err != nil {
+			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+			return
+		}
+		zap.S().Infow("get request received", "schema", schemaName, "rowID", rowIDStr)
+		s.executeGet(w, r, schemaName, rowID, parseAttrs(r.URL.Query()))
 		return
 	}
 
@@ -542,7 +555,7 @@ func parseSortParams(queryParams url.Values) ([]string, forma.SortOrder, error) 
 
 	var sortFields []string
 	for _, raw := range rawSortBy {
-		for _, part := range strings.Split(raw, ",") {
+		for part := range strings.SplitSeq(raw, ",") {
 			field := strings.TrimSpace(part)
 			if field != "" {
 				sortFields = append(sortFields, field)
@@ -668,7 +681,7 @@ func parseAttrs(queryParams url.Values) []string {
 	}
 
 	var attrs []string
-	for _, attr := range strings.Split(attrsParam, ",") {
+	for attr := range strings.SplitSeq(attrsParam, ",") {
 		attr = strings.TrimSpace(attr)
 		if attr != "" {
 			attrs = append(attrs, attr)
@@ -678,11 +691,26 @@ func parseAttrs(queryParams url.Values) []string {
 	return attrs
 }
 
+// classifyManagerError maps a manager-layer error to an HTTP status code.
+// It first checks for sentinel errors (preferred), then falls back to
+// heuristic string matching for errors that do not wrap the sentinels.
 func classifyManagerError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
 	}
 
+	// Sentinel error checks — use errors.Is so wrapped errors are handled.
+	if errors.Is(err, forma.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, forma.ErrConflict) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, forma.ErrInvalidInput) {
+		return http.StatusBadRequest
+	}
+
+	// Heuristic fallback for errors that do not wrap a sentinel.
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "not found") {
 		return http.StatusNotFound

@@ -140,6 +140,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 		pool,
 		metadataCache,
 		duckClient,
+		config.DuckDB,
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, registry, config), nil

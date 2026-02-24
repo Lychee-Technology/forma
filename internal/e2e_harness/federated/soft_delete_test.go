@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 // Package federated provides E2E tests for soft delete filtering.
 // TC-04: Soft Delete Tests - Validates deleted_at filtering logic.

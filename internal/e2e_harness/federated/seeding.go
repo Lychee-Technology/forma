@@ -174,7 +174,7 @@ func (h *FederatedTestHarness) insertChangeLog(ctx context.Context, r TestRecord
 func (h *FederatedTestHarness) InsertOverlappingRecords(ctx context.Context, rowID uuid.UUID, versions int) error {
 	baseTime := time.Now()
 
-	for i := 0; i < versions; i++ {
+	for i := range versions {
 		record := TestRecord{
 			RowID:    rowID,
 			SchemaID: h.SchemaID,

@@ -9,6 +9,10 @@ import (
 // ErrNotImplemented is returned until the optimizer pipeline is fully implemented.
 var ErrNotImplemented = errors.New("query optimizer plan generation not implemented")
 
+// defaultPageSize is the fallback page size applied when the caller supplies a
+// non-positive limit.
+const defaultPageSize = 50
+
 // AttributeFallbackKind describes lossy storage behaviors that require rewrites.
 type AttributeFallbackKind string
 

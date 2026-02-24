@@ -159,3 +159,17 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 func sanitizeIdentifier(name string) string {
 	return formainternal.SanitizeIdentifier(name)
 }
+
+// validateS3Credential checks that an S3 credential value is safe to embed in a DuckDB SET
+// statement. DuckDB's PRAGMA/SET does not support parameterized queries, so we validate
+// the value against a denylist of characters instead.
+// Rejected characters: single-quote ('), double-quote ("), semicolon (;), backslash (\), and space.
+func validateS3Credential(name, value string) error {
+	const forbidden = `'";\ `
+	for _, ch := range forbidden {
+		if strings.ContainsRune(value, ch) {
+			return fmt.Errorf("S3 credential %q contains forbidden character %q; DuckDB SET does not support parameterized queries", name, string(ch))
+		}
+	}
+	return nil
+}

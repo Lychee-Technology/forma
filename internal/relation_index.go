@@ -223,7 +223,7 @@ func pointerToAttrName(ptr string) string {
 	ptr = strings.TrimPrefix(ptr, "#/")
 	parts := strings.Split(ptr, "/")
 	filtered := make([]string, 0, len(parts))
-	for i := 0; i < len(parts); i++ {
+	for i := range parts {
 		p := parts[i]
 		if p == "properties" || p == "$defs" {
 			continue

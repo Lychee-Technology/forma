@@ -44,10 +44,7 @@ func NormalizeQuery(req *forma.QueryRequest, schemaID int16, schemaName string, 
 		limit = opts.MaxLimit
 	}
 
-	page := req.Page
-	if page < 1 {
-		page = 1
-	}
+	page := max(req.Page, 1)
 	offset := (page - 1) * limit
 
 	filter, err := normalizeConditionTree(req.Condition, attrs)

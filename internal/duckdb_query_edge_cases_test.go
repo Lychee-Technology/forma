@@ -107,7 +107,7 @@ func TestGenerateDuckDBWhereClause_TriplyNestedComposite(t *testing.T) {
 func TestGenerateDuckDBWhereClause_ManyTopLevelConditions(t *testing.T) {
 	// Test with many (20+) top-level AND conditions
 	conditions := make([]forma.Condition, 0, 25)
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		conditions = append(conditions, &forma.KvCondition{
 			Attr:  "field" + string(rune(i)),
 			Value: "value" + string(rune(i)),
@@ -262,7 +262,7 @@ func TestGenerateDuckDBWhereClause_NewlinesAndWhitespace(t *testing.T) {
 func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet100(t *testing.T) {
 	// Test with 100 dirty IDs
 	dirtyIDs := make([]uuid.UUID, 0, 100)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		dirtyIDs = append(dirtyIDs, uuid.New())
 	}
 
@@ -287,7 +287,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet100(t *testing.T
 func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet1000(t *testing.T) {
 	// Test with 1000 dirty IDs
 	dirtyIDs := make([]uuid.UUID, 0, 1000)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		dirtyIDs = append(dirtyIDs, uuid.New())
 	}
 
@@ -313,7 +313,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_MaxInt16DirtyIDs(t *testing.T) 
 	// Test with max practical number of dirty IDs
 	// In real scenarios, this could be 5000+ but we test with 500 for practical limits
 	dirtyIDs := make([]uuid.UUID, 0, 500)
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		dirtyIDs = append(dirtyIDs, uuid.New())
 	}
 
@@ -339,7 +339,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_DuplicateDirtyIDs(t *testing.T)
 	baseID := uuid.New()
 	dirtyIDs := make([]uuid.UUID, 0, 10)
 	// Add the same ID 5 times
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		dirtyIDs = append(dirtyIDs, baseID)
 	}
 	// Add different IDs
@@ -370,7 +370,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_DuplicateDirtyIDs(t *testing.T)
 func TestGenerateDuckDBWhereClause_ComplexNestedWithUnicodeAndLargeDirtySet(t *testing.T) {
 	// Combine: deeply nested conditions + Unicode + large dirty ID set
 	dirtyIDs := make([]uuid.UUID, 0, 100)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		dirtyIDs = append(dirtyIDs, uuid.New())
 	}
 

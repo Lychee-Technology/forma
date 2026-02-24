@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -150,9 +151,7 @@ func (s *SchemaInliner) inlineObject(obj map[string]any, currentFile string) (ma
 		// Merge any additional properties from the original object (except $ref)
 		// This handles cases like { "$ref": "...", "description": "override" }
 		result := make(map[string]any)
-		for k, v := range resolved {
-			result[k] = v
-		}
+		maps.Copy(result, resolved)
 		for k, v := range obj {
 			if k != "$ref" && !strings.HasPrefix(k, "x-") {
 				result[k] = v
@@ -263,9 +262,9 @@ func (s *SchemaInliner) resolveRef(ref string, currentFile string) (map[string]a
 //   - "./common.json" -> "./common.json", ""
 //   - "./common.json#/$defs/address" -> "./common.json", "/$defs/address"
 func parseRef(ref string) (filePath string, jsonPointer string) {
-	if idx := strings.Index(ref, "#"); idx != -1 {
-		filePath = ref[:idx]
-		jsonPointer = ref[idx+1:]
+	if before, after, ok := strings.Cut(ref, "#"); ok {
+		filePath = before
+		jsonPointer = after
 	} else {
 		filePath = ref
 	}

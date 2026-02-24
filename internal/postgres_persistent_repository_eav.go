@@ -21,7 +21,7 @@ func buildAttributeValuesClause(attributes []EAVRecord) (string, []any, error) {
 	for idx, attr := range attributes {
 		placeholderBase := idx*attributesCount + 1
 		placeholders := make([]string, attributesCount)
-		for i := 0; i < attributesCount; i++ {
+		for i := range attributesCount {
 			placeholders[i] = fmt.Sprintf("$%d", placeholderBase+i)
 		}
 		values = append(values, fmt.Sprintf("(%s)", strings.Join(placeholders, ", ")))
@@ -44,10 +44,7 @@ func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, 
 
 	const batchSize = 500
 	for i := 0; i < len(attributes); i += batchSize {
-		end := i + batchSize
-		if end > len(attributes) {
-			end = len(attributes)
-		}
+		end := min(i+batchSize, len(attributes))
 
 		valuesClause, args, err := buildAttributeValuesClause(attributes[i:end])
 		if err != nil {

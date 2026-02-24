@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -664,10 +665,7 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 	})
 
 	total := len(rowIDs)
-	start := query.Offset
-	if start > total {
-		start = total
-	}
+	start := min(query.Offset, total)
 	end := total
 	if query.Limit > 0 && start+query.Limit < end {
 		end = start + query.Limit
@@ -715,9 +713,7 @@ func cloneRecordStore(src map[int16]map[uuid.UUID]*PersistentRecord) map[int16]m
 	cloned := make(map[int16]map[uuid.UUID]*PersistentRecord, len(src))
 	for schemaID, schemaRecords := range src {
 		inner := make(map[uuid.UUID]*PersistentRecord, len(schemaRecords))
-		for rowID, record := range schemaRecords {
-			inner[rowID] = record
-		}
+		maps.Copy(inner, schemaRecords)
 		cloned[schemaID] = inner
 	}
 	return cloned

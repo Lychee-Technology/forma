@@ -207,7 +207,7 @@ func TestEvaluateRoutingPolicy_HybridDefault(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
 		Routing: forma.RoutingPolicy{
-			Strategy:          "hybrid",
+			Strategy:          forma.RoutingStrategyHybrid,
 			MaxDuckDBScanRows: 5000,
 			AllowS3Fallback:   true,
 		},
@@ -221,7 +221,7 @@ func TestEvaluateRoutingPolicy_PreferHotOverride(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
 		Routing: forma.RoutingPolicy{
-			Strategy:          "hybrid",
+			Strategy:          forma.RoutingStrategyHybrid,
 			MaxDuckDBScanRows: 5000,
 		},
 	}
@@ -244,7 +244,7 @@ func TestEvaluateRoutingPolicy_CostFirstStrategy(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
 		Routing: forma.RoutingPolicy{
-			Strategy:          "cost-first",
+			Strategy:          forma.RoutingStrategyCostFirst,
 			MaxDuckDBScanRows: 1000,
 		},
 	}

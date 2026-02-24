@@ -36,6 +36,15 @@ func RegisterTelemetryEmitter(fn telemetryEmitter) {
 
 // EmitLatency records a latency measure (milliseconds) for a named stage.
 // name: "fed_query_latency_histogram" with label {"stage": "<translation|execution|streaming>"}
+//
+// TOCTOU note: the emitter function is copied under teleMu and then called
+// outside the lock. This means a concurrent RegisterTelemetryEmitter call can
+// swap the implementation between the read and the invocation, so the emitter
+// that is actually called may differ from the one registered at the time of the
+// call. This is intentional: holding the lock across the emitter call would
+// risk deadlock if the emitter itself performs any operation that tries to
+// register a new emitter. Callers must not depend on strict ordering guarantees
+// between RegisterTelemetryEmitter and subsequent Emit* calls.
 func EmitLatency(ctx context.Context, stage string, ms int64) {
 	teleMu.Lock()
 	fn := teleImpl

@@ -34,7 +34,7 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		return 0, fmt.Errorf("schema id must be positive")
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
 	if offset < 0 {
 		offset = 0
@@ -121,7 +121,7 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 		return nil, 0, fmt.Errorf("schema id must be positive")
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
 	if offset < 0 {
 		offset = 0

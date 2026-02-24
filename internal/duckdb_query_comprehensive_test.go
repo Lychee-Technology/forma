@@ -238,7 +238,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 
 	// Create 10 dirty IDs
 	dirtyIDs := make([]uuid.UUID, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		dirtyIDs[i] = uuid.New()
 	}
 
@@ -249,7 +249,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 	require.Len(t, args, 11)
 
 	// Verify dirty ID order
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		require.Equal(t, dirtyIDs[i].String(), args[i+1])
 	}
 }

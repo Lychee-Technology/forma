@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/lychee-technology/forma"
 )
@@ -101,12 +102,7 @@ func resolvePropertyRef(prop map[string]any, defs map[string]any) map[string]any
 
 // isFieldRequired checks if a field is in the required list
 func isFieldRequired(name string, requiredFields []string) bool {
-	for _, r := range requiredFields {
-		if r == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(requiredFields, name)
 }
 
 // parseBasicPropertyFields extracts type, format, and pattern

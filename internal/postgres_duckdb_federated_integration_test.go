@@ -17,7 +17,7 @@ func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
 		Routing: forma.RoutingPolicy{
-			Strategy:          "hybrid",
+			Strategy:          forma.RoutingStrategyHybrid,
 			MaxDuckDBScanRows: 5000,
 			AllowS3Fallback:   true,
 		},
@@ -33,7 +33,7 @@ func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
 	require.False(t, dec.UseDuckDB, "PreferHot should disable duckdb")
 
 	// cost-first with large MaxRows should prefer duckdb
-	cfg.Routing.Strategy = "cost-first"
+	cfg.Routing.Strategy = forma.RoutingStrategyCostFirst
 	dec = EvaluateRoutingPolicy(cfg, nil, &FederatedQueryOptions{MaxRows: 100000})
 	require.True(t, dec.UseDuckDB, "cost-first large scan should enable duckdb")
 
@@ -47,7 +47,7 @@ func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 	env := setupIntegrationEnv(t)
 
 	// Ensure no global DuckDB client is set
-	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata, nil)
+	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata, nil, forma.DuckDBConfig{})
 
 	// Build a minimal federated query
 	q := &FederatedAttributeQuery{
@@ -75,7 +75,7 @@ func TestNewDuckDBClient_HealthCheck(t *testing.T) {
 		QueryTimeout:   5 * time.Second,
 		MaxParallelism: 1,
 		Routing: forma.RoutingPolicy{
-			Strategy:          "hybrid",
+			Strategy:          forma.RoutingStrategyHybrid,
 			MaxDuckDBScanRows: 1000,
 			AllowS3Fallback:   true,
 		},
@@ -173,16 +173,16 @@ func TestStreamDuckDBFederatedQuery_BasicExecution(t *testing.T) {
 	for rows.Next() {
 		rowCount++
 		// Scan columns to ensure they're valid
-		var rowID interface{}
-		var name interface{}
-		var age interface{}
-		var createdAt interface{}
-		var updatedAt interface{}
-		var deletedAt interface{}
-		var totalRecords interface{}
-		var totalPages interface{}
-		var currentPage interface{}
-		var attrsJSON interface{}
+		var rowID any
+		var name any
+		var age any
+		var createdAt any
+		var updatedAt any
+		var deletedAt any
+		var totalRecords any
+		var totalPages any
+		var currentPage any
+		var attrsJSON any
 
 		err := rows.Scan(&rowID, &name, &age, &createdAt, &updatedAt, &deletedAt,
 			&totalRecords, &totalPages, &currentPage, &attrsJSON)
@@ -276,7 +276,7 @@ func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck)
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
 
 	_, _, err = repo.ExecuteDuckDBFederatedQuery(context.Background(), StorageTables{}, nil, 10, 0, nil, nil)
 	require.Error(t, err)

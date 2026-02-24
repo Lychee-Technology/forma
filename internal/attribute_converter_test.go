@@ -89,7 +89,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		{
 			name: "uuid from text",
 			record: EAVRecord{
-				ValueText: ptrString(uuidVal.String()),
+				ValueText: new(uuidVal.String()),
 			},
 			valueType: forma.ValueTypeUUID,
 			want:      uuidVal,
@@ -97,7 +97,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		{
 			name: "uuid parse error",
 			record: EAVRecord{
-				ValueText: ptrString("not-a-uuid"),
+				ValueText: new("not-a-uuid"),
 			},
 			valueType: forma.ValueTypeUUID,
 			wantErr:   "parse uuid",
@@ -105,7 +105,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		{
 			name: "bool true",
 			record: EAVRecord{
-				ValueNumeric: ptrFloat64(0.6),
+				ValueNumeric: new(0.6),
 			},
 			valueType: forma.ValueTypeBool,
 			want:      true,
@@ -113,7 +113,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		{
 			name: "bool false at threshold",
 			record: EAVRecord{
-				ValueNumeric: ptrFloat64(0.5),
+				ValueNumeric: new(0.5),
 			},
 			valueType: forma.ValueTypeBool,
 			want:      false,
@@ -208,7 +208,7 @@ func TestToFloat64ForEAV(t *testing.T) {
 		{"string trimmed", "  123.45  ", 123.45, false},
 		{"string empty", "", 0, true},
 		{"string invalid", "abc", 0, true},
-		{"pointer valid", ptrString("123.45"), 123.45, false},
+		{"pointer valid", new("123.45"), 123.45, false},
 		{"pointer nil", (*string)(nil), 0, true},
 		{"int", int(42), 42, false},
 		{"int16", int16(10), 10, false},
@@ -230,12 +230,14 @@ func TestToFloat64ForEAV(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func ptrString(val string) *string {
-	return &val
+	return new(val)
 }
 
+//go:fix inline
 func ptrFloat64(val float64) *float64 {
-	return &val
+	return new(val)
 }
 
 func TestToBoolForEAV(t *testing.T) {
@@ -245,7 +247,7 @@ func TestToBoolForEAV(t *testing.T) {
 	zeroStr := "0"
 	tests := []struct {
 		name    string
-		input   interface{}
+		input   any
 		want    bool
 		wantErr bool
 	}{

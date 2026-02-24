@@ -21,14 +21,16 @@ type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *MetadataCache
 	duckDBClient  *DuckDBClient
+	duckDBCfg     forma.DuckDBConfig
 	nowFunc       func() time.Time
 }
 
-func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient) *DBPersistentRecordRepository {
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient, duckDBCfg forma.DuckDBConfig) *DBPersistentRecordRepository {
 	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
 		duckDBClient:  duckDBClient,
+		duckDBCfg:     duckDBCfg,
 		nowFunc:       time.Now,
 	}
 }
@@ -234,12 +236,9 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 
 	limit := query.Limit
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
-	offset := query.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(query.Offset, 0)
 
 	attrQuery := AttributeQuery{
 		SchemaID:  query.SchemaID,
@@ -345,14 +344,6 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx conte
 		return r.QueryPersistentRecords(ctx, prq)
 	}
 
-	// Evaluate routing policy before executing
-	var routingCfg forma.DuckDBConfig
-	// Attempt to read global default if available via metadata cache - fallback to zero value
-	if r.metadataCache != nil {
-		// no-op for now; use schema-level defaults if added later
-		_ = routingCfg
-	}
-
 	// Initialize execution plan if requested
 	if opts != nil && opts.IncludeExecutionPlan {
 		if opts.ExecutionPlan == nil {
@@ -361,7 +352,7 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx conte
 		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
 	}
 
-	decision := EvaluateRoutingPolicy(routingCfg, fq, opts)
+	decision := EvaluateRoutingPolicy(r.duckDBCfg, fq, opts)
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		opts.ExecutionPlan.Routing = decision
 	}
@@ -400,7 +391,7 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx conte
 	currentPage := 1
 	limit := fq.Limit
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
 	if limit > 0 {
 		currentPage = fq.Offset/limit + 1

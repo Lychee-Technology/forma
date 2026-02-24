@@ -2,11 +2,10 @@ package internal
 
 import "strings"
 
+// Column slices define the physical EAV column layout in the entity_main table.
+// These are declared once and treated as read-only after package init.
 var (
-	textColumns = []string{
-		"text_01", "text_02", "text_03", "text_04", "text_05",
-		"text_06", "text_07", "text_08", "text_09", "text_10",
-	}
+	textColumns     = []string{"text_01", "text_02", "text_03", "text_04", "text_05", "text_06", "text_07", "text_08", "text_09", "text_10"}
 	smallintColumns = []string{"smallint_01", "smallint_02", "smallint_03"}
 	integerColumns  = []string{"integer_01", "integer_02", "integer_03"}
 	bigintColumns   = []string{"bigint_01", "bigint_02", "bigint_03"}
@@ -14,6 +13,7 @@ var (
 	uuidColumns     = []string{"uuid_01", "uuid_02"}
 )
 
+// allowedXxxColumns are fast O(1) lookup sets built from the column slices above.
 var (
 	allowedTextColumns     = makeColumnSet(textColumns)
 	allowedSmallintColumns = makeColumnSet(smallintColumns)
@@ -47,61 +47,76 @@ type columnDescriptor struct {
 	kind columnKind
 }
 
-var entityMainColumnDescriptors = []columnDescriptor{}
-var entityMainProjection string
-
-func init() {
-	projection := make([]string, 0, 5+len(textColumns)+len(smallintColumns)+len(integerColumns)+len(bigintColumns)+len(doubleColumns)+len(uuidColumns))
-
-	// Add system fields first
-	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_schema_id", kind: columnKindSmallint})
-	projection = append(projection, "ltbase_schema_id")
-
-	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_row_id", kind: columnKindUUID})
-	projection = append(projection, "ltbase_row_id")
-
-	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_created_at", kind: columnKindBigint})
-	projection = append(projection, "ltbase_created_at")
-
-	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_updated_at", kind: columnKindBigint})
-	projection = append(projection, "ltbase_updated_at")
-
-	entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: "ltbase_deleted_at", kind: columnKindBigint})
-	projection = append(projection, "ltbase_deleted_at")
-
-	// Add remaining text columns (skip text_01 as it's already added)
-	for _, col := range textColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindText})
-		projection = append(projection, col)
-	}
-	for _, col := range smallintColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindSmallint})
-		projection = append(projection, col)
-	}
-	for _, col := range integerColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindInteger})
-		projection = append(projection, col)
-	}
-	for _, col := range bigintColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindBigint})
-		projection = append(projection, col)
-	}
-	for _, col := range doubleColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindDouble})
-		projection = append(projection, col)
-	}
-	for _, col := range uuidColumns {
-		entityMainColumnDescriptors = append(entityMainColumnDescriptors, columnDescriptor{name: col, kind: columnKindUUID})
-		projection = append(projection, col)
-	}
-	entityMainProjection = strings.Join(projection, ", ")
+// systemColumnDescriptors contains the five fixed metadata columns that appear
+// before the EAV columns in every entity_main SELECT projection.
+// They are not present in the allowedXxx sets, so getMainColumnDescriptor
+// checks this list separately.
+var systemColumnDescriptors = []columnDescriptor{
+	{name: "ltbase_schema_id", kind: columnKindSmallint},
+	{name: "ltbase_row_id", kind: columnKindUUID},
+	{name: "ltbase_created_at", kind: columnKindBigint},
+	{name: "ltbase_updated_at", kind: columnKindBigint},
+	{name: "ltbase_deleted_at", kind: columnKindBigint},
 }
 
+// systemColumnSet is the O(1) lookup equivalent of systemColumnDescriptors.
+var systemColumnSet = func() map[string]columnDescriptor {
+	m := make(map[string]columnDescriptor, len(systemColumnDescriptors))
+	for _, d := range systemColumnDescriptors {
+		m[d.name] = d
+	}
+	return m
+}()
+
+// entityMainColumnDescriptors is the ordered list of all columns (system + EAV)
+// used to scan rows from entity_main. It is built once at package load time via
+// a package-level var initializer, avoiding an init() side-effect.
+var entityMainColumnDescriptors = buildEntityMainColumnDescriptors()
+
+func buildEntityMainColumnDescriptors() []columnDescriptor {
+	capacity := len(systemColumnDescriptors) +
+		len(textColumns) + len(smallintColumns) + len(integerColumns) +
+		len(bigintColumns) + len(doubleColumns) + len(uuidColumns)
+	descs := make([]columnDescriptor, 0, capacity)
+
+	descs = append(descs, systemColumnDescriptors...)
+
+	for _, col := range textColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindText})
+	}
+	for _, col := range smallintColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindSmallint})
+	}
+	for _, col := range integerColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindInteger})
+	}
+	for _, col := range bigintColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindBigint})
+	}
+	for _, col := range doubleColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindDouble})
+	}
+	for _, col := range uuidColumns {
+		descs = append(descs, columnDescriptor{name: col, kind: columnKindUUID})
+	}
+	return descs
+}
+
+// entityMainProjection is the comma-separated column list used in SELECT statements
+// against entity_main. Built once at package load time.
+var entityMainProjection = func() string {
+	names := make([]string, 0, len(entityMainColumnDescriptors))
+	for _, d := range entityMainColumnDescriptors {
+		names = append(names, d.name)
+	}
+	return strings.Join(names, ", ")
+}()
+
+// isMainTableColumn reports whether name is a recognised entity_main column.
+// Uses O(1) map lookups — no linear scan.
 func isMainTableColumn(name string) bool {
-	for _, desc := range entityMainColumnDescriptors {
-		if desc.name == name {
-			return true
-		}
+	if _, ok := systemColumnSet[name]; ok {
+		return true
 	}
 	if _, ok := allowedTextColumns[name]; ok {
 		return true
@@ -124,8 +139,14 @@ func isMainTableColumn(name string) bool {
 	return false
 }
 
+// getMainColumnDescriptor returns the descriptor for a named entity_main column,
+// or nil if the name is not recognised. Checks the system-column map first, then
+// falls back to the ordered EAV descriptor list (linear but called infrequently).
 func getMainColumnDescriptor(name string) *columnDescriptor {
-	for _, desc := range entityMainColumnDescriptors {
+	if d, ok := systemColumnSet[name]; ok {
+		return &d
+	}
+	for _, desc := range entityMainColumnDescriptors[len(systemColumnDescriptors):] {
 		if desc.name == name {
 			return &desc
 		}

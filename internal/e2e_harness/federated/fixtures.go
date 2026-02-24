@@ -47,7 +47,7 @@ func GenerateTestRecords(count int, opts *GeneratorOptions) []TestRecord {
 	records := make([]TestRecord, count)
 	baseTime := time.Now().Add(-time.Duration(opts.TimeOffset) * time.Hour)
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// Generate UUID v7 with time-based ordering
 		rowID := uuid.Must(uuid.NewV7())
 
@@ -86,7 +86,7 @@ func GenerateOverlappingRecords(rowID uuid.UUID, versions int, schemaID int16) [
 	records := make([]TestRecord, versions)
 	baseTime := time.Now().Add(-time.Duration(versions) * time.Hour)
 
-	for i := 0; i < versions; i++ {
+	for i := range versions {
 		records[i] = TestRecord{
 			RowID:    rowID,
 			SchemaID: schemaID,
@@ -118,7 +118,7 @@ func GenerateBulkRecords(count int, schemaID int16, duplicateRatio float64) []Te
 	// Add duplicates if requested
 	if duplicateRatio > 0 && duplicateRatio < 1.0 {
 		numDuplicates := int(float64(count) * duplicateRatio)
-		for i := 0; i < numDuplicates; i++ {
+		for range numDuplicates {
 			// Pick a random record to duplicate
 			srcIdx := rand.Intn(len(records))
 			srcRecord := records[srcIdx]
@@ -220,7 +220,7 @@ func (PresetScenarios) SoftDeleteScenario(schemaID int16) []TestRecord {
 	now := time.Now().UnixMilli()
 	records := make([]TestRecord, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		deletedAt := int64(0)
 		if i >= 5 { // Last 5 records are deleted
 			deletedAt = now - int64(rand.Intn(3600000))
@@ -325,17 +325,10 @@ func generateEmail(r *rand.Rand) string {
 func generateTags(r *rand.Rand) []string {
 	count := r.Intn(3) + 1
 	tags := make([]string, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		tags[i] = tagOptions[r.Intn(len(tagOptions))]
 	}
 	return tags
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // SortByChangedAt sorts records by changed_at in ascending order.

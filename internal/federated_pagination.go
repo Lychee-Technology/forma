@@ -25,7 +25,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 		return nil, 0, fmt.Errorf("federated query cannot be nil")
 	}
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
 	if offset < 0 {
 		offset = 0
@@ -104,10 +104,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	if start >= len(merged) {
 		return []*PersistentRecord{}, total, nil
 	}
-	end := start + limit
-	if end > len(merged) {
-		end = len(merged)
-	}
+	end := min(start+limit, len(merged))
 	page := merged[start:end]
 
 	return page, total, nil

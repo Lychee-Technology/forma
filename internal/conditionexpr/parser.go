@@ -21,9 +21,9 @@ type SQLOperatorResult struct {
 
 // ParseOperatorValueLenient parses "op:value"; malformed pairs fallback to equals(raw).
 func ParseOperatorValueLenient(raw string) OperatorValue {
-	if idx := strings.Index(raw, ":"); idx >= 0 {
-		opPart := raw[:idx]
-		valPart := raw[idx+1:]
+	if before, after, ok := strings.Cut(raw, ":"); ok {
+		opPart := before
+		valPart := after
 		if opPart != "" && valPart != "" {
 			return OperatorValue{Operator: opPart, Value: valPart}
 		}
@@ -33,9 +33,9 @@ func ParseOperatorValueLenient(raw string) OperatorValue {
 
 // ParseOperatorValueStrict parses "op:value"; malformed pairs return an error.
 func ParseOperatorValueStrict(raw string) (OperatorValue, error) {
-	if idx := strings.Index(raw, ":"); idx >= 0 {
-		opPart := raw[:idx]
-		valPart := raw[idx+1:]
+	if before, after, ok := strings.Cut(raw, ":"); ok {
+		opPart := before
+		valPart := after
 		if opPart == "" || valPart == "" {
 			return OperatorValue{}, fmt.Errorf("invalid KvCondition value format: %s", raw)
 		}

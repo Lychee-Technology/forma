@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 // Package federated provides E2E tests for Merge-on-Read logic.
 // TC-02: Merge-on-Read Tests - Validates UNION ALL and merge behavior across tiers.

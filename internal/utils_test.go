@@ -22,7 +22,6 @@ func TestTryParseNumber(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got := tryParseNumber(tt.input)
 			switch exp := tt.expect.(type) {
@@ -58,7 +57,6 @@ func TestSanitizeIdentifier(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.expected, sanitizeIdentifier(tt.input))
 		})
@@ -94,7 +92,6 @@ func TestToUUID(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := toUUID(tt.input)
 			assert.Equal(t, tt.ok, ok)

@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 // Package federated provides E2E tests for global deduplication.
 // TC-03: Deduplication Tests - Validates QUALIFY ROW_NUMBER deduplication logic.

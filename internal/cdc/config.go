@@ -40,12 +40,14 @@ type CDCConfig struct {
 	MaxBatchSize     int // maximum rows per batch to cap memory usage
 
 	// S3
-	S3Bucket   string
-	S3Prefix   string // prefix inside bucket for delta files
-	S3Endpoint string
-	S3Region   string
-	S3UseSSL   bool
-	S3UsePath  bool // path style addressing
+	S3Bucket          string
+	S3Prefix          string // prefix inside bucket for delta files
+	S3Endpoint        string
+	S3Region          string
+	S3UseSSL          bool
+	S3UsePath         bool   // path style addressing
+	S3AccessKeyID     string // AWS access key ID; overrides environment variable AWS_ACCESS_KEY_ID
+	S3SecretAccessKey string // AWS secret access key; overrides environment variable AWS_SECRET_ACCESS_KEY
 
 	// Manifest (optional - when set, flush updates manifest after export)
 	ManifestPrefix   string // root prefix for manifests in S3

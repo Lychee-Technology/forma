@@ -2,7 +2,7 @@
 package federated
 
 import (
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,13 +17,13 @@ import (
 // ============================================================================
 
 // AssertRecordCount verifies the expected number of records.
-func AssertRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...interface{}) {
+func AssertRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...any) {
 	t.Helper()
 	assert.Len(t, records, expected, msgAndArgs...)
 }
 
 // RequireRecordCount verifies the expected number of records and fails immediately if not met.
-func RequireRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...interface{}) {
+func RequireRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...any) {
 	t.Helper()
 	require.Len(t, records, expected, msgAndArgs...)
 }
@@ -165,13 +165,13 @@ func AssertChecksumMatch(t *testing.T, report *ComparisonReport) {
 // ============================================================================
 
 // AssertLatencyUnder verifies query latency is under the specified threshold.
-func AssertLatencyUnder(t *testing.T, duration time.Duration, threshold time.Duration, msgAndArgs ...interface{}) {
+func AssertLatencyUnder(t *testing.T, duration time.Duration, threshold time.Duration, msgAndArgs ...any) {
 	t.Helper()
 	assert.Less(t, duration, threshold, msgAndArgs...)
 }
 
 // RequireLatencyUnder verifies query latency is under the specified threshold, failing immediately if not.
-func RequireLatencyUnder(t *testing.T, duration time.Duration, threshold time.Duration, msgAndArgs ...interface{}) {
+func RequireLatencyUnder(t *testing.T, duration time.Duration, threshold time.Duration, msgAndArgs ...any) {
 	t.Helper()
 	require.Less(t, duration, threshold, msgAndArgs...)
 }
@@ -321,9 +321,7 @@ func Percentile(latencies []time.Duration, p int) time.Duration {
 
 	sorted := make([]time.Duration, len(latencies))
 	copy(sorted, latencies)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i] < sorted[j]
-	})
+	slices.Sort(sorted)
 
 	idx := (len(sorted) - 1) * p / 100
 	return sorted[idx]

@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 // Package federated provides E2E tests for the three-tier data architecture.
 // TC-01: Data Tier Tests - Validates that queries correctly access Base, Delta, and Hot tiers.

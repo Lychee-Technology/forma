@@ -61,12 +61,9 @@ func (o *Optimizer) GeneratePlan(ctx context.Context, in *Input) (*Plan, error) 
 	// Pagination
 	limit := in.Pagination.Limit
 	if limit <= 0 {
-		limit = 50
+		limit = defaultPageSize
 	}
-	offset := in.Pagination.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(in.Pagination.Offset, 0)
 	limitParam := qb.addArg(limit)
 	offsetParam := qb.addArg(offset)
 

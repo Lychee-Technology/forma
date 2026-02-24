@@ -174,12 +174,30 @@ type DuckDBConfig struct {
 	Routing                 RoutingPolicy `json:"routing"`                 // routing policy for federated queries
 }
 
+// RoutingStrategy specifies the federated query routing algorithm.
+type RoutingStrategy string
+
+const (
+	// RoutingStrategyFreshnessFirst prefers the hot (PostgreSQL) tier for
+	// queries that explicitly request fresh data (PreferHot flag).
+	RoutingStrategyFreshnessFirst RoutingStrategy = "freshness-first"
+
+	// RoutingStrategyCostFirst routes large scans to DuckDB to reduce
+	// PostgreSQL load; small scans stay on the hot tier.
+	RoutingStrategyCostFirst RoutingStrategy = "cost-first"
+
+	// RoutingStrategyHybrid uses DuckDB by default but short-circuits to
+	// PostgreSQL when the result set is expected to be small or hot data is
+	// explicitly preferred.
+	RoutingStrategyHybrid RoutingStrategy = "hybrid"
+)
+
 // RoutingPolicy defines federated query routing behavior
 type RoutingPolicy struct {
-	Strategy          string        `json:"strategy"`          // "freshness-first", "cost-first", "hybrid"
-	HotTTL            time.Duration `json:"hotTTL"`            // TTL to consider data "hot"
-	MaxDuckDBScanRows int           `json:"maxDuckDBScanRows"` // threshold for preferring cold scans
-	AllowS3Fallback   bool          `json:"allowS3Fallback"`   // allow falling back to S3/DuckDB when PG not used
+	Strategy          RoutingStrategy `json:"strategy"`          // "freshness-first", "cost-first", "hybrid"
+	HotTTL            time.Duration   `json:"hotTTL"`            // TTL to consider data "hot"
+	MaxDuckDBScanRows int             `json:"maxDuckDBScanRows"` // threshold for preferring cold scans
+	AllowS3Fallback   bool            `json:"allowS3Fallback"`   // allow falling back to S3/DuckDB when PG not used
 }
 
 // ReferenceConfig contains reference management settings
@@ -229,6 +247,84 @@ func DefaultConfig(schemaRegistry SchemaRegistry) *Config {
 		Reference:      defaultReferenceConfig(),
 		DuckDB:         defaultDuckDBConfig(),
 	}
+}
+
+// -----------------------------------------------------------------------
+// Functional Options pattern
+// -----------------------------------------------------------------------
+
+// Option is a functional option that mutates a Config.
+// Use the With* constructors below to build option values, then pass them to
+// NewConfig to obtain a fully-configured Config without touching the struct
+// fields directly.
+type Option func(*Config)
+
+// NewConfig creates a Config starting from the defaults produced by
+// DefaultConfig(nil) and then applies each provided Option in order.
+// The schema registry can be set via WithSchemaRegistry.
+//
+// Example:
+//
+//	cfg := forma.NewConfig(
+//	    forma.WithDatabase(forma.DatabaseConfig{Host: "db.example.com", Port: 5432, MaxConnections: 50}),
+//	    forma.WithDuckDB(forma.DuckDBConfig{Enabled: true, DBPath: ":memory:"}),
+//	)
+func NewConfig(opts ...Option) *Config {
+	cfg := DefaultConfig(nil)
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg
+}
+
+// WithSchemaRegistry sets the schema registry on the config.
+func WithSchemaRegistry(sr SchemaRegistry) Option {
+	return func(c *Config) { c.SchemaRegistry = sr }
+}
+
+// WithDatabase replaces the DatabaseConfig section.
+func WithDatabase(db DatabaseConfig) Option {
+	return func(c *Config) { c.Database = db }
+}
+
+// WithQuery replaces the QueryConfig section.
+func WithQuery(q QueryConfig) Option {
+	return func(c *Config) { c.Query = q }
+}
+
+// WithEntity replaces the EntityConfig section.
+func WithEntity(e EntityConfig) Option {
+	return func(c *Config) { c.Entity = e }
+}
+
+// WithTransaction replaces the TransactionConfig section.
+func WithTransaction(t TransactionConfig) Option {
+	return func(c *Config) { c.Transaction = t }
+}
+
+// WithPerformance replaces the PerformanceConfig section.
+func WithPerformance(p PerformanceConfig) Option {
+	return func(c *Config) { c.Performance = p }
+}
+
+// WithLogging replaces the LoggingConfig section.
+func WithLogging(l LoggingConfig) Option {
+	return func(c *Config) { c.Logging = l }
+}
+
+// WithMetrics replaces the MetricsConfig section.
+func WithMetrics(m MetricsConfig) Option {
+	return func(c *Config) { c.Metrics = m }
+}
+
+// WithReference replaces the ReferenceConfig section.
+func WithReference(r ReferenceConfig) Option {
+	return func(c *Config) { c.Reference = r }
+}
+
+// WithDuckDB replaces the DuckDBConfig section.
+func WithDuckDB(d DuckDBConfig) Option {
+	return func(c *Config) { c.DuckDB = d }
 }
 
 // defaultDatabaseConfig returns default database configuration.
@@ -406,7 +502,7 @@ func defaultDuckDBConfig() DuckDBConfig {
 		MaxParallelism:          1,
 		CircuitBreakerThreshold: 0.5,
 		Routing: RoutingPolicy{
-			Strategy:          "hybrid",
+			Strategy:          RoutingStrategyHybrid,
 			HotTTL:            5 * time.Minute,
 			MaxDuckDBScanRows: 100000,
 			AllowS3Fallback:   true,
@@ -447,11 +543,11 @@ func (c *Config) Validate() error {
 	if c.DuckDB.QueryTimeout < 0 {
 		return &ConfigError{Field: "duckdb.queryTimeout", Message: "must be greater than or equal to 0"}
 	}
-	allowed := map[string]bool{
-		"freshness-first": true,
-		"cost-first":      true,
-		"hybrid":          true,
-		"":                true,
+	allowed := map[RoutingStrategy]bool{
+		RoutingStrategyFreshnessFirst: true,
+		RoutingStrategyCostFirst:      true,
+		RoutingStrategyHybrid:         true,
+		"":                            true,
 	}
 	if !allowed[c.DuckDB.Routing.Strategy] {
 		return &ConfigError{Field: "duckdb.routing.strategy", Message: "invalid routing strategy"}
