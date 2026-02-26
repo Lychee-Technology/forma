@@ -1,10 +1,8 @@
 package internal
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"maps"
 	"testing"
 	"time"
@@ -13,6 +11,8 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type stubSchemaRegistry struct {
@@ -415,14 +415,17 @@ func TestPopulateTypedValueOptionalSkipsOnError(t *testing.T) {
 		Required:    false,
 	}
 
-	buf := &bytes.Buffer{}
-	original := log.Writer()
-	log.SetOutput(buf)
-	t.Cleanup(func() { log.SetOutput(original) })
+	core, observed := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+	original := zap.L()
+	zap.ReplaceGlobals(logger)
+	t.Cleanup(func() { zap.ReplaceGlobals(original) })
 
 	set, err := populateTypedValue(&attr, "optional", "not-a-uuid", meta)
 	require.NoError(t, err)
 	assert.False(t, set)
 	assert.Nil(t, attr.ValueText)
-	assert.Contains(t, buf.String(), "optional")
+	entries := observed.FilterMessage("skip optional attribute").All()
+	require.NotEmpty(t, entries)
+	assert.Equal(t, "optional", entries[0].ContextMap()["attribute"])
 }

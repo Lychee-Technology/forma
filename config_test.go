@@ -78,6 +78,9 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Database.Port != 5432 {
 		t.Errorf("Expected database port to be 5432, got %d", config.Database.Port)
 	}
+	if config.Database.Schema != "public" {
+		t.Errorf("Expected database schema to be 'public', got %s", config.Database.Schema)
+	}
 	if config.Database.MaxConnections != 25 {
 		t.Errorf("Expected max connections to be 25, got %d", config.Database.MaxConnections)
 	}

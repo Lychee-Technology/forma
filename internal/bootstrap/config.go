@@ -15,6 +15,7 @@ type DBDefaults struct {
 	Username               string
 	Password               string
 	SSLMode                string
+	Schema                 string
 	MaxConnections         int
 	MaxIdleConns           int
 	ConnMaxLifetimeSeconds int
@@ -46,6 +47,7 @@ func DatabaseConfigFromEnv(defaults DBDefaults) forma.DatabaseConfig {
 		Username:        Env("DB_USER", defaults.Username),
 		Password:        Env("DB_PASSWORD", defaults.Password),
 		SSLMode:         Env("DB_SSL_MODE", defaults.SSLMode),
+		Schema:          Env("DB_SCHEMA", defaults.Schema),
 		MaxConnections:  EnvInt("DB_MAX_CONNECTIONS", defaults.MaxConnections),
 		MaxIdleConns:    EnvInt("DB_MAX_IDLE_CONNS", defaults.MaxIdleConns),
 		ConnMaxLifetime: time.Duration(EnvInt("DB_CONN_MAX_LIFETIME_SECONDS", defaults.ConnMaxLifetimeSeconds)) * time.Second,

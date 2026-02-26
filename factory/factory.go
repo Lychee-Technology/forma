@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,11 +34,14 @@ var defaultMetadataLoaderFactory = func(pool *pgxpool.Pool, schemaTable, schemaD
 // tableCollector is a test hook for table discovery.
 var tableCollector = collectTablesFromPool
 
+const defaultDatabaseSchema = "public"
+
 // collectTablesFromPool queries information_schema for table/view names and returns the list.
-func collectTablesFromPool(pool queryPool) ([]string, error) {
+func collectTablesFromPool(pool queryPool, schema string) ([]string, error) {
+	inspectionSchema := normalizeSchemaName(schema)
 	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables t
-WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-union SELECT table_name FROM information_schema.views v WHERE table_schema = 'public';`)
+WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+UNION SELECT table_name FROM information_schema.views v WHERE table_schema = $1;`, inspectionSchema)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify database connection: %w", err)
@@ -68,12 +72,16 @@ union SELECT table_name FROM information_schema.views v WHERE table_schema = 'pu
 //
 // See NewEntityManagerWithConfig for usage examples.
 func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
-	tables, err := tableCollector(pool)
+	schemaName := normalizeSchemaName(config.Database.Schema)
+	effectiveConfig := configWithQualifiedTables(config, schemaName)
+	tables, err := tableCollector(pool, schemaName)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(tables) < 2 || !slices.Contains(tables, config.Database.TableNames.SchemaRegistry) || !slices.Contains(tables, config.Database.TableNames.EAVData) {
+	requiredSchemaRegistry := normalizeTableName(effectiveConfig.Database.TableNames.SchemaRegistry)
+	requiredEAVData := normalizeTableName(effectiveConfig.Database.TableNames.EAVData)
+	if len(tables) < 2 || !slices.Contains(tables, requiredSchemaRegistry) || !slices.Contains(tables, requiredEAVData) {
 		return nil, fmt.Errorf("required tables are missing in the database")
 	}
 
@@ -81,8 +89,8 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	zap.S().Info("Loading metadata from database...")
 	loader := defaultMetadataLoaderFactory(
 		pool,
-		config.Database.TableNames.SchemaRegistry,
-		config.Entity.SchemaDirectory,
+		effectiveConfig.Database.TableNames.SchemaRegistry,
+		effectiveConfig.Entity.SchemaDirectory,
 	)
 
 	metadataCache, err := loader.LoadMetadata(ctx)
@@ -93,10 +101,10 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	zap.S().Infow("Metadata loaded successfully", "schemaCount", len(metadataCache.ListSchemas()))
 
 	// SchemaRegistry must be provided in config
-	if config.SchemaRegistry == nil {
+	if effectiveConfig.SchemaRegistry == nil {
 		return nil, fmt.Errorf("config.SchemaRegistry is required: please provide a SchemaRegistry implementation")
 	}
-	registry := config.SchemaRegistry
+	registry := effectiveConfig.SchemaRegistry
 	zap.S().Info("Using provided SchemaRegistry implementation")
 
 	// Initialize transformer
@@ -106,9 +114,9 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	var duckClient *internal.DuckDBClient = nil
 
 	// Initialize DuckDB client if enabled in config
-	if config.DuckDB.Enabled {
-		zap.S().Infow("initializing DuckDB client", "dbPath", config.DuckDB.DBPath)
-		duckClient, err = internal.NewDuckDBClient(config.DuckDB)
+	if effectiveConfig.DuckDB.Enabled {
+		zap.S().Infow("initializing DuckDB client", "dbPath", effectiveConfig.DuckDB.DBPath)
+		duckClient, err = internal.NewDuckDBClient(effectiveConfig.DuckDB)
 		if err != nil {
 			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
 		} else {
@@ -119,10 +127,10 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		pool,
 		metadataCache,
 		duckClient,
-		config.DuckDB,
+		effectiveConfig.DuckDB,
 	)
 	// Create and return entity manager
-	return internal.NewEntityManager(transformer, repository, registry, config), nil
+	return internal.NewEntityManager(transformer, repository, registry, effectiveConfig), nil
 }
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
@@ -158,4 +166,53 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 
 func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
 	return internal.NewFileSchemaRegistry(pool, schemaTable, schemaDir)
+}
+
+func normalizeSchemaName(schema string) string {
+	name := strings.TrimSpace(schema)
+	if name == "" {
+		return defaultDatabaseSchema
+	}
+	return name
+}
+
+func normalizeTableName(name string) string {
+	if name == "" {
+		return ""
+	}
+	parts := strings.Split(name, ".")
+	for i := len(parts) - 1; i >= 0; i-- {
+		trimmed := strings.Trim(parts[i], ` "`)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.Trim(name, ` "`)
+}
+
+func configWithQualifiedTables(config *forma.Config, schema string) *forma.Config {
+	cloned := *config
+	cloned.Database = config.Database
+	cloned.Database.TableNames = qualifyTableNames(schema, config.Database.TableNames)
+	return &cloned
+}
+
+func qualifyTableNames(schema string, tables forma.TableNames) forma.TableNames {
+	return forma.TableNames{
+		SchemaRegistry: qualifyTableName(schema, tables.SchemaRegistry),
+		EntityMain:     qualifyTableName(schema, tables.EntityMain),
+		EAVData:        qualifyTableName(schema, tables.EAVData),
+		ChangeLog:      qualifyTableName(schema, tables.ChangeLog),
+	}
+}
+
+func qualifyTableName(schema, table string) string {
+	trimmed := strings.TrimSpace(table)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, ".") || schema == "" {
+		return trimmed
+	}
+	return schema + "." + trimmed
 }

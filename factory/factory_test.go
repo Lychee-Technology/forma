@@ -213,9 +213,11 @@ func TestCollectTablesFromPool_QueryError(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT table_name FROM information_schema.tables`).WillReturnError(assert.AnError)
+	mock.ExpectQuery(`SELECT table_name FROM information_schema.tables`).
+		WithArgs("tenant_schema").
+		WillReturnError(assert.AnError)
 
-	_, err = collectTablesFromPool(mock)
+	_, err = collectTablesFromPool(mock, "tenant_schema")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to verify database connection")
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -229,12 +231,31 @@ func TestCollectTablesFromPool_Success(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"table_name"}).
 		AddRow("schema_registry").
 		AddRow("eav_data")
-	mock.ExpectQuery(`SELECT table_name FROM information_schema.tables`).WillReturnRows(rows)
+	mock.ExpectQuery(`SELECT table_name FROM information_schema.tables`).
+		WithArgs("custom_schema").
+		WillReturnRows(rows)
 
-	tables, err := collectTablesFromPool(mock)
+	tables, err := collectTablesFromPool(mock, "custom_schema")
 	require.NoError(t, err)
 	assert.Contains(t, tables, "schema_registry")
 	assert.Contains(t, tables, "eav_data")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCollectTablesFromPool_DefaultSchema(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rows := pgxmock.NewRows([]string{"table_name"}).
+		AddRow("schema_registry").
+		AddRow("eav_data")
+	mock.ExpectQuery(`SELECT table_name FROM information_schema.tables`).
+		WithArgs("public").
+		WillReturnRows(rows)
+
+	_, err = collectTablesFromPool(mock, "")
+	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -251,7 +272,7 @@ func (m *mockMetadataLoader) LoadMetadata(ctx context.Context) (*internal.Metada
 	return m.cache, m.err
 }
 
-func withTableCollector(t *testing.T, collector func(queryPool) ([]string, error)) {
+func withTableCollector(t *testing.T, collector func(queryPool, string) ([]string, error)) {
 	t.Helper()
 	original := tableCollector
 	tableCollector = collector
@@ -270,7 +291,7 @@ func withMetadataLoaderFactory(t *testing.T, factory func(pool *pgxpool.Pool, sc
 }
 
 func TestNewEntityManagerWithConfig_Unit_TableCollectorError(t *testing.T) {
-	withTableCollector(t, func(pool queryPool) ([]string, error) {
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
 		return nil, assert.AnError
 	})
 
@@ -283,7 +304,7 @@ func TestNewEntityManagerWithConfig_Unit_TableCollectorError(t *testing.T) {
 }
 
 func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
-	withTableCollector(t, func(pool queryPool) ([]string, error) {
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry"}, nil
 	})
 
@@ -302,7 +323,7 @@ func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
 
 func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(pool queryPool) ([]string, error) {
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry", "eav_data"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
@@ -325,7 +346,7 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 
 func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(pool queryPool) ([]string, error) {
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry", "eav_data"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
@@ -348,7 +369,7 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 
 func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(pool queryPool) ([]string, error) {
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry", "eav_data"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
@@ -359,6 +380,58 @@ func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+	}
+	config.Entity.SchemaDirectory = t.TempDir()
+
+	em, err := NewEntityManagerWithConfig(config, nil)
+
+	assert.NotNil(t, em)
+	assert.NoError(t, err)
+}
+
+func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T) {
+	cache := internal.NewMetadataCache()
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
+		assert.Equal(t, "tenant", schema)
+		return []string{"schema_registry", "eav_data"}, nil
+	})
+	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+		assert.Equal(t, "tenant.schema_registry", schemaTable)
+		return &mockMetadataLoader{cache: cache, err: nil}
+	})
+
+	config := forma.DefaultConfig(newMockSchemaRegistry())
+	config.Database.Schema = "tenant"
+	config.Database.TableNames = forma.TableNames{
+		SchemaRegistry: "tenant.schema_registry",
+		EAVData:        "tenant.eav_data",
+	}
+	config.Entity.SchemaDirectory = t.TempDir()
+
+	em, err := NewEntityManagerWithConfig(config, nil)
+
+	assert.NotNil(t, em)
+	assert.NoError(t, err)
+}
+
+func TestNewEntityManagerWithConfig_Unit_SchemaParamQualifiesUnqualifiedTableNames(t *testing.T) {
+	cache := internal.NewMetadataCache()
+	withTableCollector(t, func(pool queryPool, schema string) ([]string, error) {
+		assert.Equal(t, "tenant", schema)
+		return []string{"schema_registry", "eav_data"}, nil
+	})
+	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+		assert.Equal(t, "tenant.schema_registry", schemaTable)
+		return &mockMetadataLoader{cache: cache, err: nil}
+	})
+
+	config := forma.DefaultConfig(newMockSchemaRegistry())
+	config.Database.Schema = "tenant"
+	config.Database.TableNames = forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+		ChangeLog:      "change_log",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 

@@ -60,6 +60,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 			Username:               "postgres",
 			Password:               "",
 			SSLMode:                "require",
+			Schema:                 "public",
 			MaxConnections:         10,
 			MaxIdleConns:           2,
 			ConnMaxLifetimeSeconds: 300,
@@ -91,6 +92,9 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 
 	// Set schema directory
 	formaConfig.Entity.SchemaDirectory = schemaDir
+
+	// Set database schema used by factory table discovery.
+	formaConfig.Database.Schema = bootstrap.Env("DB_SCHEMA", formaConfig.Database.Schema)
 
 	// Set database configuration
 	formaConfig.Database.TableNames = tableNames

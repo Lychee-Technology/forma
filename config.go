@@ -26,6 +26,7 @@ type DatabaseConfig struct {
 	Username        string        `json:"username"`
 	Password        string        `json:"password"`
 	SSLMode         string        `json:"sslMode"`
+	Schema          string        `json:"schema"`
 	MaxConnections  int           `json:"maxConnections"`
 	MaxIdleConns    int           `json:"maxIdleConns"`
 	ConnMaxLifetime time.Duration `json:"connMaxLifetime"`
@@ -332,6 +333,7 @@ func defaultDatabaseConfig() DatabaseConfig {
 	return DatabaseConfig{
 		Host:            "localhost",
 		Port:            5432,
+		Schema:          "public",
 		MaxConnections:  25,
 		MaxIdleConns:    5,
 		ConnMaxLifetime: 5 * time.Minute,

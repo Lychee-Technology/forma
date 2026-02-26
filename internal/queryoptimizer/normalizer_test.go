@@ -1,6 +1,7 @@
 package queryoptimizer
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -70,22 +71,22 @@ func TestNormalizeQuery_ValidationErrors(t *testing.T) {
 	opts := NormalizerOptions{DefaultLimit: 10, MaxLimit: 50}
 
 	_, err := NormalizeQuery(nil, 1, "schema", defaultTables, baseAttrs(), opts)
-	if err == nil || err.Error() != "query request cannot be nil" {
+	if err == nil || !strings.Contains(err.Error(), "query request cannot be nil") || !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("expected nil request error, got %v", err)
 	}
 
 	_, err = NormalizeQuery(&forma.QueryRequest{}, 1, "schema", defaultTables, baseAttrs(), opts)
-	if err == nil || err.Error() != "query condition is required" {
+	if err == nil || !strings.Contains(err.Error(), "query condition is required") || !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("expected missing condition error, got %v", err)
 	}
 
 	_, err = NormalizeQuery(&forma.QueryRequest{Condition: &forma.KvCondition{Attr: "status", Value: "hot"}}, 1, "schema", defaultTables, AttributeCatalog{}, opts)
-	if err == nil || err.Error() != "attribute catalog cannot be empty" {
+	if err == nil || !strings.Contains(err.Error(), "attribute catalog cannot be empty") || !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("expected empty attrs error, got %v", err)
 	}
 
 	_, err = NormalizeQuery(&forma.QueryRequest{Condition: &forma.KvCondition{Attr: "status", Value: "hot"}}, 1, "", defaultTables, baseAttrs(), opts)
-	if err == nil || err.Error() != "schema name is required" {
+	if err == nil || !strings.Contains(err.Error(), "schema name is required") || !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("expected missing schema name error, got %v", err)
 	}
 }
@@ -185,7 +186,7 @@ func TestNormalizeQuery_SortHandling(t *testing.T) {
 			SortBy:    []string{""},
 		}
 		_, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
-		if err == nil || err.Error() != "sort attribute name cannot be empty" {
+		if err == nil || !strings.Contains(err.Error(), "sort attribute name cannot be empty") || !errors.Is(err, forma.ErrInvalidInput) {
 			t.Fatalf("expected empty sort attr error, got %v", err)
 		}
 	})
@@ -210,7 +211,7 @@ func TestNormalizeQuery_ConditionNormalization(t *testing.T) {
 			Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: nil},
 		}
 		_, err := NormalizeQuery(req, 1, "lead", defaultTables, attrs, NormalizerOptions{})
-		if err == nil || err.Error() != "composite condition requires children" {
+		if err == nil || !strings.Contains(err.Error(), "composite condition requires children") || !errors.Is(err, forma.ErrInvalidInput) {
 			t.Fatalf("expected composite child error, got %v", err)
 		}
 	})
@@ -415,7 +416,7 @@ func TestNormalizeConditionTree(t *testing.T) {
 	t.Run("composite with no children", func(t *testing.T) {
 		cond := &forma.CompositeCondition{Logic: forma.LogicAnd}
 		_, err := normalizeConditionTree(cond, attrs)
-		if err == nil || err.Error() != "composite condition requires children" {
+		if err == nil || !strings.Contains(err.Error(), "composite condition requires children") || !errors.Is(err, forma.ErrInvalidInput) {
 			t.Fatalf("expected composite child error, got %v", err)
 		}
 	})

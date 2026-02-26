@@ -35,6 +35,7 @@ func main() {
 		Username:               "postgres",
 		Password:               "",
 		SSLMode:                "disable",
+		Schema:                 "public",
 		MaxConnections:         25,
 		MaxIdleConns:           5,
 		ConnMaxLifetimeSeconds: 3600,

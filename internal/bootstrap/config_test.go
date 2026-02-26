@@ -22,6 +22,7 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	t.Setenv("DB_USER", "db-user")
 	t.Setenv("DB_PASSWORD", "db-password")
 	t.Setenv("DB_SSL_MODE", "require")
+	t.Setenv("DB_SCHEMA", "tenant")
 	t.Setenv("DB_MAX_CONNECTIONS", "20")
 	t.Setenv("DB_MAX_IDLE_CONNS", "4")
 	t.Setenv("DB_CONN_MAX_LIFETIME_SECONDS", "600")
@@ -34,6 +35,7 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 		Database:               "forma",
 		Username:               "postgres",
 		SSLMode:                "disable",
+		Schema:                 "public",
 		MaxConnections:         25,
 		MaxIdleConns:           5,
 		ConnMaxLifetimeSeconds: 3600,
@@ -58,6 +60,9 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	}
 	if cfg.SSLMode != "require" {
 		t.Fatalf("expected sslmode require, got %s", cfg.SSLMode)
+	}
+	if cfg.Schema != "tenant" {
+		t.Fatalf("expected schema tenant, got %s", cfg.Schema)
 	}
 	if cfg.MaxConnections != 20 {
 		t.Fatalf("expected max connections 20, got %d", cfg.MaxConnections)
