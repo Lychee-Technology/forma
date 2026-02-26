@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/cdc"
@@ -19,6 +20,10 @@ var ErrConcurrentModification = errors.New("manifest concurrently modified")
 // FileProvider fetches manifest and lists actual files (optionally cross-check).
 type FileProvider interface {
 	LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error)
+	// SaveManifest persists the manifest as a commit point.
+	// Implementations must advance manifest metadata on successful save
+	// (at least a monotonic Version increment and UpdatedAtMs refresh).
+	// Compactor relies on this contract and does not mutate those fields directly.
 	SaveManifest(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error)
 }
 
@@ -150,11 +155,12 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 
 	baseTotalMB := baseTotalBytes / (1024 * 1024)
 	deltaTotalMB := deltaTotalBytes / (1024 * 1024)
+	dirtyRatio := c.computeDirtyRatio(baseFiles, deltaFiles)
 
 	// Decision: promote deltas to base if delta total > target base size
 	// or rewrite base if dirty ratio exceeded
 	needsPromotion := deltaTotalMB >= int64(cfg.TargetBaseSizeMB)
-	needsRewrite := len(baseFiles) > 0 && c.computeDirtyRatio(baseFiles, deltaFiles) > float64(cfg.DirtyRatioPct)/100.0
+	needsRewrite := len(baseFiles) > 0 && dirtyRatio > float64(cfg.DirtyRatioPct)/100.0
 
 	if !needsPromotion && !needsRewrite {
 		c.Logger.Debug("compaction not needed",
@@ -166,6 +172,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 
 	// For MVP: simple promotion - move delta files to base tier
 	// Full rewrite (reading + merging parquet) deferred to later iteration
+	applied := false
 	if needsPromotion {
 		c.Logger.Info("promoting deltas to base tier",
 			zap.Int16("schema_id", schemaID),
@@ -173,15 +180,30 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 
 		// Update file entries: change tier from delta to base
 		for i := range m.Files {
-			if m.Files[i].Tier == "delta" {
+			if strings.EqualFold(m.Files[i].Tier, "delta") {
 				m.Files[i].Tier = "base"
+				applied = true
 			}
 		}
 	}
 
-	// Update manifest
-	m.UpdatedAtMs = time.Now().UnixMilli()
-	m.Version++
+	if needsRewrite && !applied {
+		c.Logger.Warn("rewrite needed but not implemented; skipping manifest update",
+			zap.Int16("schema_id", schemaID),
+			zap.Float64("dirty_ratio", dirtyRatio),
+			zap.Int("dirty_ratio_pct", cfg.DirtyRatioPct),
+			zap.Int64("base_mb", baseTotalMB),
+			zap.Int64("delta_mb", deltaTotalMB))
+		return nil
+	}
+
+	if !applied {
+		c.Logger.Warn("compaction decision resulted in no manifest changes; skipping manifest update",
+			zap.Int16("schema_id", schemaID),
+			zap.Bool("needs_promotion", needsPromotion),
+			zap.Bool("needs_rewrite", needsRewrite))
+		return nil
+	}
 
 	newEtag, err := c.Provider.SaveManifest(ctx, schemaID, m, etag)
 	if err != nil {
