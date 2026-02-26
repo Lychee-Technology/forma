@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 )
@@ -194,8 +193,6 @@ func UploadFileToS3(ctx context.Context, endpoint, accessKey, secretKey, bucket,
 		o.UsePathStyle = true
 	})
 
-	uploader := manager.NewUploader(s3Client)
-
 	in, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
@@ -220,7 +217,7 @@ func UploadFileToS3(ctx context.Context, endpoint, accessKey, secretKey, bucket,
 		}
 	}
 
-	_, err = uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(objectName),
 		Body:   in,

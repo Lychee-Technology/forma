@@ -15,11 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//go:fix inline
-func ptr[T any](t T) *T {
-	return new(t)
-}
-
 func TestInsertPersistentRecordIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()

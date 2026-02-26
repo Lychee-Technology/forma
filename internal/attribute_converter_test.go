@@ -230,16 +230,6 @@ func TestToFloat64ForEAV(t *testing.T) {
 	}
 }
 
-//go:fix inline
-func ptrString(val string) *string {
-	return new(val)
-}
-
-//go:fix inline
-func ptrFloat64(val float64) *float64 {
-	return new(val)
-}
-
 func TestToBoolForEAV(t *testing.T) {
 	trueVal := true
 	falseVal := false
