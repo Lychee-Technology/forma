@@ -58,6 +58,11 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		}
 	}
 
+	// Validate required attributes with parent-aware semantics before flattening.
+	if err := validateRequiredAttributesFromInput(data, cache); err != nil {
+		return nil, err
+	}
+
 	// First convert to EAVRecords internally
 	eavRecords := make([]EAVRecord, 0)
 	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &eavRecords); err != nil {
@@ -342,6 +347,101 @@ func toString(value any) (string, error) {
 	default:
 		return fmt.Sprintf("%v", value), nil
 	}
+}
+
+func validateRequiredAttributesFromInput(data map[string]any, cache forma.SchemaAttributeCache) error {
+	if len(cache) == 0 {
+		return nil
+	}
+
+	requiredNames := make([]string, 0, len(cache))
+	for attrName, meta := range cache {
+		if meta.Required {
+			requiredNames = append(requiredNames, attrName)
+		}
+	}
+	sort.Strings(requiredNames)
+
+	for _, attrName := range requiredNames {
+		meta := cache[attrName]
+		if isRequiredAttributeMissingInInput(data, attrName) {
+			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", attrName, meta.AttributeID)
+		}
+	}
+
+	return nil
+}
+
+func isRequiredAttributeMissingInInput(root map[string]any, attrPath string) bool {
+	segments := strings.Split(attrPath, ".")
+	if len(segments) == 0 {
+		return false
+	}
+
+	if len(segments) == 1 {
+		value, exists := root[segments[0]]
+		return !exists || value == nil
+	}
+
+	parentContexts := findExistingParentContexts(root, segments[:len(segments)-1])
+	if len(parentContexts) == 0 {
+		// Parent does not exist, so nested required field should not be enforced.
+		return false
+	}
+
+	leaf := segments[len(segments)-1]
+	for _, parent := range parentContexts {
+		parentMap, ok := parent.(map[string]any)
+		if !ok {
+			return true
+		}
+
+		value, exists := parentMap[leaf]
+		if !exists || value == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func findExistingParentContexts(root map[string]any, parentSegments []string) []any {
+	contexts := []any{root}
+
+	for _, segment := range parentSegments {
+		nextContexts := make([]any, 0)
+		for _, ctx := range contexts {
+			obj, ok := ctx.(map[string]any)
+			if !ok || obj == nil {
+				continue
+			}
+
+			value, exists := obj[segment]
+			if !exists || value == nil {
+				continue
+			}
+
+			appendChildContexts(&nextContexts, value)
+		}
+		contexts = nextContexts
+		if len(contexts) == 0 {
+			return nil
+		}
+	}
+
+	return contexts
+}
+
+func appendChildContexts(contexts *[]any, value any) {
+	if arrayValue, ok := value.([]any); ok {
+		for _, item := range arrayValue {
+			if item != nil {
+				*contexts = append(*contexts, item)
+			}
+		}
+		return
+	}
+	*contexts = append(*contexts, value)
 }
 
 // Array handling functions (joinIndices, parseIndices, setValueAtPath, etc.)

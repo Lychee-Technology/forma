@@ -343,6 +343,87 @@ func TestTransformer_ArrayOfObjectsStillMergesProperties(t *testing.T) {
 	assert.Equal(t, false, second["active"])
 }
 
+func TestTransformer_ToAttributes_RequiredNestedFieldDependsOnParentPresence(t *testing.T) {
+	ctx := context.Background()
+	registry := &stubSchemaRegistry{
+		schemaID:   302,
+		schemaName: "lead_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                           {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"propertyInterests.propertyId": {AttributeID: 2, ValueType: forma.ValueTypeText},
+			"propertyInterests.status":     {AttributeID: 3, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	transformer := NewTransformer(registry)
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("lead_schema")
+	require.NoError(t, err)
+
+	rowID := uuid.Must(uuid.NewV7())
+
+	// Parent path does not exist: nested required field should not be enforced.
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id": "lead-1",
+	})
+	require.NoError(t, err)
+
+	// Parent path exists (array item exists): nested required field should be enforced.
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id": "lead-2",
+		"propertyInterests": []any{
+			map[string]any{
+				"propertyId": "p-1",
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required attribute 'propertyInterests.status'")
+
+	// Nested required field present: should pass.
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id": "lead-3",
+		"propertyInterests": []any{
+			map[string]any{
+				"propertyId": "p-1",
+				"status":     "viewed",
+			},
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestTransformer_ToAttributes_RequiredNestedFieldFailsForEmptyParentObject(t *testing.T) {
+	ctx := context.Background()
+	registry := &stubSchemaRegistry{
+		schemaID:   303,
+		schemaName: "contact_schema_required",
+		cache: forma.SchemaAttributeCache{
+			"id":            {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"contact.email": {AttributeID: 2, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	transformer := NewTransformer(registry)
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("contact_schema_required")
+	require.NoError(t, err)
+
+	rowID := uuid.Must(uuid.NewV7())
+
+	// Optional parent absent: should pass.
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id": "lead-1",
+	})
+	require.NoError(t, err)
+
+	// Parent explicitly exists but child missing: should fail.
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id":      "lead-2",
+		"contact": map[string]any{},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required attribute 'contact.email'")
+}
+
 func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
 	result := make(map[string]*EAVRecord)
 	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)
