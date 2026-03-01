@@ -288,7 +288,8 @@ func (t *transformer) flattenToAttributes(
 
 func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
 	handleConversionError := func(err error) (bool, error) {
-		if meta.Required {
+		policy := meta.EffectiveRequiredPolicy()
+		if policy == forma.RequiredPolicyAlways || policy == forma.RequiredPolicyIfParentPresent {
 			return false, err
 		}
 		zap.S().Warnw("skip optional attribute", "attribute", attrName, "attributeID", meta.AttributeID, "err", err)
@@ -356,7 +357,8 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 
 	requiredNames := make([]string, 0, len(cache))
 	for attrName, meta := range cache {
-		if meta.Required {
+		switch meta.EffectiveRequiredPolicy() {
+		case forma.RequiredPolicyAlways, forma.RequiredPolicyIfParentPresent:
 			requiredNames = append(requiredNames, attrName)
 		}
 	}
@@ -364,7 +366,16 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 
 	for _, attrName := range requiredNames {
 		meta := cache[attrName]
-		if isRequiredAttributeMissingInInput(data, attrName) {
+		missing := false
+		switch meta.EffectiveRequiredPolicy() {
+		case forma.RequiredPolicyAlways:
+			missing = isRequiredAttributeMissingInInput(data, attrName, true)
+		case forma.RequiredPolicyIfParentPresent:
+			missing = isRequiredAttributeMissingInInput(data, attrName, false)
+		default:
+			missing = false
+		}
+		if missing {
 			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", attrName, meta.AttributeID)
 		}
 	}
@@ -372,7 +383,7 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 	return nil
 }
 
-func isRequiredAttributeMissingInInput(root map[string]any, attrPath string) bool {
+func isRequiredAttributeMissingInInput(root map[string]any, attrPath string, enforceWhenParentMissing bool) bool {
 	segments := strings.Split(attrPath, ".")
 	if len(segments) == 0 {
 		return false
@@ -385,8 +396,7 @@ func isRequiredAttributeMissingInInput(root map[string]any, attrPath string) boo
 
 	parentContexts := findExistingParentContexts(root, segments[:len(segments)-1])
 	if len(parentContexts) == 0 {
-		// Parent does not exist, so nested required field should not be enforced.
-		return false
+		return enforceWhenParentMissing
 	}
 
 	leaf := segments[len(segments)-1]

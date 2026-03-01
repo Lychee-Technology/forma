@@ -11,6 +11,10 @@
     "attributeID": 3,
     "valueType": "text"
   },
+  "contactSnapshot": {
+    "attributeID": 25,
+    "valueType": "text"
+  },
   "contactSnapshot.name": {
     "attributeID": 21,
     "valueType": "text"
@@ -38,12 +42,12 @@
   "id": {
     "attributeID": 6,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "leadId": {
     "attributeID": 7,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "nextFollowUpAt": {
     "attributeID": 9,
@@ -51,7 +55,8 @@
   },
   "propertyId": {
     "attributeID": 10,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "propertySnapshot.address": {
     "attributeID": 11,
@@ -79,11 +84,13 @@
   },
   "scheduledStartAt": {
     "attributeID": 17,
-    "valueType": "date"
+    "valueType": "date",
+    "required_policy": "required_always"
   },
   "status": {
     "attributeID": 18,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "updatedAt": {
     "attributeID": 19,
@@ -91,6 +98,7 @@
   },
   "userId": {
     "attributeID": 20,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   }
 }

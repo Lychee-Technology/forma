@@ -32,6 +32,7 @@ func TestParseAttributeMetadata(t *testing.T) {
 				assert.Equal(t, int16(1), meta.AttributeID)
 				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
 				assert.False(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
 				if assert.NotNil(t, meta.ColumnBinding) {
 					assert.Equal(t, forma.MainColumn("text_01"), meta.ColumnBinding.ColumnName)
 					assert.Equal(t, forma.MainColumnEncodingBoolText, meta.ColumnBinding.Encoding)
@@ -49,11 +50,12 @@ func TestParseAttributeMetadata(t *testing.T) {
 				assert.Equal(t, int16(2), meta.AttributeID)
 				assert.Equal(t, forma.ValueType("integer"), meta.ValueType)
 				assert.False(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
 				assert.Nil(t, meta.ColumnBinding)
 			},
 		},
 		{
-			name:     "success with required flag",
+			name:     "success with legacy required true flag",
 			attrName: "baz",
 			attrData: map[string]any{
 				"attributeID": 3.0,
@@ -64,6 +66,49 @@ func TestParseAttributeMetadata(t *testing.T) {
 				assert.Equal(t, int16(3), meta.AttributeID)
 				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
 				assert.True(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
+			},
+		},
+		{
+			name:     "success with required_policy always",
+			attrName: "always_required",
+			attrData: map[string]any{
+				"attributeID":     4.0,
+				"valueType":       "text",
+				"required_policy": "required_always",
+			},
+			expect: func(t *testing.T, meta forma.AttributeMetadata) {
+				assert.Equal(t, int16(4), meta.AttributeID)
+				assert.True(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyAlways, meta.RequiredPolicy)
+			},
+		},
+		{
+			name:     "success with required_policy if parent present",
+			attrName: "local_required",
+			attrData: map[string]any{
+				"attributeID":     5.0,
+				"valueType":       "text",
+				"required_policy": "required_if_parent_present",
+			},
+			expect: func(t *testing.T, meta forma.AttributeMetadata) {
+				assert.Equal(t, int16(5), meta.AttributeID)
+				assert.True(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
+			},
+		},
+		{
+			name:     "success with required_policy optional",
+			attrName: "optional_policy",
+			attrData: map[string]any{
+				"attributeID":     6.0,
+				"valueType":       "text",
+				"required_policy": "optional",
+			},
+			expect: func(t *testing.T, meta forma.AttributeMetadata) {
+				assert.Equal(t, int16(6), meta.AttributeID)
+				assert.False(t, meta.Required)
+				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
 			},
 		},
 		{
@@ -87,6 +132,27 @@ func TestParseAttributeMetadata(t *testing.T) {
 				"required":    "yes",
 			},
 			expectErr: "required",
+		},
+		{
+			name:     "error invalid required_policy",
+			attrName: "badRequiredPolicy",
+			attrData: map[string]any{
+				"attributeID":     7.0,
+				"valueType":       "text",
+				"required_policy": "global",
+			},
+			expectErr: "required_policy",
+		},
+		{
+			name:     "error required and required_policy coexist",
+			attrName: "conflictRequired",
+			attrData: map[string]any{
+				"attributeID":     8.0,
+				"valueType":       "text",
+				"required":        true,
+				"required_policy": "required_always",
+			},
+			expectErr: "both required and required_policy",
 		},
 		{
 			name:     "error from binding parsing",

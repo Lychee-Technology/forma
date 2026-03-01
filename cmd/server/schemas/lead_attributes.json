@@ -45,7 +45,8 @@
   },
   "contact.isAnonymous": {
     "attributeID": 78,
-    "valueType": "bool"
+    "valueType": "bool",
+    "required_policy": "required_always"
   },
   "contact.isBlacklisted": {
     "attributeID": 11,
@@ -106,7 +107,7 @@
   "createdAt": {
     "attributeID": 24,
     "valueType": "date",
-    "required": true
+    "required_policy": "required_always"
   },
   "firstTouchAt": {
     "attributeID": 25,
@@ -115,7 +116,7 @@
   "id": {
     "attributeID": 26,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "lastContactedAt": {
     "attributeID": 27,
@@ -128,12 +129,12 @@
   "ownerUserId": {
     "attributeID": 29,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "pipeline": {
     "attributeID": 30,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "propertyInterests.firstSeenAt": {
     "attributeID": 31,
@@ -153,7 +154,8 @@
   },
   "propertyInterests.propertyId": {
     "attributeID": 35,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
   },
   "propertyInterests.snapshot.address": {
     "attributeID": 36,
@@ -177,7 +179,8 @@
   },
   "propertyInterests.status": {
     "attributeID": 41,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
   },
   "rating": {
     "attributeID": 42,
@@ -205,7 +208,8 @@
   },
   "requirement.budget.currency": {
     "attributeID": 48,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
   },
   "requirement.budget.display": {
     "attributeID": 49,
@@ -281,7 +285,8 @@
   },
   "source.channel": {
     "attributeID": 67,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
   },
   "source.name": {
     "attributeID": 68,
@@ -294,12 +299,12 @@
   "stage": {
     "attributeID": 70,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "status": {
     "attributeID": 71,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "tags": {
     "attributeID": 72,
@@ -312,12 +317,12 @@
   "tenantId": {
     "attributeID": 74,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "updatedAt": {
     "attributeID": 75,
     "valueType": "date",
-    "required": true
+    "required_policy": "required_always"
   },
   "visits": {
     "attributeID": 76,

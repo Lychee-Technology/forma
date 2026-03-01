@@ -1,7 +1,8 @@
 {
   "at": {
     "attributeID": 1,
-    "valueType": "date"
+    "valueType": "date",
+    "required_policy": "required_always"
   },
   "createdAt": {
     "attributeID": 2,
@@ -17,11 +18,13 @@
   },
   "id": {
     "attributeID": 5,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "leadId": {
     "attributeID": 6,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "nextFollowUpAt": {
     "attributeID": 7,
@@ -29,11 +32,13 @@
   },
   "summary": {
     "attributeID": 8,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "type": {
     "attributeID": 9,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   },
   "updatedAt": {
     "attributeID": 10,
@@ -41,6 +46,7 @@
   },
   "userId": {
     "attributeID": 11,
-    "valueType": "text"
+    "valueType": "text",
+    "required_policy": "required_always"
   }
 }

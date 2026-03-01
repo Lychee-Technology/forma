@@ -384,3 +384,35 @@ func TestShouldEnforceRequiredAttribute(t *testing.T) {
 		})
 	}
 }
+
+func TestAttributeConverterFromEAVRecords_RequiredAlwaysIgnoresParentPresence(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   401,
+		schemaName: "always_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":               {AttributeID: 1, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyAlways},
+			"contact.email":    {AttributeID: 2, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyAlways},
+			"contact.nickname": {AttributeID: 3, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "lead-1"
+	records := []EAVRecord{
+		{
+			SchemaID:  401,
+			RowID:     rowID,
+			AttrID:    1,
+			ValueText: &idValue,
+		},
+	}
+
+	_, err := converter.FromEAVRecords(records)
+	if err == nil {
+		t.Fatalf("expected error for required_always attribute when parent path is absent")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'contact.email'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

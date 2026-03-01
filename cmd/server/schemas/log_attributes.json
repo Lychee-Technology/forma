@@ -2,7 +2,7 @@
   "createdAt": {
     "attributeID": 1,
     "valueType": "date",
-    "required": true
+    "required_policy": "required_always"
   },
   "data": {
     "attributeID": 11,
@@ -11,17 +11,13 @@
   "id": {
     "attributeID": 3,
     "valueType": "text",
-    "column_binding": {
-      "col_name": "text_01"
-    },
-    "required": true
+    "column_binding": {"col_name":"text_01"},
+    "required_policy": "required_always"
   },
   "leadId": {
     "attributeID": 4,
     "valueType": "text",
-    "column_binding": {
-      "col_name": "uuid_02"
-    }
+    "column_binding": {"col_name":"uuid_02"}
   },
   "noteId": {
     "attributeID": 5,
@@ -30,7 +26,7 @@
   "ownerId": {
     "attributeID": 6,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "summary": {
     "attributeID": 7,
@@ -39,7 +35,7 @@
   "type": {
     "attributeID": 8,
     "valueType": "text",
-    "required": true
+    "required_policy": "required_always"
   },
   "updatedAt": {
     "attributeID": 9,
@@ -48,8 +44,6 @@
   "visitId": {
     "attributeID": 10,
     "valueType": "text",
-    "column_binding": {
-      "col_name": "uuid_01"
-    }
+    "column_binding": {"col_name":"uuid_01"}
   }
 }

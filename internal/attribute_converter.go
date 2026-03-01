@@ -160,8 +160,13 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 				zap.S().Warnw("missing attribute metadata for missing EAV record", "attrID", missingAttrID, "attrName", missingAttrName)
 				continue
 			}
-			if metadata.Required && shouldEnforceRequiredAttribute(missingAttrName, presentAttrNames) {
+			switch metadata.EffectiveRequiredPolicy() {
+			case forma.RequiredPolicyAlways:
 				return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
+			case forma.RequiredPolicyIfParentPresent:
+				if shouldEnforceRequiredAttribute(missingAttrName, presentAttrNames) {
+					return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
+				}
 			}
 		}
 	}

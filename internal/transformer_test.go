@@ -424,6 +424,30 @@ func TestTransformer_ToAttributes_RequiredNestedFieldFailsForEmptyParentObject(t
 	assert.Contains(t, err.Error(), "missing required attribute 'contact.email'")
 }
 
+func TestTransformer_ToAttributes_RequiredAlwaysEnforcedEvenWhenParentMissing(t *testing.T) {
+	ctx := context.Background()
+	registry := &stubSchemaRegistry{
+		schemaID:   304,
+		schemaName: "required_always_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":            {AttributeID: 1, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyAlways},
+			"contact.email": {AttributeID: 2, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyAlways},
+			"contact.phone": {AttributeID: 3, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	transformer := NewTransformer(registry)
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("required_always_schema")
+	require.NoError(t, err)
+
+	rowID := uuid.Must(uuid.NewV7())
+	_, err = transformer.ToAttributes(ctx, schemaID, rowID, map[string]any{
+		"id": "lead-1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required attribute 'contact.email'")
+}
+
 func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
 	result := make(map[string]*EAVRecord)
 	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)

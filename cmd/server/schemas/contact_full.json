@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Contact profile for CRM entities",
+  "properties": {
+    "company": {
+      "description": "Company or organization",
+      "type": "string"
+    },
+    "email": {
+      "description": "Primary email address",
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "type": "string"
+    },
+    "id": {
+      "description": "Contact identifier",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "type": "string"
+    },
+    "name": {
+      "description": "Full name",
+      "type": "string"
+    },
+    "phone": {
+      "description": "Primary phone number",
+      "pattern": "^[0-9-+() ]+$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "email"
+  ],
+  "title": "Contact",
+  "type": "object"
+}

@@ -114,13 +114,37 @@ func (m *MainColumnBinding) ColumnType() MainColumnType {
 	}
 }
 
+// RequiredPolicy defines when an attribute is required.
+type RequiredPolicy string
+
+const (
+	RequiredPolicyOptional        RequiredPolicy = "optional"
+	RequiredPolicyAlways          RequiredPolicy = "required_always"
+	RequiredPolicyIfParentPresent RequiredPolicy = "required_if_parent_present"
+)
+
 // AttributeMetadata stores cached metadata from the attributes table.
 type AttributeMetadata struct {
-	AttributeName string             `json:"attr_name"`  // attr_name, JSON Path
-	AttributeID   int16              `json:"attr_id"`    // attr_id
-	ValueType     ValueType          `json:"value_type"` // 'text', 'numeric', 'date', 'bool'
+	AttributeName  string         `json:"attr_name"`  // attr_name, JSON Path
+	AttributeID    int16          `json:"attr_id"`    // attr_id
+	ValueType      ValueType      `json:"value_type"` // 'text', 'numeric', 'date', 'bool'
+	RequiredPolicy RequiredPolicy `json:"required_policy,omitempty"`
+	// Required is kept for backward compatibility with older metadata readers.
+	// New code should use RequiredPolicy.
 	Required      bool               `json:"required,omitempty"`
 	ColumnBinding *MainColumnBinding `json:"column_binding,omitempty"`
+}
+
+// EffectiveRequiredPolicy returns the policy used at runtime.
+// If RequiredPolicy is unset, it falls back to legacy Required semantics.
+func (m AttributeMetadata) EffectiveRequiredPolicy() RequiredPolicy {
+	if m.RequiredPolicy != "" {
+		return m.RequiredPolicy
+	}
+	if m.Required {
+		return RequiredPolicyIfParentPresent
+	}
+	return RequiredPolicyOptional
 }
 
 // AttributeStorageLocation enumerates where the attribute physically resides.

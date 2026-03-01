@@ -12,10 +12,16 @@ import (
 )
 
 type attributeSpec struct {
-	AttributeID int    `json:"attributeID"`
-	ValueType   string `json:"valueType"`
-	Required    bool   `json:"required,omitempty"`
+	AttributeID    int    `json:"attributeID"`
+	ValueType      string `json:"valueType"`
+	RequiredPolicy string `json:"required_policy,omitempty"`
 }
+
+const (
+	requiredPolicyOptional        = "optional"
+	requiredPolicyAlways          = "required_always"
+	requiredPolicyIfParentPresent = "required_if_parent_present"
+)
 
 func runGenerateAttributes(args []string) error {
 	flags := flag.NewFlagSet("generate-attributes", flag.ContinueOnError)
@@ -116,10 +122,10 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 		if spec, exists := newAttributes[name]; exists {
 			// Attribute still exists in schema: update valueType if changed
 			existingData["valueType"] = spec.ValueType
-			applyRequiredFlag(existingData, spec.Required)
+			applyRequiredPolicy(existingData, spec.RequiredPolicy)
 		} else {
 			// Attribute no longer exists in schema path; it must not stay required.
-			applyRequiredFlag(existingData, false)
+			applyRequiredPolicy(existingData, requiredPolicyOptional)
 		}
 		// Keep the attribute regardless of whether it exists in the new schema
 		result[name] = existingData
@@ -133,7 +139,7 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 				"attributeID": newIDMap[name],
 				"valueType":   spec.ValueType,
 			}
-			applyRequiredFlag(result[name], spec.Required)
+			applyRequiredPolicy(result[name], spec.RequiredPolicy)
 		}
 	}
 
@@ -242,6 +248,17 @@ func formatJSONValue(v any) string {
 }
 
 func traverseSchema(schema map[string]any, path string, insideArray bool, attributes map[string]attributeSpec, pathRequired bool) map[string]attributeSpec {
+	return traverseSchemaWithRequiredState(schema, path, insideArray, attributes, pathRequired, true)
+}
+
+func traverseSchemaWithRequiredState(
+	schema map[string]any,
+	path string,
+	insideArray bool,
+	attributes map[string]attributeSpec,
+	pathRequired bool,
+	currentRequired bool,
+) map[string]attributeSpec {
 	if properties, ok := schema["properties"].(map[string]any); ok {
 		requiredProps := getRequiredProperties(schema)
 		for key, raw := range properties {
@@ -256,8 +273,9 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			} else {
 				newPath = path + "." + key
 			}
-			childRequired := pathRequired && requiredProps[key]
-			traverseSchema(child, newPath, insideArray, attributes, childRequired)
+			childRequired := requiredProps[key]
+			childPathRequired := pathRequired && childRequired
+			traverseSchemaWithRequiredState(child, newPath, insideArray, attributes, childPathRequired, childRequired)
 		}
 		return attributes
 	}
@@ -269,20 +287,20 @@ func traverseSchema(schema map[string]any, path string, insideArray bool, attrib
 			case "object":
 				if _, ok := items["properties"]; ok {
 					// Arrays can be empty; item fields are only required when items exist.
-					return traverseSchema(items, path, true, attributes, false)
+					return traverseSchemaWithRequiredState(items, path, true, attributes, false, true)
 				}
 			case "string", "integer", "number", "boolean":
 				attributes[path] = attributeSpec{
-					ValueType: getValueType(items),
-					Required:  pathRequired,
+					ValueType:      getValueType(items),
+					RequiredPolicy: resolveRequiredPolicy(pathRequired, currentRequired),
 				}
 				return attributes
 			}
 		}
 	default:
 		attributes[path] = attributeSpec{
-			ValueType: getValueType(schema),
-			Required:  pathRequired,
+			ValueType:      getValueType(schema),
+			RequiredPolicy: resolveRequiredPolicy(pathRequired, currentRequired),
 		}
 	}
 
@@ -313,12 +331,26 @@ func getRequiredProperties(schema map[string]any) map[string]bool {
 	return result
 }
 
-func applyRequiredFlag(attrData map[string]any, required bool) {
-	if required {
-		attrData["required"] = true
-		return
-	}
+func applyRequiredPolicy(attrData map[string]any, policy string) {
+	// Keep output in the new format.
 	delete(attrData, "required")
+
+	switch policy {
+	case "", requiredPolicyOptional:
+		delete(attrData, "required_policy")
+	default:
+		attrData["required_policy"] = policy
+	}
+}
+
+func resolveRequiredPolicy(pathRequired bool, currentRequired bool) string {
+	if !currentRequired {
+		return requiredPolicyOptional
+	}
+	if pathRequired {
+		return requiredPolicyAlways
+	}
+	return requiredPolicyIfParentPresent
 }
 
 func getSchemaType(node map[string]any) string {

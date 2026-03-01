@@ -227,14 +227,13 @@ func parseFileAttributeMetadata(attrName string, attrData map[string]any, source
 	}
 	meta.ValueType = forma.ValueType(valueTypeStr)
 
-	// Parse required flag
-	if requiredRaw, exists := attrData["required"]; exists {
-		required, ok := requiredRaw.(bool)
-		if !ok {
-			return forma.AttributeMetadata{}, fmt.Errorf("invalid required flag for attribute %s in %s", attrName, source)
-		}
-		meta.Required = required
+	requiredPolicy, _, err := parseRequiredPolicy(attrName, attrData, source)
+	if err != nil {
+		return forma.AttributeMetadata{}, err
 	}
+	meta.RequiredPolicy = requiredPolicy
+	policy := meta.EffectiveRequiredPolicy()
+	meta.Required = policy == forma.RequiredPolicyAlways || policy == forma.RequiredPolicyIfParentPresent
 
 	// Parse optional column_binding
 	if bindingRaw, exists := attrData["column_binding"]; exists {

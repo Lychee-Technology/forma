@@ -425,20 +425,20 @@ func TestTraverseSchemaMarksRequiredProperties(t *testing.T) {
 
 	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
-	if attr := result["name"]; !attr.Required {
-		t.Errorf("expected name to be required")
+	if attr := result["name"]; attr.RequiredPolicy != requiredPolicyAlways {
+		t.Errorf("expected name policy to be %q, got %q", requiredPolicyAlways, attr.RequiredPolicy)
 	}
 
-	if attr := result["nickname"]; attr.Required {
-		t.Errorf("expected nickname to be optional")
+	if attr := result["nickname"]; attr.RequiredPolicy != requiredPolicyOptional {
+		t.Errorf("expected nickname policy to be %q, got %q", requiredPolicyOptional, attr.RequiredPolicy)
 	}
 
-	if attr := result["contact.email"]; !attr.Required {
-		t.Errorf("expected contact.email to be required")
+	if attr := result["contact.email"]; attr.RequiredPolicy != requiredPolicyAlways {
+		t.Errorf("expected contact.email policy to be %q, got %q", requiredPolicyAlways, attr.RequiredPolicy)
 	}
 
-	if attr := result["contact.phone"]; attr.Required {
-		t.Errorf("expected contact.phone to be optional")
+	if attr := result["contact.phone"]; attr.RequiredPolicy != requiredPolicyOptional {
+		t.Errorf("expected contact.phone policy to be %q, got %q", requiredPolicyOptional, attr.RequiredPolicy)
 	}
 }
 
@@ -468,8 +468,8 @@ func TestTraverseSchemaSkipsRequiredWhenParentOptional(t *testing.T) {
 
 	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
-	if attr := result["contact.email"]; attr.Required {
-		t.Errorf("expected contact.email to be optional when contact is optional")
+	if attr := result["contact.email"]; attr.RequiredPolicy != requiredPolicyIfParentPresent {
+		t.Errorf("expected contact.email policy to be %q when contact is optional, got %q", requiredPolicyIfParentPresent, attr.RequiredPolicy)
 	}
 }
 
@@ -855,7 +855,10 @@ func TestGenerateAttributesJSONRemovedAttributeClearsRequiredFlag(t *testing.T) 
 	}
 
 	if _, ok := result["toBeRemoved"]["required"]; ok {
-		t.Errorf("expected removed attribute to clear required flag")
+		t.Errorf("expected removed attribute to clear legacy required flag")
+	}
+	if _, ok := result["toBeRemoved"]["required_policy"]; ok {
+		t.Errorf("expected removed attribute to clear required_policy")
 	}
 }
 
@@ -934,12 +937,15 @@ func TestGenerateAttributesJSONMarksRequiredAttributes(t *testing.T) {
 		t.Fatalf("failed to unmarshal result: %v", err)
 	}
 
-	if required, ok := result["name"]["required"].(bool); !ok || !required {
-		t.Errorf("expected required flag for name attribute, got %v", result["name"]["required"])
+	if policy, ok := result["name"]["required_policy"].(string); !ok || policy != requiredPolicyAlways {
+		t.Errorf("expected required_policy %q for name attribute, got %v", requiredPolicyAlways, result["name"]["required_policy"])
 	}
 
 	if _, ok := result["age"]["required"]; ok {
-		t.Errorf("did not expect required flag for age attribute")
+		t.Errorf("did not expect legacy required flag for age attribute")
+	}
+	if _, ok := result["age"]["required_policy"]; ok {
+		t.Errorf("did not expect required_policy for age attribute")
 	}
 }
 
@@ -969,8 +975,8 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 	var firstResult map[string]map[string]any
 	_ = json.Unmarshal(data, &firstResult)
 
-	if required, ok := firstResult["name"]["required"].(bool); !ok || !required {
-		t.Fatalf("expected name to be required after first generation")
+	if policy, ok := firstResult["name"]["required_policy"].(string); !ok || policy != requiredPolicyAlways {
+		t.Fatalf("expected name required_policy to be %q after first generation", requiredPolicyAlways)
 	}
 
 	nameID := int(firstResult["name"]["attributeID"].(float64))
@@ -998,11 +1004,14 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 	_ = json.Unmarshal(data, &secondResult)
 
 	if _, ok := secondResult["name"]["required"]; ok {
-		t.Errorf("expected name to no longer be required")
+		t.Errorf("expected name to no longer include legacy required")
+	}
+	if _, ok := secondResult["name"]["required_policy"]; ok {
+		t.Errorf("expected name to no longer include required_policy")
 	}
 
-	if required, ok := secondResult["age"]["required"].(bool); !ok || !required {
-		t.Errorf("expected age to become required")
+	if policy, ok := secondResult["age"]["required_policy"].(string); !ok || policy != requiredPolicyAlways {
+		t.Errorf("expected age required_policy to become %q", requiredPolicyAlways)
 	}
 
 	if newNameID := int(secondResult["name"]["attributeID"].(float64)); newNameID != nameID {
