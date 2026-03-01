@@ -55,7 +55,11 @@ func Save(ctx context.Context, st Store, path string, m *Manifest, etag string) 
 	if m == nil {
 		return "", fmt.Errorf("manifest nil")
 	}
-	m.UpdatedAtMs = time.Now().UnixMilli()
+	nextUpdatedAtMs := time.Now().UnixMilli()
+	if nextUpdatedAtMs <= m.UpdatedAtMs {
+		nextUpdatedAtMs = m.UpdatedAtMs + 1
+	}
+	m.UpdatedAtMs = nextUpdatedAtMs
 	if m.Version == 0 {
 		m.Version = 1
 	} else {
