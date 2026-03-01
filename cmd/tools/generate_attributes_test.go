@@ -805,6 +805,60 @@ func TestGenerateAttributesJSONRemoveAttributeFromSchema(t *testing.T) {
 	}
 }
 
+func TestGenerateAttributesJSONRemovedAttributeClearsRequiredFlag(t *testing.T) {
+	tempDir := t.TempDir()
+	schemaPath := filepath.Join(tempDir, "schema.json")
+	outputPath := filepath.Join(tempDir, "attributes.json")
+
+	initialSchema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"mustKeep",
+			"toBeRemoved",
+		},
+		"properties": map[string]any{
+			"mustKeep":    map[string]any{"type": "string"},
+			"toBeRemoved": map[string]any{"type": "string"},
+		},
+	}
+	schemaData, _ := json.Marshal(initialSchema)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
+
+	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+		t.Fatalf("expected no error on initial generation, got %v", err)
+	}
+
+	updatedSchema := map[string]any{
+		"type": "object",
+		"required": []any{
+			"mustKeep",
+		},
+		"properties": map[string]any{
+			"mustKeep": map[string]any{"type": "string"},
+		},
+	}
+	schemaData, _ = json.Marshal(updatedSchema)
+	_ = os.WriteFile(schemaPath, schemaData, 0o644)
+
+	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+		t.Fatalf("expected no error on regeneration, got %v", err)
+	}
+
+	data, _ := os.ReadFile(outputPath)
+	var result map[string]map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	if _, exists := result["toBeRemoved"]; !exists {
+		t.Fatalf("expected removed attribute to still be preserved")
+	}
+
+	if _, ok := result["toBeRemoved"]["required"]; ok {
+		t.Errorf("expected removed attribute to clear required flag")
+	}
+}
+
 // TestGenerateAttributesJSONUpdateValueType tests that value types are updated when schema changes
 func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	tempDir := t.TempDir()

@@ -287,3 +287,100 @@ func TestToBoolForEAV(t *testing.T) {
 		})
 	}
 }
+
+func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   400,
+		schemaName: "lead_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                           {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"propertyInterests.propertyId": {AttributeID: 2, ValueType: forma.ValueTypeText},
+			"propertyInterests.status":     {AttributeID: 3, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+
+	idValue := "lead-1"
+	recordsWithoutParent := []EAVRecord{
+		{
+			SchemaID:  400,
+			RowID:     rowID,
+			AttrID:    1,
+			ValueText: &idValue,
+		},
+	}
+
+	_, err := converter.FromEAVRecords(recordsWithoutParent)
+	if err != nil {
+		t.Fatalf("expected no error when nested parent is absent, got %v", err)
+	}
+
+	propertyID := "p-1"
+	recordsWithParent := []EAVRecord{
+		recordsWithoutParent[0],
+		{
+			SchemaID:     400,
+			RowID:        rowID,
+			AttrID:       2,
+			ArrayIndices: "0",
+			ValueText:    &propertyID,
+		},
+	}
+
+	_, err = converter.FromEAVRecords(recordsWithParent)
+	if err == nil {
+		t.Fatalf("expected error when nested parent exists but required child is missing")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'propertyInterests.status'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestShouldEnforceRequiredAttribute(t *testing.T) {
+	tests := []struct {
+		name            string
+		attrName        string
+		presentAttrName []string
+		expected        bool
+	}{
+		{
+			name:            "top-level required is always enforced",
+			attrName:        "id",
+			presentAttrName: nil,
+			expected:        true,
+		},
+		{
+			name:            "nested required skipped when parent missing",
+			attrName:        "contact.email",
+			presentAttrName: []string{"id"},
+			expected:        false,
+		},
+		{
+			name:            "nested required enforced when parent descendant exists",
+			attrName:        "contact.email",
+			presentAttrName: []string{"contact.phone"},
+			expected:        true,
+		},
+		{
+			name:            "deep nested required skipped when immediate parent missing",
+			attrName:        "contact.snapshot.code",
+			presentAttrName: []string{"contact.phone"},
+			expected:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			present := make(map[string]struct{}, len(tt.presentAttrName))
+			for _, name := range tt.presentAttrName {
+				present[name] = struct{}{}
+			}
+			got := shouldEnforceRequiredAttribute(tt.attrName, present)
+			if got != tt.expected {
+				t.Fatalf("expected %v, got %v", tt.expected, got)
+			}
+		})
+	}
+}

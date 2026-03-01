@@ -117,6 +117,9 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 			// Attribute still exists in schema: update valueType if changed
 			existingData["valueType"] = spec.ValueType
 			applyRequiredFlag(existingData, spec.Required)
+		} else {
+			// Attribute no longer exists in schema path; it must not stay required.
+			applyRequiredFlag(existingData, false)
 		}
 		// Keep the attribute regardless of whether it exists in the new schema
 		result[name] = existingData

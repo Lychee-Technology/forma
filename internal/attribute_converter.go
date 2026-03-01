@@ -133,6 +133,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 
 	copyIdToName := make(map[int16]string, len(idToName))
 	maps.Copy(copyIdToName, idToName)
+	presentAttrNames := make(map[string]struct{}, len(records))
 
 	attributes := make([]EntityAttribute, 0, len(records))
 	for _, record := range records {
@@ -140,6 +141,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 		if !ok {
 			continue
 		}
+		presentAttrNames[attrName] = struct{}{}
 
 		meta := cache[attrName]
 		attr, err := c.FromEAVRecord(record, meta.ValueType)
@@ -158,7 +160,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 				zap.S().Warnw("missing attribute metadata for missing EAV record", "attrID", missingAttrID, "attrName", missingAttrName)
 				continue
 			}
-			if metadata.Required {
+			if metadata.Required && shouldEnforceRequiredAttribute(missingAttrName, presentAttrNames) {
 				return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
 			}
 		}
@@ -312,6 +314,30 @@ func parseTrimmedFloat64(value string) (float64, error) {
 		return 0, fmt.Errorf("parse float: %w", err)
 	}
 	return parsed, nil
+}
+
+func shouldEnforceRequiredAttribute(attrName string, presentAttrNames map[string]struct{}) bool {
+	parentPath, hasParent := attributeParentPath(attrName)
+	if !hasParent {
+		return true
+	}
+
+	prefix := parentPath + "."
+	for presentAttrName := range presentAttrNames {
+		if presentAttrName == parentPath || strings.HasPrefix(presentAttrName, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func attributeParentPath(attrPath string) (string, bool) {
+	lastDot := strings.LastIndex(attrPath, ".")
+	if lastDot < 0 {
+		return "", false
+	}
+	return attrPath[:lastDot], true
 }
 
 func toFloat64(value any) (float64, error) {
