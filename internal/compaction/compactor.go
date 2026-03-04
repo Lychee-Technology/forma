@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	telemetry "github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
@@ -17,13 +18,20 @@ import (
 // ErrConcurrentModification indicates manifest was modified by another process.
 var ErrConcurrentModification = errors.New("manifest concurrently modified")
 
+// ErrManifestMetadataContractViolation indicates provider.SaveManifest succeeded
+// but did not advance manifest metadata as required by FileProvider contract.
+var ErrManifestMetadataContractViolation = errors.New("manifest metadata contract violated")
+
 // FileProvider fetches manifest and lists actual files (optionally cross-check).
 type FileProvider interface {
 	LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error)
 	// SaveManifest persists the manifest as a commit point.
-	// Implementations must advance manifest metadata on successful save
-	// (at least a monotonic Version increment and UpdatedAtMs refresh).
-	// Compactor relies on this contract and does not mutate those fields directly.
+	// Implementations must mutate the provided manifest pointer in-place on
+	// successful save:
+	// - Version must increase monotonically.
+	// - UpdatedAtMs must move forward.
+	// Compactor relies on the same pointer carrying updated metadata and does
+	// not mutate those fields directly.
 	SaveManifest(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error)
 }
 
@@ -205,6 +213,9 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 		return nil
 	}
 
+	prevVersion := m.Version
+	prevUpdatedAtMs := m.UpdatedAtMs
+
 	newEtag, err := c.Provider.SaveManifest(ctx, schemaID, m, etag)
 	if err != nil {
 		// Check if this is a concurrent modification (etag mismatch)
@@ -212,6 +223,24 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			return fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
 		}
 		return fmt.Errorf("save manifest: %w", err)
+	}
+
+	if m.Version <= prevVersion || m.UpdatedAtMs <= prevUpdatedAtMs {
+		telemetry.EmitCompactionManifestContractViolation(ctx, schemaID)
+		c.Logger.Error("save manifest contract violated: metadata not advanced",
+			zap.Int16("schema_id", schemaID),
+			zap.Int64("prev_version", prevVersion),
+			zap.Int64("new_version", m.Version),
+			zap.Int64("prev_updated_at_ms", prevUpdatedAtMs),
+			zap.Int64("new_updated_at_ms", m.UpdatedAtMs),
+			zap.String("etag", newEtag))
+		return fmt.Errorf("%w: provider must mutate manifest in-place; prev(version=%d, updated_at_ms=%d), new(version=%d, updated_at_ms=%d)",
+			ErrManifestMetadataContractViolation,
+			prevVersion,
+			prevUpdatedAtMs,
+			m.Version,
+			m.UpdatedAtMs,
+		)
 	}
 
 	c.Logger.Info("compaction completed",

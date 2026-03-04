@@ -72,3 +72,14 @@ func EmitPushdownEfficiency(ctx context.Context, schemaID int16, ratio float64) 
 	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
 	fn(ctx, "fed_query_pushdown_efficiency", labels, ratio)
 }
+
+// EmitCompactionManifestContractViolation records a contract violation event when
+// compaction detects SaveManifest succeeded without metadata advancement.
+// name: "compaction_manifest_contract_violation_total" with label {"schema_id": "<id>"}
+func EmitCompactionManifestContractViolation(ctx context.Context, schemaID int16) {
+	teleMu.Lock()
+	fn := teleImpl
+	teleMu.Unlock()
+	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
+	fn(ctx, "compaction_manifest_contract_violation_total", labels, int64(1))
+}

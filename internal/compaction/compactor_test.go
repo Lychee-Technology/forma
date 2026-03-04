@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	telemetry "github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/stretchr/testify/require"
@@ -14,11 +15,13 @@ import (
 
 // mockProvider implements FileProvider for testing
 type mockProvider struct {
-	manifest  *manifest.Manifest
-	etag      string
-	loadErr   error
-	saveErr   error
-	savedEtag string
+	manifest             *manifest.Manifest
+	etag                 string
+	loadErr              error
+	saveErr              error
+	savedEtag            string
+	skipVersionAdvance   bool
+	skipUpdatedAtAdvance bool
 }
 
 func (m *mockProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
@@ -33,11 +36,19 @@ func (m *mockProvider) SaveManifest(ctx context.Context, schemaID int16, mani *m
 		return "", m.saveErr
 	}
 	if mani != nil {
-		mani.UpdatedAtMs = time.Now().UnixMilli()
-		if mani.Version == 0 {
-			mani.Version = 1
-		} else {
-			mani.Version++
+		if !m.skipUpdatedAtAdvance {
+			nextUpdatedAtMs := time.Now().UnixMilli()
+			if nextUpdatedAtMs <= mani.UpdatedAtMs {
+				nextUpdatedAtMs = mani.UpdatedAtMs + 1
+			}
+			mani.UpdatedAtMs = nextUpdatedAtMs
+		}
+		if !m.skipVersionAdvance {
+			if mani.Version == 0 {
+				mani.Version = 1
+			} else {
+				mani.Version++
+			}
 		}
 	}
 	m.manifest = mani
@@ -165,6 +176,111 @@ func TestCompactor_RunOnce_PromotesDeltasCaseInsensitiveTier(t *testing.T) {
 	require.Equal(t, "base", provider.manifest.Files[0].Tier)
 	require.Equal(t, "new-etag", provider.savedEtag)
 	require.Equal(t, int64(2), provider.manifest.Version)
+}
+
+func TestCompactor_RunOnce_SaveManifestMissingVersionAdvance(t *testing.T) {
+	logger := zap.NewNop()
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
+		},
+	}
+	provider := &mockProvider{
+		manifest:           m,
+		etag:               "etag-1",
+		skipVersionAdvance: true,
+	}
+
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:         1,
+			TargetBaseSizeMB: 256,
+		},
+		Provider: provider,
+	}
+
+	err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
+	require.Contains(t, err.Error(), "version")
+}
+
+func TestCompactor_RunOnce_SaveManifestMissingUpdatedAtAdvance(t *testing.T) {
+	logger := zap.NewNop()
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
+		},
+	}
+	provider := &mockProvider{
+		manifest:             m,
+		etag:                 "etag-1",
+		skipUpdatedAtAdvance: true,
+	}
+
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:         1,
+			TargetBaseSizeMB: 256,
+		},
+		Provider: provider,
+	}
+
+	err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
+	require.Contains(t, err.Error(), "updated_at_ms")
+}
+
+func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testing.T) {
+	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+
+	var gotName string
+	var gotLabels map[string]string
+	var gotValue any
+	telemetry.RegisterTelemetryEmitter(func(ctx context.Context, name string, labels map[string]string, value any) {
+		gotName = name
+		gotLabels = labels
+		gotValue = value
+	})
+
+	logger := zap.NewNop()
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
+		},
+	}
+	provider := &mockProvider{
+		manifest:           m,
+		etag:               "etag-1",
+		skipVersionAdvance: true,
+	}
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:         1,
+			TargetBaseSizeMB: 256,
+		},
+		Provider: provider,
+	}
+
+	err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
+	require.Equal(t, "compaction_manifest_contract_violation_total", gotName)
+	require.Equal(t, "1", gotLabels["schema_id"])
+	require.Equal(t, int64(1), gotValue)
 }
 
 func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *testing.T) {
