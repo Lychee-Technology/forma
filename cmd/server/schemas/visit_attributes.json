@@ -35,6 +35,10 @@
     "attributeID": 4,
     "valueType": "date"
   },
+  "createdBy": {
+    "attributeID": 26,
+    "valueType": "text"
+  },
   "feedback": {
     "attributeID": 5,
     "valueType": "text"
@@ -52,6 +56,10 @@
   "nextFollowUpAt": {
     "attributeID": 9,
     "valueType": "date"
+  },
+  "ownerTeam": {
+    "attributeID": 27,
+    "valueType": "text"
   },
   "propertyId": {
     "attributeID": 10,
@@ -95,6 +103,10 @@
   "updatedAt": {
     "attributeID": 19,
     "valueType": "date"
+  },
+  "updatedBy": {
+    "attributeID": 28,
+    "valueType": "text"
   },
   "userId": {
     "attributeID": 20,

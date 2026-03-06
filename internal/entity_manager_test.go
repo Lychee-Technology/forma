@@ -312,6 +312,7 @@ func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 		"stage":       "new",
 		"status":      "open",
 		"contact": map[string]any{
+			"isAnonymous": false,
 			"name":         "Parent Lead",
 			"primaryPhone": "123-456",
 		},

@@ -63,6 +63,18 @@
       "type": "string",
       "format": "date-time",
       "description": "Last update timestamp"
+    },
+    "createdBy": {
+      "type": "string",
+      "description": "User ID of who created the visit record"
+    },
+    "updatedBy": {
+      "type": "string",
+      "description": "User ID of who last updated the visit record"
+    },
+    "ownerTeam": {
+      "type": "string",
+      "description": "Team that owns the visit record"
     }
   }
 }
