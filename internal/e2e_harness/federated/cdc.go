@@ -15,6 +15,15 @@ import (
 func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, error) {
 	start := time.Now()
 
+	locked, unlock, err := h.tryAcquireSchemaLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !locked {
+		return &FlushResult{Flushed: false, Duration: time.Since(start)}, nil
+	}
+	defer unlock()
+
 	// Get unflushed count before
 	countBefore, _, err := h.GetChangeLogStats(ctx)
 	if err != nil {
@@ -52,16 +61,42 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 	}
 
 	// Mark as flushed
-	if err := h.markRowsFlushed(ctx, rowIDs); err != nil {
+	rowsFlushed, err := h.markRowsFlushed(ctx, rowIDs)
+	if err != nil {
 		return nil, err
 	}
 
 	return &FlushResult{
-		Flushed:      true,
-		RowsFlushed:  int64(len(rowIDs)),
+		Flushed:      rowsFlushed > 0,
+		RowsFlushed:  rowsFlushed,
 		FilesCreated: []string{filename},
 		Duration:     time.Since(start),
 	}, nil
+}
+
+func (h *FederatedTestHarness) tryAcquireSchemaLock(ctx context.Context) (bool, func(), error) {
+	conn, err := h.PGDB.Conn(ctx)
+	if err != nil {
+		return false, nil, fmt.Errorf("get postgres connection for advisory lock: %w", err)
+	}
+
+	var locked bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1, $2)", int32(h.SchemaID), int32(h.SchemaID)).Scan(&locked); err != nil {
+		_ = conn.Close()
+		return false, nil, fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	if !locked {
+		_ = conn.Close()
+		return false, nil, nil
+	}
+
+	unlock := func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1, $2)", int32(h.SchemaID), int32(h.SchemaID))
+		_ = conn.Close()
+	}
+	return true, unlock, nil
 }
 
 // getUnflushedRowIDs fetches unflushed row IDs from change_log up to batch size.
@@ -88,18 +123,24 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]uuid.U
 }
 
 // markRowsFlushed marks rows as flushed in the change_log.
-func (h *FederatedTestHarness) markRowsFlushed(ctx context.Context, rowIDs []uuid.UUID) error {
+func (h *FederatedTestHarness) markRowsFlushed(ctx context.Context, rowIDs []uuid.UUID) (int64, error) {
 	flushedAt := time.Now().UnixMilli()
+	var updated int64
 	for _, id := range rowIDs {
-		_, err := h.PGDB.ExecContext(ctx, `
-			UPDATE change_log SET flushed_at = $1 
-			WHERE schema_id = $2 AND row_id = $3 AND flushed_at = 0
-		`, flushedAt, h.SchemaID, id)
+		res, err := h.PGDB.ExecContext(ctx, `
+				UPDATE change_log SET flushed_at = $1 
+				WHERE schema_id = $2 AND row_id = $3 AND flushed_at = 0
+			`, flushedAt, h.SchemaID, id)
 		if err != nil {
-			return fmt.Errorf("mark row flushed: %w", err)
+			return 0, fmt.Errorf("mark row flushed: %w", err)
 		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("read rows affected: %w", err)
+		}
+		updated += affected
 	}
-	return nil
+	return updated, nil
 }
 
 // RunCompaction triggers a compaction operation.
