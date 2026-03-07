@@ -2,10 +2,10 @@ package internal
 
 import "strings"
 
-// Column slices define the physical EAV column layout in the entity_main table.
+// Column slices define the physical hot-storage columns available in entity_main.
 // These are declared once and treated as read-only after package init.
 var (
-	textColumns     = []string{"text_01", "text_02", "text_03", "text_04", "text_05", "text_06", "text_07", "text_08", "text_09", "text_10"}
+	textColumns     = []string{"ltbase_created_by", "ltbase_deleted_by", "ltbase_updated_by", "text_01", "text_02", "text_03", "text_04", "text_05", "text_06", "text_07", "text_08", "text_09", "text_10"}
 	smallintColumns = []string{"smallint_01", "smallint_02", "smallint_03"}
 	integerColumns  = []string{"integer_01", "integer_02", "integer_03"}
 	bigintColumns   = []string{"bigint_01", "bigint_02", "bigint_03"}

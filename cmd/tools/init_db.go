@@ -164,6 +164,9 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 		ltbase_created_at  BIGINT NOT NULL,
 		ltbase_updated_at  BIGINT NOT NULL,
 		ltbase_deleted_at  BIGINT,
+		ltbase_created_by  TEXT,
+		ltbase_updated_by  TEXT,
+		ltbase_deleted_by  TEXT,
 		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 	)`, entityMain)
 

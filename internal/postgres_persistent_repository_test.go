@@ -60,11 +60,17 @@ func TestSortedColumnKeys(t *testing.T) {
 func TestMainColumnHelpers(t *testing.T) {
 	assert.True(t, isMainTableColumn("text_01"))
 	assert.True(t, isMainTableColumn("ltbase_schema_id"))
+	assert.True(t, isMainTableColumn("ltbase_created_by"))
+	assert.True(t, isMainTableColumn("ltbase_updated_by"))
+	assert.True(t, isMainTableColumn("ltbase_deleted_by"))
 	assert.False(t, isMainTableColumn("nope"))
 
 	desc := getMainColumnDescriptor("ltbase_schema_id")
 	require.NotNil(t, desc)
 	assert.Equal(t, columnKindSmallint, desc.kind)
+	desc = getMainColumnDescriptor("ltbase_created_by")
+	require.NotNil(t, desc)
+	assert.Equal(t, columnKindText, desc.kind)
 	assert.Nil(t, getMainColumnDescriptor("nope"))
 }
 
@@ -342,6 +348,30 @@ func TestBuildHybridConditionsMainColumn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1=1", clause)
 	assert.Nil(t, args)
+}
+
+func TestBuildHybridConditionsBoundAuditColumn(t *testing.T) {
+	cache := NewMetadataCache()
+	cache.schemaNameToID["log"] = 1
+	cache.schemaIDToName[1] = "log"
+	cache.schemaCaches[1] = forma.SchemaAttributeCache{
+		"createdBy": {
+			AttributeName: "createdBy",
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnCreatedBy},
+		},
+	}
+	repo := &DBPersistentRecordRepository{
+		metadataCache: cache,
+	}
+	query := AttributeQuery{
+		SchemaID:  1,
+		Condition: &forma.KvCondition{Attr: "createdBy", Value: "equals:user-123"},
+	}
+
+	clause, args, err := repo.buildHybridConditions("eav_table", "main_table", query, 1, true)
+	require.NoError(t, err)
+	assert.Equal(t, "m.\"ltbase_created_by\" = $2", clause)
+	assert.Equal(t, []any{"user-123"}, args)
 }
 
 func TestRunOptimizedQueryValidation(t *testing.T) {

@@ -54,6 +54,9 @@ const (
 	MainColumnCreatedAt  MainColumn = "ltbase_created_at"
 	MainColumnUpdatedAt  MainColumn = "ltbase_updated_at"
 	MainColumnDeletedAt  MainColumn = "ltbase_deleted_at"
+	MainColumnCreatedBy  MainColumn = "ltbase_created_by"
+	MainColumnUpdatedBy  MainColumn = "ltbase_updated_by"
+	MainColumnDeletedBy  MainColumn = "ltbase_deleted_by"
 	MainColumnSchemaID   MainColumn = "ltbase_schema_id"
 	MainColumnRowID      MainColumn = "ltbase_row_id"
 )
@@ -103,6 +106,8 @@ func (m *MainColumnBinding) ColumnType() MainColumnType {
 		return MainColumnTypeDouble
 	case strings.HasPrefix(name, "uuid"):
 		return MainColumnTypeUUID
+	case (m.ColumnName == MainColumnCreatedBy || m.ColumnName == MainColumnUpdatedBy || m.ColumnName == MainColumnDeletedBy):
+		return MainColumnTypeText
 	case (m.ColumnName == MainColumnCreatedAt || m.ColumnName == MainColumnUpdatedAt || m.ColumnName == MainColumnDeletedAt):
 		return MainColumnTypeBigint
 	case m.ColumnName == MainColumnSchemaID:

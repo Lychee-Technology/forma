@@ -36,10 +36,16 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 			values = append(values, int64(200))
 		case "ltbase_deleted_at":
 			values = append(values, int64(300))
+		case "ltbase_created_by":
+			values = append(values, "creator-1")
 		case "text_01":
 			values = append(values, "hello")
+		case "ltbase_updated_by":
+			values = append(values, "updater-1")
 		case "smallint_01":
 			values = append(values, int64(7))
+		case "ltbase_deleted_by":
+			values = append(values, "deleter-1")
 		case "integer_01":
 			values = append(values, int64(11))
 		case "bigint_01":
@@ -70,7 +76,12 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 	require.NotNil(t, record.DeletedAt)
 	assert.Equal(t, int64(300), *record.DeletedAt)
 
-	assert.Equal(t, map[string]string{"text_01": "hello"}, record.TextItems)
+	assert.Equal(t, map[string]string{
+		"ltbase_created_by": "creator-1",
+		"ltbase_deleted_by": "deleter-1",
+		"text_01":           "hello",
+		"ltbase_updated_by": "updater-1",
+	}, record.TextItems)
 	assert.Equal(t, map[string]int16{"smallint_01": 7}, record.Int16Items)
 	assert.Equal(t, map[string]int32{"integer_01": 11}, record.Int32Items)
 	assert.Equal(t, map[string]int64{"bigint_01": 123}, record.Int64Items)

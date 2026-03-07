@@ -34,6 +34,9 @@ func SeedPostgres(ctx context.Context, db *sql.DB) error {
   ltbase_created_at BIGINT,
   ltbase_updated_at BIGINT,
   ltbase_deleted_at BIGINT,
+  ltbase_created_by TEXT,
+  ltbase_updated_by TEXT,
+  ltbase_deleted_by TEXT,
   text_01 TEXT,
   integer_01 INTEGER
 );`,

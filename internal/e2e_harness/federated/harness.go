@@ -277,6 +277,9 @@ func (h *FederatedTestHarness) initDatabaseSchema(ctx context.Context) error {
 			ltbase_created_at BIGINT NOT NULL,
 			ltbase_updated_at BIGINT NOT NULL,
 			ltbase_deleted_at BIGINT,
+			ltbase_created_by TEXT,
+			ltbase_updated_by TEXT,
+			ltbase_deleted_by TEXT,
 			PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS eav_data (
