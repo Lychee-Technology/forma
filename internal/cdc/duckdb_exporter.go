@@ -18,7 +18,6 @@ import (
 type DuckExporter struct {
 	DB     *sql.DB
 	Logger *zap.Logger
-	Config CDCConfig // keep config for compression settings
 }
 
 // NewDuckExporter opens a DuckDB connection and configures pragmas and extensions.
@@ -106,19 +105,19 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 		}
 	}
 
-	return &DuckExporter{DB: db, Logger: logger, Config: cfg}, nil
+	return &DuckExporter{DB: db, Logger: logger}, nil
 }
 
 // ExportSnapshotToTmp builds an export SQL and runs COPY to the provided s3TmpPath.
 // s3TmpPath is the destination like 's3://bucket/prefix/<schema_id>/_tmp/<tmp_uuid>.parquet'
-func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-	sql, clQuery, mQuery, eQuery, err := buildExportSQL(pgConnStr, s3TmpPath, e.Config, schemaID, snapshotTS, rowIDs, attrCache)
+func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+	sql, clQuery, mQuery, eQuery, err := buildExportSQL(pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
 		return err
 	}
 
 	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", redactConnStr(sql), "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
-	timeout := e.Config.QueryTimeout
+	timeout := cfg.QueryTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}

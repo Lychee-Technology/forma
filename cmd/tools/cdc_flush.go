@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	publiccdc "github.com/lychee-technology/forma/cdc"
 	"github.com/lychee-technology/forma/internal"
-	"github.com/lychee-technology/forma/internal/cdc"
 	"go.uber.org/zap"
 )
 
@@ -84,7 +84,7 @@ func runCDCFlush(args []string) error {
 		password = os.Getenv("PGPASSWORD")
 	}
 
-	cfg := cdc.CDCConfig{
+	cfg := publiccdc.Config{
 		ChangeLogTable:          *changeLogTable,
 		EntityMainTable:         *entityMainTable,
 		EAVDataTable:            *eavDataTable,
@@ -165,7 +165,7 @@ func runCDCFlush(args []string) error {
 		zap.String("manifest_template", cfg.ManifestTemplate),
 		zap.Bool("dry_run", *dryRun))
 
-	if err := cdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, schemaRegistry); err != nil {
+	if err := publiccdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, schemaRegistry); err != nil {
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 

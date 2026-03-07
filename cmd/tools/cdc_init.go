@@ -551,7 +551,7 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 		return nil
 	}
 
-	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache); err != nil {
+	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.cfg, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache); err != nil {
 		return fmt.Errorf("export batch: %w", err)
 	}
 	if err := cdc.CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, batch.tmpKey, batch.finalKey, runCtx.logger); err != nil {

@@ -13,14 +13,14 @@ import (
 // ExportBaseFileToTmp exports existing entity_main + eav_data rows directly to a base parquet file.
 // Unlike delta export, this does NOT use change_log - it reads directly from entity_main.
 // s3TmpPath is the destination like 's3://bucket/base/<schema_id>/_tmp/<tmp_uuid>.parquet'
-func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, pgConnStr string, s3TmpPath string, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-	sql, mQuery, eQuery, err := buildBaseExportSQL(pgConnStr, s3TmpPath, e.Config, schemaID, rowIDs, attrCache)
+func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+	sql, mQuery, eQuery, err := buildBaseExportSQL(pgConnStr, s3TmpPath, cfg, schemaID, rowIDs, attrCache)
 	if err != nil {
 		return err
 	}
 
 	e.Logger.Sugar().Infow("duckdb base export sql", "sql_preview", redactConnStr(sql), "m_query", mQuery, "e_query", eQuery)
-	timeout := e.Config.QueryTimeout
+	timeout := cfg.QueryTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}

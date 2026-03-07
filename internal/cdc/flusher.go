@@ -327,7 +327,7 @@ type flushBatchExecutor struct {
 func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 
-	if err := e.duck.ExportSnapshotToTmp(e.ctx, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+	if err := e.duck.ExportSnapshotToTmp(e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
 		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
 	}
 
