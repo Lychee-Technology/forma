@@ -36,7 +36,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	var (
 		dbPool         *pgxpool.Pool
 		err            error
-		startupTimeout = 30 * time.Second
+		startupTimeout time.Duration
 	)
 
 	// Get configuration from environment variables
