@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
 	"github.com/lychee-technology/forma/internal"
@@ -12,6 +17,11 @@ import (
 	"github.com/lychee-technology/forma/internal/httpapi"
 	"go.uber.org/zap"
 )
+
+type serverRuntime struct {
+	pool   *pgxpool.Pool
+	server *httpapi.Server
+}
 
 func main() {
 	logger, err := zap.NewProduction()
@@ -23,6 +33,23 @@ func main() {
 	zap.ReplaceGlobals(logger)
 	sugar := logger.Sugar()
 
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	runtime, err := bootstrapServer(rootCtx, sugar)
+	if err != nil {
+		sugar.Fatalf("failed to bootstrap server: %v", err)
+	}
+	defer runtime.pool.Close()
+
+	port := bootstrap.Env("PORT", "8080")
+	zap.S().Infow("starting server", "port", port)
+	if err := http.ListenAndServe(":"+port, runtime.server.Handler()); err != nil {
+		sugar.Fatalf("server error: %v", err)
+	}
+}
+
+func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRuntime, error) {
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	sugar.Infof("schemaDir: %s", schemaDir)
@@ -51,17 +78,23 @@ func main() {
 		ChangeLog:      "change_log_dev",
 	})
 
-	// Create database connection pool
-	pool, err := bootstrap.NewPostgresPoolFromConfig(dbConfig)
-	if err != nil {
-		sugar.Fatalf("failed to create database pool: %v", err)
+	startupTimeout := dbConfig.Timeout
+	if startupTimeout <= 0 {
+		startupTimeout = 30 * time.Second
 	}
-	defer pool.Close()
+	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+
+	pool, err := bootstrap.NewPostgresPoolFromConfigContext(startupCtx, dbConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database pool: %w", err)
+	}
 
 	// Create file-based schema registry from database
-	registry, err := internal.NewFileSchemaRegistry(pool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := internal.NewFileSchemaRegistryContext(startupCtx, pool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
-		sugar.Fatalf("failed to create schema registry: %v", err)
+		pool.Close()
+		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
 
 	// Load configuration with schema registry
@@ -76,16 +109,14 @@ func main() {
 	config.SchemaRegistry = registry
 
 	// Initialize EntityManager with the same pool used by schema registry.
-	manager, err := factory.NewEntityManagerWithConfig(config, pool)
+	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)
 	if err != nil {
-		sugar.Fatalf("failed to create entity manager: %v", err)
+		pool.Close()
+		return nil, fmt.Errorf("failed to create entity manager: %w", err)
 	}
 
-	server := httpapi.NewServer(manager, httpapi.Options{})
-
-	port := bootstrap.Env("PORT", "8080")
-	zap.S().Infow("starting server", "port", port)
-	if err := http.ListenAndServe(":"+port, server.Handler()); err != nil {
-		sugar.Fatalf("server error: %v", err)
-	}
+	return &serverRuntime{
+		pool:   pool,
+		server: httpapi.NewServer(manager, httpapi.Options{}),
+	}, nil
 }

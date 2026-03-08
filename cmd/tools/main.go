@@ -1,59 +1,77 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
+type toolCommand struct {
+	name        string
+	run         func(ctx context.Context, args []string) error
+	exitOnError bool
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(runToolMain(ctx, os.Args[1:], os.Stdout))
+}
+
+func runToolMain(ctx context.Context, args []string, out io.Writer) int {
+	if len(args) < 1 {
+		printUsage(out)
+		return 1
 	}
 
-	switch os.Args[1] {
-	case "generate-attributes":
-		if err := runGenerateAttributes(os.Args[2:]); err != nil {
-			fmt.Printf("generate-attributes: %v\n", err)
+	cmd, ok := lookupToolCommand(args[0])
+	if !ok {
+		fmt.Fprintf(out, "unknown command %q\n", args[0])
+		printUsage(out)
+		return 1
+	}
+
+	if err := cmd.run(ctx, args[1:]); err != nil {
+		fmt.Fprintf(out, "%s: %v\n", cmd.name, err)
+		if cmd.exitOnError {
+			return 1
 		}
-	case "init-db":
-		if err := runInitDB(os.Args[2:]); err != nil {
-			fmt.Printf("init-db: %v\n", err)
+	}
+
+	return 0
+}
+
+func lookupToolCommand(name string) (toolCommand, bool) {
+	for _, cmd := range toolCommands() {
+		if cmd.name == name {
+			return cmd, true
 		}
-	case "inline-schema":
-		if err := runInlineSchema(os.Args[2:]); err != nil {
-			fmt.Printf("inline-schema: %v\n", err)
-		}
-	case "cdc-flush":
-		if err := runCDCFlush(os.Args[2:]); err != nil {
-			fmt.Printf("cdc-flush: %v\n", err)
-			os.Exit(1)
-		}
-	case "cdc-init":
-		if err := runCDCInit(os.Args[2:]); err != nil {
-			fmt.Printf("cdc-init: %v\n", err)
-			os.Exit(1)
-		}
-	case "compactor":
-		if err := runCompactor(os.Args[2:]); err != nil {
-			fmt.Printf("compactor: %v\n", err)
-			os.Exit(1)
-		}
-	default:
-		fmt.Printf("unknown command %q\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+	}
+	return toolCommand{}, false
+}
+
+func toolCommands() []toolCommand {
+	return []toolCommand{
+		{name: "generate-attributes", run: runGenerateAttributes},
+		{name: "init-db", run: runInitDB},
+		{name: "inline-schema", run: runInlineSchema},
+		{name: "cdc-flush", run: runCDCFlush, exitOnError: true},
+		{name: "cdc-init", run: runCDCInit, exitOnError: true},
+		{name: "compactor", run: runCompactor, exitOnError: true},
 	}
 }
 
-func printUsage() {
-	fmt.Println("Usage: forma-tools <command> [options]")
-	fmt.Println("")
-	fmt.Println("Commands:")
-	fmt.Println("  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
-	fmt.Println("  init-db               Create PostgreSQL tables and indexes for Forma")
-	fmt.Println("  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
-	fmt.Println("  cdc-flush             Run CDC change_log flush to S3 parquet files")
-	fmt.Println("  cdc-init              Initialize S3 parquet base files from existing data")
-	fmt.Println("  compactor             Run compaction on parquet files for a schema")
+func printUsage(out io.Writer) {
+	fmt.Fprintln(out, "Usage: forma-tools <command> [options]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Commands:")
+	fmt.Fprintln(out, "  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
+	fmt.Fprintln(out, "  init-db               Create PostgreSQL tables and indexes for Forma")
+	fmt.Fprintln(out, "  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
+	fmt.Fprintln(out, "  cdc-flush             Run CDC change_log flush to S3 parquet files")
+	fmt.Fprintln(out, "  cdc-init              Initialize S3 parquet base files from existing data")
+	fmt.Fprintln(out, "  compactor             Run compaction on parquet files for a schema")
 }

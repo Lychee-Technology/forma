@@ -31,15 +31,17 @@ var defaultMetadataLoaderFactory = func(pool *pgxpool.Pool, schemaTable, schemaD
 	return internal.NewMetadataLoader(pool, schemaTable, schemaDir)
 }
 
+var defaultDuckDBClientFactory = internal.NewDuckDBClientContext
+
 // tableCollector is a test hook for table discovery.
 var tableCollector = collectTablesFromPool
 
 const defaultDatabaseSchema = "public"
 
 // collectTablesFromPool queries information_schema for table/view names and returns the list.
-func collectTablesFromPool(pool queryPool, schema string) ([]string, error) {
+func collectTablesFromPool(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 	inspectionSchema := normalizeSchemaName(schema)
-	rows, err := pool.Query(context.Background(), `SELECT table_name FROM information_schema.tables t
+	rows, err := pool.Query(ctx, `SELECT table_name FROM information_schema.tables t
 WHERE table_schema = $1 AND table_type = 'BASE TABLE'
 UNION SELECT table_name FROM information_schema.views v WHERE table_schema = $1;`, inspectionSchema)
 
@@ -74,7 +76,7 @@ UNION SELECT table_name FROM information_schema.views v WHERE table_schema = $1;
 func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
 	schemaName := normalizeSchemaName(config.Database.Schema)
 	effectiveConfig := configWithQualifiedTables(config, schemaName)
-	tables, err := tableCollector(pool, schemaName)
+	tables, err := tableCollector(ctx, pool, schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +118,7 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Initialize DuckDB client if enabled in config
 	if effectiveConfig.DuckDB.Enabled {
 		zap.S().Infow("initializing DuckDB client", "dbPath", effectiveConfig.DuckDB.DBPath)
-		duckClient, err = internal.NewDuckDBClient(effectiveConfig.DuckDB)
+		duckClient, err = defaultDuckDBClientFactory(ctx, effectiveConfig.DuckDB)
 		if err != nil {
 			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
 		} else {
@@ -136,8 +138,9 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
 // This is the primary way for external projects to create an EntityManager instance.
 //
-// If config.SchemaRegistry is provided, it will be used instead of creating a file-based registry.
-// This allows callers to provide their own SchemaRegistry implementation.
+// config.SchemaRegistry must already be initialized before calling this
+// function. The factory validates database state and builds the entity manager
+// around the provided registry; it does not create a fallback registry.
 //
 // Usage:
 //
@@ -164,8 +167,12 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 	return NewEntityManagerWithConfigContext(context.Background(), config, pool)
 }
 
+func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
+	return internal.NewFileSchemaRegistryContext(ctx, pool, schemaTable, schemaDir)
+}
+
 func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
-	return internal.NewFileSchemaRegistry(pool, schemaTable, schemaDir)
+	return NewFileSchemaRegistryContext(context.Background(), pool, schemaTable, schemaDir)
 }
 
 func normalizeSchemaName(schema string) string {

@@ -37,6 +37,10 @@ type fileSchemaRegistry struct {
 //   - schemaTable: Name of the schema_registry table (e.g., "schema_registry_1234567890")
 //   - schemaDir: Directory containing the *_attributes.json files
 func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
+	return NewFileSchemaRegistryContext(context.Background(), pool, schemaTable, schemaDir)
+}
+
+func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
 	registry := &fileSchemaRegistry{
 		pool:                  pool,
 		schemaTable:           schemaTable,
@@ -47,7 +51,7 @@ func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir str
 		schemas:               make(map[int16]forma.JSONSchema),
 	}
 
-	if err := registry.loadSchemasFromDB(); err != nil {
+	if err := registry.loadSchemasFromDB(ctx); err != nil {
 		return nil, err
 	}
 
@@ -102,9 +106,7 @@ func (r *fileSchemaRegistry) registerSchema(schemaName string, schemaID int16, c
 
 // loadSchemasFromDB reads schema mappings from the database and loads attribute
 // definitions from JSON files on disk.
-func (r *fileSchemaRegistry) loadSchemasFromDB() error {
-	ctx := context.Background()
-
+func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 	// Step 1: Read schema_name -> schema_id mappings from database
 	query := fmt.Sprintf("SELECT schema_name, schema_id FROM %s ORDER BY schema_name", sanitizeIdentifier(r.schemaTable))
 	rows, err := r.pool.Query(ctx, query)

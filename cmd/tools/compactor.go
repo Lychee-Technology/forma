@@ -2,29 +2,28 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"go.uber.org/zap"
 )
 
-func runCompactor(args []string) error {
-	fs := flag.NewFlagSet("compactor", flag.ExitOnError)
+func runCompactor(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("compactor", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
 
 	// Schema selection
 	schemaID := fs.Int("schema-id", 0, "Schema ID to compact (required)")
 
-	// S3 settings
-	s3Bucket := fs.String("s3-bucket", "", "S3 bucket for parquet/manifest files (required)")
-	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint (for MinIO)")
-	s3Region := fs.String("s3-region", "us-east-1", "S3 region")
-	_ = fs.Bool("s3-use-ssl", true, "Use SSL for S3") // reserved for future use
-	s3UsePath := fs.Bool("s3-use-path", false, "Use path-style S3 addressing")
+	var s3Config s3Flags
+	s3Config.register(fs, s3FlagOptions{
+		bucketUsage:    "S3 bucket for parquet/manifest files (required)",
+		bucketRequired: true,
+	})
 
 	// Manifest settings
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3")
@@ -44,14 +43,17 @@ func runCompactor(args []string) error {
 	dataPrefix := fs.String("data-prefix", "data", "Data prefix for parquet files")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
 	if *schemaID == 0 {
 		return fmt.Errorf("--schema-id is required")
 	}
-	if *s3Bucket == "" {
-		return fmt.Errorf("--s3-bucket is required")
+	if err := s3Config.validate(true); err != nil {
+		return err
 	}
 
 	compactCfg := cdc.CompactionConfig{
@@ -65,33 +67,20 @@ func runCompactor(args []string) error {
 	}.WithDefaults()
 
 	manifestCfg := cdc.ManifestConfig{
-		Bucket:       *s3Bucket,
+		Bucket:       s3Config.bucket,
 		Prefix:       *manifestPrefix,
 		PathTemplate: *manifestTemplate,
 	}
 
-	// Create logger
-	logger, err := zap.NewProduction()
+	logger, err := buildToolLogger(false)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
 
-	// Create S3 client
-	ctx := context.Background()
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(*s3Region))
+	s3Client, err := buildToolS3Client(ctx, s3Config.region, s3Config.endpoint, s3Config.usePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
-	}
-
-	var s3Client *s3.Client
-	if *s3Endpoint != "" {
-		s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-			o.BaseEndpoint = s3Endpoint
-			o.UsePathStyle = *s3UsePath
-		})
-	} else {
-		s3Client = s3.NewFromConfig(awsCfg)
 	}
 
 	// Create provider
@@ -102,14 +91,14 @@ func runCompactor(args []string) error {
 		Logger:     logger,
 		Config:     compactCfg,
 		Provider:   provider,
-		Bucket:     *s3Bucket,
+		Bucket:     s3Config.bucket,
 		DataPrefix: *dataPrefix,
 	}
 
 	// Run compaction
 	logger.Info("starting compaction",
 		zap.Int16("schema_id", compactCfg.SchemaID),
-		zap.String("bucket", *s3Bucket))
+		zap.String("bucket", s3Config.bucket))
 
 	if err := c.RunOnce(ctx); err != nil {
 		return fmt.Errorf("compaction failed: %w", err)

@@ -11,7 +11,10 @@ type exportSQLOptions struct {
 	compression      string
 	compressionLevel int
 	memoryLimit      string
+	parquetVersion   string
 }
+
+const defaultParquetVersion = "V2"
 
 func resolveExportSQLOptions(cfg CDCConfig, defaultMemoryLimit string) exportSQLOptions {
 	compression := cfg.ParquetCompression
@@ -33,7 +36,17 @@ func resolveExportSQLOptions(cfg CDCConfig, defaultMemoryLimit string) exportSQL
 		compression:      compression,
 		compressionLevel: compressionLevel,
 		memoryLimit:      memoryLimit,
+		parquetVersion:   defaultParquetVersion,
 	}
+}
+
+func buildParquetCopyOptions(opts exportSQLOptions) string {
+	return fmt.Sprintf(
+		"FORMAT PARQUET, PARQUET_VERSION %s, COMPRESSION '%s', COMPRESSION_LEVEL %d",
+		opts.parquetVersion,
+		strings.ToUpper(opts.compression),
+		opts.compressionLevel,
+	)
 }
 
 func resolveMainAndEAVTableNames(cfg CDCConfig) (string, string) {

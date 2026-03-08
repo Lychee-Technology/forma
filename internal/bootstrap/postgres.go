@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,7 +10,11 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-func NewPostgresPoolFromConfig(config forma.DatabaseConfig) (*pgxpool.Pool, error) {
+func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.DatabaseConfig) (*pgxpool.Pool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("postgres bootstrap context: %w", err)
+	}
+
 	connString := fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		config.Username,
@@ -31,17 +36,35 @@ func NewPostgresPoolFromConfig(config forma.DatabaseConfig) (*pgxpool.Pool, erro
 	poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
 	poolConfig.ConnConfig.ConnectTimeout = config.Timeout
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingTimeout := 5 * time.Second
+	if config.Timeout > 0 && config.Timeout < pingTimeout {
+		pingTimeout = config.Timeout
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 
-	if err := pool.Ping(ctx); err != nil {
+	if err := pingCtx.Err(); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres ping context: %w", err)
+	}
+
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("failed to ping database: %w", err)
+		}
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return pool, nil
+}
+
+func NewPostgresPoolFromConfig(config forma.DatabaseConfig) (*pgxpool.Pool, error) {
+	return NewPostgresPoolFromConfigContext(context.Background(), config)
 }

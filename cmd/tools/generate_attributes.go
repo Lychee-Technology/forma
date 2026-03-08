@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,7 +24,7 @@ const (
 	requiredPolicyIfParentPresent = "required_if_parent_present"
 )
 
-func runGenerateAttributes(args []string) error {
+func runGenerateAttributes(_ context.Context, args []string) error {
 	flags := flag.NewFlagSet("generate-attributes", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {

@@ -34,8 +34,9 @@ type lambdaRuntime struct {
 
 func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRuntime, error) {
 	var (
-		dbPool *pgxpool.Pool
-		err    error
+		dbPool         *pgxpool.Pool
+		err            error
+		startupTimeout = 30 * time.Second
 	)
 
 	// Get configuration from environment variables
@@ -47,13 +48,14 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 
 	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
 	dsqlEndpoint := bootstrap.Env("DSQL_ENDPOINT", "")
+	var dbConfig forma.DatabaseConfig
 	if dsqlEndpoint != "" {
 		// Aurora DSQL mode - use IAM authentication
 		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
-		dbPool, err = createDSQLPool(dsqlEndpoint)
+		startupTimeout = time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
 	} else {
 		// Traditional PostgreSQL mode - use password authentication
-		dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+		dbConfig = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
 			Host:                   "localhost",
 			Port:                   5432,
 			Database:               "forma",
@@ -67,7 +69,19 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 			ConnMaxIdleTimeSeconds: 60,
 			TimeoutSeconds:         30,
 		})
-		dbPool, err = bootstrap.NewPostgresPoolFromConfig(dbConfig)
+		startupTimeout = dbConfig.Timeout
+		if startupTimeout <= 0 {
+			startupTimeout = 30 * time.Second
+		}
+	}
+
+	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+
+	if dsqlEndpoint != "" {
+		dbPool, err = createDSQLPool(startupCtx, dsqlEndpoint)
+	} else {
+		dbPool, err = bootstrap.NewPostgresPoolFromConfigContext(startupCtx, dbConfig)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database pool: %w", err)
@@ -82,7 +96,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	})
 
 	// Create file-based schema registry from database
-	registry, err := internal.NewFileSchemaRegistry(dbPool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := internal.NewFileSchemaRegistryContext(startupCtx, dbPool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
@@ -100,7 +114,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	formaConfig.Database.TableNames = tableNames
 
 	// Initialize EntityManager using factory
-	manager, err := factory.NewEntityManagerWithConfig(formaConfig, dbPool)
+	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, formaConfig, dbPool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create entity manager: %w", err)
 	}
@@ -159,8 +173,10 @@ func main() {
 // - Database: postgres (fixed)
 // - User: admin (default admin user)
 // - SSL: required
-func createDSQLPool(endpoint string) (*pgxpool.Pool, error) {
-	ctx := context.Background()
+func createDSQLPool(ctx context.Context, endpoint string) (*pgxpool.Pool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("dsql bootstrap context: %w", err)
+	}
 
 	// Load AWS configuration
 	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(bootstrap.Env("AWS_REGION", "us-east-2")))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,7 +13,7 @@ import (
 	"strings"
 )
 
-func runInlineSchema(args []string) error {
+func runInlineSchema(_ context.Context, args []string) error {
 	flags := flag.NewFlagSet("inline-schema", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {

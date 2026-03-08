@@ -5,14 +5,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/bootstrap"
 )
 
 type initDBOptions struct {
@@ -29,7 +30,7 @@ type initDBOptions struct {
 	schemaDir   string
 }
 
-func runInitDB(args []string) error {
+func runInitDB(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("init-db", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
@@ -40,17 +41,32 @@ func runInitDB(args []string) error {
 	}
 
 	opts := initDBOptions{}
-	flags.StringVar(&opts.host, "db-host", getenvDefault("DB_HOST", "localhost"), "database host")
-	flags.IntVar(&opts.port, "db-port", getenvDefaultInt("DB_PORT", 5432), "database port")
-	flags.StringVar(&opts.database, "db-name", getenvDefault("DB_NAME", "forma"), "database name")
-	flags.StringVar(&opts.user, "db-user", getenvDefault("DB_USER", "postgres"), "database user")
-	flags.StringVar(&opts.password, "db-password", getenvDefault("DB_PASSWORD", "postgres"), "database password")
-	flags.StringVar(&opts.sslMode, "db-ssl-mode", getenvDefault("DB_SSL_MODE", "disable"), "database sslmode")
-	flags.StringVar(&opts.schemaTable, "schema-table", getenvDefault("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
-	flags.StringVar(&opts.eavTable, "eav-table", getenvDefault("EAV_TABLE", "eav_dev"), "EAV data table name")
-	flags.StringVar(&opts.entityMain, "entity-main-table", getenvDefault("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
-	flags.StringVar(&opts.changeLog, "change-log-table", getenvDefault("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
-	flags.StringVar(&opts.schemaDir, "schema-dir", getenvDefault("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
+	var pg postgresFlags
+	pg.register(flags, postgresFlagOptions{
+		hostFlag:        "db-host",
+		portFlag:        "db-port",
+		userFlag:        "db-user",
+		passwordFlag:    "db-password",
+		databaseFlag:    "db-name",
+		sslModeFlag:     "db-ssl-mode",
+		hostDefault:     bootstrap.Env("DB_HOST", "localhost"),
+		portDefault:     bootstrap.EnvInt("DB_PORT", 5432),
+		userDefault:     bootstrap.Env("DB_USER", "postgres"),
+		passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
+		databaseDefault: bootstrap.Env("DB_NAME", "forma"),
+		sslModeDefault:  bootstrap.Env("DB_SSL_MODE", "disable"),
+		hostUsage:       "database host",
+		portUsage:       "database port",
+		userUsage:       "database user",
+		passwordUsage:   "database password",
+		databaseUsage:   "database name",
+		sslModeUsage:    "database sslmode",
+	})
+	flags.StringVar(&opts.schemaTable, "schema-table", bootstrap.Env("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
+	flags.StringVar(&opts.eavTable, "eav-table", bootstrap.Env("EAV_TABLE", "eav_dev"), "EAV data table name")
+	flags.StringVar(&opts.entityMain, "entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
+	flags.StringVar(&opts.changeLog, "change-log-table", bootstrap.Env("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
+	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -59,14 +75,21 @@ func runInitDB(args []string) error {
 		return err
 	}
 
-	return initDatabase(opts)
+	opts.host = pg.host
+	opts.port = pg.port
+	opts.database = pg.database
+	opts.user = pg.user
+	opts.password = pg.resolvedPassword("DB_PASSWORD")
+	opts.sslMode = pg.sslMode
+
+	return initDatabase(ctx, opts, pg.databaseConfig("DB_PASSWORD", toolPostgresPoolSettings{
+		maxConnections: 4,
+		timeout:        30 * time.Second,
+	}))
 }
 
-func initDatabase(opts initDBOptions) error {
-	ctx := context.Background()
-
-	connString := buildConnString(opts)
-	pool, err := pgxpool.New(ctx, connString)
+func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.DatabaseConfig) error {
+	pool, err := buildToolPostgresPool(ctx, dbConfig)
 	if err != nil {
 		return fmt.Errorf("create connection pool: %w", err)
 	}
@@ -86,32 +109,6 @@ func initDatabase(opts initDBOptions) error {
 
 	fmt.Println("Database initialized successfully.")
 	return nil
-}
-
-func buildConnString(opts initDBOptions) string {
-	hostPort := fmt.Sprintf("%s:%d", opts.host, opts.port)
-
-	var userInfo *url.Userinfo
-	if opts.password != "" {
-		userInfo = url.UserPassword(opts.user, opts.password)
-	} else {
-		userInfo = url.User(opts.user)
-	}
-
-	u := &url.URL{
-		Scheme: "postgres",
-		User:   userInfo,
-		Host:   hostPort,
-		Path:   "/" + opts.database,
-	}
-
-	q := url.Values{}
-	if opts.sslMode != "" {
-		q.Set("sslmode", opts.sslMode)
-	}
-	u.RawQuery = q.Encode()
-
-	return u.String()
 }
 
 func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
@@ -340,20 +337,4 @@ func makeIndexName(table string, suffix string) string {
 	base := strings.ReplaceAll(table, ".", "_")
 	base = strings.ReplaceAll(base, `"`, "")
 	return fmt.Sprintf("%s_%s_idx", base, suffix)
-}
-
-func getenvDefault(key, def string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
-	}
-	return def
-}
-
-func getenvDefaultInt(key string, def int) int {
-	if val := os.Getenv(key); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil {
-			return parsed
-		}
-	}
-	return def
 }

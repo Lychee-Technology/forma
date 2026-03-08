@@ -20,6 +20,24 @@ type DuckExporter struct {
 	Logger *zap.Logger
 }
 
+type exportModeSpec struct {
+	defaultMemoryLimit string
+	defaultMainColumns func() []string
+	activeOnly         bool
+	useChangeLog       bool
+	schemaIDSelect     string
+	rowIDSelect        string
+	timeSlotSelect     string
+	deletedAtSelect    string
+}
+
+type exportSQLPlan struct {
+	sql            string
+	changeLogQuery string
+	mainQuery      string
+	eavQuery       string
+}
+
 // NewDuckExporter opens a DuckDB connection and configures pragmas and extensions.
 func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret string, logger *zap.Logger) (*DuckExporter, error) {
 	// Build DSN
@@ -116,17 +134,7 @@ func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, p
 		return err
 	}
 
-	e.Logger.Sugar().Infow("duckdb export sql", "sql_preview", redactConnStr(sql), "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
-	timeout := cfg.QueryTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if _, err := e.DB.ExecContext(ctx2, sql); err != nil {
-		return fmt.Errorf("duckdb copy exec: %w", err)
-	}
-	return nil
+	return e.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", sql, clQuery, mQuery, eQuery)
 }
 
 // escapeLiteral doubles single quotes for safe embedding in SQL string literals.
@@ -135,52 +143,107 @@ func escapeLiteral(s string) string {
 }
 
 func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, string, error) {
+	plan, err := buildExportSQLPlan(exportModeSpec{
+		defaultMemoryLimit: "4GB",
+		defaultMainColumns: defaultDeltaMainColumns,
+		activeOnly:         false,
+		useChangeLog:       true,
+		schemaIDSelect:     "cl.schema_id",
+		rowIDSelect:        "cl.row_id",
+		timeSlotSelect:     "cl.changed_at AS time_slot",
+		deletedAtSelect:    "cl.deleted_at",
+	}, pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	return plan.sql, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, nil
+}
+
+func (e *DuckExporter) executeExportSQL(ctx context.Context, cfg CDCConfig, logMessage, execErrPrefix, sqlText, clQuery, mQuery, eQuery string) error {
+	e.Logger.Sugar().Infow(logMessage, "sql_preview", redactConnStr(sqlText), "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
+	timeout := cfg.QueryTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx2, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if _, err := e.DB.ExecContext(ctx2, sqlText); err != nil {
+		return fmt.Errorf("%s: %w", execErrPrefix, err)
+	}
+	return nil
+}
+
+func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
 	if len(rowIDs) == 0 {
-		return "", "", "", "", fmt.Errorf("export snapshot: no row ids provided")
+		modeName := "base"
+		if spec.useChangeLog {
+			modeName = "snapshot"
+		}
+		return exportSQLPlan{}, fmt.Errorf("export %s: no row ids provided", modeName)
 	}
 
 	pgEsc := escapeLiteral(pgConnStr)
 	s3Esc := escapeLiteral(s3TmpPath)
-
-	changeLog := sanitizeIdentifier(cfg.ChangeLogTable)
-	if changeLog == "" {
-		changeLog = "change_log"
-	}
 	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
-
 	rowList := quoteUUIDList(rowIDs)
-	clFilter := fmt.Sprintf("row_id IN (%s)", rowList)
 	mFilter := fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
 	eFilter := fmt.Sprintf("row_id IN (%s)", rowList)
 
-	clQuery := fmt.Sprintf(
-		"SELECT schema_id, row_id, changed_at, deleted_at FROM %s WHERE schema_id = %d AND flushed_at = 0 AND changed_at <= %d AND %s",
-		changeLog, schemaID, snapshotTS, clFilter,
-	)
+	plan := exportSQLPlan{}
+	if spec.useChangeLog {
+		changeLog := sanitizeIdentifier(cfg.ChangeLogTable)
+		if changeLog == "" {
+			changeLog = "change_log"
+		}
+		clFilter := fmt.Sprintf("row_id IN (%s)", rowList)
+		plan.changeLogQuery = fmt.Sprintf(
+			"SELECT schema_id, row_id, changed_at, deleted_at FROM %s WHERE schema_id = %d AND flushed_at = 0 AND changed_at <= %d AND %s",
+			changeLog, schemaID, snapshotTS, clFilter,
+		)
+	}
 
-	opts := resolveExportSQLOptions(cfg, "4GB")
+	opts := resolveExportSQLOptions(cfg, spec.defaultMemoryLimit)
+	copyOptions := buildParquetCopyOptions(opts)
 
-	// Fallback to generic projection when no schema metadata is provided.
 	if len(attrCache) == 0 {
-		mColumns := defaultDeltaMainColumns()
-		mQuery := buildMainEntityQuery(entityMain, schemaID, mColumns, mFilter, false)
-		eQuery := buildEAVQuery(eavData, schemaID, eFilter, nil)
+		mainColumns := spec.defaultMainColumns()
+		plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, mainColumns, mFilter, spec.activeOnly)
+		plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, nil)
+		mainSelectCols := append(spec.baseSelectColumns(), prefixColumns("m.", mainColumns[5:])...)
+		plan.sql = buildGenericExportSQL(spec, opts, copyOptions, pgEsc, s3Esc, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, mainSelectCols)
+		return plan, nil
+	}
 
+	projection := buildSchemaDrivenProjection(attrCache)
+	plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, spec.activeOnly)
+	plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
+	mainSelectCols := append(spec.baseSelectColumns(), projection.mainProjections...)
+	mainSelectCols = append(mainSelectCols, projection.eavSelect...)
+	plan.sql = buildProjectedExportSQL(spec, opts, copyOptions, pgEsc, s3Esc, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, mainSelectCols, projection.eavAgg)
+
+	return plan, nil
+}
+
+func (spec exportModeSpec) baseSelectColumns() []string {
+	return []string{
+		spec.schemaIDSelect,
+		spec.rowIDSelect,
+		spec.timeSlotSelect,
+		spec.deletedAtSelect,
+		"m.ltbase_created_at",
+		"m.ltbase_updated_at",
+		"m.ltbase_deleted_at",
+	}
+}
+
+func buildGenericExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols []string) string {
+	mQueryEsc := escapeLiteral(mQuery)
+	eQueryEsc := escapeLiteral(eQuery)
+
+	if spec.useChangeLog {
 		clQueryEsc := escapeLiteral(clQuery)
-		mQueryEsc := escapeLiteral(mQuery)
-		eQueryEsc := escapeLiteral(eQuery)
-
-		mainSelectCols := append([]string{
-			"cl.schema_id",
-			"cl.row_id",
-			"cl.changed_at AS time_slot",
-			"cl.deleted_at",
-			"m.ltbase_created_at",
-			"m.ltbase_updated_at",
-			"m.ltbase_deleted_at",
-		}, prefixColumns("m.", mColumns[5:])...)
-
-		sql := fmt.Sprintf(`PRAGMA memory_limit='%s';
+		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
 COPY (
@@ -195,37 +258,35 @@ LEFT JOIN (
   FROM postgres_query('pg_db', '%s')
   GROUP BY row_id
 ) e ON cl.row_id = e.row_id
-) TO '%s' (FORMAT PARQUET, COMPRESSION '%s', COMPRESSION_LEVEL %d);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eQueryEsc, s3Esc,
-			strings.ToUpper(opts.compression), opts.compressionLevel)
-
-		return sql, clQuery, mQuery, eQuery, nil
+) TO '%s' (%s);
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eQueryEsc, s3Esc, copyOptions)
 	}
 
-	// Schema-driven projection path
-	projection := buildSchemaDrivenProjection(attrCache)
-	mQuery := buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, false)
-	eQuery := buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
+	return fmt.Sprintf(`PRAGMA memory_limit='%s';
+ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
-	clQueryEsc := escapeLiteral(clQuery)
+COPY (
+SELECT
+  %s,
+  e.attributes
+FROM postgres_query('pg_db', '%s') m
+LEFT JOIN (
+  SELECT row_id, list(struct_pack(attr_id := attr_id, value_text := value_text)) AS attributes
+  FROM postgres_query('pg_db', '%s')
+  GROUP BY row_id
+) e ON m.ltbase_row_id = e.row_id
+) TO '%s' (%s);
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eQueryEsc, s3Esc, copyOptions)
+}
+
+func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols, eavAgg []string) string {
 	mQueryEsc := escapeLiteral(mQuery)
 	eQueryEsc := escapeLiteral(eQuery)
+	eAggSQL := buildEAVAggregationSQL(eQueryEsc, eavAgg)
 
-	mainSelectCols := []string{
-		"cl.schema_id",
-		"cl.row_id",
-		"cl.changed_at AS time_slot",
-		"cl.deleted_at",
-		"m.ltbase_created_at",
-		"m.ltbase_updated_at",
-		"m.ltbase_deleted_at",
-	}
-	mainSelectCols = append(mainSelectCols, projection.mainProjections...)
-	mainSelectCols = append(mainSelectCols, projection.eavSelect...)
-
-	eAggSQL := buildEAVAggregationSQL(eQueryEsc, projection.eavAgg)
-
-	sql := fmt.Sprintf(`PRAGMA memory_limit='%s';
+	if spec.useChangeLog {
+		clQueryEsc := escapeLiteral(clQuery)
+		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
 COPY (
@@ -237,11 +298,22 @@ JOIN postgres_query('pg_db', '%s') m
 LEFT JOIN (
   %s
 ) e ON cl.row_id = e.row_id
-) TO '%s' (FORMAT PARQUET, COMPRESSION '%s', COMPRESSION_LEVEL %d);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eAggSQL, s3Esc,
-		strings.ToUpper(opts.compression), opts.compressionLevel)
+) TO '%s' (%s);
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eAggSQL, s3Esc, copyOptions)
+	}
 
-	return sql, clQuery, mQuery, eQuery, nil
+	return fmt.Sprintf(`PRAGMA memory_limit='%s';
+ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
+
+COPY (
+SELECT
+  %s
+FROM postgres_query('pg_db', '%s') m
+LEFT JOIN (
+  %s
+) e ON m.ltbase_row_id = e.row_id
+) TO '%s' (%s);
+`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eAggSQL, s3Esc, copyOptions)
 }
 
 func quoteUUIDList(ids []uuid.UUID) string {

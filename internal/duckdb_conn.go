@@ -57,8 +57,17 @@ func validateS3Credential(name, value string) error {
 // NewDuckDBClient creates and configures a DuckDB client according to the provided config.
 // It attempts to load common extensions (httpfs/parquet) and configure S3 access via PRAGMA when requested.
 func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
+	return NewDuckDBClientContext(context.Background(), cfg)
+}
+
+// NewDuckDBClientContext creates and configures a DuckDB client while honoring
+// the caller-provided context during bootstrap.
+func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("duckdb disabled in config")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	dsn := cfg.DBPath
@@ -78,24 +87,24 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 	}
 
 	// Try a quick ping with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping duckdb: %w", err)
 	}
 
-	if err := configureExtensions(ctx, db, cfg); err != nil {
+	if err := configureExtensions(pingCtx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	if err := configureS3(ctx, db, cfg); err != nil {
+	if err := configureS3(pingCtx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	if err := applyResourcePragmas(ctx, db, cfg); err != nil {
+	if err := applyResourcePragmas(pingCtx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -136,7 +136,7 @@ func (ml *MetadataLoader) LoadMetadata(ctx context.Context) (*MetadataCache, err
 
 // loadSchemaRegistry loads schema name to ID mappings from database
 func (ml *MetadataLoader) loadSchemaRegistry(ctx context.Context, cache *MetadataCache) error {
-	query := fmt.Sprintf("SELECT schema_name, schema_id FROM %s", ml.schemaTableName)
+	query := fmt.Sprintf("SELECT schema_name, schema_id FROM %s", sanitizeIdentifier(ml.schemaTableName))
 
 	rows, err := ml.pool.Query(ctx, query)
 	if err != nil {
@@ -190,10 +190,10 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 		attributesFile := filepath.Join(ml.schemaDirectory, schemaName+"_attributes.json")
 
-		// Check if file exists
+		// Registry entries without attribute files are a bootstrap error. If we
+		// continue, requests will fail later with missing cache lookups.
 		if _, err := os.Stat(attributesFile); os.IsNotExist(err) {
-			zap.S().Warnw("attribute file not found; skipping schema", "schema", schemaName)
-			continue
+			return fmt.Errorf("attributes file not found for schema %s: %s", schemaName, attributesFile)
 		}
 
 		// Read and parse attribute metadata

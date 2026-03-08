@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -97,16 +98,23 @@ func TestLoadMetadata_Success(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).
 		AddRow("alpha", int16(1)).
 		AddRow("beta", int16(2))
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM test_registry`).WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("test_registry"))).WillReturnRows(rows)
 
-	// Create attribute file for alpha only
+	// Create attribute files for each registered schema.
 	alphaAttrs := map[string]any{
 		"name": map[string]any{
 			"attributeID": float64(10),
 			"valueType":   "text",
 		},
 	}
+	betaAttrs := map[string]any{
+		"status": map[string]any{
+			"attributeID": float64(20),
+			"valueType":   "text",
+		},
+	}
 	writeJSONFile(t, filepath.Join(dir, "alpha_attributes.json"), alphaAttrs)
+	writeJSONFile(t, filepath.Join(dir, "beta_attributes.json"), betaAttrs)
 
 	// Create orphan attribute file (no registry entry)
 	writeJSONFile(t, filepath.Join(dir, "orphan_attributes.json"), map[string]any{})
@@ -123,8 +131,8 @@ func TestLoadMetadata_Success(t *testing.T) {
 	require.Contains(t, cache.attributeMetadata, int16(1))
 	assert.Contains(t, cache.attributeMetadata[int16(1)], "name")
 
-	// beta has no attribute file, so empty map
-	assert.NotContains(t, cache.attributeMetadata, int16(2))
+	require.Contains(t, cache.attributeMetadata, int16(2))
+	assert.Contains(t, cache.attributeMetadata[int16(2)], "status")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -135,7 +143,7 @@ func TestLoadMetadata_SchemaRegistryQueryError(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM tbl`).WillReturnError(errors.New("db error"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("tbl"))).WillReturnError(errors.New("db error"))
 
 	loader := NewMetadataLoader(mock, "tbl", t.TempDir())
 	_, err = loader.LoadMetadata(ctx)
@@ -153,7 +161,7 @@ func TestLoadMetadata_NoSchemasError(t *testing.T) {
 	defer mock.Close()
 
 	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"})
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM empty`).WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("empty"))).WillReturnRows(rows)
 
 	loader := NewMetadataLoader(mock, "empty", t.TempDir())
 	_, err = loader.LoadMetadata(ctx)
@@ -172,7 +180,7 @@ func TestLoadMetadata_AttributeFileReadError(t *testing.T) {
 	dir := t.TempDir()
 
 	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("bad", int16(1))
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM reg`).WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("reg"))).WillReturnRows(rows)
 
 	// Create a directory instead of file to cause read error
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "bad_attributes.json"), 0o755))
@@ -194,7 +202,7 @@ func TestLoadMetadata_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 
 	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("inv", int16(1))
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM reg`).WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("reg"))).WillReturnRows(rows)
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "inv_attributes.json"), []byte("{invalid"), 0o644))
 
@@ -215,7 +223,7 @@ func TestLoadMetadata_ParseAttributeError(t *testing.T) {
 	dir := t.TempDir()
 
 	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("bad", int16(1))
-	mock.ExpectQuery(`SELECT schema_name, schema_id FROM reg`).WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("reg"))).WillReturnRows(rows)
 
 	// Missing required attributeID
 	badAttrs := map[string]any{
@@ -229,6 +237,23 @@ func TestLoadMetadata_ParseAttributeError(t *testing.T) {
 	_, err = loader.LoadMetadata(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "attributeID")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoadMetadata_MissingAttributesFileFails(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("missing", int16(1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("tenant.schema_registry"))).WillReturnRows(rows)
+
+	loader := NewMetadataLoader(mock, "tenant.schema_registry", t.TempDir())
+	_, err = loader.LoadMetadata(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attributes file not found for schema missing")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

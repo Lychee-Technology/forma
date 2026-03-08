@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 // TestRunGenerateAttributesHelpFlag tests the help flag
 func TestRunGenerateAttributesHelpFlag(t *testing.T) {
 	args := []string{"-h"}
-	err := runGenerateAttributes(args)
+	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
 		t.Fatalf("expected no error with -h flag, got %v", err)
 	}
@@ -21,7 +22,7 @@ func TestRunGenerateAttributesHelpFlag(t *testing.T) {
 func TestRunGenerateAttributesMissingSchemaArgument(t *testing.T) {
 	tempDir := t.TempDir()
 	args := []string{"-out", filepath.Join(tempDir, "output.json")}
-	err := runGenerateAttributes(args)
+	err := runGenerateAttributes(context.Background(), args)
 	if err == nil || !strings.Contains(err.Error(), "either -schema or -schema-file must be provided") {
 		t.Fatalf("expected error about missing schema argument, got %v", err)
 	}
@@ -55,7 +56,7 @@ func TestRunGenerateAttributesWithSchemaName(t *testing.T) {
 		"-schema", "test",
 		"-out", outputPath,
 	}
-	err := runGenerateAttributes(args)
+	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -90,7 +91,7 @@ func TestRunGenerateAttributesWithSchemaFile(t *testing.T) {
 		"-schema-file", schemaPath,
 		"-out", outputPath,
 	}
-	err := runGenerateAttributes(args)
+	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -123,7 +124,7 @@ func TestRunGenerateAttributesDefaultOutputPath(t *testing.T) {
 	args := []string{
 		"-schema-file", schemaPath,
 	}
-	err := runGenerateAttributes(args)
+	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

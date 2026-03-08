@@ -2,31 +2,44 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	publiccdc "github.com/lychee-technology/forma/cdc"
-	"github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
 
-func runCDCFlush(args []string) error {
-	fs := flag.NewFlagSet("cdc-flush", flag.ExitOnError)
+func runCDCFlush(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("cdc-flush", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
 
-	// Database connection
-	pgHost := fs.String("pg-host", "localhost", "PostgreSQL host")
-	pgPort := fs.Int("pg-port", 5432, "PostgreSQL port")
-	pgUser := fs.String("pg-user", "postgres", "PostgreSQL user")
-	pgPassword := fs.String("pg-password", "", "PostgreSQL password (or set PGPASSWORD env)")
-	pgDB := fs.String("pg-db", "forma", "PostgreSQL database")
-	pgUseIAM := fs.Bool("pg-use-iam", false, "Use IAM authentication for PostgreSQL")
-	pgSSLMode := fs.String("pg-ssl-mode", getenvDefault("PG_SSL_MODE", "require"), "PostgreSQL sslmode")
+	var pg postgresFlags
+	pg.register(fs, postgresFlagOptions{
+		hostFlag:        "pg-host",
+		portFlag:        "pg-port",
+		userFlag:        "pg-user",
+		passwordFlag:    "pg-password",
+		databaseFlag:    "pg-db",
+		sslModeFlag:     "pg-ssl-mode",
+		hostDefault:     "localhost",
+		portDefault:     5432,
+		userDefault:     "postgres",
+		passwordDefault: "",
+		databaseDefault: "forma",
+		sslModeDefault:  "require",
+		hostUsage:       "PostgreSQL host",
+		portUsage:       "PostgreSQL port",
+		userUsage:       "PostgreSQL user",
+		passwordUsage:   "PostgreSQL password (or set PGPASSWORD env)",
+		databaseUsage:   "PostgreSQL database",
+		sslModeUsage:    "PostgreSQL sslmode",
+		includeUseIAM:   true,
+		useIAMFlag:      "pg-use-iam",
+		useIAMUsage:     "Use IAM authentication for PostgreSQL",
+	})
 
 	// Change log settings
 	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
@@ -38,52 +51,47 @@ func runCDCFlush(args []string) error {
 	estimatedRowBytes := fs.Int("estimated-row-bytes", 0, "Estimated bytes per row for batch sizing (0 to use default)")
 	maxBatchBytes := fs.Int64("max-batch-bytes", 0, "Max batch size in bytes (0 to use default)")
 
-	// DuckDB settings
-	duckDBPath := fs.String("duckdb-path", "", "DuckDB path (empty for :memory:)")
-	duckThreads := fs.Int("duck-threads", 4, "DuckDB thread count")
-	duckMemLimit := fs.String("duck-mem-limit", "4GB", "DuckDB memory limit")
-	queryTimeout := fs.Duration("query-timeout", 5*time.Minute, "Query timeout")
+	var duck duckExportFlags
+	duck.register(fs, duckExportFlagOptions{
+		memLimitDefault: "4GB",
+		queryTimeout:    5 * time.Minute,
+	})
 
-	// S3 settings
-	s3Bucket := fs.String("s3-bucket", "", "S3 bucket for parquet files (required)")
-	s3Prefix := fs.String("s3-prefix", "delta", "S3 prefix for delta files")
-	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint (for MinIO)")
-	s3Region := fs.String("s3-region", "us-east-1", "S3 region")
-	s3UseSSL := fs.Bool("s3-use-ssl", true, "Use SSL for S3")
-	s3UsePath := fs.Bool("s3-use-path", false, "Use path-style S3 addressing")
+	var s3Config s3Flags
+	s3Config.register(fs, s3FlagOptions{
+		includePrefix:  true,
+		prefixFlag:     "s3-prefix",
+		prefixDefault:  "delta",
+		prefixUsage:    "S3 prefix for delta files",
+		bucketUsage:    "S3 bucket for parquet files (required)",
+		bucketRequired: true,
+	})
 
 	// Manifest settings (optional - enables manifest tracking)
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 
-	// Compression
-	parquetCompression := fs.String("parquet-compression", "zstd", "Parquet compression codec")
-	parquetCompressionLevel := fs.Int("parquet-compression-level", 3, "Parquet compression level")
-
-	// Schema registry (optional)
-	schemaRegistryTable := fs.String("schema-registry-table", "", "Schema registry table name (optional)")
-	schemaDir := fs.String("schema-dir", "", "Directory with *_attributes.json files (required if schema-registry-table is set)")
+	var schemaRegistry schemaRegistryFlags
+	schemaRegistry.register(fs, false)
 
 	// Control
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual flush)")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
-	if *s3Bucket == "" {
-		return fmt.Errorf("--s3-bucket is required")
+	if err := s3Config.validate(true); err != nil {
+		return err
 	}
-	if (*schemaRegistryTable == "") != (*schemaDir == "") {
-		return fmt.Errorf("both --schema-registry-table and --schema-dir are required together")
-	}
-
-	// Get password from env if not provided
-	password := *pgPassword
-	if password == "" {
-		password = os.Getenv("PGPASSWORD")
+	if err := schemaRegistry.validate(false); err != nil {
+		return err
 	}
 
+	password := pg.resolvedPassword("PGPASSWORD")
 	cfg := publiccdc.Config{
 		ChangeLogTable:          *changeLogTable,
 		EntityMainTable:         *entityMainTable,
@@ -93,69 +101,55 @@ func runCDCFlush(args []string) error {
 		BatchSize:               *batchSize,
 		EstimatedRowBytes:       *estimatedRowBytes,
 		MaxBatchBytes:           *maxBatchBytes,
-		PGHost:                  *pgHost,
-		PGPort:                  *pgPort,
-		PGUser:                  *pgUser,
+		PGHost:                  pg.host,
+		PGPort:                  pg.port,
+		PGUser:                  pg.user,
 		PGPassword:              password,
-		PGDB:                    *pgDB,
-		PGUseIAM:                *pgUseIAM,
-		PGSSLMode:               *pgSSLMode,
-		DuckDBPath:              *duckDBPath,
-		DuckThreads:             *duckThreads,
-		DuckMemLimit:            *duckMemLimit,
-		QueryTimeout:            *queryTimeout,
-		ParquetCompression:      *parquetCompression,
-		ParquetCompressionLevel: *parquetCompressionLevel,
-		S3Bucket:                *s3Bucket,
-		S3Prefix:                *s3Prefix,
-		S3Endpoint:              *s3Endpoint,
-		S3Region:                *s3Region,
-		S3UseSSL:                *s3UseSSL,
-		S3UsePath:               *s3UsePath,
+		PGDB:                    pg.database,
+		PGUseIAM:                pg.useIAM,
+		PGSSLMode:               pg.sslMode,
+		DuckDBPath:              duck.duckDBPath,
+		DuckThreads:             duck.duckThreads,
+		DuckMemLimit:            duck.duckMemLimit,
+		QueryTimeout:            duck.queryTimeout,
+		ParquetCompression:      duck.parquetCompression,
+		ParquetCompressionLevel: duck.parquetCompressionLevel,
+		S3Bucket:                s3Config.bucket,
+		S3Prefix:                s3Config.prefix,
+		S3Endpoint:              s3Config.endpoint,
+		S3Region:                s3Config.region,
+		S3UseSSL:                s3Config.useSSL,
+		S3UsePath:               s3Config.usePath,
 		ManifestPrefix:          *manifestPrefix,
 		ManifestTemplate:        *manifestTemplate,
 	}.WithDefaults()
 
-	// Create logger
-	logger, err := zap.NewDevelopment()
+	logger, err := buildToolLogger(true)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
 
-	ctx := context.Background()
-
-	// Optional schema registry
-	var schemaRegistry forma.SchemaRegistry
-	if *schemaRegistryTable != "" {
-		connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, cfg.PGSSLMode)
-		pool, err := pgxpool.New(ctx, connStr)
+	var registry forma.SchemaRegistry
+	if schemaRegistry.table != "" {
+		pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
+			maxConnections: 4,
+			timeout:        30 * time.Second,
+		}))
 		if err != nil {
 			return fmt.Errorf("create schema registry pool: %w", err)
 		}
 		defer pool.Close()
-		reg, err := internal.NewFileSchemaRegistry(pool, *schemaRegistryTable, *schemaDir)
+		reg, err := buildToolSchemaRegistry(ctx, pool, schemaRegistry.table, schemaRegistry.dir)
 		if err != nil {
 			return fmt.Errorf("create schema registry: %w", err)
 		}
-		schemaRegistry = reg
+		registry = reg
 	}
 
-	// Create S3 client
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.S3Region))
+	s3Client, err := buildToolS3Client(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
-	}
-
-	var s3Client *s3.Client
-	if cfg.S3Endpoint != "" {
-		// Custom endpoint (MinIO, etc.)
-		s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-			o.BaseEndpoint = &cfg.S3Endpoint
-			o.UsePathStyle = cfg.S3UsePath
-		})
-	} else {
-		s3Client = s3.NewFromConfig(awsCfg)
 	}
 
 	// Run flush
@@ -165,7 +159,7 @@ func runCDCFlush(args []string) error {
 		zap.String("manifest_template", cfg.ManifestTemplate),
 		zap.Bool("dry_run", *dryRun))
 
-	if err := publiccdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, schemaRegistry); err != nil {
+	if err := publiccdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, registry); err != nil {
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 

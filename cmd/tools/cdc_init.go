@@ -9,10 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
@@ -25,46 +23,58 @@ const (
 	defaultInitBatchSize = 50000
 )
 
-func runCDCInit(args []string) error {
-	fs := flag.NewFlagSet("cdc-init", flag.ExitOnError)
+func runCDCInit(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("cdc-init", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
 
-	// Database connection
-	pgHost := fs.String("pg-host", "localhost", "PostgreSQL host")
-	pgPort := fs.Int("pg-port", 5432, "PostgreSQL port")
-	pgUser := fs.String("pg-user", "postgres", "PostgreSQL user")
-	pgPassword := fs.String("pg-password", "", "PostgreSQL password (or set PGPASSWORD env)")
-	pgDB := fs.String("pg-db", "forma", "PostgreSQL database")
-	pgSSLMode := fs.String("pg-ssl-mode", getenvDefault("PG_SSL_MODE", "require"), "PostgreSQL sslmode")
+	var pg postgresFlags
+	pg.register(fs, postgresFlagOptions{
+		hostFlag:        "pg-host",
+		portFlag:        "pg-port",
+		userFlag:        "pg-user",
+		passwordFlag:    "pg-password",
+		databaseFlag:    "pg-db",
+		sslModeFlag:     "pg-ssl-mode",
+		hostDefault:     "localhost",
+		portDefault:     5432,
+		userDefault:     "postgres",
+		passwordDefault: "",
+		databaseDefault: "forma",
+		sslModeDefault:  "require",
+		hostUsage:       "PostgreSQL host",
+		portUsage:       "PostgreSQL port",
+		userUsage:       "PostgreSQL user",
+		passwordUsage:   "PostgreSQL password (or set PGPASSWORD env)",
+		databaseUsage:   "PostgreSQL database",
+		sslModeUsage:    "PostgreSQL sslmode",
+	})
 
 	// Table names
 	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table name")
 	eavDataTable := fs.String("eav-table", "eav_data", "EAV data table name")
 
-	// DuckDB settings
-	duckDBPath := fs.String("duckdb-path", "", "DuckDB path (empty for :memory:)")
-	duckThreads := fs.Int("duck-threads", 4, "DuckDB thread count")
-	duckMemLimit := fs.String("duck-mem-limit", "8GB", "DuckDB memory limit")
-	queryTimeout := fs.Duration("query-timeout", 10*time.Minute, "Query timeout")
+	var duck duckExportFlags
+	duck.register(fs, duckExportFlagOptions{
+		memLimitDefault: "8GB",
+		queryTimeout:    10 * time.Minute,
+	})
 
-	// S3 settings
-	s3Bucket := fs.String("s3-bucket", "", "S3 bucket for parquet files (required)")
-	s3Prefix := fs.String("s3-prefix", "base", "S3 prefix for base files")
-	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint (for MinIO)")
-	s3Region := fs.String("s3-region", "us-east-1", "S3 region")
-	s3UseSSL := fs.Bool("s3-use-ssl", true, "Use SSL for S3")
-	s3UsePath := fs.Bool("s3-use-path", false, "Use path-style S3 addressing")
+	var s3Config s3Flags
+	s3Config.register(fs, s3FlagOptions{
+		includePrefix:  true,
+		prefixFlag:     "s3-prefix",
+		prefixDefault:  "base",
+		prefixUsage:    "S3 prefix for base files",
+		bucketUsage:    "S3 bucket for parquet files (required)",
+		bucketRequired: true,
+	})
 
 	// Manifest settings (optional - enables manifest tracking)
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 
-	// Compression
-	parquetCompression := fs.String("parquet-compression", "zstd", "Parquet compression codec")
-	parquetCompressionLevel := fs.Int("parquet-compression-level", 3, "Parquet compression level")
-
-	// Schema registry (required for cdc-init)
-	schemaRegistryTable := fs.String("schema-registry-table", "", "Schema registry table name (required)")
-	schemaDir := fs.String("schema-dir", "", "Directory with *_attributes.json files (required)")
+	var schemaRegistry schemaRegistryFlags
+	schemaRegistry.register(fs, true)
 
 	// Init-specific options
 	batchSize := fs.Int("batch-size", defaultInitBatchSize, "Rows per batch (overridden by target-file-size-mb)")
@@ -75,28 +85,22 @@ func runCDCInit(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual export)")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
-	// Validate required flags
-	if *s3Bucket == "" {
-		return fmt.Errorf("--s3-bucket is required")
+	if err := s3Config.validate(true); err != nil {
+		return err
 	}
-	if *schemaRegistryTable == "" {
-		return fmt.Errorf("--schema-registry-table is required")
-	}
-	if *schemaDir == "" {
-		return fmt.Errorf("--schema-dir is required")
-	}
-
-	// Get password from env if not provided
-	password := *pgPassword
-	if password == "" {
-		password = os.Getenv("PGPASSWORD")
+	if err := schemaRegistry.validate(true); err != nil {
+		return err
 	}
 
 	// Track if user explicitly provided estimated-row-bytes (0 means auto-calculate from schema)
 	autoEstimateRowBytes := *estimatedRowBytes == 0
+	password := pg.resolvedPassword("PGPASSWORD")
 
 	cfg := cdc.CDCConfig{
 		EntityMainTable:         *entityMainTable,
@@ -105,65 +109,51 @@ func runCDCInit(args []string) error {
 		TargetFileSizeMB:        *targetFileSizeMB,
 		EstimatedRowBytes:       *estimatedRowBytes,
 		MaxBatchSize:            *maxBatchSize,
-		PGHost:                  *pgHost,
-		PGPort:                  *pgPort,
-		PGUser:                  *pgUser,
+		PGHost:                  pg.host,
+		PGPort:                  pg.port,
+		PGUser:                  pg.user,
 		PGPassword:              password,
-		PGDB:                    *pgDB,
-		PGSSLMode:               *pgSSLMode,
-		DuckDBPath:              *duckDBPath,
-		DuckThreads:             *duckThreads,
-		DuckMemLimit:            *duckMemLimit,
-		QueryTimeout:            *queryTimeout,
-		ParquetCompression:      *parquetCompression,
-		ParquetCompressionLevel: *parquetCompressionLevel,
-		S3Bucket:                *s3Bucket,
-		S3Prefix:                *s3Prefix,
-		S3Endpoint:              *s3Endpoint,
-		S3Region:                *s3Region,
-		S3UseSSL:                *s3UseSSL,
-		S3UsePath:               *s3UsePath,
+		PGDB:                    pg.database,
+		PGSSLMode:               pg.sslMode,
+		DuckDBPath:              duck.duckDBPath,
+		DuckThreads:             duck.duckThreads,
+		DuckMemLimit:            duck.duckMemLimit,
+		QueryTimeout:            duck.queryTimeout,
+		ParquetCompression:      duck.parquetCompression,
+		ParquetCompressionLevel: duck.parquetCompressionLevel,
+		S3Bucket:                s3Config.bucket,
+		S3Prefix:                s3Config.prefix,
+		S3Endpoint:              s3Config.endpoint,
+		S3Region:                s3Config.region,
+		S3UseSSL:                s3Config.useSSL,
+		S3UsePath:               s3Config.usePath,
 		ManifestPrefix:          *manifestPrefix,
 		ManifestTemplate:        *manifestTemplate,
 	}.WithDefaults()
 
-	// Create logger
-	logger, err := zap.NewDevelopment()
+	logger, err := buildToolLogger(true)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
 
-	ctx := context.Background()
-
-	// Create schema registry
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, cfg.PGSSLMode)
-	pool, err := pgxpool.New(ctx, connStr)
+	pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
+		maxConnections: 4,
+		timeout:        30 * time.Second,
+	}))
 	if err != nil {
 		return fmt.Errorf("create schema registry pool: %w", err)
 	}
 	defer pool.Close()
 
-	schemaRegistry, err := internal.NewFileSchemaRegistry(pool, *schemaRegistryTable, *schemaDir)
+	registry, err := buildToolSchemaRegistry(ctx, pool, schemaRegistry.table, schemaRegistry.dir)
 	if err != nil {
 		return fmt.Errorf("create schema registry: %w", err)
 	}
 
-	// Create S3 client
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.S3Region))
+	s3Client, err := buildToolS3Client(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
-	}
-
-	var s3Client *s3.Client
-	if cfg.S3Endpoint != "" {
-		s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-			o.BaseEndpoint = &cfg.S3Endpoint
-			o.UsePathStyle = cfg.S3UsePath
-		})
-	} else {
-		s3Client = s3.NewFromConfig(awsCfg)
 	}
 
 	// Run init
@@ -182,12 +172,12 @@ func runCDCInit(args []string) error {
 	if err := runInit(ctx, initRunOptions{
 		cfg:                  cfg,
 		s3Client:             s3Client,
-		schemaRegistryTable:  *schemaRegistryTable,
+		schemaRegistryTable:  schemaRegistry.table,
 		schemaIDFilter:       *schemaIDFilter,
 		dryRun:               *dryRun,
 		autoEstimateRowBytes: autoEstimateRowBytes,
 		logger:               logger,
-		schemaRegistry:       schemaRegistry,
+		schemaRegistry:       registry,
 	}); err != nil {
 		return fmt.Errorf("CDC init failed: %w", err)
 	}
