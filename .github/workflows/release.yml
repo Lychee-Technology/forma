@@ -61,6 +61,20 @@ jobs:
           # Create checksum
           sha256sum lambda-arm64.zip > lambda-arm64.zip.sha256
 
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ github.ref_name }}" > /dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists."
+            exit 0
+          fi
+
+          gh release create "${{ github.ref_name }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "${{ github.ref_name }}"
+
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
