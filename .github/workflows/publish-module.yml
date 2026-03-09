@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -28,9 +26,6 @@ jobs:
         id: resolve
         run: |
           version="${{ github.event.inputs.version }}"
-          if [ -z "$version" ]; then
-            version="${{ github.event.release.tag_name }}"
-          fi
           if [ -z "$version" ]; then
             version="$GITHUB_REF_NAME"
           fi

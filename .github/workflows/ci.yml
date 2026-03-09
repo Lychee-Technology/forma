@@ -8,7 +8,6 @@ on:
 
 env:
   GO_VERSION: '1.26.0'
-  DUCKDB_STATIC_VERSION: 'v1.4.4_2'
 
 jobs:
   lint:
@@ -91,70 +90,3 @@ jobs:
 
       - name: Run E2E federated smoke tests
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -short -timeout=10m
-
-  build-lambda:
-    name: Build Lambda (ARM64)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Download DuckDB static library
-        run: |
-          mkdir -p libs
-          curl -L -o /tmp/duckdb.tar.xz \
-            "https://github.com/Lychee-Technology/duckdb-static/releases/download/${{ env.DUCKDB_STATIC_VERSION }}/libduckdb_bundle-arm64.tar.xz"
-          tar -xJf /tmp/duckdb.tar.xz -C libs
-          ls -la libs/
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc g++ libssl-dev libcurl4-openssl-dev zlib1g-dev
-
-      - name: Build Lambda binary
-        env:
-          CGO_ENABLED: "1"
-          GOOS: linux
-          GOARCH: arm64
-          CGO_CPPFLAGS: "-DDUCKDB_STATIC_BUILD"
-          CGO_LDFLAGS: "-L${{ github.workspace }}/libs -lduckdb_bundle -lstdc++ -lm -lcurl -lssl -lcrypto -lpthread"
-        run: |
-          go build -tags=duckdb_use_static_lib -ldflags="-s -w" -o bootstrap ./cmd/lambda
-          file bootstrap
-          ls -lh bootstrap
-
-      - name: Create deployment package
-        run: |
-          zip -j lambda.zip bootstrap
-          ls -lh lambda.zip
-
-      - name: Upload Lambda artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lambda-${{ github.sha }}
-          path: lambda.zip
-          retention-days: 7
-
-  infra-validate:
-    name: Validate Pulumi Code
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Validate infra Go code
-        working-directory: ./infra
-        run: |
-          go mod download
-          go build -o /dev/null .
