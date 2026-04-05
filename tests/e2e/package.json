@@ -11,9 +11,9 @@
     "compactor": "bun run scripts/compactor.ts",
     "federated-check": "bun run scripts/federated-check.ts",
     "build-k6": "bunx esbuild k6/scenarios.ts --bundle --format=esm --target=es2020 --platform=neutral --external:k6 --external:'k6/*' --outfile=k6/dist/bundle.js",
-    "k6-smoke": "k6 run --out json=reports/k6-smoke.json -e SCENARIO=smoke k6/dist/bundle.js",
-    "k6-full": "k6 run --out json=reports/k6-full.json -e SCENARIO=full k6/dist/bundle.js",
-    "k6-perf": "k6 run --out json=reports/k6-perf.json -e SCENARIO=perf k6/dist/bundle.js",
+    "k6-smoke": "bash scripts/run-k6.sh smoke",
+    "k6-full": "bash scripts/run-k6.sh full",
+    "k6-perf": "bash scripts/run-k6.sh perf",
     "test": "bun run register-schemas && bun run gen-data && bun run cdc-flush && bun run federated-check"
   },
   "dependencies": {

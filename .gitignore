@@ -48,3 +48,7 @@ local-only/
 internal/e2e_harness/e2e_artifacts
 *.parquet
 node_modules/
+
+# k6 build artifacts and test run outputs
+tests/e2e/k6/dist/
+tests/e2e/reports/
