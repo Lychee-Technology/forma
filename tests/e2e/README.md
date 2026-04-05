@@ -2,10 +2,12 @@
 
 End-to-end tests for validating Forma's CDC (Change Data Capture) and Federated Query functionality.
 
+For the repo-wide E2E inventory across both Go harness tests and Bun/k6 workflows, see [../../docs/e2e-tests-cn.md](../../docs/e2e-tests-cn.md) and [../../docs/e2e-tests-en.md](../../docs/e2e-tests-en.md).
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) runtime
-- [k6](https://k6.io/) for load testing
+- [k6](https://k6.io/) for load testing, or Docker for the built-in fallback runner
 - Docker & Docker Compose (for local infrastructure)
 - Go toolchain (for building CDC tools)
 
@@ -20,8 +22,16 @@ cd tests/e2e
 cp .env.example .env
 bun install
 
-# 3. Run full E2E suite
+# 3. Run the default Bun E2E flow
 bun run test
+```
+
+`bun run test` only runs `register-schemas -> gen-data -> cdc-flush -> federated-check`. `cdc-init`, `compactor`, and k6 are available as manual follow-up steps.
+
+For a one-shot local performance run that starts Forma, waits for `/health`, runs `k6-full`, and then cleans up, use:
+
+```bash
+./scripts/run_local_k6_full.sh
 ```
 
 ## Project Structure
@@ -34,7 +44,9 @@ tests/e2e/
 ├── scripts/
 │   ├── register-schemas.ts  # Register lead/visit/log schemas
 │   ├── gen-data.ts          # Generate test data via API
+│   ├── cdc-init.ts          # Backfill base parquet from existing data
 │   ├── cdc-flush.ts         # Trigger CDC flush to S3
+│   ├── compactor.ts         # Merge delta parquet files into base
 │   └── federated-check.ts   # Validate federated query consistency
 ├── k6/
 │   ├── scenarios.ts    # k6 load test scenarios
@@ -46,6 +58,12 @@ tests/e2e/
 ```
 
 ## Scripts
+
+### Default Flow vs Extended Steps
+
+- Default flow: `bun run test`
+- Included by default: `register-schemas`, `gen-data`, `cdc-flush`, `federated-check`
+- Manual extensions: `cdc-init`, `compactor`, `build-k6`, `k6-smoke`, `k6-full`, `k6-perf`
 
 ### Register Schemas
 
@@ -70,6 +88,21 @@ bun run gen-data -- --schema all --count 5000
 bun run gen-data
 ```
 
+### CDC Init
+
+Initializes base parquet files from existing `entity_main` + `eav_data`. This is mainly used for backfilling an existing deployment before incremental CDC takes over.
+
+```bash
+# Initialize all schemas
+bun run cdc-init
+
+# Dry run
+bun run cdc-init -- --dry-run
+
+# Single schema with custom target file size
+bun run cdc-init -- --schema-id 101 --target-file-size-mb 256
+```
+
 ### CDC Flush
 
 Triggers the CDC flush process to export change_log data to S3 as Parquet files:
@@ -85,6 +118,21 @@ bun run cdc-flush -- --dry-run
 Notes:
 - Schema registry is required: set `SCHEMA_TABLE` and `SCHEMA_DIR` in `.env` so the CDC tools can generate schema-aware parquet.
 - Optional: tune `CDC_EST_ROW_BYTES` and `CDC_MAX_BATCH_BYTES` to split batches by estimated file size (targets 10–50MB).
+
+### Compactor
+
+Runs compaction to merge delta parquet files into the base tier.
+
+```bash
+# Compact the default schema
+bun run compactor
+
+# Compact all known schemas
+bun run compactor -- --all
+
+# Compact one schema
+bun run compactor -- --schema-id 101
+```
 
 ### Federated Check
 
@@ -125,6 +173,8 @@ bun run k6-perf
 k6 run -e BASE_URL=http://localhost:8080 -e SCENARIO=full k6/dist/bundle.js
 ```
 
+The `k6-*` scripts prefer a local `k6` binary. If `k6` is not installed, they automatically fall back to `docker run grafana/k6` when Docker is available.
+
 ### k6 Thresholds
 
 | Metric | Threshold | Description |
@@ -160,31 +210,48 @@ See `.env.example` for all available configuration options:
 
 All scripts generate JSON reports in the `reports/` directory:
 
+- `schema-registration.json` - Schema registration results
 - `data-gen.json` - Data generation results
+- `cdc-init.json` - CDC base initialization results
 - `cdc-flush.json` - CDC flush results
+- `compactor.json` - Compaction results
 - `federated-check.json` - Federated query validation results
 - `k6-*.json` - k6 load test results
 
 ## Full E2E Flow
 
-The complete E2E test validates:
+The default Bun E2E flow validates:
 
 1. **Schema Registration** - Registers schemas via API
 2. **Data Generation** - Creates test records in Postgres (hot tier)
 3. **CDC Flush** - Exports data to S3 as Parquet (cold tier)
 4. **Federated Check** - Validates query consistency across tiers
-5. **Load Testing** - Validates p95 latency under load
 
 ```bash
-# Run the complete flow
+# Run the default flow
 bun run test
+```
 
-# Or run steps individually
+Extended validation is available as manual follow-up:
+
+1. **CDC Init** - Backfills base parquet for existing data
+2. **Compaction** - Merges delta parquet files into base
+3. **Load Testing** - Validates p95 latency under load
+
+```bash
+# Optional backfill
+bun run cdc-init
+
+# Default flow steps
 bun run register-schemas
 bun run gen-data -- --schema all --count 10000
 bun run cdc-flush
 bun run federated-check
-bun run build-k6 && bun run k6-full
+
+# Optional compaction and load
+bun run compactor -- --all
+bun run build-k6
+bun run k6-full
 ```
 
 ## Troubleshooting
@@ -215,7 +282,9 @@ bun run register-schemas
 
 ### k6 not found
 
-Install k6:
+Either install k6 locally, or rely on the Docker fallback used by `bun run k6-smoke|k6-full|k6-perf`.
+
+Install k6 locally:
 
 ```bash
 # macOS

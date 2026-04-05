@@ -2,6 +2,8 @@
 
 End-to-end test harness for validating the federated query system, including the three-tier data architecture, CDC flushing, compaction, and data consistency.
 
+This README documents the Go harness only. For the repo-wide E2E inventory that also covers `tests/e2e` Bun/k6 workflows, see [../../docs/e2e-tests-cn.md](../../docs/e2e-tests-cn.md) and [../../docs/e2e-tests-en.md](../../docs/e2e-tests-en.md).
+
 ## Prerequisites
 
 - **Go 1.21+**
