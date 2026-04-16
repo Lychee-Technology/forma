@@ -2,13 +2,18 @@ package internal
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
+
+type duckDBRowsIterator interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
 
 // ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
 // FederatedAttributeQuery. It fetches dirty IDs from the Postgres change_log (if available),
@@ -115,7 +120,7 @@ func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
 		return nil, nil
 	}
 
-	dirtyIDs, err := r.FetchDirtyRowIDs(ctx, tables.ChangeLog, schemaID)
+	dirtyIDs, err := r.getDirtyIDFetcher()(ctx, tables.ChangeLog, schemaID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch dirty ids: %w", err)
 	}
@@ -174,7 +179,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 	// Record Postgres pushdown fragment
 	planCtx.recordPushdownFragment(dc.PgMainClause)
 
-	sqlStr, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, sqlParams, q, dirtyIDs, &dc)
+	sqlStr, args, err := r.getDuckDBQueryBuilder()(r.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
@@ -187,7 +192,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 // streamDuckDBRows iterates through DuckDB rows and invokes the handler.
 func (r *DBPersistentRecordRepository) streamDuckDBRows(
 	ctx context.Context,
-	rows *sql.Rows,
+	rows duckDBRowsIterator,
 	rowHandler func(context.Context, *PersistentRecord) error,
 ) (int64, int64, error) {
 	buffers := newDuckDBScanBuffers()

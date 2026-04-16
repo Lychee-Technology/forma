@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"text/template"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,9 @@ type DBPersistentRecordRepository struct {
 	duckDBClient  *DuckDBClient
 	duckDBCfg     forma.DuckDBConfig
 	nowFunc       func() time.Time
+	fetchDirtyIDs func(context.Context, string, int16) ([]uuid.UUID, error)
+	buildDuckSQL  func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *DualClauses) (string, []any, error)
+	duckTemplate  *template.Template
 }
 
 func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient, duckDBCfg forma.DuckDBConfig) *DBPersistentRecordRepository {
@@ -32,7 +36,29 @@ func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *M
 		duckDBClient:  duckDBClient,
 		duckDBCfg:     duckDBCfg,
 		nowFunc:       time.Now,
+		duckTemplate:  AdvancedQueryTemplateDuckDB,
 	}
+}
+
+func (r *DBPersistentRecordRepository) getDirtyIDFetcher() func(context.Context, string, int16) ([]uuid.UUID, error) {
+	if r.fetchDirtyIDs != nil {
+		return r.fetchDirtyIDs
+	}
+	return r.FetchDirtyRowIDs
+}
+
+func (r *DBPersistentRecordRepository) getDuckDBQueryBuilder() func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *DualClauses) (string, []any, error) {
+	if r.buildDuckSQL != nil {
+		return r.buildDuckSQL
+	}
+	return BuildDuckDBQuery
+}
+
+func (r *DBPersistentRecordRepository) getDuckDBTemplate() *template.Template {
+	if r.duckTemplate != nil {
+		return r.duckTemplate
+	}
+	return AdvancedQueryTemplateDuckDB
 }
 
 func (r *DBPersistentRecordRepository) withClock(now func() time.Time) {
