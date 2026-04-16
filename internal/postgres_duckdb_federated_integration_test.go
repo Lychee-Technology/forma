@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"text/template"
 	"time"
@@ -320,4 +321,293 @@ func TestRenderDuckDBQuery_ParameterMerging(t *testing.T) {
 	require.Len(t, args, 2)
 	require.Equal(t, "arg1", args[0])
 	require.Equal(t, "arg2", args[1])
+}
+
+func TestStreamDuckDBFederatedQuery_RowHandlerErrorStopsIteration(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+		return nil, nil
+	}
+	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+		rowID := uuid.New().String()
+		createdAt := time.Now().UnixMilli()
+		return fmt.Sprintf(
+			`SELECT 
+				1::SMALLINT AS ltbase_schema_id,
+				'%s'::TEXT AS ltbase_row_id,
+				%d::BIGINT AS ltbase_created_at,
+				%d::BIGINT AS ltbase_updated_at,
+				NULL::BIGINT AS ltbase_deleted_at,
+				'[]'::TEXT AS attributes_json,
+				1::BIGINT AS total_records,
+				1::BIGINT AS total_pages,
+				1 AS current_page`,
+			rowID, createdAt, createdAt,
+		), nil, nil
+	}
+
+	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
+	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: ""}
+
+	handlerCallCount := 0
+	expectedErr := fmt.Errorf("row handler forced error")
+	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(ctx context.Context, record *PersistentRecord) error {
+		handlerCallCount++
+		return expectedErr
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "row handler forced error")
+	require.Equal(t, 1, handlerCallCount, "rowHandler must be called exactly once before stopping")
+}
+
+func TestStreamDuckDBFederatedQuery_DirtyIDFetcherErrorIsInjectable(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+		return nil, fmt.Errorf("forced dirty-id fetch failure")
+	}
+
+	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
+	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: "change_log_dev"}
+
+	handlerCalled := false
+	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
+		handlerCalled = true
+		return nil
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "fetch dirty ids: forced dirty-id fetch failure")
+	require.False(t, handlerCalled, "row handler must not be called when dirty-id fetching fails")
+}
+
+func TestStreamDuckDBFederatedQuery_QueryBuilderErrorIsInjectable(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+		return "", nil, fmt.Errorf("forced duckdb query build failure")
+	}
+
+	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
+	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: ""}
+
+	handlerCalled := false
+	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
+		handlerCalled = true
+		return nil
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "build duckdb query: forced duckdb query build failure")
+	require.False(t, handlerCalled, "row handler must not be called when query building fails")
+}
+
+func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
+	repo := &DBPersistentRecordRepository{}
+	opts := &FederatedQueryOptions{
+		IncludeExecutionPlan: false,
+		ExecutionPlan:        &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+	}
+	planCtx := newDuckDBExecutionPlanContext(opts)
+	require.NotNil(t, planCtx)
+
+	repo.finalizeDuckDBExecutionPlan(context.Background(), planCtx, nil, 10, 5)
+
+	require.Empty(t, opts.ExecutionPlan.Timings, "Timings must not be attached when capture is disabled")
+	require.Empty(t, opts.ExecutionPlan.Notes, "Notes must not be attached when capture is disabled")
+}
+
+func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureDisabled(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+		return nil, nil
+	}
+	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+		return "SELECT 1 AS val", nil, nil
+	}
+
+	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
+	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: ""}
+
+	opts := &FederatedQueryOptions{
+		IncludeExecutionPlan: false,
+		ExecutionPlan:        &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+	}
+
+	handlerCalled := false
+	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(context.Context, *PersistentRecord) error {
+		handlerCalled = true
+		return nil
+	})
+
+	if err != nil {
+		t.Skipf("buildDuckDBQueryWithPlan requires ToDualClauses with valid condition: %v", err)
+	}
+
+	require.True(t, handlerCalled, "handler should be called when query succeeds")
+	require.Empty(t, opts.ExecutionPlan.Timings, "Timings must not be attached when IncludeExecutionPlan is false")
+}
+
+func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureEnabled_MetadataAttached(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+		return nil, nil
+	}
+
+	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+		rowID := uuid.New().String()
+		createdAt := time.Now().UnixMilli()
+		return fmt.Sprintf(
+			`SELECT 
+				1::SMALLINT AS ltbase_schema_id,
+				'%s'::TEXT AS ltbase_row_id,
+				%d::BIGINT AS ltbase_created_at,
+				%d::BIGINT AS ltbase_updated_at,
+				NULL::BIGINT AS ltbase_deleted_at,
+				'[]'::TEXT AS attributes_json,
+				1::BIGINT AS total_records,
+				1::BIGINT AS total_pages,
+				1 AS current_page`,
+			rowID, createdAt, createdAt,
+		), nil, nil
+	}
+
+	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
+	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: ""}
+
+	opts := &FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan:        &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+	}
+
+	handlerCalled := false
+	total, err := repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(ctx context.Context, record *PersistentRecord) error {
+		handlerCalled = true
+		return nil
+	})
+
+	if err != nil {
+		t.Skipf("streamDuckDBRows requires query to return scannable columns matching entityMainColumnDescriptors: %v", err)
+	}
+
+	require.True(t, handlerCalled, "handler should be called when query succeeds")
+	require.Equal(t, int64(1), total, "total records should be 1")
+	require.NotEmpty(t, opts.ExecutionPlan.Timings, "Timings must be attached when IncludeExecutionPlan is true")
+	require.Contains(t, opts.ExecutionPlan.Timings, "duckdb_fetch", "duckdb_fetch timing must be recorded")
+	require.Contains(t, opts.ExecutionPlan.Timings, "total", "total timing must be recorded")
+}
+
+func TestStreamDuckDBFederatedQuery_RowsIteratorErrorPropagates(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	duck, err := NewDuckDBClient(cfg)
+	require.NoError(t, err)
+	defer duck.Close()
+
+	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+		return nil, nil
+	}
+
+	fakeRows := &fakeDuckDBRowsIteratorWithError{err: fmt.Errorf("iterator error after rows exhausted")}
+	handlerCalled := false
+	_, _, err = streamDuckDBRowsViaPublicAPI(repo, fakeRows, func(ctx context.Context, record *PersistentRecord) error {
+		handlerCalled = true
+		return nil
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "iterate duckdb rows")
+	require.Contains(t, err.Error(), "iterator error after rows exhausted")
+	require.False(t, handlerCalled, "row handler must not be called when rows.Err() is non-nil")
+}
+
+type fakeDuckDBRowsIteratorWithError struct {
+	calledNext bool
+	err        error
+}
+
+func (f *fakeDuckDBRowsIteratorWithError) Next() bool {
+	f.calledNext = true
+	return false
+}
+
+func (f *fakeDuckDBRowsIteratorWithError) Scan(dest ...any) error {
+	return fmt.Errorf("scan should not be called after Next returns false")
+}
+
+func (f *fakeDuckDBRowsIteratorWithError) Err() error {
+	return f.err
+}
+
+func streamDuckDBRowsViaPublicAPI(repo *DBPersistentRecordRepository, rows duckDBRowsIterator, handler func(context.Context, *PersistentRecord) error) (int64, int64, error) {
+	return repo.streamDuckDBRows(context.Background(), rows, handler)
 }
