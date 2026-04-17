@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/stretchr/testify/require"
 )
 
 type exportSQLResult struct {
@@ -133,4 +134,85 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveExportSQLOptions_AppliesDefaultsWhenConfigOmitsOverrides(t *testing.T) {
+	opts := resolveExportSQLOptions(CDCConfig{}, "4GB")
+
+	require.Equal(t, DefaultParquetCompression, opts.compression)
+	require.Equal(t, DefaultParquetCompressionLevel, opts.compressionLevel)
+	require.Equal(t, "4GB", opts.memoryLimit)
+	require.Equal(t, defaultParquetVersion, opts.parquetVersion)
+}
+
+func TestResolveMainAndEAVTableNames_QuotesUnsafeNamesAndFallsBackWhenEmpty(t *testing.T) {
+	mainTable, eavTable := resolveMainAndEAVTableNames(CDCConfig{
+		EntityMainTable: "entity-main prod",
+		EAVDataTable:    "",
+	})
+
+	require.Equal(t, `"entity-main prod"`, mainTable)
+	require.Equal(t, "eav_data", eavTable)
+}
+
+func TestBuildMainEntityQuery_OmitsDeletedGuardWhenActiveOnlyIsFalse(t *testing.T) {
+	query := buildMainEntityQuery("entity_main", 7, []string{"ltbase_row_id", "text_01"}, "ltbase_row_id IS NOT NULL", false)
+
+	require.Contains(t, query, "FROM entity_main")
+	require.NotContains(t, query, "ltbase_deleted_at IS NULL")
+	require.Contains(t, query, "AND ltbase_row_id IS NOT NULL")
+}
+
+func TestBuildEAVQuery_OmitsAttrFilterWhenAttrIDsAreEmpty(t *testing.T) {
+	query := buildEAVQuery("eav_data", 9, "row_id IS NOT NULL", nil)
+
+	require.Contains(t, query, "FROM eav_data")
+	require.NotContains(t, query, "attr_id IN")
+	require.Contains(t, query, "AND row_id IS NOT NULL")
+}
+
+func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggregates(t *testing.T) {
+	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+		"display_name": {
+			AttributeName: "display_name",
+			AttributeID:   10,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01},
+		},
+		"legal_name": {
+			AttributeName: "legal_name",
+			AttributeID:   11,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01},
+		},
+		"is_active": {
+			AttributeName: "is_active",
+			AttributeID:   12,
+			ValueType:     forma.ValueTypeBool,
+		},
+	})
+
+	mainColumnCount := 0
+	for _, col := range projection.mainColumns {
+		if col == string(forma.MainColumnText01) {
+			mainColumnCount++
+		}
+	}
+
+	require.Equal(t, 1, mainColumnCount)
+	require.Len(t, projection.mainProjections, 2)
+	require.Contains(t, projection.mainProjections[0], "AS display_name")
+	require.Contains(t, projection.mainProjections[1], "AS legal_name")
+	require.Len(t, projection.eavAgg, 1)
+	require.Contains(t, projection.eavAgg[0], "attr_id = 12")
+	require.Contains(t, projection.eavAgg[0], "AS is_active")
+	require.Equal(t, []int16{12}, projection.eavAttrIDs)
+}
+
+func TestBuildEAVAggregationSQL_GroupsByRowIDWhenNoAggregatesExist(t *testing.T) {
+	query := buildEAVAggregationSQL("SELECT row_id FROM eav_data", nil)
+
+	require.Contains(t, query, "SELECT row_id FROM postgres_query")
+	require.Contains(t, query, "GROUP BY row_id")
+	require.NotContains(t, query, ",\n    MAX(")
 }
