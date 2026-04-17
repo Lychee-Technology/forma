@@ -165,3 +165,66 @@ func TestToDualClauses_UnknownAttribute_IgnoredForPgMain(t *testing.T) {
 	require.Equal(t, "", pgClause)
 	require.Nil(t, pgArgs)
 }
+
+// Given bound attributes of various types, when classifyPredicate is invoked,
+// then only pushdown-safe operators are accepted for each value type.
+func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t *testing.T) {
+	// Prepare a pseudo KvCondition (attr name is unused by classifyPredicate except for Value)
+	kvText := &forma.KvCondition{Attr: "txt", Value: "starts_with:foo"}
+	kvTextEq := &forma.KvCondition{Attr: "txt", Value: "equals:bar"}
+	kvTextBad := &forma.KvCondition{Attr: "txt", Value: "gt:5"}
+
+	kvNum := &forma.KvCondition{Attr: "n", Value: "gt:5"}
+	kvNumBad := &forma.KvCondition{Attr: "n", Value: "contains:5"}
+
+	kvDate := &forma.KvCondition{Attr: "d", Value: "lt:2020-01-01"}
+	kvDateBad := &forma.KvCondition{Attr: "d", Value: "contains:2020"}
+
+	kvBool := &forma.KvCondition{Attr: "b", Value: "equals:true"}
+	kvBoolBad := &forma.KvCondition{Attr: "b", Value: "gt:true"}
+
+	// All metadata must include a ColumnBinding to reach operator checking
+	textMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}}
+	numMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("num_01")}}
+	dateMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("date_01")}}
+	boolMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeBool, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bool_01")}}
+
+	// Text: starts_with and equals supported; numeric operator is not
+	ok, reason := classifyPredicate(kvText, textMeta)
+	require.True(t, ok, "starts_with should be accepted for text")
+	require.Contains(t, reason, "text")
+
+	ok, _ = classifyPredicate(kvTextEq, textMeta)
+	require.True(t, ok, "equals should be accepted for text")
+
+	ok, reason = classifyPredicate(kvTextBad, textMeta)
+	require.False(t, ok, "gt should not be accepted for text")
+	require.Contains(t, reason, "text operator not supported")
+
+	// Numeric: gt supported; contains not
+	ok, reason = classifyPredicate(kvNum, numMeta)
+	require.True(t, ok, "gt should be accepted for numeric")
+	require.Contains(t, reason, "numeric")
+
+	ok, reason = classifyPredicate(kvNumBad, numMeta)
+	require.False(t, ok, "contains should not be accepted for numeric")
+	require.Contains(t, reason, "numeric operator not supported")
+
+	// Date: lt supported; contains not
+	ok, reason = classifyPredicate(kvDate, dateMeta)
+	require.True(t, ok, "lt should be accepted for date")
+	require.Contains(t, reason, "date")
+
+	ok, reason = classifyPredicate(kvDateBad, dateMeta)
+	require.False(t, ok, "contains should not be accepted for date")
+	require.Contains(t, reason, "date operator not supported")
+
+	// Bool: equals accepted; gt not
+	ok, reason = classifyPredicate(kvBool, boolMeta)
+	require.True(t, ok, "equals should be accepted for bool")
+	require.Contains(t, reason, "bool")
+
+	ok, reason = classifyPredicate(kvBoolBad, boolMeta)
+	require.False(t, ok, "gt should not be accepted for bool")
+	require.Contains(t, reason, "bool operator not supported")
+}
