@@ -12,8 +12,8 @@ Usage:
   ./tools/autoresearch/testing/scripts/autoloop.sh [options]
 
 Options:
-  -m, --model MODEL            OpenCode model in provider/model form
-  -t, --target TARGET          Target key: flusher | postgres_duckdb_query | entity_query_service | postgres_repo_query
+  -m, --model MODEL            OpenCode model in provider/model form (default: github-copilot/gpt-5-mini)
+  -t, --target TARGET          Target key: flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
       --agent AGENT            Optional OpenCode agent name
       --variant NAME           Optional OpenCode model variant
       --iterations N           Number of outer-loop runs (default: 20)
@@ -39,7 +39,7 @@ EOF
 }
 
 TARGET="flusher"
-MODEL=""
+MODEL="github-copilot/gpt-5-mini"
 AGENT=""
 VARIANT=""
 ITERATIONS=20
@@ -56,6 +56,8 @@ PRINT_PROMPT=0
 DRY_RUN=0
 FORCE=0
 CONSECUTIVE_BLOCKED_LIMIT=2
+MEDIUM_GATE_EVERY=5
+KEPT_COUNT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -222,6 +224,10 @@ ensure_worktree_on_research() {
   local current_branch
   current_branch="$(git -C "$WORKTREE_DIR" symbolic-ref --short HEAD 2>/dev/null || git -C "$WORKTREE_DIR" rev-parse --short HEAD 2>/dev/null)"
   if [[ "$current_branch" != "$RESEARCH_BRANCH" ]]; then
+    if ! git -C "$ROOT_DIR" rev-parse --verify "$RESEARCH_BRANCH" >/dev/null 2>&1; then
+      printf 'creating missing research branch %s from current worktree HEAD.\n' "$RESEARCH_BRANCH"
+      git -C "$ROOT_DIR" branch "$RESEARCH_BRANCH" "$current_branch"
+    fi
     if [[ "$FORCE" -eq 1 ]]; then
       printf 'worktree is on %s, but --force is set. Switching to %s.\n' "$current_branch" "$RESEARCH_BRANCH"
       git -C "$WORKTREE_DIR" checkout "$RESEARCH_BRANCH"
@@ -334,7 +340,91 @@ print_prompt() {
   "$SCRIPT_DIR/opencode_autoresearch.sh" \
     --target "$TARGET" \
     --single-candidate \
+    --decision-file /tmp/autoresearch-decision.txt \
     --print-prompt
+}
+
+sync_autoresearch_assets() {
+  local dst_dir="$WORKTREE_DIR/tools/autoresearch/testing"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'sync autoresearch assets into: %s\n' "$dst_dir"
+    return 0
+  fi
+
+  mkdir -p "$dst_dir"
+  cp "$AR_DIR/README.md" "$AR_DIR/program-testcov.md" "$dst_dir/"
+  cp -R "$AR_DIR/prompts" "$AR_DIR/scripts" "$AR_DIR/targets" "$dst_dir/"
+}
+
+cleanup_synced_assets() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'cleanup synced autoresearch assets in: %s\n' "$WORKTREE_DIR/tools/autoresearch/testing"
+    return 0
+  fi
+
+  git -C "$WORKTREE_DIR" restore --worktree --source=HEAD -- \
+    tools/autoresearch/testing/README.md \
+    tools/autoresearch/testing/program-testcov.md \
+    tools/autoresearch/testing/prompts \
+    tools/autoresearch/testing/scripts \
+    tools/autoresearch/testing/targets
+  git -C "$WORKTREE_DIR" clean -fd -- \
+    tools/autoresearch/testing/prompts \
+    tools/autoresearch/testing/scripts \
+    tools/autoresearch/testing/targets
+}
+
+run_fast_gate() {
+  local gate_log
+  gate_log="$(test_log_path "${LOG_PREFIX}-${TARGET}-fast-gate")"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'fast gate command: (cd %q && ./tools/autoresearch/testing/scripts/run_candidate.sh %q)\n' "$WORKTREE_DIR" "$TARGET"
+    return 0
+  fi
+
+  rm -f "$gate_log"
+  (
+    cd "$WORKTREE_DIR"
+    ./tools/autoresearch/testing/scripts/run_candidate.sh "$TARGET"
+  ) 2>&1 | tee "$gate_log"
+}
+
+extract_fast_gate_failure_evidence() {
+  local gate_log
+  gate_log="$(test_log_path "${LOG_PREFIX}-${TARGET}-fast-gate")"
+
+  if [[ ! -f "$gate_log" ]]; then
+    printf '%s' 'fast gate failed'
+    return 0
+  fi
+
+  local line
+  line="$(rg -m 1 '^--- FAIL:|^FAIL\b|^Error:|^panic:' "$gate_log" || true)"
+  if [[ -n "$line" ]]; then
+    sanitize_tsv_field "$line"
+    return 0
+  fi
+
+  printf '%s' 'fast gate failed'
+}
+
+run_medium_gate_if_due() {
+  if [[ "$KEPT_COUNT" -eq 0 || $((KEPT_COUNT % MEDIUM_GATE_EVERY)) -ne 0 ]]; then
+    return 0
+  fi
+
+  append_loop_log "running medium gate after $KEPT_COUNT kept candidates"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'medium gate command: (cd %q && ./tools/autoresearch/testing/scripts/medium_gate.sh)\n' "$WORKTREE_DIR"
+    return 0
+  fi
+
+  (
+    cd "$WORKTREE_DIR"
+    ./tools/autoresearch/testing/scripts/medium_gate.sh
+  )
 }
 
 build_opencode_command() {
@@ -366,7 +456,7 @@ build_opencode_command() {
   fi
 
   local prompt
-  prompt="$("$SCRIPT_DIR/opencode_autoresearch.sh" \
+  prompt="$(WORKTREE_DIR="$WORKTREE_DIR" "$SCRIPT_DIR/opencode_autoresearch.sh" \
     --target "$TARGET" \
     --single-candidate \
     --decision-file "$decision_file" \
@@ -548,6 +638,14 @@ commit_candidate() {
     commit_msg+=" | ${description}"
   fi
 
+  if ! run_fast_gate; then
+    local gate_evidence
+    gate_evidence="$(extract_fast_gate_failure_evidence)"
+    append_loop_log "fast gate failed for run $run_index"
+    discard_candidate "$run_index" "fast_gate_failed" "$scenario" "$description" "$gate_evidence"
+    return 1
+  fi
+
   while IFS= read -r status_line; do
     path="${status_line:3}"
     case "$path" in
@@ -571,8 +669,13 @@ commit_candidate() {
   git -C "$WORKTREE_DIR" commit -m "$commit_msg"
   local hash
   hash="$(git -C "$WORKTREE_DIR" rev-parse --short HEAD)"
+  KEPT_COUNT=$((KEPT_COUNT + 1))
   printf 'committed run %d as %s: %s\n' "$run_index" "$hash" "$commit_msg"
   printf '%s\t%s\t%s\tkeep\t%s\t%s\t%s\n' "$hash" "$TARGET" "$(resolve_target_pkg "$TARGET")" "$scenario" "$evidence" "$description" >> "$AR_DIR/results.tsv"
+  if ! run_medium_gate_if_due; then
+    append_issue "environment" "$TARGET" "tools/autoresearch/testing/scripts/medium_gate.sh" "Medium gate failed after kept candidate" "run ${run_index} failed medium gate after commit ${hash}" "Inspect medium gate logs and determine whether the kept candidate exposed a real regression"
+    return 1
+  fi
 }
 
 discard_candidate() {
@@ -605,7 +708,7 @@ run_iteration() {
   if [[ "$run_status" -ne 0 ]]; then
     append_loop_log "run $run_index failed with exit $run_status"
     printf 'n/a\t%s\t%s\terror\tn/a\trun %d failed with exit %d\tn/a\n' "$TARGET" "$(resolve_target_pkg "$TARGET")" "$run_index" "$run_status" >> "$AR_DIR/results.tsv"
-    append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run exited before writing a decision" "run ${run_index} failed with exit ${run_status}" "Inspect OpenCode run logs and harden controller or prompt error handling"
+    append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run exited before writing a decision" "run ${run_index} failed with exit ${run_status}" "Inspect OpenCode run logs for model/config/controller failures and harden prompt or runtime validation"
     return 1
   fi
 
@@ -634,7 +737,10 @@ run_iteration() {
   case "$status" in
     keep)
       BLOCKED_STREAK=0
-      commit_candidate "$run_index" "$scenario" "$description" "$evidence"
+      if ! commit_candidate "$run_index" "$scenario" "$description" "$evidence"; then
+        append_loop_log "iteration $run_index failed during keep path"
+        return 1
+      fi
       ;;
     discard)
       if [[ "$reason" == *blocked* || "$evidence" == *blocked* ]]; then
@@ -652,6 +758,7 @@ run_iteration() {
   esac
 
   rm -f "$decision_file"
+  cleanup_synced_assets
 }
 
 append_loop_log() {
@@ -674,34 +781,39 @@ LOOP_LOG="$(test_log_path "$LOG_PREFIX-$TARGET")"
 
 append_loop_log "target=$TARGET research_branch=$RESEARCH_BRANCH worktree=$WORKTREE_DIR model=${MODEL:-default}"
 
-if ! ensure_main_clean; then
-  if [[ "$FORCE" -ne 1 ]]; then
-    exit 1
+if [[ "$DRY_RUN" -ne 1 ]]; then
+  if ! ensure_main_clean; then
+    if [[ "$FORCE" -ne 1 ]]; then
+      exit 1
+    fi
   fi
+  ensure_local_infra
+  init_worktree
+  ensure_worktree_clean
+  ensure_worktree_on_research
 fi
-ensure_local_infra
-init_worktree
-ensure_worktree_clean
-ensure_worktree_on_research
 
 if [[ "$RUN_BASELINE" -eq 1 ]]; then
   append_loop_log "running baseline"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf 'baseline would run in worktree: %s\n' "$WORKTREE_DIR"
+    printf 'baseline package: %s\n' "$(resolve_target_pkg "$TARGET")"
+    printf 'baseline coverprofile: %s\n' "$REPORT_DIR/baseline/${TARGET}.cover.out"
   else
-    GOCACHE="$ROOT_DIR/.gocache" GOFLAGS='-buildvcs=false' \
-      go test ./internal/cdc -coverprofile="$REPORT_DIR/baseline/${TARGET}.cover.out"
-    GOCACHE="$ROOT_DIR/.gocache" GOFLAGS='-buildvcs=false' \
-      go tool cover -func="$REPORT_DIR/baseline/${TARGET}.cover.out" \
-      > "$REPORT_DIR/baseline/${TARGET}.cover.txt"
+    (
+      cd "$WORKTREE_DIR"
+      ./tools/autoresearch/testing/scripts/baseline.sh "$TARGET"
+    )
     append_loop_log "baseline complete"
   fi
 fi
 
 for ((run_index = 1; run_index <= ITERATIONS; run_index++)); do
+  if [[ "$DRY_RUN" -ne 1 ]]; then
+    sync_autoresearch_assets
+  fi
   append_loop_log "=== iteration $run_index of $ITERATIONS ==="
-  run_iteration "$run_index"
-  iter_status=$?
+  run_iteration "$run_index" || iter_status=$?
+  iter_status=${iter_status:-0}
 
   if [[ "$iter_status" -ne 0 ]]; then
     append_loop_log "iteration $run_index did not complete successfully"

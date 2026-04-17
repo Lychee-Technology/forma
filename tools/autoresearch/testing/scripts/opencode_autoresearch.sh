@@ -12,8 +12,8 @@ Usage:
   ./tools/autoresearch/testing/scripts/opencode_autoresearch.sh [options]
 
 Options:
-  -m, --model MODEL           OpenCode model in provider/model form
-  -t, --target TARGET         Target key: flusher | postgres_duckdb_query | entity_query_service | postgres_repo_query
+  -m, --model MODEL           OpenCode model in provider/model form (default: github-copilot/gpt-5-mini)
+  -t, --target TARGET         Target key: flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
       --mode MODE             Launch mode: tui | run (default: tui)
       --agent AGENT           Optional OpenCode agent name
       --single-candidate       Generate a single-candidate prompt (controller mode)
@@ -36,10 +36,11 @@ EOF
 
 TARGET="flusher"
 MODE="tui"
-MODEL=""
+MODEL="github-copilot/gpt-5-mini"
 AGENT=""
 SINGLE_CANDIDATE=0
 DECISION_FILE=""
+WORKTREE_DIR_OVERRIDE="${WORKTREE_DIR:-$ROOT_DIR}"
 CONTINUE_LAST=0
 SESSION_ID=""
 FORK_SESSION=0
@@ -128,13 +129,13 @@ fi
 if [[ "$SINGLE_CANDIDATE" -eq 1 ]]; then
   TEMPLATE_PATH="$AR_DIR/prompts/opencode-single-candidate.md"
   if [[ -n "$DECISION_FILE" ]]; then
-    PROMPT="$(render_prompt_template_with_decision "$TEMPLATE_PATH" "$TARGET" "$DECISION_FILE")"
+    PROMPT="$(render_prompt_template_with_decision "$TEMPLATE_PATH" "$TARGET" "$DECISION_FILE" "$WORKTREE_DIR_OVERRIDE")"
   else
-    PROMPT="$(render_prompt_template "$TEMPLATE_PATH" "$TARGET" "" "")"
+    PROMPT="$(render_prompt_template "$TEMPLATE_PATH" "$TARGET" "" "" "$WORKTREE_DIR_OVERRIDE")"
   fi
 else
   TEMPLATE_PATH="$AR_DIR/prompts/opencode-autoloop.md"
-  PROMPT="$(render_prompt_template "$TEMPLATE_PATH" "$TARGET" "" "")"
+  PROMPT="$(render_prompt_template "$TEMPLATE_PATH" "$TARGET" "20" "5" "$WORKTREE_DIR_OVERRIDE")"
 fi
 
 if [[ "$PRINT_PROMPT" -eq 1 ]]; then

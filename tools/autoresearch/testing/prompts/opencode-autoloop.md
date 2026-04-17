@@ -1,14 +1,15 @@
 Read these files first:
-- `tools/autoresearch/testing/README.md`
-- `tools/autoresearch/testing/program-testcov.md`
+- `{{WORKTREE_DIR}}/tools/autoresearch/testing/README.md`
+- `{{WORKTREE_DIR}}/tools/autoresearch/testing/program-testcov.md`
 - `{{BRIEF_FILE}}`
-- `tools/autoresearch/testing/prompts/test-gap.md`
-- `tools/autoresearch/testing/prompts/test-review.md`
+- `{{WORKTREE_DIR}}/tools/autoresearch/testing/prompts/test-gap.md`
+- `{{WORKTREE_DIR}}/tools/autoresearch/testing/prompts/test-review.md`
 
 Active target:
 - target key: `{{TARGET}}`
 - source file: `{{SOURCE_FILE}}`
 - primary test file: `{{PRIMARY_TEST_FILE}}`
+- worktree root: `{{WORKTREE_DIR}}`
 
 Run configuration:
 - max candidate attempts this run: `{{MAX_ITERATIONS}}`
@@ -22,6 +23,7 @@ Rules:
 - prefer extending existing tests
 - prefer deterministic mocks, stubs, and table-driven tests
 - prefer BDD-style scenario framing and observable assertions
+- if you discover a blocker, bug, or worthwhile production-code improvement, record it via the structured `issue_*` fields in the decision artifact so it lands in `issues.tsv`
 
 Loop until you hit the max candidate attempts or I manually stop you:
 

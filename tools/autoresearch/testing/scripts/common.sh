@@ -27,6 +27,15 @@ resolve_target_pkg() {
     flusher)
       printf '%s\n' './internal/cdc'
       ;;
+    dualpath_sql_generator)
+      printf '%s\n' './internal'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' './internal'
+      ;;
+    export_sql_builder)
+      printf '%s\n' './internal/cdc'
+      ;;
     postgres_duckdb_query)
       printf '%s\n' './internal'
       ;;
@@ -47,6 +56,15 @@ resolve_focus_regex() {
   case "${1:-}" in
     flusher)
       printf '%s\n' 'processSchema|shouldFlush|executeFlush|executeBatch|executeFlushInChunks|executeFlushSingle'
+      ;;
+    dualpath_sql_generator)
+      printf '%s\n' 'ToDualClauses|classifyPredicate|buildPgMainClause|buildPgMainCompositeClause|buildPgMainKvClause|buildDuckClause|buildDuckCompositeClause|buildDuckKvClause'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' 'BuildListPredicate|ValidateOrderByForListTypes|ValidateOrderByAttributesForListTypes|RenderS3ParquetPath|GenerateDuckDBWhereClause|generateDuckDBCondition|generateDuckDBCompositeCondition|generateDuckDBKvCondition|duckDBSQLOperator|detectDuckDBValueType|parseDuckDBParamValue|AppendDirtyExclusion|GenerateDuckDBWhereClauseWithExclusions'
+      ;;
+    export_sql_builder)
+      printf '%s\n' 'resolveExportSQLOptions|buildParquetCopyOptions|resolveMainAndEAVTableNames|buildMainEntityQuery|buildEAVQuery|buildSchemaDrivenProjection|buildEAVAggregationSQL'
       ;;
     postgres_duckdb_query)
       printf '%s\n' 'StreamDuckDBFederatedQuery|fetchAndRecordDirtyIDs|buildDuckDBQueryWithPlan|streamDuckDBRows|finalizeDuckDBExecutionPlan'
@@ -69,6 +87,15 @@ resolve_target_source() {
     flusher)
       printf '%s\n' 'internal/cdc/flusher.go'
       ;;
+    dualpath_sql_generator)
+      printf '%s\n' 'internal/dualpath_sql_generator.go'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' 'internal/duckdb_sql_generator.go'
+      ;;
+    export_sql_builder)
+      printf '%s\n' 'internal/cdc/export_sql_builder.go'
+      ;;
     postgres_duckdb_query)
       printf '%s\n' 'internal/postgres_duckdb_query.go'
       ;;
@@ -89,6 +116,15 @@ resolve_target_brief() {
   case "${1:-}" in
     flusher)
       printf '%s\n' 'tools/autoresearch/testing/targets/flusher.md'
+      ;;
+    dualpath_sql_generator)
+      printf '%s\n' 'tools/autoresearch/testing/targets/dualpath_sql_generator.md'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' 'tools/autoresearch/testing/targets/duckdb_sql_generator.md'
+      ;;
+    export_sql_builder)
+      printf '%s\n' 'tools/autoresearch/testing/targets/export_sql_builder.md'
       ;;
     postgres_duckdb_query)
       printf '%s\n' 'tools/autoresearch/testing/targets/postgres_duckdb_query.md'
@@ -111,6 +147,15 @@ resolve_target_primary_test() {
     flusher)
       printf '%s\n' 'internal/cdc/flusher_test.go'
       ;;
+    dualpath_sql_generator)
+      printf '%s\n' 'internal/dualpath_sql_generator_test.go'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' 'internal/duckdb_sql_generator_test.go'
+      ;;
+    export_sql_builder)
+      printf '%s\n' 'internal/cdc/export_sql_shared_test.go'
+      ;;
     postgres_duckdb_query)
       printf '%s\n' 'internal/postgres_duckdb_federated_integration_test.go'
       ;;
@@ -127,19 +172,50 @@ resolve_target_primary_test() {
   esac
 }
 
+resolve_target_test_regex() {
+  case "${1:-}" in
+    flusher)
+      printf '%s\n' 'Test.*Flusher|Test.*Flush|Test.*ProcessSchema|Test.*ShouldFlush|Test.*ExecuteFlush|Test.*ExecuteBatch'
+      ;;
+    dualpath_sql_generator)
+      printf '%s\n' 'TestToDualClauses|TestHealth_'
+      ;;
+    duckdb_sql_generator)
+      printf '%s\n' 'Test(RenderS3ParquetPath|BuildListPredicate|ValidateOrderByForListTypes|ValidateOrderByAttributesForListTypes|GenerateDuckDBWhereClause|AppendDirtyExclusion|RenderDirtyIDsValuesCSV)'
+      ;;
+    export_sql_builder)
+      printf '%s\n' 'TestBuild(Base)?ExportSQL|TestBuildExportSQL_CommonSemanticsAcrossModes'
+      ;;
+    postgres_duckdb_query)
+      printf '%s\n' 'Test(StreamDuckDB|BuildDuckDBQuery|ExecuteDuckDBFederatedQuery|RenderDuckDBQuery|EvaluateRoutingPolicy)'
+      ;;
+    entity_query_service)
+      printf '%s\n' 'TestEntity(QueryService|Manager)_(Query|CrossSchemaSearch)|TestEntityManager_Query|TestEntityManager_CrossSchemaSearch'
+      ;;
+    postgres_repo_query)
+      printf '%s\n' 'Test(BuildHybridConditions|RunOptimizedQuery|StreamOptimizedQuery|QueryPersistentRecords)'
+      ;;
+    *)
+      printf 'unknown target: %s\n' "${1:-}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 render_prompt_template() {
   local template_path="$1"
   local target="$2"
   local max_iterations="${3:-}"
   local medium_gate_every="${4:-}"
+  local worktree_dir="${5:-$ROOT_DIR}"
   local rendered
   local source_file
   local brief_file
   local primary_test_file
 
-  source_file="$(resolve_target_source "$target")"
-  brief_file="$(resolve_target_brief "$target")"
-  primary_test_file="$(resolve_target_primary_test "$target")"
+  source_file="$worktree_dir/$(resolve_target_source "$target")"
+  brief_file="$worktree_dir/$(resolve_target_brief "$target")"
+  primary_test_file="$worktree_dir/$(resolve_target_primary_test "$target")"
   rendered="$(<"$template_path")"
   rendered="${rendered//\{\{TARGET\}\}/$target}"
   rendered="${rendered//\{\{SOURCE_FILE\}\}/$source_file}"
@@ -147,6 +223,7 @@ render_prompt_template() {
   rendered="${rendered//\{\{PRIMARY_TEST_FILE\}\}/$primary_test_file}"
   rendered="${rendered//\{\{MAX_ITERATIONS\}\}/$max_iterations}"
   rendered="${rendered//\{\{MEDIUM_GATE_EVERY\}\}/$medium_gate_every}"
+  rendered="${rendered//\{\{WORKTREE_DIR\}\}/$worktree_dir}"
   printf '%s' "$rendered"
 }
 
@@ -154,20 +231,22 @@ render_prompt_template_with_decision() {
   local template_path="$1"
   local target="$2"
   local decision_file="$3"
+  local worktree_dir="${4:-$ROOT_DIR}"
   local rendered
   local source_file
   local brief_file
   local primary_test_file
 
-  source_file="$(resolve_target_source "$target")"
-  brief_file="$(resolve_target_brief "$target")"
-  primary_test_file="$(resolve_target_primary_test "$target")"
+  source_file="$worktree_dir/$(resolve_target_source "$target")"
+  brief_file="$worktree_dir/$(resolve_target_brief "$target")"
+  primary_test_file="$worktree_dir/$(resolve_target_primary_test "$target")"
   rendered="$(<"$template_path")"
   rendered="${rendered//\{\{TARGET\}\}/$target}"
   rendered="${rendered//\{\{SOURCE_FILE\}\}/$source_file}"
   rendered="${rendered//\{\{BRIEF_FILE\}\}/$brief_file}"
   rendered="${rendered//\{\{PRIMARY_TEST_FILE\}\}/$primary_test_file}"
   rendered="${rendered//\{\{DECISION_FILE\}\}/$decision_file}"
+  rendered="${rendered//\{\{WORKTREE_DIR\}\}/$worktree_dir}"
   printf '%s' "$rendered"
 }
 
@@ -212,6 +291,7 @@ run_go_coverage() {
 
   local pkg
   local focus
+  local test_regex
   local cover_out
   local func_out
   local focus_out
@@ -220,6 +300,7 @@ run_go_coverage() {
 
   pkg="$(resolve_target_pkg "$target")"
   focus="$(resolve_focus_regex "$target")"
+  test_regex="$(resolve_target_test_regex "$target")"
   cover_out="$(coverage_out_path "$bucket" "$target")"
   func_out="$(coverage_func_path "$bucket" "$target")"
   focus_out="$(coverage_focus_path "$bucket" "$target")"
@@ -229,7 +310,7 @@ run_go_coverage() {
   ensure_report_dirs
   rm -f "$cover_out" "$func_out" "$focus_out" "$summary_out" "$scenario_out"
 
-  GOCACHE="$ROOT_DIR/.gocache" GOFLAGS='-buildvcs=false' go test "$pkg" -coverprofile="$cover_out"
+  GOCACHE="$ROOT_DIR/.gocache" GOFLAGS='-buildvcs=false' go test "$pkg" -run "$test_regex" -coverprofile="$cover_out"
   GOCACHE="$ROOT_DIR/.gocache" GOFLAGS='-buildvcs=false' go tool cover -func="$cover_out" | tee "$func_out" >/dev/null
   rg "$focus" "$func_out" > "$focus_out" || true
   {
@@ -239,6 +320,7 @@ run_go_coverage() {
     printf 'coverage_report=%s\n' "$func_out"
     printf 'focus_report=%s\n' "$focus_out"
     printf 'focus_regex=%s\n' "$focus"
+    printf 'test_regex=%s\n' "$test_regex"
     printf 'scenario_notes=%s\n' "$scenario_out"
     printf 'interpretation=Use this as supporting evidence for BDD-style scenario quality, not as the primary goal.\n'
   } > "$summary_out"
