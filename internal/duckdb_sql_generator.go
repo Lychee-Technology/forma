@@ -316,21 +316,6 @@ func joinStrings(parts []string, joiner string) string {
 	return buf.String()
 }
 
-// helper: splitOnce returns two strings; if sep not present, second is empty
-func splitOnce(s, sep string) (string, string) {
-	idx := -1
-	for i := 0; i+len(sep) <= len(s); i++ {
-		if s[i:i+len(sep)] == sep {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return "", ""
-	}
-	return s[:idx], s[idx+len(sep):]
-}
-
 // AppendDirtyExclusion adds a NOT IN clause excluding dirty row ids.
 // dirtyIDs are converted to strings for DuckDB parameterization using ? placeholders.
 func AppendDirtyExclusion(baseClause string, dirtyIDs []uuid.UUID) (string, []any) {
