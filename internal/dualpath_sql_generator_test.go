@@ -3,6 +3,7 @@ package internal
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -250,4 +251,31 @@ func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing
 	// Should not produce a clause or args when operator is unsupported for a bound column
 	require.Equal(t, "", pgClause)
 	require.Nil(t, pgArgs)
+}
+
+// Given a DuckDB predicate without metadata, when the clause is built,
+// then value-type fallback inference still produces the expected cast and parameter value.
+func TestBuildDuckClause_NoMetadata_InferTypeAndCast(t *testing.T) {
+	cache := forma.SchemaAttributeCache{}
+
+	// RFC3339 datetime literal with no metadata present
+	cond := &forma.KvCondition{Attr: "unknown_ts", Value: "2020-01-02T03:04:05Z"}
+
+	clause, args, err := buildDuckClause(cond, cache)
+	require.NoError(t, err)
+
+	// Expect a CAST(? AS TIMESTAMP) because the value should be inferred as a datetime
+	require.Contains(t, clause, "CAST(? AS TIMESTAMP)")
+	// Column name should be the attribute name when no metadata is present
+	require.Contains(t, clause, "unknown_ts")
+
+	require.Len(t, args, 1)
+
+	// The argument should be a time.Time equal to the parsed RFC3339 value (in UTC)
+	parsedWant, err := time.Parse(time.RFC3339Nano, "2020-01-02T03:04:05Z")
+	require.NoError(t, err)
+
+	gotTime, ok := args[0].(time.Time)
+	require.True(t, ok, "expected DuckDB arg to be time.Time")
+	require.True(t, gotTime.Equal(parsedWant.UTC()), "expected parsed time to match")
 }
