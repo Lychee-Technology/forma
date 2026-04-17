@@ -258,8 +258,9 @@ func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing
 func TestBuildDuckClause_NoMetadata_InferTypeAndCast(t *testing.T) {
 	cache := forma.SchemaAttributeCache{}
 
-	// RFC3339 datetime literal with no metadata present
-	cond := &forma.KvCondition{Attr: "unknown_ts", Value: "2020-01-02T03:04:05Z"}
+	// RFC3339 datetime literal with no metadata present.
+	// Use an explicit equals: prefix so the timestamp's ':' characters are not misparsed as an operator separator.
+	cond := &forma.KvCondition{Attr: "unknown_ts", Value: "equals:2020-01-02T03:04:05Z"}
 
 	clause, args, err := buildDuckClause(cond, cache)
 	require.NoError(t, err)
