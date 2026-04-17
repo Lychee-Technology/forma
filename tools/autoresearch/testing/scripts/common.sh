@@ -2,7 +2,19 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(git rev-parse --show-toplevel)"
+resolve_repo_root_dir() {
+  local common_dir
+
+  common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common_dir" && "$(basename "$common_dir")" == ".git" ]]; then
+    dirname "$common_dir"
+    return 0
+  fi
+
+  git rev-parse --show-toplevel
+}
+
+ROOT_DIR="$(resolve_repo_root_dir)"
 AR_DIR="$ROOT_DIR/tools/autoresearch/testing"
 REPORT_DIR="$AR_DIR/reports"
 
