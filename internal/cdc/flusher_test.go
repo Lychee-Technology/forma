@@ -452,25 +452,7 @@ func TestExecuteFlush_FallsBackToGenericProjectionWhenSchemaLookupFails(t *testi
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, time.Now().UnixMilli())
 	require.NoError(t, err)
 
-	origSingle := executeFlushSingleFn
-	origChunks := executeFlushInChunksFn
-	t.Cleanup(func() {
-		executeFlushSingleFn = origSingle
-		executeFlushInChunksFn = origChunks
-	})
-
 	called := false
-	executeFlushSingleFn = func(executor *flushBatchExecutor, batchIDs []uuid.UUID) error {
-		called = true
-		require.Len(t, batchIDs, 1)
-		require.Nil(t, executor.attrCache)
-		require.Equal(t, int16(7), executor.schemaID)
-		return nil
-	}
-	executeFlushInChunksFn = func(*flushBatchExecutor, []uuid.UUID, int) error {
-		return errors.New("unexpected chunk execution")
-	}
-
 	flushCtx := &schemaFlushContext{
 		db:             db,
 		cfg:            CDCConfig{BatchSize: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
@@ -478,6 +460,16 @@ func TestExecuteFlush_FallsBackToGenericProjectionWhenSchemaLookupFails(t *testi
 		pgPassword:     "secret",
 		logger:         zap.NewNop(),
 		schemaRegistry: errorSchemaRegistry{err: errors.New("schema unavailable")},
+		executeSingle: func(executor *flushBatchExecutor, batchIDs []uuid.UUID) error {
+			called = true
+			require.Len(t, batchIDs, 1)
+			require.Nil(t, executor.attrCache)
+			require.Equal(t, int16(7), executor.schemaID)
+			return nil
+		},
+		executeInChunks: func(*flushBatchExecutor, []uuid.UUID, int) error {
+			return errors.New("unexpected chunk execution")
+		},
 	}
 
 	err = flushCtx.executeFlush(ctx, 7)
@@ -508,31 +500,23 @@ func TestExecuteFlush_SplitsBatchWhenByteTargetIsExceeded(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	origSingle := executeFlushSingleFn
-	origChunks := executeFlushInChunksFn
-	t.Cleanup(func() {
-		executeFlushSingleFn = origSingle
-		executeFlushInChunksFn = origChunks
-	})
-
 	chunkCalled := false
-	executeFlushSingleFn = func(*flushBatchExecutor, []uuid.UUID) error {
-		return errors.New("unexpected single execution")
-	}
-	executeFlushInChunksFn = func(executor *flushBatchExecutor, batchIDs []uuid.UUID, maxRows int) error {
-		chunkCalled = true
-		require.Equal(t, 1, maxRows)
-		require.Len(t, batchIDs, 3)
-		require.Equal(t, int16(7), executor.schemaID)
-		return nil
-	}
-
 	flushCtx := &schemaFlushContext{
 		db:         db,
 		cfg:        CDCConfig{BatchSize: 10, MaxBatchBytes: 10, EstimatedRowBytes: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
 		tableName:  "change_log",
 		pgPassword: "secret",
 		logger:     zap.NewNop(),
+		executeSingle: func(*flushBatchExecutor, []uuid.UUID) error {
+			return errors.New("unexpected single execution")
+		},
+		executeInChunks: func(executor *flushBatchExecutor, batchIDs []uuid.UUID, maxRows int) error {
+			chunkCalled = true
+			require.Equal(t, 1, maxRows)
+			require.Len(t, batchIDs, 3)
+			require.Equal(t, int16(7), executor.schemaID)
+			return nil
+		},
 	}
 
 	err = flushCtx.executeFlush(ctx, 7)
@@ -555,20 +539,7 @@ func TestExecuteBatch_SucceedsWhenManifestUpdateFails(t *testing.T) {
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
 	require.NoError(t, err)
 
-	origExport := exportSnapshotToTmpFn
-	t.Cleanup(func() {
-		exportSnapshotToTmpFn = origExport
-	})
 	exportCalled := false
-	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-		exportCalled = true
-		require.Equal(t, int16(7), schemaID)
-		require.Equal(t, snapshot, snapshotTS)
-		require.Equal(t, []uuid.UUID{rowID}, rowIDs)
-		require.Contains(t, s3TmpPath, "s3://test-bucket/cdc/7/_tmp/")
-		require.Nil(t, attrCache)
-		return nil
-	}
 
 	store := newInMemoryManifestStore()
 	store.loadErr = errors.New("boom")
@@ -587,6 +558,15 @@ func TestExecuteBatch_SucceedsWhenManifestUpdateFails(t *testing.T) {
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
+		exportSnapshot: func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+			exportCalled = true
+			require.Equal(t, int16(7), schemaID)
+			require.Equal(t, snapshot, snapshotTS)
+			require.Equal(t, []uuid.UUID{rowID}, rowIDs)
+			require.Contains(t, s3TmpPath, "s3://test-bucket/cdc/7/_tmp/")
+			require.Nil(t, attrCache)
+			return nil
+		},
 	}
 
 	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
@@ -615,14 +595,6 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
 	require.NoError(t, err)
 
-	origExport := exportSnapshotToTmpFn
-	t.Cleanup(func() {
-		exportSnapshotToTmpFn = origExport
-	})
-	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, _ string, _ int16, _ int64, _ []uuid.UUID, _ forma.SchemaAttributeCache) error {
-		return errors.New("export failed")
-	}
-
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
 		ctx:           ctx,
@@ -636,6 +608,9 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+			return errors.New("export failed")
+		},
 	}
 
 	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
@@ -664,14 +639,6 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
 	require.NoError(t, err)
 
-	origExport := exportSnapshotToTmpFn
-	t.Cleanup(func() {
-		exportSnapshotToTmpFn = origExport
-	})
-	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, _ string, _ int16, _ int64, _ []uuid.UUID, _ forma.SchemaAttributeCache) error {
-		return nil
-	}
-
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
 		ctx:           ctx,
@@ -685,6 +652,9 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+			return nil
+		},
 	}
 
 	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
