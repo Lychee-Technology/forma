@@ -228,3 +228,26 @@ func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t 
 	require.False(t, ok, "gt should not be accepted for bool")
 	require.Contains(t, reason, "bool operator not supported")
 }
+
+// Given a bound attribute with an unsupported operator, when Postgres main pushdown is built,
+// then a clear error is returned and no clause or args are produced.
+func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing.T) {
+	paramIndex := 0
+	cache := forma.SchemaAttributeCache{
+		"title": forma.AttributeMetadata{
+			AttributeID:   10,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_05")},
+		},
+	}
+
+	// Use a text attribute but pass a numeric-style operator which is unsupported for text
+	cond := &forma.KvCondition{Attr: "title", Value: "gt:foo"}
+
+	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported operator")
+	// Should not produce a clause or args when operator is unsupported for a bound column
+	require.Equal(t, "", pgClause)
+	require.Nil(t, pgArgs)
+}
