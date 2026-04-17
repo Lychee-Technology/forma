@@ -279,3 +279,38 @@ func TestBuildDuckClause_NoMetadata_InferTypeAndCast(t *testing.T) {
 	require.True(t, ok, "expected DuckDB arg to be time.Time")
 	require.True(t, gotTime.Equal(parsedWant.UTC()), "expected parsed time to match")
 }
+
+// Given a LIKE-style operator such as starts_with or contains,
+// when a DuckDB clause is built, then the wildcard rewrite is correct
+// and no CAST expression is introduced for the LIKE path.
+func TestBuildDuckClause_LikeOperators_WildcardRewrite_NoCast(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"bio": forma.AttributeMetadata{
+			AttributeID: 40,
+			ValueType:   forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("text_10"),
+			},
+		},
+	}
+
+	// starts_with should rewrite to value% and emit a plain LIKE with a single ? placeholder
+	starts := &forma.KvCondition{Attr: "bio", Value: "starts_with:pre"}
+	clause, args, err := buildDuckClause(starts, cache)
+	require.NoError(t, err)
+	require.Contains(t, clause, "text_10")
+	require.Contains(t, clause, "LIKE")
+	require.NotContains(t, clause, "CAST(")
+	require.Len(t, args, 1)
+	require.Equal(t, []any{"pre%"}, args)
+
+	// contains should rewrite to %value% and likewise not introduce a CAST
+	contains := &forma.KvCondition{Attr: "bio", Value: "contains:mid"}
+	clause2, args2, err := buildDuckClause(contains, cache)
+	require.NoError(t, err)
+	require.Contains(t, clause2, "text_10")
+	require.Contains(t, clause2, "LIKE")
+	require.NotContains(t, clause2, "CAST(")
+	require.Len(t, args2, 1)
+	require.Equal(t, []any{"%mid%"}, args2)
+}
