@@ -24,7 +24,7 @@ The key design principle is **commit-per-keep**: every accepted candidate is imm
   - `common.sh`: shared shell utilities
   - `baseline.sh`, `run_candidate.sh`, `medium_gate.sh`, `heavy_gate.sh`: gate scripts
 - `results.tsv`: experiment log written by the controller (not by the model)
-- `issues.tsv`: backlog of production-code blockers, pre-existing bugs, and harness issues discovered by autoresearch
+- `issues.tsv`: backlog of production-code blockers, pre-existing bugs, worthwhile production improvements, and harness issues discovered by autoresearch
 
 ## Quick start
 
@@ -52,7 +52,7 @@ This is the main entry point. It:
 6. If `keep`: commits the candidate immediately
 7. If `discard`: reverts to pre-run state (controller, not model, does this)
 8. Appends one row to `results.tsv` per iteration
-9. Appends structured issues to `issues.tsv` when the agent reports a blocker or bug
+9. Appends structured issues to `issues.tsv` when the agent reports a blocker, bug, or worthwhile production improvement
 
 Safety checks:
 - Refuses to run on `main` or any non-research branch unless `--force` is set
@@ -114,6 +114,12 @@ issue_title=Short actionable title
 issue_evidence=One-line evidence summary
 issue_suggested_fix=One-line suggested fix
 ```
+
+These fields are also the mechanism for recording non-blocking but worthwhile production-code improvements discovered during test iteration, such as extracting a narrow seam, tightening validation, or simplifying a brittle code path.
+
+Record a production improvement only when it is specific, actionable, and likely to matter for correctness, testability, or maintenance.
+Good examples include missing interfaces/seams, brittle validation paths, duplicated branching that obscures behavior, or misleading defaults that make tests or behavior hard to reason about.
+Do not record cosmetic cleanup, naming preferences, formatting ideas, or broad refactor wishes without concrete evidence from the current iteration.
 
 The controller reads this and decides commit vs. revert. The model never touches git state.
 When `issue_*` fields are present, the controller also appends an entry to `issues.tsv` with deduplication.

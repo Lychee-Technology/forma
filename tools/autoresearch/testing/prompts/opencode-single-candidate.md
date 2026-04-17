@@ -11,6 +11,7 @@ Active target:
 - source file: `{{SOURCE_FILE}}`
 - primary test file: `{{PRIMARY_TEST_FILE}}`
 - target brief: `{{BRIEF_FILE}}`
+- worktree root: `{{WORKTREE_DIR}}`
 
 Local runtime assumption:
 - the controller starts Postgres and RustFS from `deploy/docker-compose.yml` before your candidate runs unless explicitly disabled
@@ -36,7 +37,7 @@ Then stop. Do not produce multiple candidates.
 9. **Avoid**: sleeps, random behavior, log-only assertions, trivial getters.
 10. **If S3 behavior is required**, prefer local RustFS docker over writing an S3 mock.
 11. **Do not create fake `S3ObjectClient` implementations** for scenarios about copy/delete/object persistence; use RustFS for those.
-12. **If production-code testability limits or a pre-existing bug blocks the work**, emit a structured issue in the decision artifact.
+12. **If production-code testability limits, a pre-existing bug, or a worthwhile production-code improvement is discovered**, emit a structured issue in the decision artifact.
 
 ## Scenario Selection
 
@@ -82,7 +83,7 @@ description=<what was attempted or 'n/a'>
 evidence=<gate failure reason, 'blocked - requires production code changes', or 'n/a'>
 ```
 
-If you hit a production-code testability limit, a pre-existing failing test, or a likely production bug, append these optional fields to the decision artifact:
+If you hit a production-code testability limit, a pre-existing failing test, a likely production bug, or notice a production-code improvement that would materially improve correctness, maintainability, or testability, append these optional fields to the decision artifact:
 
 ```
 issue_category=<testability|bug|environment|harness>
@@ -91,6 +92,10 @@ issue_title=<short actionable title>
 issue_evidence=<one line summarizing the evidence>
 issue_suggested_fix=<one line suggested fix>
 ```
+
+Use `issue_category=testability` for missing seams or code structure that blocks good tests.
+Use `issue_category=bug` for likely incorrect behavior.
+Use the same structured issue fields for non-blocking but worthwhile production improvements when the code would benefit from a small refactor, validation hardening, or clearer seam even if you can still keep the current test.
 
 10. After writing the decision file, print the exact same decision content to stdout using this wrapper:
 
@@ -116,6 +121,6 @@ Include any optional `issue_*` lines inside the same wrapper block.
 - If the scenario is about real object storage behavior, do not write a fake `S3ObjectClient`; use RustFS.
 - If the scenario requires mocking a non-S3 concrete type without an interface, write `status=discard` with reason "blocked - requires production code changes".
 - If a higher-priority scenario is blocked, fall back to another unblocked scenario in the brief before discarding the run.
-- If you discover a production-code testability blocker or a pre-existing failing test, include the optional `issue_*` fields so the controller can add it to the backlog.
+- If you discover a production-code testability blocker, a pre-existing failing test, or a worthwhile production-code improvement, include the optional `issue_*` fields so the controller can add it to the backlog.
 - If you are unsure, err on the side of `status=discard`.
 - Print exactly one fallback marker block after writing the decision file, then stop.
