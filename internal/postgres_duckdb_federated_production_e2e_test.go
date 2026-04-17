@@ -306,6 +306,26 @@ func insertProductionHotRecord(t *testing.T, env *productionFederatedE2EEnv, sch
 	require.NoError(t, err)
 }
 
+func insertProductionDeletedHotRecord(t *testing.T, env *productionFederatedE2EEnv, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt int64, name string, age int32) {
+	t.Helper()
+	_, err := env.pool.Exec(env.ctx, `
+		INSERT INTO entity_main_dev (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, ltbase_deleted_at, text_01, integer_01)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET
+			ltbase_updated_at = EXCLUDED.ltbase_updated_at,
+			ltbase_deleted_at = EXCLUDED.ltbase_deleted_at,
+			text_01 = EXCLUDED.text_01,
+			integer_01 = EXCLUDED.integer_01
+	`, schemaID, rowID, changedAt, changedAt, deletedAt, name, age)
+	require.NoError(t, err)
+	_, err = env.pool.Exec(env.ctx, `
+		INSERT INTO change_log_dev (schema_id, row_id, flushed_at, changed_at, deleted_at)
+		VALUES ($1, $2, 0, $3, $4)
+		ON CONFLICT (schema_id, row_id, flushed_at) DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at
+	`, schemaID, rowID, changedAt, deletedAt)
+	require.NoError(t, err)
+}
+
 func requireExecutionPlanHasSource(t *testing.T, sources []DataSourcePlan, engine string, reasonSubstring string, predicatePushdown *bool) {
 	t.Helper()
 	for _, source := range sources {
@@ -549,4 +569,108 @@ func TestStreamDuckDBFederatedQuery_GivenBaseDeltaAndHotOverlap_WhenQueried_Then
 	require.Equal(t, hotTime, got[0].UpdatedAt)
 	require.Equal(t, "hot-version", got[0].TextItems["text_01"])
 	require.Equal(t, int32(30), got[0].Int32Items["integer_01"])
+}
+
+func TestStreamDuckDBFederatedQuery_GivenBaseAndDeltaRowsWithoutHotData_WhenQueried_ThenColdRowsAreReturned(t *testing.T) {
+	withProductionDuckDBTemplateDescriptors(t)
+	env := setupProductionFederatedE2EEnv(t)
+	clearProductionFederatedData(t, env, 100)
+
+	baseRowID := uuid.Must(uuid.NewV7())
+	deltaRowID := uuid.Must(uuid.NewV7())
+	now := time.Now()
+
+	writeProductionParquet(t, env, "base", "cold_only_base.parquet", []productionTestRecord{{
+		RowID:     baseRowID,
+		SchemaID:  100,
+		Name:      "base-only",
+		Age:       14,
+		Tag:       "base-tag",
+		ChangedAt: now.Add(-72 * time.Hour).UnixMilli(),
+	}})
+	writeProductionParquet(t, env, "delta", "cold_only_delta.parquet", []productionTestRecord{{
+		RowID:     deltaRowID,
+		SchemaID:  100,
+		Name:      "delta-only",
+		Age:       28,
+		Tag:       "delta-tag",
+		ChangedAt: now.Add(-12 * time.Hour).UnixMilli(),
+	}})
+
+	plan := &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	opts := &FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: plan}
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 100, Limit: 10, Offset: 0},
+		DuckDBHints: &DuckDBRenderHints{
+			S3ParquetPathTemplate: fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", env.bucket, env.prefix, env.bucket, env.prefix),
+		},
+	}
+
+	var got []*PersistentRecord
+	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
+		got = append(got, record)
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, int64(2), total)
+	require.Len(t, got, 2)
+
+	names := map[string]bool{}
+	for _, record := range got {
+		names[record.TextItems["text_01"]] = true
+	}
+	require.Equal(t, map[string]bool{"base-only": true, "delta-only": true}, names)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "postgres", "dirty", nil)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "duckdb", "template rendered", nil)
+	require.Contains(t, opts.ExecutionPlan.Timings, "duckdb_fetch")
+	require.Contains(t, opts.ExecutionPlan.Timings, "total")
+}
+
+func TestStreamDuckDBFederatedQuery_GivenSoftDeletedRowsAcrossMixedTiers_WhenQueried_ThenDeletedRowsAreExcluded(t *testing.T) {
+	withProductionDuckDBTemplateDescriptors(t)
+	env := setupProductionFederatedE2EEnv(t)
+	clearProductionFederatedData(t, env, 100)
+
+	baseDeletedRowID := uuid.Must(uuid.NewV7())
+	hotDeletedRowID := uuid.Must(uuid.NewV7())
+	now := time.Now()
+	deletedAt := now.UnixMilli()
+
+	writeProductionParquet(t, env, "base", "deleted_base.parquet", []productionTestRecord{{
+		RowID:     baseDeletedRowID,
+		SchemaID:  100,
+		Name:      "deleted-base",
+		Age:       7,
+		Tag:       "deleted-base-tag",
+		ChangedAt: now.Add(-24 * time.Hour).UnixMilli(),
+		DeletedAt: deletedAt,
+	}})
+	writeProductionParquet(t, env, "delta", "deleted_delta.parquet", []productionTestRecord{{
+		RowID:     uuid.Must(uuid.NewV7()),
+		SchemaID:  100,
+		Name:      "placeholder",
+		Age:       0,
+		Tag:       "placeholder",
+		ChangedAt: 0,
+		DeletedAt: deletedAt,
+	}})
+	insertProductionDeletedHotRecord(t, env, 100, hotDeletedRowID, now.Add(-1*time.Hour).UnixMilli(), deletedAt, "deleted-hot", 9)
+
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 100, Limit: 10, Offset: 0},
+		DuckDBHints: &DuckDBRenderHints{
+			S3ParquetPathTemplate: fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", env.bucket, env.prefix, env.bucket, env.prefix),
+		},
+	}
+
+	var got []*PersistentRecord
+	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+		got = append(got, record)
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Zero(t, total)
+	require.Empty(t, got)
 }
