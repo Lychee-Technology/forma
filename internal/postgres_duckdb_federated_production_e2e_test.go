@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,6 +306,23 @@ func insertProductionHotRecord(t *testing.T, env *productionFederatedE2EEnv, sch
 	require.NoError(t, err)
 }
 
+func requireExecutionPlanHasSource(t *testing.T, sources []DataSourcePlan, engine string, reasonSubstring string, predicatePushdown *bool) {
+	t.Helper()
+	for _, source := range sources {
+		if source.Engine != engine {
+			continue
+		}
+		if reasonSubstring != "" && !strings.Contains(source.Reason, reasonSubstring) {
+			continue
+		}
+		if predicatePushdown != nil && source.PredicatePushdown != *predicatePushdown {
+			continue
+		}
+		return
+	}
+	t.Fatalf("expected execution plan source engine=%q reason~=%q predicatePushdown=%v, got %#v", engine, reasonSubstring, predicatePushdown, sources)
+}
+
 func TestStreamDuckDBFederatedQuery_GivenBaseAndHotVersions_WhenQueried_ThenLatestHotVersionWins(t *testing.T) {
 	withProductionDuckDBTemplateDescriptors(t)
 	env := setupProductionFederatedE2EEnv(t)
@@ -402,7 +420,10 @@ func TestStreamDuckDBFederatedQuery_GivenDirtyHotRow_WhenColdVersionExists_ThenC
 	require.Equal(t, hotTime, got[0].UpdatedAt)
 	require.Equal(t, "dirty-hot-version", got[0].TextItems["text_01"])
 	require.NotEmpty(t, opts.ExecutionPlan.Sources)
-	require.Contains(t, fmt.Sprint(opts.ExecutionPlan.Sources), "postgres")
+	require.Len(t, opts.ExecutionPlan.Sources, 3)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "postgres", "dirty", nil)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "postgres", "pushdown", nil)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "duckdb", "template rendered", nil)
 	require.Contains(t, opts.ExecutionPlan.Timings, "duckdb_fetch")
 	require.Contains(t, opts.ExecutionPlan.Timings, "total")
 	require.Contains(t, fmt.Sprint(opts.ExecutionPlan.Notes), "StreamDuckDBFederatedQuery started")
@@ -470,9 +491,62 @@ func TestStreamDuckDBFederatedQuery_GivenBaseDeltaAndHotRows_WhenQueried_ThenAll
 	}, names)
 	require.Equal(t, map[int32]bool{11: true, 22: true, 33: true}, ages)
 	require.NotEmpty(t, opts.ExecutionPlan.Sources)
-	require.Contains(t, fmt.Sprint(opts.ExecutionPlan.Sources), "postgres")
+	require.Len(t, opts.ExecutionPlan.Sources, 3)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "postgres", "dirty", nil)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "postgres", "pushdown", nil)
+	requireExecutionPlanHasSource(t, opts.ExecutionPlan.Sources, "duckdb", "template rendered", nil)
 	require.Contains(t, opts.ExecutionPlan.Timings, "duckdb_fetch")
 	require.Contains(t, opts.ExecutionPlan.Timings, "total")
 	require.Contains(t, fmt.Sprint(opts.ExecutionPlan.Notes), "StreamDuckDBFederatedQuery started")
 	require.Contains(t, fmt.Sprint(opts.ExecutionPlan.Notes), "pushdown_efficiency=")
+}
+
+func TestStreamDuckDBFederatedQuery_GivenBaseDeltaAndHotOverlap_WhenQueried_ThenNewestHotVersionWins(t *testing.T) {
+	withProductionDuckDBTemplateDescriptors(t)
+	env := setupProductionFederatedE2EEnv(t)
+	clearProductionFederatedData(t, env, 100)
+
+	rowID := uuid.Must(uuid.NewV7())
+	now := time.Now()
+	baseTime := now.Add(-72 * time.Hour).UnixMilli()
+	deltaTime := now.Add(-24 * time.Hour).UnixMilli()
+	hotTime := now.UnixMilli()
+
+	writeProductionParquet(t, env, "base", "overlap_base.parquet", []productionTestRecord{{
+		RowID:     rowID,
+		SchemaID:  100,
+		Name:      "base-version",
+		Age:       10,
+		Tag:       "base-tag",
+		ChangedAt: baseTime,
+	}})
+	writeProductionParquet(t, env, "delta", "overlap_delta.parquet", []productionTestRecord{{
+		RowID:     rowID,
+		SchemaID:  100,
+		Name:      "delta-version",
+		Age:       20,
+		Tag:       "delta-tag",
+		ChangedAt: deltaTime,
+	}})
+	insertProductionHotRecord(t, env, 100, rowID, hotTime, "hot-version", 30)
+
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 100, Limit: 10, Offset: 0},
+		DuckDBHints: &DuckDBRenderHints{
+			S3ParquetPathTemplate: fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", env.bucket, env.prefix, env.bucket, env.prefix),
+		},
+	}
+
+	var got []*PersistentRecord
+	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+		got = append(got, record)
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Len(t, got, 1)
+	require.Equal(t, hotTime, got[0].UpdatedAt)
+	require.Equal(t, "hot-version", got[0].TextItems["text_01"])
+	require.Equal(t, int32(30), got[0].Int32Items["integer_01"])
 }
