@@ -335,6 +335,9 @@ type flushBatchExecutor struct {
 	manifestResolver manifest.PathResolver
 }
 
+var executeFlushSingleFn = executeFlushSingle
+var executeFlushInChunksFn = executeFlushInChunks
+
 func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 
@@ -442,10 +445,10 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 
 	if maxRows > 0 && len(batchIDs) > maxRows {
 		c.logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
-		return executeFlushInChunks(executor, batchIDs, maxRows)
+		return executeFlushInChunksFn(executor, batchIDs, maxRows)
 	}
 
-	return executeFlushSingle(executor, batchIDs)
+	return executeFlushSingleFn(executor, batchIDs)
 }
 
 func executeFlushInChunks(
