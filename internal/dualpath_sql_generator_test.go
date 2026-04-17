@@ -123,3 +123,28 @@ func TestToDualClauses_NestedAndOr_GroupingAndOrdering(t *testing.T) {
 	// DuckDB uses ? placeholders; args should be in same logical order
 	require.Equal(t, []any{"A", "B", "C"}, duckArgs)
 }
+
+// Given an empty composite condition, when main and DuckDB clauses are built,
+// then both sides use their no-op behavior consistently.
+func TestToDualClauses_EmptyComposite_NoOpBehavior(t *testing.T) {
+	paramIndex := 0
+	cache := forma.SchemaAttributeCache{}
+
+	empty := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{}}
+
+	// When: building Postgres main clause for an empty composite
+	pgClause, pgArgs, err := buildPgMainClause(empty, cache, &paramIndex)
+	require.NoError(t, err)
+
+	// Then: Postgres main pushdown should be a no-op (empty clause, no args)
+	require.Equal(t, "", pgClause)
+	require.Nil(t, pgArgs)
+
+	// When: building DuckDB clause for an empty composite
+	duckClause, duckArgs, err := buildDuckClause(empty, cache)
+	require.NoError(t, err)
+
+	// Then: DuckDB should produce the 1=1 no-op clause and no args
+	require.Equal(t, "1=1", duckClause)
+	require.Nil(t, duckArgs)
+}
