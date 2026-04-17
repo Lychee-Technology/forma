@@ -23,11 +23,11 @@ services:
     image: rustfs/rustfs:latest
     container_name: forma-s3-local
     ports:
-      - '19000:9000'
-      - '19001:9001'
+      - '9000:9000'
+      - '9001:9001'
     volumes:
-      - './rustfs/s3:/data'
-      - './rustfs/log:/log'
+      - 'rustfs-data:/data'
+      - 'rustfs-logs:/logs'
     environment:
       - RUSTFS_ACCESS_KEY=minio
       - RUSTFS_SECRET_KEY=minio_password
@@ -39,3 +39,7 @@ networks:
   forma-local:
     driver: bridge
     name: forma-local
+
+volumes:
+  rustfs-data:
+  rustfs-logs:
