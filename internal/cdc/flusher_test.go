@@ -10,10 +10,33 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+type errorSchemaRegistry struct{ err error }
+
+func (r errorSchemaRegistry) GetSchemaAttributeCacheByName(string) (int16, forma.SchemaAttributeCache, error) {
+	return 0, nil, r.err
+}
+
+func (r errorSchemaRegistry) GetSchemaAttributeCacheByID(int16) (string, forma.SchemaAttributeCache, error) {
+	return "", nil, r.err
+}
+
+func (r errorSchemaRegistry) GetSchemaByName(string) (int16, forma.JSONSchema, error) {
+	return 0, forma.JSONSchema{}, r.err
+}
+
+func (r errorSchemaRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error) {
+	return "", forma.JSONSchema{}, r.err
+}
+
+func (r errorSchemaRegistry) ListSchemas() []string {
+	return nil
+}
 
 type inMemoryManifestStore struct {
 	data    map[string][]byte
@@ -403,6 +426,108 @@ func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
 	err = flushCtx.processSchema(ctx, 7)
 	require.NoError(t, err)
 	require.Equal(t, 1, releaseCalls)
+}
+
+func TestExecuteFlush_FallsBackToGenericProjectionWhenSchemaLookupFails(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, time.Now().UnixMilli())
+	require.NoError(t, err)
+
+	origSingle := executeFlushSingleFn
+	origChunks := executeFlushInChunksFn
+	t.Cleanup(func() {
+		executeFlushSingleFn = origSingle
+		executeFlushInChunksFn = origChunks
+	})
+
+	called := false
+	executeFlushSingleFn = func(executor *flushBatchExecutor, batchIDs []uuid.UUID) error {
+		called = true
+		require.Len(t, batchIDs, 1)
+		require.Nil(t, executor.attrCache)
+		require.Equal(t, int16(7), executor.schemaID)
+		return nil
+	}
+	executeFlushInChunksFn = func(*flushBatchExecutor, []uuid.UUID, int) error {
+		return errors.New("unexpected chunk execution")
+	}
+
+	flushCtx := &schemaFlushContext{
+		db:             db,
+		cfg:            CDCConfig{BatchSize: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
+		tableName:      "change_log",
+		pgPassword:     "secret",
+		logger:         zap.NewNop(),
+		schemaRegistry: errorSchemaRegistry{err: errors.New("schema unavailable")},
+	}
+
+	err = flushCtx.executeFlush(ctx, 7)
+	require.NoError(t, err)
+	require.True(t, called)
+}
+
+func TestExecuteFlush_SplitsBatchWhenByteTargetIsExceeded(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rows := []struct {
+		id        uuid.UUID
+		changedAt int64
+	}{
+		{uuid.MustParse("018f05c0-0000-7000-8000-000000000001"), time.Now().Add(-3 * time.Minute).UnixMilli()},
+		{uuid.MustParse("018f05c0-0001-7000-8000-000000000001"), time.Now().Add(-2 * time.Minute).UnixMilli()},
+		{uuid.MustParse("018f05c0-0002-7000-8000-000000000001"), time.Now().Add(-1 * time.Minute).UnixMilli()},
+	}
+	for _, row := range rows {
+		_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", row.id, row.changedAt)
+		require.NoError(t, err)
+	}
+
+	origSingle := executeFlushSingleFn
+	origChunks := executeFlushInChunksFn
+	t.Cleanup(func() {
+		executeFlushSingleFn = origSingle
+		executeFlushInChunksFn = origChunks
+	})
+
+	chunkCalled := false
+	executeFlushSingleFn = func(*flushBatchExecutor, []uuid.UUID) error {
+		return errors.New("unexpected single execution")
+	}
+	executeFlushInChunksFn = func(executor *flushBatchExecutor, batchIDs []uuid.UUID, maxRows int) error {
+		chunkCalled = true
+		require.Equal(t, 1, maxRows)
+		require.Len(t, batchIDs, 3)
+		require.Equal(t, int16(7), executor.schemaID)
+		return nil
+	}
+
+	flushCtx := &schemaFlushContext{
+		db:         db,
+		cfg:        CDCConfig{BatchSize: 10, MaxBatchBytes: 10, EstimatedRowBytes: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
+		tableName:  "change_log",
+		pgPassword: "secret",
+		logger:     zap.NewNop(),
+	}
+
+	err = flushCtx.executeFlush(ctx, 7)
+	require.NoError(t, err)
+	require.True(t, chunkCalled)
 }
 
 func TestUpdateManifest_NilStore(t *testing.T) {
