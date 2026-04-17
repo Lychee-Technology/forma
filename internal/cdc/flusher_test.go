@@ -284,6 +284,127 @@ func TestExecuteFlush_NoSelectedRowIDsReturnsWithoutExportWork(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	lockAttempts := 0
+	releaseCalls := 0
+	flushCtx := &schemaFlushContext{
+		db:     db,
+		cfg:    CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
+		logger: zap.NewNop(),
+		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
+			lockAttempts++
+			return false, nil
+		},
+		releaseLock: func(context.Context, *sql.DB, int16) error {
+			releaseCalls++
+			return nil
+		},
+	}
+
+	err = flushCtx.processSchema(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, 1, lockAttempts)
+	require.Zero(t, releaseCalls)
+}
+
+func TestProcessSchema_ReturnsErrorWhenChangeLogStatsCannotBeRead(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	releaseCalls := 0
+	flushCtx := &schemaFlushContext{
+		db:        db,
+		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
+		tableName: "missing_change_log",
+		logger:    zap.NewNop(),
+		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
+			return true, nil
+		},
+		releaseLock: func(context.Context, *sql.DB, int16) error {
+			releaseCalls++
+			return nil
+		},
+	}
+
+	err = flushCtx.processSchema(context.Background(), 7)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "get changelog stats")
+	require.Equal(t, 1, releaseCalls)
+}
+
+func TestProcessSchema_SkipsWhenNoPendingRowsExist(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+
+	releaseCalls := 0
+	flushCtx := &schemaFlushContext{
+		db:        db,
+		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
+		tableName: "change_log",
+		logger:    zap.NewNop(),
+		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
+			return true, nil
+		},
+		releaseLock: func(context.Context, *sql.DB, int16) error {
+			releaseCalls++
+			return nil
+		},
+	}
+
+	err = flushCtx.processSchema(ctx, 7)
+	require.NoError(t, err)
+	require.Equal(t, 1, releaseCalls)
+}
+
+func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, 0)", time.Now().UnixMilli())
+	require.NoError(t, err)
+
+	releaseCalls := 0
+	flushCtx := &schemaFlushContext{
+		db:        db,
+		cfg:       CDCConfig{MinRecords: 10, MaxAgeMs: 1_000_000},
+		tableName: "change_log",
+		logger:    zap.NewNop(),
+		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
+			return true, nil
+		},
+		releaseLock: func(context.Context, *sql.DB, int16) error {
+			releaseCalls++
+			return nil
+		},
+	}
+
+	err = flushCtx.processSchema(ctx, 7)
+	require.NoError(t, err)
+	require.Equal(t, 1, releaseCalls)
+}
+
 func TestUpdateManifest_NilStore(t *testing.T) {
 	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
 	err := updateManifest(
