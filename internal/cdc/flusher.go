@@ -256,14 +256,25 @@ type schemaFlushContext struct {
 	schemaRegistry   forma.SchemaRegistry
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
+	acquireLock      func(context.Context, *sql.DB, int16) (bool, error)
+	releaseLock      func(context.Context, *sql.DB, int16) error
 }
 
 // processSchema handles the flush process for a single schema.
 func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) error {
 	c.logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
+	acquireLock := c.acquireLock
+	if acquireLock == nil {
+		acquireLock = AcquireSchemaLock
+	}
+	releaseLock := c.releaseLock
+	if releaseLock == nil {
+		releaseLock = ReleaseSchemaLock
+	}
+
 	// Try advisory lock
-	locked, err := AcquireSchemaLock(ctx, c.db, schemaID)
+	locked, err := acquireLock(ctx, c.db, schemaID)
 	if err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
@@ -271,7 +282,7 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 		c.logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return nil
 	}
-	defer func() { _ = ReleaseSchemaLock(ctx, c.db, schemaID) }()
+	defer func() { _ = releaseLock(ctx, c.db, schemaID) }()
 
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
