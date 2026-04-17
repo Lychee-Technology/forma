@@ -148,3 +148,20 @@ func TestToDualClauses_EmptyComposite_NoOpBehavior(t *testing.T) {
 	require.Equal(t, "1=1", duckClause)
 	require.Nil(t, duckArgs)
 }
+
+// Given an unknown attribute, when Postgres main pushdown is built,
+// then it is ignored rather than treated as a hard failure.
+func TestToDualClauses_UnknownAttribute_IgnoredForPgMain(t *testing.T) {
+	paramIndex := 0
+	cache := forma.SchemaAttributeCache{}
+
+	cond := &forma.KvCondition{Attr: "missing_attr", Value: "equals:val"}
+
+	// When: building Postgres main clause for an unknown attribute
+	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
+	require.NoError(t, err)
+
+	// Then: the predicate should be skipped (no clause, no args)
+	require.Equal(t, "", pgClause)
+	require.Nil(t, pgArgs)
+}
