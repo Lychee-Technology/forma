@@ -163,6 +163,14 @@ func TestBuildMainEntityQuery_OmitsDeletedGuardWhenActiveOnlyIsFalse(t *testing.
 	require.Contains(t, query, "AND ltbase_row_id IS NOT NULL")
 }
 
+func TestBuildMainEntityQuery_IncludesDeletedGuardWhenActiveOnlyIsTrue(t *testing.T) {
+	query := buildMainEntityQuery("entity_main", 7, []string{"ltbase_row_id", "text_01"}, "ltbase_row_id IS NOT NULL", true)
+
+	require.Contains(t, query, "FROM entity_main")
+	require.Contains(t, query, "ltbase_deleted_at IS NULL")
+	require.Contains(t, query, "AND ltbase_row_id IS NOT NULL")
+}
+
 func TestBuildEAVQuery_OmitsAttrFilterWhenAttrIDsAreEmpty(t *testing.T) {
 	query := buildEAVQuery("eav_data", 9, "row_id IS NOT NULL", nil)
 
@@ -207,6 +215,75 @@ func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggre
 	require.Contains(t, projection.eavAgg[0], "attr_id = 12")
 	require.Contains(t, projection.eavAgg[0], "AS is_active")
 	require.Equal(t, []int16{12}, projection.eavAttrIDs)
+}
+
+func TestBuildParquetCopyOptions_FormatsResolvedOptionsForDuckDB(t *testing.T) {
+	options := buildParquetCopyOptions(exportSQLOptions{
+		compression:      "zstd",
+		compressionLevel: 7,
+		memoryLimit:      "3GB",
+		parquetVersion:   "V2",
+	})
+
+	require.Equal(t, "FORMAT PARQUET, PARQUET_VERSION V2, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 7", options)
+}
+
+func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAliasesAndAttrIDsAligned(t *testing.T) {
+	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+		"display_name": {
+			AttributeName: "display_name",
+			AttributeID:   20,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01},
+		},
+		"employee_count": {
+			AttributeName: "employee_count",
+			AttributeID:   21,
+			ValueType:     forma.ValueTypeInteger,
+		},
+		"is_active": {
+			AttributeName: "is_active",
+			AttributeID:   22,
+			ValueType:     forma.ValueTypeBool,
+		},
+	})
+
+	require.Contains(t, projection.mainColumns, string(forma.MainColumnText01))
+	require.Len(t, projection.mainProjections, 1)
+	require.Contains(t, projection.mainProjections[0], "CAST(m.text_01 AS VARCHAR)")
+	require.Contains(t, projection.mainProjections[0], "AS display_name")
+	require.Len(t, projection.eavAgg, 2)
+	require.Contains(t, projection.eavAgg[0], "attr_id = 21")
+	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_text AS INTEGER)")
+	require.Contains(t, projection.eavAgg[0], "AS employee_count")
+	require.Contains(t, projection.eavAgg[1], "attr_id = 22")
+	require.Contains(t, projection.eavAgg[1], "lower(value_text) IN ('true','1','t','yes','y')")
+	require.Contains(t, projection.eavAgg[1], "ELSE NULL END")
+	require.Contains(t, projection.eavAgg[1], "AS is_active")
+	require.Equal(t, []string{"e.employee_count", "e.is_active"}, projection.eavSelect)
+	require.Equal(t, []int16{21, 22}, projection.eavAttrIDs)
+}
+
+func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnboundAttributes(t *testing.T) {
+	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+		"company_name": {
+			AttributeName: "company_name",
+			AttributeID:   30,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02},
+		},
+		"annual_revenue": {
+			AttributeName: "annual_revenue",
+			AttributeID:   31,
+			ValueType:     forma.ValueTypeNumeric,
+		},
+	})
+
+	require.Contains(t, projection.mainColumns, string(forma.MainColumnText02))
+	require.Equal(t, []string{"CAST(m.text_02 AS VARCHAR) AS company_name"}, projection.mainProjections)
+	require.Equal(t, []string{"MAX(CASE WHEN attr_id = 31 THEN TRY_CAST(value_text AS DOUBLE) END) AS annual_revenue"}, projection.eavAgg)
+	require.Equal(t, []string{"e.annual_revenue"}, projection.eavSelect)
+	require.Equal(t, []int16{31}, projection.eavAttrIDs)
 }
 
 func TestBuildEAVAggregationSQL_GroupsByRowIDWhenNoAggregatesExist(t *testing.T) {
