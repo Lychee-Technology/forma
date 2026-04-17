@@ -52,13 +52,38 @@ func TestBuildDuckDBQuery_Injection(t *testing.T) {
 		DuckClause:   "age > ?",
 		DuckArgs:     []any{18},
 		PgMainClause: "integer_01 > 18",
-		PgMainArgs:   []any{},
+		PgMainArgs:   []any{18},
 	}
 
 	sql, args, err := BuildDuckDBQuery(tpl, map[string]any{}, nil, nil, dual)
 	require.NoError(t, err)
 	require.Contains(t, sql, "PGCLAUSE:integer_01 > 18")
 	require.Contains(t, sql, "COND:age > ?")
+	require.Len(t, args, 2)
+	require.Equal(t, 18, args[0])
+	require.Equal(t, 18, args[1])
+}
+
+func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T) {
+	tpl := template.Must(template.New("test").Parse("PG={{.PG_CONN}}|S3={{.S3_PATHS}}|SCHEMA={{.SCHEMA_ID}}|PAGE={{.PAGE_SIZE}}|OFFSET={{.OFFSET}}|LOGICAL={{.LOGICAL_WHERE_CLAUSE}}|PUSH={{.PG_WHERE_CLAUSE}}"))
+	dual := &DualClauses{
+		DuckClause:   "age > ?",
+		DuckArgs:     []any{18},
+		PgMainClause: "integer_01 > 18",
+	}
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
+	}
+
+	sql, args, err := BuildDuckDBQuery(tpl, map[string]any{"DuckDBPGConnString": "host=pg port=5432", "S3_PATHS": "'s3://bucket/prefix/42/base/*.parquet'", "Anchor": map[string]any{}}, q, nil, dual)
+	require.NoError(t, err)
+	require.Contains(t, sql, "PG=host=pg port=5432")
+	require.Contains(t, sql, "S3='s3://bucket/prefix/42/base/*.parquet'")
+	require.Contains(t, sql, "SCHEMA=42")
+	require.Contains(t, sql, "PAGE=25")
+	require.Contains(t, sql, "OFFSET=5")
+	require.Contains(t, sql, "LOGICAL=age > ?")
+	require.Contains(t, sql, "PUSH=integer_01 > 18")
 	require.Len(t, args, 1)
 	require.Equal(t, 18, args[0])
 }

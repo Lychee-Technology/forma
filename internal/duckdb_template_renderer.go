@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/google/uuid"
@@ -26,6 +28,8 @@ func RenderDuckDBQuery(tpl *template.Template, params any, whereArgs []any) (str
 // params so the template (or tests) can observe the pushdown fragment. Dirty-ID exclusions
 // are appended to the DuckDB clause regardless of source.
 func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	isAdvancedTemplate := tpl == AdvancedQueryTemplateDuckDB
+
 	// Prepare where variables
 	var whereClause string
 	var whereArgs []any
@@ -47,12 +51,13 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 	// If dual clauses provided, prefer them; otherwise fall back to legacy generator.
 	if dual != nil && dual.DuckClause != "" {
 		whereClause = dual.DuckClause
-		whereArgs = make([]any, 0, len(dual.DuckArgs))
+		whereArgs = make([]any, 0, len(dual.DuckArgs)+len(dual.PgMainArgs)+len(dual.DuckArgs))
 		if len(dual.DuckArgs) > 0 {
 			whereArgs = append(whereArgs, dual.DuckArgs...)
 		}
-		// Append dirty exclusions
-		if len(dirtyIDs) > 0 {
+		// Generic templates need the dirty-id exclusion physically appended into the clause.
+		// The production DuckDB federated template manages dirty IDs via its own CTE/anti-join.
+		if !isAdvancedTemplate && len(dirtyIDs) > 0 {
 			var exclArgs []any
 			whereClause, exclArgs = AppendDirtyExclusion(whereClause, dirtyIDs)
 			whereArgs = append(whereArgs, exclArgs...)
@@ -63,18 +68,99 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 		m["PgMainClause"] = dual.PgMainClause
 		m["PgMainArgs"] = dual.PgMainArgs
 		m["HasPgMainClause"] = dual.PgMainClause != ""
+		if isAdvancedTemplate {
+			m["LOGICAL_WHERE_CLAUSE"] = dual.DuckClause
+			m["PG_WHERE_CLAUSE"] = defaultIfEmpty(dual.PgMainClause, "1=1")
+			if len(dual.PgMainArgs) > 0 {
+				whereArgs = append(whereArgs, dual.PgMainArgs...)
+			}
+			if len(dual.DuckArgs) > 0 {
+				whereArgs = append(whereArgs, dual.DuckArgs...)
+			}
+		}
+		injectDuckDBTemplateParams(m, q, dual)
+		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
+			whereArgs = append(whereArgs, dual.PgMainArgs...)
+		}
 
 		merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
 		return RenderDuckDBQuery(tpl, merged, whereArgs)
 	}
 
 	// Legacy path
-	whereClause, whereArgs, err = GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
+	if isAdvancedTemplate {
+		whereClause, whereArgs, err = GenerateDuckDBWhereClause(q)
+	} else {
+		whereClause, whereArgs, err = GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
+	}
 	if err != nil {
 		return "", nil, err
 	}
 	anchor["Condition"] = whereClause
+	if isAdvancedTemplate {
+		m["LOGICAL_WHERE_CLAUSE"] = whereClause
+		if len(whereArgs) > 0 {
+			whereArgs = append(whereArgs, whereArgs...)
+		}
+	}
+	injectDuckDBTemplateParams(m, q, nil)
 
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
 	return RenderDuckDBQuery(tpl, merged, whereArgs)
+}
+
+func defaultIfEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuery, dual *DualClauses) {
+	if q == nil {
+		return
+	}
+
+	params["SCHEMA_ID"] = q.SchemaID
+	params["PAGE_SIZE"] = q.Limit
+	params["OFFSET"] = q.Offset
+
+	if _, ok := params["PG_WHERE_CLAUSE"]; !ok {
+		pgWhere := "1=1"
+		if dual != nil && dual.PgMainClause != "" {
+			pgWhere = dual.PgMainClause
+		}
+		params["PG_WHERE_CLAUSE"] = pgWhere
+	}
+
+	if _, ok := params["LOGICAL_WHERE_CLAUSE"]; !ok {
+		if anchor, ok := params["Anchor"].(map[string]any); ok {
+			if cond, ok := anchor["Condition"].(string); ok && cond != "" {
+				params["LOGICAL_WHERE_CLAUSE"] = cond
+			}
+		}
+	}
+
+	if _, ok := params["PG_CONN"]; !ok {
+		if raw, ok := params["DuckDBPGConnString"].(string); ok && raw != "" {
+			params["PG_CONN"] = raw
+		}
+	}
+
+	if _, ok := params["S3_PATHS"]; !ok {
+		if paths, ok := params["DuckDBS3Paths"].([]string); ok && len(paths) > 0 {
+			params["S3_PATHS"] = formatDuckDBPathList(paths)
+		}
+	}
+}
+
+func formatDuckDBPathList(paths []string) string {
+	quoted := make([]string, 0, len(paths))
+	for _, path := range paths {
+		quoted = append(quoted, fmt.Sprintf("'%s'", path))
+	}
+	if len(quoted) == 1 {
+		return quoted[0]
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
