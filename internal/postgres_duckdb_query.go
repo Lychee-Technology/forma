@@ -3,9 +3,11 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 )
 
@@ -161,6 +163,13 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 		"PageSize": limit,
 	}
 
+	if connStr := r.duckDBPostgresConnString(); connStr != "" {
+		sqlParams["DuckDBPGConnString"] = connStr
+	}
+	if paths := duckDBParquetPathsForQuery(q); len(paths) > 0 {
+		sqlParams["DuckDBS3Paths"] = paths
+	}
+
 	startTranslate := time.Now()
 
 	// Build dual clauses (PG pushdown + DuckDB logical) if metadata cache available
@@ -187,6 +196,45 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+func (r *DBPersistentRecordRepository) duckDBPostgresConnString() string {
+	if r.pool == nil {
+		return ""
+	}
+	if cfgPool, ok := r.pool.(*pgxpool.Pool); ok && cfgPool != nil {
+		cfg := cfgPool.Config()
+		if cfg != nil {
+			connCfg := cfg.ConnConfig
+			return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s",
+				connCfg.Host,
+				connCfg.Port,
+				connCfg.User,
+				connCfg.Password,
+				connCfg.Database,
+			)
+		}
+	}
+	return ""
+}
+
+func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
+	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
+		return nil
+	}
+	rendered, err := RenderS3ParquetPath(q.DuckDBHints.S3ParquetPathTemplate, q.SchemaID)
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(rendered, ",")
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return paths
 }
 
 // streamDuckDBRows iterates through DuckDB rows and invokes the handler.
