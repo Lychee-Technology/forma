@@ -262,6 +262,28 @@ func TestGetUnflushedSchemaIDs_QueryError(t *testing.T) {
 	require.Contains(t, err.Error(), "query distinct schema ids")
 }
 
+func TestExecuteFlush_NoSelectedRowIDsReturnsWithoutExportWork(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id BIGINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+
+	flushCtx := &schemaFlushContext{
+		db:        db,
+		cfg:       CDCConfig{BatchSize: 10},
+		tableName: "change_log",
+		logger:    zap.NewNop(),
+	}
+
+	err = flushCtx.executeFlush(ctx, 7)
+	require.NoError(t, err)
+}
+
 func TestUpdateManifest_NilStore(t *testing.T) {
 	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
 	err := updateManifest(

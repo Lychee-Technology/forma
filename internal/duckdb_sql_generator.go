@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // ErrListInOrderBy is returned when a LIST type attribute is used in ORDER BY.
@@ -184,14 +185,9 @@ func generateDuckDBCompositeCondition(cond *forma.CompositeCondition) (string, [
 
 // generateDuckDBKvCondition handles KvCondition for DuckDB WHERE generation.
 func generateDuckDBKvCondition(cond *forma.KvCondition) (string, []any, error) {
-	// Parse operator and value
-	opPart, valPart := splitOnce(cond.Value, ":")
-	opStr := "equals"
-	valStr := cond.Value
-	if opPart != "" && valPart != "" {
-		opStr = opPart
-		valStr = valPart
-	}
+	parsed := conditionexpr.ParseOperatorValueLenient(cond.Value)
+	opStr := parsed.Operator
+	valStr := parsed.Value
 
 	// Convert to SQL operator
 	sqlOp, valStr, err := duckDBSQLOperator(opStr, valStr)
@@ -255,13 +251,19 @@ func detectDuckDBValueType(s string) forma.ValueType {
 	if ls == "true" || ls == "false" || ls == "1" || ls == "0" {
 		return forma.ValueTypeBool
 	}
-	// Try numeric
-	if _, err := strconv.ParseFloat(s, 64); err == nil {
-		return forma.ValueTypeNumeric
-	}
 	// Try timestamp (RFC3339 or unix millis)
 	if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return forma.ValueTypeDateTime
+	}
+	trimmed := strings.TrimPrefix(s, "-")
+	if len(trimmed) >= 12 {
+		if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return forma.ValueTypeDateTime
+		}
+	}
+	// Try numeric
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return forma.ValueTypeNumeric
 	}
 	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
 		// ambiguous integer: treat as numeric/bigint; choose numeric for comparisons
@@ -293,12 +295,8 @@ func parseDuckDBParamValue(s string, vt forma.ValueType) any {
 		}
 		return s
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		if t, err := conditionexpr.ParseRFC3339OrUnixMs(s); err == nil {
 			return t.UTC()
-		}
-		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-			// assume epoch millis
-			return time.UnixMilli(i).UTC()
 		}
 		return s
 	default:

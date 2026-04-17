@@ -3,6 +3,7 @@ package internal
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -259,4 +260,135 @@ func TestValidateOrderByAttributesForListTypes_WithListType(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrListInOrderBy))
 	require.Contains(t, err.Error(), "2")
+}
+
+// ============================================================================
+// Focused helper behavior tests
+// ============================================================================
+
+func TestDuckDBSQLOperator_RewritesLikePatterns(t *testing.T) {
+	tests := []struct {
+		name      string
+		op        string
+		value     string
+		wantOp    string
+		wantValue string
+	}{
+		{name: "equals", op: "equals", value: "alice", wantOp: "=", wantValue: "alice"},
+		{name: "starts with", op: "starts_with", value: "pre", wantOp: "LIKE", wantValue: "pre%"},
+		{name: "contains", op: "contains", value: "mid", wantOp: "LIKE", wantValue: "%mid%"},
+		{name: "not equals", op: "not_equals", value: "x", wantOp: "!=", wantValue: "x"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotOp, gotValue, err := duckDBSQLOperator(tt.op, tt.value)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantOp, gotOp)
+			require.Equal(t, tt.wantValue, gotValue)
+		})
+	}
+
+	_, _, err := duckDBSQLOperator("regex", ".*")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported operator")
+}
+
+func TestDetectDuckDBValueType_RecognizesTemporalAndScalarValues(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want forma.ValueType
+	}{
+		{name: "bool true", raw: "true", want: forma.ValueTypeBool},
+		{name: "uuid", raw: "550e8400-e29b-41d4-a716-446655440000", want: forma.ValueTypeUUID},
+		{name: "rfc3339", raw: "2020-01-02T03:04:05Z", want: forma.ValueTypeDateTime},
+		{name: "epoch millis", raw: "1700000000000", want: forma.ValueTypeDateTime},
+		{name: "float", raw: "42.5", want: forma.ValueTypeNumeric},
+		{name: "text", raw: "hello", want: forma.ValueTypeText},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, detectDuckDBValueType(tt.raw))
+		})
+	}
+}
+
+func TestParseDuckDBParamValue_ParsesTemporalAndBooleanValues(t *testing.T) {
+	t.Run("rfc3339 datetime", func(t *testing.T) {
+		got := parseDuckDBParamValue("2020-01-02T03:04:05Z", forma.ValueTypeDateTime)
+		require.IsType(t, time.Time{}, got)
+		require.Equal(t, time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), got)
+	})
+
+	t.Run("epoch millis datetime", func(t *testing.T) {
+		got := parseDuckDBParamValue("1700000000000", forma.ValueTypeDateTime)
+		require.IsType(t, time.Time{}, got)
+		require.Equal(t, time.UnixMilli(1700000000000).UTC(), got)
+	})
+
+	t.Run("bool one", func(t *testing.T) {
+		got := parseDuckDBParamValue("1", forma.ValueTypeBool)
+		require.Equal(t, true, got)
+	})
+}
+
+func TestGenerateDuckDBWhereClause_GivenBareRFC3339Literal_WhenClauseBuilt_ThenItDefaultsToEqualsTimestamp(t *testing.T) {
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			Condition: &forma.KvCondition{
+				Attr:  "created_at",
+				Value: "2020-01-02T03:04:05Z",
+			},
+		},
+	}
+
+	clause, args, err := GenerateDuckDBWhereClause(q)
+	require.NoError(t, err)
+	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Len(t, args, 1)
+	require.Equal(t, time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), args[0])
+}
+
+func TestGenerateDuckDBWhereClause_GivenEpochMillisLiteral_WhenClauseBuilt_ThenItUsesTimestampCast(t *testing.T) {
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			Condition: &forma.KvCondition{
+				Attr:  "created_at",
+				Value: "1700000000000",
+			},
+		},
+	}
+
+	clause, args, err := GenerateDuckDBWhereClause(q)
+	require.NoError(t, err)
+	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Len(t, args, 1)
+	require.Equal(t, time.UnixMilli(1700000000000).UTC(), args[0])
+}
+
+func TestGenerateDuckDBWhereClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGroupingAndArgumentOrderArePreserved(t *testing.T) {
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			Condition: &forma.CompositeCondition{
+				Logic: forma.LogicAnd,
+				Conditions: []forma.Condition{
+					&forma.KvCondition{Attr: "status", Value: "active"},
+					&forma.CompositeCondition{
+						Logic: forma.LogicOr,
+						Conditions: []forma.Condition{
+							&forma.KvCondition{Attr: "score", Value: "gt:10"},
+							&forma.KvCondition{Attr: "email", Value: "starts_with:ops"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	clause, args, err := GenerateDuckDBWhereClause(q)
+	require.NoError(t, err)
+	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DOUBLE)) OR (email LIKE ?))", clause)
+	require.Equal(t, []any{"active", 10.0, "ops%"}, args)
 }
