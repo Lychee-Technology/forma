@@ -56,6 +56,16 @@ func (c *objectOnlyS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectI
 	return &s3.DeleteObjectOutput{}, nil
 }
 
+type copyFailingS3Client struct{}
+
+func (c *copyFailingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	return nil, errors.New("copy failed")
+}
+
+func (c *copyFailingS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	return &s3.DeleteObjectOutput{}, nil
+}
+
 type fullS3ClientMock struct {
 	objectOnlyS3Client
 }
@@ -528,6 +538,164 @@ func TestExecuteFlush_SplitsBatchWhenByteTargetIsExceeded(t *testing.T) {
 	err = flushCtx.executeFlush(ctx, 7)
 	require.NoError(t, err)
 	require.True(t, chunkCalled)
+}
+
+func TestExecuteBatch_SucceedsWhenManifestUpdateFails(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	origExport := exportSnapshotToTmpFn
+	t.Cleanup(func() {
+		exportSnapshotToTmpFn = origExport
+	})
+	exportCalled := false
+	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+		exportCalled = true
+		require.Equal(t, int16(7), schemaID)
+		require.Equal(t, snapshot, snapshotTS)
+		require.Equal(t, []uuid.UUID{rowID}, rowIDs)
+		require.Contains(t, s3TmpPath, "s3://test-bucket/cdc/7/_tmp/")
+		require.Nil(t, attrCache)
+		return nil
+	}
+
+	store := newInMemoryManifestStore()
+	store.loadErr = errors.New("boom")
+	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
+
+	executor := &flushBatchExecutor{
+		ctx:              ctx,
+		db:               db,
+		duck:             &DuckExporter{Logger: zap.NewNop()},
+		s3Client:         &objectOnlyS3Client{},
+		cfg:              CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:        "change_log",
+		schemaID:         7,
+		snapshot:         snapshot,
+		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		logger:           zap.NewNop(),
+		manifestStore:    store,
+		manifestResolver: resolver,
+	}
+
+	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	require.NoError(t, err)
+	require.True(t, exportCalled)
+
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.NotZero(t, flushedAt)
+	require.Zero(t, store.saved)
+}
+
+func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	origExport := exportSnapshotToTmpFn
+	t.Cleanup(func() {
+		exportSnapshotToTmpFn = origExport
+	})
+	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, _ string, _ int16, _ int64, _ []uuid.UUID, _ forma.SchemaAttributeCache) error {
+		return errors.New("export failed")
+	}
+
+	store := newInMemoryManifestStore()
+	executor := &flushBatchExecutor{
+		ctx:           ctx,
+		db:            db,
+		duck:          &DuckExporter{Logger: zap.NewNop()},
+		s3Client:      &objectOnlyS3Client{},
+		cfg:           CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:     "change_log",
+		schemaID:      7,
+		snapshot:      snapshot,
+		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		logger:        zap.NewNop(),
+		manifestStore: store,
+	}
+
+	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duck export snapshot")
+
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.Zero(t, flushedAt)
+	require.Zero(t, store.saved)
+}
+
+func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	origExport := exportSnapshotToTmpFn
+	t.Cleanup(func() {
+		exportSnapshotToTmpFn = origExport
+	})
+	exportSnapshotToTmpFn = func(_ *DuckExporter, _ context.Context, _ CDCConfig, _ string, _ string, _ int16, _ int64, _ []uuid.UUID, _ forma.SchemaAttributeCache) error {
+		return nil
+	}
+
+	store := newInMemoryManifestStore()
+	executor := &flushBatchExecutor{
+		ctx:           ctx,
+		db:            db,
+		duck:          &DuckExporter{Logger: zap.NewNop()},
+		s3Client:      &copyFailingS3Client{},
+		cfg:           CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:     "change_log",
+		schemaID:      7,
+		snapshot:      snapshot,
+		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		logger:        zap.NewNop(),
+		manifestStore: store,
+	}
+
+	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "copy tmp to final")
+
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.Zero(t, flushedAt)
+	require.Zero(t, store.saved)
 }
 
 func TestUpdateManifest_NilStore(t *testing.T) {

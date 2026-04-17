@@ -337,11 +337,14 @@ type flushBatchExecutor struct {
 
 var executeFlushSingleFn = executeFlushSingle
 var executeFlushInChunksFn = executeFlushInChunks
+var exportSnapshotToTmpFn = func(e *DuckExporter, ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+	return e.ExportSnapshotToTmp(ctx, cfg, pgConnStr, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
+}
 
 func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 
-	if err := e.duck.ExportSnapshotToTmp(e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+	if err := exportSnapshotToTmpFn(e.duck, e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
 		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
 	}
 
