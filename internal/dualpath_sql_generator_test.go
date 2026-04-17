@@ -314,3 +314,37 @@ func TestBuildDuckClause_LikeOperators_WildcardRewrite_NoCast(t *testing.T) {
 	require.Len(t, args2, 1)
 	require.Equal(t, []any{"%mid%"}, args2)
 }
+
+// Given a datetime attribute stored on the main table with Unix-ms encoding,
+// when the Postgres main pushdown is built, then the argument is converted to int64 unix milliseconds.
+func TestToDualClauses_DateMainColumnEncoding_UnixMsArgument(t *testing.T) {
+	paramIndex := 0
+	// RFC3339 literal
+	ts := "2020-01-02T03:04:05Z"
+
+	cache := forma.SchemaAttributeCache{
+		"ts": forma.AttributeMetadata{
+			AttributeID: 50,
+			ValueType:   forma.ValueTypeDateTime,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("bigint_02"),
+				Encoding:   forma.MainColumnEncodingUnixMs,
+			},
+		},
+	}
+
+	cond := &forma.KvCondition{Attr: "ts", Value: "equals:" + ts}
+
+	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
+	require.NoError(t, err)
+	require.NotEmpty(t, pgClause)
+	require.Len(t, pgArgs, 1)
+
+	// The argument should be an int64 representing unix milliseconds
+	got, ok := pgArgs[0].(int64)
+	require.True(t, ok, "expected pg main arg to be int64 unix ms")
+
+	parsed, err := time.Parse(time.RFC3339Nano, ts)
+	require.NoError(t, err)
+	require.Equal(t, parsed.UnixMilli(), got)
+}
