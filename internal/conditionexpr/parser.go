@@ -21,6 +21,10 @@ type SQLOperatorResult struct {
 
 // ParseOperatorValueLenient parses "op:value"; malformed pairs fallback to equals(raw).
 func ParseOperatorValueLenient(raw string) OperatorValue {
+	if _, err := ParseRFC3339OrUnixMs(raw); err == nil {
+		return OperatorValue{Operator: "equals", Value: raw}
+	}
+
 	if before, after, ok := strings.Cut(raw, ":"); ok {
 		opPart := before
 		valPart := after
