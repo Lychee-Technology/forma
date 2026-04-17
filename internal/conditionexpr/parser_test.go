@@ -38,6 +38,29 @@ func TestParseOperatorValueStrict(t *testing.T) {
 	}
 }
 
+func TestParseOperatorValueLenient(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantOp    string
+		wantValue string
+	}{
+		{name: "bare text", raw: "abc", wantOp: "equals", wantValue: "abc"},
+		{name: "supported operator", raw: "gt:10", wantOp: "gt", wantValue: "10"},
+		{name: "bare rfc3339 literal", raw: "2020-01-02T03:04:05Z", wantOp: "equals", wantValue: "2020-01-02T03:04:05Z"},
+		{name: "unknown operator still preserved", raw: "unknownop:bar", wantOp: "unknownop", wantValue: "bar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseOperatorValueLenient(tt.raw)
+			if got.Operator != tt.wantOp || got.Value != tt.wantValue {
+				t.Fatalf("unexpected parse result %+v", got)
+			}
+		})
+	}
+}
+
 func TestToSQLOperator(t *testing.T) {
 	got, err := ToSQLOperator("eq", "42")
 	if err != nil {
