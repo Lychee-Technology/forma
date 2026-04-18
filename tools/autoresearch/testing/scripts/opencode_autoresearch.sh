@@ -13,7 +13,7 @@ Usage:
 
 Options:
   -m, --model MODEL           OpenCode model in provider/model form (default: github-copilot/gpt-5-mini)
-  -t, --target TARGET         Target key: flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
+  -t, --target TARGET         Target key: conditionexpr_parser | flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
       --mode MODE             Launch mode: tui | run (default: tui)
       --agent AGENT           Optional OpenCode agent name
       --single-candidate       Generate a single-candidate prompt (controller mode)

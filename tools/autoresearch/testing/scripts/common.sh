@@ -24,6 +24,9 @@ ensure_report_dirs() {
 
 resolve_target_pkg() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' './internal/conditionexpr'
+      ;;
     flusher)
       printf '%s\n' './internal/cdc'
       ;;
@@ -54,6 +57,9 @@ resolve_target_pkg() {
 
 resolve_focus_regex() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' 'ParseOperatorValueLenient|ParseOperatorValueStrict|ParseOperatorValueEqualsOnEmptyOperator|CanonicalOperator|ToSQLOperator|ParseNumeric|ParseRFC3339OrUnixMs'
+      ;;
     flusher)
       printf '%s\n' 'processSchema|shouldFlush|executeFlush|executeBatch|executeFlushInChunks|executeFlushSingle'
       ;;
@@ -84,6 +90,9 @@ resolve_focus_regex() {
 
 resolve_target_source() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' 'internal/conditionexpr/parser.go'
+      ;;
     flusher)
       printf '%s\n' 'internal/cdc/flusher.go'
       ;;
@@ -114,6 +123,9 @@ resolve_target_source() {
 
 resolve_target_brief() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' 'tools/autoresearch/testing/targets/conditionexpr_parser.md'
+      ;;
     flusher)
       printf '%s\n' 'tools/autoresearch/testing/targets/flusher.md'
       ;;
@@ -144,6 +156,9 @@ resolve_target_brief() {
 
 resolve_target_primary_test() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' 'internal/conditionexpr/parser_test.go'
+      ;;
     flusher)
       printf '%s\n' 'internal/cdc/flusher_test.go'
       ;;
@@ -174,6 +189,9 @@ resolve_target_primary_test() {
 
 resolve_target_test_regex() {
   case "${1:-}" in
+    conditionexpr_parser)
+      printf '%s\n' 'Test(ParseOperatorValue|ToSQLOperator|ParseNumeric|ParseRFC3339OrUnixMs|CanonicalOperator)'
+      ;;
     flusher)
       printf '%s\n' 'Test.*Flusher|Test.*Flush|Test.*ProcessSchema|Test.*ShouldFlush|Test.*ExecuteFlush|Test.*ExecuteBatch'
       ;;

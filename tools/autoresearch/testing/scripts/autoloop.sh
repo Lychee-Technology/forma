@@ -13,7 +13,7 @@ Usage:
 
 Options:
   -m, --model MODEL            OpenCode model in provider/model form (default: github-copilot/gpt-5-mini)
-  -t, --target TARGET          Target key: flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
+  -t, --target TARGET          Target key: conditionexpr_parser | flusher | dualpath_sql_generator | duckdb_sql_generator | export_sql_builder | postgres_duckdb_query | entity_query_service | postgres_repo_query
       --agent AGENT            Optional OpenCode agent name
       --variant NAME           Optional OpenCode model variant
       --iterations N           Number of outer-loop runs (default: 20)
@@ -851,10 +851,12 @@ autoloop_main() {
       printf 'baseline package: %s\n' "$(resolve_target_pkg "$TARGET")"
       printf 'baseline coverprofile: %s\n' "$REPORT_DIR/baseline/${TARGET}.cover.out"
     else
+      sync_autoresearch_assets
       (
         cd "$WORKTREE_DIR"
         ./tools/autoresearch/testing/scripts/baseline.sh "$TARGET"
       )
+      cleanup_synced_assets
       append_loop_log "baseline complete"
     fi
   fi

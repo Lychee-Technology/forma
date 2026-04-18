@@ -63,7 +63,7 @@ Key options:
 
 ```bash
 --model MODEL           OpenCode model (required)
---target TARGET         flusher | postgres_duckdb_query | ...
+--target TARGET         conditionexpr_parser | flusher | postgres_duckdb_query | ...
 --iterations N          Number of candidates (default: 20)
 --baseline             Run coverage baseline before the loop
 --skip-local-infra     Do not auto-start Postgres and RustFS
@@ -159,7 +159,7 @@ If you already manage local services yourself, pass `--skip-local-infra`.
 
 ## Target briefs
 
-See `targets/` for priority scenarios per target. Start with `flusher`.
+See `targets/` for priority scenarios per target. Start with `flusher` or another high-yield pure-logic target such as `conditionexpr_parser`.
 
 ## Notes
 
