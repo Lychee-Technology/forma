@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark Security",
+  "description": "TPC-E-inspired security benchmark schema",
+  "type": "object",
+  "required": [
+    "symbol",
+    "sector"
+  ],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "sector": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50
+    },
+    "companyName": {
+      "type": "string"
+    },
+    "dividend": {
+      "type": "number",
+      "minimum": 0
+    },
+    "marketCap": {
+      "type": "number",
+      "minimum": 0
+    }
+  }
+}

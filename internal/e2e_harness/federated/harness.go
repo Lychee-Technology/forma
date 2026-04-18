@@ -274,6 +274,13 @@ func (h *FederatedTestHarness) initDatabaseSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS entity_main (
 			ltbase_schema_id SMALLINT NOT NULL,
 			ltbase_row_id UUID NOT NULL,
+			text_01 TEXT,
+			text_02 TEXT,
+			smallint_01 SMALLINT,
+			bigint_01 BIGINT,
+			bigint_02 BIGINT,
+			double_01 DOUBLE PRECISION,
+			uuid_01 UUID,
 			ltbase_created_at BIGINT NOT NULL,
 			ltbase_updated_at BIGINT NOT NULL,
 			ltbase_deleted_at BIGINT,

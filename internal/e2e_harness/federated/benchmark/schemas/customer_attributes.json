@@ -1,0 +1,35 @@
+{
+  "taxId": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "status": {
+    "attributeID": 2,
+    "valueType": "smallint",
+    "column_binding": {
+      "col_name": "smallint_01"
+    }
+  },
+  "region": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "name": {
+    "attributeID": 4,
+    "valueType": "text"
+  },
+  "email": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "creditRating": {
+    "attributeID": 6,
+    "valueType": "numeric"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "symbol": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "sector": {
+    "attributeID": 2,
+    "valueType": "smallint",
+    "column_binding": {
+      "col_name": "smallint_01"
+    }
+  },
+  "companyName": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "dividend": {
+    "attributeID": 4,
+    "valueType": "numeric"
+  },
+  "marketCap": {
+    "attributeID": 5,
+    "valueType": "numeric"
+  }
+}

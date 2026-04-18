@@ -1,0 +1,72 @@
+{
+  "symbol": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "tradeType": {
+    "attributeID": 2,
+    "valueType": "smallint",
+    "column_binding": {
+      "col_name": "smallint_01"
+    }
+  },
+  "quantity": {
+    "attributeID": 3,
+    "valueType": "bigint",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "price": {
+    "attributeID": 4,
+    "valueType": "numeric",
+    "column_binding": {
+      "col_name": "double_01"
+    }
+  },
+  "tradeTime": {
+    "attributeID": 5,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_02",
+      "encoding": "unix_ms"
+    }
+  },
+  "customerId": {
+    "attributeID": 6,
+    "valueType": "uuid",
+    "column_binding": {
+      "col_name": "uuid_01"
+    }
+  },
+  "region": {
+    "attributeID": 7,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "exchange": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "commission": {
+    "attributeID": 9,
+    "valueType": "numeric"
+  },
+  "isCash": {
+    "attributeID": 10,
+    "valueType": "bool"
+  },
+  "brokerId": {
+    "attributeID": 11,
+    "valueType": "text"
+  },
+  "orderChannel": {
+    "attributeID": 12,
+    "valueType": "text"
+  }
+}
