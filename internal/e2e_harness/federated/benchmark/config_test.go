@@ -32,3 +32,20 @@ func TestConfigValidateRejectsUnknownTierProfile(t *testing.T) {
 		t.Fatalf("Validate should reject unknown tier profile")
 	}
 }
+
+func TestDefaultWorkloadNamesIncludesSchemaScopedCoverage(t *testing.T) {
+	names := DefaultWorkloadNames()
+	foundCustomer := false
+	foundSecurity := false
+	for _, name := range names {
+		if name == "customer-region-page" {
+			foundCustomer = true
+		}
+		if name == "security-symbol-page" {
+			foundSecurity = true
+		}
+	}
+	if !foundCustomer || !foundSecurity {
+		t.Fatalf("expected default workloads to include schema-scoped customer and security coverage: %v", names)
+	}
+}

@@ -233,7 +233,16 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	if pageSize <= 0 {
 		pageSize = r.config.PageSize
 	}
-	opts := &federated.QueryOptions{Limit: pageSize, Offset: workload.DerivedOffset(r.config.PageSize), SortBy: "tradeTime", SortDesc: true}
+	schemaID, err := workloadSchemaID(workload.TargetSchema)
+	if err != nil {
+		return WorkloadRunResult{}, nil, err
+	}
+	previousSchemaID := h.SchemaID
+	h.SchemaID = schemaID
+	defer func() {
+		h.SchemaID = previousSchemaID
+	}()
+	opts := queryOptionsForWorkload(workload, r.config.PageSize)
 	if workload.UsesSimpleFilter() {
 		opts.Filter = &federated.Filter{Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue}}
 	}
@@ -329,14 +338,40 @@ func validatePaginationTransition(previous, current WorkloadRunResult) []Asserti
 }
 
 func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord) []AssertionResult {
-	assertions := []AssertionResult{validateUniqueRows(run)}
+	assertions := []AssertionResult{validateUniqueRows(run), validateSchemaScope(workload, records)}
 	if workload.UsesSimpleFilter() {
 		assertions = append(assertions, validateFilterMatch(workload, records))
 	}
-	if len(records) > 1 {
+	if workload.TargetSchema == "trade" && len(records) > 1 {
 		assertions = append(assertions, validateSortOrder(records, "tradeTime", true))
 	}
 	return assertions
+}
+
+func validateSchemaScope(workload WorkloadDefinition, records []*internal.PersistentRecord) AssertionResult {
+	expectedSchemaID, err := workloadSchemaID(workload.TargetSchema)
+	if err != nil {
+		return AssertionResult{Name: "schema-scoped-results-match-target", Passed: false, Message: err.Error()}
+	}
+	for _, record := range records {
+		if record.SchemaID != expectedSchemaID {
+			return AssertionResult{Name: "schema-scoped-results-match-target", Passed: false, Message: fmt.Sprintf("expected_schema=%d actual_schema=%d row=%s", expectedSchemaID, record.SchemaID, record.RowID)}
+		}
+	}
+	return AssertionResult{Name: "schema-scoped-results-match-target", Passed: true, Message: fmt.Sprintf("schema=%s rows=%d", workload.TargetSchema, len(records))}
+}
+
+func queryOptionsForWorkload(workload WorkloadDefinition, defaultPageSize int) *federated.QueryOptions {
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	opts := &federated.QueryOptions{Limit: pageSize, Offset: workload.DerivedOffset(defaultPageSize)}
+	if workload.TargetSchema == "trade" {
+		opts.SortBy = "tradeTime"
+		opts.SortDesc = true
+	}
+	return opts
 }
 
 func validateUniqueRows(run WorkloadRunResult) AssertionResult {
