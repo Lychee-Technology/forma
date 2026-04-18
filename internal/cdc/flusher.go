@@ -258,6 +258,8 @@ type schemaFlushContext struct {
 	manifestResolver manifest.PathResolver
 	acquireLock      func(context.Context, *sql.DB, int16) (bool, error)
 	releaseLock      func(context.Context, *sql.DB, int16) error
+	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
+	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 }
 
 // processSchema handles the flush process for a single schema.
@@ -333,15 +335,21 @@ type flushBatchExecutor struct {
 	logger           *zap.Logger
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
+	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
+	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
+	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
 }
-
-var executeFlushSingleFn = executeFlushSingle
-var executeFlushInChunksFn = executeFlushInChunks
 
 func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
+	exportSnapshot := e.exportSnapshot
+	if exportSnapshot == nil {
+		exportSnapshot = func(duck *DuckExporter, ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+			return duck.ExportSnapshotToTmp(ctx, cfg, pgConnStr, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
+		}
+	}
 
-	if err := e.duck.ExportSnapshotToTmp(e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+	if err := exportSnapshot(e.duck, e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
 		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
 	}
 
@@ -435,6 +443,17 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		logger:           c.logger,
 		manifestStore:    c.manifestStore,
 		manifestResolver: c.manifestResolver,
+		executeSingle:    c.executeSingle,
+		executeInChunks:  c.executeInChunks,
+	}
+
+	executeInChunks := executor.executeInChunks
+	if executeInChunks == nil {
+		executeInChunks = executeFlushInChunks
+	}
+	executeSingle := executor.executeSingle
+	if executeSingle == nil {
+		executeSingle = executeFlushSingle
 	}
 
 	batchIDs := ids
@@ -445,10 +464,10 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 
 	if maxRows > 0 && len(batchIDs) > maxRows {
 		c.logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
-		return executeFlushInChunksFn(executor, batchIDs, maxRows)
+		return executeInChunks(executor, batchIDs, maxRows)
 	}
 
-	return executeFlushSingleFn(executor, batchIDs)
+	return executeSingle(executor, batchIDs)
 }
 
 func executeFlushInChunks(
