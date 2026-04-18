@@ -66,6 +66,7 @@ Compare these fields first:
 
 ## Current Limitations
 
-- current CLI `run` still uses the scaffolded execution path unless the runtime is wired to a live harness
+- baseline presets currently favor `smoke` and `plan` modes for artifact stability over live execution cost
+- use `go run ./cmd/benchmark run -mode live ...` when you need executable benchmark evidence instead of planning-only artifacts
 - baseline capture is designed for artifact stability first, not for production-like throughput measurement
 - CI integration and operator workflow guidance are documented in `docs/federated-query/federated-query-benchmark-ci-and-ops-guide.md`

@@ -9,12 +9,13 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 
 ## Current Execution Model
 
-- `go run ./cmd/benchmark run ...` is currently a scaffolded validation path
+- `go run ./cmd/benchmark run ...` supports both validation and live execution paths
 - `-mode smoke` validates config, fixtures, and workload resolution only
 - `-mode plan` validates config and emits the planned workload shape only
-- live federated-query execution currently happens through the harness-backed test path such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness`
+- `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
+- harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
-This means phase-1 benchmark CI should be treated as configuration, fixture, and artifact regression coverage first. It is not yet an official throughput gate.
+This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
 
 ## Workload Groups
 
@@ -40,7 +41,7 @@ Use for pre-merge review, local baseline capture, and scheduled CI.
 
 - workloads: `baseline-page-1`, `hot-selective-page`, `eav-selective-page`, `mixed-tier-window`
 - scale: `small` or `medium`
-- mode: `plan` for CLI-only checks, harness-backed test for executable query coverage
+- mode: `plan` for cheap CLI-only checks, `live` for executable query coverage
 - goal: verify workload set shape, artifacts, and supported federated execution paths without using the heaviest deep-page cases
 - expected runtime: 1 to 5 minutes depending on runner size and whether harness-backed tests are included
 
@@ -84,12 +85,12 @@ go run ./cmd/benchmark run \
 
 ```bash
 go run ./cmd/benchmark run \
-  -mode plan \
-  -scale medium \
-  -distribution zipf \
-  -iterations 5 \
-  -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window \
-  -baseline-dir .artifacts/benchmark/regression-medium
+  -mode live \
+  -scale small \
+  -distribution hotspot-overlap \
+  -tier-profile balanced \
+  -workloads baseline-page-1,hot-selective-page \
+  -baseline-dir .artifacts/benchmark/live-small
 ```
 
 ### Harness-Backed Execution Check
@@ -98,6 +99,18 @@ go run ./cmd/benchmark run \
 go test -v ./internal/e2e_harness/federated/... \
   -run TestBenchmarkWorkloadExecution_RunWithHarness \
   -timeout=10m
+```
+
+### Local Regression Planning
+
+```bash
+go run ./cmd/benchmark run \
+  -mode plan \
+  -scale medium \
+  -distribution zipf \
+  -iterations 5 \
+  -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window \
+  -baseline-dir .artifacts/benchmark/regression-medium
 ```
 
 ## CI Guidance
@@ -118,7 +131,7 @@ The repository CI workflow now includes a dedicated `benchmark-smoke` job for th
 - Go toolchain matching the repository CI version
 - writable workspace for `.artifacts/benchmark` output
 - for CLI smoke/plan runs: no external services beyond normal test prerequisites
-- for harness-backed execution: the same environment required by federated e2e tests, including Docker-backed services when applicable
+- for CLI `-mode live` and harness-backed execution: the same environment required by federated e2e tests, including Docker-backed services when applicable
 
 Operational expectations:
 
@@ -158,7 +171,6 @@ These items remain intentionally out of scope for the current phase-1 operating 
 
 - official CI performance gating on large-scale thresholds
 - benchmark trend dashboards and longitudinal regression tracking
-- CLI wiring for live harness-backed execution instead of validation-only `run`
 - keyset pagination comparison workloads
 - distributed benchmark agents
 

@@ -74,6 +74,19 @@ func TestLoadTieredDatasetUsesLoader(t *testing.T) {
 	}
 }
 
+func TestResolveTierMixProfile(t *testing.T) {
+	profile, err := ResolveTierMixProfile("high-hot")
+	if err != nil {
+		t.Fatalf("ResolveTierMixProfile failed: %v", err)
+	}
+	if profile.Name != TierMixHighHot.Name {
+		t.Fatalf("unexpected profile: %+v", profile)
+	}
+	if _, err := ResolveTierMixProfile("unknown"); err == nil {
+		t.Fatalf("expected unknown tier profile to fail")
+	}
+}
+
 type captureTierLoader struct {
 	cleared     bool
 	schemas     []SchemaFixture

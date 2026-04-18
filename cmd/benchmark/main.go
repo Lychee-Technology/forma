@@ -12,7 +12,37 @@ import (
 	"strings"
 	"syscall"
 
+	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
+)
+
+var (
+	newBenchmarkRunner = bench.NewRunner
+	runValidationMode  = func(ctx context.Context, runner *bench.Runner) (*bench.RunResult, error) {
+		return runner.Run(ctx)
+	}
+	runLiveMode = func(ctx context.Context, runner *bench.Runner, cfg bench.Config) (*bench.RunResult, error) {
+		profile, err := bench.ResolveTierMixProfile(cfg.TierProfile)
+		if err != nil {
+			return nil, err
+		}
+		h, err := federated.NewFederatedTestHarness(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("create federated harness: %w", err)
+		}
+		result, runErr := runner.RunWithHarness(ctx, h, profile)
+		cleanupErr := h.Cleanup(ctx)
+		if runErr != nil {
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("%w; cleanup federated harness: %v", runErr, cleanupErr)
+			}
+			return nil, runErr
+		}
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("cleanup federated harness: %w", cleanupErr)
+		}
+		return result, nil
+	}
 )
 
 func main() {
@@ -46,7 +76,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  describe   Print benchmark schemas, workloads, and defaults")
 	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
-	fmt.Fprintln(out, "  run        Execute the scaffolded benchmark runner")
+	fmt.Fprintln(out, "  run        Execute benchmark validation or live runtime")
 }
 
 func runDescribe(out io.Writer) int {
@@ -105,12 +135,13 @@ type runOutputs struct {
 func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, int) {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(errOut)
-	mode := flags.String("mode", string(bench.ExecutionModeSmoke), "Execution mode: smoke or plan")
+	mode := flags.String("mode", string(bench.ExecutionModeSmoke), "Execution mode: smoke, plan, or live")
 	scale := flags.String("scale", string(bench.ScaleSmall), "Dataset scale: small, medium, or large")
 	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
 	iterations := flags.Int("iterations", 1, "Number of iterations to schedule")
 	concurrency := flags.Int("concurrency", 1, "Number of concurrent workers to schedule")
 	pageSize := flags.Int("page-size", 20, "Default page size for workload planning")
+	tierProfile := flags.String("tier-profile", bench.DefaultTierMixProfile().Name, "Tier mix profile: balanced, high-hot, long-history, or explicit profile name")
 	seed := flags.Int64("seed", 42, "Deterministic benchmark seed")
 	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
 	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
@@ -132,6 +163,7 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 		Concurrency:   *concurrency,
 		PageSize:      *pageSize,
 		Seed:          *seed,
+		TierProfile:   *tierProfile,
 		TradeCount:    *tradeCount,
 		CustomerCount: *customerCount,
 		SecurityCount: *securityCount,
@@ -144,12 +176,18 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 }
 
 func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutputs, out, errOut io.Writer) int {
-	runner, err := bench.NewRunner(cfg)
+	runner, err := newBenchmarkRunner(cfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "benchmark setup failed: %v\n", err)
 		return 1
 	}
-	result, err := runner.Run(ctx)
+	var result *bench.RunResult
+	switch cfg.Mode {
+	case bench.ExecutionModeLive:
+		result, err = runLiveMode(ctx, runner, cfg)
+	default:
+		result, err = runValidationMode(ctx, runner)
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "benchmark run failed: %v\n", err)
 		return 1

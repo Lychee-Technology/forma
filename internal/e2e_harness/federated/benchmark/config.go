@@ -28,6 +28,7 @@ type ExecutionMode string
 const (
 	ExecutionModeSmoke ExecutionMode = "smoke"
 	ExecutionModePlan  ExecutionMode = "plan"
+	ExecutionModeLive  ExecutionMode = "live"
 )
 
 // Config describes a benchmark run.
@@ -44,6 +45,7 @@ type Config struct {
 	SecurityCount int           `json:"security_count,omitempty"`
 	OverlapRatio  float64       `json:"overlap_ratio,omitempty"`
 	DeleteRatio   float64       `json:"delete_ratio,omitempty"`
+	TierProfile   string        `json:"tier_profile,omitempty"`
 	Workloads     []string      `json:"workloads"`
 }
 
@@ -57,6 +59,7 @@ func DefaultConfig() Config {
 		Concurrency:  1,
 		PageSize:     20,
 		Seed:         42,
+		TierProfile:  DefaultTierMixProfile().Name,
 		Workloads:    DefaultWorkloadNames(),
 	}
 }
@@ -85,6 +88,9 @@ func (c Config) WithDefaults() Config {
 	if c.Seed == 0 {
 		c.Seed = defaults.Seed
 	}
+	if c.TierProfile == "" {
+		c.TierProfile = defaults.TierProfile
+	}
 	if len(c.Workloads) == 0 {
 		c.Workloads = defaults.Workloads
 	}
@@ -111,6 +117,11 @@ func (c Config) Validate() error {
 	if c.PageSize <= 0 {
 		return fmt.Errorf("page size must be greater than zero")
 	}
+	if c.TierProfile != "" {
+		if _, err := ResolveTierMixProfile(c.TierProfile); err != nil {
+			return err
+		}
+	}
 	if _, err := ResolveWorkloads(c.Workloads); err != nil {
 		return err
 	}
@@ -119,7 +130,7 @@ func (c Config) Validate() error {
 
 func isValidMode(mode ExecutionMode) bool {
 	switch mode {
-	case ExecutionModeSmoke, ExecutionModePlan:
+	case ExecutionModeSmoke, ExecutionModePlan, ExecutionModeLive:
 		return true
 	default:
 		return false
