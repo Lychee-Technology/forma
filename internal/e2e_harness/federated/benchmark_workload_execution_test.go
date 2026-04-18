@@ -35,6 +35,7 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		Workloads: []string{
 			"baseline-page-1",
 			"deep-page-1000",
+			"deep-page-100000",
 		},
 	}.WithDefaults())
 	require.NoError(t, err)
@@ -42,10 +43,14 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	result, err := runner.RunWithHarness(ctx, h, bench.TierMixBalanced)
 	require.NoError(t, err)
 	require.False(t, result.ValidationOnly)
-	require.Len(t, result.Executions, 2)
+	require.Len(t, result.Executions, 3)
 	for _, execution := range result.Executions {
 		require.NotEmpty(t, execution.Name)
 		require.GreaterOrEqual(t, execution.ResultCount, 0)
 		require.GreaterOrEqual(t, execution.TotalRecords, int64(0))
+		require.NotEmpty(t, execution.Assertions)
+		for _, assertion := range execution.Assertions {
+			require.True(t, assertion.Passed, assertion.Name+": "+assertion.Message)
+		}
 	}
 }

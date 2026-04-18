@@ -24,16 +24,24 @@ type RunResult struct {
 
 // WorkloadRunResult captures one workload execution result.
 type WorkloadRunResult struct {
-	Name         string        `json:"name"`
-	Category     string        `json:"category"`
-	Distribution Distribution  `json:"distribution"`
-	PageSize     int           `json:"page_size"`
-	PageNumber   int           `json:"page_number"`
-	Offset       int           `json:"offset"`
-	ResultCount  int           `json:"result_count"`
-	TotalRecords int64         `json:"total_records"`
-	Duration     time.Duration `json:"duration"`
-	PlanNotes    []string      `json:"plan_notes,omitempty"`
+	Name         string            `json:"name"`
+	Category     string            `json:"category"`
+	Distribution Distribution      `json:"distribution"`
+	PageSize     int               `json:"page_size"`
+	PageNumber   int               `json:"page_number"`
+	Offset       int               `json:"offset"`
+	ResultCount  int               `json:"result_count"`
+	TotalRecords int64             `json:"total_records"`
+	Duration     time.Duration     `json:"duration"`
+	Assertions   []AssertionResult `json:"assertions,omitempty"`
+	PlanNotes    []string          `json:"plan_notes,omitempty"`
+}
+
+// AssertionResult captures one correctness assertion outcome.
+type AssertionResult struct {
+	Name    string `json:"name"`
+	Passed  bool   `json:"passed"`
+	Message string `json:"message,omitempty"`
 }
 
 // Runner validates benchmark inputs and prepares the phase-1 execution plan.
@@ -141,6 +149,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		return nil, err
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
+	pageRuns := make(map[string]WorkloadRunResult)
 	for _, workload := range r.workloads {
 		if !workload.SupportsDistribution(r.genConfig.Distribution) {
 			continue
@@ -149,6 +158,13 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			run, err := r.executeWorkload(ctx, h, workload)
 			if err != nil {
 				return nil, fmt.Errorf("execute workload %s: %w", workload.Name, err)
+			}
+			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
+			if workload.Category == WorkloadCategoryPagination || workload.Category == WorkloadCategoryDeepPage {
+				if previous, ok := pageRuns[workload.TargetSchema]; ok {
+					run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
+				}
+				pageRuns[workload.TargetSchema] = run
 			}
 			executions = append(executions, run)
 		}
@@ -216,4 +232,36 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		run.PlanNotes = append([]string(nil), result.Plan.Notes...)
 	}
 	return run, nil
+}
+
+func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRunResult) []AssertionResult {
+	assertions := []AssertionResult{
+		{
+			Name:    "non-negative-total-records",
+			Passed:  run.TotalRecords >= 0,
+			Message: fmt.Sprintf("total_records=%d", run.TotalRecords),
+		},
+		{
+			Name:    "page-size-bound",
+			Passed:  run.ResultCount <= run.PageSize,
+			Message: fmt.Sprintf("result_count=%d page_size=%d", run.ResultCount, run.PageSize),
+		},
+	}
+	if workload.Category == WorkloadCategoryDeepPage {
+		assertions = append(assertions, AssertionResult{
+			Name:    "deep-page-empty-when-offset-exceeds-total",
+			Passed:  run.Offset < int(run.TotalRecords) || run.ResultCount == 0,
+			Message: fmt.Sprintf("offset=%d total=%d result_count=%d", run.Offset, run.TotalRecords, run.ResultCount),
+		})
+	}
+	return assertions
+}
+
+func validatePaginationTransition(previous, current WorkloadRunResult) []AssertionResult {
+	assertion := AssertionResult{
+		Name:    "non-decreasing-offsets-across-pagination-runs",
+		Passed:  current.Offset >= previous.Offset,
+		Message: fmt.Sprintf("previous_offset=%d current_offset=%d", previous.Offset, current.Offset),
+	}
+	return []AssertionResult{assertion}
 }
