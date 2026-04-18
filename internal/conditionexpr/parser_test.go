@@ -136,3 +136,16 @@ func TestGivenRFC3339WithMultipleColons_WhenLenientParsing_ThenEqualsReturned(t 
 		t.Fatalf("unexpected parse result %+v for raw=%q", got, raw)
 	}
 }
+
+func TestGivenEmptyOperator_WhenEqualsOnEmptyParsing_ThenEqualsReturned(t *testing.T) {
+	// Given: an input with an empty operator before the colon
+	raw := ":preserve-me"
+
+	// When: parsing with the equals-on-empty-operator helper
+	got := ParseOperatorValueEqualsOnEmptyOperator(raw)
+
+	// Then: the operator should normalize to "equals" and the value preserved
+	if got.Operator != "equals" || got.Value != "preserve-me" {
+		t.Fatalf("unexpected parse result %+v for raw=%q", got, raw)
+	}
+}
