@@ -68,4 +68,4 @@ Compare these fields first:
 
 - current CLI `run` still uses the scaffolded execution path unless the runtime is wired to a live harness
 - baseline capture is designed for artifact stability first, not for production-like throughput measurement
-- CI integration and operator workflow guidance are tracked separately in `#39`
+- CI integration and operator workflow guidance are documented in `docs/federated-query/federated-query-benchmark-ci-and-ops-guide.md`

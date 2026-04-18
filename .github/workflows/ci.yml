@@ -65,7 +65,7 @@ jobs:
           DB_USER: test
           DB_PASSWORD: test
           DB_NAME: forma_test
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile=coverage.out . ./cdc ./cmd/... ./factory ./internal/...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
@@ -91,3 +91,22 @@ jobs:
 
       - name: Run E2E federated smoke tests
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -short -timeout=10m
+
+  benchmark-smoke:
+    name: Benchmark Smoke
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run benchmark smoke validation
+        run: make benchmark-smoke

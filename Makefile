@@ -1,4 +1,4 @@
-.PHONY: test test-unit lint coverage build build-tools build-benchmark build-all build-lambda clean all create-build-dir link
+.PHONY: test test-unit lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy build-all build-lambda clean all create-build-dir link
 
 # Binary names
 BINARY_SERVER=server
@@ -27,6 +27,11 @@ GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)"
 
 GOOS=$(shell $(GOENV) go env GOOS)
 GOARCH=$(shell $(GOENV) go env GOARCH)
+TEST_PKGS=.
+TEST_PKGS+= ./cdc
+TEST_PKGS+= ./cmd/...
+TEST_PKGS+= ./factory
+TEST_PKGS+= ./internal/...
 
 # Default target
 all: test build-all
@@ -36,7 +41,7 @@ test: test-unit
 
 test-unit:
 	@echo "Running unit tests..."
-	@$(GOENV) go test ./...
+	@$(GOENV) go test $(TEST_PKGS)
 
 # Run linter (same as CI lint job)
 lint:
@@ -48,10 +53,25 @@ lint:
 # Run unit tests with coverage report
 coverage: create-build-dir
 	@echo "Running unit tests with coverage..."
-	@$(GOENV) go test ./... -coverprofile=$(COVERAGE_PROFILE)
+	@$(GOENV) go test $(TEST_PKGS) -coverprofile=$(COVERAGE_PROFILE)
 	@$(GOENV) go tool cover -func=$(COVERAGE_PROFILE)
 	@$(GOENV) go tool cover -html=$(COVERAGE_PROFILE) -o $(COVERAGE_HTML)
 	@echo "Coverage report written to $(COVERAGE_HTML)"
+
+benchmark-smoke: create-build-dir
+	@echo "Running benchmark smoke validation..."
+	@mkdir -p .artifacts/benchmark/smoke
+	@$(GOENV) go run ./cmd/benchmark run -mode smoke -scale small -distribution uniform -workloads baseline-page-1,hot-selective-page -baseline-dir .artifacts/benchmark/smoke
+
+benchmark-regression: create-build-dir
+	@echo "Running benchmark regression planning..."
+	@mkdir -p .artifacts/benchmark/regression
+	@$(GOENV) go run ./cmd/benchmark run -mode plan -scale medium -distribution zipf -iterations 5 -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window -baseline-dir .artifacts/benchmark/regression
+
+benchmark-heavy: create-build-dir
+	@echo "Running benchmark heavy planning set..."
+	@mkdir -p .artifacts/benchmark/heavy
+	@$(GOENV) go run ./cmd/benchmark run -mode plan -scale large -distribution hotspot-overlap -iterations 3 -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window,deep-page-1000,deep-page-100000 -baseline-dir .artifacts/benchmark/heavy
 
 # Build server for current platform
 build-server: create-build-dir

@@ -6,12 +6,18 @@ import (
 	"testing"
 	"time"
 
-	telemetry "github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+type telemetryEvent struct {
+	name   string
+	labels map[string]string
+	value  any
+}
 
 // mockProvider implements FileProvider for testing
 type mockProvider struct {
@@ -284,6 +290,13 @@ func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testin
 }
 
 func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *testing.T) {
+	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+
+	events := make([]telemetryEvent, 0, 2)
+	telemetry.RegisterTelemetryEmitter(func(ctx context.Context, name string, labels map[string]string, value any) {
+		events = append(events, telemetryEvent{name: name, labels: labels, value: value})
+	})
+
 	logger := zap.NewNop()
 	// Force needsRewrite=true (delta/base rows = 100/1000 = 10% > 5%)
 	// while keeping needsPromotion=false (10MB < 256MB).
@@ -318,6 +331,14 @@ func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *t
 	// No rewrite/promotion happened in current implementation.
 	require.Equal(t, "base", provider.manifest.Files[0].Tier)
 	require.Equal(t, "delta", provider.manifest.Files[1].Tier)
+
+	require.Len(t, events, 2)
+	require.Equal(t, "compaction_dirty_ratio", events[0].name)
+	require.Equal(t, "1", events[0].labels["schema_id"])
+	require.Equal(t, 0.1, events[0].value)
+	require.Equal(t, "compaction_rewrite_pending_total", events[1].name)
+	require.Equal(t, "1", events[1].labels["schema_id"])
+	require.Equal(t, int64(1), events[1].value)
 }
 
 func TestCompactor_RunOnce_LoadManifestError(t *testing.T) {

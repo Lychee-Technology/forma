@@ -81,4 +81,4 @@ These are intentionally left for follow-up work:
 - richer filter-aware workload execution against a more expressive query model
 - benchmark reporting/export beyond the current execution result structure
 - stronger correctness assertions over result contents rather than only page-level invariants
-- CI and operational benchmark guidance
+- official performance gating on real executable benchmark thresholds
