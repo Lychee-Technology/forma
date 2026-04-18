@@ -99,8 +99,10 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows) ([]*internal.Per
 		var changedAt, deletedAt int64
 		var name sql.NullString
 		var version sql.NullInt64
+		var symbol, exchange, region sql.NullString
+		var tradeType, tradeTime sql.NullInt64
 
-		if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+		if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 
@@ -118,8 +120,26 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows) ([]*internal.Per
 		if name.Valid {
 			rec.TextItems["name"] = name.String
 		}
+		if symbol.Valid {
+			rec.TextItems["symbol"] = symbol.String
+		}
+		if exchange.Valid {
+			rec.TextItems["exchange"] = exchange.String
+		}
+		if region.Valid {
+			rec.TextItems["region"] = region.String
+		}
 		if version.Valid {
 			rec.Float64Items["version"] = float64(version.Int64)
+		}
+		if tradeType.Valid || tradeTime.Valid {
+			rec.Int64Items = make(map[string]int64)
+			if tradeType.Valid {
+				rec.Int64Items["tradeType"] = tradeType.Int64
+			}
+			if tradeTime.Valid {
+				rec.Int64Items["tradeTime"] = tradeTime.Int64
+			}
 		}
 
 		records = append(records, rec)
@@ -150,6 +170,7 @@ func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
+	attributeFilter := buildAttributeFilterClause(opts)
 	pgConnStr := h.buildPGConnString()
 
 	// Build tier queries dynamically
@@ -157,19 +178,19 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 
 	if hasBase {
 		baseQuery := fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, 'base' as tier
+			SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, 'base' as tier
 			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s`,
-			basePath, dirtyExclusion, rowIDFilter)
+			WHERE deleted_at = 0 %s %s %s`,
+			basePath, dirtyExclusion, rowIDFilter, attributeFilter)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
 		deltaQuery := fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, 'delta' as tier
+			SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, 'delta' as tier
 			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s`,
-			deltaPath, dirtyExclusion, rowIDFilter)
+			WHERE deleted_at = 0 %s %s %s`,
+			deltaPath, dirtyExclusion, rowIDFilter, attributeFilter)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
@@ -180,15 +201,23 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 			cl.schema_id,
 			cl.changed_at,
 			cl.deleted_at,
-			'' as name,
+			COALESCE(em.text_01, '') as name,
 			0 as version,
+			COALESCE(em.text_01, '') as symbol,
+			'' as exchange,
+			COALESCE(em.text_02, '') as region,
+			COALESCE(em.smallint_01, 0) as tradeType,
+			COALESCE(em.bigint_02, 0) as tradeTime,
 			'hot' as tier
 		FROM postgres_scan('%s', 'public', 'change_log') cl
+		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
 			AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
+			%s
 			%s`,
-		pgConnStr, h.SchemaID, rowIDFilter)
+		pgConnStr, pgConnStr, h.SchemaID, rowIDFilter, attributeFilter)
 	tierQueries = append(tierQueries, hotQuery)
 
 	// Combine all tier queries with UNION ALL
@@ -202,12 +231,12 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
 			FROM combined
 		)
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version
+		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
 		FROM deduplicated
 		WHERE rn = 1
-		ORDER BY row_id
+		ORDER BY %s
 		LIMIT %d OFFSET %d
-	`, combinedQuery, opts.Limit, opts.Offset)
+	`, combinedQuery, buildOrderByClause(opts), opts.Limit, opts.Offset)
 
 	return query
 }
@@ -230,6 +259,68 @@ func buildRowIDFilter(opts *QueryOptions) string {
 		return fmt.Sprintf("AND row_id = '%s'", opts.Filter.RowID.String())
 	}
 	return ""
+}
+
+func buildAttributeFilterClause(opts *QueryOptions) string {
+	if opts == nil || opts.Filter == nil || len(opts.Filter.Conditions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(opts.Filter.Conditions))
+	for key, value := range opts.Filter.Conditions {
+		column := benchmarkQueryColumn(key)
+		if column == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("AND %s = %s", column, benchmarkSQLLiteral(value)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func benchmarkQueryColumn(attribute string) string {
+	switch attribute {
+	case "symbol":
+		return "symbol"
+	case "exchange":
+		return "exchange"
+	case "region":
+		return "region"
+	case "tradeType":
+		return "tradeType"
+	case "tradeTime":
+		return "tradeTime"
+	default:
+		return ""
+	}
+}
+
+func benchmarkSQLLiteral(value any) string {
+	switch v := value.(type) {
+	case string:
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%v", v)
+	default:
+		return fmt.Sprintf("'%v'", v)
+	}
+}
+
+func buildOrderByClause(opts *QueryOptions) string {
+	if opts == nil {
+		return "row_id ASC"
+	}
+	column := benchmarkQueryColumn(opts.SortBy)
+	if column == "" {
+		column = "row_id"
+	}
+	direction := "ASC"
+	if opts.SortDesc {
+		direction = "DESC"
+	}
+	return fmt.Sprintf("%s %s, row_id ASC", column, direction)
 }
 
 // buildPGConnString builds the Postgres connection string for DuckDB.
