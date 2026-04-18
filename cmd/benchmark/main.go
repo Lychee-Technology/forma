@@ -59,6 +59,8 @@ func runBenchmarkMain(ctx context.Context, args []string, out, errOut io.Writer)
 	switch args[0] {
 	case "describe":
 		return runDescribe(out)
+	case "compare":
+		return runCompare(args[1:], out, errOut)
 	case "baseline":
 		return runBaseline(ctx, args[1:], out, errOut)
 	case "run":
@@ -75,6 +77,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  describe   Print benchmark schemas, workloads, and defaults")
+	fmt.Fprintln(out, "  compare    Compare two benchmark summary artifacts")
 	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
 	fmt.Fprintln(out, "  run        Execute benchmark validation or live runtime")
 }
@@ -114,6 +117,7 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	preset := flags.String("preset", "small", "Baseline preset: small or medium")
 	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
 	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
+	compareTo := flags.String("compare-to", "", "Optional path to an existing benchmark-summary.json for diff output")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -123,7 +127,56 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 		return 1
 	}
 	outputs := runOutputs{baselineDir: filepath.Join(*outputDir, dirName)}
-	return executeBenchmarkRun(ctx, config, outputs, out, errOut)
+	exitCode := executeBenchmarkRun(ctx, config, outputs, out, errOut)
+	if *compareTo == "" {
+		return exitCode
+	}
+	if outputs.baselineDir == "" {
+		return exitCode
+	}
+	diffExitCode := compareSummaryFiles(*compareTo, filepath.Join(outputs.baselineDir, "benchmark-summary.json"), out, errOut)
+	if diffExitCode != 0 {
+		return diffExitCode
+	}
+	return exitCode
+}
+
+func runCompare(args []string, out, errOut io.Writer) int {
+	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	baseline := flags.String("baseline", "", "Path to the baseline benchmark-summary.json")
+	candidate := flags.String("candidate", "", "Path to the candidate benchmark-summary.json")
+	diffOut := flags.String("diff-out", "", "Optional path for machine-readable diff output")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if strings.TrimSpace(*baseline) == "" || strings.TrimSpace(*candidate) == "" {
+		fmt.Fprintln(errOut, "compare requires -baseline and -candidate")
+		return 1
+	}
+	return compareSummaryFiles(*baseline, *candidate, out, errOut, *diffOut)
+}
+
+func compareSummaryFiles(baselinePath, candidatePath string, out, errOut io.Writer, diffOut ...string) int {
+	baseline, err := bench.ReadSummaryReport(baselinePath)
+	if err != nil {
+		fmt.Fprintf(errOut, "failed to read baseline summary: %v\n", err)
+		return 1
+	}
+	candidate, err := bench.ReadSummaryReport(candidatePath)
+	if err != nil {
+		fmt.Fprintf(errOut, "failed to read candidate summary: %v\n", err)
+		return 1
+	}
+	diff := bench.CompareSummaryReports(baseline, candidate)
+	if len(diffOut) > 0 && strings.TrimSpace(diffOut[0]) != "" {
+		if err := bench.WriteDiffReport(diffOut[0], &diff); err != nil {
+			fmt.Fprintf(errOut, "failed to write diff report: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Fprintln(errOut, bench.FormatDiffSummary(diff))
+	return writeJSON(out, diff)
 }
 
 type runOutputs struct {

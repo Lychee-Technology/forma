@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,10 @@ func TestWriteReports(t *testing.T) {
 	}
 	if _, err := os.Stat(mdPath); err != nil {
 		t.Fatalf("expected markdown report to exist: %v", err)
+	}
+	summary := SummarizeRunResult(result)
+	if summary.Metadata.BenchmarkID == "" {
+		t.Fatalf("expected summary to carry metadata")
 	}
 }
 
@@ -72,6 +77,12 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	if summary.FailureCount != 2 {
 		t.Fatalf("expected summary failure count 2, got %d", summary.FailureCount)
 	}
+	if summary.Metadata.BenchmarkID == "" {
+		t.Fatalf("expected summary metadata to include benchmark ID")
+	}
+	if len(summary.Workloads) != 2 {
+		t.Fatalf("expected two workload summaries, got %d", len(summary.Workloads))
+	}
 }
 
 func TestFormatConsoleSummary(t *testing.T) {
@@ -96,5 +107,97 @@ func TestFormatConsoleSummary(t *testing.T) {
 	}
 	if !strings.Contains(formatted, "passed=false") {
 		t.Fatalf("expected pass state in summary: %s", formatted)
+	}
+	if !strings.Contains(formatted, "benchmark_id=") {
+		t.Fatalf("expected benchmark id in summary: %s", formatted)
+	}
+}
+
+func TestCompareSummaryReports(t *testing.T) {
+	baseline := SummaryReport{
+		Metadata:       ArtifactMetadata{BenchmarkID: "bench-a"},
+		Passed:         true,
+		ExecutionCount: 2,
+		QPS:            10,
+		Avg:            10 * time.Millisecond,
+		P95:            20 * time.Millisecond,
+		Workloads: []WorkloadSummary{{
+			Name:            "q1",
+			TargetSchema:    "trade",
+			Passed:          true,
+			ExecutionCount:  2,
+			QPS:             5,
+			Avg:             10 * time.Millisecond,
+			P95:             20 * time.Millisecond,
+			AvgResultCount:  20,
+			AvgTotalRecords: 100,
+		}},
+	}
+	candidate := SummaryReport{
+		Metadata:       ArtifactMetadata{BenchmarkID: "bench-b"},
+		Passed:         false,
+		FailureCount:   1,
+		ExecutionCount: 2,
+		QPS:            8,
+		Avg:            12 * time.Millisecond,
+		P95:            25 * time.Millisecond,
+		Workloads: []WorkloadSummary{{
+			Name:            "q1",
+			TargetSchema:    "trade",
+			Passed:          false,
+			FailureCount:    1,
+			ExecutionCount:  2,
+			QPS:             4,
+			Avg:             12 * time.Millisecond,
+			P95:             25 * time.Millisecond,
+			AvgResultCount:  18,
+			AvgTotalRecords: 95,
+		}},
+	}
+	diff := CompareSummaryReports(baseline, candidate)
+	if !diff.Summary.PassedChanged {
+		t.Fatalf("expected passed state change in diff")
+	}
+	if len(diff.Workloads) != 1 {
+		t.Fatalf("expected one workload diff, got %d", len(diff.Workloads))
+	}
+	if diff.Workloads[0].AvgResultCountDelta >= 0 {
+		t.Fatalf("expected avg result count delta to be negative: %+v", diff.Workloads[0])
+	}
+	formatted := FormatDiffSummary(diff)
+	if !strings.Contains(formatted, "Benchmark Diff Summary") {
+		t.Fatalf("expected diff summary header: %s", formatted)
+	}
+}
+
+func TestWriteAndReadDiffReport(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "diff.json")
+	summaryPath := filepath.Join(dir, "summary.json")
+	diff := &DiffReport{
+		BaselineMetadata:  ArtifactMetadata{BenchmarkID: "bench-a"},
+		CandidateMetadata: ArtifactMetadata{BenchmarkID: "bench-b"},
+		Summary:           SummaryDiff{QPSDelta: -2},
+	}
+	if err := WriteDiffReport(path, diff); err != nil {
+		t.Fatalf("WriteDiffReport failed: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected diff report to exist: %v", err)
+	}
+	summary := SummaryReport{Metadata: ArtifactMetadata{BenchmarkID: "bench-summary"}, Passed: true}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary fixture failed: %v", err)
+	}
+	if err := os.WriteFile(summaryPath, data, 0o644); err != nil {
+		t.Fatalf("write summary fixture failed: %v", err)
+	}
+	readSummary, err := ReadSummaryReport(summaryPath)
+	if err != nil {
+		t.Fatalf("ReadSummaryReport failed: %v", err)
+	}
+	if readSummary.Metadata.BenchmarkID != summary.Metadata.BenchmarkID {
+		t.Fatalf("unexpected summary metadata: %+v", readSummary.Metadata)
 	}
 }

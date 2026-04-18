@@ -14,6 +14,7 @@ import (
 type RunResult struct {
 	Config         Config               `json:"config"`
 	Generator      GeneratorConfig      `json:"generator"`
+	Metadata       ArtifactMetadata     `json:"metadata"`
 	StartedAt      time.Time            `json:"started_at"`
 	CompletedAt    time.Time            `json:"completed_at"`
 	ValidationOnly bool                 `json:"validation_only"`
@@ -101,6 +102,7 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 	result := &RunResult{
 		Config:         r.config,
 		Generator:      r.genConfig,
+		Metadata:       BuildArtifactMetadata(r.config, r.genConfig, r.workloads),
 		StartedAt:      startedAt,
 		ValidationOnly: true,
 		Passed:         true,
@@ -194,6 +196,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	result := &RunResult{
 		Config:         r.config,
 		Generator:      r.genConfig,
+		Metadata:       BuildArtifactMetadata(r.config, r.genConfig, r.workloads),
 		StartedAt:      startedAt,
 		CompletedAt:    time.Now(),
 		ValidationOnly: false,
