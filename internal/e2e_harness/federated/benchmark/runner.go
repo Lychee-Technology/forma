@@ -209,7 +209,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	if pageSize <= 0 {
 		pageSize = r.config.PageSize
 	}
-	opts := &federated.QueryOptions{Limit: pageSize, Offset: workload.DerivedOffset(r.config.PageSize)}
+	opts := &federated.QueryOptions{Limit: pageSize, Offset: workload.DerivedOffset(r.config.PageSize), SortBy: "tradeTime", SortDesc: true}
 	if workload.UsesSimpleFilter() {
 		opts.Filter = &federated.Filter{Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue}}
 	}
