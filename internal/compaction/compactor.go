@@ -22,6 +22,25 @@ var ErrConcurrentModification = errors.New("manifest concurrently modified")
 // but did not advance manifest metadata as required by FileProvider contract.
 var ErrManifestMetadataContractViolation = errors.New("manifest metadata contract violated")
 
+// CompactionOutcome describes the result of a compaction pass for a single schema.
+type CompactionOutcome string
+
+const (
+	Noop             CompactionOutcome = "noop"
+	PromotionApplied CompactionOutcome = "promotion_applied"
+	RewritePending   CompactionOutcome = "rewrite_pending"
+)
+
+// CompactionResult carries the outcome and metadata from a compaction pass.
+type CompactionResult struct {
+	Outcome    CompactionOutcome
+	SchemaID   int16
+	Version    int64
+	DirtyRatio float64
+	BaseMB     int64
+	DeltaMB    int64
+}
+
 // FileProvider fetches manifest and lists actual files (optionally cross-check).
 type FileProvider interface {
 	LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error)
@@ -51,45 +70,34 @@ type Compactor struct {
 	Resolver   manifest.PathResolver
 }
 
-// RunOnce executes compaction for a schema (or all if Config.SchemaID==0).
-func (c *Compactor) RunOnce(ctx context.Context) error {
+// RunOnce executes compaction for a schema and returns a typed result.
+func (c *Compactor) RunOnce(ctx context.Context) (CompactionResult, error) {
 	if c.Provider == nil {
-		return fmt.Errorf("file provider is nil")
+		return CompactionResult{}, fmt.Errorf("file provider is nil")
 	}
-	schemas := []int16{c.Config.SchemaID}
 	if c.Config.SchemaID == 0 {
-		// For MVP, require explicit schema; all-schema sweep can be added later.
-		return fmt.Errorf("schema_id required for compaction in MVP")
+		return CompactionResult{}, fmt.Errorf("schema_id required for compaction in MVP")
 	}
 
 	cfg := c.Config.WithDefaults()
-	for _, sid := range schemas {
-		if sid == 0 {
-			continue
-		}
-		if err := c.compactSchemaWithRetry(ctx, sid, cfg); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.compactSchemaWithRetry(ctx, c.Config.SchemaID, cfg)
 }
 
 // compactSchemaWithRetry wraps compactSchema with exponential backoff for transient errors.
-func (c *Compactor) compactSchemaWithRetry(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) error {
+func (c *Compactor) compactSchemaWithRetry(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) (CompactionResult, error) {
 	var lastErr error
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
-		err := c.compactSchema(ctx, schemaID, cfg)
+		result, err := c.compactSchema(ctx, schemaID, cfg)
 		if err == nil {
-			return nil
+			return result, nil
 		}
 		lastErr = err
 
-		// Don't retry if context cancelled or non-retryable
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return CompactionResult{}, ctx.Err()
 		}
 		if !isRetryable(err) {
-			return err
+			return CompactionResult{}, err
 		}
 
 		if attempt < cfg.MaxRetries {
@@ -102,12 +110,12 @@ func (c *Compactor) compactSchemaWithRetry(ctx context.Context, schemaID int16, 
 
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return CompactionResult{}, ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
 	}
-	return fmt.Errorf("compaction failed after %d retries: %w", cfg.MaxRetries, lastErr)
+	return CompactionResult{}, fmt.Errorf("compaction failed after %d retries: %w", cfg.MaxRetries, lastErr)
 }
 
 // computeBackoff returns exponential backoff with jitter.
@@ -129,18 +137,16 @@ func isRetryable(err error) bool {
 	return false
 }
 
-func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) error {
+func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) (CompactionResult, error) {
 	m, etag, err := c.Provider.LoadManifest(ctx, schemaID)
 	if err != nil {
-		return fmt.Errorf("load manifest: %w", err)
+		return CompactionResult{}, fmt.Errorf("load manifest: %w", err)
 	}
 	if m == nil {
-		// No manifest yet means no data to compact
 		c.Logger.Debug("no manifest for schema, skipping", zap.Int16("schema_id", schemaID))
-		return nil
+		return CompactionResult{Outcome: Noop, SchemaID: schemaID}, nil
 	}
 
-	// Separate base and delta files
 	baseFiles := manifest.FilterByTier(m, "base")
 	deltaFiles := manifest.FilterByTier(m, "delta")
 
@@ -152,7 +158,6 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 		zap.Int("base_files", len(baseFiles)),
 		zap.Int("delta_files", len(deltaFiles)))
 
-	// Calculate total sizes
 	var baseTotalBytes, deltaTotalBytes int64
 	for _, f := range baseFiles {
 		baseTotalBytes += f.SizeBytes
@@ -166,8 +171,6 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	dirtyRatio := c.computeDirtyRatio(baseFiles, deltaFiles)
 	telemetry.EmitCompactionDirtyRatio(ctx, schemaID, dirtyRatio)
 
-	// Decision: promote deltas to base if delta total > target base size
-	// or rewrite base if dirty ratio exceeded
 	needsPromotion := deltaTotalMB >= int64(cfg.TargetBaseSizeMB)
 	needsRewrite := len(baseFiles) > 0 && dirtyRatio > float64(cfg.DirtyRatioPct)/100.0
 
@@ -176,18 +179,15 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			zap.Int16("schema_id", schemaID),
 			zap.Int64("base_mb", baseTotalMB),
 			zap.Int64("delta_mb", deltaTotalMB))
-		return nil
+		return CompactionResult{Outcome: Noop, SchemaID: schemaID, DirtyRatio: dirtyRatio, BaseMB: baseTotalMB, DeltaMB: deltaTotalMB}, nil
 	}
 
-	// For MVP: simple promotion - move delta files to base tier
-	// Full rewrite (reading + merging parquet) deferred to later iteration
 	applied := false
 	if needsPromotion {
 		c.Logger.Info("promoting deltas to base tier",
 			zap.Int16("schema_id", schemaID),
 			zap.Int64("delta_mb", deltaTotalMB))
 
-		// Update file entries: change tier from delta to base
 		for i := range m.Files {
 			if strings.EqualFold(m.Files[i].Tier, "delta") {
 				m.Files[i].Tier = "base"
@@ -204,7 +204,13 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			zap.Int("dirty_ratio_pct", cfg.DirtyRatioPct),
 			zap.Int64("base_mb", baseTotalMB),
 			zap.Int64("delta_mb", deltaTotalMB))
-		return nil
+		return CompactionResult{
+			Outcome:    RewritePending,
+			SchemaID:   schemaID,
+			DirtyRatio: dirtyRatio,
+			BaseMB:     baseTotalMB,
+			DeltaMB:    deltaTotalMB,
+		}, nil
 	}
 
 	if !applied {
@@ -212,7 +218,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			zap.Int16("schema_id", schemaID),
 			zap.Bool("needs_promotion", needsPromotion),
 			zap.Bool("needs_rewrite", needsRewrite))
-		return nil
+		return CompactionResult{Outcome: Noop, SchemaID: schemaID, DirtyRatio: dirtyRatio, BaseMB: baseTotalMB, DeltaMB: deltaTotalMB}, nil
 	}
 
 	prevVersion := m.Version
@@ -220,11 +226,10 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 
 	newEtag, err := c.Provider.SaveManifest(ctx, schemaID, m, etag)
 	if err != nil {
-		// Check if this is a concurrent modification (etag mismatch)
 		if newEtag == "" && etag != "" {
-			return fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
+			return CompactionResult{}, fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
 		}
-		return fmt.Errorf("save manifest: %w", err)
+		return CompactionResult{}, fmt.Errorf("save manifest: %w", err)
 	}
 
 	if m.Version <= prevVersion || m.UpdatedAtMs <= prevUpdatedAtMs {
@@ -236,7 +241,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			zap.Int64("prev_updated_at_ms", prevUpdatedAtMs),
 			zap.Int64("new_updated_at_ms", m.UpdatedAtMs),
 			zap.String("etag", newEtag))
-		return fmt.Errorf("%w: provider must mutate manifest in-place; prev(version=%d, updated_at_ms=%d), new(version=%d, updated_at_ms=%d)",
+		return CompactionResult{}, fmt.Errorf("%w: provider must mutate manifest in-place; prev(version=%d, updated_at_ms=%d), new(version=%d, updated_at_ms=%d)",
 			ErrManifestMetadataContractViolation,
 			prevVersion,
 			prevUpdatedAtMs,
@@ -250,7 +255,14 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 		zap.Int64("version", m.Version),
 		zap.String("etag", newEtag))
 
-	return nil
+	return CompactionResult{
+		Outcome:    PromotionApplied,
+		SchemaID:   schemaID,
+		Version:    m.Version,
+		DirtyRatio: dirtyRatio,
+		BaseMB:     baseTotalMB,
+		DeltaMB:    deltaTotalMB,
+	}, nil
 }
 
 // computeDirtyRatio estimates the ratio of updated/deleted rows to total base rows.
