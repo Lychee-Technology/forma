@@ -15,6 +15,7 @@ import (
 func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *QueryOptions) (*QueryResult, error) {
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
+	benchmarkProjection := usesBenchmarkProjection(opts)
 
 	// Check which tiers have parquet files
 	hasBaseFiles, hasDeltaFiles, err := h.checkTierFiles(ctx)
@@ -50,7 +51,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	}
 	defer rows.Close()
 
-	records, err := h.scanQueryResults(rows)
+	records, err := h.scanQueryResults(rows, benchmarkProjection)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (h *FederatedTestHarness) checkTierFiles(ctx context.Context) (hasBase, has
 }
 
 // scanQueryResults scans DuckDB query rows into PersistentRecords.
-func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows) ([]*internal.PersistentRecord, error) {
+func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProjection bool) ([]*internal.PersistentRecord, error) {
 	var records []*internal.PersistentRecord
 	for rows.Next() {
 		var rowID string
@@ -102,8 +103,14 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows) ([]*internal.Per
 		var symbol, exchange, region sql.NullString
 		var tradeType, tradeTime sql.NullInt64
 
-		if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
+		if benchmarkProjection {
+			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
+				return nil, fmt.Errorf("scan row: %w", err)
+			}
+		} else {
+			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+				return nil, fmt.Errorf("scan row: %w", err)
+			}
 		}
 
 		rec := &internal.PersistentRecord{
@@ -120,19 +127,21 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows) ([]*internal.Per
 		if name.Valid {
 			rec.TextItems["name"] = name.String
 		}
-		if symbol.Valid {
-			rec.TextItems["symbol"] = symbol.String
-		}
-		if exchange.Valid {
-			rec.TextItems["exchange"] = exchange.String
-		}
-		if region.Valid {
-			rec.TextItems["region"] = region.String
+		if benchmarkProjection {
+			if symbol.Valid {
+				rec.TextItems["symbol"] = symbol.String
+			}
+			if exchange.Valid {
+				rec.TextItems["exchange"] = exchange.String
+			}
+			if region.Valid {
+				rec.TextItems["region"] = region.String
+			}
 		}
 		if version.Valid {
 			rec.Float64Items["version"] = float64(version.Int64)
 		}
-		if tradeType.Valid || tradeTime.Valid {
+		if benchmarkProjection && (tradeType.Valid || tradeTime.Valid) {
 			rec.Int64Items = make(map[string]int64)
 			if tradeType.Valid {
 				rec.Int64Items["tradeType"] = tradeType.Int64
@@ -171,31 +180,50 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
 	attributeFilter := buildAttributeFilterClause(opts)
+	benchmarkProjection := usesBenchmarkProjection(opts)
 	pgConnStr := h.buildPGConnString()
 
 	// Build tier queries dynamically
 	var tierQueries []string
 
 	if hasBase {
-		baseQuery := fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, 'base' as tier
-			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s %s`,
-			basePath, dirtyExclusion, rowIDFilter, attributeFilter)
+		baseQuery := buildParquetTierQuery(basePath, "base", dirtyExclusion, rowIDFilter, attributeFilter, benchmarkProjection)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
-		deltaQuery := fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, 'delta' as tier
-			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s %s`,
-			deltaPath, dirtyExclusion, rowIDFilter, attributeFilter)
+		deltaQuery := buildParquetTierQuery(deltaPath, "delta", dirtyExclusion, rowIDFilter, attributeFilter, benchmarkProjection)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
 	// Always include hot buffer (Postgres)
-	hotQuery := fmt.Sprintf(`
+	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, rowIDFilter, attributeFilter, benchmarkProjection)
+	tierQueries = append(tierQueries, hotQuery)
+
+	// Combine all tier queries with UNION ALL
+	combinedQuery := strings.Join(tierQueries, "\n\t\t\tUNION ALL\n")
+
+	query := buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
+
+	return query
+}
+
+func buildParquetTierQuery(path, tier, dirtyExclusion, rowIDFilter, attributeFilter string, benchmarkProjection bool) string {
+	if benchmarkProjection {
+		return fmt.Sprintf(`
+			SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, '%s' as tier
+			FROM read_parquet('%s')
+			WHERE deleted_at = 0 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, attributeFilter)
+	}
+	return fmt.Sprintf(`
+			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
+			FROM read_parquet('%s')
+			WHERE deleted_at = 0 %s %s`, tier, path, dirtyExclusion, rowIDFilter)
+}
+
+func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter string, benchmarkProjection bool) string {
+	if benchmarkProjection {
+		return fmt.Sprintf(`
 		SELECT 
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
@@ -216,14 +244,27 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 			AND cl.schema_id = %d
 			AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
 			%s
-			%s`,
-		pgConnStr, pgConnStr, h.SchemaID, rowIDFilter, attributeFilter)
-	tierQueries = append(tierQueries, hotQuery)
+			%s`, pgConnStr, pgConnStr, schemaID, rowIDFilter, attributeFilter)
+	}
+	return fmt.Sprintf(`
+		SELECT 
+			cl.row_id::VARCHAR as row_id,
+			cl.schema_id,
+			cl.changed_at,
+			cl.deleted_at,
+			'' as name,
+			0 as version,
+			'hot' as tier
+		FROM postgres_scan('%s', 'public', 'change_log') cl
+		WHERE cl.flushed_at = 0 
+			AND cl.schema_id = %d
+			AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
+			%s`, pgConnStr, schemaID, rowIDFilter)
+}
 
-	// Combine all tier queries with UNION ALL
-	combinedQuery := strings.Join(tierQueries, "\n\t\t\tUNION ALL\n")
-
-	query := fmt.Sprintf(`
+func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
+	if benchmarkProjection {
+		return fmt.Sprintf(`
 		WITH combined AS (
 			%s
 		),
@@ -237,8 +278,39 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 		ORDER BY %s
 		LIMIT %d OFFSET %d
 	`, combinedQuery, buildOrderByClause(opts), opts.Limit, opts.Offset)
+	}
+	return fmt.Sprintf(`
+		WITH combined AS (
+			%s
+		),
+		deduplicated AS (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
+			FROM combined
+		)
+		SELECT row_id, schema_id, changed_at, deleted_at, name, version
+		FROM deduplicated
+		WHERE rn = 1
+		ORDER BY row_id
+		LIMIT %d OFFSET %d
+	`, combinedQuery, opts.Limit, opts.Offset)
+}
 
-	return query
+func usesBenchmarkProjection(opts *QueryOptions) bool {
+	if opts == nil {
+		return false
+	}
+	if opts.SortBy != "" && opts.SortBy != "row_id" {
+		return true
+	}
+	if opts.Filter == nil {
+		return false
+	}
+	for key := range opts.Filter.Conditions {
+		if benchmarkQueryColumn(key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildDirtyExclusion builds the dirty ID exclusion clause.
