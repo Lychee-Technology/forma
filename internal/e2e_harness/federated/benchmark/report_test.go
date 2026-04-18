@@ -33,3 +33,29 @@ func TestWriteReports(t *testing.T) {
 		t.Fatalf("expected markdown report to exist: %v", err)
 	}
 }
+
+func TestWriteBaselineCaptureAndSummary(t *testing.T) {
+	dir := t.TempDir()
+	result := &RunResult{
+		Generator: GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Executions: []WorkloadRunResult{
+			{Name: "q1", Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
+			{Name: "q2", Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+		},
+	}
+	if err := WriteBaselineCapture(dir, result); err != nil {
+		t.Fatalf("WriteBaselineCapture failed: %v", err)
+	}
+	for _, name := range []string{"benchmark-result.json", "benchmark-result.md", "benchmark-summary.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("expected %s to exist: %v", name, err)
+		}
+	}
+	summary := SummarizeRunResult(result)
+	if summary.ExecutionCount != 2 {
+		t.Fatalf("unexpected execution count: %d", summary.ExecutionCount)
+	}
+	if summary.AssertionStats["a"].Passed != 1 || summary.AssertionStats["a"].Failed != 1 {
+		t.Fatalf("unexpected assertion stats: %+v", summary.AssertionStats["a"])
+	}
+}

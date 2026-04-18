@@ -6,6 +6,7 @@ import (
 	"time"
 
 	forma "github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
@@ -33,6 +34,7 @@ type WorkloadRunResult struct {
 	ResultCount  int               `json:"result_count"`
 	TotalRecords int64             `json:"total_records"`
 	Duration     time.Duration     `json:"duration"`
+	RowIDs       []string          `json:"row_ids,omitempty"`
 	Assertions   []AssertionResult `json:"assertions,omitempty"`
 	PlanNotes    []string          `json:"plan_notes,omitempty"`
 }
@@ -155,11 +157,12 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			continue
 		}
 		for iteration := 0; iteration < r.config.Iterations; iteration++ {
-			run, err := r.executeWorkload(ctx, h, workload)
+			run, records, err := r.executeWorkload(ctx, h, workload)
 			if err != nil {
 				return nil, fmt.Errorf("execute workload %s: %w", workload.Name, err)
 			}
 			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
+			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records)...)
 			if workload.Category == WorkloadCategoryPagination || workload.Category == WorkloadCategoryDeepPage {
 				if previous, ok := pageRuns[workload.TargetSchema]; ok {
 					run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
@@ -204,7 +207,7 @@ func (r *Runner) validateFixtures() error {
 	return nil
 }
 
-func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, error) {
+func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
 	pageSize := workload.PageSize
 	if pageSize <= 0 {
 		pageSize = r.config.PageSize
@@ -215,7 +218,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	}
 	result, err := h.ExecuteFederatedQuery(ctx, opts)
 	if err != nil {
-		return WorkloadRunResult{}, err
+		return WorkloadRunResult{}, nil, err
 	}
 	run := WorkloadRunResult{
 		Name:         workload.Name,
@@ -227,11 +230,12 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		ResultCount:  len(result.Records),
 		TotalRecords: result.TotalRecords,
 		Duration:     result.Duration,
+		RowIDs:       persistentRecordIDs(result.Records),
 	}
 	if result.Plan != nil {
 		run.PlanNotes = append([]string(nil), result.Plan.Notes...)
 	}
-	return run, nil
+	return run, result.Records, nil
 }
 
 func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRunResult) []AssertionResult {
@@ -258,10 +262,103 @@ func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRu
 }
 
 func validatePaginationTransition(previous, current WorkloadRunResult) []AssertionResult {
-	assertion := AssertionResult{
+	assertions := []AssertionResult{{
 		Name:    "non-decreasing-offsets-across-pagination-runs",
 		Passed:  current.Offset >= previous.Offset,
 		Message: fmt.Sprintf("previous_offset=%d current_offset=%d", previous.Offset, current.Offset),
+	}}
+	if current.Offset > previous.Offset {
+		overlap := hasRowIDOverlap(previous.RowIDs, current.RowIDs)
+		assertions = append(assertions, AssertionResult{
+			Name:    "no-overlap-across-page-slices",
+			Passed:  !overlap,
+			Message: fmt.Sprintf("previous_rows=%d current_rows=%d", len(previous.RowIDs), len(current.RowIDs)),
+		})
 	}
-	return []AssertionResult{assertion}
+	return assertions
+}
+
+func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord) []AssertionResult {
+	assertions := []AssertionResult{validateUniqueRows(run)}
+	if workload.UsesSimpleFilter() {
+		assertions = append(assertions, validateFilterMatch(workload, records))
+	}
+	if len(records) > 1 {
+		assertions = append(assertions, validateSortOrder(records, "tradeTime", true))
+	}
+	return assertions
+}
+
+func validateUniqueRows(run WorkloadRunResult) AssertionResult {
+	seen := make(map[string]struct{}, len(run.RowIDs))
+	for _, rowID := range run.RowIDs {
+		if _, ok := seen[rowID]; ok {
+			return AssertionResult{Name: "unique-row-ids-within-page", Passed: false, Message: rowID}
+		}
+		seen[rowID] = struct{}{}
+	}
+	return AssertionResult{Name: "unique-row-ids-within-page", Passed: true, Message: fmt.Sprintf("rows=%d", len(run.RowIDs))}
+}
+
+func validateFilterMatch(workload WorkloadDefinition, records []*internal.PersistentRecord) AssertionResult {
+	for _, record := range records {
+		if !recordMatchesFilter(record, workload.FilterAttribute, workload.FilterValue) {
+			return AssertionResult{Name: "filter-results-match-request", Passed: false, Message: fmt.Sprintf("attribute=%s expected=%s row=%s", workload.FilterAttribute, workload.FilterValue, record.RowID)}
+		}
+	}
+	return AssertionResult{Name: "filter-results-match-request", Passed: true, Message: fmt.Sprintf("attribute=%s expected=%s", workload.FilterAttribute, workload.FilterValue)}
+}
+
+func validateSortOrder(records []*internal.PersistentRecord, attribute string, desc bool) AssertionResult {
+	values := make([]int64, 0, len(records))
+	for _, record := range records {
+		value, ok := record.Int64Items[attribute]
+		if !ok {
+			continue
+		}
+		values = append(values, value)
+	}
+	if len(values) <= 1 {
+		return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: true, Message: "insufficient comparable rows"}
+	}
+	if desc {
+		for i := 1; i < len(values); i++ {
+			if values[i] > values[i-1] {
+				return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: false, Message: fmt.Sprintf("index=%d prev=%d curr=%d", i, values[i-1], values[i])}
+			}
+		}
+	}
+	return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: true, Message: fmt.Sprintf("comparable_rows=%d", len(values))}
+}
+
+func recordMatchesFilter(record *internal.PersistentRecord, attribute, expected string) bool {
+	switch attribute {
+	case "symbol", "exchange", "region", "name":
+		return record.TextItems[attribute] == expected
+	case "tradeType":
+		return fmt.Sprintf("%d", record.Int64Items[attribute]) == expected
+	default:
+		return true
+	}
+}
+
+func persistentRecordIDs(records []*internal.PersistentRecord) []string {
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.RowID.String())
+	}
+	return ids
+}
+
+func hasRowIDOverlap(a, b []string) bool {
+	seen := make(map[string]struct{}, len(a))
+	for _, rowID := range a {
+		seen[rowID] = struct{}{}
+	}
+	for _, rowID := range b {
+		if _, ok := seen[rowID]; ok {
+			return true
+		}
+	}
+	return false
 }
