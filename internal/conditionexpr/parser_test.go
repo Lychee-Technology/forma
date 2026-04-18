@@ -123,3 +123,16 @@ func TestParseRFC3339OrUnixMs(t *testing.T) {
 		t.Fatalf("expected parse error")
 	}
 }
+
+func TestGivenRFC3339WithMultipleColons_WhenLenientParsing_ThenEqualsReturned(t *testing.T) {
+	// Given: an RFC3339 datetime that contains multiple ':' characters (timezone offset)
+	raw := "2020-01-02T03:04:05-07:00"
+
+	// When: lenient parsing is run
+	got := ParseOperatorValueLenient(raw)
+
+	// Then: it should be treated as an equals literal rather than split into op/value
+	if got.Operator != "equals" || got.Value != raw {
+		t.Fatalf("unexpected parse result %+v for raw=%q", got, raw)
+	}
+}
