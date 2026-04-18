@@ -542,19 +542,6 @@ func benchmarkHotFilterExpression(attribute string) string {
 	}
 }
 
-func benchmarkSchemaID(schemaName string) (int16, error) {
-	switch strings.TrimSpace(strings.ToLower(schemaName)) {
-	case "customer":
-		return benchmarkSchemaIDCustomer, nil
-	case "security":
-		return benchmarkSchemaIDSecurity, nil
-	case "trade":
-		return benchmarkSchemaIDTrade, nil
-	default:
-		return 0, fmt.Errorf("unknown benchmark schema %q", schemaName)
-	}
-}
-
 func buildOrderByClause(opts *QueryOptions) string {
 	if opts == nil {
 		return "row_id ASC"
