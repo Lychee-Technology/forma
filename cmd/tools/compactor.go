@@ -100,10 +100,27 @@ func runCompactor(ctx context.Context, args []string) error {
 		zap.Int16("schema_id", compactCfg.SchemaID),
 		zap.String("bucket", s3Config.bucket))
 
-	if err := c.RunOnce(ctx); err != nil {
+	result, err := c.RunOnce(ctx)
+	if err != nil {
 		return fmt.Errorf("compaction failed: %w", err)
 	}
 
-	logger.Info("compaction completed")
+	switch result.Outcome {
+	case compaction.PromotionApplied:
+		logger.Info("compaction completed",
+			zap.Int16("schema_id", result.SchemaID),
+			zap.Int64("version", result.Version),
+			zap.Float64("dirty_ratio", result.DirtyRatio))
+	case compaction.RewritePending:
+		logger.Warn("compaction deferred: rewrite pending",
+			zap.Int16("schema_id", result.SchemaID),
+			zap.Float64("dirty_ratio", result.DirtyRatio),
+			zap.Int64("base_mb", result.BaseMB),
+			zap.Int64("delta_mb", result.DeltaMB))
+	default:
+		logger.Info("compaction completed",
+			zap.Int16("schema_id", result.SchemaID),
+			zap.String("outcome", string(result.Outcome)))
+	}
 	return nil
 }

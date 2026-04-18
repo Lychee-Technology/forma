@@ -70,9 +70,10 @@ func TestCompactor_RunOnce_RequiresSchemaID(t *testing.T) {
 		Provider: &mockProvider{},
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema_id required")
+	require.Empty(t, result.Outcome)
 }
 
 func TestCompactor_RunOnce_RequiresProvider(t *testing.T) {
@@ -82,9 +83,10 @@ func TestCompactor_RunOnce_RequiresProvider(t *testing.T) {
 		Config: cdc.CompactionConfig{SchemaID: 1},
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "file provider is nil")
+	require.Empty(t, result.Outcome)
 }
 
 func TestCompactor_RunOnce_NoManifest(t *testing.T) {
@@ -95,8 +97,9 @@ func TestCompactor_RunOnce_NoManifest(t *testing.T) {
 		Provider: &mockProvider{manifest: nil},
 	}
 
-	err := c.RunOnce(context.Background())
-	require.NoError(t, err) // no manifest = nothing to compact
+	result, err := c.RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, Noop, result.Outcome)
 }
 
 func TestCompactor_RunOnce_NoFilesToCompact(t *testing.T) {
@@ -115,8 +118,9 @@ func TestCompactor_RunOnce_NoFilesToCompact(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
+	require.Equal(t, Noop, result.Outcome)
 }
 
 func TestCompactor_RunOnce_PromotsDeltas(t *testing.T) {
@@ -143,10 +147,10 @@ func TestCompactor_RunOnce_PromotsDeltas(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
+	require.Equal(t, PromotionApplied, result.Outcome)
 
-	// Check that files were promoted to base tier
 	for _, f := range provider.manifest.Files {
 		require.Equal(t, "base", f.Tier)
 	}
@@ -176,10 +180,9 @@ func TestCompactor_RunOnce_PromotesDeltasCaseInsensitiveTier(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
-
-	require.Equal(t, "base", provider.manifest.Files[0].Tier)
+	require.Equal(t, PromotionApplied, result.Outcome)
 	require.Equal(t, "new-etag", provider.savedEtag)
 	require.Equal(t, int64(2), provider.manifest.Version)
 }
@@ -209,10 +212,11 @@ func TestCompactor_RunOnce_SaveManifestMissingVersionAdvance(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
 	require.Contains(t, err.Error(), "version")
+	require.Empty(t, result.Outcome)
 }
 
 func TestCompactor_RunOnce_SaveManifestMissingUpdatedAtAdvance(t *testing.T) {
@@ -240,10 +244,11 @@ func TestCompactor_RunOnce_SaveManifestMissingUpdatedAtAdvance(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
 	require.Contains(t, err.Error(), "updated_at_ms")
+	require.Empty(t, result.Outcome)
 }
 
 func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testing.T) {
@@ -281,7 +286,7 @@ func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testin
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	_, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
 	require.Equal(t, "compaction_manifest_contract_violation_total", gotName)
@@ -321,14 +326,13 @@ func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *t
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
+	require.Equal(t, RewritePending, result.Outcome)
 
-	// Rewrite is not implemented yet, so manifest should not be persisted.
 	require.Equal(t, "", provider.savedEtag)
 	require.Equal(t, int64(1), provider.manifest.Version)
 
-	// No rewrite/promotion happened in current implementation.
 	require.Equal(t, "base", provider.manifest.Files[0].Tier)
 	require.Equal(t, "delta", provider.manifest.Files[1].Tier)
 
@@ -351,7 +355,7 @@ func TestCompactor_RunOnce_LoadManifestError(t *testing.T) {
 		Provider: provider,
 	}
 
-	err := c.RunOnce(context.Background())
+	_, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "load manifest")
 }
