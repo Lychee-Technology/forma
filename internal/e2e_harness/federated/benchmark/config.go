@@ -32,14 +32,19 @@ const (
 
 // Config describes a benchmark run.
 type Config struct {
-	Mode         ExecutionMode `json:"mode"`
-	Scale        Scale         `json:"scale"`
-	Distribution Distribution  `json:"distribution"`
-	Iterations   int           `json:"iterations"`
-	Concurrency  int           `json:"concurrency"`
-	PageSize     int           `json:"page_size"`
-	Seed         int64         `json:"seed"`
-	Workloads    []string      `json:"workloads"`
+	Mode          ExecutionMode `json:"mode"`
+	Scale         Scale         `json:"scale"`
+	Distribution  Distribution  `json:"distribution"`
+	Iterations    int           `json:"iterations"`
+	Concurrency   int           `json:"concurrency"`
+	PageSize      int           `json:"page_size"`
+	Seed          int64         `json:"seed"`
+	TradeCount    int           `json:"trade_count,omitempty"`
+	CustomerCount int           `json:"customer_count,omitempty"`
+	SecurityCount int           `json:"security_count,omitempty"`
+	OverlapRatio  float64       `json:"overlap_ratio,omitempty"`
+	DeleteRatio   float64       `json:"delete_ratio,omitempty"`
+	Workloads     []string      `json:"workloads"`
 }
 
 // DefaultConfig returns the phase-1 benchmark scaffold defaults.

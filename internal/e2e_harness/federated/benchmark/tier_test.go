@@ -67,7 +67,10 @@ func TestLoadTieredDatasetUsesLoader(t *testing.T) {
 		t.Fatalf("expected fixture schemas to be registered")
 	}
 	if len(loader.baseWrites) != 1 || len(loader.deltaWrites) != 1 || len(loader.hotWrites) != 1 {
-		t.Fatalf("expected one write per tier")
+		t.Fatalf("expected one write per tier bucket")
+	}
+	if loader.baseWrites[0][0].SchemaID != SchemaIDCustomer {
+		t.Fatalf("expected base write to stay schema-scoped")
 	}
 }
 

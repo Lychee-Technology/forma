@@ -132,24 +132,27 @@ func LoadTieredDataset(ctx context.Context, loader TierLoader, dataset *TieredDa
 	if err := loader.ClearAllData(ctx); err != nil {
 		return fmt.Errorf("clear existing data: %w", err)
 	}
+	baseBySchema := groupRecordsBySchema(dataset.Base)
+	deltaBySchema := groupRecordsBySchema(dataset.Delta)
+	hotBySchema := groupRecordsBySchema(dataset.Hot)
 	for _, fixture := range DefaultSchemaFixtures() {
 		if err := loader.SetupSchema(fixture.ID, fixture.Name); err != nil {
 			return fmt.Errorf("setup schema %s: %w", fixture.Name, err)
 		}
-	}
-	if len(dataset.Base) > 0 {
-		if err := loader.WriteParquet(ctx, "base", "benchmark_base.parquet", ToTestRecords(dataset.Base)); err != nil {
-			return fmt.Errorf("write base parquet: %w", err)
+		if records := baseBySchema[fixture.ID]; len(records) > 0 {
+			if err := loader.WriteParquet(ctx, "base", fmt.Sprintf("benchmark_base_%s.parquet", fixture.Name), ToTestRecords(records)); err != nil {
+				return fmt.Errorf("write base parquet for %s: %w", fixture.Name, err)
+			}
 		}
-	}
-	if len(dataset.Delta) > 0 {
-		if err := loader.WriteParquet(ctx, "delta", "benchmark_delta.parquet", ToTestRecords(dataset.Delta)); err != nil {
-			return fmt.Errorf("write delta parquet: %w", err)
+		if records := deltaBySchema[fixture.ID]; len(records) > 0 {
+			if err := loader.WriteParquet(ctx, "delta", fmt.Sprintf("benchmark_delta_%s.parquet", fixture.Name), ToTestRecords(records)); err != nil {
+				return fmt.Errorf("write delta parquet for %s: %w", fixture.Name, err)
+			}
 		}
-	}
-	if len(dataset.Hot) > 0 {
-		if err := loader.SeedHotRecordsWithData(ctx, ToTestRecords(dataset.Hot)); err != nil {
-			return fmt.Errorf("seed hot records: %w", err)
+		if records := hotBySchema[fixture.ID]; len(records) > 0 {
+			if err := loader.SeedHotRecordsWithData(ctx, ToTestRecords(records)); err != nil {
+				return fmt.Errorf("seed hot records for %s: %w", fixture.Name, err)
+			}
 		}
 	}
 	return nil
@@ -232,4 +235,12 @@ func benchmarkDisplayName(record GeneratedRecord) string {
 	default:
 		return record.SchemaName
 	}
+}
+
+func groupRecordsBySchema(records []GeneratedRecord) map[int16][]GeneratedRecord {
+	out := make(map[int16][]GeneratedRecord)
+	for _, record := range records {
+		out[record.SchemaID] = append(out[record.SchemaID], cloneGeneratedRecord(record))
+	}
+	return out
 }

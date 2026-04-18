@@ -76,19 +76,29 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 	concurrency := flags.Int("concurrency", 1, "Number of concurrent workers to schedule")
 	pageSize := flags.Int("page-size", 20, "Default page size for workload planning")
 	seed := flags.Int64("seed", 42, "Deterministic benchmark seed")
+	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
+	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
+	securityCount := flags.Int("security-count", 0, "Override generated security row count")
+	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
+	deleteRatio := flags.Float64("delete-ratio", 0, "Override delete ratio")
 	workloads := flags.String("workloads", "", "Comma-separated workload names (defaults to all)")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
 	cfg := bench.Config{
-		Mode:         bench.ExecutionMode(*mode),
-		Scale:        bench.Scale(*scale),
-		Distribution: bench.Distribution(*distribution),
-		Iterations:   *iterations,
-		Concurrency:  *concurrency,
-		PageSize:     *pageSize,
-		Seed:         *seed,
-		Workloads:    parseWorkloads(*workloads),
+		Mode:          bench.ExecutionMode(*mode),
+		Scale:         bench.Scale(*scale),
+		Distribution:  bench.Distribution(*distribution),
+		Iterations:    *iterations,
+		Concurrency:   *concurrency,
+		PageSize:      *pageSize,
+		Seed:          *seed,
+		TradeCount:    *tradeCount,
+		CustomerCount: *customerCount,
+		SecurityCount: *securityCount,
+		OverlapRatio:  *overlapRatio,
+		DeleteRatio:   *deleteRatio,
+		Workloads:     parseWorkloads(*workloads),
 	}.WithDefaults()
 	runner, err := bench.NewRunner(cfg)
 	if err != nil {
