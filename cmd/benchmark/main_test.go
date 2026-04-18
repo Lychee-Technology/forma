@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -126,5 +127,43 @@ func TestRunBenchmarkMainReturnsNonZeroForFailedBenchmarkResult(t *testing.T) {
 	}
 	if out.Len() == 0 {
 		t.Fatalf("expected JSON output even on failed benchmark result")
+	}
+}
+
+func TestRunBenchmarkMainCompare(t *testing.T) {
+	dir := t.TempDir()
+	baseline := bench.SummaryReport{Metadata: bench.ArtifactMetadata{BenchmarkID: "bench-a"}, Passed: true, QPS: 10, Avg: 10}
+	candidate := bench.SummaryReport{Metadata: bench.ArtifactMetadata{BenchmarkID: "bench-b"}, Passed: false, FailureCount: 1, QPS: 8, Avg: 15}
+	baselinePath := filepath.Join(dir, "baseline-summary.json")
+	candidatePath := filepath.Join(dir, "candidate-summary.json")
+	diffPath := filepath.Join(dir, "diff.json")
+	writeSummaryFixture(t, baselinePath, baseline)
+	writeSummaryFixture(t, candidatePath, candidate)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"compare", "-baseline", baselinePath, "-candidate", candidatePath, "-diff-out", diffPath}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("compare returned exit code %d: %s", exitCode, errOut.String())
+	}
+	if out.Len() == 0 {
+		t.Fatalf("compare should emit JSON output")
+	}
+	if _, err := os.Stat(diffPath); err != nil {
+		t.Fatalf("expected diff output to exist: %v", err)
+	}
+	if errOut.Len() == 0 {
+		t.Fatalf("compare should emit console diff summary")
+	}
+}
+
+func writeSummaryFixture(t *testing.T, path string, summary bench.SummaryReport) {
+	t.Helper()
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary fixture: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write summary fixture: %v", err)
 	}
 }
