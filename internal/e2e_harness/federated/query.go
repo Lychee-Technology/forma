@@ -40,11 +40,22 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 
 	// Build and execute the federated query
 	query := h.buildFederatedQuerySQLDynamic(basePath, deltaPath, hasBaseFiles, hasDeltaFiles, dirtyIDs, opts)
+	countQuery := h.buildFederatedQueryCountSQLDynamic(basePath, deltaPath, hasBaseFiles, hasDeltaFiles, dirtyIDs, opts)
+
+	var totalRecords int64
+	if err := h.Duck.DB.QueryRowContext(ctx, countQuery).Scan(&totalRecords); err != nil {
+		if isFederatedTierFileError(err) {
+			return h.ExecutePostgresQuery(ctx, opts)
+		}
+		return nil, fmt.Errorf("count query: %w", err)
+	}
+	if opts.CountOnly {
+		return &QueryResult{TotalRecords: totalRecords, Duration: time.Since(start), Plan: buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, time.Since(start))}, nil
+	}
 
 	rows, err := h.Duck.DB.QueryContext(ctx, query)
 	if err != nil {
-		// Check if it's a file not found error
-		if strings.Contains(err.Error(), "No files found") || strings.Contains(err.Error(), "does not exist") {
+		if isFederatedTierFileError(err) {
 			return h.ExecutePostgresQuery(ctx, opts)
 		}
 		return nil, fmt.Errorf("execute query: %w", err)
@@ -61,7 +72,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 
 	return &QueryResult{
 		Records:      records,
-		TotalRecords: int64(len(records)),
+		TotalRecords: totalRecords,
 		Duration:     duration,
 		Plan:         plan,
 	}, nil
@@ -175,8 +186,25 @@ func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.
 	}
 }
 
+func isFederatedTierFileError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "No files found") || strings.Contains(err.Error(), "does not exist")
+}
+
 // buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
+	combinedQuery, benchmarkProjection := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts)
+	return buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
+}
+
+func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
+	combinedQuery, _ := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts)
+	return buildFinalFederatedCount(combinedQuery)
+}
+
+func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) (string, bool) {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
 	attributeFilter := buildAttributeFilterClause(opts)
@@ -202,10 +230,7 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 
 	// Combine all tier queries with UNION ALL
 	combinedQuery := strings.Join(tierQueries, "\n\t\t\tUNION ALL\n")
-
-	query := buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
-
-	return query
+	return combinedQuery, benchmarkProjection
 }
 
 func buildParquetTierQuery(path, tier, dirtyExclusion, rowIDFilter, attributeFilter string, benchmarkProjection bool) string {
@@ -263,22 +288,37 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 }
 
 func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
+	cte := buildFederatedDeduplicatedCTE(combinedQuery)
 	if benchmarkProjection {
 		return fmt.Sprintf(`
-		WITH combined AS (
-			%s
-		),
-		deduplicated AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
-			FROM combined
-		)
+		%s
 		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
 		FROM deduplicated
 		WHERE rn = 1
 		ORDER BY %s
 		LIMIT %d OFFSET %d
-	`, combinedQuery, buildOrderByClause(opts), opts.Limit, opts.Offset)
+	`, cte, buildOrderByClause(opts), opts.Limit, opts.Offset)
 	}
+	return fmt.Sprintf(`
+		%s
+		SELECT row_id, schema_id, changed_at, deleted_at, name, version
+		FROM deduplicated
+		WHERE rn = 1
+		ORDER BY row_id
+		LIMIT %d OFFSET %d
+	`, cte, opts.Limit, opts.Offset)
+}
+
+func buildFinalFederatedCount(combinedQuery string) string {
+	return fmt.Sprintf(`
+		%s
+		SELECT COUNT(*)
+		FROM deduplicated
+		WHERE rn = 1
+	`, buildFederatedDeduplicatedCTE(combinedQuery))
+}
+
+func buildFederatedDeduplicatedCTE(combinedQuery string) string {
 	return fmt.Sprintf(`
 		WITH combined AS (
 			%s
@@ -287,12 +327,7 @@ func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchma
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
 			FROM combined
 		)
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version
-		FROM deduplicated
-		WHERE rn = 1
-		ORDER BY row_id
-		LIMIT %d OFFSET %d
-	`, combinedQuery, opts.Limit, opts.Offset)
+	`, combinedQuery)
 }
 
 func usesBenchmarkProjection(opts *QueryOptions) bool {
@@ -427,6 +462,16 @@ func (h *FederatedTestHarness) getDirtyIDs(ctx context.Context) ([]uuid.UUID, er
 func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *QueryOptions) (*QueryResult, error) {
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
+	if opts.CountOnly {
+		var total int64
+		if err := h.PGDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM entity_main 
+			WHERE ltbase_schema_id = $1 AND (ltbase_deleted_at IS NULL OR ltbase_deleted_at = 0)
+		`, h.SchemaID).Scan(&total); err != nil {
+			return nil, err
+		}
+		return &QueryResult{TotalRecords: total, Duration: time.Since(start)}, nil
+	}
 
 	query := `
 		SELECT 

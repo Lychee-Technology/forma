@@ -14,6 +14,9 @@ import (
 // SummaryReport captures aggregated execution metrics.
 type SummaryReport struct {
 	ExecutionCount int                      `json:"execution_count"`
+	Passed         bool                     `json:"passed"`
+	FailureCount   int                      `json:"failure_count,omitempty"`
+	InfraFailures  int                      `json:"infra_failures,omitempty"`
 	P50            time.Duration            `json:"p50"`
 	P95            time.Duration            `json:"p95"`
 	P99            time.Duration            `json:"p99"`
@@ -50,6 +53,8 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	var b strings.Builder
 	b.WriteString("# Federated Query Benchmark Report\n\n")
 	b.WriteString(fmt.Sprintf("- Validation only: %t\n", result.ValidationOnly))
+	b.WriteString(fmt.Sprintf("- Passed: %t\n", result.Passed))
+	b.WriteString(fmt.Sprintf("- Failure count: %d\n", result.FailureCount))
 	b.WriteString(fmt.Sprintf("- Distribution: %s\n", result.Generator.Distribution))
 	b.WriteString(fmt.Sprintf("- Scale: %s\n", result.Generator.Scale))
 	b.WriteString(fmt.Sprintf("- Executions: %d\n", len(result.Executions)))
@@ -60,7 +65,10 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	if len(result.Executions) > 0 {
 		b.WriteString("\n## Executions\n\n")
 		for _, execution := range result.Executions {
-			b.WriteString(fmt.Sprintf("- `%s`: count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
+			b.WriteString(fmt.Sprintf("- `%s`: passed=%t failures=%d count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.Passed, execution.FailureCount, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
+			if execution.InfraError != "" {
+				b.WriteString(fmt.Sprintf("  infra_error=%s\n", execution.InfraError))
+			}
 		}
 	}
 	if len(summary.AssertionStats) > 0 {
@@ -104,11 +112,18 @@ func WriteBaselineCapture(dir string, result *RunResult) error {
 func SummarizeRunResult(result *RunResult) SummaryReport {
 	summary := SummaryReport{AssertionStats: make(map[string]AssertionStat)}
 	if result == nil || len(result.Executions) == 0 {
+		summary.Passed = result != nil && result.Passed
+		summary.FailureCount = resultFailureCount(result)
 		return summary
 	}
+	summary.Passed = result.Passed
+	summary.FailureCount = resultFailureCount(result)
 	durations := make([]time.Duration, 0, len(result.Executions))
 	for _, execution := range result.Executions {
 		durations = append(durations, execution.Duration)
+		if execution.InfraError != "" {
+			summary.InfraFailures++
+		}
 		for _, assertion := range execution.Assertions {
 			stat := summary.AssertionStats[assertion.Name]
 			if assertion.Passed {
@@ -158,7 +173,7 @@ func FormatConsoleSummary(result *RunResult) string {
 	summary := SummarizeRunResult(result)
 	var b strings.Builder
 	b.WriteString("Benchmark Summary\n")
-	b.WriteString(fmt.Sprintf("scale=%s distribution=%s executions=%d\n", result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount))
+	b.WriteString(fmt.Sprintf("scale=%s distribution=%s executions=%d passed=%t failures=%d infra_failures=%d\n", result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount, summary.Passed, summary.FailureCount, summary.InfraFailures))
 	b.WriteString(fmt.Sprintf("latency p50=%s p95=%s p99=%s max=%s avg=%s qps=%.2f\n", summary.P50, summary.P95, summary.P99, summary.Max, summary.Avg, summary.QPS))
 	if len(summary.AssertionStats) > 0 {
 		keys := make([]string, 0, len(summary.AssertionStats))
@@ -172,4 +187,18 @@ func FormatConsoleSummary(result *RunResult) string {
 		}
 	}
 	return b.String()
+}
+
+func resultFailureCount(result *RunResult) int {
+	if result == nil {
+		return 0
+	}
+	if result.FailureCount > 0 {
+		return result.FailureCount
+	}
+	failed := 0
+	for _, execution := range result.Executions {
+		failed += maxInt(execution.FailureCount, countFailedAssertions(execution.Assertions))
+	}
+	return failed
 }
