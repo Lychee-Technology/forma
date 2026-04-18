@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
@@ -52,6 +53,26 @@ var (
 // DefaultTierMixProfiles returns the supported tier layouts.
 func DefaultTierMixProfiles() []TierMixProfile {
 	return []TierMixProfile{TierMixBalanced, TierMixHighHot, TierMixLongHistory}
+}
+
+// DefaultTierMixProfile returns the default tier layout for benchmark execution.
+func DefaultTierMixProfile() TierMixProfile {
+	return TierMixBalanced
+}
+
+// ResolveTierMixProfile resolves a CLI or config profile name to a supported tier mix.
+func ResolveTierMixProfile(name string) (TierMixProfile, error) {
+	normalized := strings.TrimSpace(strings.ToLower(name))
+	switch normalized {
+	case "", strings.ToLower(TierMixBalanced.Name), "balanced":
+		return TierMixBalanced, nil
+	case strings.ToLower(TierMixHighHot.Name), "high-hot":
+		return TierMixHighHot, nil
+	case strings.ToLower(TierMixLongHistory.Name), "long-history":
+		return TierMixLongHistory, nil
+	default:
+		return TierMixProfile{}, fmt.Errorf("unknown tier profile %q", name)
+	}
 }
 
 // SplitIntoTiers partitions the generated dataset into base, delta, and hot tiers.
