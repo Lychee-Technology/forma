@@ -1,6 +1,9 @@
 package benchmark
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // WorkloadCategory groups benchmark workloads by intent.
 type WorkloadCategory string
@@ -18,6 +21,8 @@ type WorkloadDefinition struct {
 	Description            string           `json:"description"`
 	Category               WorkloadCategory `json:"category"`
 	TargetSchema           string           `json:"target_schema"`
+	FilterAttribute        string           `json:"filter_attribute,omitempty"`
+	FilterValue            string           `json:"filter_value,omitempty"`
 	PageSize               int              `json:"page_size"`
 	PageNumber             int              `json:"page_number"`
 	SupportsDistributions  []Distribution   `json:"supports_distributions"`
@@ -45,6 +50,8 @@ func DefaultWorkloads() []WorkloadDefinition {
 			Description:            "High-selectivity hot-column filter with pagination on trade rows.",
 			Category:               WorkloadCategoryFilter,
 			TargetSchema:           "trade",
+			FilterAttribute:        "symbol",
+			FilterValue:            "SYM00001",
 			PageSize:               20,
 			PageNumber:             1,
 			SupportsDistributions:  allDistributions(),
@@ -55,6 +62,8 @@ func DefaultWorkloads() []WorkloadDefinition {
 			Description:            "EAV-backed filter with paginated trade results.",
 			Category:               WorkloadCategoryFilter,
 			TargetSchema:           "trade",
+			FilterAttribute:        "exchange",
+			FilterValue:            "NYSE",
 			PageSize:               20,
 			PageNumber:             1,
 			SupportsDistributions:  allDistributions(),
@@ -94,6 +103,34 @@ func DefaultWorkloads() []WorkloadDefinition {
 			Phase1ExecutionStubbed: true,
 		},
 	}
+}
+
+// SupportsDistribution reports whether a workload can run for a distribution.
+func (w WorkloadDefinition) SupportsDistribution(dist Distribution) bool {
+	for _, supported := range w.SupportsDistributions {
+		if supported == dist {
+			return true
+		}
+	}
+	return false
+}
+
+// DerivedOffset returns the offset implied by page size and page number.
+func (w WorkloadDefinition) DerivedOffset(defaultPageSize int) int {
+	pageSize := w.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	pageNumber := w.PageNumber
+	if pageNumber <= 1 {
+		return 0
+	}
+	return (pageNumber - 1) * pageSize
+}
+
+// UsesSimpleFilter reports whether the workload is representable via the current harness filter model.
+func (w WorkloadDefinition) UsesSimpleFilter() bool {
+	return strings.TrimSpace(w.FilterAttribute) != ""
 }
 
 // DefaultWorkloadNames returns the full phase-1 workload set.

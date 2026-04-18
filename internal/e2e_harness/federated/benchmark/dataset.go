@@ -87,6 +87,21 @@ func GeneratorConfigFromBenchmark(cfg Config) GeneratorConfig {
 	genCfg.Scale = resolved.Scale
 	genCfg.Distribution = resolved.Distribution
 	genCfg.Seed = resolved.Seed
+	if resolved.TradeCount > 0 {
+		genCfg.TradeCount = resolved.TradeCount
+	}
+	if resolved.CustomerCount > 0 {
+		genCfg.CustomerCount = resolved.CustomerCount
+	}
+	if resolved.SecurityCount > 0 {
+		genCfg.SecurityCount = resolved.SecurityCount
+	}
+	if resolved.OverlapRatio > 0 {
+		genCfg.OverlapRatio = resolved.OverlapRatio
+	}
+	if resolved.DeleteRatio > 0 {
+		genCfg.DeleteRatio = resolved.DeleteRatio
+	}
 	return genCfg.WithDefaults()
 }
 

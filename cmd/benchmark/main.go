@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -28,6 +29,8 @@ func runBenchmarkMain(ctx context.Context, args []string, out, errOut io.Writer)
 	switch args[0] {
 	case "describe":
 		return runDescribe(out)
+	case "baseline":
+		return runBaseline(ctx, args[1:], out, errOut)
 	case "run":
 		return runBenchmark(ctx, args[1:], out, errOut)
 	default:
@@ -42,6 +45,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  describe   Print benchmark schemas, workloads, and defaults")
+	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
 	fmt.Fprintln(out, "  run        Execute the scaffolded benchmark runner")
 }
 
@@ -67,6 +71,38 @@ func runDescribe(out io.Writer) int {
 }
 
 func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int {
+	config, outputs, exitCode := parseRunConfig(args, errOut)
+	if exitCode != 0 {
+		return exitCode
+	}
+	return executeBenchmarkRun(ctx, config, outputs, out, errOut)
+}
+
+func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	preset := flags.String("preset", "small", "Baseline preset: small or medium")
+	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
+	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	config, dirName, err := baselinePresetConfig(*preset, bench.Distribution(*distribution))
+	if err != nil {
+		fmt.Fprintf(errOut, "baseline setup failed: %v\n", err)
+		return 1
+	}
+	outputs := runOutputs{baselineDir: filepath.Join(*outputDir, dirName)}
+	return executeBenchmarkRun(ctx, config, outputs, out, errOut)
+}
+
+type runOutputs struct {
+	jsonOut     string
+	mdOut       string
+	baselineDir string
+}
+
+func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, int) {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	mode := flags.String("mode", string(bench.ExecutionModeSmoke), "Execution mode: smoke or plan")
@@ -76,20 +112,38 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 	concurrency := flags.Int("concurrency", 1, "Number of concurrent workers to schedule")
 	pageSize := flags.Int("page-size", 20, "Default page size for workload planning")
 	seed := flags.Int64("seed", 42, "Deterministic benchmark seed")
+	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
+	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
+	securityCount := flags.Int("security-count", 0, "Override generated security row count")
+	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
+	deleteRatio := flags.Float64("delete-ratio", 0, "Override delete ratio")
+	jsonOut := flags.String("json-out", "", "Optional path for JSON benchmark output")
+	mdOut := flags.String("md-out", "", "Optional path for Markdown benchmark output")
+	baselineDir := flags.String("baseline-dir", "", "Optional directory for baseline capture outputs")
 	workloads := flags.String("workloads", "", "Comma-separated workload names (defaults to all)")
 	if err := flags.Parse(args); err != nil {
-		return 1
+		return bench.Config{}, runOutputs{}, 1
 	}
 	cfg := bench.Config{
-		Mode:         bench.ExecutionMode(*mode),
-		Scale:        bench.Scale(*scale),
-		Distribution: bench.Distribution(*distribution),
-		Iterations:   *iterations,
-		Concurrency:  *concurrency,
-		PageSize:     *pageSize,
-		Seed:         *seed,
-		Workloads:    parseWorkloads(*workloads),
+		Mode:          bench.ExecutionMode(*mode),
+		Scale:         bench.Scale(*scale),
+		Distribution:  bench.Distribution(*distribution),
+		Iterations:    *iterations,
+		Concurrency:   *concurrency,
+		PageSize:      *pageSize,
+		Seed:          *seed,
+		TradeCount:    *tradeCount,
+		CustomerCount: *customerCount,
+		SecurityCount: *securityCount,
+		OverlapRatio:  *overlapRatio,
+		DeleteRatio:   *deleteRatio,
+		Workloads:     parseWorkloads(*workloads),
 	}.WithDefaults()
+	outputs := runOutputs{jsonOut: *jsonOut, mdOut: *mdOut, baselineDir: *baselineDir}
+	return cfg, outputs, 0
+}
+
+func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutputs, out, errOut io.Writer) int {
 	runner, err := bench.NewRunner(cfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "benchmark setup failed: %v\n", err)
@@ -100,7 +154,41 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 		fmt.Fprintf(errOut, "benchmark run failed: %v\n", err)
 		return 1
 	}
+	if outputs.jsonOut != "" {
+		if err := bench.WriteJSONReport(outputs.jsonOut, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write JSON report: %v\n", err)
+			return 1
+		}
+	}
+	if outputs.mdOut != "" {
+		if err := bench.WriteMarkdownReport(outputs.mdOut, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write Markdown report: %v\n", err)
+			return 1
+		}
+	}
+	if outputs.baselineDir != "" {
+		if err := bench.WriteBaselineCapture(outputs.baselineDir, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write baseline capture: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Fprintln(errOut, bench.FormatConsoleSummary(result))
 	return writeJSON(out, result)
+}
+
+func baselinePresetConfig(rawPreset string, distribution bench.Distribution) (bench.Config, string, error) {
+	preset := strings.ToLower(strings.TrimSpace(rawPreset))
+	if distribution == "" {
+		distribution = bench.DistributionUniform
+	}
+	switch preset {
+	case "small":
+		return bench.Config{Mode: bench.ExecutionModeSmoke, Scale: bench.ScaleSmall, Distribution: distribution, Iterations: 5, PageSize: 20, Seed: 42}.WithDefaults(), fmt.Sprintf("small-%s", distribution), nil
+	case "medium":
+		return bench.Config{Mode: bench.ExecutionModePlan, Scale: bench.ScaleMedium, Distribution: distribution, Iterations: 10, PageSize: 20, Seed: 42}.WithDefaults(), fmt.Sprintf("medium-%s", distribution), nil
+	default:
+		return bench.Config{}, "", fmt.Errorf("unknown baseline preset %q", rawPreset)
+	}
 }
 
 func parseWorkloads(raw string) []string {
