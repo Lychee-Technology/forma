@@ -24,14 +24,25 @@ def main() -> int:
     if finish == -1:
         return 1
 
+    required_fields = {
+        "status",
+        "reason",
+        "scenario",
+        "description",
+        "evidence",
+    }
     lines = []
+    seen_fields = set()
     for raw in text[start:finish].splitlines():
         line = raw.strip()
         if not line or "=" not in line:
             continue
         lines.append(line)
+        key = line.split("=", 1)[0].strip()
+        if key:
+            seen_fields.add(key)
 
-    if not any(line.startswith("status=") for line in lines):
+    if not required_fields.issubset(seen_fields):
         return 1
 
     decision_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
