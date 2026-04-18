@@ -28,4 +28,7 @@ func TestRunBenchmarkMainSmoke(t *testing.T) {
 	if out.Len() == 0 {
 		t.Fatalf("run should emit JSON output")
 	}
+	if errOut.Len() == 0 {
+		t.Fatalf("run should emit console summary to stderr")
+	}
 }

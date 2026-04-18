@@ -18,6 +18,8 @@ type SummaryReport struct {
 	P95            time.Duration            `json:"p95"`
 	P99            time.Duration            `json:"p99"`
 	Max            time.Duration            `json:"max"`
+	Avg            time.Duration            `json:"avg"`
+	QPS            float64                  `json:"qps"`
 	AssertionStats map[string]AssertionStat `json:"assertion_stats"`
 }
 
@@ -59,6 +61,18 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 		b.WriteString("\n## Executions\n\n")
 		for _, execution := range result.Executions {
 			b.WriteString(fmt.Sprintf("- `%s`: count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
+		}
+	}
+	if len(summary.AssertionStats) > 0 {
+		b.WriteString("\n## Assertions\n\n")
+		keys := make([]string, 0, len(summary.AssertionStats))
+		for key := range summary.AssertionStats {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			stat := summary.AssertionStats[key]
+			b.WriteString(fmt.Sprintf("- `%s`: passed=%d failed=%d\n", key, stat.Passed, stat.Failed))
 		}
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
@@ -111,6 +125,14 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 	summary.P95 = percentileDuration(durations, 0.95)
 	summary.P99 = percentileDuration(durations, 0.99)
 	summary.Max = durations[len(durations)-1]
+	var total time.Duration
+	for _, duration := range durations {
+		total += duration
+	}
+	summary.Avg = total / time.Duration(len(durations))
+	if total > 0 {
+		summary.QPS = float64(len(durations)) / total.Seconds()
+	}
 	return summary
 }
 
@@ -126,4 +148,28 @@ func percentileDuration(values []time.Duration, percentile float64) time.Duratio
 		idx = len(values) - 1
 	}
 	return values[idx]
+}
+
+// FormatConsoleSummary returns a stable text summary for terminal output.
+func FormatConsoleSummary(result *RunResult) string {
+	if result == nil {
+		return "benchmark result: <nil>"
+	}
+	summary := SummarizeRunResult(result)
+	var b strings.Builder
+	b.WriteString("Benchmark Summary\n")
+	b.WriteString(fmt.Sprintf("scale=%s distribution=%s executions=%d\n", result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount))
+	b.WriteString(fmt.Sprintf("latency p50=%s p95=%s p99=%s max=%s avg=%s qps=%.2f\n", summary.P50, summary.P95, summary.P99, summary.Max, summary.Avg, summary.QPS))
+	if len(summary.AssertionStats) > 0 {
+		keys := make([]string, 0, len(summary.AssertionStats))
+		for key := range summary.AssertionStats {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			stat := summary.AssertionStats[key]
+			b.WriteString(fmt.Sprintf("assertion %s passed=%d failed=%d\n", key, stat.Passed, stat.Failed))
+		}
+	}
+	return b.String()
 }

@@ -3,6 +3,7 @@ package benchmark
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,7 +56,28 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	if summary.ExecutionCount != 2 {
 		t.Fatalf("unexpected execution count: %d", summary.ExecutionCount)
 	}
+	if summary.Avg <= 0 || summary.QPS <= 0 {
+		t.Fatalf("expected avg and qps to be populated: %+v", summary)
+	}
 	if summary.AssertionStats["a"].Passed != 1 || summary.AssertionStats["a"].Failed != 1 {
 		t.Fatalf("unexpected assertion stats: %+v", summary.AssertionStats["a"])
+	}
+}
+
+func TestFormatConsoleSummary(t *testing.T) {
+	result := &RunResult{
+		Generator: GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Executions: []WorkloadRunResult{{
+			Name:       "q1",
+			Duration:   10 * time.Millisecond,
+			Assertions: []AssertionResult{{Name: "a", Passed: true}},
+		}},
+	}
+	formatted := FormatConsoleSummary(result)
+	if formatted == "" {
+		t.Fatalf("expected non-empty console summary")
+	}
+	if !strings.Contains(formatted, "Benchmark Summary") {
+		t.Fatalf("expected benchmark header in summary: %s", formatted)
 	}
 }

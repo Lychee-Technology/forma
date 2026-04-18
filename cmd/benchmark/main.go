@@ -81,6 +81,9 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 	securityCount := flags.Int("security-count", 0, "Override generated security row count")
 	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
 	deleteRatio := flags.Float64("delete-ratio", 0, "Override delete ratio")
+	jsonOut := flags.String("json-out", "", "Optional path for JSON benchmark output")
+	mdOut := flags.String("md-out", "", "Optional path for Markdown benchmark output")
+	baselineDir := flags.String("baseline-dir", "", "Optional directory for baseline capture outputs")
 	workloads := flags.String("workloads", "", "Comma-separated workload names (defaults to all)")
 	if err := flags.Parse(args); err != nil {
 		return 1
@@ -110,6 +113,25 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 		fmt.Fprintf(errOut, "benchmark run failed: %v\n", err)
 		return 1
 	}
+	if *jsonOut != "" {
+		if err := bench.WriteJSONReport(*jsonOut, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write JSON report: %v\n", err)
+			return 1
+		}
+	}
+	if *mdOut != "" {
+		if err := bench.WriteMarkdownReport(*mdOut, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write Markdown report: %v\n", err)
+			return 1
+		}
+	}
+	if *baselineDir != "" {
+		if err := bench.WriteBaselineCapture(*baselineDir, result); err != nil {
+			fmt.Fprintf(errOut, "failed to write baseline capture: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Fprintln(errOut, bench.FormatConsoleSummary(result))
 	return writeJSON(out, result)
 }
 
