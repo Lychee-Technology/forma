@@ -531,6 +531,39 @@ recover_decision_from_stdout() {
   python3 "$SCRIPT_DIR/extract_decision_from_stdout.py" "$stdout_log" "$decision_file"
 }
 
+diagnose_decision_recovery_failure() {
+  local run_index="$1"
+  local stdout_log
+
+  stdout_log="$(test_log_path "${LOG_PREFIX}-${TARGET}-run-${run_index}.stdout")"
+  if [[ ! -f "$stdout_log" ]]; then
+    printf '%s' 'stdout log missing'
+    return 0
+  fi
+
+  if ! rg -q 'AUTORESEARCH_DECISION_BEGIN' "$stdout_log"; then
+    printf '%s' 'stdout fallback block missing begin marker'
+    return 0
+  fi
+
+  if ! rg -q 'AUTORESEARCH_DECISION_END' "$stdout_log"; then
+    printf '%s' 'stdout fallback block missing end marker'
+    return 0
+  fi
+
+  printf '%s' 'stdout fallback block missing one or more required decision fields'
+}
+
+cleanup_iteration_state() {
+  local decision_file="$1"
+
+  rm -f "$decision_file"
+
+  if [[ "$DRY_RUN" -ne 1 ]]; then
+    cleanup_synced_assets
+  fi
+}
+
 sanitize_tsv_field() {
   printf '%s' "$1" | tr '\t\r\n' '   '
 }
@@ -694,36 +727,51 @@ discard_candidate() {
 run_iteration() {
   local run_index="$1"
   local decision_file="$WORKTREE_DIR/.autoresearch-decision-$run_index.txt"
+  local iteration_status=0
+  local run_status=0
+  local recovered_from_stdout=0
+  local recovery_failure_reason=""
+  local status=""
+  local reason=""
+  local scenario=""
+  local description=""
+  local evidence=""
 
   rm -f "$decision_file"
 
   run_single_candidate "$run_index" "$decision_file"
-  local run_status=$?
+  run_status=$?
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     append_loop_log "run $run_index dry-run complete"
     return 0
   fi
 
-  if [[ "$run_status" -ne 0 ]]; then
-    append_loop_log "run $run_index failed with exit $run_status"
-    printf 'n/a\t%s\t%s\terror\tn/a\trun %d failed with exit %d\tn/a\n' "$TARGET" "$(resolve_target_pkg "$TARGET")" "$run_index" "$run_status" >> "$AR_DIR/results.tsv"
-    append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run exited before writing a decision" "run ${run_index} failed with exit ${run_status}" "Inspect OpenCode run logs for model/config/controller failures and harden prompt or runtime validation"
-    return 1
-  fi
-
   if [[ ! -f "$decision_file" ]]; then
     if recover_decision_from_stdout "$run_index" "$decision_file"; then
+      recovered_from_stdout=1
       append_loop_log "run $run_index recovered decision file from stdout fallback"
     else
-      append_loop_log "run $run_index produced no decision file"
-      append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run produced no decision artifact" "run ${run_index} produced no decision file" "Tighten prompt compliance or add controller-side fallback capture for interrupted runs"
+      recovery_failure_reason="$(diagnose_decision_recovery_failure "$run_index")"
+      if [[ "$run_status" -ne 0 ]]; then
+        append_loop_log "run $run_index failed with exit $run_status and no usable decision artifact (${recovery_failure_reason})"
+        printf 'n/a\t%s\t%s\terror\tn/a\trun %d failed with exit %d; %s\tn/a\n' "$TARGET" "$(resolve_target_pkg "$TARGET")" "$run_index" "$run_status" "$recovery_failure_reason" >> "$AR_DIR/results.tsv"
+        append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run exited without a usable decision" "run ${run_index} failed with exit ${run_status}; ${recovery_failure_reason}" "Inspect the stdout log and controller recovery path; keep stdout fallback parseable even when opencode exits non-zero"
+      else
+        append_loop_log "run $run_index produced no usable decision artifact (${recovery_failure_reason})"
+        append_issue "harness" "$TARGET" "tools/autoresearch/testing/scripts/autoloop.sh" "Autoresearch run produced no usable decision artifact" "run ${run_index} produced no decision file; ${recovery_failure_reason}" "Inspect the stdout log and tighten decision-block emission or fallback parsing"
+      fi
       discard_candidate "$run_index" "no_decision_file" "n/a" "n/a" "no_decision_file"
-      return 1
+      iteration_status=1
+      cleanup_iteration_state "$decision_file"
+      return "$iteration_status"
     fi
   fi
 
-  local status reason scenario description evidence
+  if [[ "$run_status" -ne 0 ]]; then
+    append_loop_log "run $run_index exited with $run_status after producing a usable decision artifact"
+  fi
+
   status="$(get_decision_field "$decision_file" status)"
   reason="$(get_decision_field "$decision_file" reason)"
   scenario="$(get_decision_field "$decision_file" scenario)"
@@ -733,13 +781,16 @@ run_iteration() {
   record_issue_from_decision "$decision_file"
 
   append_loop_log "run $run_index decision: status=$status reason=$reason"
+  if [[ "$recovered_from_stdout" -eq 1 ]]; then
+    append_loop_log "run $run_index using stdout-recovered decision artifact"
+  fi
 
   case "$status" in
     keep)
       BLOCKED_STREAK=0
       if ! commit_candidate "$run_index" "$scenario" "$description" "$evidence"; then
         append_loop_log "iteration $run_index failed during keep path"
-        return 1
+        iteration_status=1
       fi
       ;;
     discard)
@@ -757,8 +808,8 @@ run_iteration() {
       ;;
   esac
 
-  rm -f "$decision_file"
-  cleanup_synced_assets
+  cleanup_iteration_state "$decision_file"
+  return "$iteration_status"
 }
 
 append_loop_log() {
@@ -766,71 +817,78 @@ append_loop_log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line" | tee -a "$LOOP_LOG"
 }
 
-cd "$ROOT_DIR"
+autoloop_main() {
+  cd "$ROOT_DIR"
 
-if [[ "$PRINT_PROMPT" -eq 1 ]]; then
-  print_prompt
-  exit 0
-fi
-
-BRANCH_DATE="$(date '+%Y%m%d')"
-RESEARCH_BRANCH="autoresearch/${TARGET}-${BRANCH_DATE}"
-WORKTREE_DIR="$ROOT_DIR/.worktrees/autoresearch-$TARGET"
-ensure_report_dirs
-LOOP_LOG="$(test_log_path "$LOG_PREFIX-$TARGET")"
-
-append_loop_log "target=$TARGET research_branch=$RESEARCH_BRANCH worktree=$WORKTREE_DIR model=${MODEL:-default}"
-
-if [[ "$DRY_RUN" -ne 1 ]]; then
-  if ! ensure_main_clean; then
-    if [[ "$FORCE" -ne 1 ]]; then
-      exit 1
-    fi
+  if [[ "$PRINT_PROMPT" -eq 1 ]]; then
+    print_prompt
+    return 0
   fi
-  ensure_local_infra
-  init_worktree
-  ensure_worktree_clean
-  ensure_worktree_on_research
-fi
 
-if [[ "$RUN_BASELINE" -eq 1 ]]; then
-  append_loop_log "running baseline"
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf 'baseline package: %s\n' "$(resolve_target_pkg "$TARGET")"
-    printf 'baseline coverprofile: %s\n' "$REPORT_DIR/baseline/${TARGET}.cover.out"
-  else
-    (
-      cd "$WORKTREE_DIR"
-      ./tools/autoresearch/testing/scripts/baseline.sh "$TARGET"
-    )
-    append_loop_log "baseline complete"
-  fi
-fi
+  BRANCH_DATE="$(date '+%Y%m%d')"
+  RESEARCH_BRANCH="autoresearch/${TARGET}-${BRANCH_DATE}"
+  WORKTREE_DIR="$ROOT_DIR/.worktrees/autoresearch-$TARGET"
+  ensure_report_dirs
+  LOOP_LOG="$(test_log_path "$LOG_PREFIX-$TARGET")"
 
-for ((run_index = 1; run_index <= ITERATIONS; run_index++)); do
+  append_loop_log "target=$TARGET research_branch=$RESEARCH_BRANCH worktree=$WORKTREE_DIR model=${MODEL:-default}"
+
   if [[ "$DRY_RUN" -ne 1 ]]; then
-    sync_autoresearch_assets
-  fi
-  append_loop_log "=== iteration $run_index of $ITERATIONS ==="
-  run_iteration "$run_index" || iter_status=$?
-  iter_status=${iter_status:-0}
-
-  if [[ "$iter_status" -ne 0 ]]; then
-    append_loop_log "iteration $run_index did not complete successfully"
-  fi
-
-  if [[ "$BLOCKED_STREAK" -ge "$CONSECUTIVE_BLOCKED_LIMIT" ]]; then
-    append_loop_log "stopping early after $BLOCKED_STREAK consecutive blocked discards; target guidance likely too restrictive"
-    break
+    if ! ensure_main_clean; then
+      if [[ "$FORCE" -ne 1 ]]; then
+        return 1
+      fi
+    fi
+    ensure_local_infra
+    init_worktree
+    ensure_worktree_clean
+    ensure_worktree_on_research
   fi
 
-  if [[ "$run_index" -lt "$ITERATIONS" && "$SLEEP_SECONDS" -gt 0 ]]; then
+  if [[ "$RUN_BASELINE" -eq 1 ]]; then
+    append_loop_log "running baseline"
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      printf 'sleep %s\n' "$SLEEP_SECONDS"
+      printf 'baseline package: %s\n' "$(resolve_target_pkg "$TARGET")"
+      printf 'baseline coverprofile: %s\n' "$REPORT_DIR/baseline/${TARGET}.cover.out"
     else
-      sleep "$SLEEP_SECONDS"
+      (
+        cd "$WORKTREE_DIR"
+        ./tools/autoresearch/testing/scripts/baseline.sh "$TARGET"
+      )
+      append_loop_log "baseline complete"
     fi
   fi
-done
 
-append_loop_log "autoloop finished: $ITERATIONS iterations completed for target=$TARGET"
+  for ((run_index = 1; run_index <= ITERATIONS; run_index++)); do
+    if [[ "$DRY_RUN" -ne 1 ]]; then
+      ensure_worktree_clean
+      sync_autoresearch_assets
+    fi
+    append_loop_log "=== iteration $run_index of $ITERATIONS ==="
+    run_iteration "$run_index" || iter_status=$?
+    iter_status=${iter_status:-0}
+
+    if [[ "$iter_status" -ne 0 ]]; then
+      append_loop_log "iteration $run_index did not complete successfully"
+    fi
+
+    if [[ "$BLOCKED_STREAK" -ge "$CONSECUTIVE_BLOCKED_LIMIT" ]]; then
+      append_loop_log "stopping early after $BLOCKED_STREAK consecutive blocked discards; target guidance likely too restrictive"
+      break
+    fi
+
+    if [[ "$run_index" -lt "$ITERATIONS" && "$SLEEP_SECONDS" -gt 0 ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'sleep %s\n' "$SLEEP_SECONDS"
+      else
+        sleep "$SLEEP_SECONDS"
+      fi
+    fi
+  done
+
+  append_loop_log "autoloop finished: $ITERATIONS iterations completed for target=$TARGET"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  autoloop_main "$@"
+fi

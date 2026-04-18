@@ -125,7 +125,9 @@ The controller reads this and decides commit vs. revert. The model never touches
 When `issue_*` fields are present, the controller also appends an entry to `issues.tsv` with deduplication.
 
 For resilience, single-candidate runs also ask the agent to print the same decision block to stdout wrapped in `AUTORESEARCH_DECISION_BEGIN` / `AUTORESEARCH_DECISION_END`.
-If the decision file is missing but the stdout fallback block is present, the controller reconstructs the decision artifact from stdout and continues the run.
+If the decision file is missing but the stdout fallback block is present with all required fields, the controller reconstructs the decision artifact from stdout and continues the run.
+This fallback also applies when `opencode run` exits non-zero after already printing a complete decision block, so a late controller/model exit does not automatically waste the iteration.
+When recovery fails, the controller records a more specific harness reason such as missing stdout logs, missing fallback markers, or incomplete decision fields.
 
 ## Gate scripts
 
