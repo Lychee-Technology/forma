@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,13 +114,25 @@ func (h *FederatedTestHarness) insertHotRecord(ctx context.Context, r TestRecord
 
 // insertEntityMain inserts a record into the entity_main table.
 func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecord) error {
+	text01, text02, smallint01, bigint01, bigint02, double01, uuid01 := benchmarkMainColumnValues(r)
 	_, err := h.PGDB.ExecContext(ctx, `
-		INSERT INTO entity_main (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, ltbase_deleted_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO entity_main (
+			ltbase_schema_id, ltbase_row_id,
+			text_01, text_02, smallint_01, bigint_01, bigint_02, double_01, uuid_01,
+			ltbase_created_at, ltbase_updated_at, ltbase_deleted_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET
-			ltbase_updated_at = $4,
-			ltbase_deleted_at = $5
-	`, r.SchemaID, r.RowID, r.ChangedAt, r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
+			text_01 = $3,
+			text_02 = $4,
+			smallint_01 = $5,
+			bigint_01 = $6,
+			bigint_02 = $7,
+			double_01 = $8,
+			uuid_01 = $9,
+			ltbase_updated_at = $11,
+			ltbase_deleted_at = $12
+	`, r.SchemaID, r.RowID, text01, text02, smallint01, bigint01, bigint02, double01, uuid01, r.ChangedAt, r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
 	if err != nil {
 		return fmt.Errorf("insert entity_main: %w", err)
 	}
@@ -126,8 +141,13 @@ func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecor
 
 // insertEAVData inserts attribute values into the eav_data table.
 func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) error {
-	attrID := 1
-	for name, value := range r.Attributes {
+	keys := make([]string, 0, len(r.Attributes))
+	for name := range r.Attributes {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		value := r.Attributes[name]
 		var valueText sql.NullString
 		var valueNumeric sql.NullFloat64
 
@@ -146,13 +166,100 @@ func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) 
 			ON CONFLICT (schema_id, row_id, attr_id) DO UPDATE SET
 				value_text = $4,
 				value_numeric = $5
-		`, r.SchemaID, r.RowID, attrID, valueText, valueNumeric)
+		`, r.SchemaID, r.RowID, DeterministicAttributeID(r.SchemaID, name), valueText, valueNumeric)
 		if err != nil {
 			return fmt.Errorf("insert eav_data for %s: %w", name, err)
 		}
-		attrID++
 	}
 	return nil
+}
+
+// DeterministicAttributeID returns a stable test-only attribute ID for a schema/name pair.
+func DeterministicAttributeID(schemaID int16, name string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strconv.FormatInt(int64(schemaID), 10)))
+	_, _ = h.Write([]byte{':'})
+	_, _ = h.Write([]byte(name))
+	return int(h.Sum32()%30000) + 1
+}
+
+func benchmarkMainColumnValues(r TestRecord) (sql.NullString, sql.NullString, sql.NullInt16, sql.NullInt64, sql.NullInt64, sql.NullFloat64, sql.NullString) {
+	attrs := r.Attributes
+	text01 := nullableString(firstNonNil(attrs, "taxId", "symbol"))
+	text02 := nullableString(firstNonNil(attrs, "region"))
+	smallint01 := nullableInt16(firstNonNil(attrs, "status", "sector", "tradeType"))
+	bigint01 := nullableInt64(firstNonNil(attrs, "quantity"))
+	bigint02 := nullableUnixMillis(firstNonNil(attrs, "tradeTime"))
+	double01 := nullableFloat64(firstNonNil(attrs, "price"))
+	uuid01 := nullableUUIDString(firstNonNil(attrs, "customerId"))
+	return text01, text02, smallint01, bigint01, bigint02, double01, uuid01
+}
+
+func firstNonNil(attrs map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := attrs[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func nullableString(value any) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: fmt.Sprint(value), Valid: true}
+}
+
+func nullableUUIDString(value any) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	parsed := fmt.Sprint(value)
+	if _, err := uuid.Parse(parsed); err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: parsed, Valid: true}
+}
+
+func nullableInt16(value any) sql.NullInt16 {
+	if value == nil {
+		return sql.NullInt16{}
+	}
+	return sql.NullInt16{Int16: int16(toFloat64(value)), Valid: true}
+}
+
+func nullableInt64(value any) sql.NullInt64 {
+	if value == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(toFloat64(value)), Valid: true}
+}
+
+func nullableFloat64(value any) sql.NullFloat64 {
+	if value == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: toFloat64(value), Valid: true}
+}
+
+func nullableUnixMillis(value any) sql.NullInt64 {
+	if value == nil {
+		return sql.NullInt64{}
+	}
+	switch v := value.(type) {
+	case string:
+		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+			return sql.NullInt64{Int64: parsed.UnixMilli(), Valid: true}
+		}
+	case int64:
+		return sql.NullInt64{Int64: v, Valid: true}
+	case int:
+		return sql.NullInt64{Int64: int64(v), Valid: true}
+	case float64:
+		return sql.NullInt64{Int64: int64(v), Valid: true}
+	}
+	return sql.NullInt64{}
 }
 
 // insertChangeLog inserts a record into the change_log table.
