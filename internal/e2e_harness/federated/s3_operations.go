@@ -3,10 +3,13 @@ package federated
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -65,25 +68,85 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 	}
 	defer f.Close()
 
-	// Header
-	_, _ = f.WriteString("row_id,schema_id,changed_at,deleted_at,name,version\n")
+	attrKeys := collectCSVAttributeKeys(records)
+	writer := csv.NewWriter(f)
+	header := []string{"row_id", "schema_id", "changed_at", "deleted_at", "name", "version"}
+	header = append(header, attrKeys...)
+	if err := writer.Write(header); err != nil {
+		return err
+	}
 
 	for _, r := range records {
-		name := ""
-		version := 0
-		if v, ok := r.Attributes["name"].(string); ok {
-			name = v
+		row := []string{
+			r.RowID.String(),
+			strconv.FormatInt(int64(r.SchemaID), 10),
+			strconv.FormatInt(r.ChangedAt, 10),
+			strconv.FormatInt(r.DeletedAt, 10),
+			attributeStringValue(r.Attributes, "name"),
+			attributeStringValue(r.Attributes, "version"),
 		}
-		if v, ok := r.Attributes["version"].(int); ok {
-			version = v
+		for _, key := range attrKeys {
+			row = append(row, attributeStringValue(r.Attributes, key))
 		}
-
-		line := fmt.Sprintf("%s,%d,%d,%d,%s,%d\n",
-			r.RowID.String(), r.SchemaID, r.ChangedAt, r.DeletedAt, name, version)
-		_, _ = f.WriteString(line)
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+func collectCSVAttributeKeys(records []TestRecord) []string {
+	keys := make(map[string]struct{})
+	for _, record := range records {
+		for key := range record.Attributes {
+			if key == "name" || key == "version" {
+				continue
+			}
+			keys[key] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func attributeStringValue(attrs map[string]any, key string) string {
+	if attrs == nil {
+		return ""
+	}
+	value, ok := attrs[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return v
+	case int:
+		return strconv.Itoa(v)
+	case int16:
+		return strconv.FormatInt(int64(v), 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // uploadToS3 uploads a local file to S3.

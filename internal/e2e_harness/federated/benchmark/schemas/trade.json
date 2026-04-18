@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark Trade",
+  "description": "TPC-E-inspired trade benchmark schema",
+  "type": "object",
+  "required": [
+    "symbol",
+    "tradeType",
+    "quantity",
+    "price",
+    "tradeTime",
+    "customerId"
+  ],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "tradeType": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "price": {
+      "type": "number",
+      "minimum": 0
+    },
+    "tradeTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "customerId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "NA",
+        "EU",
+        "APAC",
+        "LATAM"
+      ]
+    },
+    "exchange": {
+      "type": "string"
+    },
+    "commission": {
+      "type": "number",
+      "minimum": 0
+    },
+    "isCash": {
+      "type": "boolean"
+    },
+    "brokerId": {
+      "type": "string"
+    },
+    "orderChannel": {
+      "type": "string",
+      "enum": [
+        "web",
+        "mobile",
+        "branch",
+        "api"
+      ]
+    }
+  }
+}

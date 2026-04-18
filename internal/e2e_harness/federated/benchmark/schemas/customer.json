@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark Customer",
+  "description": "TPC-E-inspired customer benchmark schema",
+  "type": "object",
+  "required": [
+    "taxId",
+    "status",
+    "region"
+  ],
+  "properties": {
+    "taxId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "status": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "NA",
+        "EU",
+        "APAC",
+        "LATAM"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "email": {
+      "type": "string",
+      "format": "email"
+    },
+    "creditRating": {
+      "type": "number",
+      "minimum": 300,
+      "maximum": 850
+    }
+  }
+}
