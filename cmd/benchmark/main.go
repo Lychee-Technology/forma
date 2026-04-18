@@ -211,7 +211,14 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 		}
 	}
 	fmt.Fprintln(errOut, bench.FormatConsoleSummary(result))
-	return writeJSON(out, result)
+	exitCode := writeJSON(out, result)
+	if exitCode != 0 {
+		return exitCode
+	}
+	if !result.Passed {
+		return 1
+	}
+	return 0
 }
 
 func baselinePresetConfig(rawPreset string, distribution bench.Distribution) (bench.Config, string, error) {

@@ -81,6 +81,7 @@ func TestRunBenchmarkMainLiveUsesLiveExecutor(t *testing.T) {
 			Config:         cfg,
 			Generator:      bench.GeneratorConfig{Scale: cfg.Scale, Distribution: cfg.Distribution},
 			ValidationOnly: false,
+			Passed:         true,
 			Notes:          []string{"stub live execution"},
 		}, nil
 	}
@@ -99,5 +100,31 @@ func TestRunBenchmarkMainLiveUsesLiveExecutor(t *testing.T) {
 	}
 	if errOut.Len() == 0 {
 		t.Fatalf("live run should emit console summary to stderr")
+	}
+}
+
+func TestRunBenchmarkMainReturnsNonZeroForFailedBenchmarkResult(t *testing.T) {
+	originalValidationMode := runValidationMode
+	defer func() {
+		runValidationMode = originalValidationMode
+	}()
+	runValidationMode = func(context.Context, *bench.Runner) (*bench.RunResult, error) {
+		return &bench.RunResult{
+			Passed:         false,
+			FailureCount:   1,
+			ValidationOnly: true,
+			Generator:      bench.GeneratorConfig{Scale: bench.ScaleSmall, Distribution: bench.DistributionUniform},
+			Notes:          []string{"failed benchmark result"},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"run", "-mode", "smoke"}, &out, &errOut)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit code for failed benchmark result")
+	}
+	if out.Len() == 0 {
+		t.Fatalf("expected JSON output even on failed benchmark result")
 	}
 }

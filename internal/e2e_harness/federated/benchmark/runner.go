@@ -17,6 +17,9 @@ type RunResult struct {
 	StartedAt      time.Time            `json:"started_at"`
 	CompletedAt    time.Time            `json:"completed_at"`
 	ValidationOnly bool                 `json:"validation_only"`
+	Passed         bool                 `json:"passed"`
+	FailureCount   int                  `json:"failure_count,omitempty"`
+	InfraError     string               `json:"infra_error,omitempty"`
 	Schemas        []SchemaFixture      `json:"schemas"`
 	Workloads      []WorkloadDefinition `json:"workloads"`
 	Executions     []WorkloadRunResult  `json:"executions,omitempty"`
@@ -34,6 +37,9 @@ type WorkloadRunResult struct {
 	ResultCount  int               `json:"result_count"`
 	TotalRecords int64             `json:"total_records"`
 	Duration     time.Duration     `json:"duration"`
+	Passed       bool              `json:"passed"`
+	FailureCount int               `json:"failure_count,omitempty"`
+	InfraError   string            `json:"infra_error,omitempty"`
 	RowIDs       []string          `json:"row_ids,omitempty"`
 	Assertions   []AssertionResult `json:"assertions,omitempty"`
 	PlanNotes    []string          `json:"plan_notes,omitempty"`
@@ -97,6 +103,7 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 		Generator:      r.genConfig,
 		StartedAt:      startedAt,
 		ValidationOnly: true,
+		Passed:         true,
 		Schemas:        append([]SchemaFixture(nil), r.schemas...),
 		Workloads:      append([]WorkloadDefinition(nil), r.workloads...),
 	}
@@ -152,6 +159,8 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
 	pageRuns := make(map[string]WorkloadRunResult)
+	passed := true
+	failureCount := 0
 	for _, workload := range r.workloads {
 		if !workload.SupportsDistribution(r.genConfig.Distribution) {
 			continue
@@ -159,7 +168,11 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		for iteration := 0; iteration < r.config.Iterations; iteration++ {
 			run, records, err := r.executeWorkload(ctx, h, workload)
 			if err != nil {
-				return nil, fmt.Errorf("execute workload %s: %w", workload.Name, err)
+				run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
+				executions = append(executions, run)
+				passed = false
+				failureCount++
+				continue
 			}
 			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
 			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records)...)
@@ -168,6 +181,12 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 					run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
 				}
 				pageRuns[workload.TargetSchema] = run
+			}
+			run.FailureCount = countFailedAssertions(run.Assertions)
+			run.Passed = run.FailureCount == 0 && run.InfraError == ""
+			if !run.Passed {
+				passed = false
+				failureCount += maxInt(1, run.FailureCount)
 			}
 			executions = append(executions, run)
 		}
@@ -178,6 +197,8 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		StartedAt:      startedAt,
 		CompletedAt:    time.Now(),
 		ValidationOnly: false,
+		Passed:         passed,
+		FailureCount:   failureCount,
 		Schemas:        append([]SchemaFixture(nil), r.schemas...),
 		Workloads:      append([]WorkloadDefinition(nil), r.workloads...),
 		Executions:     executions,
@@ -230,12 +251,31 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		ResultCount:  len(result.Records),
 		TotalRecords: result.TotalRecords,
 		Duration:     result.Duration,
+		Passed:       true,
 		RowIDs:       persistentRecordIDs(result.Records),
 	}
 	if result.Plan != nil {
 		run.PlanNotes = append([]string(nil), result.Plan.Notes...)
 	}
 	return run, result.Records, nil
+}
+
+func failedWorkloadRunResult(workload WorkloadDefinition, distribution Distribution, defaultPageSize int, infraError string) WorkloadRunResult {
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	return WorkloadRunResult{
+		Name:         workload.Name,
+		Category:     string(workload.Category),
+		Distribution: distribution,
+		PageSize:     pageSize,
+		PageNumber:   workload.PageNumber,
+		Offset:       workload.DerivedOffset(defaultPageSize),
+		Passed:       false,
+		FailureCount: 1,
+		InfraError:   infraError,
+	}
 }
 
 func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRunResult) []AssertionResult {
@@ -249,6 +289,16 @@ func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRu
 			Name:    "page-size-bound",
 			Passed:  run.ResultCount <= run.PageSize,
 			Message: fmt.Sprintf("result_count=%d page_size=%d", run.ResultCount, run.PageSize),
+		},
+		{
+			Name:    "result-count-within-total-records",
+			Passed:  int64(run.ResultCount) <= run.TotalRecords,
+			Message: fmt.Sprintf("result_count=%d total_records=%d", run.ResultCount, run.TotalRecords),
+		},
+		{
+			Name:    "empty-page-only-when-offset-reaches-total",
+			Passed:  run.ResultCount > 0 || run.Offset >= int(run.TotalRecords) || run.TotalRecords == 0,
+			Message: fmt.Sprintf("offset=%d total=%d result_count=%d", run.Offset, run.TotalRecords, run.ResultCount),
 		},
 	}
 	if workload.Category == WorkloadCategoryDeepPage {
@@ -361,4 +411,21 @@ func hasRowIDOverlap(a, b []string) bool {
 		}
 	}
 	return false
+}
+
+func countFailedAssertions(assertions []AssertionResult) int {
+	failed := 0
+	for _, assertion := range assertions {
+		if !assertion.Passed {
+			failed++
+		}
+	}
+	return failed
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -13,9 +13,11 @@ func TestWriteReports(t *testing.T) {
 	jsonPath := filepath.Join(dir, "report.json")
 	mdPath := filepath.Join(dir, "report.md")
 	result := &RunResult{
+		Passed:    true,
 		Generator: GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
 		Executions: []WorkloadRunResult{{
 			Name:         "baseline-page-1",
+			Passed:       true,
 			ResultCount:  20,
 			TotalRecords: 100,
 			Duration:     10 * time.Millisecond,
@@ -38,10 +40,12 @@ func TestWriteReports(t *testing.T) {
 func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	dir := t.TempDir()
 	result := &RunResult{
-		Generator: GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Passed:       false,
+		FailureCount: 2,
+		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
 		Executions: []WorkloadRunResult{
-			{Name: "q1", Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
-			{Name: "q2", Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+			{Name: "q1", Passed: true, Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
+			{Name: "q2", Passed: false, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
 		},
 	}
 	if err := WriteBaselineCapture(dir, result); err != nil {
@@ -62,15 +66,25 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	if summary.AssertionStats["a"].Passed != 1 || summary.AssertionStats["a"].Failed != 1 {
 		t.Fatalf("unexpected assertion stats: %+v", summary.AssertionStats["a"])
 	}
+	if summary.Passed {
+		t.Fatalf("expected summary to be marked failed")
+	}
+	if summary.FailureCount != 2 {
+		t.Fatalf("expected summary failure count 2, got %d", summary.FailureCount)
+	}
 }
 
 func TestFormatConsoleSummary(t *testing.T) {
 	result := &RunResult{
-		Generator: GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Passed:       false,
+		FailureCount: 1,
+		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
 		Executions: []WorkloadRunResult{{
-			Name:       "q1",
-			Duration:   10 * time.Millisecond,
-			Assertions: []AssertionResult{{Name: "a", Passed: true}},
+			Name:         "q1",
+			Passed:       false,
+			FailureCount: 1,
+			Duration:     10 * time.Millisecond,
+			Assertions:   []AssertionResult{{Name: "a", Passed: true}},
 		}},
 	}
 	formatted := FormatConsoleSummary(result)
@@ -79,5 +93,8 @@ func TestFormatConsoleSummary(t *testing.T) {
 	}
 	if !strings.Contains(formatted, "Benchmark Summary") {
 		t.Fatalf("expected benchmark header in summary: %s", formatted)
+	}
+	if !strings.Contains(formatted, "passed=false") {
+		t.Fatalf("expected pass state in summary: %s", formatted)
 	}
 }
