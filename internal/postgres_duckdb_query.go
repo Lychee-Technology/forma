@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/telemetry"
 )
 
 type duckDBRowsIterator interface {
@@ -128,7 +129,7 @@ func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
 	}
 
 	// Emit metric for dirty set size
-	EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
+	telemetry.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
 	planCtx.recordDirtyIDSource(tables.ChangeLog, len(dirtyIDs))
@@ -190,7 +191,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 
 	sqlStr, args, err := r.getDuckDBQueryBuilder()(r.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
-	EmitLatency(ctx, "translation", translateMs)
+	telemetry.EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
 		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
 	}
@@ -318,10 +319,10 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 	planCtx.opts.ExecutionPlan.Timings["total"] = time.Since(planCtx.startTotal).Milliseconds()
 
 	// Emit telemetry
-	EmitLatency(ctx, "execution", qMs)
+	telemetry.EmitLatency(ctx, "execution", qMs)
 	streamMs := max(time.Since(planCtx.startQuery).Milliseconds()-qMs, 0)
-	EmitLatency(ctx, "streaming", streamMs)
-	EmitRowCount(ctx, "duckdb", rowCount)
+	telemetry.EmitLatency(ctx, "streaming", streamMs)
+	telemetry.EmitRowCount(ctx, "duckdb", rowCount)
 
 	// Compute pushdown efficiency
 	pgRows := computePgRowCount(planCtx.opts.ExecutionPlan, dirtyIDs)
@@ -333,7 +334,7 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 		finalRows = 1
 	}
 	ratio := float64(pgRows) / float64(finalRows)
-	EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
+	telemetry.EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
 
 	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))

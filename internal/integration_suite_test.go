@@ -114,10 +114,17 @@ func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.
 }
 
 func activityPayload(activityType string, extra map[string]any) map[string]any {
+	direction := "outbound"
+	if extra != nil {
+		if rawDirection, ok := extra["direction"]; ok && rawDirection != nil {
+			direction = fmt.Sprint(rawDirection)
+		}
+	}
+
 	payload := map[string]any{
 		"id":             fmt.Sprintf("activity-%d", time.Now().UnixNano()),
 		"type":           activityType,
-		"direction":      extra["direction"],
+		"direction":      direction,
 		"at":             time.Now(),
 		"userId":         "user-test",
 		"summary":        fmt.Sprintf("Integration test %s activity", activityType),

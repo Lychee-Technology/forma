@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	telemetry "github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -164,6 +164,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	baseTotalMB := baseTotalBytes / (1024 * 1024)
 	deltaTotalMB := deltaTotalBytes / (1024 * 1024)
 	dirtyRatio := c.computeDirtyRatio(baseFiles, deltaFiles)
+	telemetry.EmitCompactionDirtyRatio(ctx, schemaID, dirtyRatio)
 
 	// Decision: promote deltas to base if delta total > target base size
 	// or rewrite base if dirty ratio exceeded
@@ -196,6 +197,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	}
 
 	if needsRewrite && !applied {
+		telemetry.EmitCompactionRewritePending(ctx, schemaID)
 		c.Logger.Warn("rewrite needed but not implemented; skipping manifest update",
 			zap.Int16("schema_id", schemaID),
 			zap.Float64("dirty_ratio", dirtyRatio),

@@ -13,6 +13,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func optimizedQueryFixtureColumnsAndValues(rowID uuid.UUID, totalRecords int64) ([]string, []any) {
+	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)
+	values := make([]any, 0, len(entityMainColumnDescriptors)+4)
+	for _, desc := range entityMainColumnDescriptors {
+		columns = append(columns, desc.name)
+		switch desc.name {
+		case "ltbase_schema_id":
+			values = append(values, int64(1))
+		case "ltbase_row_id":
+			values = append(values, rowID.String())
+		case "ltbase_created_at":
+			values = append(values, int64(100))
+		case "ltbase_updated_at":
+			values = append(values, int64(200))
+		default:
+			values = append(values, nil)
+		}
+	}
+	columns = append(columns, "attributes_json", "total_records", "total_pages", "current_page")
+	values = append(values, []byte("[]"), totalRecords, int64(1), int32(1))
+	return columns, values
+}
+
 func TestInsertPersistentRecordWithMockPool(t *testing.T) {
 	ctx := context.Background()
 	mock, err := pgxmock.NewPool()
@@ -355,28 +378,7 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)
-	values := make([]any, 0, len(entityMainColumnDescriptors)+4)
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
-		switch desc.name {
-		case "ltbase_schema_id":
-			values = append(values, int64(1))
-		case "ltbase_row_id":
-			values = append(values, rowID.String())
-		case "ltbase_created_at":
-			values = append(values, int64(100))
-		case "ltbase_updated_at":
-			values = append(values, int64(200))
-		case "text_01":
-			values = append(values, "hello")
-		default:
-			values = append(values, nil)
-		}
-	}
-	columns = append(columns, "attributes_json", "total_records", "total_pages", "current_page")
-	values = append(values, []byte("[]"), int64(1), int64(1), int32(1))
-
+	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, 1)
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 50, 0).WillReturnRows(rows)
 
@@ -393,6 +395,32 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 	assert.Equal(t, 1, page.TotalPages)
 	assert.Equal(t, 1, page.CurrentPage)
 	assert.Equal(t, rowID, page.Records[0].RowID)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestStreamOptimizedQuery_PropagatesRowHandlerError(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rowID := uuid.MustParse("88888888-8888-8888-8888-888888888888")
+	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, 1)
+	rows := pgxmock.NewRows(columns).AddRow(values...)
+	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 10, 0).WillReturnRows(rows)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+
+	handlerCalls := 0
+	total, err := repo.StreamOptimizedQuery(ctx, StorageTables{EntityMain: "main_table", EAVData: "eav_table"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *PersistentRecord) error {
+		handlerCalls++
+		return assert.AnError
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, assert.AnError)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, 1, handlerCalls)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
