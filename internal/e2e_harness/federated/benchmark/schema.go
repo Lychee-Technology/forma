@@ -72,3 +72,12 @@ func RegisterFixtureSchemas(registrar SchemaRegistrar) error {
 	}
 	return nil
 }
+
+func workloadSchemaID(schemaName string) (int16, error) {
+	for _, fixture := range DefaultSchemaFixtures() {
+		if fixture.Name == schemaName {
+			return fixture.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("unknown benchmark schema %q", schemaName)
+}

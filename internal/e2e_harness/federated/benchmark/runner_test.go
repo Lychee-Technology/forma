@@ -64,6 +64,25 @@ func TestValidateResultLevelAssertionsDetectsUnsortedRows(t *testing.T) {
 	}
 }
 
+func TestQueryOptionsForWorkloadSkipsTradeOrderingForNonTradeSchema(t *testing.T) {
+	customerOpts := queryOptionsForWorkload(WorkloadDefinition{Name: "customer-region-page", TargetSchema: "customer", PageSize: 20, PageNumber: 1}, 20)
+	if customerOpts.SortBy != "" || customerOpts.SortDesc {
+		t.Fatalf("expected customer workload to avoid trade ordering, got %+v", customerOpts)
+	}
+	tradeOpts := queryOptionsForWorkload(WorkloadDefinition{Name: "baseline-page-1", TargetSchema: "trade", PageSize: 20, PageNumber: 1}, 20)
+	if tradeOpts.SortBy != "tradeTime" || !tradeOpts.SortDesc {
+		t.Fatalf("expected trade workload to preserve trade ordering, got %+v", tradeOpts)
+	}
+}
+
+func TestValidateSchemaScopeDetectsCrossSchemaRows(t *testing.T) {
+	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000010"), SchemaID: SchemaIDTrade}}
+	assertion := validateSchemaScope(WorkloadDefinition{Name: "customer-region-page", TargetSchema: "customer"}, records)
+	if assertion.Passed {
+		t.Fatalf("expected schema scope assertion to fail for mismatched schema")
+	}
+}
+
 func TestFailedWorkloadRunResultMarksInfraFailure(t *testing.T) {
 	run := failedWorkloadRunResult(WorkloadDefinition{Name: "baseline-page-1", Category: WorkloadCategoryPagination, PageNumber: 1}, DistributionUniform, 20, "boom")
 	if run.Passed {

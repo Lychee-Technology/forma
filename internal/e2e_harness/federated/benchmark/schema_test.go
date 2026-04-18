@@ -37,6 +37,19 @@ func TestRegisterFixtureSchemas(t *testing.T) {
 	}
 }
 
+func TestWorkloadSchemaID(t *testing.T) {
+	schemaID, err := workloadSchemaID("customer")
+	if err != nil {
+		t.Fatalf("workloadSchemaID failed: %v", err)
+	}
+	if schemaID != SchemaIDCustomer {
+		t.Fatalf("expected customer schema ID, got %d", schemaID)
+	}
+	if _, err := workloadSchemaID("unknown"); err == nil {
+		t.Fatalf("expected unknown schema to fail")
+	}
+}
+
 type captureRegistrar struct {
 	calls []SchemaFixture
 }
