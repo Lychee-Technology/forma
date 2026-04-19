@@ -48,9 +48,10 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 		Passed:       false,
 		FailureCount: 2,
 		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		OracleModes:  map[string]string{"q1": string(OracleModeLoadedState), "q2": string(OracleModeTruthPass)},
 		Executions: []WorkloadRunResult{
-			{Name: "q1", Passed: true, Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
-			{Name: "q2", Passed: false, FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+			{Name: "q1", Passed: true, OracleMode: string(OracleModeLoadedState), Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
+			{Name: "q2", Passed: false, OracleMode: string(OracleModeTruthPass), FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
 		},
 	}
 	if err := WriteBaselineCapture(dir, result); err != nil {
@@ -83,6 +84,9 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	if summary.Metadata.BenchmarkID == "" {
 		t.Fatalf("expected summary metadata to include benchmark ID")
 	}
+	if summary.OracleModes["q2"] != string(OracleModeTruthPass) {
+		t.Fatalf("expected summary to expose oracle modes, got %+v", summary.OracleModes)
+	}
 	if len(summary.Workloads) != 2 {
 		t.Fatalf("expected two workload summaries, got %d", len(summary.Workloads))
 	}
@@ -96,6 +100,7 @@ func TestFormatConsoleSummary(t *testing.T) {
 		Executions: []WorkloadRunResult{{
 			Name:         "q1",
 			Passed:       false,
+			OracleMode:   string(OracleModeTruthPass),
 			FailureKind:  FailureKindCorrectness,
 			FailureCount: 1,
 			Duration:     10 * time.Millisecond,
@@ -117,6 +122,14 @@ func TestFormatConsoleSummary(t *testing.T) {
 	}
 	if !strings.Contains(formatted, "correctness_failures=1") {
 		t.Fatalf("expected correctness failures in summary: %s", formatted)
+	}
+}
+
+func TestSummarizeWorkloadsCarriesOracleMode(t *testing.T) {
+	result := &RunResult{Executions: []WorkloadRunResult{{Name: "q1", OracleMode: string(OracleModeTruthPass), Duration: 10 * time.Millisecond, Passed: true}}}
+	workloads := summarizeWorkloads(result)
+	if len(workloads) != 1 || workloads[0].OracleMode != string(OracleModeTruthPass) {
+		t.Fatalf("expected workload summary to carry oracle mode, got %+v", workloads)
 	}
 }
 

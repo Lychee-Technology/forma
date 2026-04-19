@@ -35,6 +35,7 @@ type EnvironmentMetadata struct {
 // SummaryReport captures aggregated execution metrics.
 type SummaryReport struct {
 	Metadata            ArtifactMetadata         `json:"metadata"`
+	OracleModes         map[string]string        `json:"oracle_modes,omitempty"`
 	ExecutionCount      int                      `json:"execution_count"`
 	Passed              bool                     `json:"passed"`
 	FailureCount        int                      `json:"failure_count,omitempty"`
@@ -63,6 +64,7 @@ type WorkloadSummary struct {
 	Name                string                   `json:"name"`
 	Category            string                   `json:"category"`
 	TargetSchema        string                   `json:"target_schema,omitempty"`
+	OracleMode          string                   `json:"oracle_mode,omitempty"`
 	Distribution        Distribution             `json:"distribution"`
 	ExecutionCount      int                      `json:"execution_count"`
 	Passed              bool                     `json:"passed"`
@@ -230,6 +232,7 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 		return summary
 	}
 	summary.Metadata = metadataForResult(result)
+	summary.OracleModes = cloneStringMap(result.OracleModes)
 	if len(result.Executions) == 0 {
 		summary.Passed = result != nil && result.Passed
 		summary.FailureCount = resultFailureCount(result)
@@ -289,6 +292,17 @@ func percentileDuration(values []time.Duration, percentile float64) time.Duratio
 		idx = len(values) - 1
 	}
 	return values[idx]
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 // FormatConsoleSummary returns a stable text summary for terminal output.
@@ -469,6 +483,7 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 		if def, ok := workloadDefs[name]; ok {
 			workload.Category = string(def.Category)
 			workload.TargetSchema = def.TargetSchema
+			workload.OracleMode = string(def.ResolvedOracleMode())
 			workload.Distribution = runs[0].Distribution
 			workload.PageSize = def.PageSize
 		}
@@ -497,6 +512,9 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			}
 			if run.Offset > workload.MaxOffset {
 				workload.MaxOffset = run.Offset
+			}
+			if workload.OracleMode == "" && run.OracleMode != "" {
+				workload.OracleMode = run.OracleMode
 			}
 			for _, assertion := range run.Assertions {
 				stat := workload.AssertionStats[assertion.Name]

@@ -14,9 +14,38 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - `-mode plan` validates config and emits the planned workload shape only
 - `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
 - live benchmark summaries distinguish correctness failures from infrastructure failures, and workload-level expected-result checks are part of the executable path
+- benchmark summaries now expose workload oracle provenance so selective workloads can be distinguished between `loaded-state` and `truth-pass` expected-result modes
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
+
+## Oracle Modes
+
+The benchmark reports a workload `oracle_mode` because correctness verdicts depend on how expected results were derived.
+
+### Why this exists
+
+The benchmark compares actual federated query output against an expected result set. For some workloads, the expected result can be reconstructed directly from the benchmark's loaded tier state. For other workloads, especially selective hot or EAV-heavy cases, the safest expected-result path is to confirm visibility through targeted federated truth passes.
+
+Without this distinction, two correctness failures could look identical even though they were derived from different benchmark methods.
+
+### `loaded-state`
+
+- expected rows are reconstructed from the benchmark's loaded tier state
+- this is the normal mode for workloads whose visibility semantics are already well modeled by the benchmark runner
+- it is cheaper and should remain the default where it is trustworthy
+
+### `truth-pass`
+
+- expected rows are confirmed through the live federated path for targeted candidate rows
+- this is used for workloads where final visible filter semantics are better validated through execution than through synthetic reconstruction alone
+- it is intentionally narrower and more expensive than `loaded-state`
+
+### Operational guidance
+
+- do not treat a switch between `loaded-state` and `truth-pass` as a pure performance change; it also changes how correctness is judged
+- when a selective workload fails under `truth-pass`, assume the benchmark has already validated the expected answer through the executable path
+- when comparing benchmark summaries, use `oracle_mode` alongside `correctness_failures` so reviewers understand whether failures came from loaded-state reconstruction or truth-pass-backed verification
 
 ## Workload Groups
 
@@ -150,6 +179,7 @@ Check these fields first in `benchmark-summary.json` or the Markdown summary:
 - `avg`
 - `qps`
 - per-assertion pass/fail counts
+- workload `oracle_mode`
 
 Interpretation guidance:
 
@@ -158,6 +188,7 @@ Interpretation guidance:
 - isolated `max` spikes often point to skew, tier imbalance, or unstable deep-page behavior
 - a drop in `qps` without matching row-count changes is a regression candidate worth manual review
 - planning-only output should stay structurally stable across runs for the same seed and workload selection
+- supported live workloads should also keep repeated-run `FailureKind`, `total_records`, and page `row_ids` stable for the same seed and workload selection
 
 ## Common Failure Modes
 

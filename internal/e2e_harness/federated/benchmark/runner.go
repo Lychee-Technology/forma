@@ -29,6 +29,7 @@ type RunResult struct {
 	Workloads      []WorkloadDefinition `json:"workloads"`
 	Executions     []WorkloadRunResult  `json:"executions,omitempty"`
 	Notes          []string             `json:"notes"`
+	OracleModes    map[string]string    `json:"oracle_modes,omitempty"`
 }
 
 // WorkloadRunResult captures one workload execution result.
@@ -44,6 +45,7 @@ type WorkloadRunResult struct {
 	Duration     time.Duration     `json:"duration"`
 	Passed       bool              `json:"passed"`
 	FailureKind  string            `json:"failure_kind,omitempty"`
+	OracleMode   string            `json:"oracle_mode,omitempty"`
 	FailureCount int               `json:"failure_count,omitempty"`
 	InfraError   string            `json:"infra_error,omitempty"`
 	RowIDs       []string          `json:"row_ids,omitempty"`
@@ -171,16 +173,14 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
 	pageRuns := make(map[string]WorkloadRunResult)
+	previousRuns := make(map[string]WorkloadRunResult)
 	loadedRecords, err := buildLoadedStateSnapshot(ctx, h, tiered)
 	if err != nil {
 		return nil, fmt.Errorf("build loaded state snapshot: %w", err)
 	}
-	expectedByWorkload := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
-	if hotExpected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, WorkloadDefinition{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}, r.config.PageSize, loadedRecords, r.genConfig); err == nil {
-		expectedByWorkload["hot-selective-page"] = hotExpected
-	}
-	if eavExpected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, WorkloadDefinition{Name: "eav-selective-page", TargetSchema: "trade", FilterAttribute: "exchange", FilterValue: "NYSE", PageSize: 20, PageNumber: 1}, r.config.PageSize, loadedRecords, r.genConfig); err == nil {
-		expectedByWorkload["eav-selective-page"] = eavExpected
+	expectedByWorkload, oracleModes, oracleNotes, err := r.buildExpectedResults(ctx, h, loadedRecords)
+	if err != nil {
+		return nil, err
 	}
 	passed := true
 	failureCount := 0
@@ -200,6 +200,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			semantics := semanticsForWorkload(workload, r.genConfig)
 			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
 			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records, semantics)...)
+			run.OracleMode = string(workload.ResolvedOracleMode())
 			if expected, ok := expectedByWorkload[workload.Name]; ok {
 				run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
 			}
@@ -209,6 +210,10 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				}
 				pageRuns[workload.TargetSchema] = run
 			}
+			if previous, ok := previousRuns[workload.Name]; ok {
+				run.Assertions = append(run.Assertions, validateRepeatedRunStability(previous, run)...)
+			}
+			previousRuns[workload.Name] = run
 			run.FailureCount = countFailedAssertions(run.Assertions)
 			run.FailureKind = failureKindForRun(run)
 			run.Passed = run.FailureCount == 0 && run.InfraError == ""
@@ -231,15 +236,40 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		Schemas:        append([]SchemaFixture(nil), r.schemas...),
 		Workloads:      append([]WorkloadDefinition(nil), r.workloads...),
 		Executions:     executions,
+		OracleModes:    oracleModes,
 		Notes: []string{
 			"loaded TPC-E-inspired schema fixtures",
 			fmt.Sprintf("generated dataset with distribution=%s", r.genConfig.Distribution),
 			fmt.Sprintf("loaded tiered dataset profile=%s", profile.Name),
 			fmt.Sprintf("loaded-state snapshot rows=%d", len(loadedRecords)),
+			oracleNotes,
 			"executed supported federated query workloads",
 		},
 	}
 	return result, nil
+}
+
+func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord) (map[string]expectedWorkloadResult, map[string]string, string, error) {
+	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
+	oracleModes := make(map[string]string, len(r.workloads))
+	loadedStateCount := 0
+	truthPassCount := 0
+	for _, workload := range r.workloads {
+		mode := string(workload.ResolvedOracleMode())
+		oracleModes[workload.Name] = mode
+		switch workload.ResolvedOracleMode() {
+		case OracleModeTruthPass:
+			expected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, workload, r.config.PageSize, loadedRecords, r.genConfig)
+			if err != nil {
+				return nil, nil, "", fmt.Errorf("build truth-pass expected result for %s: %w", workload.Name, err)
+			}
+			results[workload.Name] = expected
+			truthPassCount++
+		default:
+			loadedStateCount++
+		}
+	}
+	return results, oracleModes, fmt.Sprintf("oracle_modes loaded_state=%d truth_pass=%d", loadedStateCount, truthPassCount), nil
 }
 
 func (r *Runner) validateFixtures() error {
@@ -273,8 +303,8 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		h.SchemaID = previousSchemaID
 	}()
 	opts := queryOptionsForWorkloadWithConfig(workload, r.config.PageSize, r.genConfig)
-	if workload.UsesSimpleFilter() {
-		opts.Filter = &federated.Filter{Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue}}
+	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
+		opts.Filter = &federated.Filter{Conditions: conditions}
 	}
 	result, err := h.ExecuteFederatedQuery(ctx, opts)
 	if err != nil {
@@ -527,11 +557,12 @@ func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *feder
 		h.SchemaID = previousSchemaID
 	}()
 	for _, candidate := range candidates {
+		conditions := workload.ResolvedFilterConditions()
 		result, err := h.ExecuteFederatedQuery(ctx, &federated.QueryOptions{
 			Limit: 1,
 			Filter: &federated.Filter{
 				RowID:      candidate.RowID,
-				Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue},
+				Conditions: conditions,
 			},
 			SortBy:   "tradeTime",
 			SortDesc: true,
@@ -595,7 +626,7 @@ func filterExpectedRecordsForWorkload(records []GeneratedRecord, workload Worklo
 				continue
 			}
 		}
-		if workload.UsesSimpleFilter() && !generatedRecordMatchesFilterForWorkload(record, workload) {
+		if len(workload.ResolvedFilterConditions()) > 0 && !generatedRecordMatchesFilterForWorkload(record, workload) {
 			continue
 		}
 		out = append(out, cloneGeneratedRecord(record))
@@ -604,7 +635,7 @@ func filterExpectedRecordsForWorkload(records []GeneratedRecord, workload Worklo
 }
 
 func semanticsForWorkload(workload WorkloadDefinition, genCfg GeneratorConfig) workloadSemantics {
-	if workload.Name != "mixed-tier-window" {
+	if workload.TargetSchema != "trade" {
 		return workloadSemantics{}
 	}
 	baseTime := genCfg.BaseTime
@@ -616,8 +647,20 @@ func semanticsForWorkload(workload WorkloadDefinition, genCfg GeneratorConfig) w
 		windowDays = DefaultGeneratorConfig().TimeWindowDays
 	}
 	windowMillis := int64(windowDays) * 24 * int64(time.Hour/time.Millisecond)
-	start := baseTime.UnixMilli() - (windowMillis * 4 / 5)
-	end := baseTime.UnixMilli() - windowMillis/5
+	var start, end int64
+	switch workload.Name {
+	case "mixed-tier-window":
+		start = baseTime.UnixMilli() - (windowMillis * 4 / 5)
+		end = baseTime.UnixMilli() - windowMillis/5
+	case "hot-only-window":
+		start = baseTime.UnixMilli() - windowMillis/5
+		end = baseTime.UnixMilli()
+	case "cold-only-window":
+		start = baseTime.UnixMilli() - windowMillis
+		end = baseTime.UnixMilli() - (windowMillis * 4 / 5)
+	default:
+		return workloadSemantics{}
+	}
 	if start > end {
 		start, end = end, start
 	}
@@ -635,14 +678,22 @@ func benchmarkAttributeID(schemaID int16, name string) int {
 }
 
 func generatedRecordMatchesFilterForWorkload(record GeneratedRecord, workload WorkloadDefinition) bool {
-	value, ok := benchmarkVisibleAttributeValue(record, workload.FilterAttribute)
-	if !ok {
-		return false
+	for key, expected := range workload.ResolvedFilterConditions() {
+		value, ok := benchmarkVisibleAttributeValue(record, key)
+		if !ok {
+			return false
+		}
+		if key == "tradeType" {
+			if fmt.Sprintf("%v", value) != fmt.Sprintf("%v", expected) {
+				return false
+			}
+			continue
+		}
+		if fmt.Sprint(value) != fmt.Sprint(expected) {
+			return false
+		}
 	}
-	if workload.FilterAttribute == "tradeType" {
-		return fmt.Sprintf("%v", value) == workload.FilterValue
-	}
-	return fmt.Sprint(value) == workload.FilterValue
+	return true
 }
 
 func benchmarkVisibleAttributeValue(record GeneratedRecord, attribute string) (any, bool) {
@@ -809,9 +860,28 @@ func validatePaginationTransition(previous, current WorkloadRunResult) []Asserti
 	return assertions
 }
 
+func validateRepeatedRunStability(previous, current WorkloadRunResult) []AssertionResult {
+	assertions := []AssertionResult{{
+		Name:    "repeated-run-failure-kind-stable",
+		Passed:  previous.FailureKind == current.FailureKind,
+		Message: fmt.Sprintf("previous=%s current=%s", previous.FailureKind, current.FailureKind),
+	}}
+	assertions = append(assertions, AssertionResult{
+		Name:    "repeated-run-total-records-stable",
+		Passed:  previous.TotalRecords == current.TotalRecords,
+		Message: fmt.Sprintf("previous=%d current=%d", previous.TotalRecords, current.TotalRecords),
+	})
+	assertions = append(assertions, AssertionResult{
+		Name:    "repeated-run-page-row-ids-stable",
+		Passed:  stringSlicesEqual(previous.RowIDs, current.RowIDs),
+		Message: fmt.Sprintf("previous=%v current=%v", previous.RowIDs, current.RowIDs),
+	})
+	return assertions
+}
+
 func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord, semantics workloadSemantics) []AssertionResult {
 	assertions := []AssertionResult{validateUniqueRows(run), validateSchemaScope(workload, records)}
-	if workload.UsesSimpleFilter() {
+	if len(workload.ResolvedFilterConditions()) > 0 {
 		assertions = append(assertions, validateFilterMatch(workload, records))
 	}
 	if semantics.TradeTimeStart > 0 || semantics.TradeTimeEnd > 0 {
@@ -869,11 +939,13 @@ func validateUniqueRows(run WorkloadRunResult) AssertionResult {
 
 func validateFilterMatch(workload WorkloadDefinition, records []*internal.PersistentRecord) AssertionResult {
 	for _, record := range records {
-		if !recordMatchesFilter(record, workload.FilterAttribute, workload.FilterValue) {
-			return AssertionResult{Name: "filter-results-match-request", Passed: false, Message: fmt.Sprintf("attribute=%s expected=%s row=%s", workload.FilterAttribute, workload.FilterValue, record.RowID)}
+		for key, expected := range workload.ResolvedFilterConditions() {
+			if !recordMatchesFilter(record, key, fmt.Sprint(expected)) {
+				return AssertionResult{Name: "filter-results-match-request", Passed: false, Message: fmt.Sprintf("attribute=%s expected=%v row=%s", key, expected, record.RowID)}
+			}
 		}
 	}
-	return AssertionResult{Name: "filter-results-match-request", Passed: true, Message: fmt.Sprintf("attribute=%s expected=%s", workload.FilterAttribute, workload.FilterValue)}
+	return AssertionResult{Name: "filter-results-match-request", Passed: true, Message: fmt.Sprintf("conditions=%v", workload.ResolvedFilterConditions())}
 }
 
 func validateTradeTimeWindow(records []*internal.PersistentRecord, semantics workloadSemantics) AssertionResult {
