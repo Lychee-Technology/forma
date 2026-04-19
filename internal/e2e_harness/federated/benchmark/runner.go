@@ -3,6 +3,8 @@ package benchmark
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	forma "github.com/lychee-technology/forma"
@@ -10,7 +12,7 @@ import (
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
-// RunResult captures the phase-1 scaffold output.
+// RunResult captures benchmark execution output.
 type RunResult struct {
 	Config         Config               `json:"config"`
 	Generator      GeneratorConfig      `json:"generator"`
@@ -39,12 +41,18 @@ type WorkloadRunResult struct {
 	TotalRecords int64             `json:"total_records"`
 	Duration     time.Duration     `json:"duration"`
 	Passed       bool              `json:"passed"`
+	FailureKind  string            `json:"failure_kind,omitempty"`
 	FailureCount int               `json:"failure_count,omitempty"`
 	InfraError   string            `json:"infra_error,omitempty"`
 	RowIDs       []string          `json:"row_ids,omitempty"`
 	Assertions   []AssertionResult `json:"assertions,omitempty"`
 	PlanNotes    []string          `json:"plan_notes,omitempty"`
 }
+
+const (
+	FailureKindInfra       = "infra"
+	FailureKindCorrectness = "correctness"
+)
 
 // AssertionResult captures one correctness assertion outcome.
 type AssertionResult struct {
@@ -53,7 +61,7 @@ type AssertionResult struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Runner validates benchmark inputs and prepares the phase-1 execution plan.
+// Runner validates benchmark inputs and prepares execution plans.
 type Runner struct {
 	config    Config
 	registry  forma.SchemaRegistry
@@ -116,7 +124,7 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 			"loaded TPC-E-inspired schema fixtures",
 			"resolved workload matrix",
 			fmt.Sprintf("prepared generator for scale=%s distribution=%s", r.genConfig.Scale, r.genConfig.Distribution),
-			"phase-1 scaffold stops before query execution",
+			"smoke mode stops before query execution",
 		}
 	case ExecutionModePlan:
 		result.Notes = []string{
@@ -161,6 +169,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
 	pageRuns := make(map[string]WorkloadRunResult)
+	expectedByWorkload := buildExpectedWorkloadResultsFromRecords(tieredRecords(tiered), r.workloads, r.config.PageSize)
 	passed := true
 	failureCount := 0
 	for _, workload := range r.workloads {
@@ -178,6 +187,9 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			}
 			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
 			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records)...)
+			if expected, ok := expectedByWorkload[workload.Name]; ok {
+				run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
+			}
 			if workload.Category == WorkloadCategoryPagination || workload.Category == WorkloadCategoryDeepPage {
 				if previous, ok := pageRuns[workload.TargetSchema]; ok {
 					run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
@@ -185,6 +197,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				pageRuns[workload.TargetSchema] = run
 			}
 			run.FailureCount = countFailedAssertions(run.Assertions)
+			run.FailureKind = failureKindForRun(run)
 			run.Passed = run.FailureCount == 0 && run.InfraError == ""
 			if !run.Passed {
 				passed = false
@@ -285,9 +298,204 @@ func failedWorkloadRunResult(workload WorkloadDefinition, distribution Distribut
 		PageNumber:   workload.PageNumber,
 		Offset:       workload.DerivedOffset(defaultPageSize),
 		Passed:       false,
+		FailureKind:  FailureKindInfra,
 		FailureCount: 1,
 		InfraError:   infraError,
 	}
+}
+
+type expectedWorkloadResult struct {
+	TotalRecords int64
+	RowIDs       []string
+}
+
+func buildExpectedWorkloadResults(dataset *GeneratedDataset, workloads []WorkloadDefinition, defaultPageSize int) map[string]expectedWorkloadResult {
+	if dataset == nil {
+		return map[string]expectedWorkloadResult{}
+	}
+	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize)
+}
+
+func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int) map[string]expectedWorkloadResult {
+	results := make(map[string]expectedWorkloadResult, len(workloads))
+	visible := expectedVisibleRecords(records)
+	for _, workload := range workloads {
+		matching := filterExpectedRecordsForWorkload(visible, workload)
+		sortExpectedRecordsForWorkload(matching, workload)
+		pageSize := workload.PageSize
+		if pageSize <= 0 {
+			pageSize = defaultPageSize
+		}
+		offset := workload.DerivedOffset(defaultPageSize)
+		rowIDs := expectedPageRowIDs(matching, offset, pageSize)
+		results[workload.Name] = expectedWorkloadResult{TotalRecords: int64(len(matching)), RowIDs: rowIDs}
+	}
+	return results
+}
+
+func tieredRecords(dataset *TieredDataset) []GeneratedRecord {
+	if dataset == nil {
+		return nil
+	}
+	records := make([]GeneratedRecord, 0, len(dataset.Base)+len(dataset.Delta)+len(dataset.Hot))
+	for _, bucket := range [][]GeneratedRecord{dataset.Base, dataset.Delta, dataset.Hot} {
+		for _, record := range bucket {
+			records = append(records, cloneGeneratedRecord(record))
+		}
+	}
+	return records
+}
+
+func expectedVisibleRecords(records []GeneratedRecord) []GeneratedRecord {
+	latest := make(map[string]GeneratedRecord)
+	for _, record := range records {
+		key := schemaRowKey(record.SchemaID, record.RowID)
+		existing, ok := latest[key]
+		if ok && !recordWinsExpectedRecord(record, existing) {
+			continue
+		}
+		latest[key] = cloneGeneratedRecord(record)
+	}
+	out := make([]GeneratedRecord, 0, len(latest))
+	for _, record := range latest {
+		if record.DeletedAt > 0 {
+			continue
+		}
+		out = append(out, cloneGeneratedRecord(record))
+	}
+	return out
+}
+
+func recordWinsExpectedRecord(candidate, current GeneratedRecord) bool {
+	if candidate.ChangedAt != current.ChangedAt {
+		return candidate.ChangedAt > current.ChangedAt
+	}
+	if candidate.Version != current.Version {
+		return candidate.Version > current.Version
+	}
+	if candidate.DeletedAt != current.DeletedAt {
+		return candidate.DeletedAt > current.DeletedAt
+	}
+	return false
+}
+
+func filterExpectedRecordsForWorkload(records []GeneratedRecord, workload WorkloadDefinition) []GeneratedRecord {
+	out := make([]GeneratedRecord, 0)
+	for _, record := range records {
+		if record.SchemaName != workload.TargetSchema {
+			continue
+		}
+		if workload.UsesSimpleFilter() && !generatedRecordMatchesFilter(record, workload.FilterAttribute, workload.FilterValue) {
+			continue
+		}
+		out = append(out, cloneGeneratedRecord(record))
+	}
+	return out
+}
+
+func generatedRecordMatchesFilter(record GeneratedRecord, attribute, expected string) bool {
+	value, ok := record.Attributes[attribute]
+	if !ok {
+		return false
+	}
+	switch attribute {
+	case "tradeType":
+		return fmt.Sprintf("%v", value) == expected
+	default:
+		return fmt.Sprint(value) == expected
+	}
+}
+
+func sortExpectedRecordsForWorkload(records []GeneratedRecord, workload WorkloadDefinition) {
+	if workload.TargetSchema == "trade" {
+		sort.Slice(records, func(i, j int) bool {
+			left := generatedRecordTradeTime(records[i])
+			right := generatedRecordTradeTime(records[j])
+			if left != right {
+				return left > right
+			}
+			return records[i].RowID.String() < records[j].RowID.String()
+		})
+		return
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].RowID.String() < records[j].RowID.String()
+	})
+}
+
+func generatedRecordTradeTime(record GeneratedRecord) int64 {
+	value, ok := record.Attributes["tradeTime"]
+	if !ok {
+		return 0
+	}
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case string:
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err == nil {
+			return parsed.UnixMilli()
+		}
+		if unixMillis, convErr := strconv.ParseInt(v, 10, 64); convErr == nil {
+			return unixMillis
+		}
+	}
+	return 0
+}
+
+func expectedPageRowIDs(records []GeneratedRecord, offset, pageSize int) []string {
+	if offset >= len(records) {
+		return nil
+	}
+	end := offset + pageSize
+	if end > len(records) {
+		end = len(records)
+	}
+	rowIDs := make([]string, 0, end-offset)
+	for _, record := range records[offset:end] {
+		rowIDs = append(rowIDs, record.RowID.String())
+	}
+	return rowIDs
+}
+
+func validateExpectedWorkloadOutcome(run WorkloadRunResult, expected expectedWorkloadResult) []AssertionResult {
+	assertions := []AssertionResult{{
+		Name:    "total-records-match-expected",
+		Passed:  run.TotalRecords == expected.TotalRecords,
+		Message: fmt.Sprintf("actual=%d expected=%d", run.TotalRecords, expected.TotalRecords),
+	}}
+	actualRows := append([]string(nil), run.RowIDs...)
+	expectedRows := append([]string(nil), expected.RowIDs...)
+	assertions = append(assertions, AssertionResult{
+		Name:    "page-row-ids-match-expected",
+		Passed:  stringSlicesEqual(actualRows, expectedRows),
+		Message: fmt.Sprintf("actual=%v expected=%v", actualRows, expectedRows),
+	})
+	return assertions
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func failureKindForRun(run WorkloadRunResult) string {
+	if run.InfraError != "" {
+		return FailureKindInfra
+	}
+	if countFailedAssertions(run.Assertions) > 0 {
+		return FailureKindCorrectness
+	}
+	return ""
 }
 
 func validateBasicWorkloadAssertions(workload WorkloadDefinition, run WorkloadRunResult) []AssertionResult {

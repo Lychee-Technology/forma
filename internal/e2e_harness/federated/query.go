@@ -250,12 +250,12 @@ func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, ro
 		projection := benchmarkParquetProjection(schemaID, tier, path)
 		return fmt.Sprintf(`
 			%s
-			WHERE deleted_at = 0 %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter)
+			WHERE 1 = 1 %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter)
 	}
 	return fmt.Sprintf(`
 			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
 			FROM read_parquet('%s')
-			WHERE deleted_at = 0 %s %s`, tier, path, dirtyExclusion, rowIDFilter)
+			WHERE 1 = 1 %s %s`, tier, path, dirtyExclusion, rowIDFilter)
 }
 
 func benchmarkParquetProjection(schemaID int16, tier, path string) string {
@@ -300,7 +300,6 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
-			AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
 			%s
 			%s`, pgConnStr, pgConnStr, pgConnStr, schemaID, rowIDFilter, attributeFilter)
 	}
@@ -316,7 +315,6 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 		FROM postgres_scan('%s', 'public', 'change_log') cl
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
-			AND (cl.deleted_at = 0 OR cl.deleted_at IS NULL)
 			%s`, pgConnStr, schemaID, rowIDFilter)
 }
 
@@ -327,7 +325,7 @@ func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchma
 		%s
 		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
 		FROM deduplicated
-		WHERE rn = 1
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
 		ORDER BY %s
 		LIMIT %d OFFSET %d
 	`, cte, buildOrderByClause(opts), opts.Limit, opts.Offset)
@@ -336,7 +334,7 @@ func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchma
 		%s
 		SELECT row_id, schema_id, changed_at, deleted_at, name, version
 		FROM deduplicated
-		WHERE rn = 1
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
 		ORDER BY row_id
 		LIMIT %d OFFSET %d
 	`, cte, opts.Limit, opts.Offset)
@@ -347,7 +345,7 @@ func buildFinalFederatedCount(combinedQuery string) string {
 		%s
 		SELECT COUNT(*)
 		FROM deduplicated
-		WHERE rn = 1
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
 	`, buildFederatedDeduplicatedCTE(combinedQuery))
 }
 
@@ -357,7 +355,14 @@ func buildFederatedDeduplicatedCTE(combinedQuery string) string {
 			%s
 		),
 		deduplicated AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY changed_at DESC) as rn
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY row_id
+				ORDER BY changed_at DESC,
+					CASE tier WHEN 'hot' THEN 3 WHEN 'delta' THEN 2 WHEN 'base' THEN 1 ELSE 0 END DESC,
+					version DESC,
+					deleted_at DESC,
+					row_id ASC
+			) as rn
 			FROM combined
 		)
 	`, combinedQuery)

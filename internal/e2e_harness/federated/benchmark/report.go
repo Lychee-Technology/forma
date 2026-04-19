@@ -34,21 +34,22 @@ type EnvironmentMetadata struct {
 
 // SummaryReport captures aggregated execution metrics.
 type SummaryReport struct {
-	Metadata       ArtifactMetadata         `json:"metadata"`
-	ExecutionCount int                      `json:"execution_count"`
-	Passed         bool                     `json:"passed"`
-	FailureCount   int                      `json:"failure_count,omitempty"`
-	InfraFailures  int                      `json:"infra_failures,omitempty"`
-	Min            time.Duration            `json:"min"`
-	P50            time.Duration            `json:"p50"`
-	P95            time.Duration            `json:"p95"`
-	P99            time.Duration            `json:"p99"`
-	Max            time.Duration            `json:"max"`
-	Avg            time.Duration            `json:"avg"`
-	TotalDuration  time.Duration            `json:"total_duration"`
-	QPS            float64                  `json:"qps"`
-	AssertionStats map[string]AssertionStat `json:"assertion_stats"`
-	Workloads      []WorkloadSummary        `json:"workloads,omitempty"`
+	Metadata            ArtifactMetadata         `json:"metadata"`
+	ExecutionCount      int                      `json:"execution_count"`
+	Passed              bool                     `json:"passed"`
+	FailureCount        int                      `json:"failure_count,omitempty"`
+	CorrectnessFailures int                      `json:"correctness_failures,omitempty"`
+	InfraFailures       int                      `json:"infra_failures,omitempty"`
+	Min                 time.Duration            `json:"min"`
+	P50                 time.Duration            `json:"p50"`
+	P95                 time.Duration            `json:"p95"`
+	P99                 time.Duration            `json:"p99"`
+	Max                 time.Duration            `json:"max"`
+	Avg                 time.Duration            `json:"avg"`
+	TotalDuration       time.Duration            `json:"total_duration"`
+	QPS                 float64                  `json:"qps"`
+	AssertionStats      map[string]AssertionStat `json:"assertion_stats"`
+	Workloads           []WorkloadSummary        `json:"workloads,omitempty"`
 }
 
 // AssertionStat captures aggregate assertion pass/fail counts.
@@ -59,27 +60,28 @@ type AssertionStat struct {
 
 // WorkloadSummary captures stable workload-level metrics and metadata.
 type WorkloadSummary struct {
-	Name            string                   `json:"name"`
-	Category        string                   `json:"category"`
-	TargetSchema    string                   `json:"target_schema,omitempty"`
-	Distribution    Distribution             `json:"distribution"`
-	ExecutionCount  int                      `json:"execution_count"`
-	Passed          bool                     `json:"passed"`
-	FailureCount    int                      `json:"failure_count,omitempty"`
-	InfraFailures   int                      `json:"infra_failures,omitempty"`
-	PageSize        int                      `json:"page_size,omitempty"`
-	MaxOffset       int                      `json:"max_offset,omitempty"`
-	AvgResultCount  float64                  `json:"avg_result_count,omitempty"`
-	AvgTotalRecords float64                  `json:"avg_total_records,omitempty"`
-	Min             time.Duration            `json:"min"`
-	P50             time.Duration            `json:"p50"`
-	P95             time.Duration            `json:"p95"`
-	P99             time.Duration            `json:"p99"`
-	Max             time.Duration            `json:"max"`
-	Avg             time.Duration            `json:"avg"`
-	TotalDuration   time.Duration            `json:"total_duration"`
-	QPS             float64                  `json:"qps"`
-	AssertionStats  map[string]AssertionStat `json:"assertion_stats,omitempty"`
+	Name                string                   `json:"name"`
+	Category            string                   `json:"category"`
+	TargetSchema        string                   `json:"target_schema,omitempty"`
+	Distribution        Distribution             `json:"distribution"`
+	ExecutionCount      int                      `json:"execution_count"`
+	Passed              bool                     `json:"passed"`
+	FailureCount        int                      `json:"failure_count,omitempty"`
+	CorrectnessFailures int                      `json:"correctness_failures,omitempty"`
+	InfraFailures       int                      `json:"infra_failures,omitempty"`
+	PageSize            int                      `json:"page_size,omitempty"`
+	MaxOffset           int                      `json:"max_offset,omitempty"`
+	AvgResultCount      float64                  `json:"avg_result_count,omitempty"`
+	AvgTotalRecords     float64                  `json:"avg_total_records,omitempty"`
+	Min                 time.Duration            `json:"min"`
+	P50                 time.Duration            `json:"p50"`
+	P95                 time.Duration            `json:"p95"`
+	P99                 time.Duration            `json:"p99"`
+	Max                 time.Duration            `json:"max"`
+	Avg                 time.Duration            `json:"avg"`
+	TotalDuration       time.Duration            `json:"total_duration"`
+	QPS                 float64                  `json:"qps"`
+	AssertionStats      map[string]AssertionStat `json:"assertion_stats,omitempty"`
 }
 
 // DiffReport captures machine-readable baseline deltas.
@@ -92,32 +94,34 @@ type DiffReport struct {
 
 // SummaryDiff captures aggregate benchmark deltas.
 type SummaryDiff struct {
-	PassedChanged       bool          `json:"passed_changed"`
-	FailureCountDelta   int           `json:"failure_count_delta"`
-	InfraFailuresDelta  int           `json:"infra_failures_delta"`
-	ExecutionCountDelta int           `json:"execution_count_delta"`
-	QPSDelta            float64       `json:"qps_delta"`
-	AvgLatencyDelta     time.Duration `json:"avg_latency_delta"`
-	P95LatencyDelta     time.Duration `json:"p95_latency_delta"`
-	P99LatencyDelta     time.Duration `json:"p99_latency_delta"`
-	TotalDurationDelta  time.Duration `json:"total_duration_delta"`
+	PassedChanged            bool          `json:"passed_changed"`
+	FailureCountDelta        int           `json:"failure_count_delta"`
+	CorrectnessFailuresDelta int           `json:"correctness_failures_delta"`
+	InfraFailuresDelta       int           `json:"infra_failures_delta"`
+	ExecutionCountDelta      int           `json:"execution_count_delta"`
+	QPSDelta                 float64       `json:"qps_delta"`
+	AvgLatencyDelta          time.Duration `json:"avg_latency_delta"`
+	P95LatencyDelta          time.Duration `json:"p95_latency_delta"`
+	P99LatencyDelta          time.Duration `json:"p99_latency_delta"`
+	TotalDurationDelta       time.Duration `json:"total_duration_delta"`
 }
 
 // WorkloadDiff captures workload-level metric deltas.
 type WorkloadDiff struct {
-	Name                 string        `json:"name"`
-	TargetSchema         string        `json:"target_schema,omitempty"`
-	MissingInBaseline    bool          `json:"missing_in_baseline,omitempty"`
-	MissingInCandidate   bool          `json:"missing_in_candidate,omitempty"`
-	PassedChanged        bool          `json:"passed_changed"`
-	FailureCountDelta    int           `json:"failure_count_delta"`
-	InfraFailuresDelta   int           `json:"infra_failures_delta"`
-	ExecutionCountDelta  int           `json:"execution_count_delta"`
-	QPSDelta             float64       `json:"qps_delta"`
-	AvgLatencyDelta      time.Duration `json:"avg_latency_delta"`
-	P95LatencyDelta      time.Duration `json:"p95_latency_delta"`
-	AvgResultCountDelta  float64       `json:"avg_result_count_delta"`
-	AvgTotalRecordsDelta float64       `json:"avg_total_records_delta"`
+	Name                     string        `json:"name"`
+	TargetSchema             string        `json:"target_schema,omitempty"`
+	MissingInBaseline        bool          `json:"missing_in_baseline,omitempty"`
+	MissingInCandidate       bool          `json:"missing_in_candidate,omitempty"`
+	PassedChanged            bool          `json:"passed_changed"`
+	FailureCountDelta        int           `json:"failure_count_delta"`
+	CorrectnessFailuresDelta int           `json:"correctness_failures_delta"`
+	InfraFailuresDelta       int           `json:"infra_failures_delta"`
+	ExecutionCountDelta      int           `json:"execution_count_delta"`
+	QPSDelta                 float64       `json:"qps_delta"`
+	AvgLatencyDelta          time.Duration `json:"avg_latency_delta"`
+	P95LatencyDelta          time.Duration `json:"p95_latency_delta"`
+	AvgResultCountDelta      float64       `json:"avg_result_count_delta"`
+	AvgTotalRecordsDelta     float64       `json:"avg_total_records_delta"`
 }
 
 // WriteJSONReport writes a benchmark run result to JSON.
@@ -145,6 +149,7 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	b.WriteString(fmt.Sprintf("- Validation only: %t\n", result.ValidationOnly))
 	b.WriteString(fmt.Sprintf("- Passed: %t\n", result.Passed))
 	b.WriteString(fmt.Sprintf("- Failure count: %d\n", result.FailureCount))
+	b.WriteString(fmt.Sprintf("- Correctness failures: %d\n", summary.CorrectnessFailures))
 	b.WriteString(fmt.Sprintf("- Distribution: %s\n", result.Generator.Distribution))
 	b.WriteString(fmt.Sprintf("- Scale: %s\n", result.Generator.Scale))
 	b.WriteString(fmt.Sprintf("- Executions: %d\n", len(result.Executions)))
@@ -157,7 +162,7 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	if len(result.Executions) > 0 {
 		b.WriteString("\n## Executions\n\n")
 		for _, execution := range result.Executions {
-			b.WriteString(fmt.Sprintf("- `%s`: passed=%t failures=%d count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.Passed, execution.FailureCount, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
+			b.WriteString(fmt.Sprintf("- `%s`: passed=%t failure_kind=%s failures=%d count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.Passed, execution.FailureKind, execution.FailureCount, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
 			if execution.InfraError != "" {
 				b.WriteString(fmt.Sprintf("  infra_error=%s\n", execution.InfraError))
 			}
@@ -240,6 +245,9 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 		if execution.InfraError != "" {
 			summary.InfraFailures++
 		}
+		if execution.FailureKind == FailureKindCorrectness {
+			summary.CorrectnessFailures++
+		}
 		for _, assertion := range execution.Assertions {
 			stat := summary.AssertionStats[assertion.Name]
 			if assertion.Passed {
@@ -291,7 +299,7 @@ func FormatConsoleSummary(result *RunResult) string {
 	summary := SummarizeRunResult(result)
 	var b strings.Builder
 	b.WriteString("Benchmark Summary\n")
-	b.WriteString(fmt.Sprintf("benchmark_id=%s scale=%s distribution=%s executions=%d passed=%t failures=%d infra_failures=%d\n", summary.Metadata.BenchmarkID, result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount, summary.Passed, summary.FailureCount, summary.InfraFailures))
+	b.WriteString(fmt.Sprintf("benchmark_id=%s scale=%s distribution=%s executions=%d passed=%t failures=%d correctness_failures=%d infra_failures=%d\n", summary.Metadata.BenchmarkID, result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount, summary.Passed, summary.FailureCount, summary.CorrectnessFailures, summary.InfraFailures))
 	b.WriteString(fmt.Sprintf("latency min=%s p50=%s p95=%s p99=%s max=%s avg=%s total=%s qps=%.2f\n", summary.Min, summary.P50, summary.P95, summary.P99, summary.Max, summary.Avg, summary.TotalDuration, summary.QPS))
 	if len(summary.AssertionStats) > 0 {
 		keys := make([]string, 0, len(summary.AssertionStats))
@@ -371,15 +379,16 @@ func CompareSummaryReports(baseline, candidate SummaryReport) DiffReport {
 		BaselineMetadata:  baseline.Metadata,
 		CandidateMetadata: candidate.Metadata,
 		Summary: SummaryDiff{
-			PassedChanged:       baseline.Passed != candidate.Passed,
-			FailureCountDelta:   candidate.FailureCount - baseline.FailureCount,
-			InfraFailuresDelta:  candidate.InfraFailures - baseline.InfraFailures,
-			ExecutionCountDelta: candidate.ExecutionCount - baseline.ExecutionCount,
-			QPSDelta:            candidate.QPS - baseline.QPS,
-			AvgLatencyDelta:     candidate.Avg - baseline.Avg,
-			P95LatencyDelta:     candidate.P95 - baseline.P95,
-			P99LatencyDelta:     candidate.P99 - baseline.P99,
-			TotalDurationDelta:  candidate.TotalDuration - baseline.TotalDuration,
+			PassedChanged:            baseline.Passed != candidate.Passed,
+			FailureCountDelta:        candidate.FailureCount - baseline.FailureCount,
+			CorrectnessFailuresDelta: candidate.CorrectnessFailures - baseline.CorrectnessFailures,
+			InfraFailuresDelta:       candidate.InfraFailures - baseline.InfraFailures,
+			ExecutionCountDelta:      candidate.ExecutionCount - baseline.ExecutionCount,
+			QPSDelta:                 candidate.QPS - baseline.QPS,
+			AvgLatencyDelta:          candidate.Avg - baseline.Avg,
+			P95LatencyDelta:          candidate.P95 - baseline.P95,
+			P99LatencyDelta:          candidate.P99 - baseline.P99,
+			TotalDurationDelta:       candidate.TotalDuration - baseline.TotalDuration,
 		},
 		Workloads: compareWorkloadSummaries(baseline.Workloads, candidate.Workloads),
 	}
@@ -407,23 +416,25 @@ func ReadSummaryReport(path string) (SummaryReport, error) {
 func FormatDiffSummary(diff DiffReport) string {
 	var b strings.Builder
 	b.WriteString("Benchmark Diff Summary\n")
-	b.WriteString(fmt.Sprintf("baseline=%s candidate=%s passed_changed=%t failure_delta=%d infra_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s\n",
+	b.WriteString(fmt.Sprintf("baseline=%s candidate=%s passed_changed=%t failure_delta=%d correctness_delta=%d infra_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s\n",
 		diff.BaselineMetadata.BenchmarkID,
 		diff.CandidateMetadata.BenchmarkID,
 		diff.Summary.PassedChanged,
 		diff.Summary.FailureCountDelta,
+		diff.Summary.CorrectnessFailuresDelta,
 		diff.Summary.InfraFailuresDelta,
 		diff.Summary.QPSDelta,
 		diff.Summary.AvgLatencyDelta,
 		diff.Summary.P95LatencyDelta,
 	))
 	for _, workload := range diff.Workloads {
-		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f\n",
+		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t correctness_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f\n",
 			workload.Name,
 			workload.TargetSchema,
 			workload.MissingInBaseline,
 			workload.MissingInCandidate,
 			workload.PassedChanged,
+			workload.CorrectnessFailuresDelta,
 			workload.QPSDelta,
 			workload.AvgLatencyDelta,
 			workload.P95LatencyDelta,
@@ -474,6 +485,9 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			workload.FailureCount += maxInt(run.FailureCount, countFailedAssertions(run.Assertions))
 			if run.InfraError != "" {
 				workload.InfraFailures++
+			}
+			if run.FailureKind == FailureKindCorrectness {
+				workload.CorrectnessFailures++
 			}
 			if !run.Passed {
 				workload.Passed = false
@@ -538,19 +552,20 @@ func compareWorkloadSummaries(baseline, candidate []WorkloadSummary) []WorkloadD
 			targetSchema = cand.TargetSchema
 		}
 		diffs = append(diffs, WorkloadDiff{
-			Name:                 name,
-			TargetSchema:         targetSchema,
-			MissingInBaseline:    !baseOK,
-			MissingInCandidate:   !candOK,
-			PassedChanged:        base.Passed != cand.Passed,
-			FailureCountDelta:    cand.FailureCount - base.FailureCount,
-			InfraFailuresDelta:   cand.InfraFailures - base.InfraFailures,
-			ExecutionCountDelta:  cand.ExecutionCount - base.ExecutionCount,
-			QPSDelta:             cand.QPS - base.QPS,
-			AvgLatencyDelta:      cand.Avg - base.Avg,
-			P95LatencyDelta:      cand.P95 - base.P95,
-			AvgResultCountDelta:  cand.AvgResultCount - base.AvgResultCount,
-			AvgTotalRecordsDelta: cand.AvgTotalRecords - base.AvgTotalRecords,
+			Name:                     name,
+			TargetSchema:             targetSchema,
+			MissingInBaseline:        !baseOK,
+			MissingInCandidate:       !candOK,
+			PassedChanged:            base.Passed != cand.Passed,
+			FailureCountDelta:        cand.FailureCount - base.FailureCount,
+			CorrectnessFailuresDelta: cand.CorrectnessFailures - base.CorrectnessFailures,
+			InfraFailuresDelta:       cand.InfraFailures - base.InfraFailures,
+			ExecutionCountDelta:      cand.ExecutionCount - base.ExecutionCount,
+			QPSDelta:                 cand.QPS - base.QPS,
+			AvgLatencyDelta:          cand.Avg - base.Avg,
+			P95LatencyDelta:          cand.P95 - base.P95,
+			AvgResultCountDelta:      cand.AvgResultCount - base.AvgResultCount,
+			AvgTotalRecordsDelta:     cand.AvgTotalRecords - base.AvgTotalRecords,
 		})
 	}
 	return diffs

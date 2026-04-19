@@ -50,7 +50,7 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
 		Executions: []WorkloadRunResult{
 			{Name: "q1", Passed: true, Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
-			{Name: "q2", Passed: false, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+			{Name: "q2", Passed: false, FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
 		},
 	}
 	if err := WriteBaselineCapture(dir, result); err != nil {
@@ -77,6 +77,9 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	if summary.FailureCount != 2 {
 		t.Fatalf("expected summary failure count 2, got %d", summary.FailureCount)
 	}
+	if summary.CorrectnessFailures != 1 {
+		t.Fatalf("expected one correctness failure, got %d", summary.CorrectnessFailures)
+	}
 	if summary.Metadata.BenchmarkID == "" {
 		t.Fatalf("expected summary metadata to include benchmark ID")
 	}
@@ -93,6 +96,7 @@ func TestFormatConsoleSummary(t *testing.T) {
 		Executions: []WorkloadRunResult{{
 			Name:         "q1",
 			Passed:       false,
+			FailureKind:  FailureKindCorrectness,
 			FailureCount: 1,
 			Duration:     10 * time.Millisecond,
 			Assertions:   []AssertionResult{{Name: "a", Passed: true}},
@@ -111,47 +115,54 @@ func TestFormatConsoleSummary(t *testing.T) {
 	if !strings.Contains(formatted, "benchmark_id=") {
 		t.Fatalf("expected benchmark id in summary: %s", formatted)
 	}
+	if !strings.Contains(formatted, "correctness_failures=1") {
+		t.Fatalf("expected correctness failures in summary: %s", formatted)
+	}
 }
 
 func TestCompareSummaryReports(t *testing.T) {
 	baseline := SummaryReport{
-		Metadata:       ArtifactMetadata{BenchmarkID: "bench-a"},
-		Passed:         true,
-		ExecutionCount: 2,
-		QPS:            10,
-		Avg:            10 * time.Millisecond,
-		P95:            20 * time.Millisecond,
+		Metadata:            ArtifactMetadata{BenchmarkID: "bench-a"},
+		Passed:              true,
+		ExecutionCount:      2,
+		CorrectnessFailures: 0,
+		QPS:                 10,
+		Avg:                 10 * time.Millisecond,
+		P95:                 20 * time.Millisecond,
 		Workloads: []WorkloadSummary{{
-			Name:            "q1",
-			TargetSchema:    "trade",
-			Passed:          true,
-			ExecutionCount:  2,
-			QPS:             5,
-			Avg:             10 * time.Millisecond,
-			P95:             20 * time.Millisecond,
-			AvgResultCount:  20,
-			AvgTotalRecords: 100,
+			Name:                "q1",
+			TargetSchema:        "trade",
+			Passed:              true,
+			ExecutionCount:      2,
+			CorrectnessFailures: 0,
+			QPS:                 5,
+			Avg:                 10 * time.Millisecond,
+			P95:                 20 * time.Millisecond,
+			AvgResultCount:      20,
+			AvgTotalRecords:     100,
 		}},
 	}
 	candidate := SummaryReport{
-		Metadata:       ArtifactMetadata{BenchmarkID: "bench-b"},
-		Passed:         false,
-		FailureCount:   1,
-		ExecutionCount: 2,
-		QPS:            8,
-		Avg:            12 * time.Millisecond,
-		P95:            25 * time.Millisecond,
+		Metadata:            ArtifactMetadata{BenchmarkID: "bench-b"},
+		Passed:              false,
+		FailureCount:        1,
+		ExecutionCount:      2,
+		CorrectnessFailures: 1,
+		QPS:                 8,
+		Avg:                 12 * time.Millisecond,
+		P95:                 25 * time.Millisecond,
 		Workloads: []WorkloadSummary{{
-			Name:            "q1",
-			TargetSchema:    "trade",
-			Passed:          false,
-			FailureCount:    1,
-			ExecutionCount:  2,
-			QPS:             4,
-			Avg:             12 * time.Millisecond,
-			P95:             25 * time.Millisecond,
-			AvgResultCount:  18,
-			AvgTotalRecords: 95,
+			Name:                "q1",
+			TargetSchema:        "trade",
+			Passed:              false,
+			FailureCount:        1,
+			ExecutionCount:      2,
+			CorrectnessFailures: 1,
+			QPS:                 4,
+			Avg:                 12 * time.Millisecond,
+			P95:                 25 * time.Millisecond,
+			AvgResultCount:      18,
+			AvgTotalRecords:     95,
 		}},
 	}
 	diff := CompareSummaryReports(baseline, candidate)
@@ -163,6 +174,9 @@ func TestCompareSummaryReports(t *testing.T) {
 	}
 	if diff.Workloads[0].AvgResultCountDelta >= 0 {
 		t.Fatalf("expected avg result count delta to be negative: %+v", diff.Workloads[0])
+	}
+	if diff.Summary.CorrectnessFailuresDelta != 1 {
+		t.Fatalf("expected correctness failure delta of 1, got %+v", diff.Summary)
 	}
 	formatted := FormatDiffSummary(diff)
 	if !strings.Contains(formatted, "Benchmark Diff Summary") {

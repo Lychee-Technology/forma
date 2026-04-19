@@ -49,7 +49,7 @@ type Config struct {
 	Workloads     []string      `json:"workloads"`
 }
 
-// DefaultConfig returns the phase-1 benchmark scaffold defaults.
+// DefaultConfig returns the benchmark scaffold defaults.
 func DefaultConfig() Config {
 	return Config{
 		Mode:         ExecutionModeSmoke,

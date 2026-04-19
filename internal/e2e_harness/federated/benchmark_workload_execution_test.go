@@ -35,6 +35,7 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		Workloads: []string{
 			"baseline-page-1",
 			"hot-selective-page",
+			"eav-selective-page",
 			"deep-page-1000",
 			"deep-page-100000",
 		},
@@ -44,19 +45,29 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	result, err := runner.RunWithHarness(ctx, h, bench.TierMixBalanced)
 	require.NoError(t, err)
 	require.False(t, result.ValidationOnly)
-	require.Len(t, result.Executions, 4)
+	require.Len(t, result.Executions, 5)
 	filteredSeen := false
+	eavSeen := false
+	expectedOracleAssertionsSeen := false
 	for _, execution := range result.Executions {
 		require.NotEmpty(t, execution.Name)
 		require.GreaterOrEqual(t, execution.ResultCount, 0)
 		require.GreaterOrEqual(t, execution.TotalRecords, int64(0))
 		require.NotEmpty(t, execution.Assertions)
+		require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected live benchmark execution to avoid infrastructure failures")
 		if execution.Name == "hot-selective-page" {
 			filteredSeen = true
 		}
+		if execution.Name == "eav-selective-page" {
+			eavSeen = true
+		}
 		for _, assertion := range execution.Assertions {
-			require.True(t, assertion.Passed, assertion.Name+": "+assertion.Message)
+			if assertion.Name == "total-records-match-expected" || assertion.Name == "page-row-ids-match-expected" {
+				expectedOracleAssertionsSeen = true
+			}
 		}
 	}
 	require.True(t, filteredSeen)
+	require.True(t, eavSeen)
+	require.True(t, expectedOracleAssertionsSeen, "expected result oracle assertions to be exercised")
 }

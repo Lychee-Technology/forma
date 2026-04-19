@@ -259,6 +259,60 @@ func TestSoftDelete_AllTiersDeleted(t *testing.T) {
 	t.Logf("TC-04-05 PASSED: Deleted records from all tiers excluded")
 }
 
+// TestSoftDelete_HotDeleteShadowsParquetVersion verifies a latest hot tombstone hides an older parquet row.
+func TestSoftDelete_HotDeleteShadowsParquetVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	h, err := NewFederatedTestHarness(ctx)
+	require.NoError(t, err, "failed to create harness")
+	defer h.Cleanup(ctx)
+
+	rowID := uuid.Must(uuid.NewV7())
+	baseTime := time.Now()
+
+	// Older visible version in parquet.
+	require.NoError(t, h.WriteParquet(ctx, "base", "shadowed_base.parquet", []TestRecord{{
+		RowID:      rowID,
+		SchemaID:   h.SchemaID,
+		Attributes: map[string]any{"name": "Old Visible Version", "version": 1},
+		ChangedAt:  baseTime.Add(-2 * time.Hour).UnixMilli(),
+		DeletedAt:  0,
+	}}))
+
+	// Newer tombstone in hot should shadow the parquet version.
+	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{{
+		RowID:      rowID,
+		SchemaID:   h.SchemaID,
+		Attributes: map[string]any{"name": "Deleted Version", "version": 2},
+		ChangedAt:  baseTime.UnixMilli(),
+		DeletedAt:  baseTime.UnixMilli(),
+	}}))
+
+	// Add one unrelated live row so the query still returns data.
+	liveRowID := uuid.Must(uuid.NewV7())
+	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{{
+		RowID:      liveRowID,
+		SchemaID:   h.SchemaID,
+		Attributes: map[string]any{"name": "Still Visible", "version": 1},
+		ChangedAt:  baseTime.Add(-time.Minute).UnixMilli(),
+		DeletedAt:  0,
+	}}))
+
+	result, err := h.ExecuteFederatedQuery(ctx, &QueryOptions{Limit: 10})
+	require.NoError(t, err, "federated query failed")
+
+	AssertRecordCount(t, result.Records, 1)
+	require.Equal(t, liveRowID, result.Records[0].RowID, "expected only unrelated live row to remain visible")
+	require.EqualValues(t, 1, result.TotalRecords, "expected count query to honor delete shadowing")
+
+	t.Logf("TC-04-05B PASSED: Hot tombstone shadows older parquet version")
+}
+
 // TestSoftDelete_BulkDeletedExclusion verifies performance with many deleted records.
 func TestSoftDelete_BulkDeletedExclusion(t *testing.T) {
 	if testing.Short() {

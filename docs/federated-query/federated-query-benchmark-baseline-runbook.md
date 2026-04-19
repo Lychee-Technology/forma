@@ -63,10 +63,12 @@ Compare these fields first:
 - use `medium` to compare behavior across distributions and page-depth workloads
 - treat assertion failures as correctness regressions even if latency improves
 - treat large `max` growth separately from percentile movement; it is often a sign of tier skew or unstable deep pagination
+- read `correctness_failures` and `infra_failures` separately in benchmark summaries; only the latter indicates an execution-environment problem
 
 ## Current Limitations
 
 - baseline presets currently favor `smoke` and `plan` modes for artifact stability over live execution cost
 - use `go run ./cmd/benchmark run -mode live ...` when you need executable benchmark evidence instead of planning-only artifacts
+- live benchmark correctness checks compare query results against the benchmark's loaded tier state rather than only the pre-split generated dataset
 - baseline capture is designed for artifact stability first, not for production-like throughput measurement
 - CI integration and operator workflow guidance are documented in `docs/federated-query/federated-query-benchmark-ci-and-ops-guide.md`
