@@ -17,114 +17,105 @@ const (
 
 // WorkloadDefinition declares a benchmark workload.
 type WorkloadDefinition struct {
-	Name                   string           `json:"name"`
-	Description            string           `json:"description"`
-	Category               WorkloadCategory `json:"category"`
-	TargetSchema           string           `json:"target_schema"`
-	FilterAttribute        string           `json:"filter_attribute,omitempty"`
-	FilterValue            string           `json:"filter_value,omitempty"`
-	PageSize               int              `json:"page_size"`
-	PageNumber             int              `json:"page_number"`
-	SupportsDistributions  []Distribution   `json:"supports_distributions"`
-	PreferHot              bool             `json:"prefer_hot,omitempty"`
-	UsesEAVFilter          bool             `json:"uses_eav_filter,omitempty"`
-	LargePageJump          bool             `json:"large_page_jump,omitempty"`
-	Phase1ExecutionStubbed bool             `json:"phase1_execution_stubbed"`
+	Name                  string           `json:"name"`
+	Description           string           `json:"description"`
+	Category              WorkloadCategory `json:"category"`
+	TargetSchema          string           `json:"target_schema"`
+	FilterAttribute       string           `json:"filter_attribute,omitempty"`
+	FilterValue           string           `json:"filter_value,omitempty"`
+	PageSize              int              `json:"page_size"`
+	PageNumber            int              `json:"page_number"`
+	SupportsDistributions []Distribution   `json:"supports_distributions"`
+	PreferHot             bool             `json:"prefer_hot,omitempty"`
+	UsesEAVFilter         bool             `json:"uses_eav_filter,omitempty"`
+	LargePageJump         bool             `json:"large_page_jump,omitempty"`
 }
 
 // DefaultWorkloads returns the initial declarative workload matrix.
 func DefaultWorkloads() []WorkloadDefinition {
 	return []WorkloadDefinition{
 		{
-			Name:                   "baseline-page-1",
-			Description:            "Unfiltered first page ordered by trade time descending.",
-			Category:               WorkloadCategoryPagination,
-			TargetSchema:           "trade",
-			PageSize:               20,
-			PageNumber:             1,
-			SupportsDistributions:  allDistributions(),
-			Phase1ExecutionStubbed: true,
+			Name:                  "baseline-page-1",
+			Description:           "Unfiltered first page ordered by trade time descending.",
+			Category:              WorkloadCategoryPagination,
+			TargetSchema:          "trade",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
 		},
 		{
-			Name:                   "customer-region-page",
-			Description:            "Customer region filter to validate schema-scoped non-trade execution.",
-			Category:               WorkloadCategoryFilter,
-			TargetSchema:           "customer",
-			FilterAttribute:        "region",
-			FilterValue:            "NA",
-			PageSize:               20,
-			PageNumber:             1,
-			SupportsDistributions:  allDistributions(),
-			Phase1ExecutionStubbed: true,
+			Name:                  "customer-region-page",
+			Description:           "Customer region filter to validate schema-scoped non-trade execution.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "customer",
+			FilterAttribute:       "region",
+			FilterValue:           "NA",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
 		},
 		{
-			Name:                   "security-symbol-page",
-			Description:            "Security symbol filter to validate schema-scoped reference lookups.",
-			Category:               WorkloadCategoryFilter,
-			TargetSchema:           "security",
-			FilterAttribute:        "symbol",
-			FilterValue:            "SYM00001",
-			PageSize:               20,
-			PageNumber:             1,
-			SupportsDistributions:  allDistributions(),
-			Phase1ExecutionStubbed: true,
+			Name:                  "security-symbol-page",
+			Description:           "Security symbol filter to validate schema-scoped reference lookups.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "security",
+			FilterAttribute:       "symbol",
+			FilterValue:           "SYM00001",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
 		},
 		{
-			Name:                   "hot-selective-page",
-			Description:            "High-selectivity hot-column filter with pagination on trade rows.",
-			Category:               WorkloadCategoryFilter,
-			TargetSchema:           "trade",
-			FilterAttribute:        "symbol",
-			FilterValue:            "SYM00001",
-			PageSize:               20,
-			PageNumber:             1,
-			SupportsDistributions:  allDistributions(),
-			Phase1ExecutionStubbed: true,
+			Name:                  "hot-selective-page",
+			Description:           "High-selectivity hot-column filter with pagination on trade rows.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "trade",
+			FilterAttribute:       "symbol",
+			FilterValue:           "SYM00001",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
 		},
 		{
-			Name:                   "eav-selective-page",
-			Description:            "EAV-backed filter with paginated trade results.",
-			Category:               WorkloadCategoryFilter,
-			TargetSchema:           "trade",
-			FilterAttribute:        "exchange",
-			FilterValue:            "NYSE",
-			PageSize:               20,
-			PageNumber:             1,
-			SupportsDistributions:  allDistributions(),
-			UsesEAVFilter:          true,
-			Phase1ExecutionStubbed: true,
+			Name:                  "eav-selective-page",
+			Description:           "EAV-backed filter with paginated trade results.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "trade",
+			FilterAttribute:       "exchange",
+			FilterValue:           "NYSE",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			UsesEAVFilter:         true,
 		},
 		{
-			Name:                   "mixed-tier-window",
-			Description:            "Time-window query expected to touch cold and hot tiers.",
-			Category:               WorkloadCategoryTierMix,
-			TargetSchema:           "trade",
-			PageSize:               50,
-			PageNumber:             1,
-			SupportsDistributions:  []Distribution{DistributionTemporal, DistributionHotspot, DistributionUniform},
-			Phase1ExecutionStubbed: true,
+			Name:                  "mixed-tier-window",
+			Description:           "Time-window query expected to touch cold and hot tiers.",
+			Category:              WorkloadCategoryTierMix,
+			TargetSchema:          "trade",
+			PageSize:              50,
+			PageNumber:            1,
+			SupportsDistributions: []Distribution{DistributionTemporal, DistributionHotspot, DistributionUniform},
 		},
 		{
-			Name:                   "deep-page-1000",
-			Description:            "Deep pagination baseline at page 1,000 using LIMIT/OFFSET semantics.",
-			Category:               WorkloadCategoryDeepPage,
-			TargetSchema:           "trade",
-			PageSize:               20,
-			PageNumber:             1000,
-			SupportsDistributions:  allDistributions(),
-			LargePageJump:          true,
-			Phase1ExecutionStubbed: true,
+			Name:                  "deep-page-1000",
+			Description:           "Deep pagination baseline at page 1,000 using LIMIT/OFFSET semantics.",
+			Category:              WorkloadCategoryDeepPage,
+			TargetSchema:          "trade",
+			PageSize:              20,
+			PageNumber:            1000,
+			SupportsDistributions: allDistributions(),
+			LargePageJump:         true,
 		},
 		{
-			Name:                   "deep-page-100000",
-			Description:            "Large page jump benchmark at page 100,000.",
-			Category:               WorkloadCategoryDeepPage,
-			TargetSchema:           "trade",
-			PageSize:               20,
-			PageNumber:             100000,
-			SupportsDistributions:  allDistributions(),
-			LargePageJump:          true,
-			Phase1ExecutionStubbed: true,
+			Name:                  "deep-page-100000",
+			Description:           "Large page jump benchmark at page 100,000.",
+			Category:              WorkloadCategoryDeepPage,
+			TargetSchema:          "trade",
+			PageSize:              20,
+			PageNumber:            100000,
+			SupportsDistributions: allDistributions(),
+			LargePageJump:         true,
 		},
 	}
 }
@@ -157,7 +148,7 @@ func (w WorkloadDefinition) UsesSimpleFilter() bool {
 	return strings.TrimSpace(w.FilterAttribute) != ""
 }
 
-// DefaultWorkloadNames returns the full phase-1 workload set.
+// DefaultWorkloadNames returns the full default workload set.
 func DefaultWorkloadNames() []string {
 	workloads := DefaultWorkloads()
 	names := make([]string, 0, len(workloads))

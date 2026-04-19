@@ -5,7 +5,7 @@ Repository: `forma`
 
 ## Purpose
 
-This guide defines which benchmark subsets are safe for local validation, PR-time CI, and heavier manual review. It also documents how to read the generated artifacts and what is still deferred in phase 1.
+This guide defines which benchmark subsets are safe for local validation, PR-time CI, and heavier manual review. It also documents how to read the generated artifacts and what remains deferred from full performance-gating workflows.
 
 ## Current Execution Model
 
@@ -13,6 +13,7 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - `-mode smoke` validates config, fixtures, and workload resolution only
 - `-mode plan` validates config and emits the planned workload shape only
 - `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
+- live benchmark summaries distinguish correctness failures from infrastructure failures, and workload-level expected-result checks are part of the executable path
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
@@ -167,7 +168,7 @@ Interpretation guidance:
 
 ## Deferred Work
 
-These items remain intentionally out of scope for the current phase-1 operating model:
+These items remain intentionally out of scope for the current operating model:
 
 - official CI performance gating on large-scale thresholds
 - benchmark trend dashboards and longitudinal regression tracking
