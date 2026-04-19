@@ -105,6 +105,19 @@ Typical examples:
 - `truth-pass` is usually more expensive than `loaded-state`, so do not assume all workloads should use it by default
 - if a workload changes oracle mode between baselines, treat that as a benchmark methodology change, not a pure performance change
 
+## PreferHot
+
+`prefer_hot` currently records workload intent and benchmark provenance. It tells reviewers that a workload is expected to bias toward hot data freshness or hot-tier-heavy access patterns.
+
+At the current stage, `prefer_hot` should mostly be interpreted as metadata. The benchmark now uses a real hot-preferred execution override only for tier-mix workloads where a Postgres-only hot-path comparison is intentional.
+
+- it appears in workload definitions, run results, summaries, and plan notes
+- it helps reviewers distinguish hot-biased workloads from neutral workloads when comparing baselines
+- for filter-heavy workloads it does not yet mean the benchmark has applied a hard routing override that excludes cold or mixed execution paths
+- for tier-mix workloads such as `hot-only-window`, the benchmark may record that a hot-preferred execution override was applied
+
+Treat any future change that turns `prefer_hot` into a real execution flag as a benchmark methodology change and compare baselines accordingly.
+
 ## Interpretation Guidance
 
 - use `small` to catch obvious correctness or latency regressions quickly

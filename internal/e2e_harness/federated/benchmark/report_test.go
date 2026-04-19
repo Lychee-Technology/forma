@@ -51,7 +51,7 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 		OracleModes:  map[string]string{"q1": string(OracleModeLoadedState), "q2": string(OracleModeTruthPass)},
 		Executions: []WorkloadRunResult{
 			{Name: "q1", Passed: true, OracleMode: string(OracleModeLoadedState), Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
-			{Name: "q2", Passed: false, OracleMode: string(OracleModeTruthPass), FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+			{Name: "q2", Passed: false, PreferHot: true, OracleMode: string(OracleModeTruthPass), FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
 		},
 	}
 	if err := WriteBaselineCapture(dir, result); err != nil {
@@ -86,6 +86,9 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	}
 	if summary.OracleModes["q2"] != string(OracleModeTruthPass) {
 		t.Fatalf("expected summary to expose oracle modes, got %+v", summary.OracleModes)
+	}
+	if !summary.Workloads[1].PreferHot {
+		t.Fatalf("expected workload summary to expose prefer_hot intent, got %+v", summary.Workloads[1])
 	}
 	if len(summary.Workloads) != 2 {
 		t.Fatalf("expected two workload summaries, got %d", len(summary.Workloads))
@@ -126,10 +129,13 @@ func TestFormatConsoleSummary(t *testing.T) {
 }
 
 func TestSummarizeWorkloadsCarriesOracleMode(t *testing.T) {
-	result := &RunResult{Executions: []WorkloadRunResult{{Name: "q1", OracleMode: string(OracleModeTruthPass), Duration: 10 * time.Millisecond, Passed: true}}}
+	result := &RunResult{Executions: []WorkloadRunResult{{Name: "q1", PreferHot: true, OracleMode: string(OracleModeTruthPass), Duration: 10 * time.Millisecond, Passed: true}}}
 	workloads := summarizeWorkloads(result)
 	if len(workloads) != 1 || workloads[0].OracleMode != string(OracleModeTruthPass) {
 		t.Fatalf("expected workload summary to carry oracle mode, got %+v", workloads)
+	}
+	if !workloads[0].PreferHot {
+		t.Fatalf("expected workload summary to carry prefer_hot, got %+v", workloads)
 	}
 }
 
