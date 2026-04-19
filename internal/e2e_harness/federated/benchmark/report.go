@@ -65,6 +65,7 @@ type WorkloadSummary struct {
 	Category            string                   `json:"category"`
 	TargetSchema        string                   `json:"target_schema,omitempty"`
 	OracleMode          string                   `json:"oracle_mode,omitempty"`
+	PreferHot           bool                     `json:"prefer_hot,omitempty"`
 	Distribution        Distribution             `json:"distribution"`
 	ExecutionCount      int                      `json:"execution_count"`
 	Passed              bool                     `json:"passed"`
@@ -164,7 +165,7 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	if len(result.Executions) > 0 {
 		b.WriteString("\n## Executions\n\n")
 		for _, execution := range result.Executions {
-			b.WriteString(fmt.Sprintf("- `%s`: passed=%t failure_kind=%s failures=%d count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.Passed, execution.FailureKind, execution.FailureCount, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
+			b.WriteString(fmt.Sprintf("- `%s`: passed=%t failure_kind=%s oracle_mode=%s prefer_hot=%t failures=%d count=%d total=%d duration=%s offset=%d\n", execution.Name, execution.Passed, execution.FailureKind, execution.OracleMode, execution.PreferHot, execution.FailureCount, execution.ResultCount, execution.TotalRecords, execution.Duration, execution.Offset))
 			if execution.InfraError != "" {
 				b.WriteString(fmt.Sprintf("  infra_error=%s\n", execution.InfraError))
 			}
@@ -185,7 +186,7 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	if len(summary.Workloads) > 0 {
 		b.WriteString("\n## Workload Summaries\n\n")
 		for _, workload := range summary.Workloads {
-			b.WriteString(fmt.Sprintf("- `%s`: schema=%s executions=%d passed=%t qps=%.2f p95=%s avg=%s avg_result_count=%.2f avg_total_records=%.2f\n", workload.Name, workload.TargetSchema, workload.ExecutionCount, workload.Passed, workload.QPS, workload.P95, workload.Avg, workload.AvgResultCount, workload.AvgTotalRecords))
+			b.WriteString(fmt.Sprintf("- `%s`: schema=%s oracle_mode=%s prefer_hot=%t executions=%d passed=%t qps=%.2f p95=%s avg=%s avg_result_count=%.2f avg_total_records=%.2f\n", workload.Name, workload.TargetSchema, workload.OracleMode, workload.PreferHot, workload.ExecutionCount, workload.Passed, workload.QPS, workload.P95, workload.Avg, workload.AvgResultCount, workload.AvgTotalRecords))
 		}
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
@@ -484,6 +485,7 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			workload.Category = string(def.Category)
 			workload.TargetSchema = def.TargetSchema
 			workload.OracleMode = string(def.ResolvedOracleMode())
+			workload.PreferHot = def.PreferHot
 			workload.Distribution = runs[0].Distribution
 			workload.PageSize = def.PageSize
 		}
@@ -515,6 +517,9 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			}
 			if workload.OracleMode == "" && run.OracleMode != "" {
 				workload.OracleMode = run.OracleMode
+			}
+			if run.PreferHot {
+				workload.PreferHot = true
 			}
 			for _, assertion := range run.Assertions {
 				stat := workload.AssertionStats[assertion.Name]

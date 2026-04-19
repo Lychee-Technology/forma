@@ -47,6 +47,18 @@ Without this distinction, two correctness failures could look identical even tho
 - when a selective workload fails under `truth-pass`, assume the benchmark has already validated the expected answer through the executable path
 - when comparing benchmark summaries, use `oracle_mode` alongside `correctness_failures` so reviewers understand whether failures came from loaded-state reconstruction or truth-pass-backed verification
 
+## PreferHot
+
+The benchmark also carries `prefer_hot` as workload intent metadata.
+
+At this stage, `prefer_hot` means the workload is intended to emphasize hot-tier freshness or hot-biased access patterns. For most workloads it is still intent metadata only. The current exception is tier-mix workloads where the benchmark may apply a hot-preferred Postgres-only override to make that execution choice explicit.
+
+Operationally, that means:
+
+- use `prefer_hot` to group or explain workloads in reviews and benchmark summaries
+- do not interpret `prefer_hot=true` as proof that cold tiers were excluded from execution unless the run also records a hot-preferred execution override in plan notes
+- if a later change turns `prefer_hot` into a real routing or planning flag, treat that as a benchmark methodology change rather than a simple benchmark expansion
+
 ## Workload Groups
 
 ### Smoke

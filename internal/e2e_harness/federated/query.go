@@ -21,6 +21,19 @@ const (
 func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *QueryOptions) (*QueryResult, error) {
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
+	if opts.PreferHot {
+		result, err := h.ExecutePostgresQuery(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		if result.Plan == nil {
+			result.Plan = &internal.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
+		}
+		result.Plan.Notes = append(result.Plan.Notes, "prefer_hot_override", "postgres_only_execution")
+		result.Plan.Timings["total"] = time.Since(start).Milliseconds()
+		result.Duration = time.Since(start)
+		return result, nil
+	}
 	benchmarkProjection := usesBenchmarkProjection(opts)
 	if benchmarkProjection {
 		if err := prepareBenchmarkDuckDBMacros(ctx, h); err != nil {
@@ -635,72 +648,255 @@ func (h *FederatedTestHarness) getDirtyIDs(ctx context.Context) ([]uuid.UUID, er
 func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *QueryOptions) (*QueryResult, error) {
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
+	countQuery, countArgs := h.buildPostgresOnlyCountQuery(opts)
+	var total int64
+	if err := h.PGDB.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, err
+	}
 	if opts.CountOnly {
-		var total int64
-		if err := h.PGDB.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM entity_main 
-			WHERE ltbase_schema_id = $1 AND (ltbase_deleted_at IS NULL OR ltbase_deleted_at = 0)
-		`, h.SchemaID).Scan(&total); err != nil {
-			return nil, err
-		}
-		return &QueryResult{TotalRecords: total, Duration: time.Since(start)}, nil
+		return &QueryResult{TotalRecords: total, Duration: time.Since(start), Plan: buildPostgresOnlyExecutionPlan(time.Since(start), opts.PreferHot)}, nil
 	}
 
-	query := `
-		SELECT 
-			em.ltbase_row_id,
-			em.ltbase_schema_id,
-			em.ltbase_created_at,
-			em.ltbase_deleted_at
-		FROM entity_main em
-		WHERE em.ltbase_schema_id = $1
-			AND (em.ltbase_deleted_at IS NULL OR em.ltbase_deleted_at = 0)
-		ORDER BY em.ltbase_created_at DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := h.PGDB.QueryContext(ctx, query, h.SchemaID, opts.Limit, opts.Offset)
+	query, args := h.buildPostgresOnlySelectQuery(opts)
+	rows, err := h.PGDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	benchmarkProjection := usesBenchmarkProjection(opts)
 	var records []*internal.PersistentRecord
 	for rows.Next() {
-		var rowID uuid.UUID
+		var rowID string
 		var schemaID int16
-		var createdAt int64
-		var deletedAt sql.NullInt64
-
-		if err := rows.Scan(&rowID, &schemaID, &createdAt, &deletedAt); err != nil {
-			return nil, err
+		var changedAt, deletedAt int64
+		var name sql.NullString
+		var version sql.NullInt64
+		var symbol, exchange, region sql.NullString
+		var tradeType, tradeTime sql.NullInt64
+		if benchmarkProjection {
+			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+				return nil, err
+			}
 		}
-
-		rec := &internal.PersistentRecord{
-			RowID:     rowID,
-			SchemaID:  schemaID,
-			CreatedAt: createdAt,
-			UpdatedAt: createdAt,
+		rec := &internal.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: changedAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
+		if deletedAt > 0 {
+			rec.DeletedAt = &deletedAt
 		}
-		if deletedAt.Valid && deletedAt.Int64 > 0 {
-			rec.DeletedAt = &deletedAt.Int64
+		if name.Valid {
+			rec.TextItems["name"] = name.String
 		}
-
+		if benchmarkProjection {
+			if symbol.Valid {
+				rec.TextItems["symbol"] = symbol.String
+			}
+			if exchange.Valid {
+				rec.TextItems["exchange"] = exchange.String
+			}
+			if region.Valid {
+				rec.TextItems["region"] = region.String
+			}
+		}
+		if version.Valid {
+			rec.Float64Items["version"] = float64(version.Int64)
+		}
+		if benchmarkProjection && (tradeType.Valid || tradeTime.Valid) {
+			rec.Int64Items = make(map[string]int64)
+			if tradeType.Valid {
+				rec.Int64Items["tradeType"] = tradeType.Int64
+			}
+			if tradeTime.Valid {
+				rec.Int64Items["tradeTime"] = tradeTime.Int64
+			}
+		}
 		records = append(records, rec)
 	}
-
-	// Get total count
-	var total int64
-	_ = h.PGDB.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM entity_main 
-		WHERE ltbase_schema_id = $1 AND (ltbase_deleted_at IS NULL OR ltbase_deleted_at = 0)
-	`, h.SchemaID).Scan(&total)
 
 	return &QueryResult{
 		Records:      records,
 		TotalRecords: total,
 		Duration:     time.Since(start),
+		Plan:         buildPostgresOnlyExecutionPlan(time.Since(start), opts.PreferHot),
 	}, nil
+}
+
+func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) (string, []any) {
+	args := []any{h.SchemaID}
+	attrIDs := benchmarkPostgresAttributeIDs()
+	query := strings.Builder{}
+	query.WriteString(`
+		SELECT
+			cl.row_id::VARCHAR,
+			cl.schema_id,
+			cl.changed_at,
+			COALESCE(cl.deleted_at, 0),
+			COALESCE(hot_vals.name, hot_vals.symbol, '') as name,
+			0 as version`)
+	if usesBenchmarkProjection(opts) {
+		query.WriteString(`,
+			COALESCE(hot_vals.symbol, em.text_01, '') as symbol,
+			COALESCE(hot_vals.exchange, '') as exchange,
+			COALESCE(hot_vals.region, em.text_02, '') as region,
+			COALESCE(hot_vals.trade_type, em.smallint_01::BIGINT, 0) as tradeType,
+			COALESCE(hot_vals.trade_time, em.bigint_02, 0) as tradeTime`)
+	}
+	query.WriteString(fmt.Sprintf(`
+		FROM change_log cl
+		LEFT JOIN entity_main em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
+		LEFT JOIN (
+			SELECT schema_id, row_id,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS exchange,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,
+				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_type,
+				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_time,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS name
+			FROM eav_data
+			WHERE attr_id IN (%d, %d, %d, %d, %d, %d)
+			GROUP BY schema_id, row_id
+		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
+		WHERE cl.schema_id = $1 AND cl.flushed_at = 0 AND (cl.deleted_at IS NULL OR cl.deleted_at = 0)`,
+		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name,
+		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name))
+	filterSQL, filterArgs := buildPostgresOnlyFilterClauses(opts, 2)
+	query.WriteString(filterSQL)
+	args = append(args, filterArgs...)
+	query.WriteString(fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", buildPostgresOnlyOrderBy(opts), len(args)+1, len(args)+2))
+	args = append(args, opts.Limit, opts.Offset)
+	return query.String(), args
+}
+
+func (h *FederatedTestHarness) buildPostgresOnlyCountQuery(opts *QueryOptions) (string, []any) {
+	args := []any{h.SchemaID}
+	attrIDs := benchmarkPostgresAttributeIDs()
+	query := strings.Builder{}
+	query.WriteString(fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM change_log cl
+		LEFT JOIN entity_main em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
+		LEFT JOIN (
+			SELECT schema_id, row_id,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS exchange,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,
+				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_type,
+				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_time,
+				MAX(CASE WHEN attr_id = %d THEN value_text END) AS name
+			FROM eav_data
+			WHERE attr_id IN (%d, %d, %d, %d, %d, %d)
+			GROUP BY schema_id, row_id
+		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
+		WHERE cl.schema_id = $1 AND cl.flushed_at = 0 AND (cl.deleted_at IS NULL OR cl.deleted_at = 0)`,
+		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name,
+		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name))
+	filterSQL, filterArgs := buildPostgresOnlyFilterClauses(opts, 2)
+	query.WriteString(filterSQL)
+	args = append(args, filterArgs...)
+	return query.String(), args
+}
+
+func buildPostgresOnlyFilterClauses(opts *QueryOptions, placeholderStart int) (string, []any) {
+	if opts == nil {
+		return "", nil
+	}
+	args := make([]any, 0)
+	parts := make([]string, 0)
+	placeholder := placeholderStart
+	if opts.Filter != nil && opts.Filter.RowID != uuid.Nil {
+		parts = append(parts, fmt.Sprintf("AND cl.row_id = $%d", placeholder))
+		args = append(args, opts.Filter.RowID)
+		placeholder++
+	}
+	if opts.Filter != nil {
+		for key, value := range opts.Filter.Conditions {
+			expression := postgresOnlyFilterExpression(key)
+			if expression == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("AND %s = $%d", expression, placeholder))
+			args = append(args, value)
+			placeholder++
+		}
+	}
+	if opts.TradeTimeStart > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s >= $%d", postgresOnlyFilterExpression("tradeTime"), placeholder))
+		args = append(args, opts.TradeTimeStart)
+		placeholder++
+	}
+	if opts.TradeTimeEnd > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s <= $%d", postgresOnlyFilterExpression("tradeTime"), placeholder))
+		args = append(args, opts.TradeTimeEnd)
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return " " + strings.Join(parts, " "), args
+}
+
+func buildPostgresOnlyOrderBy(opts *QueryOptions) string {
+	if opts == nil || opts.SortBy == "" {
+		return "cl.row_id ASC"
+	}
+	column := postgresOnlyFilterExpression(opts.SortBy)
+	if column == "" {
+		column = "cl.row_id"
+	}
+	direction := "ASC"
+	if opts.SortDesc {
+		direction = "DESC"
+	}
+	return fmt.Sprintf("%s %s, cl.row_id ASC", column, direction)
+}
+
+type postgresBenchmarkAttributeIDs struct {
+	symbol    int
+	exchange  int
+	region    int
+	tradeType int
+	tradeTime int
+	name      int
+}
+
+func benchmarkPostgresAttributeIDs() postgresBenchmarkAttributeIDs {
+	return postgresBenchmarkAttributeIDs{
+		symbol:    benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
+		exchange:  benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
+		region:    benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
+		tradeType: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
+		tradeTime: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
+		name:      benchmarkAttributeID(benchmarkSchemaIDTrade, "name"),
+	}
+}
+
+func postgresOnlyFilterExpression(attribute string) string {
+	switch attribute {
+	case "symbol":
+		return "COALESCE(hot_vals.symbol, em.text_01, '')"
+	case "exchange":
+		return "COALESCE(hot_vals.exchange, '')"
+	case "region":
+		return "COALESCE(hot_vals.region, em.text_02, '')"
+	case "tradeType":
+		return "COALESCE(hot_vals.trade_type, em.smallint_01::BIGINT, 0)"
+	case "tradeTime":
+		return "COALESCE(hot_vals.trade_time, em.bigint_02, 0)"
+	default:
+		return ""
+	}
+}
+
+func buildPostgresOnlyExecutionPlan(duration time.Duration, preferHot bool) *internal.ExecutionPlan {
+	notes := []string{"hot_buffer_scanned", "postgres_only_execution"}
+	if preferHot {
+		notes = append(notes, "prefer_hot_override")
+	}
+	return &internal.ExecutionPlan{Notes: notes, Timings: map[string]int64{"total": duration.Milliseconds()}}
 }
 
 // StreamFederatedQuery streams query results with a handler callback.

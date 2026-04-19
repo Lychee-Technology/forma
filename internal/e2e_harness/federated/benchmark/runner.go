@@ -40,6 +40,7 @@ type WorkloadRunResult struct {
 	PageSize     int               `json:"page_size"`
 	PageNumber   int               `json:"page_number"`
 	Offset       int               `json:"offset"`
+	PreferHot    bool              `json:"prefer_hot,omitempty"`
 	ResultCount  int               `json:"result_count"`
 	TotalRecords int64             `json:"total_records"`
 	Duration     time.Duration     `json:"duration"`
@@ -243,6 +244,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			fmt.Sprintf("loaded tiered dataset profile=%s", profile.Name),
 			fmt.Sprintf("loaded-state snapshot rows=%d", len(loadedRecords)),
 			oracleNotes,
+			"prefer_hot expresses workload intent and report provenance, not hard execution routing",
 			"executed supported federated query workloads",
 		},
 	}
@@ -303,6 +305,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		h.SchemaID = previousSchemaID
 	}()
 	opts := queryOptionsForWorkloadWithConfig(workload, r.config.PageSize, r.genConfig)
+	opts.PreferHot = workload.PreferHot && workload.Category == WorkloadCategoryTierMix
 	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
 		opts.Filter = &federated.Filter{Conditions: conditions}
 	}
@@ -317,6 +320,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		PageSize:     pageSize,
 		PageNumber:   workload.PageNumber,
 		Offset:       opts.Offset,
+		PreferHot:    workload.PreferHot,
 		ResultCount:  len(result.Records),
 		TotalRecords: result.TotalRecords,
 		Duration:     result.Duration,
@@ -325,6 +329,12 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	}
 	if result.Plan != nil {
 		run.PlanNotes = append([]string(nil), result.Plan.Notes...)
+	}
+	if workload.PreferHot {
+		run.PlanNotes = append(run.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
+		if opts.PreferHot {
+			run.PlanNotes = append(run.PlanNotes, "prefer_hot_execution=true (postgres-only override active for tier-mix workload)")
+		}
 	}
 	return run, result.Records, nil
 }
@@ -341,6 +351,7 @@ func failedWorkloadRunResult(workload WorkloadDefinition, distribution Distribut
 		PageSize:     pageSize,
 		PageNumber:   workload.PageNumber,
 		Offset:       workload.DerivedOffset(defaultPageSize),
+		PreferHot:    workload.PreferHot,
 		Passed:       false,
 		FailureKind:  FailureKindInfra,
 		FailureCount: 1,

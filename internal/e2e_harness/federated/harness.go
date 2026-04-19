@@ -66,6 +66,7 @@ type QueryOptions struct {
 	Filter         *Filter
 	SortBy         string
 	SortDesc       bool
+	PreferHot      bool
 	TradeTimeStart int64
 	TradeTimeEnd   int64
 	CountOnly      bool

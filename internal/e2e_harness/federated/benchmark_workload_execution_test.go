@@ -54,6 +54,7 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	require.False(t, result.ValidationOnly)
 	require.Len(t, result.Executions, 24)
 	require.Contains(t, result.Notes, "oracle_modes loaded_state=8 truth_pass=4")
+	require.Contains(t, result.Notes, "prefer_hot expresses workload intent and report provenance, not hard execution routing")
 	customerSeen := false
 	securitySeen := false
 	filteredSeen := false
@@ -90,10 +91,16 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		}
 		if execution.Name == "hot-low-selectivity-page" {
 			lowSelectiveSeen = true
+			require.True(t, execution.PreferHot)
+			require.Contains(t, execution.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
+			require.NotContains(t, execution.PlanNotes, "prefer_hot_execution=true (postgres-only override active for tier-mix workload)")
 			require.Empty(t, execution.FailureKind, "expected low-selectivity workload to pass correctness in live execution")
 		}
 		if execution.Name == "mixed-hot-eav-page" {
 			mixedFilterSeen = true
+			require.True(t, execution.PreferHot)
+			require.Contains(t, execution.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
+			require.NotContains(t, execution.PlanNotes, "prefer_hot_execution=true (postgres-only override active for tier-mix workload)")
 			require.Empty(t, execution.FailureKind, "expected mixed hot+EAV workload to pass correctness in live execution")
 		}
 		if execution.Name == "mixed-tier-window" {
@@ -101,6 +108,9 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		}
 		if execution.Name == "hot-only-window" {
 			hotOnlySeen = true
+			require.True(t, execution.PreferHot)
+			require.Contains(t, execution.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
+			require.Contains(t, execution.PlanNotes, "prefer_hot_execution=true (postgres-only override active for tier-mix workload)")
 		}
 		if execution.Name == "cold-only-window" {
 			coldOnlySeen = true
