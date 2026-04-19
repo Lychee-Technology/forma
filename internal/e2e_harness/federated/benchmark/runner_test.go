@@ -87,6 +87,21 @@ func TestQueryOptionsForWorkloadAddsMixedTierWindowTradeTimeRange(t *testing.T) 
 	}
 }
 
+func TestQueryOptionsForWorkloadAddsHotAndColdWindowRanges(t *testing.T) {
+	genCfg := GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionTemporal, TimeWindowDays: 30, BaseTime: defaultBaseTime}.WithDefaults()
+	hotOpts := queryOptionsForWorkloadWithConfig(WorkloadDefinition{Name: "hot-only-window", TargetSchema: "trade", PageSize: 50, PageNumber: 1}, 20, genCfg)
+	coldOpts := queryOptionsForWorkloadWithConfig(WorkloadDefinition{Name: "cold-only-window", TargetSchema: "trade", PageSize: 50, PageNumber: 1}, 20, genCfg)
+	if hotOpts.TradeTimeStart <= 0 || hotOpts.TradeTimeEnd <= hotOpts.TradeTimeStart {
+		t.Fatalf("expected hot-only window to set a valid range, got %+v", hotOpts)
+	}
+	if coldOpts.TradeTimeStart <= 0 || coldOpts.TradeTimeEnd <= coldOpts.TradeTimeStart {
+		t.Fatalf("expected cold-only window to set a valid range, got %+v", coldOpts)
+	}
+	if coldOpts.TradeTimeEnd > hotOpts.TradeTimeStart {
+		t.Fatalf("expected cold-only window to end before hot-only window starts, cold=%+v hot=%+v", coldOpts, hotOpts)
+	}
+}
+
 func TestValidateSchemaScopeDetectsCrossSchemaRows(t *testing.T) {
 	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000010"), SchemaID: SchemaIDTrade}}
 	assertion := validateSchemaScope(WorkloadDefinition{Name: "customer-region-page", TargetSchema: "customer"}, records)
@@ -275,6 +290,30 @@ func TestBuildExpectedWorkloadResultsFromRecordsHonorsMixedTierWindow(t *testing
 	}
 }
 
+func TestGeneratedRecordMatchesFilterForWorkloadSupportsMultipleConditions(t *testing.T) {
+	workload := WorkloadDefinition{FilterConditions: map[string]any{"symbol": "SYM00001", "exchange": "NYSE"}}
+	record := GeneratedRecord{SchemaName: "trade", Attributes: map[string]any{"symbol": "SYM00001", "exchange": "NYSE"}}
+	if !generatedRecordMatchesFilterForWorkload(record, workload) {
+		t.Fatalf("expected record to satisfy all filter conditions")
+	}
+	record.Attributes["exchange"] = "NASDAQ"
+	if generatedRecordMatchesFilterForWorkload(record, workload) {
+		t.Fatalf("expected record to fail when one filter condition does not match")
+	}
+}
+
+func TestValidateFilterMatchSupportsMultipleConditions(t *testing.T) {
+	workload := WorkloadDefinition{FilterConditions: map[string]any{"symbol": "SYM00001", "exchange": "NYSE"}}
+	passing := []*internal.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NYSE"}}}
+	if assertion := validateFilterMatch(workload, passing); !assertion.Passed {
+		t.Fatalf("expected multi-condition filter assertion to pass: %+v", assertion)
+	}
+	failing := []*internal.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NASDAQ"}}}
+	if assertion := validateFilterMatch(workload, failing); assertion.Passed {
+		t.Fatalf("expected multi-condition filter assertion to fail")
+	}
+}
+
 func TestValidateTradeTimeWindowDetectsOutOfWindowRows(t *testing.T) {
 	semantics := workloadSemantics{TradeTimeStart: 100, TradeTimeEnd: 200}
 	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 99}}}
@@ -293,5 +332,65 @@ func TestFailureKindForRunDistinguishesInfraAndCorrectness(t *testing.T) {
 	}
 	if kind := failureKindForRun(WorkloadRunResult{Assertions: []AssertionResult{{Name: "a", Passed: true}}}); kind != "" {
 		t.Fatalf("expected empty failure kind for successful run, got %q", kind)
+	}
+}
+
+func TestValidateRepeatedRunStabilityDetectsChangingRows(t *testing.T) {
+	previous := WorkloadRunResult{FailureKind: "", TotalRecords: 5, RowIDs: []string{"a", "b"}}
+	current := WorkloadRunResult{FailureKind: "", TotalRecords: 5, RowIDs: []string{"a", "c"}}
+	assertions := validateRepeatedRunStability(previous, current)
+	if assertionPassed(assertions, "repeated-run-page-row-ids-stable") {
+		t.Fatalf("expected repeated-run-page-row-ids-stable to fail")
+	}
+	if !assertionPassed(assertions, "repeated-run-total-records-stable") {
+		t.Fatalf("expected repeated-run-total-records-stable to pass")
+	}
+}
+
+func TestWorkloadResolvedOracleModeDefaultsToLoadedState(t *testing.T) {
+	if mode := (WorkloadDefinition{Name: "baseline-page-1"}).ResolvedOracleMode(); mode != OracleModeLoadedState {
+		t.Fatalf("expected default oracle mode to be loaded-state, got %q", mode)
+	}
+	if mode := (WorkloadDefinition{Name: "hot-selective-page", OracleMode: OracleModeTruthPass}).ResolvedOracleMode(); mode != OracleModeTruthPass {
+		t.Fatalf("expected explicit truth-pass oracle mode, got %q", mode)
+	}
+}
+
+func TestDefaultWorkloadsMarkSelectiveWorkloadsAsTruthPass(t *testing.T) {
+	resolved, err := ResolveWorkloads([]string{"hot-selective-page", "hot-low-selectivity-page", "eav-selective-page", "mixed-hot-eav-page", "baseline-page-1"})
+	if err != nil {
+		t.Fatalf("ResolveWorkloads failed: %v", err)
+	}
+	modes := map[string]OracleMode{}
+	for _, workload := range resolved {
+		modes[workload.Name] = workload.ResolvedOracleMode()
+	}
+	if modes["hot-selective-page"] != OracleModeTruthPass {
+		t.Fatalf("expected hot-selective-page to use truth-pass oracle, got %q", modes["hot-selective-page"])
+	}
+	if modes["eav-selective-page"] != OracleModeTruthPass {
+		t.Fatalf("expected eav-selective-page to use truth-pass oracle, got %q", modes["eav-selective-page"])
+	}
+	if modes["hot-low-selectivity-page"] != OracleModeTruthPass {
+		t.Fatalf("expected hot-low-selectivity-page to use truth-pass oracle, got %q", modes["hot-low-selectivity-page"])
+	}
+	if modes["mixed-hot-eav-page"] != OracleModeTruthPass {
+		t.Fatalf("expected mixed-hot-eav-page to use truth-pass oracle, got %q", modes["mixed-hot-eav-page"])
+	}
+	if modes["baseline-page-1"] != OracleModeLoadedState {
+		t.Fatalf("expected baseline-page-1 to use loaded-state oracle, got %q", modes["baseline-page-1"])
+	}
+}
+
+func TestWorkloadResolvedFilterConditionsPrefersExplicitMap(t *testing.T) {
+	workload := WorkloadDefinition{FilterAttribute: "symbol", FilterValue: "SYM00001", FilterConditions: map[string]any{"symbol": "SYM00002", "exchange": "NYSE"}}
+	conditions := workload.ResolvedFilterConditions()
+	if len(conditions) != 2 || conditions["symbol"] != "SYM00002" || conditions["exchange"] != "NYSE" {
+		t.Fatalf("expected explicit filter conditions to win, got %+v", conditions)
+	}
+	simple := WorkloadDefinition{FilterAttribute: "symbol", FilterValue: "SYM00001"}
+	conditions = simple.ResolvedFilterConditions()
+	if len(conditions) != 1 || conditions["symbol"] != "SYM00001" {
+		t.Fatalf("expected simple filter fallback, got %+v", conditions)
 	}
 }

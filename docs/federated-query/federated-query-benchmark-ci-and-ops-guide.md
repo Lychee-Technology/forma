@@ -14,6 +14,7 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - `-mode plan` validates config and emits the planned workload shape only
 - `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
 - live benchmark summaries distinguish correctness failures from infrastructure failures, and workload-level expected-result checks are part of the executable path
+- benchmark summaries now expose workload oracle provenance so selective workloads can be distinguished between `loaded-state` and `truth-pass` expected-result modes
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
@@ -150,6 +151,7 @@ Check these fields first in `benchmark-summary.json` or the Markdown summary:
 - `avg`
 - `qps`
 - per-assertion pass/fail counts
+- workload `oracle_mode`
 
 Interpretation guidance:
 
@@ -158,6 +160,7 @@ Interpretation guidance:
 - isolated `max` spikes often point to skew, tier imbalance, or unstable deep-page behavior
 - a drop in `qps` without matching row-count changes is a regression candidate worth manual review
 - planning-only output should stay structurally stable across runs for the same seed and workload selection
+- supported live workloads should also keep repeated-run `FailureKind`, `total_records`, and page `row_ids` stable for the same seed and workload selection
 
 ## Common Failure Modes
 

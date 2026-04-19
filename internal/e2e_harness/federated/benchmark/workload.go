@@ -8,11 +8,17 @@ import (
 // WorkloadCategory groups benchmark workloads by intent.
 type WorkloadCategory string
 
+// OracleMode declares how expected benchmark results are derived.
+type OracleMode string
+
 const (
 	WorkloadCategoryPagination WorkloadCategory = "pagination"
 	WorkloadCategoryFilter     WorkloadCategory = "filter"
 	WorkloadCategoryDeepPage   WorkloadCategory = "deep-pagination"
 	WorkloadCategoryTierMix    WorkloadCategory = "tier-mix"
+
+	OracleModeLoadedState OracleMode = "loaded-state"
+	OracleModeTruthPass   OracleMode = "truth-pass"
 )
 
 // WorkloadDefinition declares a benchmark workload.
@@ -23,12 +29,14 @@ type WorkloadDefinition struct {
 	TargetSchema          string           `json:"target_schema"`
 	FilterAttribute       string           `json:"filter_attribute,omitempty"`
 	FilterValue           string           `json:"filter_value,omitempty"`
+	FilterConditions      map[string]any   `json:"filter_conditions,omitempty"`
 	PageSize              int              `json:"page_size"`
 	PageNumber            int              `json:"page_number"`
 	SupportsDistributions []Distribution   `json:"supports_distributions"`
 	PreferHot             bool             `json:"prefer_hot,omitempty"`
 	UsesEAVFilter         bool             `json:"uses_eav_filter,omitempty"`
 	LargePageJump         bool             `json:"large_page_jump,omitempty"`
+	OracleMode            OracleMode       `json:"oracle_mode,omitempty"`
 }
 
 // DefaultWorkloads returns the initial declarative workload matrix.
@@ -42,6 +50,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
+			OracleMode:            OracleModeLoadedState,
 		},
 		{
 			Name:                  "customer-region-page",
@@ -53,6 +62,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
+			OracleMode:            OracleModeLoadedState,
 		},
 		{
 			Name:                  "security-symbol-page",
@@ -64,6 +74,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
+			OracleMode:            OracleModeLoadedState,
 		},
 		{
 			Name:                  "hot-selective-page",
@@ -72,9 +83,25 @@ func DefaultWorkloads() []WorkloadDefinition {
 			TargetSchema:          "trade",
 			FilterAttribute:       "symbol",
 			FilterValue:           "SYM00001",
+			FilterConditions:      map[string]any{"symbol": "SYM00001"},
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
+			OracleMode:            OracleModeTruthPass,
+		},
+		{
+			Name:                  "hot-low-selectivity-page",
+			Description:           "Lower-selectivity hot-column filter with pagination on trade rows.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "trade",
+			FilterAttribute:       "tradeType",
+			FilterValue:           "0",
+			FilterConditions:      map[string]any{"tradeType": 0},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			PreferHot:             true,
+			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "eav-selective-page",
@@ -83,10 +110,27 @@ func DefaultWorkloads() []WorkloadDefinition {
 			TargetSchema:          "trade",
 			FilterAttribute:       "exchange",
 			FilterValue:           "NYSE",
+			FilterConditions:      map[string]any{"exchange": "NYSE"},
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
 			UsesEAVFilter:         true,
+			OracleMode:            OracleModeTruthPass,
+		},
+		{
+			Name:                  "mixed-hot-eav-page",
+			Description:           "Mixed hot and EAV filter workload with paginated trade results.",
+			Category:              WorkloadCategoryFilter,
+			TargetSchema:          "trade",
+			FilterAttribute:       "symbol",
+			FilterValue:           "SYM00001",
+			FilterConditions:      map[string]any{"symbol": "SYM00001", "exchange": "NYSE"},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			PreferHot:             true,
+			UsesEAVFilter:         true,
+			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "mixed-tier-window",
@@ -96,6 +140,28 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageSize:              50,
 			PageNumber:            1,
 			SupportsDistributions: []Distribution{DistributionTemporal, DistributionHotspot, DistributionUniform},
+			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "hot-only-window",
+			Description:           "Recent time-window query expected to stay within hot rows.",
+			Category:              WorkloadCategoryTierMix,
+			TargetSchema:          "trade",
+			PageSize:              50,
+			PageNumber:            1,
+			SupportsDistributions: []Distribution{DistributionTemporal, DistributionHotspot, DistributionUniform},
+			PreferHot:             true,
+			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "cold-only-window",
+			Description:           "Historical time-window query expected to stay within cold tiers.",
+			Category:              WorkloadCategoryTierMix,
+			TargetSchema:          "trade",
+			PageSize:              50,
+			PageNumber:            1,
+			SupportsDistributions: []Distribution{DistributionTemporal, DistributionHotspot, DistributionUniform},
+			OracleMode:            OracleModeLoadedState,
 		},
 		{
 			Name:                  "deep-page-1000",
@@ -106,6 +172,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageNumber:            1000,
 			SupportsDistributions: allDistributions(),
 			LargePageJump:         true,
+			OracleMode:            OracleModeLoadedState,
 		},
 		{
 			Name:                  "deep-page-100000",
@@ -116,6 +183,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageNumber:            100000,
 			SupportsDistributions: allDistributions(),
 			LargePageJump:         true,
+			OracleMode:            OracleModeLoadedState,
 		},
 	}
 }
@@ -146,6 +214,29 @@ func (w WorkloadDefinition) DerivedOffset(defaultPageSize int) int {
 // UsesSimpleFilter reports whether the workload is representable via the current harness filter model.
 func (w WorkloadDefinition) UsesSimpleFilter() bool {
 	return strings.TrimSpace(w.FilterAttribute) != ""
+}
+
+// ResolvedFilterConditions returns the filter map used by executable workloads.
+func (w WorkloadDefinition) ResolvedFilterConditions() map[string]any {
+	if len(w.FilterConditions) > 0 {
+		conditions := make(map[string]any, len(w.FilterConditions))
+		for key, value := range w.FilterConditions {
+			conditions[key] = value
+		}
+		return conditions
+	}
+	if strings.TrimSpace(w.FilterAttribute) == "" {
+		return nil
+	}
+	return map[string]any{w.FilterAttribute: w.FilterValue}
+}
+
+// ResolvedOracleMode returns the default oracle mode when not explicitly set.
+func (w WorkloadDefinition) ResolvedOracleMode() OracleMode {
+	if w.OracleMode == "" {
+		return OracleModeLoadedState
+	}
+	return w.OracleMode
 }
 
 // DefaultWorkloadNames returns the full default workload set.
