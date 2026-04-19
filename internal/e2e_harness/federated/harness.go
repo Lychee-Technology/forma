@@ -61,12 +61,14 @@ type TestRecord struct {
 
 // QueryOptions configures federated query execution.
 type QueryOptions struct {
-	Limit     int
-	Offset    int
-	Filter    *Filter
-	SortBy    string
-	SortDesc  bool
-	CountOnly bool
+	Limit          int
+	Offset         int
+	Filter         *Filter
+	SortBy         string
+	SortDesc       bool
+	TradeTimeStart int64
+	TradeTimeEnd   int64
+	CountOnly      bool
 }
 
 // Filter defines query filter conditions.

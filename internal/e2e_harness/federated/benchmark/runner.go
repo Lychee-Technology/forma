@@ -2,11 +2,13 @@ package benchmark
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
@@ -169,7 +171,19 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
 	pageRuns := make(map[string]WorkloadRunResult)
-	expectedByWorkload := buildExpectedWorkloadResultsFromRecords(tieredRecords(tiered), r.workloads, r.config.PageSize)
+	loadedRecords := tieredRecords(tiered)
+	snapshot, err := buildLoadedStateSnapshot(ctx, h, tiered)
+	if err != nil {
+		return nil, fmt.Errorf("build loaded state snapshot: %w", err)
+	}
+	loadedRecords = snapshot
+	expectedByWorkload := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
+	if hotExpected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, WorkloadDefinition{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}, r.config.PageSize, loadedRecords, r.genConfig); err == nil {
+		expectedByWorkload["hot-selective-page"] = hotExpected
+	}
+	if eavExpected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, WorkloadDefinition{Name: "eav-selective-page", TargetSchema: "trade", FilterAttribute: "exchange", FilterValue: "NYSE", PageSize: 20, PageNumber: 1}, r.config.PageSize, loadedRecords, r.genConfig); err == nil {
+		expectedByWorkload["eav-selective-page"] = eavExpected
+	}
 	passed := true
 	failureCount := 0
 	for _, workload := range r.workloads {
@@ -185,8 +199,9 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				failureCount++
 				continue
 			}
+			semantics := semanticsForWorkload(workload, r.genConfig)
 			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
-			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records)...)
+			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records, semantics)...)
 			if expected, ok := expectedByWorkload[workload.Name]; ok {
 				run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
 			}
@@ -222,6 +237,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			"loaded TPC-E-inspired schema fixtures",
 			fmt.Sprintf("generated dataset with distribution=%s", r.genConfig.Distribution),
 			fmt.Sprintf("loaded tiered dataset profile=%s", profile.Name),
+			fmt.Sprintf("loaded-state snapshot rows=%d", len(loadedRecords)),
 			"executed supported federated query workloads",
 		},
 	}
@@ -258,7 +274,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	defer func() {
 		h.SchemaID = previousSchemaID
 	}()
-	opts := queryOptionsForWorkload(workload, r.config.PageSize)
+	opts := queryOptionsForWorkloadWithConfig(workload, r.config.PageSize, r.genConfig)
 	if workload.UsesSimpleFilter() {
 		opts.Filter = &federated.Filter{Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue}}
 	}
@@ -309,18 +325,23 @@ type expectedWorkloadResult struct {
 	RowIDs       []string
 }
 
+type workloadSemantics struct {
+	TradeTimeStart int64
+	TradeTimeEnd   int64
+}
+
 func buildExpectedWorkloadResults(dataset *GeneratedDataset, workloads []WorkloadDefinition, defaultPageSize int) map[string]expectedWorkloadResult {
 	if dataset == nil {
 		return map[string]expectedWorkloadResult{}
 	}
-	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize)
+	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize, dataset.Config)
 }
 
-func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int) map[string]expectedWorkloadResult {
+func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig) map[string]expectedWorkloadResult {
 	results := make(map[string]expectedWorkloadResult, len(workloads))
 	visible := expectedVisibleRecords(records)
 	for _, workload := range workloads {
-		matching := filterExpectedRecordsForWorkload(visible, workload)
+		matching := filterExpectedRecordsForWorkload(visible, workload, semanticsForWorkload(workload, genCfg))
 		sortExpectedRecordsForWorkload(matching, workload)
 		pageSize := workload.PageSize
 		if pageSize <= 0 {
@@ -344,6 +365,201 @@ func tieredRecords(dataset *TieredDataset) []GeneratedRecord {
 		}
 	}
 	return records
+}
+
+func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, error) {
+	if h == nil || dataset == nil {
+		return nil, fmt.Errorf("harness and dataset are required")
+	}
+	hotRecords, hotKeys, err := loadHotStateRecords(ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]GeneratedRecord, 0, len(dataset.Base)+len(dataset.Delta)+len(hotRecords))
+	for _, bucket := range [][]GeneratedRecord{dataset.Base, dataset.Delta} {
+		for _, record := range bucket {
+			if _, ok := hotKeys[schemaRowKey(record.SchemaID, record.RowID)]; ok {
+				continue
+			}
+			records = append(records, cloneGeneratedRecord(record))
+		}
+	}
+	records = append(records, hotRecords...)
+	return records, nil
+}
+
+func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness) ([]GeneratedRecord, map[string]struct{}, error) {
+	rows, err := h.PGDB.QueryContext(ctx, `
+		SELECT cl.schema_id, cl.row_id, cl.changed_at, COALESCE(cl.deleted_at, 0),
+			em.text_01, em.text_02, em.smallint_01, em.bigint_02,
+			hot_vals.symbol, hot_vals.exchange, hot_vals.region, hot_vals.trade_type, hot_vals.trade_time, hot_vals.name
+		FROM change_log cl
+		LEFT JOIN entity_main em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
+		LEFT JOIN (
+			SELECT schema_id, row_id,
+				MAX(CASE WHEN attr_id = $1 THEN value_text END) AS symbol,
+				MAX(CASE WHEN attr_id = $2 THEN value_text END) AS exchange,
+				MAX(CASE WHEN attr_id = $3 THEN value_text END) AS region,
+				MAX(CASE WHEN attr_id = $4 THEN value_numeric END) AS trade_type,
+				MAX(CASE WHEN attr_id = $5 THEN COALESCE(value_text, CAST(value_numeric AS TEXT)) END) AS trade_time,
+				MAX(CASE WHEN attr_id = $6 THEN value_text END) AS name
+			FROM eav_data
+			GROUP BY schema_id, row_id
+		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
+		WHERE cl.flushed_at = 0
+	`,
+		benchmarkAttributeID(SchemaIDTrade, "symbol"),
+		benchmarkAttributeID(SchemaIDTrade, "exchange"),
+		benchmarkAttributeID(SchemaIDTrade, "region"),
+		benchmarkAttributeID(SchemaIDTrade, "tradeType"),
+		benchmarkAttributeID(SchemaIDTrade, "tradeTime"),
+		benchmarkAttributeID(SchemaIDTrade, "name"),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load hot state snapshot: %w", err)
+	}
+	defer rows.Close()
+	records := make([]GeneratedRecord, 0)
+	keys := make(map[string]struct{})
+	for rows.Next() {
+		record, err := scanLoadedHotRecord(rows)
+		if err != nil {
+			return nil, nil, err
+		}
+		records = append(records, record)
+		keys[schemaRowKey(record.SchemaID, record.RowID)] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate hot state snapshot: %w", err)
+	}
+	return records, keys, nil
+}
+
+func scanLoadedHotRecord(rows *sql.Rows) (GeneratedRecord, error) {
+	var schemaID int16
+	var rowID uuid.UUID
+	var changedAt int64
+	var deletedAt int64
+	var text01 sql.NullString
+	var text02 sql.NullString
+	var smallint01 sql.NullInt16
+	var bigint02 sql.NullInt64
+	var symbol sql.NullString
+	var exchange sql.NullString
+	var region sql.NullString
+	var tradeType sql.NullFloat64
+	var tradeTime sql.NullString
+	var name sql.NullString
+	if err := rows.Scan(&schemaID, &rowID, &changedAt, &deletedAt, &text01, &text02, &smallint01, &bigint02, &symbol, &exchange, &region, &tradeType, &tradeTime, &name); err != nil {
+		return GeneratedRecord{}, fmt.Errorf("scan hot state row: %w", err)
+	}
+	attrs := make(map[string]any)
+	schemaName, err := schemaNameForID(schemaID)
+	if err != nil {
+		return GeneratedRecord{}, err
+	}
+	switch schemaID {
+	case SchemaIDTrade:
+		if symbol.Valid {
+			attrs["symbol"] = symbol.String
+		} else if text01.Valid {
+			attrs["symbol"] = text01.String
+		}
+		if exchange.Valid {
+			attrs["exchange"] = exchange.String
+		}
+		if region.Valid {
+			attrs["region"] = region.String
+		} else if text02.Valid {
+			attrs["region"] = text02.String
+		}
+		if tradeType.Valid {
+			attrs["tradeType"] = int64(tradeType.Float64)
+		} else if smallint01.Valid {
+			attrs["tradeType"] = int64(smallint01.Int16)
+		}
+		if tradeTime.Valid {
+			attrs["tradeTime"] = tradeTime.String
+		} else if bigint02.Valid {
+			attrs["tradeTime"] = strconv.FormatInt(bigint02.Int64, 10)
+		}
+		if name.Valid {
+			attrs["name"] = name.String
+		} else if symbol.Valid {
+			attrs["name"] = symbol.String
+		}
+	case SchemaIDCustomer:
+		if text02.Valid {
+			attrs["region"] = text02.String
+		}
+		if name.Valid {
+			attrs["name"] = name.String
+		} else if text01.Valid {
+			attrs["name"] = text01.String
+		}
+	case SchemaIDSecurity:
+		if symbol.Valid {
+			attrs["symbol"] = symbol.String
+		} else if text01.Valid {
+			attrs["symbol"] = text01.String
+		}
+		if name.Valid {
+			attrs["companyName"] = name.String
+		}
+	}
+	return GeneratedRecord{SchemaID: schemaID, SchemaName: schemaName, RowID: rowID, Version: 0, ChangedAt: changedAt, DeletedAt: deletedAt, Attributes: attrs}, nil
+}
+
+func schemaNameForID(schemaID int16) (string, error) {
+	for _, fixture := range DefaultSchemaFixtures() {
+		if fixture.ID == schemaID {
+			return fixture.Name, nil
+		}
+	}
+	return "", fmt.Errorf("unknown benchmark schema id %d", schemaID)
+}
+
+func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition, defaultPageSize int, loadedRecords []GeneratedRecord, genCfg GeneratorConfig) (expectedWorkloadResult, error) {
+	if h == nil {
+		return expectedWorkloadResult{}, fmt.Errorf("harness cannot be nil")
+	}
+	semantics := semanticsForWorkload(workload, genCfg)
+	candidates := filterExpectedRecordsForWorkload(expectedVisibleRecords(loadedRecords), workload, semantics)
+	sortExpectedRecordsForWorkload(candidates, workload)
+	matching := make([]GeneratedRecord, 0, len(candidates))
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	previousSchemaID := h.SchemaID
+	schemaID, err := workloadSchemaID(workload.TargetSchema)
+	if err != nil {
+		return expectedWorkloadResult{}, err
+	}
+	h.SchemaID = schemaID
+	defer func() {
+		h.SchemaID = previousSchemaID
+	}()
+	for _, candidate := range candidates {
+		result, err := h.ExecuteFederatedQuery(ctx, &federated.QueryOptions{
+			Limit: 1,
+			Filter: &federated.Filter{
+				RowID:      candidate.RowID,
+				Conditions: map[string]any{workload.FilterAttribute: workload.FilterValue},
+			},
+			SortBy:   "tradeTime",
+			SortDesc: true,
+		})
+		if err != nil {
+			return expectedWorkloadResult{}, err
+		}
+		if result.TotalRecords > 0 {
+			matching = append(matching, candidate)
+		}
+	}
+	rowIDs := expectedPageRowIDs(matching, workload.DerivedOffset(defaultPageSize), pageSize)
+	return expectedWorkloadResult{TotalRecords: int64(len(matching)), RowIDs: rowIDs}, nil
 }
 
 func expectedVisibleRecords(records []GeneratedRecord) []GeneratedRecord {
@@ -379,18 +595,69 @@ func recordWinsExpectedRecord(candidate, current GeneratedRecord) bool {
 	return false
 }
 
-func filterExpectedRecordsForWorkload(records []GeneratedRecord, workload WorkloadDefinition) []GeneratedRecord {
+func filterExpectedRecordsForWorkload(records []GeneratedRecord, workload WorkloadDefinition, semantics workloadSemantics) []GeneratedRecord {
 	out := make([]GeneratedRecord, 0)
 	for _, record := range records {
 		if record.SchemaName != workload.TargetSchema {
 			continue
 		}
-		if workload.UsesSimpleFilter() && !generatedRecordMatchesFilter(record, workload.FilterAttribute, workload.FilterValue) {
+		if semantics.TradeTimeStart > 0 || semantics.TradeTimeEnd > 0 {
+			tradeTime := generatedRecordTradeTime(record)
+			if semantics.TradeTimeStart > 0 && tradeTime < semantics.TradeTimeStart {
+				continue
+			}
+			if semantics.TradeTimeEnd > 0 && tradeTime > semantics.TradeTimeEnd {
+				continue
+			}
+		}
+		if workload.UsesSimpleFilter() && !generatedRecordMatchesFilterForWorkload(record, workload) {
 			continue
 		}
 		out = append(out, cloneGeneratedRecord(record))
 	}
 	return out
+}
+
+func semanticsForWorkload(workload WorkloadDefinition, genCfg GeneratorConfig) workloadSemantics {
+	if workload.Name != "mixed-tier-window" {
+		return workloadSemantics{}
+	}
+	baseTime := genCfg.BaseTime
+	if baseTime.IsZero() {
+		baseTime = defaultBaseTime
+	}
+	windowDays := genCfg.TimeWindowDays
+	if windowDays <= 0 {
+		windowDays = DefaultGeneratorConfig().TimeWindowDays
+	}
+	windowMillis := int64(windowDays) * 24 * int64(time.Hour/time.Millisecond)
+	start := baseTime.UnixMilli() - (windowMillis * 4 / 5)
+	end := baseTime.UnixMilli() - windowMillis/5
+	if start > end {
+		start, end = end, start
+	}
+	return workloadSemantics{TradeTimeStart: start, TradeTimeEnd: end}
+}
+
+func benchmarkAttributeID(schemaID int16, name string) int {
+	hash := uint32(2166136261)
+	input := fmt.Sprintf("%d:%s", schemaID, name)
+	for i := 0; i < len(input); i++ {
+		hash ^= uint32(input[i])
+		hash *= 16777619
+	}
+	return int(hash%30000) + 1
+}
+
+func generatedRecordMatchesFilterForWorkload(record GeneratedRecord, workload WorkloadDefinition) bool {
+	value, ok := benchmarkVisibleAttributeValue(record, workload.FilterAttribute)
+	if !ok {
+		return false
+	}
+	if workload.FilterAttribute == "tradeType" {
+		return fmt.Sprintf("%v", value) == workload.FilterValue
+	}
+	return fmt.Sprint(value) == workload.FilterValue
 }
 
 func generatedRecordMatchesFilter(record GeneratedRecord, attribute, expected string) bool {
@@ -403,6 +670,28 @@ func generatedRecordMatchesFilter(record GeneratedRecord, attribute, expected st
 		return fmt.Sprintf("%v", value) == expected
 	default:
 		return fmt.Sprint(value) == expected
+	}
+}
+
+func benchmarkVisibleAttributeValue(record GeneratedRecord, attribute string) (any, bool) {
+	if value, ok := record.Attributes[attribute]; ok {
+		return value, true
+	}
+	if record.SchemaName != "trade" {
+		return nil, false
+	}
+	switch attribute {
+	case "symbol", "name":
+		value, ok := record.Attributes["symbol"]
+		return value, ok
+	case "tradeType":
+		value, ok := record.Attributes["tradeType"]
+		return value, ok
+	case "tradeTime":
+		value, ok := record.Attributes["tradeTime"]
+		return value, ok
+	default:
+		return nil, false
 	}
 }
 
@@ -548,10 +837,13 @@ func validatePaginationTransition(previous, current WorkloadRunResult) []Asserti
 	return assertions
 }
 
-func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord) []AssertionResult {
+func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord, semantics workloadSemantics) []AssertionResult {
 	assertions := []AssertionResult{validateUniqueRows(run), validateSchemaScope(workload, records)}
 	if workload.UsesSimpleFilter() {
 		assertions = append(assertions, validateFilterMatch(workload, records))
+	}
+	if semantics.TradeTimeStart > 0 || semantics.TradeTimeEnd > 0 {
+		assertions = append(assertions, validateTradeTimeWindow(records, semantics))
 	}
 	if workload.TargetSchema == "trade" && len(records) > 1 {
 		assertions = append(assertions, validateSortOrder(records, "tradeTime", true))
@@ -573,6 +865,10 @@ func validateSchemaScope(workload WorkloadDefinition, records []*internal.Persis
 }
 
 func queryOptionsForWorkload(workload WorkloadDefinition, defaultPageSize int) *federated.QueryOptions {
+	return queryOptionsForWorkloadWithConfig(workload, defaultPageSize, DefaultGeneratorConfig())
+}
+
+func queryOptionsForWorkloadWithConfig(workload WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig) *federated.QueryOptions {
 	pageSize := workload.PageSize
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -582,6 +878,9 @@ func queryOptionsForWorkload(workload WorkloadDefinition, defaultPageSize int) *
 		opts.SortBy = "tradeTime"
 		opts.SortDesc = true
 	}
+	semantics := semanticsForWorkload(workload, genCfg)
+	opts.TradeTimeStart = semantics.TradeTimeStart
+	opts.TradeTimeEnd = semantics.TradeTimeEnd
 	return opts
 }
 
@@ -603,6 +902,22 @@ func validateFilterMatch(workload WorkloadDefinition, records []*internal.Persis
 		}
 	}
 	return AssertionResult{Name: "filter-results-match-request", Passed: true, Message: fmt.Sprintf("attribute=%s expected=%s", workload.FilterAttribute, workload.FilterValue)}
+}
+
+func validateTradeTimeWindow(records []*internal.PersistentRecord, semantics workloadSemantics) AssertionResult {
+	for _, record := range records {
+		tradeTime, ok := record.Int64Items["tradeTime"]
+		if !ok {
+			return AssertionResult{Name: "tradeTime-window-match-request", Passed: false, Message: fmt.Sprintf("missing tradeTime row=%s", record.RowID)}
+		}
+		if semantics.TradeTimeStart > 0 && tradeTime < semantics.TradeTimeStart {
+			return AssertionResult{Name: "tradeTime-window-match-request", Passed: false, Message: fmt.Sprintf("row=%s tradeTime=%d start=%d", record.RowID, tradeTime, semantics.TradeTimeStart)}
+		}
+		if semantics.TradeTimeEnd > 0 && tradeTime > semantics.TradeTimeEnd {
+			return AssertionResult{Name: "tradeTime-window-match-request", Passed: false, Message: fmt.Sprintf("row=%s tradeTime=%d end=%d", record.RowID, tradeTime, semantics.TradeTimeEnd)}
+		}
+	}
+	return AssertionResult{Name: "tradeTime-window-match-request", Passed: true, Message: fmt.Sprintf("rows=%d start=%d end=%d", len(records), semantics.TradeTimeStart, semantics.TradeTimeEnd)}
 }
 
 func validateSortOrder(records []*internal.PersistentRecord, attribute string, desc bool) AssertionResult {
