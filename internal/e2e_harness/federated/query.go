@@ -218,8 +218,11 @@ func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, delt
 func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) (string, bool) {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
+	hotRowIDFilter := buildHotRowIDFilter(opts)
 	attributeFilter := buildAttributeFilterClause(opts)
+	timeWindowFilter := buildTradeTimeFilterClause(opts)
 	hotAttributeFilter := buildHotAttributeFilterClause(opts)
+	hotTimeWindowFilter := buildHotTradeTimeFilterClause(opts)
 	benchmarkProjection := usesBenchmarkProjection(opts)
 	pgConnStr := h.buildPGConnString()
 
@@ -227,17 +230,17 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	var tierQueries []string
 
 	if hasBase {
-		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, benchmarkProjection)
+		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
-		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, benchmarkProjection)
+		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
 	// Always include hot buffer (Postgres)
-	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, rowIDFilter, hotAttributeFilter, benchmarkProjection)
+	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection)
 	tierQueries = append(tierQueries, hotQuery)
 
 	// Combine all tier queries with UNION ALL
@@ -245,17 +248,17 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	return combinedQuery, benchmarkProjection
 }
 
-func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter string, benchmarkProjection bool) string {
+func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection bool) string {
 	if benchmarkProjection {
 		projection := benchmarkParquetProjection(schemaID, tier, path)
 		return fmt.Sprintf(`
 			%s
-			WHERE 1 = 1 %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter)
+			WHERE 1 = 1 %s %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter)
 	}
 	return fmt.Sprintf(`
 			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
 			FROM read_parquet('%s')
-			WHERE 1 = 1 %s %s`, tier, path, dirtyExclusion, rowIDFilter)
+			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, timeWindowFilter)
 }
 
 func benchmarkParquetProjection(schemaID int16, tier, path string) string {
@@ -269,7 +272,7 @@ func benchmarkParquetProjection(schemaID int16, tier, path string) string {
 	}
 }
 
-func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter string, benchmarkProjection bool) string {
+func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection bool) string {
 	if benchmarkProjection {
 		return fmt.Sprintf(`
 		SELECT 
@@ -301,7 +304,8 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
 			%s
-			%s`, pgConnStr, pgConnStr, pgConnStr, schemaID, rowIDFilter, attributeFilter)
+			%s
+			%s`, pgConnStr, pgConnStr, pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 	}
 	return fmt.Sprintf(`
 		SELECT 
@@ -315,7 +319,8 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 		FROM postgres_scan('%s', 'public', 'change_log') cl
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
-			%s`, pgConnStr, schemaID, rowIDFilter)
+			%s
+			%s`, pgConnStr, schemaID, rowIDFilter, timeWindowFilter)
 }
 
 func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
@@ -406,6 +411,13 @@ func buildRowIDFilter(opts *QueryOptions) string {
 	return ""
 }
 
+func buildHotRowIDFilter(opts *QueryOptions) string {
+	if opts.Filter != nil && opts.Filter.RowID != uuid.Nil {
+		return fmt.Sprintf("AND cl.row_id = '%s'", opts.Filter.RowID.String())
+	}
+	return ""
+}
+
 func buildAttributeFilterClause(opts *QueryOptions) string {
 	if opts == nil || opts.Filter == nil || len(opts.Filter.Conditions) == 0 {
 		return ""
@@ -417,6 +429,35 @@ func buildAttributeFilterClause(opts *QueryOptions) string {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("AND %s = %s", column, benchmarkSQLLiteral(value)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func buildTradeTimeFilterClause(opts *QueryOptions) string {
+	if opts == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if opts.TradeTimeStart > 0 {
+		parts = append(parts, fmt.Sprintf("AND tradeTime >= epoch_ms(%d)", opts.TradeTimeStart))
+	}
+	if opts.TradeTimeEnd > 0 {
+		parts = append(parts, fmt.Sprintf("AND tradeTime <= epoch_ms(%d)", opts.TradeTimeEnd))
+	}
+	return strings.Join(parts, " ")
+}
+
+func buildHotTradeTimeFilterClause(opts *QueryOptions) string {
+	if opts == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	expression := benchmarkHotFilterExpression("tradeTime")
+	if opts.TradeTimeStart > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s >= %d", expression, opts.TradeTimeStart))
+	}
+	if opts.TradeTimeEnd > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s <= %d", expression, opts.TradeTimeEnd))
 	}
 	return strings.Join(parts, " ")
 }

@@ -46,25 +46,25 @@ func TestBuildFederatedCombinedQueryUsesHotFilterExpressions(t *testing.T) {
 }
 
 func TestBuildParquetTierQuerySupportsSchemaSpecificProjection(t *testing.T) {
-	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND region = 'NA'", true)
+	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND region = 'NA'", "", true)
 	if !strings.Contains(customerQuery, "region") || strings.Contains(customerQuery, "epoch_ms(tradeTime)") {
 		t.Fatalf("expected customer projection without trade time conversion: %s", customerQuery)
 	}
-	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND symbol = 'SYM00001'", true)
+	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND symbol = 'SYM00001'", "", true)
 	if !strings.Contains(securityQuery, "symbol") || strings.Contains(securityQuery, "epoch_ms(tradeTime)") {
 		t.Fatalf("expected security projection with symbol only: %s", securityQuery)
 	}
 }
 
 func TestBuildParquetTierQueryKeepsDeletedRowsForDeduplication(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", true)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", "", true)
 	if strings.Contains(query, "deleted_at = 0") {
 		t.Fatalf("expected parquet tier query to defer deleted filtering until after dedup: %s", query)
 	}
 }
 
 func TestBuildHotTierQueryKeepsDeletedRowsForDeduplication(t *testing.T) {
-	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", true)
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", true)
 	if strings.Contains(query, "deleted_at = 0") || strings.Contains(query, "deleted_at IS NULL") {
 		t.Fatalf("expected hot tier query to defer deleted filtering until after dedup: %s", query)
 	}
@@ -75,6 +75,16 @@ func TestBuildFederatedDeduplicatedCTEUsesStableTieBreaks(t *testing.T) {
 	for _, expected := range []string{"changed_at DESC", "CASE tier WHEN 'hot' THEN 3", "version DESC", "deleted_at DESC", "row_id ASC"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected dedup query to include %q: %s", expected, query)
+		}
+	}
+}
+
+func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
+	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
+	query, _ := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, &QueryOptions{TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true})
+	for _, expected := range []string{"tradeTime >= epoch_ms(1000)", "tradeTime <= epoch_ms(2000)", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) >= 1000", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) <= 2000"} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected combined query to include %q: %s", expected, query)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestValidateResultLevelAssertionsDetectsUnsortedRows(t *testing.T) {
 		{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 10}},
 		{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Int64Items: map[string]int64{"tradeTime": 20}},
 	}
-	assertions := validateResultLevelAssertions(WorkloadDefinition{Name: "baseline-page-1"}, WorkloadRunResult{RowIDs: []string{records[0].RowID.String(), records[1].RowID.String()}}, records)
+	assertions := validateResultLevelAssertions(WorkloadDefinition{Name: "baseline-page-1"}, WorkloadRunResult{RowIDs: []string{records[0].RowID.String(), records[1].RowID.String()}}, records, workloadSemantics{})
 	if assertionPassed(assertions, "sorted-by-tradeTime-desc") {
 		t.Fatalf("expected sort assertion to fail for ascending rows")
 	}
@@ -72,6 +73,17 @@ func TestQueryOptionsForWorkloadSkipsTradeOrderingForNonTradeSchema(t *testing.T
 	tradeOpts := queryOptionsForWorkload(WorkloadDefinition{Name: "baseline-page-1", TargetSchema: "trade", PageSize: 20, PageNumber: 1}, 20)
 	if tradeOpts.SortBy != "tradeTime" || !tradeOpts.SortDesc {
 		t.Fatalf("expected trade workload to preserve trade ordering, got %+v", tradeOpts)
+	}
+}
+
+func TestQueryOptionsForWorkloadAddsMixedTierWindowTradeTimeRange(t *testing.T) {
+	genCfg := GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionTemporal, TimeWindowDays: 30, BaseTime: defaultBaseTime}.WithDefaults()
+	opts := queryOptionsForWorkloadWithConfig(WorkloadDefinition{Name: "mixed-tier-window", TargetSchema: "trade", PageSize: 50, PageNumber: 1}, 20, genCfg)
+	if opts.TradeTimeStart <= 0 || opts.TradeTimeEnd <= 0 {
+		t.Fatalf("expected mixed tier workload to set a trade time window, got %+v", opts)
+	}
+	if opts.TradeTimeStart >= opts.TradeTimeEnd {
+		t.Fatalf("expected ascending trade time window, got %+v", opts)
 	}
 }
 
@@ -199,7 +211,7 @@ func TestBuildExpectedWorkloadResultsFromRecordsUsesLoadedTierState(t *testing.T
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 1, ChangedAt: 100, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:00:00Z"}},
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, Attributes: map[string]any{"symbol": "SYM99999", "tradeTime": "2026-01-01T00:01:00Z"}},
 	}
-	results := buildExpectedWorkloadResultsFromRecords([]GeneratedRecord{original[0]}, workloads, 20)
+	results := buildExpectedWorkloadResultsFromRecords([]GeneratedRecord{original[0]}, workloads, 20, DefaultGeneratorConfig())
 	expected := results["hot-selective-page"]
 	if expected.TotalRecords != 1 {
 		t.Fatalf("expected loaded tier state to include visible row, got %+v", expected)
@@ -210,6 +222,65 @@ func TestBuildExpectedWorkloadResultsFromRecordsUsesLoadedTierState(t *testing.T
 	fromDataset := buildExpectedWorkloadResults(&GeneratedDataset{Records: original}, workloads, 20)
 	if fromDataset["hot-selective-page"].TotalRecords != 0 {
 		t.Fatalf("expected original dataset semantics to exclude row after symbol change, got %+v", fromDataset["hot-selective-page"])
+	}
+}
+
+func TestBuildExpectedWorkloadResultsFromRecordsExcludesDeletedHotSelectiveRows(t *testing.T) {
+	rowID := deterministicRowID(2, "trade", 1)
+	workloads := []WorkloadDefinition{{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}}
+	records := []GeneratedRecord{
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 1, ChangedAt: 100, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:00:00Z"}},
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, DeletedAt: 205, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:01:00Z"}},
+	}
+	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, DefaultGeneratorConfig())
+	if results["hot-selective-page"].TotalRecords != 0 {
+		t.Fatalf("expected deleted latest trade row to be excluded, got %+v", results["hot-selective-page"])
+	}
+}
+
+func TestExpectedWorkloadResultsCanUseLoadedHotStateSnapshot(t *testing.T) {
+	rowID := deterministicRowID(3, "trade", 1)
+	workloads := []WorkloadDefinition{{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}}
+	syntheticTiered := []GeneratedRecord{{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:01:00Z"}}}
+	loadedHotSnapshot := []GeneratedRecord{{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 0, ChangedAt: 200, DeletedAt: 205, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "1735689660000"}}}
+	fromSynthetic := buildExpectedWorkloadResultsFromRecords(syntheticTiered, workloads, 20, DefaultGeneratorConfig())
+	if fromSynthetic["hot-selective-page"].TotalRecords != 1 {
+		t.Fatalf("expected synthetic tiered record to match filter, got %+v", fromSynthetic["hot-selective-page"])
+	}
+	fromLoaded := buildExpectedWorkloadResultsFromRecords(loadedHotSnapshot, workloads, 20, DefaultGeneratorConfig())
+	if fromLoaded["hot-selective-page"].TotalRecords != 0 {
+		t.Fatalf("expected loaded hot snapshot to exclude deleted row, got %+v", fromLoaded["hot-selective-page"])
+	}
+}
+
+func TestBuildExpectedWorkloadResultsFromRecordsHonorsMixedTierWindow(t *testing.T) {
+	genCfg := GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionTemporal, TimeWindowDays: 30, BaseTime: defaultBaseTime}.WithDefaults()
+	semantics := semanticsForWorkload(WorkloadDefinition{Name: "mixed-tier-window", TargetSchema: "trade"}, genCfg)
+	inside := deterministicRowID(7, "trade", 1)
+	before := deterministicRowID(7, "trade", 2)
+	after := deterministicRowID(7, "trade", 3)
+	workloads := []WorkloadDefinition{{Name: "mixed-tier-window", TargetSchema: "trade", PageSize: 50, PageNumber: 1}}
+	records := []GeneratedRecord{
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: inside, Version: 1, ChangedAt: semantics.TradeTimeStart + 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeStart+1000, 10)}},
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: before, Version: 1, ChangedAt: semantics.TradeTimeStart - 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeStart-1000, 10)}},
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: after, Version: 1, ChangedAt: semantics.TradeTimeEnd + 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeEnd+1000, 10)}},
+	}
+	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, genCfg)
+	expected := results["mixed-tier-window"]
+	if expected.TotalRecords != 1 {
+		t.Fatalf("expected one in-window record, got %+v", expected)
+	}
+	if len(expected.RowIDs) != 1 || expected.RowIDs[0] != inside.String() {
+		t.Fatalf("unexpected in-window row ids: %+v", expected.RowIDs)
+	}
+}
+
+func TestValidateTradeTimeWindowDetectsOutOfWindowRows(t *testing.T) {
+	semantics := workloadSemantics{TradeTimeStart: 100, TradeTimeEnd: 200}
+	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 99}}}
+	assertion := validateTradeTimeWindow(records, semantics)
+	if assertion.Passed {
+		t.Fatalf("expected trade time window assertion to fail")
 	}
 }
 
