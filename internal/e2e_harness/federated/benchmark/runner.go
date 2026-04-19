@@ -352,19 +352,6 @@ func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workload
 	return results
 }
 
-func tieredRecords(dataset *TieredDataset) []GeneratedRecord {
-	if dataset == nil {
-		return nil
-	}
-	records := make([]GeneratedRecord, 0, len(dataset.Base)+len(dataset.Delta)+len(dataset.Hot))
-	for _, bucket := range [][]GeneratedRecord{dataset.Base, dataset.Delta, dataset.Hot} {
-		for _, record := range bucket {
-			records = append(records, cloneGeneratedRecord(record))
-		}
-	}
-	return records
-}
-
 func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, error) {
 	if h == nil || dataset == nil {
 		return nil, fmt.Errorf("harness and dataset are required")
