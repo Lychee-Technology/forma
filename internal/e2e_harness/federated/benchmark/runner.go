@@ -171,12 +171,10 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
 	pageRuns := make(map[string]WorkloadRunResult)
-	loadedRecords := tieredRecords(tiered)
-	snapshot, err := buildLoadedStateSnapshot(ctx, h, tiered)
+	loadedRecords, err := buildLoadedStateSnapshot(ctx, h, tiered)
 	if err != nil {
 		return nil, fmt.Errorf("build loaded state snapshot: %w", err)
 	}
-	loadedRecords = snapshot
 	expectedByWorkload := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
 	if hotExpected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, WorkloadDefinition{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}, r.config.PageSize, loadedRecords, r.genConfig); err == nil {
 		expectedByWorkload["hot-selective-page"] = hotExpected
@@ -658,19 +656,6 @@ func generatedRecordMatchesFilterForWorkload(record GeneratedRecord, workload Wo
 		return fmt.Sprintf("%v", value) == workload.FilterValue
 	}
 	return fmt.Sprint(value) == workload.FilterValue
-}
-
-func generatedRecordMatchesFilter(record GeneratedRecord, attribute, expected string) bool {
-	value, ok := record.Attributes[attribute]
-	if !ok {
-		return false
-	}
-	switch attribute {
-	case "tradeType":
-		return fmt.Sprintf("%v", value) == expected
-	default:
-		return fmt.Sprint(value) == expected
-	}
 }
 
 func benchmarkVisibleAttributeValue(record GeneratedRecord, attribute string) (any, bool) {
