@@ -19,6 +19,34 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
 
+## Oracle Modes
+
+The benchmark reports a workload `oracle_mode` because correctness verdicts depend on how expected results were derived.
+
+### Why this exists
+
+The benchmark compares actual federated query output against an expected result set. For some workloads, the expected result can be reconstructed directly from the benchmark's loaded tier state. For other workloads, especially selective hot or EAV-heavy cases, the safest expected-result path is to confirm visibility through targeted federated truth passes.
+
+Without this distinction, two correctness failures could look identical even though they were derived from different benchmark methods.
+
+### `loaded-state`
+
+- expected rows are reconstructed from the benchmark's loaded tier state
+- this is the normal mode for workloads whose visibility semantics are already well modeled by the benchmark runner
+- it is cheaper and should remain the default where it is trustworthy
+
+### `truth-pass`
+
+- expected rows are confirmed through the live federated path for targeted candidate rows
+- this is used for workloads where final visible filter semantics are better validated through execution than through synthetic reconstruction alone
+- it is intentionally narrower and more expensive than `loaded-state`
+
+### Operational guidance
+
+- do not treat a switch between `loaded-state` and `truth-pass` as a pure performance change; it also changes how correctness is judged
+- when a selective workload fails under `truth-pass`, assume the benchmark has already validated the expected answer through the executable path
+- when comparing benchmark summaries, use `oracle_mode` alongside `correctness_failures` so reviewers understand whether failures came from loaded-state reconstruction or truth-pass-backed verification
+
 ## Workload Groups
 
 ### Smoke
