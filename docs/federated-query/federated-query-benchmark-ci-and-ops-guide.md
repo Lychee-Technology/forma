@@ -81,9 +81,10 @@ make benchmark-smoke
 
 Use for pre-merge review, local baseline capture, and scheduled CI.
 
-- workloads: `baseline-page-1`, `hot-selective-page`, `eav-selective-page`, `mixed-tier-window`
-- scale: `small` or `medium`
-- mode: `plan` for cheap CLI-only checks, `live` for executable query coverage
+- preset: `small-live`
+- workloads: baseline pagination, schema-scoped lookups, selective filters, and tier-window coverage
+- scale: `small`
+- mode: `live`
 - goal: verify workload set shape, artifacts, and supported federated execution paths without using the heaviest deep-page cases
 - expected runtime: 1 to 5 minutes depending on runner size and whether harness-backed tests are included
 
@@ -98,9 +99,10 @@ go test -v ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecut
 
 Use for manual performance review or nightly jobs only.
 
+- preset: `heavy-plan`
 - workloads: full workload set including `deep-page-1000` and `deep-page-100000`
-- scale: `medium` or `large`
-- mode: `plan` today, harness-backed execution only when the environment can tolerate larger seeded datasets
+- scale: `large`
+- mode: `plan`
 - goal: compare deep-pagination planning shape and prepare for later real benchmark gating
 - expected runtime: several minutes for planning, significantly longer once large executable runs are wired into the CLI
 
@@ -115,24 +117,17 @@ make benchmark-heavy
 ### Local Smoke
 
 ```bash
-go run ./cmd/benchmark run \
-  -mode smoke \
-  -scale small \
-  -distribution uniform \
-  -workloads baseline-page-1,hot-selective-page \
-  -baseline-dir .artifacts/benchmark/smoke
+go run ./cmd/benchmark baseline \
+  -preset ci-smoke \
+  -output-dir .artifacts/benchmark
 ```
 
-### Local Regression Planning
+### Local Regression Live Subset
 
 ```bash
-go run ./cmd/benchmark run \
-  -mode live \
-  -scale small \
-  -distribution hotspot-overlap \
-  -tier-profile balanced \
-  -workloads baseline-page-1,hot-selective-page \
-  -baseline-dir .artifacts/benchmark/live-small
+go run ./cmd/benchmark baseline \
+  -preset small-live \
+  -output-dir .artifacts/benchmark
 ```
 
 ### Harness-Backed Execution Check
@@ -143,26 +138,22 @@ go test -v ./internal/e2e_harness/federated/... \
   -timeout=10m
 ```
 
-### Local Regression Planning
+### Medium Live Baseline
 
 ```bash
-go run ./cmd/benchmark run \
-  -mode plan \
-  -scale medium \
-  -distribution zipf \
-  -iterations 5 \
-  -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window \
-  -baseline-dir .artifacts/benchmark/regression-medium
+go run ./cmd/benchmark baseline \
+  -preset medium-live \
+  -output-dir .artifacts/benchmark
 ```
 
 ## CI Guidance
 
-Use these rules in CI until the benchmark CLI is wired to live execution.
+Use these rules in CI and automation for the current benchmark model.
 
 - run `make benchmark-smoke` on pull requests
-- keep CI benchmark runs on `small` scale only
+- keep PR-time benchmark automation on the `ci-smoke` preset only
 - do not run `deep-page-100000` in PR-time CI
-- use scheduled jobs for `benchmark-regression`
+- use scheduled jobs or manual review environments for `make benchmark-regression`
 - reserve `benchmark-heavy` for manual or nightly jobs
 - treat harness-backed execution tests as smoke coverage, not as stable performance thresholds
 

@@ -42,18 +42,47 @@ func TestRunBenchmarkMainBaseline(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	exitCode := runBenchmarkMain(context.Background(), []string{"baseline", "-preset", "small", "-output-dir", dir}, &out, &errOut)
+	exitCode := runBenchmarkMain(context.Background(), []string{"baseline", "-preset", "ci-smoke", "-output-dir", dir}, &out, &errOut)
 	if exitCode != 0 {
 		t.Fatalf("baseline returned exit code %d: %s", exitCode, errOut.String())
 	}
 	for _, name := range []string{"benchmark-result.json", "benchmark-result.md", "benchmark-summary.json"} {
-		matches, err := filepath.Glob(filepath.Join(dir, "small-*", name))
+		matches, err := filepath.Glob(filepath.Join(dir, "ci-smoke*", name))
 		if err != nil || len(matches) == 0 {
 			t.Fatalf("expected baseline artifact %s to exist", name)
 		}
 		if _, err := os.Stat(matches[0]); err != nil {
 			t.Fatalf("expected baseline artifact %s to exist: %v", name, err)
 		}
+	}
+}
+
+func TestResolveBenchmarkPresetSupportsAliasesAndPresets(t *testing.T) {
+	small, err := resolveBenchmarkPreset("small", bench.DistributionUniform)
+	if err != nil {
+		t.Fatalf("resolveBenchmarkPreset small failed: %v", err)
+	}
+	if small.Name != "small-live" || small.Config.Mode != bench.ExecutionModeLive {
+		t.Fatalf("expected small alias to resolve to small-live live preset, got %+v", small)
+	}
+	ci, err := resolveBenchmarkPreset("ci-smoke", bench.DistributionUniform)
+	if err != nil {
+		t.Fatalf("resolveBenchmarkPreset ci-smoke failed: %v", err)
+	}
+	if !ci.CISafe || ci.Config.Mode != bench.ExecutionModeSmoke {
+		t.Fatalf("expected ci-smoke preset to be CI-safe smoke, got %+v", ci)
+	}
+}
+
+func TestRunBenchmarkMainDescribeIncludesPresets(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"describe"}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("describe returned exit code %d: %s", exitCode, errOut.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"presets"`)) {
+		t.Fatalf("expected describe output to include presets: %s", out.String())
 	}
 }
 

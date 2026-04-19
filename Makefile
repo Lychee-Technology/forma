@@ -61,17 +61,17 @@ coverage: create-build-dir
 benchmark-smoke: create-build-dir
 	@echo "Running benchmark smoke validation..."
 	@mkdir -p .artifacts/benchmark/smoke
-	@$(GOENV) go run ./cmd/benchmark run -mode smoke -scale small -distribution uniform -workloads baseline-page-1,hot-selective-page -baseline-dir .artifacts/benchmark/smoke
+	@$(GOENV) go run ./cmd/benchmark baseline -preset ci-smoke -output-dir .artifacts/benchmark/smoke
 
 benchmark-regression: create-build-dir
-	@echo "Running benchmark regression planning..."
+	@echo "Running benchmark regression live subset..."
 	@mkdir -p .artifacts/benchmark/regression
-	@$(GOENV) go run ./cmd/benchmark run -mode plan -scale medium -distribution zipf -iterations 5 -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window -baseline-dir .artifacts/benchmark/regression
+	@$(GOENV) go run ./cmd/benchmark baseline -preset small-live -output-dir .artifacts/benchmark/regression
 
 benchmark-heavy: create-build-dir
 	@echo "Running benchmark heavy planning set..."
 	@mkdir -p .artifacts/benchmark/heavy
-	@$(GOENV) go run ./cmd/benchmark run -mode plan -scale large -distribution hotspot-overlap -iterations 3 -workloads baseline-page-1,hot-selective-page,eav-selective-page,mixed-tier-window,deep-page-1000,deep-page-100000 -baseline-dir .artifacts/benchmark/heavy
+	@$(GOENV) go run ./cmd/benchmark baseline -preset heavy-plan -output-dir .artifacts/benchmark/heavy
 
 # Build server for current platform
 build-server: create-build-dir
