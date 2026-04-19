@@ -16,6 +16,16 @@ import (
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
 )
 
+type benchmarkPreset struct {
+	Name          string       `json:"name"`
+	Description   string       `json:"description"`
+	RuntimeClass  string       `json:"runtime_class"`
+	BaselineDir   string       `json:"baseline_dir"`
+	CISafe        bool         `json:"ci_safe"`
+	ExpectedUsage string       `json:"expected_usage"`
+	Config        bench.Config `json:"config"`
+}
+
 var (
 	newBenchmarkRunner = bench.NewRunner
 	runValidationMode  = func(ctx context.Context, runner *bench.Runner) (*bench.RunResult, error) {
@@ -87,6 +97,7 @@ func runDescribe(out io.Writer) int {
 		SchemaDir    string                     `json:"schema_dir"`
 		Defaults     bench.Config               `json:"defaults"`
 		Generator    bench.GeneratorConfig      `json:"generator_defaults"`
+		Presets      []benchmarkPreset          `json:"presets"`
 		ScalePresets []bench.ScalePreset        `json:"scale_presets"`
 		TierProfiles []bench.TierMixProfile     `json:"tier_profiles"`
 		Schemas      []bench.SchemaFixture      `json:"schemas"`
@@ -95,6 +106,7 @@ func runDescribe(out io.Writer) int {
 		SchemaDir:    bench.FixturesDir(),
 		Defaults:     bench.DefaultConfig(),
 		Generator:    bench.DefaultGeneratorConfig(),
+		Presets:      defaultBenchmarkPresets(),
 		ScalePresets: bench.DefaultScalePresets(),
 		TierProfiles: bench.DefaultTierMixProfiles(),
 		Schemas:      bench.DefaultSchemaFixtures(),
@@ -114,7 +126,7 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(errOut)
-	preset := flags.String("preset", "small", "Baseline preset: small or medium")
+	preset := flags.String("preset", "small", "Baseline preset: ci-smoke, small, small-live, medium, medium-live, or heavy-plan")
 	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
 	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
 	compareTo := flags.String("compare-to", "", "Optional path to an existing benchmark-summary.json for diff output")
@@ -275,18 +287,74 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 }
 
 func baselinePresetConfig(rawPreset string, distribution bench.Distribution) (bench.Config, string, error) {
-	preset := strings.ToLower(strings.TrimSpace(rawPreset))
-	if distribution == "" {
-		distribution = bench.DistributionUniform
+	preset, err := resolveBenchmarkPreset(rawPreset, distribution)
+	if err != nil {
+		return bench.Config{}, "", err
 	}
-	switch preset {
-	case "small":
-		return bench.Config{Mode: bench.ExecutionModeSmoke, Scale: bench.ScaleSmall, Distribution: distribution, Iterations: 5, PageSize: 20, Seed: 42}.WithDefaults(), fmt.Sprintf("small-%s", distribution), nil
-	case "medium":
-		return bench.Config{Mode: bench.ExecutionModePlan, Scale: bench.ScaleMedium, Distribution: distribution, Iterations: 10, PageSize: 20, Seed: 42}.WithDefaults(), fmt.Sprintf("medium-%s", distribution), nil
-	default:
-		return bench.Config{}, "", fmt.Errorf("unknown baseline preset %q", rawPreset)
+	return preset.Config, preset.BaselineDir, nil
+}
+
+func defaultBenchmarkPresets() []benchmarkPreset {
+	return []benchmarkPreset{
+		{
+			Name:          "ci-smoke",
+			Description:   "Cheap CI-safe smoke validation with artifact capture.",
+			RuntimeClass:  "fast",
+			BaselineDir:   "ci-smoke-uniform",
+			CISafe:        true,
+			ExpectedUsage: "pull requests and quick local validation",
+			Config:        bench.Config{Mode: bench.ExecutionModeSmoke, Scale: bench.ScaleSmall, Distribution: bench.DistributionUniform, Iterations: 1, PageSize: 20, Seed: 42, Workloads: []string{"baseline-page-1", "hot-selective-page"}}.WithDefaults(),
+		},
+		{
+			Name:          "small-live",
+			Description:   "Live small-scale baseline subset for routine benchmark evidence.",
+			RuntimeClass:  "medium",
+			BaselineDir:   "small-live-hotspot-overlap",
+			CISafe:        false,
+			ExpectedUsage: "local or controlled review baseline capture",
+			Config:        bench.Config{Mode: bench.ExecutionModeLive, Scale: bench.ScaleSmall, Distribution: bench.DistributionHotspot, Iterations: 2, PageSize: 20, Seed: 42, TierProfile: bench.DefaultTierMixProfile().Name, Workloads: []string{"baseline-page-1", "customer-region-page", "security-symbol-page", "hot-selective-page", "eav-selective-page", "mixed-tier-window", "hot-only-window"}}.WithDefaults(),
+		},
+		{
+			Name:          "medium-live",
+			Description:   "Controlled medium-scale live baseline subset for regression review.",
+			RuntimeClass:  "medium",
+			BaselineDir:   "medium-live-zipf",
+			CISafe:        false,
+			ExpectedUsage: "manual or scheduled baseline capture",
+			Config:        bench.Config{Mode: bench.ExecutionModeLive, Scale: bench.ScaleMedium, Distribution: bench.DistributionZipf, Iterations: 2, PageSize: 20, Seed: 42, TierProfile: bench.DefaultTierMixProfile().Name, Workloads: []string{"baseline-page-1", "hot-selective-page", "eav-selective-page", "mixed-tier-window", "hot-only-window", "cold-only-window", "deep-page-1000"}}.WithDefaults(),
+		},
+		{
+			Name:          "heavy-plan",
+			Description:   "Heavy planning-only workload set for manual or nightly review.",
+			RuntimeClass:  "heavy",
+			BaselineDir:   "heavy-plan-hotspot-overlap",
+			CISafe:        false,
+			ExpectedUsage: "manual or nightly planning review only",
+			Config:        bench.Config{Mode: bench.ExecutionModePlan, Scale: bench.ScaleLarge, Distribution: bench.DistributionHotspot, Iterations: 3, PageSize: 20, Seed: 42, TierProfile: bench.DefaultTierMixProfile().Name, Workloads: bench.DefaultWorkloadNames()}.WithDefaults(),
+		},
 	}
+}
+
+func resolveBenchmarkPreset(rawPreset string, distribution bench.Distribution) (benchmarkPreset, error) {
+	presetName := strings.ToLower(strings.TrimSpace(rawPreset))
+	if presetName == "small" {
+		presetName = "small-live"
+	}
+	if presetName == "medium" {
+		presetName = "medium-live"
+	}
+	for _, preset := range defaultBenchmarkPresets() {
+		if preset.Name != presetName {
+			continue
+		}
+		resolved := preset
+		if distribution != "" {
+			resolved.Config.Distribution = distribution
+			resolved.BaselineDir = fmt.Sprintf("%s-%s", resolved.Name, distribution)
+		}
+		return resolved, nil
+	}
+	return benchmarkPreset{}, fmt.Errorf("unknown baseline preset %q", rawPreset)
 }
 
 func parseWorkloads(raw string) []string {

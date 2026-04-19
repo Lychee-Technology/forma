@@ -7,33 +7,39 @@ Repository: `forma`
 
 This runbook defines a repeatable baseline capture flow for the federated query benchmark at `small` and `medium` scale.
 
-## Recommended Baseline Scales
+## Recommended Baseline Presets
 
-- `small`: local development and PR validation
-- `medium`: controlled baseline comparison and regression review
+- `ci-smoke`: cheapest artifact-generating preset for pull requests and quick local checks
+- `small-live`: default live baseline subset for local or controlled review runs
+- `medium-live`: medium-scale live subset for manual regression review
+- `heavy-plan`: planning-only heavyweight set for manual or nightly use
+
+Use `go run ./cmd/benchmark describe` to inspect the current preset definitions and workload matrix. The CLI also accepts the legacy aliases `small` -> `small-live` and `medium` -> `medium-live` when running `benchmark baseline`.
 
 ## Recommended Commands
 
-### Small Baseline
+### CI Smoke Baseline
 
 ```bash
-go run ./cmd/benchmark run \
-  -mode smoke \
-  -scale small \
-  -distribution uniform \
-  -iterations 5 \
-  -baseline-dir .artifacts/benchmark/small-uniform
+go run ./cmd/benchmark baseline \
+  -preset ci-smoke \
+  -output-dir .artifacts/benchmark
 ```
 
-### Medium Baseline
+### Small Live Baseline
 
 ```bash
-go run ./cmd/benchmark run \
-  -mode plan \
-  -scale medium \
-  -distribution zipf \
-  -iterations 10 \
-  -baseline-dir .artifacts/benchmark/medium-zipf
+go run ./cmd/benchmark baseline \
+  -preset small-live \
+  -output-dir .artifacts/benchmark
+```
+
+### Medium Live Baseline
+
+```bash
+go run ./cmd/benchmark baseline \
+  -preset medium-live \
+  -output-dir .artifacts/benchmark
 ```
 
 ## Output Files
@@ -43,6 +49,13 @@ Each baseline directory should contain:
 - `benchmark-result.json`
 - `benchmark-result.md`
 - `benchmark-summary.json`
+
+The default baseline directory naming now follows the benchmark preset name, for example:
+
+- `.artifacts/benchmark/ci-smoke-uniform`
+- `.artifacts/benchmark/small-live-hotspot-overlap`
+- `.artifacts/benchmark/medium-live-zipf`
+- `.artifacts/benchmark/heavy-plan-hotspot-overlap`
 
 ## How To Compare Runs
 
@@ -121,17 +134,26 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 ## Interpretation Guidance
 
 - use `small` to catch obvious correctness or latency regressions quickly
-- use `medium` to compare behavior across distributions and page-depth workloads
+- use `small-live` to collect executable baseline evidence without the full heavy workload set
+- use `medium-live` to compare behavior across distributions and page-depth workloads
+- use `heavy-plan` only when you need planning coverage for the full workload matrix
 - treat assertion failures as correctness regressions even if latency improves
 - treat large `max` growth separately from percentile movement; it is often a sign of tier skew or unstable deep pagination
 - read `correctness_failures` and `infra_failures` separately in benchmark summaries; only the latter indicates an execution-environment problem
 - for repeated executions with the same seed, expect `FailureKind`, `total_records`, and page `row_ids` to remain stable for supported workloads
 - read workload `oracle_mode` when interpreting selective filter workloads; `truth-pass` means expected results were validated through the live federated path rather than only loaded-state reconstruction
 
+## Runtime Envelopes
+
+- `ci-smoke`: usually under 1 minute on CI runners
+- `small-live`: roughly 1 to 5 minutes depending on machine size and Docker startup overhead
+- `medium-live`: noticeably slower; use in controlled review environments rather than PR-time CI
+- `heavy-plan`: planning-only and suitable for manual or nightly review, not routine pre-merge execution
+
 ## Current Limitations
 
-- baseline presets currently favor `smoke` and `plan` modes for artifact stability over live execution cost
-- use `go run ./cmd/benchmark run -mode live ...` when you need executable benchmark evidence instead of planning-only artifacts
+- live baseline capture now exists through `small-live` and `medium-live`, but CI should still default to the cheaper `ci-smoke` preset
+- use `go run ./cmd/benchmark run -mode live ...` when you need a custom executable workload mix instead of the documented presets
 - live benchmark correctness checks compare query results against the benchmark's loaded tier state rather than only the pre-split generated dataset
 - selective hot/EAV workloads may use a truth-pass-backed oracle mode to align expected results with the executable federated filter semantics
 - baseline capture is designed for artifact stability first, not for production-like throughput measurement
