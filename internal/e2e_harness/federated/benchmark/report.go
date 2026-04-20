@@ -36,6 +36,8 @@ type EnvironmentMetadata struct {
 type SummaryReport struct {
 	Metadata            ArtifactMetadata         `json:"metadata"`
 	OracleModes         map[string]string        `json:"oracle_modes,omitempty"`
+	OracleProvenance    []OracleProvenance       `json:"oracle_provenance,omitempty"`
+	Stability           StabilitySummary         `json:"stability"`
 	ExecutionCount      int                      `json:"execution_count"`
 	Passed              bool                     `json:"passed"`
 	FailureCount        int                      `json:"failure_count,omitempty"`
@@ -57,6 +59,22 @@ type SummaryReport struct {
 type AssertionStat struct {
 	Passed int `json:"passed"`
 	Failed int `json:"failed"`
+}
+
+// OracleProvenance groups workloads by expected-result oracle mode.
+type OracleProvenance struct {
+	Mode      string   `json:"mode"`
+	Workloads []string `json:"workloads,omitempty"`
+}
+
+// StabilitySummary captures repeated-run stability signals for same-seed runs.
+type StabilitySummary struct {
+	Enabled              bool     `json:"enabled"`
+	WorkloadsChecked     int      `json:"workloads_checked,omitempty"`
+	UnstableWorkloads    []string `json:"unstable_workloads,omitempty"`
+	FailureKindFailures  int      `json:"failure_kind_failures,omitempty"`
+	TotalRecordsFailures int      `json:"total_records_failures,omitempty"`
+	PageRowIDFailures    int      `json:"page_row_id_failures,omitempty"`
 }
 
 // WorkloadSummary captures stable workload-level metrics and metadata.
@@ -162,6 +180,16 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	b.WriteString(fmt.Sprintf("- P95: %s\n", summary.P95))
 	b.WriteString(fmt.Sprintf("- P99: %s\n", summary.P99))
 	b.WriteString(fmt.Sprintf("- Max: %s\n", summary.Max))
+	b.WriteString(fmt.Sprintf("- Repeated-run checks enabled: %t\n", summary.Stability.Enabled))
+	if summary.Stability.Enabled {
+		b.WriteString(fmt.Sprintf("- Repeated-run workloads checked: %d\n", summary.Stability.WorkloadsChecked))
+		b.WriteString(fmt.Sprintf("- Repeated-run failure-kind failures: %d\n", summary.Stability.FailureKindFailures))
+		b.WriteString(fmt.Sprintf("- Repeated-run total-record failures: %d\n", summary.Stability.TotalRecordsFailures))
+		b.WriteString(fmt.Sprintf("- Repeated-run page-row-id failures: %d\n", summary.Stability.PageRowIDFailures))
+	}
+	if len(summary.Stability.UnstableWorkloads) > 0 {
+		b.WriteString(fmt.Sprintf("- Unstable workloads: `%s`\n", strings.Join(summary.Stability.UnstableWorkloads, "`, `")))
+	}
 	if len(result.Executions) > 0 {
 		b.WriteString("\n## Executions\n\n")
 		for _, execution := range result.Executions {
@@ -187,6 +215,12 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 		b.WriteString("\n## Workload Summaries\n\n")
 		for _, workload := range summary.Workloads {
 			b.WriteString(fmt.Sprintf("- `%s`: schema=%s oracle_mode=%s prefer_hot=%t executions=%d passed=%t qps=%.2f p95=%s avg=%s avg_result_count=%.2f avg_total_records=%.2f\n", workload.Name, workload.TargetSchema, workload.OracleMode, workload.PreferHot, workload.ExecutionCount, workload.Passed, workload.QPS, workload.P95, workload.Avg, workload.AvgResultCount, workload.AvgTotalRecords))
+		}
+	}
+	if len(summary.OracleProvenance) > 0 {
+		b.WriteString("\n## Oracle Provenance\n\n")
+		for _, provenance := range summary.OracleProvenance {
+			b.WriteString(fmt.Sprintf("- `%s`: `%s`\n", provenance.Mode, strings.Join(provenance.Workloads, "`, `")))
 		}
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
@@ -234,15 +268,18 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 	}
 	summary.Metadata = metadataForResult(result)
 	summary.OracleModes = cloneStringMap(result.OracleModes)
+	summary.OracleProvenance = summarizeOracleProvenance(result)
 	if len(result.Executions) == 0 {
 		summary.Passed = result != nil && result.Passed
 		summary.FailureCount = resultFailureCount(result)
 		summary.Workloads = summarizeWorkloads(result)
+		summary.Stability = summarizeStability(summary.Workloads)
 		return summary
 	}
 	summary.Passed = result.Passed
 	summary.FailureCount = resultFailureCount(result)
 	summary.Workloads = summarizeWorkloads(result)
+	summary.Stability = summarizeStability(summary.Workloads)
 	durations := make([]time.Duration, 0, len(result.Executions))
 	for _, execution := range result.Executions {
 		durations = append(durations, execution.Duration)
@@ -316,6 +353,14 @@ func FormatConsoleSummary(result *RunResult) string {
 	b.WriteString("Benchmark Summary\n")
 	b.WriteString(fmt.Sprintf("benchmark_id=%s scale=%s distribution=%s executions=%d passed=%t failures=%d correctness_failures=%d infra_failures=%d\n", summary.Metadata.BenchmarkID, result.Generator.Scale, result.Generator.Distribution, summary.ExecutionCount, summary.Passed, summary.FailureCount, summary.CorrectnessFailures, summary.InfraFailures))
 	b.WriteString(fmt.Sprintf("latency min=%s p50=%s p95=%s p99=%s max=%s avg=%s total=%s qps=%.2f\n", summary.Min, summary.P50, summary.P95, summary.P99, summary.Max, summary.Avg, summary.TotalDuration, summary.QPS))
+	b.WriteString(fmt.Sprintf("stability enabled=%t workloads_checked=%d unstable_workloads=%d failure_kind_failures=%d total_record_failures=%d page_row_id_failures=%d\n", summary.Stability.Enabled, summary.Stability.WorkloadsChecked, len(summary.Stability.UnstableWorkloads), summary.Stability.FailureKindFailures, summary.Stability.TotalRecordsFailures, summary.Stability.PageRowIDFailures))
+	if len(summary.OracleProvenance) > 0 {
+		parts := make([]string, 0, len(summary.OracleProvenance))
+		for _, provenance := range summary.OracleProvenance {
+			parts = append(parts, fmt.Sprintf("%s=%s", provenance.Mode, strings.Join(provenance.Workloads, ",")))
+		}
+		b.WriteString(fmt.Sprintf("oracle_provenance %s\n", strings.Join(parts, " ")))
+	}
 	if len(summary.AssertionStats) > 0 {
 		keys := make([]string, 0, len(summary.AssertionStats))
 		for key := range summary.AssertionStats {
@@ -547,6 +592,68 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 		workloads = append(workloads, workload)
 	}
 	return workloads
+}
+
+func summarizeOracleProvenance(result *RunResult) []OracleProvenance {
+	if result == nil {
+		return nil
+	}
+	byMode := make(map[string][]string)
+	if len(result.Workloads) > 0 {
+		for _, workload := range result.Workloads {
+			mode := string(workload.ResolvedOracleMode())
+			byMode[mode] = append(byMode[mode], workload.Name)
+		}
+	} else {
+		for _, execution := range result.Executions {
+			if execution.OracleMode == "" {
+				continue
+			}
+			byMode[execution.OracleMode] = append(byMode[execution.OracleMode], execution.Name)
+		}
+	}
+	if len(byMode) == 0 {
+		return nil
+	}
+	modes := make([]string, 0, len(byMode))
+	for mode := range byMode {
+		modes = append(modes, mode)
+	}
+	sort.Strings(modes)
+	provenance := make([]OracleProvenance, 0, len(modes))
+	for _, mode := range modes {
+		workloads := append([]string(nil), byMode[mode]...)
+		sort.Strings(workloads)
+		provenance = append(provenance, OracleProvenance{Mode: mode, Workloads: workloads})
+	}
+	return provenance
+}
+
+func summarizeStability(workloads []WorkloadSummary) StabilitySummary {
+	var summary StabilitySummary
+	seenUnstable := make(map[string]struct{})
+	for _, workload := range workloads {
+		failureKind := workload.AssertionStats["repeated-run-failure-kind-stable"]
+		totalRecords := workload.AssertionStats["repeated-run-total-records-stable"]
+		pageRowIDs := workload.AssertionStats["repeated-run-page-row-ids-stable"]
+		checked := failureKind.Passed+failureKind.Failed > 0 || totalRecords.Passed+totalRecords.Failed > 0 || pageRowIDs.Passed+pageRowIDs.Failed > 0
+		if !checked {
+			continue
+		}
+		summary.Enabled = true
+		summary.WorkloadsChecked++
+		summary.FailureKindFailures += failureKind.Failed
+		summary.TotalRecordsFailures += totalRecords.Failed
+		summary.PageRowIDFailures += pageRowIDs.Failed
+		if failureKind.Failed > 0 || totalRecords.Failed > 0 || pageRowIDs.Failed > 0 {
+			if _, ok := seenUnstable[workload.Name]; !ok {
+				seenUnstable[workload.Name] = struct{}{}
+				summary.UnstableWorkloads = append(summary.UnstableWorkloads, workload.Name)
+			}
+		}
+	}
+	sort.Strings(summary.UnstableWorkloads)
+	return summary
 }
 
 func compareWorkloadSummaries(baseline, candidate []WorkloadSummary) []WorkloadDiff {
