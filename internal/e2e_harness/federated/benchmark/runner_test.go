@@ -351,6 +351,12 @@ func TestWorkloadResolvedOracleModeDefaultsToLoadedState(t *testing.T) {
 	if mode := (WorkloadDefinition{Name: "baseline-page-1"}).ResolvedOracleMode(); mode != OracleModeLoadedState {
 		t.Fatalf("expected default oracle mode to be loaded-state, got %q", mode)
 	}
+	if mode := (WorkloadDefinition{Name: "generic-trade-filter", Category: WorkloadCategoryFilter, TargetSchema: "trade"}).ResolvedOracleMode(); mode != OracleModeTruthPass {
+		t.Fatalf("expected trade filter workload to default to truth-pass oracle, got %q", mode)
+	}
+	if mode := (WorkloadDefinition{Name: "generic-customer-filter", Category: WorkloadCategoryFilter, TargetSchema: "customer"}).ResolvedOracleMode(); mode != OracleModeLoadedState {
+		t.Fatalf("expected non-trade filter workload to default to loaded-state oracle, got %q", mode)
+	}
 	if mode := (WorkloadDefinition{Name: "hot-selective-page", OracleMode: OracleModeTruthPass}).ResolvedOracleMode(); mode != OracleModeTruthPass {
 		t.Fatalf("expected explicit truth-pass oracle mode, got %q", mode)
 	}
@@ -379,6 +385,55 @@ func TestDefaultWorkloadsMarkSelectiveWorkloadsAsTruthPass(t *testing.T) {
 	}
 	if modes["baseline-page-1"] != OracleModeLoadedState {
 		t.Fatalf("expected baseline-page-1 to use loaded-state oracle, got %q", modes["baseline-page-1"])
+	}
+}
+
+func TestDefaultSelectiveWorkloadsRelyOnInferredOracleMode(t *testing.T) {
+	resolved, err := ResolveWorkloads([]string{"hot-selective-page", "hot-low-selectivity-page", "eav-selective-page", "mixed-hot-eav-page"})
+	if err != nil {
+		t.Fatalf("ResolveWorkloads failed: %v", err)
+	}
+	for _, workload := range resolved {
+		if workload.OracleMode != "" {
+			t.Fatalf("expected workload %s to rely on inferred oracle mode, got explicit mode %q", workload.Name, workload.OracleMode)
+		}
+		if mode := workload.ResolvedOracleMode(); mode != OracleModeTruthPass {
+			t.Fatalf("expected workload %s to resolve to truth-pass, got %q", workload.Name, mode)
+		}
+	}
+}
+
+func TestInferredOracleModeUsesWorkloadClassInsteadOfName(t *testing.T) {
+	cases := []struct {
+		name     string
+		workload WorkloadDefinition
+		expect   OracleMode
+	}{
+		{
+			name:     "trade filter defaults to truth pass",
+			workload: WorkloadDefinition{Name: "future-trade-filter", Category: WorkloadCategoryFilter, TargetSchema: "trade", FilterConditions: map[string]any{"symbol": "SYM12345"}},
+			expect:   OracleModeTruthPass,
+		},
+		{
+			name:     "trade pagination defaults to loaded state",
+			workload: WorkloadDefinition{Name: "future-trade-page", Category: WorkloadCategoryPagination, TargetSchema: "trade"},
+			expect:   OracleModeLoadedState,
+		},
+		{
+			name:     "non trade filter defaults to loaded state",
+			workload: WorkloadDefinition{Name: "future-security-filter", Category: WorkloadCategoryFilter, TargetSchema: "security", FilterConditions: map[string]any{"symbol": "SYM12345"}},
+			expect:   OracleModeLoadedState,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if mode := tc.workload.InferredOracleMode(); mode != tc.expect {
+				t.Fatalf("expected inferred oracle mode %q, got %q", tc.expect, mode)
+			}
+			if mode := tc.workload.ResolvedOracleMode(); mode != tc.expect {
+				t.Fatalf("expected resolved oracle mode %q, got %q", tc.expect, mode)
+			}
+		})
 	}
 }
 

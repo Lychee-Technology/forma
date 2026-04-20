@@ -1,6 +1,6 @@
 # Federated Query Benchmark Autoresearch PR Plan
 
-Last updated: 2026-04-18  
+Last updated: 2026-04-20  
 Repository: `forma`
 
 ## 1. Objective
@@ -14,6 +14,17 @@ The benchmark is ready for autoresearch-guided optimization only when it can do 
 - emit stable, workload-level evidence that can be compared to a saved baseline
 - support fast and repeatable benchmark subsets suitable for automated keep/discard decisions
 
+## 1.1 Current State
+
+The repository has already landed the first benchmark foundation wave:
+
+- a supported CLI with `smoke`, `plan`, and `live` benchmark modes
+- live benchmark execution backed by the federated harness
+- stronger correctness and failure semantics in benchmark results
+- workload-level summaries, machine-readable diff support, and baseline capture artifacts
+
+This means the next phase is no longer about reopening the original runtime and artifact issues. It is about closing the remaining trust gaps before optimization and autoresearch loops depend on benchmark output.
+
 ## 2. Delivery Principles
 
 - correctness before speed: any failed correctness assertion blocks optimization claims
@@ -24,75 +35,71 @@ The benchmark is ready for autoresearch-guided optimization only when it can do 
 
 ## 3. PR Sequence
 
-### PR 1: Executable Benchmark Runtime
+### PR 0: Backlog Alignment
 
-Goal: promote the benchmark from scaffolded CLI validation to a supported live-execution path.
-
-Scope:
-
-- add an executable benchmark mode backed by the live federated harness
-- preserve existing `smoke` and `plan` modes for cheap validation
-- make benchmark run outputs identify whether execution was validation-only or live
-- cover the live path with focused tests and operator commands
-
-Exit criteria:
-
-- `cmd/benchmark` can execute supported workloads against the harness
-- local execution does not require reaching into test-only helper code by hand
-- the benchmark has a single documented runtime story for validation and live execution
-
-### PR 2: Result Semantics and Correctness Hardening
-
-Goal: make benchmark results safe to use as optimization evidence.
+Goal: align the benchmark roadmap with the shipped runtime and the remaining open gaps.
 
 Scope:
 
-- fix `total_records` and deep-page result semantics
-- strengthen assertions for dedup, ordering stability, delete shadowing, and last-write-wins
-- add explicit workload failure signals for correctness regressions
-- tighten benchmark result structures so that downstream automation can trust them
+- audit the current benchmark issue set against the shipped CLI, runtime, workload matrix, reports, and docs
+- distinguish closed foundation work from still-open readiness work
+- update the umbrella roadmap so later optimization issues point at current prerequisites
 
 Exit criteria:
 
-- workload results distinguish empty pages from broken query behavior
-- repeated runs with the same seed produce stable correctness verdicts
-- benchmark failures clearly separate correctness failures from infrastructure failures
+- the umbrella issue reflects the current repository state instead of the original phase-1 split
+- remaining readiness issues are ordered and non-duplicative
+- newer follow-up issues clearly refine rather than repeat earlier closed work
 
-### PR 3: Filter Fidelity and Schema-Scoped Workloads
+### PR 1: Workload Matrix Completion
 
-Goal: make the executed workloads match the benchmark model instead of only the current happy path.
+Goal: finish the remaining representative workload coverage needed before optimization waves begin.
 
 Scope:
 
-- complete hot, EAV, and mixed filter execution fidelity
-- make schema targeting explicit in execution instead of declarative-only metadata
-- keep `trade` as the primary executed schema while retaining fixture sanity coverage for `customer` and `security`
-- expand workload assertions around schema-scoped and filter-scoped behavior
+- add the remaining low-selectivity, mixed-filter, and tier-targeted window cases to the workload matrix
+- ensure the new workload set executes through the live path with explicit expected-result semantics
+- cover the expanded matrix with benchmark runner and harness-backed tests
 
 Exit criteria:
 
-- hot and EAV workloads execute with consistent semantics across tiers
-- benchmark execution honors workload schema intent
-- mixed-tier and deep-page workloads are representative enough for tuning work
+- the benchmark covers the agreed pre-optimization workload matrix
+- newly added workloads are executable rather than declarative-only
+- later deep-page, filter, and routing issues have the intended benchmark targets available
 
-### PR 4: Metrics, Artifact Schema, and Baseline Diff
+### PR 2: Selective Oracle Generalization
 
-Goal: make benchmark artifacts directly usable for automated comparison.
+Goal: remove workload-name-specific truth-pass behavior from selective benchmark correctness checks.
 
 Scope:
 
-- extend summary metrics beyond latency percentiles and QPS
-- capture workload-level metadata, environment data, and benchmark identifiers
-- add machine-readable diff support against a saved baseline
-- keep output formats stable across runs with the same seed and workload set
+- extract selective workload truth-pass logic into a reusable oracle mechanism
+- define when `loaded-state` is sufficient and when `truth-pass` is required
+- keep oracle provenance visible in benchmark results
 
 Exit criteria:
 
-- benchmark output can answer which workloads improved, regressed, or stayed flat
-- saved baselines are structurally stable and safe for automation
-- artifact fields are sufficient for later autoresearch decision rules
+- adding a new selective workload does not require bespoke oracle wiring in the runner
+- selective workload correctness remains explainable and reproducible
+- oracle provenance stays explicit in reports and summaries
 
-### PR 5: Baseline Capture and CI Policy
+### PR 3: Stability And Oracle Provenance Hardening
+
+Goal: make repeated-run benchmark trust signals explicit before the benchmark is treated as an optimization judge.
+
+Scope:
+
+- add same-seed repeated-run stability checks for supported live workloads
+- expose oracle provenance clearly in reports and operator guidance
+- document how reviewers should interpret loaded-state and truth-pass benchmark verdicts
+
+Exit criteria:
+
+- repeated runs with the same seed produce stable correctness verdicts for the supported live subset
+- benchmark reports show enough oracle provenance for selective workloads
+- CI and review guidance explain how to interpret these signals
+
+### PR 4: Baseline Capture and CI Policy
 
 Goal: codify which benchmark subsets are safe for local automation, CI, and manual tuning review.
 
@@ -108,6 +115,22 @@ Exit criteria:
 - the repository has documented baseline artifacts and comparison guidance
 - CI-safe subsets are clearly separated from heavier manual runs
 - benchmark commands used by later autoresearch loops are stable and documented
+
+### PR 5: Benchmark Readiness Gate
+
+Goal: define the explicit bar the benchmark must clear before optimization and autoresearch decisions depend on it.
+
+Scope:
+
+- define the readiness checklist for benchmark-driven optimization work
+- identify protected workloads and known methodology limitations
+- document the exit criteria for enabling benchmark-driven keep/discard automation
+
+Exit criteria:
+
+- the repository has a documented readiness gate with explicit pass criteria
+- methodology limitations and protected workloads are visible to reviewers and automation
+- later optimization and autoresearch issues can cite a stable benchmark gate
 
 ### PR 6: Autoresearch Perf Loop Scaffold
 
@@ -192,12 +215,14 @@ Exit criteria:
 
 ## 4. Ready-For-Autoresearch Gate
 
-The repository should not treat the benchmark as a performance autoresearch gate until PRs 1 through 5 are complete.
+The repository should not treat the benchmark as a performance autoresearch gate until PRs 0 through 5 are complete.
 
 At that point, the minimum bar is:
 
-- live benchmark execution exists as a supported command path
-- correctness assertions are strong enough to reject bad optimizations
+- the benchmark backlog is aligned with shipped behavior and remaining dependencies
+- the benchmark covers the intended pre-optimization workload matrix
+- selective workload correctness no longer depends on workload-name-specific oracle branching
+- repeated-run stability and oracle provenance are visible and documented
 - workload-level baselines and diffs are machine-readable
 - the benchmark has CI-safe and local-safe execution subsets
 
