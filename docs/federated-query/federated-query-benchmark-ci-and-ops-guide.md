@@ -160,6 +160,45 @@ Use these rules in CI and automation for the current benchmark model.
 
 The repository CI workflow now includes a dedicated `benchmark-smoke` job for the scaffolded benchmark command and the existing federated e2e smoke tests remain the executable coverage path.
 
+## Benchmark Readiness Gate
+
+Treat the benchmark as ready to inform optimization review only when all of the following are true:
+
+- the live benchmark path is available through `go run ./cmd/benchmark run -mode live ...` and the documented baseline presets
+- correctness failures and infrastructure failures are reported separately in benchmark summaries
+- same-seed repeated-run stability is visible through the top-level `stability` summary
+- oracle methodology is visible through workload `oracle_mode` and top-level `oracle_provenance`
+- workload-level summaries and diff artifacts are available for baseline comparison
+- CI-safe and manual-only workload subsets remain separated by policy
+
+If any of those conditions stops being true, treat the benchmark as evidence for debugging only rather than as an optimization gate.
+
+### Protected Workloads
+
+Use these workloads as the default protected set when evaluating benchmark-driven query changes:
+
+- `baseline-page-1`
+- `hot-selective-page`
+- `hot-low-selectivity-page`
+- `eav-selective-page`
+- `mixed-hot-eav-page`
+- `mixed-tier-window`
+- `hot-only-window`
+- `cold-only-window`
+- `deep-page-1000`
+
+Operationally:
+
+- treat correctness regressions in any protected workload as a hard stop
+- treat repeated-run instability in any protected workload as a methodology problem that must be resolved before trusting latency deltas
+- reserve `deep-page-100000` for heavier manual review rather than routine protection in CI-safe flows
+
+### Known Methodology Limits
+
+- `truth-pass` workloads use the live federated path to validate expected results, so oracle mode changes are methodology changes rather than pure performance changes
+- `prefer_hot` is still primarily provenance metadata outside the documented tier-mix execution override case
+- live benchmark runs are intended for repeatable correctness and relative performance review, not for production-grade throughput SLOs
+
 ## Environment Requirements
 
 - Go toolchain matching the repository CI version

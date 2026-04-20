@@ -22,8 +22,10 @@ The repository has already landed the first benchmark foundation wave:
 - live benchmark execution backed by the federated harness
 - stronger correctness and failure semantics in benchmark results
 - workload-level summaries, machine-readable diff support, and baseline capture artifacts
+- repeated-run stability summaries and grouped oracle provenance in reports
+- documented baseline presets, CI-safe benchmark subsets, and a benchmark readiness gate
 
-This means the next phase is no longer about reopening the original runtime and artifact issues. It is about closing the remaining trust gaps before optimization and autoresearch loops depend on benchmark output.
+This means the benchmark readiness phase is complete. The next phase is benchmark-driven automation and optimization work, rather than more readiness hardening.
 
 ## 2. Delivery Principles
 

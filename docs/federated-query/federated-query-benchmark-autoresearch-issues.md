@@ -10,20 +10,20 @@ This backlog extends the closed phase-1 benchmark work and reorganizes the remai
 Planned issues:
 
 1. `#55` umbrella issue for the benchmark-to-autoresearch follow-up plan
-2. `#70` backlog alignment for benchmark follow-up work
-3. `#64` remaining workload-matrix expansion before optimization waves
-4. `#63` selective workload oracle generalization
-5. `#65` stability checks and oracle provenance hardening
-6. `#45` baseline capture and CI execution policy
-7. `#69` benchmark readiness gate
-8. `#49` autoresearch perf loop scaffolding
-9. `#53` autoresearch perf targets and gate scripts
-10. `#46` deep-pagination optimization wave
-11. `#51` filter pushdown and EAV optimization wave
-12. `#54` routing and concurrency optimization wave
+2. `#49` autoresearch perf loop scaffolding
+3. `#53` autoresearch perf targets and gate scripts
+4. `#46` deep-pagination optimization wave
+5. `#51` filter pushdown and EAV optimization wave
+6. `#54` routing and concurrency optimization wave
 
 Already closed foundation issues:
 
+- `#70` backlog alignment for benchmark follow-up work
+- `#64` remaining workload-matrix expansion before optimization waves
+- `#63` selective workload oracle generalization
+- `#65` stability checks and oracle provenance hardening
+- `#45` baseline capture and CI execution policy
+- `#69` benchmark readiness gate
 - `#52` executable benchmark runtime backed by the live federated harness
 - `#48` result semantics and correctness hardening
 - `#50` filter fidelity and schema-scoped workload execution
