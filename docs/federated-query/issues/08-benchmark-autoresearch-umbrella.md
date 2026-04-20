@@ -8,9 +8,9 @@ The current benchmark foundation is useful for validation and early workload exe
 
 ## Scope
 
-- define the follow-up benchmark phases after the closed phase-1 issue set
+- track the remaining benchmark readiness work after the shipped runtime and phase-1 hardening work
 - link the PR-sliced execution plan for benchmark and autoresearch work
-- track the execution issues needed before optimization waves begin
+- distinguish closed benchmark foundations from still-open follow-up gaps
 - establish the readiness bar for using benchmark artifacts in autoresearch keep or discard decisions
 
 ## Acceptance Criteria
@@ -19,15 +19,29 @@ The current benchmark foundation is useful for validation and early workload exe
 - execution issues are listed explicitly and grouped in delivery order
 - the issue can be used as the single coordination entrypoint for benchmark-to-autoresearch work
 
-## Execution Issues
+## Shipped Foundations
 
-- [ ] #52 Add executable benchmark runtime backed by the live federated harness
-- [ ] #48 Harden benchmark result semantics and correctness assertions
-- [ ] #50 Complete filter fidelity and schema-scoped benchmark workloads
-- [ ] #47 Expand benchmark metrics, artifact schema, and baseline diff support
+- [x] #52 Add executable benchmark runtime backed by the live federated harness
+- [x] #48 Harden benchmark result semantics and correctness assertions
+- [x] #50 Complete filter fidelity and schema-scoped benchmark workloads
+- [x] #47 Expand benchmark metrics, artifact schema, and baseline diff support
+
+## Remaining Readiness Work
+
+- [x] #70 Align benchmark follow-up backlog with shipped runtime and remaining gaps
+- [x] #64 Expand the benchmark workload matrix with low-selectivity, mixed-filter, and tier-targeted window cases
+- [x] #63 Generalize selective-workload benchmark oracles beyond workload-specific truth passes
+- [ ] #65 Harden benchmark stability checks and expose oracle provenance in reports
 - [ ] #45 Capture benchmark baselines and codify CI execution policy
+- [ ] #69 Define a benchmark readiness gate before optimization and autoresearch decisions
+
+## Benchmark-Driven Automation
+
 - [ ] #49 Scaffold a performance-oriented autoresearch loop around benchmark evidence
 - [ ] #53 Add autoresearch performance targets and benchmark gate scripts
+
+## Optimization Waves
+
 - [ ] #46 Optimize the federated deep-pagination path using benchmark evidence
 - [ ] #51 Optimize federated filter pushdown and EAV behavior using benchmark evidence
 - [ ] #54 Optimize federated routing and concurrency behavior using benchmark evidence

@@ -87,7 +87,6 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
-			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "hot-low-selectivity-page",
@@ -101,7 +100,6 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
 			PreferHot:             true,
-			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "eav-selective-page",
@@ -115,7 +113,6 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
 			UsesEAVFilter:         true,
-			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "mixed-hot-eav-page",
@@ -130,7 +127,6 @@ func DefaultWorkloads() []WorkloadDefinition {
 			SupportsDistributions: allDistributions(),
 			PreferHot:             true,
 			UsesEAVFilter:         true,
-			OracleMode:            OracleModeTruthPass,
 		},
 		{
 			Name:                  "mixed-tier-window",
@@ -231,10 +227,20 @@ func (w WorkloadDefinition) ResolvedFilterConditions() map[string]any {
 	return map[string]any{w.FilterAttribute: w.FilterValue}
 }
 
-// ResolvedOracleMode returns the default oracle mode when not explicitly set.
+// InferredOracleMode returns the workload-class default oracle mode.
+func (w WorkloadDefinition) InferredOracleMode() OracleMode {
+	// Trade filter workloads use a truth-pass oracle because loaded-state-only
+	// reconstruction can diverge from executable federated filter semantics.
+	if w.Category == WorkloadCategoryFilter && w.TargetSchema == "trade" {
+		return OracleModeTruthPass
+	}
+	return OracleModeLoadedState
+}
+
+// ResolvedOracleMode returns the explicit oracle override or the inferred default.
 func (w WorkloadDefinition) ResolvedOracleMode() OracleMode {
 	if w.OracleMode == "" {
-		return OracleModeLoadedState
+		return w.InferredOracleMode()
 	}
 	return w.OracleMode
 }
