@@ -31,9 +31,9 @@ The current benchmark foundation is useful for validation and early workload exe
 - [x] #70 Align benchmark follow-up backlog with shipped runtime and remaining gaps
 - [x] #64 Expand the benchmark workload matrix with low-selectivity, mixed-filter, and tier-targeted window cases
 - [x] #63 Generalize selective-workload benchmark oracles beyond workload-specific truth passes
-- [ ] #65 Harden benchmark stability checks and expose oracle provenance in reports
-- [ ] #45 Capture benchmark baselines and codify CI execution policy
-- [ ] #69 Define a benchmark readiness gate before optimization and autoresearch decisions
+- [x] #65 Harden benchmark stability checks and expose oracle provenance in reports
+- [x] #45 Capture benchmark baselines and codify CI execution policy
+- [x] #69 Define a benchmark readiness gate before optimization and autoresearch decisions
 
 ## Benchmark-Driven Automation
 
