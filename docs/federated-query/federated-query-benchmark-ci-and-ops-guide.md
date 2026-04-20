@@ -1,6 +1,6 @@
 # Federated Query Benchmark CI and Operator Guide
 
-Last updated: 2026-04-18  
+Last updated: 2026-04-20  
 Repository: `forma`
 
 ## Purpose
@@ -15,6 +15,7 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
 - live benchmark summaries distinguish correctness failures from infrastructure failures, and workload-level expected-result checks are part of the executable path
 - benchmark summaries now expose workload oracle provenance so selective workloads can be distinguished between `loaded-state` and `truth-pass` expected-result modes
+- benchmark summaries now expose repeated-run stability status so reviewers can quickly tell whether same-seed live runs stayed stable
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
@@ -183,6 +184,8 @@ Check these fields first in `benchmark-summary.json` or the Markdown summary:
 - `qps`
 - per-assertion pass/fail counts
 - workload `oracle_mode`
+- top-level `stability`
+- top-level `oracle_provenance`
 
 Interpretation guidance:
 
@@ -192,6 +195,8 @@ Interpretation guidance:
 - a drop in `qps` without matching row-count changes is a regression candidate worth manual review
 - planning-only output should stay structurally stable across runs for the same seed and workload selection
 - supported live workloads should also keep repeated-run `FailureKind`, `total_records`, and page `row_ids` stable for the same seed and workload selection
+- if `stability.enabled=true`, review `unstable_workloads`, `failure_kind_failures`, `total_record_failures`, and `page_row_id_failures` before trusting latency changes
+- use `oracle_provenance` to see which workloads were judged via `loaded-state` versus `truth-pass` without reading every workload row individually
 
 ## Common Failure Modes
 

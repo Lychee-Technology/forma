@@ -1,6 +1,6 @@
 # Federated Query Benchmark Baseline Runbook
 
-Last updated: 2026-04-18  
+Last updated: 2026-04-20  
 Repository: `forma`
 
 ## Purpose
@@ -69,6 +69,8 @@ Compare these fields first:
 - `avg`
 - `qps`
 - assertion pass/fail counts
+- top-level `stability`
+- top-level `oracle_provenance`
 
 ## Oracle Mode
 
@@ -142,6 +144,8 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 - read `correctness_failures` and `infra_failures` separately in benchmark summaries; only the latter indicates an execution-environment problem
 - for repeated executions with the same seed, expect `FailureKind`, `total_records`, and page `row_ids` to remain stable for supported workloads
 - read workload `oracle_mode` when interpreting selective filter workloads; `truth-pass` means expected results were validated through the live federated path rather than only loaded-state reconstruction
+- read top-level `stability` before comparing latency deltas; any unstable workload means correctness evidence changed across same-seed runs and should be investigated first
+- read top-level `oracle_provenance` to confirm whether a workload group was judged via `loaded-state` or `truth-pass` without inspecting each workload entry individually
 
 ## Runtime Envelopes
 

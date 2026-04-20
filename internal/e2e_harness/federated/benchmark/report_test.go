@@ -48,10 +48,14 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 		Passed:       false,
 		FailureCount: 2,
 		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
-		OracleModes:  map[string]string{"q1": string(OracleModeLoadedState), "q2": string(OracleModeTruthPass)},
+		Workloads: []WorkloadDefinition{
+			{Name: "q1", Category: WorkloadCategoryPagination, TargetSchema: "trade", OracleMode: OracleModeLoadedState},
+			{Name: "q2", Category: WorkloadCategoryFilter, TargetSchema: "trade", OracleMode: OracleModeTruthPass, PreferHot: true},
+		},
+		OracleModes: map[string]string{"q1": string(OracleModeLoadedState), "q2": string(OracleModeTruthPass)},
 		Executions: []WorkloadRunResult{
 			{Name: "q1", Passed: true, OracleMode: string(OracleModeLoadedState), Duration: 10 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: true}}},
-			{Name: "q2", Passed: false, PreferHot: true, OracleMode: string(OracleModeTruthPass), FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}}},
+			{Name: "q2", Passed: false, PreferHot: true, OracleMode: string(OracleModeTruthPass), FailureKind: FailureKindCorrectness, FailureCount: 1, Duration: 30 * time.Millisecond, Assertions: []AssertionResult{{Name: "a", Passed: false}, {Name: "repeated-run-total-records-stable", Passed: false}}},
 		},
 	}
 	if err := WriteBaselineCapture(dir, result); err != nil {
@@ -86,6 +90,21 @@ func TestWriteBaselineCaptureAndSummary(t *testing.T) {
 	}
 	if summary.OracleModes["q2"] != string(OracleModeTruthPass) {
 		t.Fatalf("expected summary to expose oracle modes, got %+v", summary.OracleModes)
+	}
+	if !summary.Stability.Enabled {
+		t.Fatalf("expected summary to expose repeated-run stability state")
+	}
+	if summary.Stability.WorkloadsChecked != 1 {
+		t.Fatalf("expected one workload with repeated-run checks, got %+v", summary.Stability)
+	}
+	if summary.Stability.TotalRecordsFailures != 1 {
+		t.Fatalf("expected one repeated-run total-record failure, got %+v", summary.Stability)
+	}
+	if len(summary.Stability.UnstableWorkloads) != 1 || summary.Stability.UnstableWorkloads[0] != "q2" {
+		t.Fatalf("expected q2 to be marked unstable, got %+v", summary.Stability)
+	}
+	if len(summary.OracleProvenance) != 2 {
+		t.Fatalf("expected grouped oracle provenance, got %+v", summary.OracleProvenance)
 	}
 	if !summary.Workloads[1].PreferHot {
 		t.Fatalf("expected workload summary to expose prefer_hot intent, got %+v", summary.Workloads[1])
@@ -126,6 +145,12 @@ func TestFormatConsoleSummary(t *testing.T) {
 	if !strings.Contains(formatted, "correctness_failures=1") {
 		t.Fatalf("expected correctness failures in summary: %s", formatted)
 	}
+	if !strings.Contains(formatted, "stability enabled=") {
+		t.Fatalf("expected stability line in summary: %s", formatted)
+	}
+	if !strings.Contains(formatted, "oracle_provenance") {
+		t.Fatalf("expected oracle provenance line in summary: %s", formatted)
+	}
 }
 
 func TestSummarizeWorkloadsCarriesOracleMode(t *testing.T) {
@@ -136,6 +161,44 @@ func TestSummarizeWorkloadsCarriesOracleMode(t *testing.T) {
 	}
 	if !workloads[0].PreferHot {
 		t.Fatalf("expected workload summary to carry prefer_hot, got %+v", workloads)
+	}
+}
+
+func TestSummarizeRunResultBuildsOracleProvenanceAndStability(t *testing.T) {
+	result := &RunResult{
+		Workloads: []WorkloadDefinition{
+			{Name: "baseline-page-1", Category: WorkloadCategoryPagination, TargetSchema: "trade", OracleMode: OracleModeLoadedState},
+			{Name: "hot-selective-page", Category: WorkloadCategoryFilter, TargetSchema: "trade", OracleMode: OracleModeTruthPass},
+		},
+		Executions: []WorkloadRunResult{
+			{
+				Name:       "baseline-page-1",
+				Passed:     true,
+				Duration:   10 * time.Millisecond,
+				OracleMode: string(OracleModeLoadedState),
+				Assertions: []AssertionResult{{Name: "repeated-run-failure-kind-stable", Passed: true}},
+			},
+			{
+				Name:       "hot-selective-page",
+				Passed:     false,
+				Duration:   15 * time.Millisecond,
+				OracleMode: string(OracleModeTruthPass),
+				Assertions: []AssertionResult{{Name: "repeated-run-page-row-ids-stable", Passed: false}},
+			},
+		},
+	}
+	summary := SummarizeRunResult(result)
+	if len(summary.OracleProvenance) != 2 {
+		t.Fatalf("expected two oracle provenance groups, got %+v", summary.OracleProvenance)
+	}
+	if !summary.Stability.Enabled || summary.Stability.WorkloadsChecked != 2 {
+		t.Fatalf("expected stability to be enabled for both workloads, got %+v", summary.Stability)
+	}
+	if len(summary.Stability.UnstableWorkloads) != 1 || summary.Stability.UnstableWorkloads[0] != "hot-selective-page" {
+		t.Fatalf("expected unstable workload to be tracked, got %+v", summary.Stability)
+	}
+	if summary.Stability.PageRowIDFailures != 1 {
+		t.Fatalf("expected one page-row-id stability failure, got %+v", summary.Stability)
 	}
 }
 
