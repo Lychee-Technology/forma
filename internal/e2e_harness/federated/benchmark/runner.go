@@ -373,6 +373,9 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
+	if _, err := h.PGDB.ExecContext(ctx, `DELETE FROM schema_registry WHERE schema_name = 'test_entity'`); err != nil {
+		return nil, nil, fmt.Errorf("remove bootstrap schema registry entry: %w", err)
+	}
 	pool, err := pgxpool.New(ctx, h.PGDSN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect benchmark pgx pool: %w", err)
