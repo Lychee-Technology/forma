@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
@@ -291,6 +292,10 @@ func (r *Runner) validateFixtures() error {
 }
 
 func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	if workload.ExecutionSource == "service" {
+		return r.executeServiceWorkload(ctx, h, workload)
+	}
+
 	pageSize := workload.PageSize
 	if pageSize <= 0 {
 		pageSize = r.config.PageSize
@@ -337,6 +342,169 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		}
 	}
 	return run, result.Records, nil
+}
+
+func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	req, pageSize := queryRequestForWorkload(workload, r.config.PageSize)
+	start := time.Now()
+	result, records, err := executeServiceQuery(ctx, h, req, r.config.PageSize)
+	if err != nil {
+		return WorkloadRunResult{}, nil, err
+	}
+	run := WorkloadRunResult{
+		Name:         workload.Name,
+		Category:     string(workload.Category),
+		Distribution: r.genConfig.Distribution,
+		PageSize:     pageSize,
+		PageNumber:   workload.PageNumber,
+		Offset:       workload.DerivedOffset(r.config.PageSize),
+		PreferHot:    workload.PreferHot,
+		ResultCount:  len(records),
+		TotalRecords: int64(result.TotalRecords),
+		Duration:     time.Since(start),
+		Passed:       true,
+		RowIDs:       persistentRecordIDs(records),
+		PlanNotes:    []string{"entity_manager_query_service"},
+	}
+	return run, records, nil
+}
+
+func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int) (*forma.QueryResult, []*internal.PersistentRecord, error) {
+	if h == nil || h.PGDSN == "" {
+		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
+	}
+	pool, err := pgxpool.New(ctx, h.PGDSN)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect benchmark pgx pool: %w", err)
+	}
+	defer pool.Close()
+
+	if err := RegisterFixtureSchemas(h); err != nil {
+		return nil, nil, fmt.Errorf("register fixture schemas: %w", err)
+	}
+
+	registry, err := internal.NewFileSchemaRegistry(pool, "schema_registry", FixturesDir())
+	if err != nil {
+		return nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
+	}
+	metadata, err := internal.NewMetadataLoader(pool, "schema_registry", FixturesDir()).LoadMetadata(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
+	}
+
+	duckCfg := forma.DuckDBConfig{}
+	if h.Duck != nil {
+		duckCfg = forma.DuckDBConfig{
+			Enabled:        true,
+			DBPath:         ":memory:",
+			EnableS3:       true,
+			EnableParquet:  true,
+			S3Endpoint:     h.CDCConfig.S3Endpoint,
+			S3AccessKey:    h.CDCConfig.S3AccessKeyID,
+			S3SecretKey:    h.CDCConfig.S3SecretAccessKey,
+			S3Region:       h.CDCConfig.S3Region,
+			MaxConnections: 4,
+			QueryTimeout:   60 * time.Second,
+			MaxParallelism: 4,
+		}
+	}
+
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	config := &forma.Config{
+		Database: forma.DatabaseConfig{
+			TableNames: forma.TableNames{
+				SchemaRegistry: "schema_registry",
+				EntityMain:     h.CDCConfig.EntityMainTable,
+				EAVData:        h.CDCConfig.EAVDataTable,
+				ChangeLog:      h.CDCConfig.ChangeLogTable,
+			},
+		},
+		Query: forma.QueryConfig{
+			DefaultPageSize: benchmarkDefaultPageSize(defaultPageSize),
+			MaxPageSize:     maxInt(defaultPageSize, 1000),
+		},
+		Entity: forma.EntityConfig{
+			SchemaDirectory: FixturesDir(),
+		},
+		DuckDB: duckCfg,
+	}
+	transformer := internal.NewPersistentRecordTransformer(registry)
+	manager := internal.NewEntityManager(transformer, repo, registry, config)
+	result, err := manager.Query(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	records, err := persistentRecordsForQueryResult(ctx, result, repo, registry)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, records, nil
+}
+
+func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (*forma.QueryRequest, int) {
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	req := &forma.QueryRequest{
+		SchemaName:   workload.TargetSchema,
+		Page:         maxInt(workload.PageNumber, 1),
+		ItemsPerPage: pageSize,
+	}
+	if workload.TargetSchema == "trade" {
+		req.SortBy = []string{"tradeTime"}
+		req.SortOrder = forma.SortOrderDesc
+	}
+	if cond := conditionForWorkload(workload); cond != nil {
+		req.Condition = cond
+	}
+	return req, pageSize
+}
+
+func conditionForWorkload(workload WorkloadDefinition) forma.Condition {
+	conditions := make([]forma.Condition, 0, len(workload.ResolvedFilterConditions())+1)
+	for key, value := range workload.ResolvedFilterConditions() {
+		conditions = append(conditions, &forma.KvCondition{Attr: key, Value: fmt.Sprintf("equals:%v", value)})
+	}
+	if len(conditions) == 0 {
+		return nil
+	}
+	if len(conditions) == 1 {
+		return conditions[0]
+	}
+	return &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: conditions}
+}
+
+func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryResult, repo *internal.DBPersistentRecordRepository, registry forma.SchemaRegistry) ([]*internal.PersistentRecord, error) {
+	if result == nil {
+		return nil, nil
+	}
+	tables := internal.StorageTables{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
+	records := make([]*internal.PersistentRecord, 0, len(result.Data))
+	for _, data := range result.Data {
+		if data == nil {
+			continue
+		}
+		schemaID, _, err := registry.GetSchemaAttributeCacheByName(data.SchemaName)
+		if err != nil {
+			return nil, fmt.Errorf("resolve schema %s: %w", data.SchemaName, err)
+		}
+		record, err := repo.GetPersistentRecord(ctx, tables, schemaID, data.RowID)
+		if err != nil {
+			return nil, fmt.Errorf("load persistent record %s: %w", data.RowID, err)
+		}
+		if record != nil {
+			records = append(records, record)
+		}
+	}
+	return records, nil
+}
+
+func benchmarkDefaultPageSize(pageSize int) int {
+	if pageSize > 0 {
+		return pageSize
+	}
+	return 20
 }
 
 func failedWorkloadRunResult(workload WorkloadDefinition, distribution Distribution, defaultPageSize int, infraError string) WorkloadRunResult {

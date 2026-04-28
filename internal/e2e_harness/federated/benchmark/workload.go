@@ -27,6 +27,7 @@ type WorkloadDefinition struct {
 	Description           string           `json:"description"`
 	Category              WorkloadCategory `json:"category"`
 	TargetSchema          string           `json:"target_schema"`
+	ExecutionSource       string           `json:"execution_source,omitempty"`
 	FilterAttribute       string           `json:"filter_attribute,omitempty"`
 	FilterValue           string           `json:"filter_value,omitempty"`
 	FilterConditions      map[string]any   `json:"filter_conditions,omitempty"`
@@ -47,6 +48,7 @@ func DefaultWorkloads() []WorkloadDefinition {
 			Description:           "Unfiltered first page ordered by trade time descending.",
 			Category:              WorkloadCategoryPagination,
 			TargetSchema:          "trade",
+			ExecutionSource:       "service",
 			PageSize:              20,
 			PageNumber:            1,
 			SupportsDistributions: allDistributions(),
