@@ -1,0 +1,16 @@
+benchmark baseline capture
+target: entity_query_service
+gate: fast
+source: internal/entity_query_service.go
+brief: tools/autoresearch/benchmark/federated/targets/entity_query_service_perf.md
+mode: live
+scale: small
+distribution override: hotspot-overlap
+tier profile: balanced
+iterations: 1
+seed: 42
+target workloads: baseline-page-1
+protected workloads: customer-region-page,security-symbol-page
+workloads: baseline-page-1,customer-region-page,security-symbol-page
+output_dir: /home/ruoshi/code/github/forma/.worktrees/pr-53-perf-targets/tools/autoresearch/benchmark/federated/reports/baseline/entity_query_service/fast
+dry-run command: benchmark_cli run -mode live -scale small -distribution hotspot-overlap -tier-profile balanced -iterations 1 -seed 42 -workloads baseline-page-1\,customer-region-page\,security-symbol-page -baseline-dir /home/ruoshi/code/github/forma/.worktrees/pr-53-perf-targets/tools/autoresearch/benchmark/federated/reports/baseline/entity_query_service/fast
