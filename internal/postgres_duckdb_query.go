@@ -148,10 +148,19 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
 	// Build template params
+	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
+	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
+	eavSchema, eavScanTable := duckDBPostgresScanLocation(tables.EAVData)
 	sqlParams := map[string]any{
 		"EAVTable":             sanitizeIdentifier(tables.EAVData),
 		"MainTable":            sanitizeIdentifier(tables.EntityMain),
 		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
+		"ChangeLogSchema":      changeLogSchema,
+		"ChangeLogScanTable":   changeLogScanTable,
+		"MainSchema":           mainSchema,
+		"MainScanTable":        mainScanTable,
+		"EAVSchema":            eavSchema,
+		"EAVScanTable":         eavScanTable,
 		"MainProjection":       entityMainProjection,
 		"SchemaID":             q.SchemaID,
 		"UseMainTableAsAnchor": q.UseMainAsAnchor,
@@ -236,6 +245,24 @@ func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
 		}
 	}
 	return paths
+}
+
+func duckDBPostgresScanLocation(name string) (string, string) {
+	parts := strings.Split(name, ".")
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.Trim(part, " \"")
+		if trimmed != "" {
+			clean = append(clean, trimmed)
+		}
+	}
+	if len(clean) >= 2 {
+		return clean[0], clean[1]
+	}
+	if len(clean) == 1 {
+		return "public", clean[0]
+	}
+	return "public", ""
 }
 
 // streamDuckDBRows iterates through DuckDB rows and invokes the handler.

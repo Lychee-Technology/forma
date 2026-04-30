@@ -9,6 +9,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var defaultFederatedPreferredTiers = []DataTier{DataTierHot, DataTierWarm, DataTierCold}
+
 type dataRecordConverter func(context.Context, string, *PersistentRecord) (*forma.DataRecord, error)
 type dataRecordEnricher func(context.Context, string, []string, ...*forma.DataRecord) error
 type storageTablesResolver func() StorageTables
@@ -106,7 +108,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}
 
 	startTime := time.Now()
-	page, err := s.repository.QueryPersistentRecords(ctx, query)
+	page, err := s.queryRecords(ctx, query, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query persistent records: %w", err)
 	}
@@ -143,6 +145,52 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		HasPrevious:   req.Page > 1,
 		ExecutionTime: time.Since(startTime),
 	}, nil
+}
+
+func (s *entityQueryService) queryRecords(ctx context.Context, query *PersistentRecordQuery, req *forma.QueryRequest) (*PersistentRecordPage, error) {
+	if query == nil {
+		return nil, fmt.Errorf("query cannot be nil")
+	}
+	if req == nil || req.Federated == nil || !req.Federated.Enabled {
+		return s.repository.QueryPersistentRecords(ctx, query)
+	}
+
+	fq := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			SchemaID:        query.SchemaID,
+			Condition:       query.Condition,
+			AttributeOrders: query.AttributeOrders,
+			Limit:           query.Limit,
+			Offset:          query.Offset,
+		},
+		PreferredTiers: federatedPreferredTiers(req.Federated.PreferredTiers),
+		PreferHot:      req.Federated.PreferHot,
+		UseMainAsAnchor: req.Federated.UseMainAsAnchor,
+	}
+	if req.Federated.S3ParquetPathTemplate != "" {
+		fq.DuckDBHints = &DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
+	}
+
+	return s.repository.QueryPersistentRecordsFederated(ctx, query.Tables, fq, &FederatedQueryOptions{
+		AllowPartialDegradedMode: req.Federated.AllowPartialDegradedMode,
+	})
+}
+
+func federatedPreferredTiers(tiers []string) []DataTier {
+	if len(tiers) == 0 {
+		return append([]DataTier(nil), defaultFederatedPreferredTiers...)
+	}
+	out := make([]DataTier, 0, len(tiers))
+	for _, tier := range tiers {
+		switch DataTier(tier) {
+		case DataTierHot, DataTierWarm, DataTierCold:
+			out = append(out, DataTier(tier))
+		}
+	}
+	if len(out) == 0 {
+		return append([]DataTier(nil), defaultFederatedPreferredTiers...)
+	}
+	return out
 }
 
 func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {

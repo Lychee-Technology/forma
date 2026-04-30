@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -373,9 +374,6 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
-	if _, err := h.PGDB.ExecContext(ctx, `DELETE FROM schema_registry WHERE schema_name = 'test_entity'`); err != nil {
-		return nil, nil, fmt.Errorf("remove bootstrap schema registry entry: %w", err)
-	}
 	pool, err := pgxpool.New(ctx, h.PGDSN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect benchmark pgx pool: %w", err)
@@ -385,12 +383,16 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	if err := RegisterFixtureSchemas(h); err != nil {
 		return nil, nil, fmt.Errorf("register fixture schemas: %w", err)
 	}
+	schemaTable, err := ensureBenchmarkSchemaRegistry(ctx, pool)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
+	}
 
-	registry, err := internal.NewFileSchemaRegistry(pool, "schema_registry", FixturesDir())
+	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
 	}
-	metadata, err := internal.NewMetadataLoader(pool, "schema_registry", FixturesDir()).LoadMetadata(ctx)
+	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
@@ -402,21 +404,22 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 			DBPath:         ":memory:",
 			EnableS3:       true,
 			EnableParquet:  true,
-			S3Endpoint:     h.CDCConfig.S3Endpoint,
-			S3AccessKey:    h.CDCConfig.S3AccessKeyID,
-			S3SecretKey:    h.CDCConfig.S3SecretAccessKey,
-			S3Region:       h.CDCConfig.S3Region,
+			S3Endpoint:     h.S3Endpoint,
+			S3AccessKey:    h.S3AccessKey,
+			S3SecretKey:    h.S3SecretKey,
+			S3Region:       h.S3Region,
 			MaxConnections: 4,
 			QueryTimeout:   60 * time.Second,
 			MaxParallelism: 4,
 		}
 	}
 
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	baseRepo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	repo := newBenchmarkServiceRepository(baseRepo, h)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
 			TableNames: forma.TableNames{
-				SchemaRegistry: "schema_registry",
+				SchemaRegistry: schemaTable,
 				EntityMain:     h.CDCConfig.EntityMainTable,
 				EAVData:        h.CDCConfig.EAVDataTable,
 				ChangeLog:      h.CDCConfig.ChangeLogTable,
@@ -433,15 +436,39 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	}
 	transformer := internal.NewPersistentRecordTransformer(registry)
 	manager := internal.NewEntityManager(transformer, repo, registry, config)
+	if req != nil && req.Federated != nil && req.Federated.Enabled {
+		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
+	}
 	result, err := manager.Query(ctx, req)
 	if err != nil {
 		return nil, nil, err
 	}
-	records, err := persistentRecordsForQueryResult(ctx, result, repo, registry)
+	records, err := persistentRecordsForQueryResult(ctx, result, registry)
 	if err != nil {
 		return nil, nil, err
 	}
 	return result, records, nil
+}
+
+func ensureBenchmarkSchemaRegistry(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	const tableName = "benchmark_schema_registry"
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS benchmark_schema_registry (
+			schema_id SMALLINT PRIMARY KEY,
+			schema_name TEXT NOT NULL UNIQUE,
+			created_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+		)`); err != nil {
+		return "", err
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM benchmark_schema_registry`); err != nil {
+		return "", err
+	}
+	for _, fixture := range DefaultSchemaFixtures() {
+		if _, err := pool.Exec(ctx, `INSERT INTO benchmark_schema_registry (schema_id, schema_name) VALUES ($1, $2)`, fixture.ID, fixture.Name); err != nil {
+			return "", err
+		}
+	}
+	return tableName, nil
 }
 
 func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (*forma.QueryRequest, int) {
@@ -454,6 +481,12 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 		Page:         maxInt(workload.PageNumber, 1),
 		ItemsPerPage: pageSize,
 	}
+	if workload.ExecutionSource == "service" {
+		req.Federated = &forma.FederatedQueryRequest{
+			Enabled:               true,
+			PreferredTiers:        []string{"hot", "warm", "cold"},
+		}
+	}
 	if workload.TargetSchema == "trade" {
 		req.SortBy = []string{"tradeTime"}
 		req.SortOrder = forma.SortOrderDesc
@@ -462,6 +495,13 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 		req.Condition = cond
 	}
 	return req, pageSize
+}
+
+func benchmarkS3ParquetPathTemplate(h *federated.FederatedTestHarness) string {
+	if h == nil {
+		return ""
+	}
+	return fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", h.S3Bucket, h.S3Prefix, h.S3Bucket, h.S3Prefix)
 }
 
 func conditionForWorkload(workload WorkloadDefinition) forma.Condition {
@@ -478,11 +518,11 @@ func conditionForWorkload(workload WorkloadDefinition) forma.Condition {
 	return &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: conditions}
 }
 
-func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryResult, repo *internal.DBPersistentRecordRepository, registry forma.SchemaRegistry) ([]*internal.PersistentRecord, error) {
+func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryResult, registry forma.SchemaRegistry) ([]*internal.PersistentRecord, error) {
 	if result == nil {
 		return nil, nil
 	}
-	tables := internal.StorageTables{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
+	transformer := internal.NewPersistentRecordTransformer(registry)
 	records := make([]*internal.PersistentRecord, 0, len(result.Data))
 	for _, data := range result.Data {
 		if data == nil {
@@ -492,15 +532,121 @@ func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryRes
 		if err != nil {
 			return nil, fmt.Errorf("resolve schema %s: %w", data.SchemaName, err)
 		}
-		record, err := repo.GetPersistentRecord(ctx, tables, schemaID, data.RowID)
+		record, err := transformer.ToPersistentRecord(ctx, schemaID, data.RowID, data.Attributes)
 		if err != nil {
-			return nil, fmt.Errorf("load persistent record %s: %w", data.RowID, err)
+			return nil, fmt.Errorf("rebuild persistent record %s: %w", data.RowID, err)
 		}
 		if record != nil {
 			records = append(records, record)
 		}
 	}
 	return records, nil
+}
+
+type benchmarkServiceRepository struct {
+	*internal.DBPersistentRecordRepository
+	harness *federated.FederatedTestHarness
+}
+
+func newBenchmarkServiceRepository(base *internal.DBPersistentRecordRepository, h *federated.FederatedTestHarness) *benchmarkServiceRepository {
+	return &benchmarkServiceRepository{DBPersistentRecordRepository: base, harness: h}
+}
+
+func (r *benchmarkServiceRepository) QueryPersistentRecordsFederated(ctx context.Context, tables internal.StorageTables, fq *internal.FederatedAttributeQuery, opts *internal.FederatedQueryOptions) (*internal.PersistentRecordPage, error) {
+	if fq == nil || r == nil || r.harness == nil {
+		return r.DBPersistentRecordRepository.QueryPersistentRecordsFederated(ctx, tables, fq, opts)
+	}
+	queryOpts := benchmarkQueryOptionsFromFederatedQuery(fq)
+	result, err := r.harness.ExecuteFederatedQuery(ctx, queryOpts)
+	if err != nil {
+		return nil, err
+	}
+	limit := fq.Limit
+	if limit <= 0 {
+		limit = benchmarkDefaultPageSize(0)
+	}
+	currentPage := 1
+	if limit > 0 {
+		currentPage = fq.Offset/limit + 1
+	}
+	return &internal.PersistentRecordPage{
+		Records:      result.Records,
+		TotalRecords: result.TotalRecords,
+		TotalPages:   benchmarkComputeTotalPages(result.TotalRecords, limit),
+		CurrentPage:  currentPage,
+	}, nil
+}
+
+func benchmarkQueryOptionsFromFederatedQuery(fq *internal.FederatedAttributeQuery) *federated.QueryOptions {
+	if fq == nil {
+		return &federated.QueryOptions{}
+	}
+	queryOpts := &federated.QueryOptions{
+		Limit:     fq.Limit,
+		Offset:    fq.Offset,
+		PreferHot: fq.PreferHot,
+	}
+	if len(fq.AttributeOrders) > 0 {
+		order := fq.AttributeOrders[0]
+		queryOpts.SortDesc = order.SortOrder == forma.SortOrderDesc
+		if name := benchmarkSortAttributeName(order); name != "" {
+			queryOpts.SortBy = name
+		}
+	}
+	if fq.Condition != nil {
+		queryOpts.Filter = &federated.Filter{Conditions: benchmarkFilterConditionsFromCondition(fq.Condition)}
+	}
+	return queryOpts
+}
+
+func benchmarkSortAttributeName(order internal.AttributeOrder) string {
+	switch order.AttrID {
+	case 1:
+		return "symbol"
+	case 2:
+		return "tradeType"
+	case 5:
+		return "tradeTime"
+	case 7:
+		return "region"
+	default:
+		return ""
+	}
+}
+
+func benchmarkFilterConditionsFromCondition(condition forma.Condition) map[string]any {
+	conditions := make(map[string]any)
+	collectBenchmarkFilterConditions(condition, conditions)
+	if len(conditions) == 0 {
+		return nil
+	}
+	return conditions
+}
+
+func collectBenchmarkFilterConditions(condition forma.Condition, out map[string]any) {
+	if condition == nil {
+		return
+	}
+	switch c := condition.(type) {
+	case *forma.KvCondition:
+		value := fmt.Sprint(c.Value)
+		if strings.HasPrefix(value, "equals:") {
+			out[c.Attr] = strings.TrimPrefix(value, "equals:")
+			return
+		}
+		out[c.Attr] = value
+	case *forma.CompositeCondition:
+		for _, child := range c.Conditions {
+			collectBenchmarkFilterConditions(child, out)
+		}
+	}
+}
+
+func benchmarkComputeTotalPages(total int64, limit int) int {
+	if total == 0 || limit <= 0 {
+		return 0
+	}
+	return int((total + int64(limit) - 1) / int64(limit))
 }
 
 func benchmarkDefaultPageSize(pageSize int) int {

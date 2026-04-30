@@ -451,13 +451,18 @@ func buildTradeTimeFilterClause(opts *QueryOptions) string {
 		return ""
 	}
 	parts := make([]string, 0, 2)
+	expression := parquetTradeTimeFilterExpression()
 	if opts.TradeTimeStart > 0 {
-		parts = append(parts, fmt.Sprintf("AND tradeTime >= epoch_ms(%d)", opts.TradeTimeStart))
+		parts = append(parts, fmt.Sprintf("AND %s >= %d", expression, opts.TradeTimeStart))
 	}
 	if opts.TradeTimeEnd > 0 {
-		parts = append(parts, fmt.Sprintf("AND tradeTime <= epoch_ms(%d)", opts.TradeTimeEnd))
+		parts = append(parts, fmt.Sprintf("AND %s <= %d", expression, opts.TradeTimeEnd))
 	}
 	return strings.Join(parts, " ")
+}
+
+func parquetTradeTimeFilterExpression() string {
+	return "epoch_ms(tradeTime)"
 }
 
 func buildHotTradeTimeFilterClause(opts *QueryOptions) string {
@@ -618,8 +623,32 @@ func buildOrderByClause(opts *QueryOptions) string {
 
 // buildPGConnString builds the Postgres connection string for DuckDB.
 func (h *FederatedTestHarness) buildPGConnString() string {
-	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s",
-		h.PGHost, h.PGPort, "postgres", "password", "postgres")
+	host := h.PGHost
+	if host == "" {
+		host = "localhost"
+	}
+	port := h.PGPort
+	if port == "" {
+		port = "5432"
+	}
+	user := h.PGUser
+	if user == "" {
+		user = "postgres"
+	}
+	password := h.PGPassword
+	if password == "" {
+		password = "password"
+	}
+	database := h.PGDatabase
+	if database == "" {
+		database = "postgres"
+	}
+	sslMode := h.PGSSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		host, port, user, password, database, sslMode)
 }
 
 // getDirtyIDs fetches unflushed row IDs from change_log.

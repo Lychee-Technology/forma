@@ -32,8 +32,17 @@ type FederatedTestHarness struct {
 	CDCConfig cdc.CDCConfig
 
 	// Postgres connection info for DuckDB postgres_scan
-	PGHost string
-	PGPort string
+	PGHost     string
+	PGPort     string
+	PGUser     string
+	PGPassword string
+	PGDatabase string
+	PGSSLMode  string
+
+	// S3 connection info shared by DuckDB and direct client access.
+	S3Region    string
+	S3AccessKey string
+	S3SecretKey string
 
 	// Internal clients
 	s3Client *s3.Client
@@ -136,21 +145,63 @@ type ParquetMetadata struct {
 func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error) {
 	logger, _ := zap.NewDevelopment()
 	base := &e2e_harness.TestHarness{}
+	externalCfg, err := loadExternalFederatedConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load external federated config: %w", err)
+	}
 
-	// Start all containers (Postgres, S3, DuckDB)
-	if err := startContainers(ctx, base); err != nil {
-		return nil, err
+	bucket := "test-bucket"
+	prefix := "test-project"
+	pgUser := "postgres"
+	pgPassword := "password"
+	pgDatabase := "postgres"
+	pgSSLMode := "disable"
+	s3Region := "us-east-1"
+	s3AccessKey := "minioadmin"
+	s3SecretKey := "minioadmin"
+
+	if externalCfg.Enabled {
+		if externalCfg.UseExternalPG {
+			if err := base.ConnectPostgres(ctx, externalCfg.PGDSN); err != nil {
+				return nil, fmt.Errorf("connect external postgres: %w", err)
+			}
+		} else {
+			if _, err := base.StartPostgres(ctx); err != nil {
+				return nil, fmt.Errorf("start postgres: %w", err)
+			}
+		}
+
+		base.S3Endpoint = externalCfg.S3Endpoint
+		if err := startDuckDB(base, externalCfg.S3Endpoint, externalCfg.S3AccessKey, externalCfg.S3SecretKey, externalCfg.S3Region); err != nil {
+			cleanupContainers(ctx, base)
+			return nil, fmt.Errorf("start duckdb: %w", err)
+		}
+
+		bucket = externalCfg.S3Bucket
+		prefix = externalCfg.S3Prefix
+		s3Region = externalCfg.S3Region
+		s3AccessKey = externalCfg.S3AccessKey
+		s3SecretKey = externalCfg.S3SecretKey
+		if externalCfg.UseExternalPG {
+			pgUser = externalCfg.PGUser
+			pgPassword = externalCfg.PGPassword
+			pgDatabase = externalCfg.PGDatabase
+			pgSSLMode = externalCfg.PGSSLMode
+		}
+	} else {
+		if err := startContainers(ctx, base); err != nil {
+			return nil, err
+		}
 	}
 
 	// Create S3 client
-	s3Client, err := createS3Client(ctx, base.S3Endpoint)
+	s3Client, err := createS3Client(ctx, base.S3Endpoint, s3Region, s3AccessKey, s3SecretKey)
 	if err != nil {
 		cleanupContainers(ctx, base)
 		return nil, fmt.Errorf("create s3 client: %w", err)
 	}
 
 	// Create test bucket
-	bucket := "test-bucket"
 	_, _ = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
 	})
@@ -168,24 +219,34 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 		TestHarness:   base,
 		SchemaID:      1,
 		S3Bucket:      bucket,
-		S3Prefix:      "test-project",
+		S3Prefix:      prefix,
 		PGHost:        pgHost,
 		PGPort:        pgPort,
+		PGUser:        pgUser,
+		PGPassword:    pgPassword,
+		PGDatabase:    pgDatabase,
+		PGSSLMode:     pgSSLMode,
+		S3Region:      s3Region,
+		S3AccessKey:   s3AccessKey,
+		S3SecretKey:   s3SecretKey,
 		s3Client:      s3Client,
 		logger:        logger,
 		seededRecords: make(map[string][]TestRecord),
 		tmpDir:        tmpDir,
 		CDCConfig: cdc.CDCConfig{
-			ChangeLogTable:  "change_log",
-			EntityMainTable: "entity_main",
-			EAVDataTable:    "eav_data",
-			MinRecords:      100, // Lower threshold for testing
-			MaxAgeMs:        60000,
-			BatchSize:       1000,
-			S3Bucket:        bucket,
-			S3Prefix:        "test-project",
-			S3Endpoint:      base.S3Endpoint,
-			S3Region:        "us-east-1",
+			ChangeLogTable:    "change_log",
+			EntityMainTable:   "entity_main",
+			EAVDataTable:      "eav_data",
+			MinRecords:        100, // Lower threshold for testing
+			MaxAgeMs:          60000,
+			BatchSize:         1000,
+			S3Bucket:          bucket,
+			S3Prefix:          prefix,
+			S3Endpoint:        base.S3Endpoint,
+			S3Region:          s3Region,
+			S3UsePath:         true,
+			S3AccessKeyID:     s3AccessKey,
+			S3SecretAccessKey: s3SecretKey,
 		},
 		tables: internal.StorageTables{
 			EntityMain: "entity_main",
@@ -214,21 +275,7 @@ func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
 		return fmt.Errorf("start s3: %w", err)
 	}
 
-	duckCfg := forma.DuckDBConfig{
-		Enabled:        true,
-		DBPath:         ":memory:",
-		MemoryLimitMB:  512,
-		EnableS3:       true,
-		EnableParquet:  true,
-		S3Endpoint:     base.S3Endpoint,
-		S3AccessKey:    "minio",
-		S3SecretKey:    "minio",
-		S3Region:       "us-east-1",
-		MaxConnections: 4,
-		QueryTimeout:   60 * time.Second,
-		MaxParallelism: 4,
-	}
-	if err := base.StartDuckDB(duckCfg); err != nil {
+	if err := startDuckDB(base, base.S3Endpoint, "minioadmin", "minioadmin", "us-east-1"); err != nil {
 		_ = base.StopS3(ctx)
 		_ = base.StopPostgres(ctx)
 		return fmt.Errorf("start duckdb: %w", err)
@@ -237,11 +284,32 @@ func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
 	return nil
 }
 
+func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3SecretKey, s3Region string) error {
+	duckCfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MemoryLimitMB:  512,
+		EnableS3:       true,
+		EnableParquet:  true,
+		S3Endpoint:     s3Endpoint,
+		S3AccessKey:    s3AccessKey,
+		S3SecretKey:    s3SecretKey,
+		S3Region:       s3Region,
+		MaxConnections: 4,
+		QueryTimeout:   60 * time.Second,
+		MaxParallelism: 4,
+	}
+	return base.StartDuckDB(duckCfg)
+}
+
 // createS3Client creates an AWS S3 client configured for MinIO.
-func createS3Client(ctx context.Context, endpoint string) (*s3.Client, error) {
+func createS3Client(ctx context.Context, endpoint, region, accessKey, secretKey string) (*s3.Client, error) {
+	if region == "" {
+		region = "us-east-1"
+	}
 	awsCfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("minio", "minio", "")),
+		config.WithRegion(region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
@@ -315,8 +383,8 @@ func (h *FederatedTestHarness) initDatabaseSchema(ctx context.Context) error {
 			attr_id SMALLINT NOT NULL,
 			array_indices TEXT NOT NULL DEFAULT '',
 			value_text TEXT,
-			value_numeric NUMERIC,
-			PRIMARY KEY (schema_id, row_id, attr_id)
+			value_numeric DOUBLE PRECISION,
+			PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
 		)`,
 		`CREATE TABLE IF NOT EXISTS change_log (
 			schema_id SMALLINT NOT NULL,
@@ -358,7 +426,7 @@ func (h *FederatedTestHarness) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	if h.PGContainer != nil {
+	if h.PGDB != nil || h.PGContainer != nil {
 		if err := h.StopPostgres(ctx); err != nil {
 			errs = append(errs, err)
 		}

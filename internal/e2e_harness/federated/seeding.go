@@ -161,12 +161,12 @@ func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) 
 		}
 
 		_, err := h.PGDB.ExecContext(ctx, `
-			INSERT INTO eav_data (schema_id, row_id, attr_id, value_text, value_numeric)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (schema_id, row_id, attr_id) DO UPDATE SET
-				value_text = $4,
-				value_numeric = $5
-		`, r.SchemaID, r.RowID, DeterministicAttributeID(r.SchemaID, name), valueText, valueNumeric)
+			INSERT INTO eav_data (schema_id, row_id, attr_id, array_indices, value_text, value_numeric)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (schema_id, row_id, attr_id, array_indices) DO UPDATE SET
+				value_text = EXCLUDED.value_text,
+				value_numeric = EXCLUDED.value_numeric
+		`, r.SchemaID, r.RowID, DeterministicAttributeID(r.SchemaID, name), "", valueText, valueNumeric)
 		if err != nil {
 			return fmt.Errorf("insert eav_data for %s: %w", name, err)
 		}

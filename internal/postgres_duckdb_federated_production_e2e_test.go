@@ -45,6 +45,7 @@ type productionTestRecord struct {
 	Name      string
 	Age       int32
 	Tag       string
+	CreatedAt int64
 	ChangedAt int64
 	DeletedAt int64
 }
@@ -273,7 +274,11 @@ func writeProductionParquet(t *testing.T, env *productionFederatedE2EEnv, tier, 
 	var csv bytes.Buffer
 	csv.WriteString("row_id,ltbase_created_at,ltbase_updated_at,ltbase_deleted_at,name,age,tag\n")
 	for _, r := range records {
-		csv.WriteString(fmt.Sprintf("%s,%d,%d,%d,%s,%d,%s\n", r.RowID.String(), r.ChangedAt, r.ChangedAt, r.DeletedAt, r.Name, r.Age, r.Tag))
+		createdAt := r.CreatedAt
+		if createdAt == 0 {
+			createdAt = r.ChangedAt
+		}
+		csv.WriteString(fmt.Sprintf("%s,%d,%d,%d,%s,%d,%s\n", r.RowID.String(), createdAt, r.ChangedAt, r.DeletedAt, r.Name, r.Age, r.Tag))
 	}
 	require.NoError(t, os.WriteFile(csvPath, csv.Bytes(), 0o644))
 	_, err := env.duck.DB.ExecContext(env.ctx, fmt.Sprintf(`CREATE OR REPLACE TABLE temp_export AS SELECT * FROM read_csv_auto('%s')`, csvPath))
@@ -388,6 +393,61 @@ func TestStreamDuckDBFederatedQuery_GivenBaseAndHotVersions_WhenQueried_ThenLate
 	require.Len(t, got, 1)
 	require.Equal(t, hotTime, got[0].UpdatedAt)
 	require.Equal(t, "hot-version", got[0].TextItems["text_01"])
+	require.Equal(t, int32(42), got[0].Int32Items["integer_01"])
+}
+
+func TestStreamDuckDBFederatedQuery_GivenConflictingCreatedAndUpdatedAt_WhenQueried_ThenLatestUpdatedAtWins(t *testing.T) {
+	withProductionDuckDBTemplateDescriptors(t)
+	env := setupProductionFederatedE2EEnv(t)
+	clearProductionFederatedData(t, env, 100)
+
+	rowID := uuid.Must(uuid.NewV7())
+	now := time.Now()
+	olderCreatedAt := now.Add(-72 * time.Hour).UnixMilli()
+	olderUpdatedAt := now.Add(-2 * time.Hour).UnixMilli()
+	newerCreatedAt := now.Add(-24 * time.Hour).UnixMilli()
+	newerUpdatedAt := now.Add(-1 * time.Hour).UnixMilli()
+
+	writeProductionParquet(t, env, "base", "updated_at_wins.parquet", []productionTestRecord{
+		{
+			RowID:     rowID,
+			SchemaID:  100,
+			Name:      "older-updated",
+			Age:       21,
+			Tag:       "older-tag",
+			CreatedAt: newerCreatedAt,
+			ChangedAt: olderUpdatedAt,
+		},
+		{
+			RowID:     rowID,
+			SchemaID:  100,
+			Name:      "newer-updated",
+			Age:       42,
+			Tag:       "newer-tag",
+			CreatedAt: olderCreatedAt,
+			ChangedAt: newerUpdatedAt,
+		},
+	})
+
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 100, Limit: 10, Offset: 0},
+		DuckDBHints: &DuckDBRenderHints{
+			S3ParquetPathTemplate: fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet", env.bucket, env.prefix),
+		},
+	}
+
+	var got []*PersistentRecord
+	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+		got = append(got, record)
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Len(t, got, 1)
+	require.Equal(t, newerUpdatedAt, got[0].UpdatedAt)
+	require.Equal(t, olderCreatedAt, got[0].CreatedAt)
+	require.Equal(t, "newer-updated", got[0].TextItems["text_01"])
 	require.Equal(t, int32(42), got[0].Int32Items["integer_01"])
 }
 
