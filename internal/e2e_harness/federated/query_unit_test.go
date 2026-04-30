@@ -82,10 +82,20 @@ func TestBuildFederatedDeduplicatedCTEUsesStableTieBreaks(t *testing.T) {
 func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
 	query, _ := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, &QueryOptions{TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true})
-	for _, expected := range []string{"tradeTime >= epoch_ms(1000)", "tradeTime <= epoch_ms(2000)", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) >= 1000", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) <= 2000"} {
+	for _, expected := range []string{"epoch_ms(tradeTime) >= 1000", "epoch_ms(tradeTime) <= 2000", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) >= 1000", "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) <= 2000"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected combined query to include %q: %s", expected, query)
 		}
+	}
+}
+
+func TestBuildParquetTierQueryAppliesProjectedTradeTimeFilter(t *testing.T) {
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "AND epoch_ms(tradeTime) <= 2000", true)
+	if !strings.Contains(query, "epoch_ms(tradeTime) <= 2000") {
+		t.Fatalf("expected projected trade time filter in parquet query: %s", query)
+	}
+	if strings.Contains(query, "AND tradeTime <= epoch_ms(2000)") {
+		t.Fatalf("expected parquet query to avoid raw tradeTime timestamp comparison: %s", query)
 	}
 }
 

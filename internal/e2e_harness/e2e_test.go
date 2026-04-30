@@ -34,8 +34,8 @@ func TestE2EHarnessMinimal(t *testing.T) {
 		EnableS3:      true,
 		EnableParquet: true,
 		S3Endpoint:    h.S3Endpoint,
-		S3AccessKey:   "minio",
-		S3SecretKey:   "minio",
+		S3AccessKey:   "minioadmin",
+		S3SecretKey:   "minioadmin",
 	}
 	if err := h.StartDuckDB(cfg); err != nil {
 		t.Fatalf("start duckdb: %v", err)
@@ -55,10 +55,10 @@ func TestE2EHarnessMinimal(t *testing.T) {
 	}
 
 	// Upload to MinIO
-	if err := UploadFileToS3(ctx, h.S3Endpoint, "minio", "minio", "test-bucket", "base/base.parquet", base); err != nil {
+	if err := UploadFileToS3(ctx, h.S3Endpoint, "minioadmin", "minioadmin", "test-bucket", "base/base.parquet", base); err != nil {
 		t.Fatalf("upload base: %v", err)
 	}
-	if err := UploadFileToS3(ctx, h.S3Endpoint, "minio", "minio", "test-bucket", "delta/delta.parquet", delta); err != nil {
+	if err := UploadFileToS3(ctx, h.S3Endpoint, "minioadmin", "minioadmin", "test-bucket", "delta/delta.parquet", delta); err != nil {
 		t.Fatalf("upload delta: %v", err)
 	}
 

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
+	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
 func TestRunnerRunSmoke(t *testing.T) {
@@ -99,6 +101,37 @@ func TestQueryOptionsForWorkloadAddsHotAndColdWindowRanges(t *testing.T) {
 	}
 	if coldOpts.TradeTimeEnd > hotOpts.TradeTimeStart {
 		t.Fatalf("expected cold-only window to end before hot-only window starts, cold=%+v hot=%+v", coldOpts, hotOpts)
+	}
+}
+
+func TestQueryRequestForWorkloadEnablesFederatedHintsForServiceWorkloads(t *testing.T) {
+	req, pageSize := queryRequestForWorkload(WorkloadDefinition{Name: "baseline-page-1", ExecutionSource: "service", TargetSchema: "trade", PageSize: 20, PageNumber: 1}, 50)
+	if pageSize != 20 {
+		t.Fatalf("expected explicit page size, got %d", pageSize)
+	}
+	if req.Federated == nil {
+		t.Fatal("expected federated request hints for service workload")
+	}
+	if !req.Federated.Enabled {
+		t.Fatal("expected federated hints to be enabled")
+	}
+	if req.Federated.S3ParquetPathTemplate != "" {
+		t.Fatalf("expected harness-specific parquet template to be populated later, got %q", req.Federated.S3ParquetPathTemplate)
+	}
+	if got := req.Federated.PreferredTiers; len(got) != 3 || got[0] != "hot" || got[1] != "warm" || got[2] != "cold" {
+		t.Fatalf("unexpected preferred tiers: %+v", got)
+	}
+	if req.SortBy[0] != "tradeTime" || req.SortOrder != forma.SortOrderDesc {
+		t.Fatalf("expected trade sort defaults, got %+v", req)
+	}
+}
+
+func TestBenchmarkS3ParquetPathTemplateUsesHarnessLocation(t *testing.T) {
+	h := &federated.FederatedTestHarness{S3Bucket: "bucket-a", S3Prefix: "prefix-b"}
+	got := benchmarkS3ParquetPathTemplate(h)
+	want := "s3://bucket-a/prefix-b/{{.SchemaID}}/base/*.parquet, s3://bucket-a/prefix-b/{{.SchemaID}}/delta/*.parquet"
+	if got != want {
+		t.Fatalf("unexpected parquet template: %q", got)
 	}
 }
 

@@ -291,6 +291,14 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 			wantErr:        false,
 		},
 		{
+			name:           "with federated hints",
+			json:           `{"schema_name":"users","page":1,"items_per_page":10,"federated":{"enabled":true,"preferred_tiers":["hot","warm","cold"],"prefer_hot":false,"use_main_as_anchor":true,"s3_parquet_path_template":"s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet","allow_partial_degraded_mode":true}}`,
+			wantSchemaName: "users",
+			wantPage:       1,
+			wantCondition:  false,
+			wantErr:        false,
+		},
+		{
 			name:    "invalid JSON",
 			json:    `{invalid}`,
 			wantErr: true,
@@ -317,6 +325,13 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 					assert.NotNil(t, req.Condition)
 				} else {
 					assert.Nil(t, req.Condition)
+				}
+				if tt.name == "with federated hints" {
+					require.NotNil(t, req.Federated)
+					assert.True(t, req.Federated.Enabled)
+					assert.Equal(t, []string{"hot", "warm", "cold"}, req.Federated.PreferredTiers)
+					assert.True(t, req.Federated.UseMainAsAnchor)
+					assert.True(t, req.Federated.AllowPartialDegradedMode)
 				}
 			}
 		})
@@ -381,6 +396,22 @@ func TestQueryRequest_MarshalJSON(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "with federated hints",
+			req: QueryRequest{
+				SchemaName:   "users",
+				Page:         1,
+				ItemsPerPage: 10,
+				Federated: &FederatedQueryRequest{
+					Enabled:                 true,
+					PreferredTiers:          []string{"hot", "warm", "cold"},
+					UseMainAsAnchor:         true,
+					S3ParquetPathTemplate:   "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
+					AllowPartialDegradedMode: true,
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -399,6 +430,11 @@ func TestQueryRequest_MarshalJSON(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.req.SchemaName, req2.SchemaName)
 				assert.Equal(t, tt.req.Page, req2.Page)
+				if tt.req.Federated != nil {
+					require.NotNil(t, req2.Federated)
+					assert.Equal(t, tt.req.Federated.PreferredTiers, req2.Federated.PreferredTiers)
+					assert.Equal(t, tt.req.Federated.S3ParquetPathTemplate, req2.Federated.S3ParquetPathTemplate)
+				}
 			}
 		})
 	}

@@ -596,7 +596,10 @@ type mockPersistentRecordRepository struct {
 	deleteCalls        int
 	lastQuery          *PersistentRecordQuery
 	queries            []*PersistentRecordQuery
+	lastFederatedQuery *FederatedAttributeQuery
+	lastFederatedOpts  *FederatedQueryOptions
 	queryFunc          func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+	federatedQueryFunc func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
 	atomicDeleteFailAt int
@@ -698,6 +701,11 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 func (m *mockPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
+	}
+	m.lastFederatedQuery = fq
+	m.lastFederatedOpts = opts
+	if m.federatedQueryFunc != nil {
+		return m.federatedQueryFunc(ctx, tables, fq, opts)
 	}
 	prq := &PersistentRecordQuery{
 		Tables:          tables,
@@ -1103,6 +1111,87 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "unknown attribute") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := NewPersistentRecordTransformer(registry)
+
+	schemaID, cache, err := registry.GetSchemaAttributeCacheByName("visit")
+	if err != nil {
+		t.Fatalf("failed to get schema metadata: %v", err)
+	}
+
+	rowID := uuid.New()
+	record := buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{
+		"id":               "visit-federated",
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
+	})
+	mockRepo := newMockPersistentRecordRepository()
+	mockRepo.federatedQueryFunc = func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+		return &PersistentRecordPage{Records: []*PersistentRecord{record}, TotalRecords: 1, TotalPages: 1, CurrentPage: 1}, nil
+	}
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+	req := &forma.QueryRequest{
+		SchemaName:   "visit",
+		Page:         1,
+		ItemsPerPage: 10,
+		SortBy:       []string{"scheduledStartAt"},
+		SortOrder:    forma.SortOrderDesc,
+		Federated: &forma.FederatedQueryRequest{
+			Enabled:                 true,
+			PreferredTiers:          []string{"hot", "warm", "cold"},
+			UseMainAsAnchor:         true,
+			S3ParquetPathTemplate:   "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
+			AllowPartialDegradedMode: true,
+		},
+	}
+
+	result, err := em.Query(ctx, req)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if result == nil || len(result.Data) != 1 {
+		t.Fatalf("expected one result, got %+v", result)
+	}
+	if mockRepo.lastFederatedQuery == nil {
+		t.Fatal("expected federated query to be captured")
+	}
+	if mockRepo.lastFederatedQuery.SchemaID != schemaID {
+		t.Fatalf("expected schema id %d, got %d", schemaID, mockRepo.lastFederatedQuery.SchemaID)
+	}
+	if got := mockRepo.lastFederatedQuery.PreferredTiers; len(got) != 3 || got[0] != DataTierHot || got[1] != DataTierWarm || got[2] != DataTierCold {
+		t.Fatalf("unexpected preferred tiers: %+v", got)
+	}
+	if !mockRepo.lastFederatedQuery.UseMainAsAnchor {
+		t.Fatal("expected use main as anchor to be forwarded")
+	}
+	if mockRepo.lastFederatedQuery.DuckDBHints == nil || mockRepo.lastFederatedQuery.DuckDBHints.S3ParquetPathTemplate == "" {
+		t.Fatal("expected duckdb hints to be forwarded")
+	}
+	if mockRepo.lastFederatedOpts == nil || !mockRepo.lastFederatedOpts.AllowPartialDegradedMode {
+		t.Fatal("expected federated options to be forwarded")
+	}
+	if len(mockRepo.lastFederatedQuery.AttributeOrders) != 1 {
+		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastFederatedQuery.AttributeOrders))
+	}
+	atMeta, ok := cache["scheduledStartAt"]
+	if !ok {
+		t.Fatalf("expected scheduledStartAt metadata")
+	}
+	if mockRepo.lastFederatedQuery.AttributeOrders[0].AttrID != atMeta.AttributeID {
+		t.Fatalf("expected attrID %d, got %d", atMeta.AttributeID, mockRepo.lastFederatedQuery.AttributeOrders[0].AttrID)
 	}
 }
 

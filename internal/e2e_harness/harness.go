@@ -54,23 +54,29 @@ func (h *TestHarness) StartPostgres(ctx context.Context) (string, error) {
 		return "", err
 	}
 	dsn := fmt.Sprintf("postgres://postgres:password@%s:%s/postgres?sslmode=disable", host, mapped.Port())
-	h.PGDSN = dsn
-
-	// Open DB connection
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
+	if err := h.ConnectPostgres(ctx, dsn); err != nil {
 		return "", err
 	}
-	// Wait until reachable
+	return dsn, nil
+}
+
+// ConnectPostgres opens a Postgres connection using an existing DSN.
+func (h *TestHarness) ConnectPostgres(ctx context.Context, dsn string) error {
+	h.PGDSN = dsn
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return err
+	}
+
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		if err := db.PingContext(ctx); err == nil {
+		if pingErr := db.PingContext(ctx); pingErr == nil {
 			h.PGDB = db
-			return dsn, nil
-		}
-		if time.Now().After(deadline) {
+			return nil
+		} else if time.Now().After(deadline) {
 			db.Close()
-			return "", fmt.Errorf("postgres did not become ready: %w", err)
+			return fmt.Errorf("postgres did not become ready: %w", pingErr)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -94,12 +100,13 @@ func (h *TestHarness) StopPostgres(ctx context.Context) error {
 // StartS3 starts a MinIO container (optional) and returns its endpoint.
 func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	req := testcontainers.ContainerRequest{
-		Image:        "rustfs/rustfs:latest",
+		Image:        "minio/minio:latest",
 		ExposedPorts: []string{"9000/tcp"},
 		Env: map[string]string{
-			"RUSTFS_ACCESS_KEY": "minio",
-			"RUSTFS_SECRET_KEY": "minio",
+			"MINIO_ROOT_USER":     "minioadmin",
+			"MINIO_ROOT_PASSWORD": "minioadmin",
 		},
+		Cmd:        []string{"server", "/data", "--address", ":9000"},
 		WaitingFor: wait.ForListeningPort("9000/tcp").WithStartupTimeout(30 * time.Second),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

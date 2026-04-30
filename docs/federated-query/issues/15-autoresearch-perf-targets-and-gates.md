@@ -13,6 +13,12 @@ Once the performance loop exists, it still needs target briefs and deterministic
 - document protected workloads, expected win areas, and known risk areas in each target brief
 - explain how benchmark-driven perf targets differ from the existing BDD testing targets
 
+## Implementation Notes
+
+- initial shipped benchmark-backed target briefs cover `internal/postgres_duckdb_query.go` and `internal/e2e_harness/federated/query.go`
+- the benchmark now also exercises `baseline-page-1` through `internal/entity_query_service.go`, making service-layer query work benchmark-backed for the primary pagination path
+- baseline, candidate, and diff scripts clear the target-and-gate artifact directory before each run so repeated local gate use does not mix stale outputs with fresh evidence
+
 ## Acceptance Criteria
 
 - target authors can run a performance autoresearch iteration against a known module and benchmark subset

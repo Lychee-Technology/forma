@@ -87,3 +87,34 @@ func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T
 	require.Len(t, args, 1)
 	require.Equal(t, 18, args[0])
 }
+
+func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T) {
+	dual := &DualClauses{
+		DuckClause:   "1=1",
+		PgMainClause: "1=1",
+	}
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
+		DuckDBHints:    &DuckDBRenderHints{S3ParquetPathTemplate: "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet"},
+	}
+	params := map[string]any{
+		"DuckDBPGConnString": "host=pg port=5432",
+		"ChangeLogSchema":    "public",
+		"ChangeLogScanTable": "change_log",
+		"MainSchema":         "public",
+		"MainScanTable":      "entity_main",
+		"EAVSchema":          "public",
+		"EAVScanTable":       "eav_data",
+		"Anchor":             map[string]any{},
+	}
+
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
+	require.NoError(t, err)
+	require.Contains(t, sql, "postgres_scan('host=pg port=5432', 'public', 'change_log')")
+	require.Contains(t, sql, "JOIN postgres_scan('host=pg port=5432',")
+	require.Contains(t, sql, "'entity_main'")
+	require.Contains(t, sql, "postgres_scan('host=pg port=5432', 'public', 'eav_data')")
+	require.NotContains(t, sql, "change_log_dev")
+	require.NotContains(t, sql, "entity_main_dev")
+	require.NotContains(t, sql, "eav_data_dev")
+}

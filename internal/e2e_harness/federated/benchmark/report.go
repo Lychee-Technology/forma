@@ -64,6 +64,7 @@ type WorkloadSummary struct {
 	Name                string                   `json:"name"`
 	Category            string                   `json:"category"`
 	TargetSchema        string                   `json:"target_schema,omitempty"`
+	ExecutionSource     string                   `json:"execution_source,omitempty"`
 	OracleMode          string                   `json:"oracle_mode,omitempty"`
 	PreferHot           bool                     `json:"prefer_hot,omitempty"`
 	Distribution        Distribution             `json:"distribution"`
@@ -484,6 +485,7 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 		if def, ok := workloadDefs[name]; ok {
 			workload.Category = string(def.Category)
 			workload.TargetSchema = def.TargetSchema
+			workload.ExecutionSource = def.ExecutionSource
 			workload.OracleMode = string(def.ResolvedOracleMode())
 			workload.PreferHot = def.PreferHot
 			workload.Distribution = runs[0].Distribution
