@@ -380,7 +380,7 @@ func (h *FederatedTestHarness) initDatabaseSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS eav_data (
 			schema_id SMALLINT NOT NULL,
 			row_id UUID NOT NULL,
-			attr_id INTEGER NOT NULL,
+			attr_id SMALLINT NOT NULL,
 			array_indices TEXT NOT NULL DEFAULT '',
 			value_text TEXT,
 			value_numeric DOUBLE PRECISION,

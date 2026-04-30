@@ -1,6 +1,6 @@
 # Federated Query Benchmark CI and Operator Guide
 
-Last updated: 2026-04-18  
+Last updated: 2026-04-20  
 Repository: `forma`
 
 ## Purpose
@@ -15,6 +15,7 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - `-mode live` creates the federated harness, prepares tiered benchmark data, and executes supported workloads end to end
 - live benchmark summaries distinguish correctness failures from infrastructure failures, and workload-level expected-result checks are part of the executable path
 - benchmark summaries now expose workload oracle provenance so selective workloads can be distinguished between `loaded-state` and `truth-pass` expected-result modes
+- benchmark summaries now expose repeated-run stability status so reviewers can quickly tell whether same-seed live runs stayed stable
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
@@ -159,6 +160,45 @@ Use these rules in CI and automation for the current benchmark model.
 
 The repository CI workflow now includes a dedicated `benchmark-smoke` job for the scaffolded benchmark command and the existing federated e2e smoke tests remain the executable coverage path.
 
+## Benchmark Readiness Gate
+
+Treat the benchmark as ready to inform optimization review only when all of the following are true:
+
+- the live benchmark path is available through `go run ./cmd/benchmark run -mode live ...` and the documented baseline presets
+- correctness failures and infrastructure failures are reported separately in benchmark summaries
+- same-seed repeated-run stability is visible through the top-level `stability` summary
+- oracle methodology is visible through workload `oracle_mode` and top-level `oracle_provenance`
+- workload-level summaries and diff artifacts are available for baseline comparison
+- CI-safe and manual-only workload subsets remain separated by policy
+
+If any of those conditions stops being true, treat the benchmark as evidence for debugging only rather than as an optimization gate.
+
+### Protected Workloads
+
+Use these workloads as the default protected set when evaluating benchmark-driven query changes:
+
+- `baseline-page-1`
+- `hot-selective-page`
+- `hot-low-selectivity-page`
+- `eav-selective-page`
+- `mixed-hot-eav-page`
+- `mixed-tier-window`
+- `hot-only-window`
+- `cold-only-window`
+- `deep-page-1000`
+
+Operationally:
+
+- treat correctness regressions in any protected workload as a hard stop
+- treat repeated-run instability in any protected workload as a methodology problem that must be resolved before trusting latency deltas
+- reserve `deep-page-100000` for heavier manual review rather than routine protection in CI-safe flows
+
+### Known Methodology Limits
+
+- `truth-pass` workloads use the live federated path to validate expected results, so oracle mode changes are methodology changes rather than pure performance changes
+- `prefer_hot` is still primarily provenance metadata outside the documented tier-mix execution override case
+- live benchmark runs are intended for repeatable correctness and relative performance review, not for production-grade throughput SLOs
+
 ## Environment Requirements
 
 - Go toolchain matching the repository CI version
@@ -183,6 +223,8 @@ Check these fields first in `benchmark-summary.json` or the Markdown summary:
 - `qps`
 - per-assertion pass/fail counts
 - workload `oracle_mode`
+- top-level `stability`
+- top-level `oracle_provenance`
 
 Interpretation guidance:
 
@@ -192,6 +234,8 @@ Interpretation guidance:
 - a drop in `qps` without matching row-count changes is a regression candidate worth manual review
 - planning-only output should stay structurally stable across runs for the same seed and workload selection
 - supported live workloads should also keep repeated-run `FailureKind`, `total_records`, and page `row_ids` stable for the same seed and workload selection
+- if `stability.enabled=true`, review `unstable_workloads`, `failure_kind_failures`, `total_record_failures`, and `page_row_id_failures` before trusting latency changes
+- use `oracle_provenance` to see which workloads were judged via `loaded-state` versus `truth-pass` without reading every workload row individually
 
 ## Common Failure Modes
 
