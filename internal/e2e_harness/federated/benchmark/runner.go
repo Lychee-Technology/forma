@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +43,8 @@ type WorkloadRunResult struct {
 	PageNumber   int                     `json:"page_number"`
 	Offset       int                     `json:"offset"`
 	PreferHot    bool                    `json:"prefer_hot,omitempty"`
+	WorkerID     int                     `json:"worker_id,omitempty"`
+	GroupID      int                     `json:"group_id,omitempty"`
 	ResultCount  int                     `json:"result_count"`
 	TotalRecords int64                   `json:"total_records"`
 	Duration     time.Duration           `json:"duration"`
@@ -54,6 +57,8 @@ type WorkloadRunResult struct {
 	Assertions   []AssertionResult       `json:"assertions,omitempty"`
 	PlanNotes    []string                `json:"plan_notes,omitempty"`
 	PerTier      *PerTierMetrics         `json:"per_tier,omitempty"`
+	RouteEngine  string                  `json:"route_engine,omitempty"`
+	RouteReason  string                  `json:"route_reason,omitempty"`
 }
 
 // PerTierMetrics captures per-engine row counts and pushdown efficiency from the execution plan.
@@ -185,7 +190,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	if err := LoadTieredDataset(ctx, h, tiered); err != nil {
 		return nil, err
 	}
-	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations)
+	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations*r.config.Concurrency)
 	pageRuns := make(map[string]WorkloadRunResult)
 	previousRuns := make(map[string]WorkloadRunResult)
 	loadedRecords, err := buildLoadedStateSnapshot(ctx, h, tiered)
@@ -198,47 +203,93 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	passed := true
 	failureCount := 0
+	concurrency := r.config.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	type concurrentResult struct {
+		run     WorkloadRunResult
+		records []*internal.PersistentRecord
+	}
 	for _, workload := range r.workloads {
 		if !workload.SupportsDistribution(r.genConfig.Distribution) {
 			continue
 		}
 		for iteration := 0; iteration < r.config.Iterations; iteration++ {
-			run, records, err := r.executeWorkload(ctx, h, workload)
-			if err != nil {
-				run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
-				executions = append(executions, run)
-				passed = false
-				failureCount++
-				continue
+			var wg sync.WaitGroup
+			barrier := make(chan struct{})
+			resultsChan := make(chan concurrentResult, concurrency)
+
+			for workerID := 0; workerID < concurrency; workerID++ {
+				wg.Add(1)
+				go func(wid, iter int) {
+					defer wg.Done()
+					<-barrier
+
+					run, records, err := r.executeWorkload(ctx, h, workload)
+					if err != nil {
+						run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
+					}
+					run.WorkerID = wid
+					run.GroupID = iter
+					resultsChan <- concurrentResult{run: run, records: records}
+				}(workerID, iteration)
 			}
-			semantics := semanticsForWorkload(workload, r.genConfig)
-			run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
-			run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, records, semantics)...)
-			run.OracleMode = string(workload.ResolvedOracleMode())
-			if expected, ok := expectedByWorkload[workload.Name]; ok {
-				run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
+
+			close(barrier)
+			wg.Wait()
+			close(resultsChan)
+
+			// Collect all batch results
+			batchResults := make([]concurrentResult, 0, concurrency)
+			for result := range resultsChan {
+				batchResults = append(batchResults, result)
 			}
-			if workload.Category == WorkloadCategoryPagination || workload.Category == WorkloadCategoryDeepPage {
-				if previous, ok := pageRuns[workload.TargetSchema]; ok {
-					run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
+
+			// Compute concurrency stability assertions across the batch
+			batchRuns := make([]WorkloadRunResult, len(batchResults))
+			for i, cr := range batchResults {
+				batchRuns[i] = cr.run
+			}
+			concurrencyAssertions := validateConcurrentRunStability(batchRuns)
+			routeAssertions := validateConcurrentRouteStability(batchRuns)
+
+			for i, result := range batchResults {
+				run := result.run
+				semantics := semanticsForWorkload(workload, r.genConfig)
+				run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
+				run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, result.records, semantics)...)
+				run.OracleMode = string(workload.ResolvedOracleMode())
+				if expected, ok := expectedByWorkload[workload.Name]; ok {
+					run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
 				}
-				pageRuns[workload.TargetSchema] = run
+				if workload.Category == WorkloadCategoryPagination || workload.Category == WorkloadCategoryDeepPage {
+					if previous, ok := pageRuns[workload.TargetSchema]; ok {
+						run.Assertions = append(run.Assertions, validatePaginationTransition(previous, run)...)
+					}
+					pageRuns[workload.TargetSchema] = run
+				}
+				if previous, ok := previousRuns[workload.Name]; ok {
+					run.Assertions = append(run.Assertions, validateRepeatedRunStability(previous, run)...)
+				}
+				previousRuns[workload.Name] = run
+				if workload.Category == WorkloadCategoryPushdown {
+					run.Assertions = append(run.Assertions, validatePushdownAssertions(run)...)
+				}
+				// Attach concurrency stability assertions to the first run (representative)
+				if i == 0 {
+					run.Assertions = append(run.Assertions, concurrencyAssertions...)
+					run.Assertions = append(run.Assertions, routeAssertions...)
+				}
+				run.FailureCount = countFailedAssertions(run.Assertions)
+				run.FailureKind = failureKindForRun(run)
+				run.Passed = run.FailureCount == 0 && run.InfraError == ""
+				if !run.Passed {
+					passed = false
+					failureCount += maxInt(1, run.FailureCount)
+				}
+				executions = append(executions, run)
 			}
-			if previous, ok := previousRuns[workload.Name]; ok {
-				run.Assertions = append(run.Assertions, validateRepeatedRunStability(previous, run)...)
-			}
-			previousRuns[workload.Name] = run
-			if workload.Category == WorkloadCategoryPushdown {
-				run.Assertions = append(run.Assertions, validatePushdownAssertions(run)...)
-			}
-			run.FailureCount = countFailedAssertions(run.Assertions)
-			run.FailureKind = failureKindForRun(run)
-			run.Passed = run.FailureCount == 0 && run.InfraError == ""
-			if !run.Passed {
-				passed = false
-				failureCount += maxInt(1, run.FailureCount)
-			}
-			executions = append(executions, run)
 		}
 	}
 	result := &RunResult{
@@ -350,6 +401,10 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	if result.Plan != nil {
 		run.PlanNotes = append([]string(nil), result.Plan.Notes...)
 	}
+	if engine, reason := routeInfoFromPlanNotes(run.PlanNotes); engine != "" {
+		run.RouteEngine = engine
+		run.RouteReason = reason
+	}
 	if workload.PreferHot {
 		run.PlanNotes = append(run.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
 		if opts.PreferHot {
@@ -359,10 +414,44 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	return run, result.Records, nil
 }
 
+func extractRouteInfo(plan *internal.ExecutionPlan) (engine, reason string) {
+	if plan == nil {
+		return "", ""
+	}
+	if plan.Routing.UseDuckDB {
+		engine = "duckdb"
+	} else if len(plan.Routing.Reason) > 0 {
+		engine = "postgres"
+	}
+	reason = plan.Routing.Reason
+	return
+}
+
+func routeInfoFromPlanNotes(notes []string) (engine, reason string) {
+	for _, note := range notes {
+		switch note {
+		case "postgres_only_execution", "prefer_hot_override":
+			engine = "postgres"
+			reason = note
+		case "dirty_ids_excluded":
+			if engine == "" {
+				engine = "duckdb"
+				reason = "federated"
+			}
+		}
+	}
+	if engine == "" && len(notes) > 0 {
+		engine = "duckdb"
+		reason = "federated"
+	}
+	return
+}
+
 func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
 	req, pageSize := queryRequestForWorkload(workload, r.config.PageSize)
 	start := time.Now()
-	result, records, plan, err := executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, workload.Category == WorkloadCategoryPushdown)
+	capturePlan := workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix
+	result, records, plan, err := executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, capturePlan)
 	if err != nil {
 		return WorkloadRunResult{}, nil, err
 	}
@@ -381,6 +470,10 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 		RowIDs:       persistentRecordIDs(records),
 		PlanNotes:    []string{"entity_manager_query_service"},
 		PerTier:      extractPerTierMetrics(plan),
+	}
+	if engine, reason := extractRouteInfo(plan); engine != "" {
+		run.RouteEngine = engine
+		run.RouteReason = reason
 	}
 	return run, records, nil
 }
@@ -626,7 +719,7 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 		req.Federated = &forma.FederatedQueryRequest{
 			Enabled:              true,
 			PreferredTiers:       []string{"hot", "warm", "cold"},
-			IncludeExecutionPlan: workload.Category == WorkloadCategoryPushdown,
+			IncludeExecutionPlan: workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix,
 		}
 	}
 	if workload.TargetSchema == "trade" {
@@ -1241,6 +1334,83 @@ func validateRepeatedRunStability(previous, current WorkloadRunResult) []Asserti
 		Message: fmt.Sprintf("previous=%v current=%v", previous.RowIDs, current.RowIDs),
 	})
 	return assertions
+}
+
+func validateConcurrentRunStability(runs []WorkloadRunResult) []AssertionResult {
+	if len(runs) < 2 {
+		return nil
+	}
+	reference := runs[0]
+	var assertions []AssertionResult
+	allPassed := true
+	for i := 1; i < len(runs); i++ {
+		allPassed = allPassed && reference.TotalRecords == runs[i].TotalRecords
+	}
+	assertions = append(assertions, AssertionResult{
+		Name:    "concurrent-run-total-records-stable",
+		Passed:  allPassed,
+		Message: fmt.Sprintf("reference=%d workers=%d", reference.TotalRecords, len(runs)),
+	})
+
+	allPassed = true
+	for i := 1; i < len(runs); i++ {
+		allPassed = allPassed && stringSlicesEqual(reference.RowIDs, runs[i].RowIDs)
+	}
+	assertions = append(assertions, AssertionResult{
+		Name:    "concurrent-run-page-row-ids-stable",
+		Passed:  allPassed,
+		Message: fmt.Sprintf("reference_rows=%d workers=%d", len(reference.RowIDs), len(runs)),
+	})
+
+	allPassed = true
+	for i := 1; i < len(runs); i++ {
+		allPassed = allPassed && reference.FailureKind == runs[i].FailureKind
+	}
+	assertions = append(assertions, AssertionResult{
+		Name:    "concurrent-run-failure-kind-stable",
+		Passed:  allPassed,
+		Message: fmt.Sprintf("reference=%s workers=%d", reference.FailureKind, len(runs)),
+	})
+
+	return assertions
+}
+
+func validateConcurrentRouteStability(runs []WorkloadRunResult) []AssertionResult {
+	if len(runs) < 2 {
+		return nil
+	}
+	reference := runs[0]
+	if reference.RouteEngine == "" {
+		return nil
+	}
+	divergentEngines := make(map[string]int)
+	for _, run := range runs {
+		if run.RouteEngine != "" {
+			divergentEngines[run.RouteEngine]++
+		}
+	}
+	stable := len(divergentEngines) <= 1
+	parts := make([]string, 0, len(divergentEngines))
+	for engine, count := range divergentEngines {
+		parts = append(parts, fmt.Sprintf("%s=%d", engine, count))
+	}
+	assertions := []AssertionResult{{
+		Name:    "concurrent-run-route-engine-stable",
+		Passed:  stable,
+		Message: fmt.Sprintf("engines: %s", partsToStr(parts)),
+	}}
+	return assertions
+}
+
+func partsToStr(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		result += ", " + parts[i]
+	}
+	return result
 }
 
 func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord, semantics workloadSemantics) []AssertionResult {

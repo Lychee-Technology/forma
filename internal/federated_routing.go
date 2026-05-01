@@ -39,27 +39,73 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 		return dec
 	}
 
+	// Determine whether hot-only or cold-only preference is implied by tier selection
+	hotOnly := fq != nil && fq.PreferHot
+	coldOnly := false
+	if fq != nil && len(fq.PreferredTiers) > 0 {
+		hasHot := false
+		for _, t := range fq.PreferredTiers {
+			if t == DataTierHot {
+				hasHot = true
+				break
+			}
+		}
+		coldOnly = !hasHot
+	}
+
+	// Determine effective rows for cost-based decisions.
+	// Prefer query-level Limit/Offset (AttributeQuery) over unset opts.MaxRows.
+	effectiveLimit := 0
+	effectiveOffset := 0
+	if fq != nil {
+		effectiveLimit = fq.Limit
+		effectiveOffset = fq.Offset
+	}
+	effectiveRows := effectiveLimit + effectiveOffset
+
 	// Strategy-based heuristics
 	switch cfg.Routing.Strategy {
 	case forma.RoutingStrategyFreshnessFirst:
-		// prefer hot only if PreferHot or recent TTL required
-		if fq != nil && fq.PreferHot {
+		if hotOnly {
 			dec.UseDuckDB = false
 			dec.Tiers = []DataTier{DataTierHot}
 			dec.Reason = "prefer hot"
+		} else if coldOnly {
+			dec.UseDuckDB = true
+			dec.Reason = "freshness-first cold only"
 		}
 	case forma.RoutingStrategyCostFirst:
-		// prefer DuckDB for large scans
-		if opts != nil && opts.MaxRows > 0 && opts.MaxRows > cfg.Routing.MaxDuckDBScanRows {
+		// hot-only preference takes priority over scan size
+		if hotOnly {
+			dec.UseDuckDB = false
+			dec.Tiers = []DataTier{DataTierHot}
+			dec.Reason = "cost-first prefer hot"
+			break
+		}
+		// Prefer DuckDB for large scans; fall back to opts.MaxRows if no query-level info
+		scanRows := effectiveRows
+		if scanRows == 0 && opts != nil && opts.MaxRows > 0 {
+			scanRows = opts.MaxRows
+		}
+		if scanRows > 0 && scanRows > cfg.Routing.MaxDuckDBScanRows {
 			dec.UseDuckDB = true
 			dec.Reason = "cost-first large scan"
 		}
 	case forma.RoutingStrategyHybrid:
-		// hybrid: use duckdb unless PreferHot or small MaxRows
-		if fq != nil && fq.PreferHot {
+		if hotOnly {
 			dec.UseDuckDB = false
 			dec.Tiers = []DataTier{DataTierHot}
 			dec.Reason = "hybrid prefer hot"
+		} else if coldOnly {
+			dec.UseDuckDB = true
+			dec.Reason = "hybrid cold only"
+		} else if effectiveOffset > 0 && effectiveOffset >= 10000 {
+			dec.UseDuckDB = true
+			dec.Reason = "hybrid deep pagination"
+		} else if effectiveLimit > 0 && effectiveLimit < 1000 {
+			// Small first-page query: prefer PG hot tier
+			dec.UseDuckDB = false
+			dec.Reason = "hybrid small result set"
 		} else if opts != nil && opts.MaxRows > 0 && opts.MaxRows < 1000 {
 			dec.UseDuckDB = false
 			dec.Reason = "hybrid small result set"
@@ -68,7 +114,6 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 			dec.Reason = "hybrid use duckdb"
 		}
 	default:
-		// unknown strategy: keep defaults
 		dec.Reason = "unknown strategy - default"
 	}
 

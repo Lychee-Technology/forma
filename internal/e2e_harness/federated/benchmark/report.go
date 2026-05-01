@@ -104,6 +104,8 @@ type WorkloadSummary struct {
 	TotalDuration       time.Duration            `json:"total_duration"`
 	QPS                 float64                  `json:"qps"`
 	AssertionStats      map[string]AssertionStat `json:"assertion_stats,omitempty"`
+	RouteEngineCounts   map[string]int           `json:"route_engine_counts,omitempty"`
+	RouteReasonCounts   map[string]int           `json:"route_reason_counts,omitempty"`
 }
 
 // DiffReport captures machine-readable baseline deltas.
@@ -144,6 +146,7 @@ type WorkloadDiff struct {
 	P95LatencyDelta          time.Duration `json:"p95_latency_delta"`
 	AvgResultCountDelta      float64       `json:"avg_result_count_delta"`
 	AvgTotalRecordsDelta     float64       `json:"avg_total_records_delta"`
+	RouteEngineChanged       bool          `json:"route_engine_changed,omitempty"`
 }
 
 // WriteJSONReport writes a benchmark run result to JSON.
@@ -215,7 +218,16 @@ func WriteMarkdownReport(path string, result *RunResult) error {
 	if len(summary.Workloads) > 0 {
 		b.WriteString("\n## Workload Summaries\n\n")
 		for _, workload := range summary.Workloads {
-			b.WriteString(fmt.Sprintf("- `%s`: schema=%s oracle_mode=%s prefer_hot=%t executions=%d passed=%t qps=%.2f p95=%s avg=%s avg_result_count=%.2f avg_total_records=%.2f\n", workload.Name, workload.TargetSchema, workload.OracleMode, workload.PreferHot, workload.ExecutionCount, workload.Passed, workload.QPS, workload.P95, workload.Avg, workload.AvgResultCount, workload.AvgTotalRecords))
+			routeInfo := ""
+			if len(workload.RouteEngineCounts) > 0 {
+				parts := make([]string, 0)
+				for engine, count := range workload.RouteEngineCounts {
+					parts = append(parts, fmt.Sprintf("%s=%d", engine, count))
+				}
+				sort.Strings(parts)
+				routeInfo = " route=[" + strings.Join(parts, ", ") + "]"
+			}
+			b.WriteString(fmt.Sprintf("- `%s`: schema=%s oracle_mode=%s prefer_hot=%t executions=%d passed=%t qps=%.2f p95=%s avg=%s avg_result_count=%.2f avg_total_records=%.2f%s\n", workload.Name, workload.TargetSchema, workload.OracleMode, workload.PreferHot, workload.ExecutionCount, workload.Passed, workload.QPS, workload.P95, workload.Avg, workload.AvgResultCount, workload.AvgTotalRecords, routeInfo))
 		}
 	}
 	if len(summary.OracleProvenance) > 0 {
@@ -489,7 +501,7 @@ func FormatDiffSummary(diff DiffReport) string {
 		diff.Summary.P95LatencyDelta,
 	))
 	for _, workload := range diff.Workloads {
-		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t correctness_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f\n",
+		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t correctness_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f route_changed=%t\n",
 			workload.Name,
 			workload.TargetSchema,
 			workload.MissingInBaseline,
@@ -501,6 +513,7 @@ func FormatDiffSummary(diff DiffReport) string {
 			workload.P95LatencyDelta,
 			workload.AvgResultCountDelta,
 			workload.AvgTotalRecordsDelta,
+			workload.RouteEngineChanged,
 		))
 	}
 	return b.String()
@@ -567,6 +580,16 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			}
 			if run.PreferHot {
 				workload.PreferHot = true
+			}
+			if run.RouteEngine != "" {
+				if workload.RouteEngineCounts == nil {
+					workload.RouteEngineCounts = make(map[string]int)
+					workload.RouteReasonCounts = make(map[string]int)
+				}
+				workload.RouteEngineCounts[run.RouteEngine]++
+				if run.RouteReason != "" {
+					workload.RouteReasonCounts[run.RouteReason]++
+				}
 			}
 			for _, assertion := range run.Assertions {
 				stat := workload.AssertionStats[assertion.Name]
@@ -683,6 +706,25 @@ func compareWorkloadSummaries(baseline, candidate []WorkloadSummary) []WorkloadD
 		if targetSchema == "" {
 			targetSchema = cand.TargetSchema
 		}
+		routeEngineChanged := false
+		if len(base.RouteEngineCounts) > 0 && len(cand.RouteEngineCounts) > 0 {
+			for engine := range base.RouteEngineCounts {
+				if _, ok := cand.RouteEngineCounts[engine]; !ok {
+					routeEngineChanged = true
+					break
+				}
+			}
+			if !routeEngineChanged {
+				for engine := range cand.RouteEngineCounts {
+					if _, ok := base.RouteEngineCounts[engine]; !ok {
+						routeEngineChanged = true
+						break
+					}
+				}
+			}
+		} else if len(base.RouteEngineCounts) != len(cand.RouteEngineCounts) {
+			routeEngineChanged = true
+		}
 		diffs = append(diffs, WorkloadDiff{
 			Name:                     name,
 			TargetSchema:             targetSchema,
@@ -698,6 +740,7 @@ func compareWorkloadSummaries(baseline, candidate []WorkloadSummary) []WorkloadD
 			P95LatencyDelta:          cand.P95 - base.P95,
 			AvgResultCountDelta:      cand.AvgResultCount - base.AvgResultCount,
 			AvgTotalRecordsDelta:     cand.AvgTotalRecords - base.AvgTotalRecords,
+			RouteEngineChanged:       routeEngineChanged,
 		})
 	}
 	return diffs
