@@ -151,9 +151,7 @@ func (sp *SchemaProjection) buildS3Projection(sortedAttrs []string) {
 		"changed_at AS ver_ts",
 		"deleted_at AS deleted_ts",
 	)
-	for _, attr := range sortedAttrs {
-		parts = append(parts, attr)
-	}
+	parts = append(parts, sortedAttrs...)
 	sp.S3SourceSelect = strings.Join(parts, ", ")
 }
 
