@@ -44,6 +44,72 @@ func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
 	require.False(t, dec.UseDuckDB, "disabled config should not use duckdb")
 }
 
+func TestEvaluateRoutingPolicy_QueryShapeAware(t *testing.T) {
+	// Hybrid strategy with realistic query shapes
+	cfg := forma.DuckDBConfig{
+		Enabled: true,
+		Routing: forma.RoutingPolicy{
+			Strategy:          forma.RoutingStrategyHybrid,
+			MaxDuckDBScanRows: 5000,
+			AllowS3Fallback:   true,
+		},
+	}
+
+	// Hot-only preference → PG
+	fq := &FederatedAttributeQuery{PreferHot: true}
+	dec := EvaluateRoutingPolicy(cfg, fq, nil)
+	require.False(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid prefer hot", dec.Reason)
+
+	// Cold-only tiers (warm,cold only, no hot) → DuckDB
+	fq = &FederatedAttributeQuery{PreferredTiers: []DataTier{DataTierWarm, DataTierCold}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.True(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid cold only", dec.Reason)
+
+	// Small first-page query → PG
+	fq = &FederatedAttributeQuery{AttributeQuery: AttributeQuery{Limit: 20, Offset: 0}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.False(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid small result set", dec.Reason)
+
+	// Larger scan → DuckDB
+	fq = &FederatedAttributeQuery{AttributeQuery: AttributeQuery{Limit: 2000, Offset: 0}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.True(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid use duckdb", dec.Reason)
+
+	// Deep pagination → DuckDB
+	fq = &FederatedAttributeQuery{AttributeQuery: AttributeQuery{Limit: 20, Offset: 10000}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.True(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid deep pagination", dec.Reason)
+
+	// Default (no query hints) → DuckDB
+	dec = EvaluateRoutingPolicy(cfg, nil, nil)
+	require.True(t, dec.UseDuckDB)
+	require.Equal(t, "hybrid use duckdb", dec.Reason)
+
+	// Cost-first with small limit (from query shape) → keeps default (enabled)
+	cfg.Routing.Strategy = forma.RoutingStrategyCostFirst
+	fq = &FederatedAttributeQuery{AttributeQuery: AttributeQuery{Limit: 50, Offset: 0}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.True(t, dec.UseDuckDB, "cost-first default is enabled")
+	require.Equal(t, "default", dec.Reason)
+
+	// Cost-first with large scan from query shape → DuckDB
+	fq = &FederatedAttributeQuery{AttributeQuery: AttributeQuery{Limit: 10000, Offset: 0}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.True(t, dec.UseDuckDB)
+	require.Equal(t, "cost-first large scan", dec.Reason)
+
+	// Cost-first with PreferHot → PG
+	fq = &FederatedAttributeQuery{PreferHot: true, AttributeQuery: AttributeQuery{Limit: 10000, Offset: 0}}
+	dec = EvaluateRoutingPolicy(cfg, fq, nil)
+	require.False(t, dec.UseDuckDB)
+	require.Equal(t, "cost-first prefer hot", dec.Reason)
+}
+
 func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 	env := setupIntegrationEnv(t)
 
