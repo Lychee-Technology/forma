@@ -256,8 +256,8 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	hotRowIDFilter := buildHotRowIDFilter(opts)
 	attributeFilter := buildAttributeFilterClause(opts)
 	timeWindowFilter := buildTradeTimeFilterClause(opts)
-	hotAttributeFilter := buildHotAttributeFilterClause(opts)
-	hotTimeWindowFilter := buildHotTradeTimeFilterClause(opts)
+	hotAttributeFilter := buildHotAttributeFilterClauseTargeted(opts)
+	hotTimeWindowFilter := buildHotTradeTimeFilterClauseTargeted(opts)
 	pgConnStr := h.buildPGConnString()
 
 	// Build tier queries dynamically
@@ -314,38 +314,7 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {
 			return buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter)
 		}
-		return fmt.Sprintf(`
-		SELECT 
-			cl.row_id::VARCHAR as row_id,
-			cl.schema_id,
-			cl.changed_at,
-			cl.deleted_at,
-			benchmark_name(hot_vals.attributes) as name,
-			0 as version,
-			benchmark_text(hot_vals.attributes, 'symbol', em.text_01) as symbol,
-			benchmark_text(hot_vals.attributes, 'exchange', '') as exchange,
-			benchmark_text(hot_vals.attributes, 'region', em.text_02) as region,
-			benchmark_int(hot_vals.attributes, 'tradeType', em.smallint_01) as tradeType,
-			benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02) as tradeTime,
-			'hot' as tier
-		FROM postgres_scan('%s', 'public', 'change_log') cl
-		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
-			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
-		LEFT JOIN (
-			SELECT row_id::VARCHAR as row_id, schema_id, map(list(attr_name), list(attr_value)) as attributes
-			FROM (
-				SELECT e.row_id, e.schema_id, benchmark_attr_name(e.schema_id, e.attr_id) as attr_name,
-					COALESCE(e.value_text, CAST(CAST(e.value_numeric AS BIGINT) AS VARCHAR), '') as attr_value
-				FROM postgres_scan('%s', 'public', 'eav_data') e
-				WHERE benchmark_attr_name(e.schema_id, e.attr_id) <> ''
-			)
-			GROUP BY schema_id, row_id
-		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
-		WHERE cl.flushed_at = 0 
-			AND cl.schema_id = %d
-			%s
-			%s
-			%s`, pgConnStr, pgConnStr, pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+		return buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 	}
 	return fmt.Sprintf(`
 		SELECT 
@@ -480,11 +449,111 @@ func usesTradeTimeOnlyBenchmarkProjectionForSelect(opts *QueryOptions) bool {
 	return opts.TradeTimeStart == 0 && opts.TradeTimeEnd == 0
 }
 
-func needsBenchmarkDuckDBMacros(opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) bool {
-	if usesBenchmarkProjectionForCount(opts) {
-		return true
+type hotTierEAVMapping struct {
+	attrIDList   string
+	pivotColumns string
+	selectExprs  string
+	nameExpr     string
+}
+
+func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
+	switch schemaID {
+	case benchmarkSchemaIDTrade:
+		symbolID := benchmarkAttributeID(schemaID, "symbol")
+		exchangeID := benchmarkAttributeID(schemaID, "exchange")
+		regionID := benchmarkAttributeID(schemaID, "region")
+		tradeTypeID := benchmarkAttributeID(schemaID, "tradeType")
+		tradeTimeID := benchmarkAttributeID(schemaID, "tradeTime")
+		nameID := benchmarkAttributeID(schemaID, "name")
+		return hotTierEAVMapping{
+			attrIDList: fmt.Sprintf("%d, %d, %d, %d, %d, %d", symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID, nameID),
+			pivotColumns: fmt.Sprintf(
+				"MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS exchange,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS tradeType,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS tradeTime,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS name",
+				symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID, nameID),
+			selectExprs: "COALESCE(hot_vals.symbol, em.text_01) as symbol,\n\t\t\t" +
+				"COALESCE(hot_vals.exchange, '') as exchange,\n\t\t\t" +
+				"COALESCE(hot_vals.region, em.text_02) as region,\n\t\t\t" +
+				"COALESCE(hot_vals.tradeType, em.smallint_01) as tradeType,\n\t\t\t" +
+				"COALESCE(hot_vals.tradeTime, em.bigint_02) as tradeTime",
+			nameExpr: "COALESCE(hot_vals.name, hot_vals.symbol, '')",
+		}
+	case benchmarkSchemaIDCustomer:
+		regionID := benchmarkAttributeID(schemaID, "region")
+		nameID := benchmarkAttributeID(schemaID, "name")
+		return hotTierEAVMapping{
+			attrIDList: fmt.Sprintf("%d, %d", regionID, nameID),
+			pivotColumns: fmt.Sprintf(
+				"MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS name",
+				regionID, nameID),
+			selectExprs: "'' as symbol,\n\t\t\t" +
+				"'' as exchange,\n\t\t\t" +
+				"COALESCE(hot_vals.region, em.text_02) as region,\n\t\t\t" +
+				"0 as tradeType,\n\t\t\t" +
+				"0 as tradeTime",
+			nameExpr: "COALESCE(hot_vals.name, '')",
+		}
+	case benchmarkSchemaIDSecurity:
+		symbolID := benchmarkAttributeID(schemaID, "symbol")
+		nameID := benchmarkAttributeID(schemaID, "companyName")
+		return hotTierEAVMapping{
+			attrIDList: fmt.Sprintf("%d, %d", symbolID, nameID),
+			pivotColumns: fmt.Sprintf(
+				"MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,\n\t\t\t"+
+					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS name",
+				symbolID, nameID),
+			selectExprs: "COALESCE(hot_vals.symbol, em.text_01) as symbol,\n\t\t\t" +
+				"'' as exchange,\n\t\t\t" +
+				"'' as region,\n\t\t\t" +
+				"0 as tradeType,\n\t\t\t" +
+				"0 as tradeTime",
+			nameExpr: "COALESCE(hot_vals.name, hot_vals.symbol, '')",
+		}
+	default:
+		return hotTierEAVMapping{}
 	}
-	return benchmarkProjection && !tradeTimeOnlyProjection
+}
+
+func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
+	m := hotTierEAVMappingForSchema(schemaID)
+	return fmt.Sprintf(`
+		SELECT 
+			cl.row_id::VARCHAR as row_id,
+			cl.schema_id,
+			cl.changed_at,
+			cl.deleted_at,
+			%s as name,
+			0 as version,
+			%s,
+			'hot' as tier
+		FROM postgres_scan('%s', 'public', 'change_log') cl
+		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
+		LEFT JOIN (
+			SELECT row_id::VARCHAR as row_id, schema_id,
+				%s
+			FROM postgres_scan('%s', 'public', 'eav_data')
+			WHERE attr_id IN (%s)
+			GROUP BY schema_id, row_id
+		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
+		WHERE cl.flushed_at = 0 
+			AND cl.schema_id = %d
+			%s
+			%s
+			%s`,
+		m.nameExpr, m.selectExprs,
+		pgConnStr, pgConnStr,
+		m.pivotColumns, pgConnStr, m.attrIDList,
+		schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+}
+
+func needsBenchmarkDuckDBMacros(opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) bool {
+	return false
 }
 
 func requiresBenchmarkProjectedFilters(opts *QueryOptions) bool {
@@ -566,12 +635,12 @@ func parquetTradeTimeFilterExpression() string {
 	return "epoch_ms(tradeTime)"
 }
 
-func buildHotTradeTimeFilterClause(opts *QueryOptions) string {
+func buildHotTradeTimeFilterClauseTargeted(opts *QueryOptions) string {
 	if opts == nil {
 		return ""
 	}
 	parts := make([]string, 0, 2)
-	expression := benchmarkHotFilterExpression("tradeTime")
+	expression := targetedHotFilterExpression("tradeTime")
 	if opts.TradeTimeStart > 0 {
 		parts = append(parts, fmt.Sprintf("AND %s >= %d", expression, opts.TradeTimeStart))
 	}
@@ -675,13 +744,13 @@ func prepareBenchmarkDuckDBMacros(ctx context.Context, h *FederatedTestHarness) 
 	return nil
 }
 
-func buildHotAttributeFilterClause(opts *QueryOptions) string {
+func buildHotAttributeFilterClauseTargeted(opts *QueryOptions) string {
 	if opts == nil || opts.Filter == nil || len(opts.Filter.Conditions) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(opts.Filter.Conditions))
 	for key, value := range opts.Filter.Conditions {
-		expression := benchmarkHotFilterExpression(key)
+		expression := targetedHotFilterExpression(key)
 		if expression == "" {
 			continue
 		}
@@ -690,18 +759,18 @@ func buildHotAttributeFilterClause(opts *QueryOptions) string {
 	return strings.Join(parts, " ")
 }
 
-func benchmarkHotFilterExpression(attribute string) string {
+func targetedHotFilterExpression(attribute string) string {
 	switch attribute {
 	case "symbol":
-		return "benchmark_text(hot_vals.attributes, 'symbol', em.text_01)"
+		return "COALESCE(hot_vals.symbol, em.text_01)"
 	case "exchange":
-		return "benchmark_text(hot_vals.attributes, 'exchange', '')"
+		return "COALESCE(hot_vals.exchange, '')"
 	case "region":
-		return "benchmark_text(hot_vals.attributes, 'region', em.text_02)"
+		return "COALESCE(hot_vals.region, em.text_02)"
 	case "tradeType":
-		return "benchmark_int(hot_vals.attributes, 'tradeType', em.smallint_01)"
+		return "COALESCE(hot_vals.tradeType, em.smallint_01)"
 	case "tradeTime":
-		return "benchmark_bigint(hot_vals.attributes, 'tradeTime', em.bigint_02)"
+		return "COALESCE(hot_vals.tradeTime, em.bigint_02)"
 	default:
 		return ""
 	}
