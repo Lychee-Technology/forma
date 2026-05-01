@@ -34,8 +34,9 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		result.Duration = time.Since(start)
 		return result, nil
 	}
-	benchmarkProjection := usesBenchmarkProjection(opts)
-	if benchmarkProjection {
+	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
+	tradeTimeOnlyProjection := usesTradeTimeOnlyBenchmarkProjectionForSelect(opts)
+	if needsBenchmarkDuckDBMacros(opts, benchmarkProjection, tradeTimeOnlyProjection) {
 		if err := prepareBenchmarkDuckDBMacros(ctx, h); err != nil {
 			return nil, err
 		}
@@ -75,6 +76,16 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	}
 	if opts.CountOnly {
 		return &QueryResult{TotalRecords: totalRecords, Duration: time.Since(start), Plan: buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, time.Since(start))}, nil
+	}
+	if shouldSkipFederatedSelect(totalRecords, opts.Offset) {
+		plan := buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, time.Since(start))
+		plan.Notes = append(plan.Notes, "empty_page_short_circuit")
+		return &QueryResult{
+			Records:      nil,
+			TotalRecords: totalRecords,
+			Duration:     time.Since(start),
+			Plan:         plan,
+		}, nil
 	}
 
 	rows, err := h.Duck.DB.QueryContext(ctx, query)
@@ -210,6 +221,16 @@ func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.
 	}
 }
 
+func shouldSkipFederatedSelect(totalRecords int64, offset int) bool {
+	if totalRecords <= 0 {
+		return true
+	}
+	if offset < 0 {
+		return false
+	}
+	return int64(offset) >= totalRecords
+}
+
 func isFederatedTierFileError(err error) bool {
 	if err == nil {
 		return false
@@ -219,16 +240,17 @@ func isFederatedTierFileError(err error) bool {
 
 // buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	combinedQuery, benchmarkProjection := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts)
+	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
+	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, benchmarkProjection, usesTradeTimeOnlyBenchmarkProjectionForSelect(opts))
 	return buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
 }
 
 func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	combinedQuery, _ := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts)
+	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, usesBenchmarkProjectionForCount(opts), false)
 	return buildFinalFederatedCount(combinedQuery)
 }
 
-func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) (string, bool) {
+func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
 	hotRowIDFilter := buildHotRowIDFilter(opts)
@@ -236,34 +258,33 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	timeWindowFilter := buildTradeTimeFilterClause(opts)
 	hotAttributeFilter := buildHotAttributeFilterClause(opts)
 	hotTimeWindowFilter := buildHotTradeTimeFilterClause(opts)
-	benchmarkProjection := usesBenchmarkProjection(opts)
 	pgConnStr := h.buildPGConnString()
 
 	// Build tier queries dynamically
 	var tierQueries []string
 
 	if hasBase {
-		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection)
+		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
-		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection)
+		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
 	// Always include hot buffer (Postgres)
-	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection)
+	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
 	tierQueries = append(tierQueries, hotQuery)
 
 	// Combine all tier queries with UNION ALL
 	combinedQuery := strings.Join(tierQueries, "\n\t\t\tUNION ALL\n")
-	return combinedQuery, benchmarkProjection
+	return combinedQuery
 }
 
-func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection bool) string {
+func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
-		projection := benchmarkParquetProjection(schemaID, tier, path)
+		projection := benchmarkParquetProjection(schemaID, tier, path, tradeTimeOnlyProjection)
 		return fmt.Sprintf(`
 			%s
 			WHERE 1 = 1 %s %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter)
@@ -274,19 +295,25 @@ func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, ro
 			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, timeWindowFilter)
 }
 
-func benchmarkParquetProjection(schemaID int16, tier, path string) string {
+func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnlyProjection bool) string {
 	switch schemaID {
 	case benchmarkSchemaIDCustomer:
 		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, '' as symbol, '' as exchange, region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	case benchmarkSchemaIDSecurity:
 		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	default:
+		if tradeTimeOnlyProjection {
+			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, epoch_ms(tradeTime) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
+		}
 		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	}
 }
 
-func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection bool) string {
+func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
+		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {
+			return buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter)
+		}
 		return fmt.Sprintf(`
 		SELECT 
 			cl.row_id::VARCHAR as row_id,
@@ -334,6 +361,37 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 			AND cl.schema_id = %d
 			%s
 			%s`, pgConnStr, schemaID, rowIDFilter, timeWindowFilter)
+}
+
+func buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string) string {
+	tradeTimeAttrID := benchmarkAttributeID(schemaID, "tradeTime")
+	return fmt.Sprintf(`
+		SELECT 
+			cl.row_id::VARCHAR as row_id,
+			cl.schema_id,
+			cl.changed_at,
+			cl.deleted_at,
+			'' as name,
+			0 as version,
+			'' as symbol,
+			'' as exchange,
+			'' as region,
+			0 as tradeType,
+			COALESCE(hot_vals.trade_time, em.bigint_02, 0) as tradeTime,
+			'hot' as tier
+		FROM postgres_scan('%s', 'public', 'change_log') cl
+		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
+		LEFT JOIN (
+			SELECT row_id::VARCHAR as row_id, schema_id,
+				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_time
+			FROM postgres_scan('%s', 'public', 'eav_data')
+			WHERE attr_id = %d
+			GROUP BY schema_id, row_id
+		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
+		WHERE cl.flushed_at = 0 
+			AND cl.schema_id = %d
+			%s`, pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
 }
 
 func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
@@ -386,11 +444,54 @@ func buildFederatedDeduplicatedCTE(combinedQuery string) string {
 	`, combinedQuery)
 }
 
-func usesBenchmarkProjection(opts *QueryOptions) bool {
+func usesBenchmarkProjectionForSelect(opts *QueryOptions) bool {
 	if opts == nil {
 		return false
 	}
+	if requiresBenchmarkProjectedFilters(opts) {
+		return true
+	}
 	if opts.SortBy != "" && opts.SortBy != "row_id" {
+		return true
+	}
+	return false
+}
+
+func usesBenchmarkProjectionForCount(opts *QueryOptions) bool {
+	if requiresBenchmarkProjectedFilters(opts) {
+		return true
+	}
+	if opts == nil {
+		return false
+	}
+	if opts.Offset <= 0 {
+		return usesBenchmarkProjectionForSelect(opts)
+	}
+	return false
+}
+
+func usesTradeTimeOnlyBenchmarkProjectionForSelect(opts *QueryOptions) bool {
+	if !usesBenchmarkProjectionForSelect(opts) || opts == nil {
+		return false
+	}
+	if opts.SortBy != "tradeTime" || opts.Filter != nil {
+		return false
+	}
+	return opts.TradeTimeStart == 0 && opts.TradeTimeEnd == 0
+}
+
+func needsBenchmarkDuckDBMacros(opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) bool {
+	if usesBenchmarkProjectionForCount(opts) {
+		return true
+	}
+	return benchmarkProjection && !tradeTimeOnlyProjection
+}
+
+func requiresBenchmarkProjectedFilters(opts *QueryOptions) bool {
+	if opts == nil {
+		return false
+	}
+	if opts.TradeTimeStart > 0 || opts.TradeTimeEnd > 0 {
 		return true
 	}
 	if opts.Filter == nil {
@@ -607,8 +708,9 @@ func benchmarkHotFilterExpression(attribute string) string {
 }
 
 func buildOrderByClause(opts *QueryOptions) string {
+	prefix := ""
 	if opts == nil {
-		return "row_id ASC"
+		return prefix + "row_id ASC"
 	}
 	column := benchmarkQueryColumn(opts.SortBy)
 	if column == "" {
@@ -618,7 +720,7 @@ func buildOrderByClause(opts *QueryOptions) string {
 	if opts.SortDesc {
 		direction = "DESC"
 	}
-	return fmt.Sprintf("%s %s, row_id ASC", column, direction)
+	return fmt.Sprintf("%s%s %s, %srow_id ASC", prefix, column, direction, prefix)
 }
 
 // buildPGConnString builds the Postgres connection string for DuckDB.
@@ -693,7 +795,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 	}
 	defer rows.Close()
 
-	benchmarkProjection := usesBenchmarkProjection(opts)
+	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
 	var records []*internal.PersistentRecord
 	for rows.Next() {
 		var rowID string
@@ -765,7 +867,7 @@ func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) 
 			COALESCE(cl.deleted_at, 0),
 			COALESCE(hot_vals.name, hot_vals.symbol, '') as name,
 			0 as version`)
-	if usesBenchmarkProjection(opts) {
+	if usesBenchmarkProjectionForSelect(opts) {
 		query.WriteString(`,
 			COALESCE(hot_vals.symbol, em.text_01, '') as symbol,
 			COALESCE(hot_vals.exchange, '') as exchange,
