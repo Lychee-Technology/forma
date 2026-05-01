@@ -173,6 +173,7 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 
 	return s.repository.QueryPersistentRecordsFederated(ctx, query.Tables, fq, &FederatedQueryOptions{
 		AllowPartialDegradedMode: req.Federated.AllowPartialDegradedMode,
+		IncludeExecutionPlan:     req.Federated.IncludeExecutionPlan,
 	})
 }
 

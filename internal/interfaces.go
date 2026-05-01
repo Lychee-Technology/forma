@@ -60,10 +60,11 @@ type PersistentRecordQuery struct {
 }
 
 type PersistentRecordPage struct {
-	Records      []*PersistentRecord
-	TotalRecords int64
-	TotalPages   int
-	CurrentPage  int
+	Records       []*PersistentRecord
+	TotalRecords  int64
+	TotalPages    int
+	CurrentPage   int
+	ExecutionPlan *ExecutionPlan
 }
 
 type PersistentRecordKey struct {

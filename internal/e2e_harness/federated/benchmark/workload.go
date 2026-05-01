@@ -16,6 +16,7 @@ const (
 	WorkloadCategoryFilter     WorkloadCategory = "filter"
 	WorkloadCategoryDeepPage   WorkloadCategory = "deep-pagination"
 	WorkloadCategoryTierMix    WorkloadCategory = "tier-mix"
+	WorkloadCategoryPushdown   WorkloadCategory = "pushdown"
 
 	OracleModeLoadedState OracleMode = "loaded-state"
 	OracleModeTruthPass   OracleMode = "truth-pass"
@@ -198,6 +199,66 @@ func DefaultWorkloads() []WorkloadDefinition {
 			SupportsDistributions: allDistributions(),
 			LargePageJump:         true,
 			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "tier-pushdown-hot",
+			Description:           "Hot column-bound filter pushdown efficiency measurement on trade schema.",
+			Category:              WorkloadCategoryPushdown,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			FilterAttribute:       "symbol",
+			FilterValue:           "SYM00001",
+			FilterConditions:      map[string]any{"symbol": "SYM00001"},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			OracleMode:            OracleModeTruthPass,
+		},
+		{
+			Name:                  "tier-pushdown-eav",
+			Description:           "EAV-only filter pushdown efficiency measurement on trade schema.",
+			Category:              WorkloadCategoryPushdown,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			FilterAttribute:       "exchange",
+			FilterValue:           "NYSE",
+			FilterConditions:      map[string]any{"exchange": "NYSE"},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			UsesEAVFilter:         true,
+			OracleMode:            OracleModeTruthPass,
+		},
+		{
+			Name:                  "tier-pushdown-mixed",
+			Description:           "Mixed hot and EAV filter pushdown efficiency measurement on trade schema.",
+			Category:              WorkloadCategoryPushdown,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			FilterAttribute:       "symbol",
+			FilterValue:           "SYM00001",
+			FilterConditions:      map[string]any{"symbol": "SYM00001", "exchange": "NYSE"},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			UsesEAVFilter:         true,
+			OracleMode:            OracleModeTruthPass,
+		},
+		{
+			Name:                  "tier-pushdown-cold-only",
+			Description:           "Cold-tier-only EAV filter pushdown efficiency with cold-only window.",
+			Category:              WorkloadCategoryPushdown,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			FilterAttribute:       "exchange",
+			FilterValue:           "NYSE",
+			FilterConditions:      map[string]any{"exchange": "NYSE"},
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			UsesEAVFilter:         true,
+			PreferHot:             false,
+			OracleMode:            OracleModeTruthPass,
 		},
 	}
 }
