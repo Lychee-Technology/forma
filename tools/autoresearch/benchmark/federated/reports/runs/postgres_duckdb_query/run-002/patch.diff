@@ -1,0 +1,36 @@
+diff --git a/internal/advanced_query_template_duckdb.go b/internal/advanced_query_template_duckdb.go
+index 94a631a..bc87c14 100644
+--- a/internal/advanced_query_template_duckdb.go
++++ b/internal/advanced_query_template_duckdb.go
+@@ -31,21 +31,22 @@ dirty_ids AS (
+ -- S3 source (Cold/Warm). Read Parquet files and apply logical filters + anti-join
+ s3_source AS (
+   SELECT
+-    row_id,
+-    ltbase_created_at AS created_at,
+-    ltbase_updated_at AS ver_ts,
+-    ltbase_deleted_at AS deleted_ts,
++    s.row_id,
++    s.ltbase_created_at AS created_at,
++    s.ltbase_updated_at AS ver_ts,
++    s.ltbase_deleted_at AS deleted_ts,
+ 
+     -- Logical columns (native in Parquet)
+-    name,
+-    age,
+-    tag
++    s.name,
++    s.age,
++    s.tag
+ 
+-  FROM read_parquet({{.S3_PATHS}})
++  FROM read_parquet({{.S3_PATHS}}) s
++  LEFT JOIN dirty_ids d ON CAST(s.row_id AS UUID) = d.row_id
+   WHERE
+     ({{.LOGICAL_WHERE_CLAUSE}})
+     -- Anti-join: exclude rows that are present in the Dirty Set (PG hot buffer)
+-    AND CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
++    AND d.row_id IS NULL
+ ),
+ 
+ -- PG source (Hot). Use postgres_scan with pushdown for entity_main, pivot EAV attributes.

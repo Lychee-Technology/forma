@@ -1,0 +1,7 @@
+Benchmark Diff Summary
+baseline=bench-58e03175693cee3d candidate=bench-58e03175693cee3d passed_changed=false failure_delta=0 correctness_delta=0 infra_delta=0 qps_delta=0.00 avg_latency_delta=-14.133776ms p95_latency_delta=1.06097ms
+workload baseline-page-1 schema=trade missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.00 avg_latency_delta=-9.434896ms p95_latency_delta=1.06097ms avg_result_delta=0.00 avg_total_delta=0.00
+workload deep-page-1000 schema=trade missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.00 avg_latency_delta=-11.368909ms p95_latency_delta=2.356889ms avg_result_delta=0.00 avg_total_delta=0.00
+workload deep-page-100000 schema=trade missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.00 avg_latency_delta=-14.806012ms p95_latency_delta=-37.810025ms avg_result_delta=0.00 avg_total_delta=0.00
+workload mixed-tier-window schema=trade missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.00 avg_latency_delta=-20.925285ms p95_latency_delta=-8.77734ms avg_result_delta=0.00 avg_total_delta=0.00
+

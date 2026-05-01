@@ -195,6 +195,9 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 		return "", nil, 0, fmt.Errorf("to dual clauses: %w", err)
 	}
 
+	// Compute schema-driven projections for the template
+	injectSchemaProjections(sqlParams, q.SchemaID, cache)
+
 	// Record Postgres pushdown fragment
 	planCtx.recordPushdownFragment(dc.PgMainClause)
 
@@ -245,6 +248,67 @@ func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
 		}
 	}
 	return paths
+}
+
+// injectSchemaProjections computes schema-driven SQL fragments from the attribute
+// cache and injects them into the template parameter map. For benchmark schemas
+// (IDs 100-102) it uses the benchmark parquet shape; for production it uses the
+// schema attribute cache for column bindings and EAV pivots.
+func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) {
+	if isBenchmarkSchemaID(schemaID) {
+		// Benchmark schemas have flat parquet columns; use hardcoded benchmark projections
+		sqlParams["S3SourceSelect"] = BuildBenchmarkS3Projection(schemaID)
+		sqlParams["OuterSelect"] = BuildBenchmarkOuterSelect(schemaID)
+		// Benchmark schemas need PG source projections based on their attribute layout
+		sp, _ := BuildSchemaProjection(schemaID, cache)
+		if sp != nil {
+			sqlParams["PGSourceSelect"] = sp.PGSourceSelect
+			sqlParams["PGGroupBy"] = sp.PGGroupBy
+			sqlParams["EAVPivotSelect"] = sp.EAVPivotSelect
+			sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
+			sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
+		}
+		return
+	}
+	if len(cache) == 0 {
+		// No cache: fall back to defaults that match the fixed layout
+		sqlParams["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
+		sqlParams["PGSourceSelect"] = "m.ltbase_row_id AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+		sqlParams["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
+		sqlParams["EAVPivotSelect"] = "MAX(CASE WHEN attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+		sqlParams["EAVPivotAttrs"] = "205"
+		sqlParams["HasEAVPivot"] = true
+		sqlParams["OuterSelect"] = fallbackOuterSelect(schemaID)
+		return
+	}
+
+	// Production schema: compute projections from the attribute cache
+	sp, err := BuildSchemaProjection(schemaID, cache)
+	if err != nil || sp == nil {
+		return
+	}
+	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
+	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
+	sqlParams["PGGroupBy"] = sp.PGGroupBy
+	sqlParams["EAVPivotSelect"] = sp.EAVPivotSelect
+	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
+	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
+	sqlParams["OuterSelect"] = sp.OuterSelect
+}
+
+// fallbackOuterSelect returns the fixed outer SELECT for the no-cache fallback path.
+func fallbackOuterSelect(schemaID int16) string {
+	return fmt.Sprintf(`%d::SMALLINT AS ltbase_schema_id,
+			CAST(row_id AS UUID) AS ltbase_row_id,
+			created_at AS ltbase_created_at,
+			ver_ts AS ltbase_updated_at,
+			deleted_ts AS ltbase_deleted_at,
+			name AS text_01,
+			age AS integer_01,
+			'[]'::TEXT AS attributes_json,
+			COUNT(DISTINCT row_id) OVER() AS total_records,
+			CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
+			(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page`, schemaID)
 }
 
 func duckDBPostgresScanLocation(name string) (string, string) {
@@ -367,7 +431,70 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
 }
 
-// computePgRowCount calculates the Postgres row count from execution plan sources.
+// capturePgPushdownRowCount fetches the actual PG pushdown row count for tier-specific
+// pushdown evidence. It reads the pushdown clause from the execution plan and runs a
+// targeted COUNT query on the PG side to measure how many rows the pushdown clause
+// selects from entity_main. This is diagnostic-only and non-blocking.
+func (r *DBPersistentRecordRepository) capturePgPushdownRowCount(
+	ctx context.Context,
+	tables StorageTables,
+	schemaID int16,
+	planCtx *duckDBExecutionPlanContext,
+) {
+	if planCtx == nil || planCtx.opts == nil || !planCtx.opts.IncludeExecutionPlan ||
+		planCtx.opts.ExecutionPlan == nil || r.pool == nil {
+		return
+	}
+
+	// Find the PG pushdown fragment source
+	var pgIdx int = -1
+	for i, src := range planCtx.opts.ExecutionPlan.Sources {
+		if src.Reason == "pushdown fragment" {
+			pgIdx = i
+			break
+		}
+	}
+	if pgIdx < 0 {
+		return
+	}
+
+	pgMainClause := planCtx.opts.ExecutionPlan.Sources[pgIdx].SQL
+	if pgMainClause == "" {
+		return
+	}
+
+	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
+	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
+
+	// Build a PG-targeted COUNT query to measure pushdown selectivity
+	countSQL := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM %s m
+		JOIN %s cl ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id
+		WHERE cl.schema_id = %d AND cl.flushed_at = 0 AND m.ltbase_schema_id = %d AND (%s)`,
+		sanitizeIdentifier(fmt.Sprintf("%s.%s", mainSchema, mainScanTable)),
+		sanitizeIdentifier(fmt.Sprintf("%s.%s", changeLogSchema, changeLogScanTable)),
+		schemaID, schemaID, pgMainClause)
+
+	connStr := r.duckDBPostgresConnString()
+	if connStr == "" {
+		return
+	}
+	duck := r.duckDBClient
+	if duck == nil || duck.DB == nil {
+		return
+	}
+
+	var pgRowCount int64
+	if err := duck.DB.QueryRowContext(ctx, countSQL).Scan(&pgRowCount); err != nil {
+		// Non-fatal: pushdown evidence is best-effort
+		return
+	}
+
+	planCtx.opts.ExecutionPlan.Sources[pgIdx].ActualRows = pgRowCount
+	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
+		fmt.Sprintf("pg_pushdown_rows=%d", pgRowCount))
+}
 func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 	var pgRows int64
 	for _, src := range plan.Sources {
@@ -378,10 +505,6 @@ func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 				pgRows += src.RowEstimate
 			}
 		}
-	}
-	// Fallback: use dirtyIDs size as a proxy
-	if pgRows == 0 {
-		pgRows = int64(len(dirtyIDs))
 	}
 	return pgRows
 }

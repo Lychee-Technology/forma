@@ -1,0 +1,377 @@
+{
+  "config": {
+    "mode": "live",
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "iterations": 1,
+    "concurrency": 1,
+    "page_size": 20,
+    "seed": 42,
+    "tier_profile": "balanced",
+    "workloads": [
+      "baseline-page-1",
+      "customer-region-page",
+      "security-symbol-page"
+    ]
+  },
+  "generator": {
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "seed": 42,
+    "trade_count": 100000,
+    "customer_count": 10000,
+    "security_count": 1000,
+    "overlap_ratio": 0.05,
+    "delete_ratio": 0.03,
+    "time_window_days": 30,
+    "base_time": "2026-01-01T00:00:00Z"
+  },
+  "metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-717c6e3be4a076d4",
+    "workload_names": [
+      "baseline-page-1",
+      "customer-region-page",
+      "security-symbol-page"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "started_at": "2026-04-28T23:44:50.426759625-07:00",
+  "completed_at": "2026-04-28T23:50:00.351072322-07:00",
+  "validation_only": false,
+  "passed": true,
+  "schemas": [
+    {
+      "id": 100,
+      "name": "customer",
+      "description": "customer dimension with hot filter and EAV profile fields"
+    },
+    {
+      "id": 101,
+      "name": "security",
+      "description": "security reference data with hot symbol lookup and cold metrics"
+    },
+    {
+      "id": 102,
+      "name": "trade",
+      "description": "trade fact entity with hybrid pagination and filter attributes"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "description": "Unfiltered first page ordered by trade time descending.",
+      "category": "pagination",
+      "target_schema": "trade",
+      "execution_source": "service",
+      "page_size": 20,
+      "page_number": 1,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "customer-region-page",
+      "description": "Customer region filter to validate schema-scoped non-trade execution.",
+      "category": "filter",
+      "target_schema": "customer",
+      "filter_attribute": "region",
+      "filter_value": "NA",
+      "page_size": 20,
+      "page_number": 1,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "security-symbol-page",
+      "description": "Security symbol filter to validate schema-scoped reference lookups.",
+      "category": "filter",
+      "target_schema": "security",
+      "filter_attribute": "symbol",
+      "filter_value": "SYM00001",
+      "page_size": 20,
+      "page_number": 1,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "oracle_mode": "loaded-state"
+    }
+  ],
+  "executions": [
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 20,
+      "total_records": 96265,
+      "duration": 2047125035,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "1e49f978-1fe9-521d-b345-326876376d13",
+        "f701d176-c43e-5f27-bd2d-5f971a910e3f",
+        "e1424d04-76dc-5cf3-bf26-74215b3770a1",
+        "b6e1a440-7bb9-52ef-aff0-92f66abe00d1",
+        "9ca054b6-56d4-5d0e-94ec-d018e864cbf0",
+        "de0a366d-c0f8-5391-9b04-699da0d6573b",
+        "b03e48cb-2906-5bb2-b277-66fcb804ce4d",
+        "aa559e47-3453-59c0-8bbe-a537b15aa571",
+        "c155c882-1c72-5238-9f73-f39c80748e36",
+        "c6674488-999a-5ed8-ba6b-90202e3cd1ad",
+        "9a26cf62-b0e3-519d-81d2-b3f34a579165",
+        "19c1cf2d-5881-502c-b60c-cda0cf40ca35",
+        "cd0cdf3e-ceb8-5734-8f07-6bb469e0242c",
+        "492cffe0-7c15-5032-9a03-2f5612ad0ca8",
+        "69020a97-f434-5109-beb3-af6a247688a6",
+        "c80a4eec-ba80-593d-85ae-c27eb171dbe3",
+        "c9cdd6c6-be86-5ecc-9ca6-8421165899dd",
+        "e656dac5-9970-5e43-9c8d-5153ab8a94e8",
+        "f107afd4-fc97-5fb1-a4e9-2b6282a735b6",
+        "84149c55-d43d-546a-8183-c7fbc6ea8bf7"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=96265 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=20"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "insufficient comparable rows"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7] expected=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7]"
+        }
+      ],
+      "plan_notes": [
+        "entity_manager_query_service"
+      ]
+    },
+    {
+      "name": "customer-region-page",
+      "category": "filter",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 20,
+      "total_records": 5495,
+      "duration": 219584849,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "000c2e30-c301-5836-918f-0f46329ad790",
+        "0029239b-4b84-572f-be78-ed24a0599b05",
+        "002c15be-88ed-5f0b-9278-ed5970a40423",
+        "003319c3-1cd3-51cd-a045-bf4acf1c314d",
+        "00332e42-16f7-55a0-99b0-7d00ead3e869",
+        "00342e03-e05f-5676-bc93-5957bf58e12a",
+        "003fd017-8c7e-5830-9594-f22d3053713e",
+        "0047089e-d55f-5007-924c-03807795b8e3",
+        "0051ba02-6766-5e85-a84e-2ea598c74b32",
+        "006248bb-05a1-516d-b56d-a5526396972e",
+        "00678db4-5244-5fb7-9eef-266bec37813c",
+        "00708866-c633-5a55-b5c3-25332d4ea90e",
+        "0083014e-556c-50a6-b0f9-e77a372074be",
+        "00862b86-1d8f-59a7-86fc-1e21c30b5438",
+        "009216fc-a066-5bbb-96f6-e19b847be2a1",
+        "0096261d-ef7f-5fd0-a267-20600def0e36",
+        "0098434c-1f28-5df6-98bf-5e8b4922a253",
+        "00a7bc14-b411-578b-b24c-81c9888a5af9",
+        "00a7ddf8-9334-532b-83fa-17f84e5cee10",
+        "00adedb8-d5b7-5d79-8001-fd2f921c2692"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=5495"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=5495"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=5495 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=customer rows=20"
+        },
+        {
+          "name": "filter-results-match-request",
+          "passed": true,
+          "message": "conditions=map[region:NA]"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=5495 expected=5495"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[000c2e30-c301-5836-918f-0f46329ad790 0029239b-4b84-572f-be78-ed24a0599b05 002c15be-88ed-5f0b-9278-ed5970a40423 003319c3-1cd3-51cd-a045-bf4acf1c314d 00332e42-16f7-55a0-99b0-7d00ead3e869 00342e03-e05f-5676-bc93-5957bf58e12a 003fd017-8c7e-5830-9594-f22d3053713e 0047089e-d55f-5007-924c-03807795b8e3 0051ba02-6766-5e85-a84e-2ea598c74b32 006248bb-05a1-516d-b56d-a5526396972e 00678db4-5244-5fb7-9eef-266bec37813c 00708866-c633-5a55-b5c3-25332d4ea90e 0083014e-556c-50a6-b0f9-e77a372074be 00862b86-1d8f-59a7-86fc-1e21c30b5438 009216fc-a066-5bbb-96f6-e19b847be2a1 0096261d-ef7f-5fd0-a267-20600def0e36 0098434c-1f28-5df6-98bf-5e8b4922a253 00a7bc14-b411-578b-b24c-81c9888a5af9 00a7ddf8-9334-532b-83fa-17f84e5cee10 00adedb8-d5b7-5d79-8001-fd2f921c2692] expected=[000c2e30-c301-5836-918f-0f46329ad790 0029239b-4b84-572f-be78-ed24a0599b05 002c15be-88ed-5f0b-9278-ed5970a40423 003319c3-1cd3-51cd-a045-bf4acf1c314d 00332e42-16f7-55a0-99b0-7d00ead3e869 00342e03-e05f-5676-bc93-5957bf58e12a 003fd017-8c7e-5830-9594-f22d3053713e 0047089e-d55f-5007-924c-03807795b8e3 0051ba02-6766-5e85-a84e-2ea598c74b32 006248bb-05a1-516d-b56d-a5526396972e 00678db4-5244-5fb7-9eef-266bec37813c 00708866-c633-5a55-b5c3-25332d4ea90e 0083014e-556c-50a6-b0f9-e77a372074be 00862b86-1d8f-59a7-86fc-1e21c30b5438 009216fc-a066-5bbb-96f6-e19b847be2a1 0096261d-ef7f-5fd0-a267-20600def0e36 0098434c-1f28-5df6-98bf-5e8b4922a253 00a7bc14-b411-578b-b24c-81c9888a5af9 00a7ddf8-9334-532b-83fa-17f84e5cee10 00adedb8-d5b7-5d79-8001-fd2f921c2692]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:0",
+        "base_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    },
+    {
+      "name": "security-symbol-page",
+      "category": "filter",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 1,
+      "total_records": 1,
+      "duration": 201429503,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "3ca06c03-8031-53fb-8606-2c8739d1b34f"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=1"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=1 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=1 total_records=1"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=1 result_count=1"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=1"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=security rows=1"
+        },
+        {
+          "name": "filter-results-match-request",
+          "passed": true,
+          "message": "conditions=map[symbol:SYM00001]"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=1 expected=1"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[3ca06c03-8031-53fb-8606-2c8739d1b34f] expected=[3ca06c03-8031-53fb-8606-2c8739d1b34f]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:0",
+        "base_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    }
+  ],
+  "notes": [
+    "loaded TPC-E-inspired schema fixtures",
+    "generated dataset with distribution=hotspot-overlap",
+    "loaded tiered dataset profile=balanced-60-30-10",
+    "loaded-state snapshot rows=114032",
+    "oracle_modes loaded_state=3 truth_pass=0",
+    "prefer_hot expresses workload intent and report provenance, not hard execution routing",
+    "executed supported federated query workloads"
+  ],
+  "oracle_modes": {
+    "baseline-page-1": "loaded-state",
+    "customer-region-page": "loaded-state",
+    "security-symbol-page": "loaded-state"
+  }
+}

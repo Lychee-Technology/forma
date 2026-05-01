@@ -1,0 +1,106 @@
+{
+  "baseline_metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-58e03175693cee3d",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000",
+      "deep-page-100000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "candidate_metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-58e03175693cee3d",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000",
+      "deep-page-100000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "summary": {
+    "passed_changed": false,
+    "failure_count_delta": 0,
+    "correctness_failures_delta": 0,
+    "infra_failures_delta": 0,
+    "execution_count_delta": 0,
+    "qps_delta": -0.01171047818211407,
+    "avg_latency_delta": 47070603,
+    "p95_latency_delta": 59482792,
+    "p99_latency_delta": 59482792,
+    "total_duration_delta": 376564822
+  },
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "target_schema": "trade",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": -0.010789477433238659,
+      "avg_latency_delta": 46412552,
+      "p95_latency_delta": 59482792,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    },
+    {
+      "name": "deep-page-1000",
+      "target_schema": "trade",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": -0.007364289642987243,
+      "avg_latency_delta": 31196412,
+      "p95_latency_delta": 33912534,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    },
+    {
+      "name": "deep-page-100000",
+      "target_schema": "trade",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": -0.0113490670744264,
+      "avg_latency_delta": 47879735,
+      "p95_latency_delta": 49045086,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    },
+    {
+      "name": "mixed-tier-window",
+      "target_schema": "trade",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": -0.018684257362260426,
+      "avg_latency_delta": 62793712,
+      "p95_latency_delta": 66998784,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    }
+  ]
+}

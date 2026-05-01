@@ -1,0 +1,4 @@
+2026-04-22 21:59:33 target=postgres_duckdb_query gate=fast research_branch=autoresearch-benchmark/postgres_duckdb_query-fast-20260422 worktree=/home/ruoshi/code/github/forma/.worktrees/autoresearch-benchmark-postgres_duckdb_query-fast model=github-copilot/gpt-5-mini
+2026-04-22 21:59:33 running baseline for postgres_duckdb_query gate=fast
+2026-04-22 21:59:33 === iteration 1 of 1 ===
+2026-04-22 21:59:33 benchmark autoresearch finished: 1 iterations completed for target=postgres_duckdb_query gate=fast

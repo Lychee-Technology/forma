@@ -1,0 +1,55 @@
+diff --git a/internal/advanced_query_template_duckdb.go b/internal/advanced_query_template_duckdb.go
+index 94a631a..54169ca 100644
+--- a/internal/advanced_query_template_duckdb.go
++++ b/internal/advanced_query_template_duckdb.go
+@@ -90,30 +90,30 @@ unified AS (
+   SELECT * FROM pg_source
+ )
+ 
+--- Final selection:
+--- - Apply final logical filters to ensure EAV & other logical predicates are respected
+--- - Remove soft-deleted rows
+--- - Deduplicate using Last-Write-Wins (ver_ts ordering)
++-- Stage 1: compute page membership from a narrowed intermediate relation.
++-- Only row_id, ver_ts, deleted_ts participate in dedup and deletion filter,
++-- so the expensive window/sort/offset work carries minimal row width.
+ SELECT
+   {{.SCHEMA_ID}}::SMALLINT AS ltbase_schema_id,
+-  CAST(row_id AS UUID) AS ltbase_row_id,
+-  created_at AS ltbase_created_at,
+-  ver_ts AS ltbase_updated_at,
+-  deleted_ts AS ltbase_deleted_at,
+-  name AS text_01,
+-  age AS integer_01,
++  CAST(u.row_id AS UUID) AS ltbase_row_id,
++  u.created_at AS ltbase_created_at,
++  u.ver_ts AS ltbase_updated_at,
++  u.deleted_ts AS ltbase_deleted_at,
++  u.name AS text_01,
++  u.age AS integer_01,
+   '[]'::TEXT AS attributes_json,
+   COUNT(*) OVER() AS total_records,
+   CEIL(COUNT(*) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
+   (FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page
+-FROM unified
+-WHERE
+-  ({{.LOGICAL_WHERE_CLAUSE}})
+-  AND (deleted_ts IS NULL OR deleted_ts = 0)
+-
+--- Deduplicate: keep most recent version per row_id
+-QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
+-
+-ORDER BY created_at DESC
+-LIMIT {{.PAGE_SIZE}} OFFSET {{.OFFSET}};
++FROM (
++  SELECT row_id, ver_ts
++  FROM unified
++  WHERE (deleted_ts IS NULL OR deleted_ts = 0)
++  QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
++  ORDER BY created_at DESC
++  LIMIT {{.PAGE_SIZE}} OFFSET {{.OFFSET}}
++) p
++JOIN unified u
++  ON u.row_id = p.row_id AND u.ver_ts = p.ver_ts
++ORDER BY u.created_at DESC;
+ `))

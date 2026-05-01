@@ -1,0 +1,21 @@
+target=postgres_duckdb_query
+candidate_passed=true
+correctness_failures=0
+infra_failures=0
+deep_page_1000_avg_delta_pct=1.0295
+deep_page_1000_p95_delta_pct=1.3550
+deep_page_1000_candidate_passed=true
+deep_page_100000_avg_delta_pct=2.0803
+deep_page_100000_p95_delta_pct=1.1776
+deep_page_100000_candidate_passed=true
+baseline_page_1_avg_delta_pct=0.6222
+baseline_page_1_p95_delta_pct=-0.6429
+baseline_page_1_candidate_passed=true
+mixed_tier_window_avg_delta_pct=1.5882
+mixed_tier_window_p95_delta_pct=1.9212
+mixed_tier_window_candidate_passed=true
+recommendation=discard
+reason=no target workload met the improvement threshold
+target_win=none
+protected_status=clean
+evidence=candidate_passed=True correctness_failures=0 infra_failures=0

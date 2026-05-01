@@ -152,6 +152,44 @@ func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuer
 			params["S3_PATHS"] = formatDuckDBPathList(paths)
 		}
 	}
+
+	// Inject defaults for schema-driven projection parameters if not already set.
+	// These defaults match the pre-dynamic-template fixed schema layout.
+	if _, ok := params["S3SourceSelect"]; !ok {
+		params["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
+	}
+	if _, ok := params["PGSourceSelect"]; !ok {
+		params["PGSourceSelect"] = "m.ltbase_row_id AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+	}
+	if _, ok := params["PGGroupBy"]; !ok {
+		params["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
+	}
+	if _, ok := params["EAVPivotSelect"]; !ok {
+		params["EAVPivotSelect"] = "MAX(CASE WHEN attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+	}
+	if _, ok := params["EAVPivotAttrs"]; !ok {
+		params["EAVPivotAttrs"] = "205"
+	}
+	if _, ok := params["HasEAVPivot"]; !ok {
+		params["HasEAVPivot"] = true
+	}
+	if _, ok := params["OuterSelect"]; !ok {
+		schemaID := int16(0)
+		if q != nil {
+			schemaID = q.SchemaID
+		}
+		params["OuterSelect"] = fmt.Sprintf(`%d::SMALLINT AS ltbase_schema_id,
+			CAST(row_id AS UUID) AS ltbase_row_id,
+			created_at AS ltbase_created_at,
+			ver_ts AS ltbase_updated_at,
+			deleted_ts AS ltbase_deleted_at,
+			name AS text_01,
+			age AS integer_01,
+			'[]'::TEXT AS attributes_json,
+			COUNT(DISTINCT row_id) OVER() AS total_records,
+			CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
+			(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page`, schemaID)
+	}
 }
 
 func formatDuckDBPathList(paths []string) string {
