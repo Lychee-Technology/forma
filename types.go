@@ -150,12 +150,13 @@ type QueryRequest struct {
 // federated repository path while preserving the normal API surface for callers that
 // do not need DuckDB/S3-backed reads.
 type FederatedQueryRequest struct {
-	Enabled                 bool     `json:"enabled,omitempty"`
-	PreferredTiers          []string `json:"preferred_tiers,omitempty"`
-	PreferHot               bool     `json:"prefer_hot,omitempty"`
-	UseMainAsAnchor         bool     `json:"use_main_as_anchor,omitempty"`
-	S3ParquetPathTemplate   string   `json:"s3_parquet_path_template,omitempty"`
-	AllowPartialDegradedMode bool    `json:"allow_partial_degraded_mode,omitempty"`
+	Enabled                   bool     `json:"enabled,omitempty"`
+	PreferredTiers            []string `json:"preferred_tiers,omitempty"`
+	PreferHot                 bool     `json:"prefer_hot,omitempty"`
+	UseMainAsAnchor           bool     `json:"use_main_as_anchor,omitempty"`
+	S3ParquetPathTemplate     string   `json:"s3_parquet_path_template,omitempty"`
+	AllowPartialDegradedMode  bool     `json:"allow_partial_degraded_mode,omitempty"`
+	IncludeExecutionPlan      bool     `json:"include_execution_plan,omitempty"`
 }
 
 func unmarshalConditionField(data []byte) (Condition, bool, error) {

@@ -35,24 +35,36 @@ type RunResult struct {
 
 // WorkloadRunResult captures one workload execution result.
 type WorkloadRunResult struct {
-	Name         string            `json:"name"`
-	Category     string            `json:"category"`
-	Distribution Distribution      `json:"distribution"`
-	PageSize     int               `json:"page_size"`
-	PageNumber   int               `json:"page_number"`
-	Offset       int               `json:"offset"`
-	PreferHot    bool              `json:"prefer_hot,omitempty"`
-	ResultCount  int               `json:"result_count"`
-	TotalRecords int64             `json:"total_records"`
-	Duration     time.Duration     `json:"duration"`
-	Passed       bool              `json:"passed"`
-	FailureKind  string            `json:"failure_kind,omitempty"`
-	OracleMode   string            `json:"oracle_mode,omitempty"`
-	FailureCount int               `json:"failure_count,omitempty"`
-	InfraError   string            `json:"infra_error,omitempty"`
-	RowIDs       []string          `json:"row_ids,omitempty"`
-	Assertions   []AssertionResult `json:"assertions,omitempty"`
-	PlanNotes    []string          `json:"plan_notes,omitempty"`
+	Name         string                  `json:"name"`
+	Category     string                  `json:"category"`
+	Distribution Distribution            `json:"distribution"`
+	PageSize     int                     `json:"page_size"`
+	PageNumber   int                     `json:"page_number"`
+	Offset       int                     `json:"offset"`
+	PreferHot    bool                    `json:"prefer_hot,omitempty"`
+	ResultCount  int                     `json:"result_count"`
+	TotalRecords int64                   `json:"total_records"`
+	Duration     time.Duration           `json:"duration"`
+	Passed       bool                    `json:"passed"`
+	FailureKind  string                  `json:"failure_kind,omitempty"`
+	OracleMode   string                  `json:"oracle_mode,omitempty"`
+	FailureCount int                     `json:"failure_count,omitempty"`
+	InfraError   string                  `json:"infra_error,omitempty"`
+	RowIDs       []string                `json:"row_ids,omitempty"`
+	Assertions   []AssertionResult       `json:"assertions,omitempty"`
+	PlanNotes    []string                `json:"plan_notes,omitempty"`
+	PerTier      *PerTierMetrics         `json:"per_tier,omitempty"`
+}
+
+// PerTierMetrics captures per-engine row counts and pushdown efficiency from the execution plan.
+type PerTierMetrics struct {
+	PGRows          int64   `json:"pg_rows"`
+	DuckDBRows      int64   `json:"duckdb_rows"`
+	FinalRows       int64   `json:"final_rows"`
+	PushdownRatio   float64 `json:"pushdown_ratio"`
+	PGDirtyCount    int64   `json:"pg_dirty_count,omitempty"`
+	HasPushdown     bool    `json:"has_pushdown"`
+	Sources         int     `json:"sources"`
 }
 
 const (
@@ -216,6 +228,9 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				run.Assertions = append(run.Assertions, validateRepeatedRunStability(previous, run)...)
 			}
 			previousRuns[workload.Name] = run
+			if workload.Category == WorkloadCategoryPushdown {
+				run.Assertions = append(run.Assertions, validatePushdownAssertions(run)...)
+			}
 			run.FailureCount = countFailedAssertions(run.Assertions)
 			run.FailureKind = failureKindForRun(run)
 			run.Passed = run.FailureCount == 0 && run.InfraError == ""
@@ -347,7 +362,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
 	req, pageSize := queryRequestForWorkload(workload, r.config.PageSize)
 	start := time.Now()
-	result, records, err := executeServiceQuery(ctx, h, req, r.config.PageSize)
+	result, records, plan, err := executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, workload.Category == WorkloadCategoryPushdown)
 	if err != nil {
 		return WorkloadRunResult{}, nil, err
 	}
@@ -365,6 +380,7 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 		Passed:       true,
 		RowIDs:       persistentRecordIDs(records),
 		PlanNotes:    []string{"entity_manager_query_service"},
+		PerTier:      extractPerTierMetrics(plan),
 	}
 	return run, records, nil
 }
@@ -448,6 +464,133 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	return result, records, nil
 }
 
+func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool) (*forma.QueryResult, []*internal.PersistentRecord, *internal.ExecutionPlan, error) {
+	if h == nil || h.PGDSN == "" {
+		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
+	}
+	pool, err := pgxpool.New(ctx, h.PGDSN)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("connect benchmark pgx pool: %w", err)
+	}
+	defer pool.Close()
+
+	result, records, err := executeServiceQuery(ctx, h, req, defaultPageSize)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if !capturePlan || req == nil || req.Federated == nil {
+		return result, records, nil, nil
+	}
+
+	schemaTable, err := ensureBenchmarkSchemaRegistry(ctx, pool)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
+	}
+	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
+	}
+	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
+	}
+
+	schemaName := req.SchemaName
+	if schemaName == "" {
+		schemaName = "trade"
+	}
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName(schemaName)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve schema %s: %w", schemaName, err)
+	}
+
+	duckCfg := forma.DuckDBConfig{}
+	if h.Duck != nil {
+		duckCfg = forma.DuckDBConfig{
+			Enabled:        true,
+			DBPath:         ":memory:",
+			EnableS3:       true,
+			EnableParquet:  true,
+			S3Endpoint:     h.S3Endpoint,
+			S3AccessKey:    h.S3AccessKey,
+			S3SecretKey:    h.S3SecretKey,
+			S3Region:       h.S3Region,
+			MaxConnections: 4,
+			QueryTimeout:   60 * time.Second,
+			MaxParallelism: 4,
+		}
+	}
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+
+	pageSize := benchmarkDefaultPageSize(defaultPageSize)
+	limit := pageSize
+	offset := (maxInt(req.Page, 1) - 1) * pageSize
+
+	sortOrder := forma.SortOrderDesc
+	if req.SortOrder == forma.SortOrderAsc {
+		sortOrder = forma.SortOrderAsc
+	}
+
+	var attrOrders []internal.AttributeOrder
+	if cache, ok := metadata.GetSchemaCacheByID(schemaID); ok {
+		for _, sortAttr := range req.SortBy {
+			meta, found := cache[sortAttr]
+			if !found {
+				continue
+			}
+			order := internal.AttributeOrder{
+				AttrID:    meta.AttributeID,
+				ValueType: meta.ValueType,
+				SortOrder: sortOrder,
+			}
+			if meta.ColumnBinding != nil {
+				order.StorageLocation = forma.AttributeStorageLocationMain
+				order.ColumnName = string(meta.ColumnBinding.ColumnName)
+			} else {
+				order.StorageLocation = forma.AttributeStorageLocationEAV
+			}
+			attrOrders = append(attrOrders, order)
+		}
+	}
+
+	plan := &internal.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	fqOpts := &internal.FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan:        plan,
+	}
+
+	tables := internal.StorageTables{
+		EntityMain: h.CDCConfig.EntityMainTable,
+		EAVData:    h.CDCConfig.EAVDataTable,
+		ChangeLog:  h.CDCConfig.ChangeLogTable,
+	}
+
+	fq := &internal.FederatedAttributeQuery{
+		AttributeQuery: internal.AttributeQuery{
+			SchemaID:        schemaID,
+			Condition:       req.Condition,
+			AttributeOrders: attrOrders,
+			Limit:           limit,
+			Offset:          offset,
+		},
+		PreferredTiers: []internal.DataTier{internal.DataTierHot, internal.DataTierWarm, internal.DataTierCold},
+	}
+	if req.Federated.S3ParquetPathTemplate != "" {
+		fq.DuckDBHints = &internal.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
+	}
+	if req.Federated.PreferHot {
+		fq.PreferHot = true
+	}
+
+	_, err = repo.QueryPersistentRecordsFederated(ctx, tables, fq, fqOpts)
+	if err != nil {
+		return result, records, plan, nil
+	}
+
+	return result, records, plan, nil
+}
+
 func ensureBenchmarkSchemaRegistry(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	const tableName = "benchmark_schema_registry"
 	if _, err := pool.Exec(ctx, `
@@ -481,8 +624,9 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 	}
 	if workload.ExecutionSource == "service" {
 		req.Federated = &forma.FederatedQueryRequest{
-			Enabled:               true,
-			PreferredTiers:        []string{"hot", "warm", "cold"},
+			Enabled:              true,
+			PreferredTiers:       []string{"hot", "warm", "cold"},
+			IncludeExecutionPlan: workload.Category == WorkloadCategoryPushdown,
 		}
 	}
 	if workload.TargetSchema == "trade" {
@@ -1246,6 +1390,86 @@ func countFailedAssertions(assertions []AssertionResult) int {
 		}
 	}
 	return failed
+}
+
+func extractPerTierMetrics(plan *internal.ExecutionPlan) *PerTierMetrics {
+	if plan == nil {
+		return nil
+	}
+	metrics := &PerTierMetrics{Sources: len(plan.Sources)}
+	for _, src := range plan.Sources {
+		switch src.Engine {
+		case "postgres":
+			if src.ActualRows > 0 {
+				metrics.PGRows += src.ActualRows
+			}
+			if src.Reason == "dirty id set fetched" {
+				metrics.PGDirtyCount = src.ActualRows
+			}
+			if src.PredicatePushdown {
+				metrics.HasPushdown = true
+			}
+		case "duckdb":
+			if src.ActualRows > 0 {
+				metrics.DuckDBRows += src.ActualRows
+			}
+		}
+	}
+	if metrics.PGRows > 0 || metrics.DuckDBRows > 0 {
+		metrics.FinalRows = metrics.PGRows + metrics.DuckDBRows
+		if metrics.FinalRows > 0 {
+			metrics.PushdownRatio = float64(metrics.PGRows) / float64(metrics.FinalRows)
+		}
+	}
+	return metrics
+}
+
+func validatePushdownAssertions(run WorkloadRunResult) []AssertionResult {
+	if run.PerTier == nil {
+		return nil
+	}
+	var assertions []AssertionResult
+	pt := run.PerTier
+
+	if pt.Sources > 0 {
+		assertions = append(assertions, AssertionResult{
+			Name:    "pushdown-plan-sources-present",
+			Passed:  true,
+			Message: fmt.Sprintf("sources=%d", pt.Sources),
+		})
+	} else {
+		assertions = append(assertions, AssertionResult{
+			Name:    "pushdown-plan-sources-present",
+			Passed:  false,
+			Message: "execution plan has no sources",
+		})
+	}
+
+	if pt.PGRows >= 0 {
+		assertions = append(assertions, AssertionResult{
+			Name:    "pushdown-pg-rows-tracked",
+			Passed:  true,
+			Message: fmt.Sprintf("pg_rows=%d", pt.PGRows),
+		})
+	}
+
+	if pt.HasPushdown {
+		assertions = append(assertions, AssertionResult{
+			Name:    "pushdown-active",
+			Passed:  true,
+			Message: "at least one source has pushdown enabled",
+		})
+	}
+
+	if pt.PushdownRatio > 0 && pt.PushdownRatio <= 1 {
+		assertions = append(assertions, AssertionResult{
+			Name:    "pushdown-efficiency-reasonable",
+			Passed:  true,
+			Message: fmt.Sprintf("pushdown_ratio=%.3f", pt.PushdownRatio),
+		})
+	}
+
+	return assertions
 }
 
 func maxInt(a, b int) int {

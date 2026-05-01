@@ -45,6 +45,10 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 			"cold-only-window",
 			"deep-page-1000",
 			"deep-page-100000",
+			"tier-pushdown-hot",
+			"tier-pushdown-eav",
+			"tier-pushdown-mixed",
+			"tier-pushdown-cold-only",
 		},
 	}.WithDefaults())
 	require.NoError(t, err)
@@ -52,8 +56,8 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	result, err := runner.RunWithHarness(ctx, h, bench.TierMixBalanced)
 	require.NoError(t, err)
 	require.False(t, result.ValidationOnly)
-	require.Len(t, result.Executions, 24)
-	require.Contains(t, result.Notes, "oracle_modes loaded_state=8 truth_pass=4")
+	require.Len(t, result.Executions, 32)
+	require.Contains(t, result.Notes, "oracle_modes loaded_state=8 truth_pass=8")
 	require.Contains(t, result.Notes, "prefer_hot expresses workload intent and report provenance, not hard execution routing")
 	customerSeen := false
 	securitySeen := false
@@ -67,6 +71,11 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	expectedOracleAssertionsSeen := false
 	tradeTimeWindowAssertionSeen := false
 	repeatedRunStabilitySeen := false
+	pushdownHotSeen := false
+	pushdownEAVSeen := false
+	pushdownMixedSeen := false
+	pushdownColdOnlySeen := false
+	pushdownAssertionsSeen := false
 	for _, execution := range result.Executions {
 		require.NotEmpty(t, execution.Name)
 		require.GreaterOrEqual(t, execution.ResultCount, 0)
@@ -114,6 +123,23 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		if execution.Name == "cold-only-window" {
 			coldOnlySeen = true
 		}
+		if execution.Name == "tier-pushdown-hot" {
+			pushdownHotSeen = true
+			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-hot workload")
+			require.Contains(t, execution.PlanNotes, "entity_manager_query_service")
+		}
+		if execution.Name == "tier-pushdown-eav" {
+			pushdownEAVSeen = true
+			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-eav workload")
+		}
+		if execution.Name == "tier-pushdown-mixed" {
+			pushdownMixedSeen = true
+			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-mixed workload")
+		}
+		if execution.Name == "tier-pushdown-cold-only" {
+			pushdownColdOnlySeen = true
+			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-cold-only workload")
+		}
 		for _, assertion := range execution.Assertions {
 			if assertion.Name == "total-records-match-expected" || assertion.Name == "page-row-ids-match-expected" {
 				expectedOracleAssertionsSeen = true
@@ -123,6 +149,9 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 			}
 			if (execution.Name == "mixed-tier-window" || execution.Name == "hot-only-window" || execution.Name == "cold-only-window") && assertion.Name == "tradeTime-window-match-request" {
 				tradeTimeWindowAssertionSeen = true
+			}
+			if assertion.Name == "pushdown-plan-sources-present" || assertion.Name == "pushdown-pg-rows-tracked" {
+				pushdownAssertionsSeen = true
 			}
 		}
 	}
@@ -138,4 +167,9 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	require.True(t, expectedOracleAssertionsSeen, "expected result oracle assertions to be exercised")
 	require.True(t, repeatedRunStabilitySeen, "expected repeated-run stability assertions to be exercised")
 	require.True(t, tradeTimeWindowAssertionSeen, "expected mixed-tier window assertion to be exercised")
+	require.True(t, pushdownHotSeen, "expected tier-pushdown-hot workload to be executed")
+	require.True(t, pushdownEAVSeen, "expected tier-pushdown-eav workload to be executed")
+	require.True(t, pushdownMixedSeen, "expected tier-pushdown-mixed workload to be executed")
+	require.True(t, pushdownColdOnlySeen, "expected tier-pushdown-cold-only workload to be executed")
+	require.True(t, pushdownAssertionsSeen, "expected pushdown assertions to be exercised")
 }

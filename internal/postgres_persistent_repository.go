@@ -423,10 +423,16 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx conte
 		currentPage = fq.Offset/limit + 1
 	}
 
+	var execPlan *ExecutionPlan
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		execPlan = opts.ExecutionPlan
+	}
+
 	return &PersistentRecordPage{
-		Records:      records,
-		TotalRecords: totalRecords,
-		TotalPages:   computeTotalPages(totalRecords, limit),
-		CurrentPage:  currentPage,
+		Records:       records,
+		TotalRecords:  totalRecords,
+		TotalPages:    computeTotalPages(totalRecords, limit),
+		CurrentPage:   currentPage,
+		ExecutionPlan: execPlan,
 	}, nil
 }
