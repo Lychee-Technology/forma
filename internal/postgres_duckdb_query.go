@@ -198,8 +198,29 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 	// Compute schema-driven projections for the template
 	injectSchemaProjections(sqlParams, q.SchemaID, cache)
 
+	// Determine if the EAV pivot can be skipped entirely (all filter/sort
+	// attributes are column-bound, no EAV-only attributes needed).
+	// Skip this optimization for benchmark schemas because their output schema
+	// includes ALL attributes (both column-bound and EAV-only) unlike production
+	// which outputs a fixed entity_main layout.
+	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
+		sqlParams["HasEAVPivot"] = false
+		sp, _ := BuildSchemaProjection(q.SchemaID, cache)
+		if sp != nil {
+			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
+			sqlParams["PGGroupBy"] = sp.BuildPGGroupByNoEAV()
+		}
+	}
+
 	// Record Postgres pushdown fragment
 	planCtx.recordPushdownFragment(dc.PgMainClause)
+
+	// For benchmark schemas, the DuckDB logical WHERE clause must reference
+	// attribute names (the S3 parquet has flat attribute columns), not entity_main
+	// column names which ToDualClauses resolves from the schema cache.
+	if isBenchmarkSchemaID(q.SchemaID) {
+		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
+	}
 
 	sqlStr, args, err := r.getDuckDBQueryBuilder()(r.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
@@ -256,18 +277,17 @@ func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
 // schema attribute cache for column bindings and EAV pivots.
 func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) {
 	if isBenchmarkSchemaID(schemaID) {
-		// Benchmark schemas have flat parquet columns; use hardcoded benchmark projections
-		sqlParams["S3SourceSelect"] = BuildBenchmarkS3Projection(schemaID)
+		// Benchmark schemas: use hardcoded benchmarks projections that match
+		// the benchmark parquet shape exactly (flat columns for column-bound
+		// attributes, JSON extraction for EAV-only attributes).
+		proj := BuildBenchmarkProjections(schemaID)
+		sqlParams["S3SourceSelect"] = proj.S3SourceSelect
+		sqlParams["PGSourceSelect"] = proj.PGSourceSelect
+		sqlParams["PGGroupBy"] = proj.PGGroupBy
+		sqlParams["EAVPivotSelect"] = proj.EAVPivotSelect
+		sqlParams["EAVPivotAttrs"] = proj.EAVPivotAttrs
+		sqlParams["HasEAVPivot"] = len(proj.EAVPivotAttrs) > 0
 		sqlParams["OuterSelect"] = BuildBenchmarkOuterSelect(schemaID)
-		// Benchmark schemas need PG source projections based on their attribute layout
-		sp, _ := BuildSchemaProjection(schemaID, cache)
-		if sp != nil {
-			sqlParams["PGSourceSelect"] = sp.PGSourceSelect
-			sqlParams["PGGroupBy"] = sp.PGGroupBy
-			sqlParams["EAVPivotSelect"] = sp.EAVPivotSelect
-			sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
-			sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
-		}
 		return
 	}
 	if len(cache) == 0 {
@@ -305,10 +325,7 @@ func fallbackOuterSelect(schemaID int16) string {
 			deleted_ts AS ltbase_deleted_at,
 			name AS text_01,
 			age AS integer_01,
-			'[]'::TEXT AS attributes_json,
-			COUNT(DISTINCT row_id) OVER() AS total_records,
-			CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
-			(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page`, schemaID)
+			'[]'::TEXT AS attributes_json`, schemaID)
 }
 
 func duckDBPostgresScanLocation(name string) (string, string) {
@@ -431,70 +448,61 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
 }
 
-// capturePgPushdownRowCount fetches the actual PG pushdown row count for tier-specific
-// pushdown evidence. It reads the pushdown clause from the execution plan and runs a
-// targeted COUNT query on the PG side to measure how many rows the pushdown clause
-// selects from entity_main. This is diagnostic-only and non-blocking.
-func (r *DBPersistentRecordRepository) capturePgPushdownRowCount(
-	ctx context.Context,
-	tables StorageTables,
-	schemaID int16,
-	planCtx *duckDBExecutionPlanContext,
-) {
-	if planCtx == nil || planCtx.opts == nil || !planCtx.opts.IncludeExecutionPlan ||
-		planCtx.opts.ExecutionPlan == nil || r.pool == nil {
-		return
+// translateDuckClauseToBenchmark rewrites a DuckDB WHERE clause from entity_main
+// column references to benchmark attribute names used in S3 parquet flat columns.
+func translateDuckClauseToBenchmark(clause string, cache forma.SchemaAttributeCache) string {
+	result := clause
+	for attr, meta := range cache {
+		if meta.ColumnBinding == nil {
+			continue
+		}
+		colName := string(meta.ColumnBinding.ColumnName)
+		result = strings.ReplaceAll(result, colName, attr)
 	}
+	return result
+}
 
-	// Find the PG pushdown fragment source
-	var pgIdx int = -1
-	for i, src := range planCtx.opts.ExecutionPlan.Sources {
-		if src.Reason == "pushdown fragment" {
-			pgIdx = i
-			break
+// needsEAVJoin checks whether the federated query requires an EAV data JOIN.
+// It returns false when all filter conditions and sort keys reference only
+// column-bound attributes, meaning the eav_data scan can be safely skipped.
+func needsEAVJoin(q *FederatedAttributeQuery, cache forma.SchemaAttributeCache) bool {
+	if q == nil || len(cache) == 0 {
+		return true
+	}
+	if needsEAVForCondition(q.Condition, cache) {
+		return true
+	}
+	for _, order := range q.AttributeOrders {
+		if order.StorageLocation != forma.AttributeStorageLocationMain {
+			return true
 		}
 	}
-	if pgIdx < 0 {
-		return
-	}
-
-	pgMainClause := planCtx.opts.ExecutionPlan.Sources[pgIdx].SQL
-	if pgMainClause == "" {
-		return
-	}
-
-	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
-	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
-
-	// Build a PG-targeted COUNT query to measure pushdown selectivity
-	countSQL := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM %s m
-		JOIN %s cl ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id
-		WHERE cl.schema_id = %d AND cl.flushed_at = 0 AND m.ltbase_schema_id = %d AND (%s)`,
-		sanitizeIdentifier(fmt.Sprintf("%s.%s", mainSchema, mainScanTable)),
-		sanitizeIdentifier(fmt.Sprintf("%s.%s", changeLogSchema, changeLogScanTable)),
-		schemaID, schemaID, pgMainClause)
-
-	connStr := r.duckDBPostgresConnString()
-	if connStr == "" {
-		return
-	}
-	duck := r.duckDBClient
-	if duck == nil || duck.DB == nil {
-		return
-	}
-
-	var pgRowCount int64
-	if err := duck.DB.QueryRowContext(ctx, countSQL).Scan(&pgRowCount); err != nil {
-		// Non-fatal: pushdown evidence is best-effort
-		return
-	}
-
-	planCtx.opts.ExecutionPlan.Sources[pgIdx].ActualRows = pgRowCount
-	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
-		fmt.Sprintf("pg_pushdown_rows=%d", pgRowCount))
+	return false
 }
+
+// needsEAVForCondition recursively checks if any condition references an
+// EAV-only (non-column-bound) attribute.
+func needsEAVForCondition(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
+	if cond == nil {
+		return false
+	}
+	switch c := cond.(type) {
+	case *forma.CompositeCondition:
+		for _, child := range c.Conditions {
+			if needsEAVForCondition(child, cache) {
+				return true
+			}
+		}
+	case *forma.KvCondition:
+		if meta, ok := cache[c.Attr]; ok {
+			if meta.ColumnBinding == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 	var pgRows int64
 	for _, src := range plan.Sources {

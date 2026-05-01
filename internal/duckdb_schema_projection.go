@@ -93,6 +93,15 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 	}
 
 	// Collect column-bound attributes and EAV-only attributes
+	ensureAttr := func(name string, vt forma.ValueType) {
+		if _, exists := cache[name]; exists {
+			return
+		}
+		cache[name] = forma.AttributeMetadata{ValueType: vt}
+	}
+	ensureAttr("name", forma.ValueTypeText)
+	ensureAttr("version", forma.ValueTypeText)
+
 	attrs := make([]attrProjectionInfo, 0, len(cache))
 	for name, meta := range cache {
 		ai := attrProjectionInfo{name: name, meta: meta}
@@ -280,14 +289,55 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 		parts = append(parts, "'[]'::TEXT AS attributes_json")
 	}
 
-	// Metadata columns
-	parts = append(parts,
-		"COUNT(DISTINCT row_id) OVER() AS total_records",
-		"CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages",
-		"(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page",
-	)
-
 	sp.OuterSelect = strings.Join(parts, ",\n\t\t\t")
+}
+
+// BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
+// (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
+func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
+	selectParts := []string{
+		"cl.row_id::VARCHAR AS row_id",
+		"m.ltbase_created_at AS created_at",
+		"cl.changed_at AS ver_ts",
+		"cl.deleted_at AS deleted_ts",
+	}
+
+	// Collect attribute names sorted for stability
+	attrs := make([]string, 0, len(sp.AttrToMainColumn)+len(sp.EAVAttrs))
+	for attr := range sp.AttrToMainColumn {
+		attrs = append(attrs, attr)
+	}
+	sort.Strings(attrs)
+
+	for _, attr := range attrs {
+		col := sp.AttrToMainColumn[attr]
+		selectParts = append(selectParts, fmt.Sprintf("m.%s AS %s", col, attr))
+	}
+
+	return strings.Join(selectParts, ",\n\t\t\t")
+}
+
+// BuildPGGroupByNoEAV returns the GROUP BY clause for PG source without EAV pivot.
+func (sp *SchemaProjection) BuildPGGroupByNoEAV() string {
+	parts := []string{
+		"cl.row_id",
+		"m.ltbase_created_at",
+		"cl.changed_at",
+		"cl.deleted_at",
+	}
+
+	attrs := make([]string, 0, len(sp.AttrToMainColumn))
+	for attr := range sp.AttrToMainColumn {
+		attrs = append(attrs, attr)
+	}
+	sort.Strings(attrs)
+
+	for _, attr := range attrs {
+		col := sp.AttrToMainColumn[attr]
+		parts = append(parts, "m."+col)
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 func (sp *SchemaProjection) attrIDForName(name string) int {
@@ -337,9 +387,10 @@ func duckDBColumnType(k columnKind) string {
 	}
 }
 
-// BuildBenchmarkS3Projection builds an S3 projection for benchmark parquet data,
-// which has flat attribute columns (unlike production parquet which uses entity_main
-// columns + attributes_json).
+// BuildBenchmarkS3Projection builds an S3 projection for benchmark parquet data.
+// Column-bound attributes are read as flat columns; EAV-only attributes are
+// extracted from the attributes_json column to model production cold-tier costs.
+// Columns are emitted in alphabetical order to match PG source projection ordering.
 func BuildBenchmarkS3Projection(schemaID int16) string {
 	parts := []string{
 		"row_id",
@@ -348,16 +399,45 @@ func BuildBenchmarkS3Projection(schemaID int16) string {
 		"deleted_at AS deleted_ts",
 	}
 
-	// Benchmark parquet has all attributes as flat columns
+	// Benchmark parquet: column-bound attrs are flat, EAV-only attrs are in attributes_json
 	switch schemaID {
 	case 100: // customer
-		parts = append(parts, "name", "version", "taxId", "status", "region", "email", "creditRating")
+		parts = append(parts,
+			"try_cast(json_extract_string(attributes_json, '$.creditRating') AS DOUBLE) as creditRating",
+			"try_cast(json_extract_string(attributes_json, '$.email') AS VARCHAR) as email",
+			"name",
+			"region",
+			"status",
+			"taxId",
+			"version",
+		)
 	case 101: // security
-		parts = append(parts, "name", "version", "symbol", "sector", "companyName", "dividend", "marketCap")
+		parts = append(parts,
+			"try_cast(json_extract_string(attributes_json, '$.companyName') AS VARCHAR) as companyName",
+			"try_cast(json_extract_string(attributes_json, '$.dividend') AS DOUBLE) as dividend",
+			"try_cast(json_extract_string(attributes_json, '$.marketCap') AS DOUBLE) as marketCap",
+			"name",
+			"sector",
+			"symbol",
+			"version",
+		)
 	case 102: // trade
-		parts = append(parts, "name", "version", "symbol", "exchange", "region",
-			"tradeType", "tradeTime", "customerId", "quantity", "price",
-			"commission", "isCash", "brokerId", "orderChannel")
+		parts = append(parts,
+			"try_cast(json_extract_string(attributes_json, '$.brokerId') AS VARCHAR) as brokerId",
+			"try_cast(json_extract_string(attributes_json, '$.commission') AS DOUBLE) as commission",
+			"customerId",
+			"try_cast(json_extract_string(attributes_json, '$.exchange') AS VARCHAR) as exchange",
+			"try_cast(json_extract_string(attributes_json, '$.isCash') AS BOOLEAN) as isCash",
+			"name",
+			"try_cast(json_extract_string(attributes_json, '$.orderChannel') AS VARCHAR) as orderChannel",
+			"price",
+			"quantity",
+			"region",
+			"symbol",
+			"tradeTime",
+			"tradeType",
+			"version",
+		)
 	}
 
 	return strings.Join(parts, ", ")
@@ -405,7 +485,16 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
 		}
 		// attributes_json from EAV-only attributes
-		parts = append(parts, "json_object('8', CAST(exchange AS VARCHAR), '9', CAST(commission AS VARCHAR), '10', CAST(isCash AS VARCHAR), '11', CAST(brokerId AS VARCHAR), '12', CAST(orderChannel AS VARCHAR))::TEXT AS attributes_json")
+		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
+			benchmarkEAVJSONArray(schemaID, 102, "",
+				eavJSONAttr{id: 8, name: "exchange", type_: "text"},
+				eavJSONAttr{id: 9, name: "commission", type_: "numeric"},
+				eavJSONAttr{id: 10, name: "isCash", type_: "text"},
+				eavJSONAttr{id: 11, name: "brokerId", type_: "text"},
+				eavJSONAttr{id: 12, name: "orderChannel", type_: "text"},
+				eavJSONAttr{id: benchmarkHashAttrID(102, "name"), name: "name", type_: "text"},
+				eavJSONAttr{id: benchmarkHashAttrID(102, "version"), name: "version", type_: "text"},
+			)))
 	case 100: // customer
 		parts = append(parts, "CAST(taxId AS VARCHAR) AS text_01")
 		parts = append(parts, "CAST(region AS VARCHAR) AS text_02")
@@ -419,7 +508,13 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 			}
 			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
 		}
-		parts = append(parts, "json_object('3', CAST(name AS VARCHAR), '5', CAST(email AS VARCHAR), '6', CAST(creditRating AS VARCHAR))::TEXT AS attributes_json")
+		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
+			benchmarkEAVJSONArray(schemaID, 100, "",
+				eavJSONAttr{id: benchmarkHashAttrID(100, "name"), name: "name", type_: "text"},
+				eavJSONAttr{id: 5, name: "email", type_: "text"},
+				eavJSONAttr{id: 6, name: "creditRating", type_: "numeric"},
+				eavJSONAttr{id: benchmarkHashAttrID(100, "version"), name: "version", type_: "text"},
+			)))
 	case 101: // security
 		parts = append(parts, "CAST(symbol AS VARCHAR) AS text_01")
 		parts = append(parts, "CAST(sector AS SMALLINT) AS smallint_01")
@@ -432,14 +527,15 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 			}
 			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
 		}
-		parts = append(parts, "json_object('3', CAST(companyName AS VARCHAR), '4', CAST(dividend AS VARCHAR), '5', CAST(marketCap AS VARCHAR))::TEXT AS attributes_json")
+		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
+			benchmarkEAVJSONArray(schemaID, 101, "",
+				eavJSONAttr{id: 3, name: "companyName", type_: "text"},
+				eavJSONAttr{id: 4, name: "dividend", type_: "numeric"},
+				eavJSONAttr{id: 5, name: "marketCap", type_: "numeric"},
+				eavJSONAttr{id: benchmarkHashAttrID(101, "name"), name: "name", type_: "text"},
+				eavJSONAttr{id: benchmarkHashAttrID(101, "version"), name: "version", type_: "text"},
+			)))
 	}
-
-	parts = append(parts,
-		"COUNT(DISTINCT row_id) OVER() AS total_records",
-		"CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages",
-		"(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page",
-	)
 
 	return strings.Join(parts, ",\n\t\t\t")
 }
@@ -457,6 +553,160 @@ func restMainColumnNames(exclude []string) []string {
 		}
 	}
 	return result
+}
+
+// benchmarkAttr describes a benchmark attribute used to build matching S3 and PG projections.
+type benchmarkAttr struct {
+	name     string
+	colName  string // entity_main column name, empty if EAV-only
+	attrID   int
+	eavJSON  bool // true if extracted from attributes_json in S3 parquet
+	s3Expr   string
+}
+
+// benchmarkHashAttrID computes deterministic attribute IDs using the same FNV hash
+// algorithm used by the benchmark harness (benchmarkAttributeID).
+func benchmarkHashAttrID(schemaID int16, name string) int {
+	hash := uint32(2166136261)
+	input := fmt.Sprintf("%d:%s", schemaID, name)
+	for i := 0; i < len(input); i++ {
+		hash ^= uint32(input[i])
+		hash *= 16777619
+	}
+	return int(hash%30000) + 1
+}
+
+// BuildBenchmarkProjections builds a SchemaProjection with matching S3 and PG sources
+// for a benchmark schema. Both sources produce the same columns in the same order.
+func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
+	sp := &SchemaProjection{
+		UnifiedColumnNames: []string{"row_id", "created_at", "ver_ts", "deleted_ts"},
+		AttrToMainColumn:   make(map[string]string),
+		attrIDs:            make(map[string]int),
+	}
+
+	// Define benchmark attributes in sorted order (matching PG projection order)
+	var allAttrs []benchmarkAttr
+	switch schemaID {
+	case 100: // customer
+		nameAttrID := benchmarkHashAttrID(100, "name")
+		allAttrs = []benchmarkAttr{
+			{name: "creditRating", eavJSON: false, attrID: 6, s3Expr: "creditRating"},
+			{name: "email", eavJSON: false, attrID: 5, s3Expr: "email"},
+			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
+			{name: "region", colName: "text_02", eavJSON: false, attrID: 3, s3Expr: "region"},
+			{name: "status", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "status"},
+			{name: "taxId", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "taxId"},
+			{name: "version", eavJSON: false, attrID: benchmarkHashAttrID(100, "version"), s3Expr: "version"},
+		}
+	case 101: // security
+		nameAttrID := benchmarkHashAttrID(101, "name")
+		allAttrs = []benchmarkAttr{
+			{name: "companyName", eavJSON: false, attrID: 3, s3Expr: "companyName"},
+			{name: "dividend", eavJSON: false, attrID: 4, s3Expr: "dividend"},
+			{name: "marketCap", eavJSON: false, attrID: 5, s3Expr: "marketCap"},
+			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
+			{name: "sector", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "sector"},
+			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
+			{name: "version", eavJSON: false, attrID: benchmarkHashAttrID(101, "version"), s3Expr: "version"},
+		}
+	case 102: // trade
+		nameAttrID := benchmarkHashAttrID(102, "name")
+		verAttrID := benchmarkHashAttrID(102, "version")
+		allAttrs = []benchmarkAttr{
+			{name: "brokerId", eavJSON: true, attrID: 11, s3Expr: "brokerId"},
+			{name: "commission", eavJSON: true, attrID: 9, s3Expr: "commission"},
+			{name: "customerId", colName: "uuid_01", eavJSON: false, attrID: 6, s3Expr: "customerId"},
+			{name: "exchange", eavJSON: true, attrID: 8, s3Expr: "exchange"},
+			{name: "isCash", eavJSON: true, attrID: 10, s3Expr: "isCash"},
+			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
+			{name: "orderChannel", eavJSON: true, attrID: 12, s3Expr: "orderChannel"},
+			{name: "price", colName: "double_01", eavJSON: false, attrID: 4, s3Expr: "price"},
+			{name: "quantity", colName: "bigint_01", eavJSON: false, attrID: 3, s3Expr: "quantity"},
+			{name: "region", colName: "text_02", eavJSON: false, attrID: 7, s3Expr: "region"},
+			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
+			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "epoch_ms(try_cast(tradeTime AS TIMESTAMP)) as tradeTime"},
+			{name: "tradeType", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "tradeType"},
+			{name: "version", eavJSON: false, attrID: verAttrID, s3Expr: "version"},
+		}
+	}
+
+	// Build S3 source projection
+	s3Parts := []string{"row_id", "changed_at AS created_at", "changed_at AS ver_ts", "deleted_at AS deleted_ts"}
+	for _, a := range allAttrs {
+		s3Parts = append(s3Parts, a.s3Expr)
+	}
+	sp.S3SourceSelect = strings.Join(s3Parts, ", ")
+
+	// Build PG source projection and GROUP BY
+	pgSelectParts := []string{
+		"cl.row_id::VARCHAR AS row_id",
+		"m.ltbase_created_at AS created_at",
+		"cl.changed_at AS ver_ts",
+		"cl.deleted_at AS deleted_ts",
+	}
+	pgGroupParts := []string{"cl.row_id", "m.ltbase_created_at", "cl.changed_at", "cl.deleted_at"}
+
+	// Build EAV pivot
+	var eavPivotParts []string
+	var eavAttrIDParts []string
+
+	for _, a := range allAttrs {
+		if a.colName != "" {
+			pgSelectParts = append(pgSelectParts,
+				fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s", a.name, a.colName, a.name))
+			pgGroupParts = append(pgGroupParts, "m."+a.colName)
+		} else {
+			pgSelectParts = append(pgSelectParts, fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", a.name, a.name))
+		}
+		sp.attrIDs[a.name] = a.attrID
+		sp.UnifiedColumnNames = append(sp.UnifiedColumnNames, a.name)
+
+		if a.attrID > 0 {
+			eavPivotParts = append(eavPivotParts,
+				fmt.Sprintf("\t\t\t\tMAX(CASE WHEN attr_id = %d THEN value_text END) AS %s", a.attrID, a.name))
+			eavAttrIDParts = append(eavAttrIDParts, fmt.Sprintf("%d", a.attrID))
+		}
+	}
+
+	sp.PGSourceSelect = strings.Join(pgSelectParts, ",\n\t\t\t")
+	sp.PGGroupBy = strings.Join(pgGroupParts, ", ")
+	if len(eavPivotParts) > 0 {
+		sp.EAVPivotSelect = strings.Join(eavPivotParts, ",\n")
+	}
+	if len(eavAttrIDParts) > 0 {
+		sp.EAVPivotAttrs = strings.Join(eavAttrIDParts, ", ")
+	}
+
+	return sp
+}
+
+// eavJSONAttr describes an EAV attribute for JSON array generation.
+type eavJSONAttr struct {
+	id    int
+	name  string
+	type_ string // "text" or "numeric"
+}
+
+// benchmarkEAVJSONArray generates a DuckDB json_array of json_objects for EAV attributes.
+// Each object has: schema_id, row_id, attr_id, array_indices, value_text, value_numeric.
+func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs ...eavJSONAttr) string {
+	var parts []string
+	for _, a := range attrs {
+		valColumn := "value_text"
+		nullColumn := "value_numeric"
+		if a.type_ == "numeric" {
+			valColumn = "value_numeric"
+			nullColumn = "value_text"
+		}
+		parts = append(parts, fmt.Sprintf(
+			`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', CAST(%s AS VARCHAR), '%s', NULL)`,
+			targetSchemaID, a.id, valColumn, a.name, nullColumn))
+	}
+	if len(parts) == 0 {
+		return "'[]'"
+	}
+	return "json_array(" + strings.Join(parts, ", ") + ")"
 }
 
 // BuildSchemaDrivenTemplateParams computes template parameters from a SchemaProjection.

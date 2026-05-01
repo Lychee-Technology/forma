@@ -5,6 +5,8 @@ import "text/template"
 // AdvancedQueryTemplateDuckDB is the DuckDB SQL template used for federated queries.
 // It accepts dynamically-generated SQL fragments for S3 source projection, PG source
 // projection, EAV pivot, and final outer SELECT, supporting any schema layout.
+// Metadata columns (total_records, total_pages, current_page) are rendered in the
+// template directly so that PAGE_SIZE and OFFSET template vars are properly expanded.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
@@ -62,7 +64,10 @@ unified AS (
 )
 
 SELECT
-  {{.OuterSelect}}
+  {{.OuterSelect}},
+  COUNT(DISTINCT row_id) OVER() AS total_records,
+  CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
+  (FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page
 FROM unified
 WHERE
   ({{.LOGICAL_WHERE_CLAUSE}})

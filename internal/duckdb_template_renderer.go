@@ -185,10 +185,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuer
 			deleted_ts AS ltbase_deleted_at,
 			name AS text_01,
 			age AS integer_01,
-			'[]'::TEXT AS attributes_json,
-			COUNT(DISTINCT row_id) OVER() AS total_records,
-			CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
-			(FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page`, schemaID)
+			'[]'::TEXT AS attributes_json`, schemaID)
 	}
 }
 
