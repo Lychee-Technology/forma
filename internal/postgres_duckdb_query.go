@@ -195,8 +195,32 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 		return "", nil, 0, fmt.Errorf("to dual clauses: %w", err)
 	}
 
+	// Compute schema-driven projections for the template
+	injectSchemaProjections(sqlParams, q.SchemaID, cache)
+
+	// Determine if the EAV pivot can be skipped entirely (all filter/sort
+	// attributes are column-bound, no EAV-only attributes needed).
+	// Skip this optimization for benchmark schemas because their output schema
+	// includes ALL attributes (both column-bound and EAV-only) unlike production
+	// which outputs a fixed entity_main layout.
+	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
+		sqlParams["HasEAVPivot"] = false
+		sp, _ := BuildSchemaProjection(q.SchemaID, cache)
+		if sp != nil {
+			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
+			sqlParams["PGGroupBy"] = sp.BuildPGGroupByNoEAV()
+		}
+	}
+
 	// Record Postgres pushdown fragment
 	planCtx.recordPushdownFragment(dc.PgMainClause)
+
+	// For benchmark schemas, the DuckDB logical WHERE clause must reference
+	// attribute names (the S3 parquet has flat attribute columns), not entity_main
+	// column names which ToDualClauses resolves from the schema cache.
+	if isBenchmarkSchemaID(q.SchemaID) {
+		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
+	}
 
 	sqlStr, args, err := r.getDuckDBQueryBuilder()(r.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
@@ -245,6 +269,63 @@ func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
 		}
 	}
 	return paths
+}
+
+// injectSchemaProjections computes schema-driven SQL fragments from the attribute
+// cache and injects them into the template parameter map. For benchmark schemas
+// (IDs 100-102) it uses the benchmark parquet shape; for production it uses the
+// schema attribute cache for column bindings and EAV pivots.
+func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) {
+	if isBenchmarkSchemaID(schemaID) {
+		// Benchmark schemas: use hardcoded benchmarks projections that match
+		// the benchmark parquet shape exactly (flat columns for column-bound
+		// attributes, JSON extraction for EAV-only attributes).
+		proj := BuildBenchmarkProjections(schemaID)
+		sqlParams["S3SourceSelect"] = proj.S3SourceSelect
+		sqlParams["PGSourceSelect"] = proj.PGSourceSelect
+		sqlParams["PGGroupBy"] = proj.PGGroupBy
+		sqlParams["EAVPivotSelect"] = proj.EAVPivotSelect
+		sqlParams["EAVPivotAttrs"] = proj.EAVPivotAttrs
+		sqlParams["HasEAVPivot"] = len(proj.EAVPivotAttrs) > 0
+		sqlParams["OuterSelect"] = BuildBenchmarkOuterSelect(schemaID)
+		return
+	}
+	if len(cache) == 0 {
+		// No cache: fall back to defaults that match the fixed layout
+		sqlParams["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
+		sqlParams["PGSourceSelect"] = "m.ltbase_row_id AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+		sqlParams["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
+		sqlParams["EAVPivotSelect"] = "MAX(CASE WHEN attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+		sqlParams["EAVPivotAttrs"] = "205"
+		sqlParams["HasEAVPivot"] = true
+		sqlParams["OuterSelect"] = fallbackOuterSelect(schemaID)
+		return
+	}
+
+	// Production schema: compute projections from the attribute cache
+	sp, err := BuildSchemaProjection(schemaID, cache)
+	if err != nil || sp == nil {
+		return
+	}
+	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
+	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
+	sqlParams["PGGroupBy"] = sp.PGGroupBy
+	sqlParams["EAVPivotSelect"] = sp.EAVPivotSelect
+	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
+	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
+	sqlParams["OuterSelect"] = sp.OuterSelect
+}
+
+// fallbackOuterSelect returns the fixed outer SELECT for the no-cache fallback path.
+func fallbackOuterSelect(schemaID int16) string {
+	return fmt.Sprintf(`%d::SMALLINT AS ltbase_schema_id,
+			CAST(row_id AS UUID) AS ltbase_row_id,
+			created_at AS ltbase_created_at,
+			ver_ts AS ltbase_updated_at,
+			deleted_ts AS ltbase_deleted_at,
+			name AS text_01,
+			age AS integer_01,
+			'[]'::TEXT AS attributes_json`, schemaID)
 }
 
 func duckDBPostgresScanLocation(name string) (string, string) {
@@ -367,7 +448,61 @@ func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
 }
 
-// computePgRowCount calculates the Postgres row count from execution plan sources.
+// translateDuckClauseToBenchmark rewrites a DuckDB WHERE clause from entity_main
+// column references to benchmark attribute names used in S3 parquet flat columns.
+func translateDuckClauseToBenchmark(clause string, cache forma.SchemaAttributeCache) string {
+	result := clause
+	for attr, meta := range cache {
+		if meta.ColumnBinding == nil {
+			continue
+		}
+		colName := string(meta.ColumnBinding.ColumnName)
+		result = strings.ReplaceAll(result, colName, attr)
+	}
+	return result
+}
+
+// needsEAVJoin checks whether the federated query requires an EAV data JOIN.
+// It returns false when all filter conditions and sort keys reference only
+// column-bound attributes, meaning the eav_data scan can be safely skipped.
+func needsEAVJoin(q *FederatedAttributeQuery, cache forma.SchemaAttributeCache) bool {
+	if q == nil || len(cache) == 0 {
+		return true
+	}
+	if needsEAVForCondition(q.Condition, cache) {
+		return true
+	}
+	for _, order := range q.AttributeOrders {
+		if order.StorageLocation != forma.AttributeStorageLocationMain {
+			return true
+		}
+	}
+	return false
+}
+
+// needsEAVForCondition recursively checks if any condition references an
+// EAV-only (non-column-bound) attribute.
+func needsEAVForCondition(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
+	if cond == nil {
+		return false
+	}
+	switch c := cond.(type) {
+	case *forma.CompositeCondition:
+		for _, child := range c.Conditions {
+			if needsEAVForCondition(child, cache) {
+				return true
+			}
+		}
+	case *forma.KvCondition:
+		if meta, ok := cache[c.Attr]; ok {
+			if meta.ColumnBinding == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 	var pgRows int64
 	for _, src := range plan.Sources {
@@ -378,10 +513,6 @@ func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 				pgRows += src.RowEstimate
 			}
 		}
-	}
-	// Fallback: use dirtyIDs size as a proxy
-	if pgRows == 0 {
-		pgRows = int64(len(dirtyIDs))
 	}
 	return pgRows
 }

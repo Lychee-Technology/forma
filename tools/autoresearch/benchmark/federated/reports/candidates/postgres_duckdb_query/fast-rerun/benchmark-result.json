@@ -1,0 +1,178 @@
+{
+  "config": {
+    "mode": "live",
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "iterations": 1,
+    "concurrency": 1,
+    "page_size": 20,
+    "seed": 42,
+    "tier_profile": "balanced",
+    "workloads": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000"
+    ]
+  },
+  "generator": {
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "seed": 42,
+    "trade_count": 100000,
+    "customer_count": 10000,
+    "security_count": 1000,
+    "overlap_ratio": 0.05,
+    "delete_ratio": 0.03,
+    "time_window_days": 30,
+    "base_time": "2026-01-01T00:00:00Z"
+  },
+  "metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-3e87a82eb3e68160",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "started_at": "2026-04-28T14:57:28.26272563-07:00",
+  "completed_at": "2026-04-28T15:02:32.639786868-07:00",
+  "validation_only": false,
+  "passed": false,
+  "failure_count": 3,
+  "schemas": [
+    {
+      "id": 100,
+      "name": "customer",
+      "description": "customer dimension with hot filter and EAV profile fields"
+    },
+    {
+      "id": 101,
+      "name": "security",
+      "description": "security reference data with hot symbol lookup and cold metrics"
+    },
+    {
+      "id": 102,
+      "name": "trade",
+      "description": "trade fact entity with hybrid pagination and filter attributes"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "description": "Unfiltered first page ordered by trade time descending.",
+      "category": "pagination",
+      "target_schema": "trade",
+      "execution_source": "service",
+      "page_size": 20,
+      "page_number": 1,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "mixed-tier-window",
+      "description": "Time-window query expected to touch cold and hot tiers.",
+      "category": "tier-mix",
+      "target_schema": "trade",
+      "page_size": 50,
+      "page_number": 1,
+      "supports_distributions": [
+        "temporal",
+        "hotspot-overlap",
+        "uniform"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "deep-page-1000",
+      "description": "Deep pagination baseline at page 1,000 using LIMIT/OFFSET semantics.",
+      "category": "deep-pagination",
+      "target_schema": "trade",
+      "page_size": 20,
+      "page_number": 1000,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "large_page_jump": true,
+      "oracle_mode": "loaded-state"
+    }
+  ],
+  "executions": [
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 0,
+      "total_records": 0,
+      "duration": 0,
+      "passed": false,
+      "failure_kind": "infra",
+      "failure_count": 1,
+      "infra_error": "execute workload: build benchmark schema registry: failed to read attributes file /home/ruoshi/code/github/forma/internal/e2e_harness/federated/benchmark/schemas/test_entity_attributes.json: open /home/ruoshi/code/github/forma/internal/e2e_harness/federated/benchmark/schemas/test_entity_attributes.json: no such file or directory"
+    },
+    {
+      "name": "mixed-tier-window",
+      "category": "tier-mix",
+      "distribution": "hotspot-overlap",
+      "page_size": 50,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 0,
+      "total_records": 0,
+      "duration": 0,
+      "passed": false,
+      "failure_kind": "infra",
+      "failure_count": 1,
+      "infra_error": "execute workload: count query: IO Error: Failed to read connection error for HTTP GET to 'http://localhost:33355/test-bucket/test-project/102/base/benchmark_base_trade.parquet'\n\nLINE 5: ..., epoch_ms(tradeTime) as tradeTime, 'base' as tier FROM read_parquet('s3://test-bucket/test-project/102/base/*.parquet...\n                                                                   ^"
+    },
+    {
+      "name": "deep-page-1000",
+      "category": "deep-pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1000,
+      "offset": 19980,
+      "result_count": 0,
+      "total_records": 0,
+      "duration": 0,
+      "passed": false,
+      "failure_kind": "infra",
+      "failure_count": 1,
+      "infra_error": "execute workload: count query: IO Error: Failed to read connection error for HTTP GET to 'http://localhost:33355/test-bucket/test-project/102/base/benchmark_base_trade.parquet'\n\nLINE 5: ..., epoch_ms(tradeTime) as tradeTime, 'base' as tier FROM read_parquet('s3://test-bucket/test-project/102/base/*.parquet...\n                                                                   ^"
+    }
+  ],
+  "notes": [
+    "loaded TPC-E-inspired schema fixtures",
+    "generated dataset with distribution=hotspot-overlap",
+    "loaded tiered dataset profile=balanced-60-30-10",
+    "loaded-state snapshot rows=114032",
+    "oracle_modes loaded_state=3 truth_pass=0",
+    "prefer_hot expresses workload intent and report provenance, not hard execution routing",
+    "executed supported federated query workloads"
+  ],
+  "oracle_modes": {
+    "baseline-page-1": "loaded-state",
+    "deep-page-1000": "loaded-state",
+    "mixed-tier-window": "loaded-state"
+  }
+}

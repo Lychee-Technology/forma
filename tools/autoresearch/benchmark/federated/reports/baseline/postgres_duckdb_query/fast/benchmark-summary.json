@@ -1,0 +1,294 @@
+{
+  "metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-3e87a82eb3e68160",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "oracle_modes": {
+    "baseline-page-1": "loaded-state",
+    "deep-page-1000": "loaded-state",
+    "mixed-tier-window": "loaded-state"
+  },
+  "oracle_provenance": [
+    {
+      "mode": "loaded-state",
+      "workloads": [
+        "baseline-page-1",
+        "deep-page-1000",
+        "mixed-tier-window"
+      ]
+    }
+  ],
+  "stability": {
+    "enabled": false
+  },
+  "execution_count": 3,
+  "passed": true,
+  "min": 1764550559,
+  "p50": 1905196238,
+  "p95": 2025243397,
+  "p99": 2025243397,
+  "max": 2025243397,
+  "avg": 1898330064,
+  "total_duration": 5694990194,
+  "qps": 0.5267787823692256,
+  "assertion_stats": {
+    "deep-page-empty-when-offset-exceeds-total": {
+      "passed": 1,
+      "failed": 0
+    },
+    "empty-page-only-when-offset-reaches-total": {
+      "passed": 3,
+      "failed": 0
+    },
+    "no-overlap-across-page-slices": {
+      "passed": 1,
+      "failed": 0
+    },
+    "non-decreasing-offsets-across-pagination-runs": {
+      "passed": 1,
+      "failed": 0
+    },
+    "non-negative-total-records": {
+      "passed": 3,
+      "failed": 0
+    },
+    "page-row-ids-match-expected": {
+      "passed": 3,
+      "failed": 0
+    },
+    "page-size-bound": {
+      "passed": 3,
+      "failed": 0
+    },
+    "result-count-within-total-records": {
+      "passed": 3,
+      "failed": 0
+    },
+    "schema-scoped-results-match-target": {
+      "passed": 3,
+      "failed": 0
+    },
+    "sorted-by-tradeTime-desc": {
+      "passed": 3,
+      "failed": 0
+    },
+    "total-records-match-expected": {
+      "passed": 3,
+      "failed": 0
+    },
+    "tradeTime-window-match-request": {
+      "passed": 1,
+      "failed": 0
+    },
+    "unique-row-ids-within-page": {
+      "passed": 3,
+      "failed": 0
+    }
+  },
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "target_schema": "trade",
+      "execution_source": "service",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": true,
+      "page_size": 20,
+      "avg_result_count": 20,
+      "avg_total_records": 96265,
+      "min": 2025243397,
+      "p50": 2025243397,
+      "p95": 2025243397,
+      "p99": 2025243397,
+      "max": 2025243397,
+      "avg": 2025243397,
+      "total_duration": 2025243397,
+      "qps": 0.493767811553566,
+      "assertion_stats": {
+        "empty-page-only-when-offset-reaches-total": {
+          "passed": 1,
+          "failed": 0
+        },
+        "non-negative-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-row-ids-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-size-bound": {
+          "passed": 1,
+          "failed": 0
+        },
+        "result-count-within-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "schema-scoped-results-match-target": {
+          "passed": 1,
+          "failed": 0
+        },
+        "sorted-by-tradeTime-desc": {
+          "passed": 1,
+          "failed": 0
+        },
+        "total-records-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "unique-row-ids-within-page": {
+          "passed": 1,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "name": "deep-page-1000",
+      "category": "deep-pagination",
+      "target_schema": "trade",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": true,
+      "page_size": 20,
+      "max_offset": 19980,
+      "avg_result_count": 20,
+      "avg_total_records": 96265,
+      "min": 1905196238,
+      "p50": 1905196238,
+      "p95": 1905196238,
+      "p99": 1905196238,
+      "max": 1905196238,
+      "avg": 1905196238,
+      "total_duration": 1905196238,
+      "qps": 0.5248803141926003,
+      "assertion_stats": {
+        "deep-page-empty-when-offset-exceeds-total": {
+          "passed": 1,
+          "failed": 0
+        },
+        "empty-page-only-when-offset-reaches-total": {
+          "passed": 1,
+          "failed": 0
+        },
+        "no-overlap-across-page-slices": {
+          "passed": 1,
+          "failed": 0
+        },
+        "non-decreasing-offsets-across-pagination-runs": {
+          "passed": 1,
+          "failed": 0
+        },
+        "non-negative-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-row-ids-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-size-bound": {
+          "passed": 1,
+          "failed": 0
+        },
+        "result-count-within-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "schema-scoped-results-match-target": {
+          "passed": 1,
+          "failed": 0
+        },
+        "sorted-by-tradeTime-desc": {
+          "passed": 1,
+          "failed": 0
+        },
+        "total-records-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "unique-row-ids-within-page": {
+          "passed": 1,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "name": "mixed-tier-window",
+      "category": "tier-mix",
+      "target_schema": "trade",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": true,
+      "page_size": 50,
+      "avg_result_count": 50,
+      "avg_total_records": 27035,
+      "min": 1764550559,
+      "p50": 1764550559,
+      "p95": 1764550559,
+      "p99": 1764550559,
+      "max": 1764550559,
+      "avg": 1764550559,
+      "total_duration": 1764550559,
+      "qps": 0.5667165471114166,
+      "assertion_stats": {
+        "empty-page-only-when-offset-reaches-total": {
+          "passed": 1,
+          "failed": 0
+        },
+        "non-negative-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-row-ids-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "page-size-bound": {
+          "passed": 1,
+          "failed": 0
+        },
+        "result-count-within-total-records": {
+          "passed": 1,
+          "failed": 0
+        },
+        "schema-scoped-results-match-target": {
+          "passed": 1,
+          "failed": 0
+        },
+        "sorted-by-tradeTime-desc": {
+          "passed": 1,
+          "failed": 0
+        },
+        "total-records-match-expected": {
+          "passed": 1,
+          "failed": 0
+        },
+        "tradeTime-window-match-request": {
+          "passed": 1,
+          "failed": 0
+        },
+        "unique-row-ids-within-page": {
+          "passed": 1,
+          "failed": 0
+        }
+      }
+    }
+  ]
+}

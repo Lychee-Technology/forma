@@ -1,0 +1,16 @@
+benchmark baseline capture
+target: federated_query_execution
+gate: medium
+source: internal/e2e_harness/federated/query.go
+brief: tools/autoresearch/benchmark/federated/targets/federated_query_execution_perf.md
+mode: live
+scale: small
+distribution override: hotspot-overlap
+tier profile: balanced
+iterations: 2
+seed: 42
+target workloads: mixed-tier-window,hot-only-window,cold-only-window
+protected workloads: baseline-page-1
+workloads: baseline-page-1,mixed-tier-window,hot-only-window,cold-only-window
+output_dir: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/baseline/federated_query_execution/medium
+dry-run command: benchmark_cli run -mode live -scale small -distribution hotspot-overlap -tier-profile balanced -iterations 2 -seed 42 -workloads baseline-page-1\,mixed-tier-window\,hot-only-window\,cold-only-window -baseline-dir /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/baseline/federated_query_execution/medium

@@ -1,0 +1,22 @@
+benchmark gate compare
+target: postgres_duckdb_query
+gate: medium
+source: internal/postgres_duckdb_query.go
+brief: tools/autoresearch/benchmark/federated/targets/postgres_duckdb_query_perf.md
+mode: live
+scale: small
+distribution override: hotspot-overlap
+tier profile: balanced
+iterations: 2
+seed: 42
+target workloads: deep-page-1000,deep-page-100000
+protected workloads: baseline-page-1,mixed-tier-window
+workloads: baseline-page-1,mixed-tier-window,deep-page-1000,deep-page-100000
+baseline_summary: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/baseline/postgres_duckdb_query/medium/benchmark-summary.json
+candidate_summary: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/candidates/postgres_duckdb_query/medium/benchmark-summary.json
+
+review defaults:
+- discard on any correctness regression
+- rerun on infra failure before judging
+- keep only if a target workload clearly improves for this gate
+- discard if protected workloads regress clearly

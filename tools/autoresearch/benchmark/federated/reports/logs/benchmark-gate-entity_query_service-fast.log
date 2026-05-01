@@ -1,0 +1,22 @@
+benchmark gate compare
+target: entity_query_service
+gate: fast
+source: internal/entity_query_service.go
+brief: tools/autoresearch/benchmark/federated/targets/entity_query_service_perf.md
+mode: live
+scale: small
+distribution override: hotspot-overlap
+tier profile: balanced
+iterations: 1
+seed: 42
+target workloads: baseline-page-1
+protected workloads: customer-region-page,security-symbol-page
+workloads: baseline-page-1,customer-region-page,security-symbol-page
+baseline_summary: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/baseline/entity_query_service/fast/benchmark-summary.json
+candidate_summary: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/candidates/entity_query_service/fast/benchmark-summary.json
+
+review defaults:
+- discard on any correctness regression
+- rerun on infra failure before judging
+- keep only if a target workload clearly improves for this gate
+- discard if protected workloads regress clearly

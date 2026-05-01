@@ -1,0 +1,90 @@
+{
+  "baseline_metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-717c6e3be4a076d4",
+    "workload_names": [
+      "baseline-page-1",
+      "customer-region-page",
+      "security-symbol-page"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "candidate_metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-717c6e3be4a076d4",
+    "workload_names": [
+      "baseline-page-1",
+      "customer-region-page",
+      "security-symbol-page"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "summary": {
+    "passed_changed": false,
+    "failure_count_delta": 0,
+    "correctness_failures_delta": 0,
+    "infra_failures_delta": 0,
+    "execution_count_delta": 0,
+    "qps_delta": 0.03571485059269919,
+    "avg_latency_delta": -24905647,
+    "p95_latency_delta": -61746449,
+    "p99_latency_delta": -61746449,
+    "total_duration_delta": -74716942
+  },
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "target_schema": "trade",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": 0.014302682658867416,
+      "avg_latency_delta": -61746449,
+      "p95_latency_delta": -61746449,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    },
+    {
+      "name": "customer-region-page",
+      "target_schema": "customer",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": 0.04745294109401943,
+      "avg_latency_delta": -2312155,
+      "p95_latency_delta": -2312155,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    },
+    {
+      "name": "security-symbol-page",
+      "target_schema": "security",
+      "passed_changed": false,
+      "failure_count_delta": 0,
+      "correctness_failures_delta": 0,
+      "infra_failures_delta": 0,
+      "execution_count_delta": 0,
+      "qps_delta": 0.24948855996069774,
+      "avg_latency_delta": -10658338,
+      "p95_latency_delta": -10658338,
+      "avg_result_count_delta": 0,
+      "avg_total_records_delta": 0
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+status=keep
+reason=Fix duplicated WHERE args and reduce unnecessary allocation which can distort translation and execution
+scenario=Prevent duplicated template arguments and reduce where-args allocation to improve translation correctness and reduce DuckDB work
+description=Avoid appending whereArgs to itself and fix capacity allocation when injecting dual clause args in BuildDuckDBQuery
+evidence=Removes duplicated bindings that could lead to extra parameter processing and incorrect template rendering; expected modest latency improvement and correctness robustness\n

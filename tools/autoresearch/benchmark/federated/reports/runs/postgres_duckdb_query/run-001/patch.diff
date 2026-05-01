@@ -1,0 +1,27 @@
+diff --git a/internal/duckdb_template_renderer.go b/internal/duckdb_template_renderer.go
+index a865578..a1c21bd 100644
+--- a/internal/duckdb_template_renderer.go
++++ b/internal/duckdb_template_renderer.go
+@@ -51,7 +51,8 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
+ 	// If dual clauses provided, prefer them; otherwise fall back to legacy generator.
+ 	if dual != nil && dual.DuckClause != "" {
+ 		whereClause = dual.DuckClause
+-		whereArgs = make([]any, 0, len(dual.DuckArgs)+len(dual.PgMainArgs)+len(dual.DuckArgs))
++		// allocate enough capacity for duck args + pg args (avoid accidental double-count)
++		whereArgs = make([]any, 0, len(dual.DuckArgs)+len(dual.PgMainArgs))
+ 		if len(dual.DuckArgs) > 0 {
+ 			whereArgs = append(whereArgs, dual.DuckArgs...)
+ 		}
+@@ -99,9 +100,9 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
+ 	anchor["Condition"] = whereClause
+ 	if isAdvancedTemplate {
+ 		m["LOGICAL_WHERE_CLAUSE"] = whereClause
+-		if len(whereArgs) > 0 {
+-			whereArgs = append(whereArgs, whereArgs...)
+-		}
++		// Do not duplicate whereArgs here — appending the slice to itself was
++		// causing duplicated arguments which could lead to incorrect bindings
++		// and extra work during translation/execution. Keep whereArgs intact.
+ 	}
+ 	injectDuckDBTemplateParams(m, q, nil)
+ 

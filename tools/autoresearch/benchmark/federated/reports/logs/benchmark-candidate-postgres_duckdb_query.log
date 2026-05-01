@@ -1,0 +1,13 @@
+benchmark candidate capture
+target: postgres_duckdb_query
+source: internal/postgres_duckdb_query.go
+brief: tools/autoresearch/benchmark/federated/targets/postgres_duckdb_query_perf.md
+mode: live
+scale: small
+distribution override: hotspot-overlap
+tier profile: balanced
+iterations: 2
+seed: 42
+workloads: baseline-page-1,mixed-tier-window,deep-page-1000,deep-page-100000
+output_dir: /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/candidates/postgres_duckdb_query
+dry-run command: benchmark_cli run -mode live -scale small -distribution hotspot-overlap -tier-profile balanced -iterations 2 -seed 42 -workloads baseline-page-1\,mixed-tier-window\,deep-page-1000\,deep-page-100000 -baseline-dir /home/ruoshi/code/github/forma/tools/autoresearch/benchmark/federated/reports/candidates/postgres_duckdb_query

@@ -1,0 +1,5 @@
+status=keep
+reason=Convert S3 anti-join from NOT IN(subselect) to LEFT JOIN ... IS NULL to reduce expensive subquery evaluation
+scenario=Anti-join pushdown: replacing NOT IN with an explicit left-join anti-join lets DuckDB use join strategies and avoids repeated subquery scans for large Parquet inputs
+description=Modify s3_source to alias read_parquet as s, LEFT JOIN dirty_ids d ON CAST(s.row_id AS UUID)=d.row_id, and filter d.row_id IS NULL (also prefix s3 columns with s.)
+evidence=Expect reduced scan/anti-join cost on deep-page workloads (lower avg/p95); correctness preserved since rows present in dirty_ids are still excluded

@@ -1,0 +1,6 @@
+Benchmark Diff Summary
+baseline=bench-717c6e3be4a076d4 candidate=bench-717c6e3be4a076d4 passed_changed=false failure_delta=0 correctness_delta=0 infra_delta=0 qps_delta=0.04 avg_latency_delta=-24.905647ms p95_latency_delta=-61.746449ms
+workload baseline-page-1 schema=trade missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.01 avg_latency_delta=-61.746449ms p95_latency_delta=-61.746449ms avg_result_delta=0.00 avg_total_delta=0.00
+workload customer-region-page schema=customer missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.05 avg_latency_delta=-2.312155ms p95_latency_delta=-2.312155ms avg_result_delta=0.00 avg_total_delta=0.00
+workload security-symbol-page schema=security missing_baseline=false missing_candidate=false passed_changed=false correctness_delta=0 qps_delta=0.25 avg_latency_delta=-10.658338ms p95_latency_delta=-10.658338ms avg_result_delta=0.00 avg_total_delta=0.00
+

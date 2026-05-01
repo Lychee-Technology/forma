@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -414,8 +413,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		}
 	}
 
-	baseRepo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
-	repo := newBenchmarkServiceRepository(baseRepo, h)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
 			TableNames: forma.TableNames{
@@ -441,7 +439,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	}
 	result, err := manager.Query(ctx, req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("execute service query: %w", err)
 	}
 	records, err := persistentRecordsForQueryResult(ctx, result, registry)
 	if err != nil {
@@ -541,112 +539,6 @@ func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryRes
 		}
 	}
 	return records, nil
-}
-
-type benchmarkServiceRepository struct {
-	*internal.DBPersistentRecordRepository
-	harness *federated.FederatedTestHarness
-}
-
-func newBenchmarkServiceRepository(base *internal.DBPersistentRecordRepository, h *federated.FederatedTestHarness) *benchmarkServiceRepository {
-	return &benchmarkServiceRepository{DBPersistentRecordRepository: base, harness: h}
-}
-
-func (r *benchmarkServiceRepository) QueryPersistentRecordsFederated(ctx context.Context, tables internal.StorageTables, fq *internal.FederatedAttributeQuery, opts *internal.FederatedQueryOptions) (*internal.PersistentRecordPage, error) {
-	if fq == nil || r == nil || r.harness == nil {
-		return r.DBPersistentRecordRepository.QueryPersistentRecordsFederated(ctx, tables, fq, opts)
-	}
-	queryOpts := benchmarkQueryOptionsFromFederatedQuery(fq)
-	result, err := r.harness.ExecuteFederatedQuery(ctx, queryOpts)
-	if err != nil {
-		return nil, err
-	}
-	limit := fq.Limit
-	if limit <= 0 {
-		limit = benchmarkDefaultPageSize(0)
-	}
-	currentPage := 1
-	if limit > 0 {
-		currentPage = fq.Offset/limit + 1
-	}
-	return &internal.PersistentRecordPage{
-		Records:      result.Records,
-		TotalRecords: result.TotalRecords,
-		TotalPages:   benchmarkComputeTotalPages(result.TotalRecords, limit),
-		CurrentPage:  currentPage,
-	}, nil
-}
-
-func benchmarkQueryOptionsFromFederatedQuery(fq *internal.FederatedAttributeQuery) *federated.QueryOptions {
-	if fq == nil {
-		return &federated.QueryOptions{}
-	}
-	queryOpts := &federated.QueryOptions{
-		Limit:     fq.Limit,
-		Offset:    fq.Offset,
-		PreferHot: fq.PreferHot,
-	}
-	if len(fq.AttributeOrders) > 0 {
-		order := fq.AttributeOrders[0]
-		queryOpts.SortDesc = order.SortOrder == forma.SortOrderDesc
-		if name := benchmarkSortAttributeName(order); name != "" {
-			queryOpts.SortBy = name
-		}
-	}
-	if fq.Condition != nil {
-		queryOpts.Filter = &federated.Filter{Conditions: benchmarkFilterConditionsFromCondition(fq.Condition)}
-	}
-	return queryOpts
-}
-
-func benchmarkSortAttributeName(order internal.AttributeOrder) string {
-	switch order.AttrID {
-	case 1:
-		return "symbol"
-	case 2:
-		return "tradeType"
-	case 5:
-		return "tradeTime"
-	case 7:
-		return "region"
-	default:
-		return ""
-	}
-}
-
-func benchmarkFilterConditionsFromCondition(condition forma.Condition) map[string]any {
-	conditions := make(map[string]any)
-	collectBenchmarkFilterConditions(condition, conditions)
-	if len(conditions) == 0 {
-		return nil
-	}
-	return conditions
-}
-
-func collectBenchmarkFilterConditions(condition forma.Condition, out map[string]any) {
-	if condition == nil {
-		return
-	}
-	switch c := condition.(type) {
-	case *forma.KvCondition:
-		value := fmt.Sprint(c.Value)
-		if strings.HasPrefix(value, "equals:") {
-			out[c.Attr] = strings.TrimPrefix(value, "equals:")
-			return
-		}
-		out[c.Attr] = value
-	case *forma.CompositeCondition:
-		for _, child := range c.Conditions {
-			collectBenchmarkFilterConditions(child, out)
-		}
-	}
-}
-
-func benchmarkComputeTotalPages(total int64, limit int) int {
-	if total == 0 || limit <= 0 {
-		return 0
-	}
-	return int((total + int64(limit) - 1) / int64(limit))
 }
 
 func benchmarkDefaultPageSize(pageSize int) int {

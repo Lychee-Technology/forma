@@ -3,7 +3,10 @@ package internal
 import "text/template"
 
 // AdvancedQueryTemplateDuckDB is the DuckDB SQL template used for federated queries.
-// Placeholders expected to be substituted by the renderer via Go template fields.
+// It accepts dynamically-generated SQL fragments for S3 source projection, PG source
+// projection, EAV pivot, and final outer SELECT, supporting any schema layout.
+// Metadata columns (total_records, total_pages, current_page) are rendered in the
+// template directly so that PAGE_SIZE and OFFSET template vars are properly expanded.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
@@ -11,16 +14,7 @@ var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuck
 PRAGMA memory_limit='4GB';
 PRAGMA threads=4;
 
--- Parameters:
--- .SCHEMA_ID             : integer
--- .PG_CONN               : postgres connection string for postgres_scan
--- .PG_WHERE_CLAUSE       : pushdown predicate for entity_main (physical columns)
--- .LOGICAL_WHERE_CLAUSE  : logical predicate for final filtering (DuckDB / Parquet columns)
--- .S3_PATHS              : comma-separated paths for read_parquet()
--- .PAGE_SIZE, .OFFSET
-
 WITH
--- Dirty set: rows currently present/dirty in PG change_log (flushed_at = 0)
 dirty_ids AS (
   SELECT row_id
   FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}')
@@ -28,81 +22,49 @@ dirty_ids AS (
     AND flushed_at = 0
 ),
 
--- S3 source (Cold/Warm). Read Parquet files and apply logical filters + anti-join
 s3_source AS (
   SELECT
-    row_id,
-    ltbase_created_at AS created_at,
-    ltbase_updated_at AS ver_ts,
-    ltbase_deleted_at AS deleted_ts,
-
-    -- Logical columns (native in Parquet)
-    name,
-    age,
-    tag
-
+    {{.S3SourceSelect}}
   FROM read_parquet({{.S3_PATHS}})
   WHERE
     ({{.LOGICAL_WHERE_CLAUSE}})
-    -- Anti-join: exclude rows that are present in the Dirty Set (PG hot buffer)
     AND CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
 ),
 
--- PG source (Hot). Use postgres_scan with pushdown for entity_main, pivot EAV attributes.
 pg_source AS (
   SELECT
-    m.ltbase_row_id AS row_id,
-    m.ltbase_created_at AS created_at,
-    cl.changed_at AS ver_ts,
-    cl.deleted_at AS deleted_ts,
-
-    -- Explicit casts to align PG types with Parquet schema
-    CAST(m.text_01 AS VARCHAR) AS name,
-    CAST(m.integer_01 AS INTEGER) AS age,
-
-    -- EAV pivot (explicit casts). Replace attr_id constants with dynamic mapping if needed.
-    MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag
-
+    {{.PGSourceSelect}}
   FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}') cl
-
-  -- Pushdown: restrict entity_main at the scan-level using .PG_WHERE_CLAUSE
   JOIN postgres_scan('{{.PG_CONN}}',
     '{{.MainSchema}}',
     '{{.MainScanTable}}'
   ) m
     ON cl.schema_id = m.ltbase_schema_id
     AND cl.row_id = m.ltbase_row_id
-
-  LEFT JOIN postgres_scan('{{.PG_CONN}}', '{{.EAVSchema}}', '{{.EAVScanTable}}') e
-    ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id
-
+  {{if .HasEAVPivot}}
+  LEFT JOIN (
+    SELECT row_id::VARCHAR as row_id, schema_id,
+      {{.EAVPivotSelect}}
+    FROM postgres_scan('{{.PG_CONN}}', '{{.EAVSchema}}', '{{.EAVScanTable}}')
+    WHERE attr_id IN ({{.EAVPivotAttrs}})
+    GROUP BY schema_id, row_id
+  ) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
+  {{end}}
   WHERE cl.schema_id = {{.SCHEMA_ID}}
     AND cl.flushed_at = 0
     AND m.ltbase_schema_id = {{.SCHEMA_ID}}
     AND ({{.PG_WHERE_CLAUSE}})
-  GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01
+  GROUP BY {{.PGGroupBy}}
 ),
 
--- Union warm/cold S3 data with hot PG data
 unified AS (
   SELECT * FROM s3_source
   UNION ALL
   SELECT * FROM pg_source
 )
 
--- Final selection:
--- - Apply final logical filters to ensure EAV & other logical predicates are respected
--- - Remove soft-deleted rows
--- - Deduplicate using latest version timestamp per row_id
 SELECT
-  {{.SCHEMA_ID}}::SMALLINT AS ltbase_schema_id,
-  CAST(row_id AS UUID) AS ltbase_row_id,
-  created_at AS ltbase_created_at,
-  ver_ts AS ltbase_updated_at,
-  deleted_ts AS ltbase_deleted_at,
-  name AS text_01,
-  age AS integer_01,
-  '[]'::TEXT AS attributes_json,
+  {{.OuterSelect}},
   COUNT(DISTINCT row_id) OVER() AS total_records,
   CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
   (FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page

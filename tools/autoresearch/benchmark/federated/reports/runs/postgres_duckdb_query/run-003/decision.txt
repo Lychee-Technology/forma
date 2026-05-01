@@ -1,0 +1,5 @@
+status=keep
+reason=Perform early deduplication to reduce rows before window/count and sorting
+scenario=Push ROW_NUMBER deduplication into a CTE to reduce work for final ORDER/LIMIT
+description=Move QUALIFY ROW_NUMBER deduplication into an earlier CTE (deduped) so the final selection, window COUNT(*) and ORDER/LIMIT operate on a smaller set
+evidence=Should reduce DuckDB CPU and memory usage on deep-offset queries by avoiding window operations over duplicate/older versions

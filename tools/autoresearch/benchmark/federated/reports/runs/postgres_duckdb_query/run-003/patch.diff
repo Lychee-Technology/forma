@@ -1,0 +1,29 @@
+diff --git a/internal/advanced_query_template_duckdb.go b/internal/advanced_query_template_duckdb.go
+index 94a631a..cf40802 100644
+--- a/internal/advanced_query_template_duckdb.go
++++ b/internal/advanced_query_template_duckdb.go
+@@ -90,6 +90,13 @@ unified AS (
+   SELECT * FROM pg_source
+ )
+ 
++-- Deduplicate early: keep most recent version per row_id before expensive window ops
++deduped AS (
++  SELECT *
++  FROM unified
++  QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
++)
++
+ -- Final selection:
+ -- - Apply final logical filters to ensure EAV & other logical predicates are respected
+ -- - Remove soft-deleted rows
+@@ -111,8 +118,8 @@ WHERE
+   ({{.LOGICAL_WHERE_CLAUSE}})
+   AND (deleted_ts IS NULL OR deleted_ts = 0)
+ 
+--- Deduplicate: keep most recent version per row_id
+-QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
++FROM deduped
++WHERE (deleted_ts IS NULL OR deleted_ts = 0)
+ 
+ ORDER BY created_at DESC
+ LIMIT {{.PAGE_SIZE}} OFFSET {{.OFFSET}};

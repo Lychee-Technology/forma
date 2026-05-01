@@ -1,0 +1,983 @@
+{
+  "config": {
+    "mode": "live",
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "iterations": 2,
+    "concurrency": 1,
+    "page_size": 20,
+    "seed": 42,
+    "tier_profile": "balanced",
+    "workloads": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000",
+      "deep-page-100000"
+    ]
+  },
+  "generator": {
+    "scale": "small",
+    "distribution": "hotspot-overlap",
+    "seed": 42,
+    "trade_count": 100000,
+    "customer_count": 10000,
+    "security_count": 1000,
+    "overlap_ratio": 0.05,
+    "delete_ratio": 0.03,
+    "time_window_days": 30,
+    "base_time": "2026-01-01T00:00:00Z"
+  },
+  "metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-58e03175693cee3d",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000",
+      "deep-page-100000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "started_at": "2026-05-01T00:06:43.416995416-07:00",
+  "completed_at": "2026-05-01T00:12:20.738255648-07:00",
+  "validation_only": false,
+  "passed": true,
+  "schemas": [
+    {
+      "id": 100,
+      "name": "customer",
+      "description": "customer dimension with hot filter and EAV profile fields"
+    },
+    {
+      "id": 101,
+      "name": "security",
+      "description": "security reference data with hot symbol lookup and cold metrics"
+    },
+    {
+      "id": 102,
+      "name": "trade",
+      "description": "trade fact entity with hybrid pagination and filter attributes"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "description": "Unfiltered first page ordered by trade time descending.",
+      "category": "pagination",
+      "target_schema": "trade",
+      "execution_source": "service",
+      "page_size": 20,
+      "page_number": 1,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "mixed-tier-window",
+      "description": "Time-window query expected to touch cold and hot tiers.",
+      "category": "tier-mix",
+      "target_schema": "trade",
+      "page_size": 50,
+      "page_number": 1,
+      "supports_distributions": [
+        "temporal",
+        "hotspot-overlap",
+        "uniform"
+      ],
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "deep-page-1000",
+      "description": "Deep pagination baseline at page 1,000 using LIMIT/OFFSET semantics.",
+      "category": "deep-pagination",
+      "target_schema": "trade",
+      "page_size": 20,
+      "page_number": 1000,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "large_page_jump": true,
+      "oracle_mode": "loaded-state"
+    },
+    {
+      "name": "deep-page-100000",
+      "description": "Large page jump benchmark at page 100,000.",
+      "category": "deep-pagination",
+      "target_schema": "trade",
+      "page_size": 20,
+      "page_number": 100000,
+      "supports_distributions": [
+        "uniform",
+        "zipf",
+        "temporal",
+        "partition-skew",
+        "hotspot-overlap"
+      ],
+      "large_page_jump": true,
+      "oracle_mode": "loaded-state"
+    }
+  ],
+  "executions": [
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 20,
+      "total_records": 96265,
+      "duration": 1952215731,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "1e49f978-1fe9-521d-b345-326876376d13",
+        "f701d176-c43e-5f27-bd2d-5f971a910e3f",
+        "e1424d04-76dc-5cf3-bf26-74215b3770a1",
+        "b6e1a440-7bb9-52ef-aff0-92f66abe00d1",
+        "9ca054b6-56d4-5d0e-94ec-d018e864cbf0",
+        "de0a366d-c0f8-5391-9b04-699da0d6573b",
+        "b03e48cb-2906-5bb2-b277-66fcb804ce4d",
+        "aa559e47-3453-59c0-8bbe-a537b15aa571",
+        "c155c882-1c72-5238-9f73-f39c80748e36",
+        "c6674488-999a-5ed8-ba6b-90202e3cd1ad",
+        "9a26cf62-b0e3-519d-81d2-b3f34a579165",
+        "19c1cf2d-5881-502c-b60c-cda0cf40ca35",
+        "cd0cdf3e-ceb8-5734-8f07-6bb469e0242c",
+        "492cffe0-7c15-5032-9a03-2f5612ad0ca8",
+        "69020a97-f434-5109-beb3-af6a247688a6",
+        "c80a4eec-ba80-593d-85ae-c27eb171dbe3",
+        "c9cdd6c6-be86-5ecc-9ca6-8421165899dd",
+        "e656dac5-9970-5e43-9c8d-5153ab8a94e8",
+        "f107afd4-fc97-5fb1-a4e9-2b6282a735b6",
+        "84149c55-d43d-546a-8183-c7fbc6ea8bf7"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=96265 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=20"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "insufficient comparable rows"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7] expected=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7]"
+        }
+      ],
+      "plan_notes": [
+        "entity_manager_query_service"
+      ]
+    },
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 20,
+      "total_records": 96265,
+      "duration": 1885000400,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "1e49f978-1fe9-521d-b345-326876376d13",
+        "f701d176-c43e-5f27-bd2d-5f971a910e3f",
+        "e1424d04-76dc-5cf3-bf26-74215b3770a1",
+        "b6e1a440-7bb9-52ef-aff0-92f66abe00d1",
+        "9ca054b6-56d4-5d0e-94ec-d018e864cbf0",
+        "de0a366d-c0f8-5391-9b04-699da0d6573b",
+        "b03e48cb-2906-5bb2-b277-66fcb804ce4d",
+        "aa559e47-3453-59c0-8bbe-a537b15aa571",
+        "c155c882-1c72-5238-9f73-f39c80748e36",
+        "c6674488-999a-5ed8-ba6b-90202e3cd1ad",
+        "9a26cf62-b0e3-519d-81d2-b3f34a579165",
+        "19c1cf2d-5881-502c-b60c-cda0cf40ca35",
+        "cd0cdf3e-ceb8-5734-8f07-6bb469e0242c",
+        "492cffe0-7c15-5032-9a03-2f5612ad0ca8",
+        "69020a97-f434-5109-beb3-af6a247688a6",
+        "c80a4eec-ba80-593d-85ae-c27eb171dbe3",
+        "c9cdd6c6-be86-5ecc-9ca6-8421165899dd",
+        "e656dac5-9970-5e43-9c8d-5153ab8a94e8",
+        "f107afd4-fc97-5fb1-a4e9-2b6282a735b6",
+        "84149c55-d43d-546a-8183-c7fbc6ea8bf7"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=96265 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=20"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "insufficient comparable rows"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7] expected=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7]"
+        },
+        {
+          "name": "non-decreasing-offsets-across-pagination-runs",
+          "passed": true,
+          "message": "previous_offset=0 current_offset=0"
+        },
+        {
+          "name": "repeated-run-failure-kind-stable",
+          "passed": true,
+          "message": "previous= current="
+        },
+        {
+          "name": "repeated-run-total-records-stable",
+          "passed": true,
+          "message": "previous=96265 current=96265"
+        },
+        {
+          "name": "repeated-run-page-row-ids-stable",
+          "passed": true,
+          "message": "previous=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7] current=[1e49f978-1fe9-521d-b345-326876376d13 f701d176-c43e-5f27-bd2d-5f971a910e3f e1424d04-76dc-5cf3-bf26-74215b3770a1 b6e1a440-7bb9-52ef-aff0-92f66abe00d1 9ca054b6-56d4-5d0e-94ec-d018e864cbf0 de0a366d-c0f8-5391-9b04-699da0d6573b b03e48cb-2906-5bb2-b277-66fcb804ce4d aa559e47-3453-59c0-8bbe-a537b15aa571 c155c882-1c72-5238-9f73-f39c80748e36 c6674488-999a-5ed8-ba6b-90202e3cd1ad 9a26cf62-b0e3-519d-81d2-b3f34a579165 19c1cf2d-5881-502c-b60c-cda0cf40ca35 cd0cdf3e-ceb8-5734-8f07-6bb469e0242c 492cffe0-7c15-5032-9a03-2f5612ad0ca8 69020a97-f434-5109-beb3-af6a247688a6 c80a4eec-ba80-593d-85ae-c27eb171dbe3 c9cdd6c6-be86-5ecc-9ca6-8421165899dd e656dac5-9970-5e43-9c8d-5153ab8a94e8 f107afd4-fc97-5fb1-a4e9-2b6282a735b6 84149c55-d43d-546a-8183-c7fbc6ea8bf7]"
+        }
+      ],
+      "plan_notes": [
+        "entity_manager_query_service"
+      ]
+    },
+    {
+      "name": "mixed-tier-window",
+      "category": "tier-mix",
+      "distribution": "hotspot-overlap",
+      "page_size": 50,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 50,
+      "total_records": 27035,
+      "duration": 1863900935,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "e70edd9b-24b8-5932-83d0-947260ec3379",
+        "1f745e42-bc88-5742-86db-d5847a4e9916",
+        "3d04c13f-854f-5020-be34-ba82c7a02c5a",
+        "e7698336-228e-5776-83b6-6feb789eb245",
+        "f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7",
+        "fb4c2906-5ff0-559b-8f33-67e759363596",
+        "16cefa1e-d145-5fa3-8b6f-63b197ff2718",
+        "bb139dc4-c030-5cb3-bb05-34d334fe0c4d",
+        "179546f7-c57a-5a67-a2ad-e82e322f31eb",
+        "2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f",
+        "1e9efd9a-e471-5771-b187-6d19f9584062",
+        "ef671cc9-e5f8-5516-9d7e-d6b5766395d5",
+        "998e3f7d-5bdc-56c4-b545-314ebb542a16",
+        "42cb166c-b445-501b-9bda-df53f0a4bc5d",
+        "50418bad-5ef0-573a-b483-308648729c72",
+        "7513f8f9-dbb6-565c-897b-e69a80fe5082",
+        "a07672d3-26fb-5a78-8f25-4bddc081abd1",
+        "e58f6604-f47d-59ab-ac68-806e0501573d",
+        "7bdf0a9d-d903-5b24-8a17-1f18f73db19a",
+        "c68d9a2c-f774-5190-9142-ddf0cf54c4cf",
+        "fa7eac38-96b4-5c08-8d9d-12afb2847911",
+        "bdeff7ca-f3be-5710-bb0c-5d7e82dd1835",
+        "a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e",
+        "aee0b1c2-b725-56fc-8dc6-80911eccbe7c",
+        "13be0f47-4adf-5612-bd53-0d7cc9d2d948",
+        "b0d20d15-c191-5764-b30d-722b59f4491a",
+        "b31b8626-6ac1-5e39-a62f-4a3751939843",
+        "c190e192-e700-5b0f-8590-4c2479a08fc6",
+        "4023cbb1-ad53-5cdf-af16-11af885d4307",
+        "54a15efe-c698-5142-93aa-bce0c0c0ca34",
+        "9abf75f3-3e7f-5762-810d-37a0f98d659f",
+        "080d5ccd-567a-5598-bcb3-e44284f628a4",
+        "7a15778f-a107-5000-b3e3-53bc35518297",
+        "bac0d944-a90e-5dcb-9ce9-68d45cd90262",
+        "c9edfac4-939b-5c62-9424-1b00053de3e3",
+        "dee35cb0-a161-542f-a9b5-3e43f7ad4fb5",
+        "fd57d193-99fd-5199-8925-4d27f93322c5",
+        "f3597ea6-0cde-571a-9437-13a9782c740f",
+        "9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a",
+        "90c96248-8396-542e-8e08-965ed69d1e78",
+        "b79a81df-af4c-5121-ad46-f44a2bd6841b",
+        "c306987c-0b98-5d64-8cd6-28275e823f41",
+        "d0c4e74a-0588-5cb5-99d7-c063a5f24b27",
+        "0c16e4ee-798b-539e-8fef-a474a1a27462",
+        "d07fb64d-26cc-5149-88ca-03600599950f",
+        "051dcf60-baf9-545f-a8d8-46ea05cebdf8",
+        "322010a8-aa74-59ea-a67f-d51f674739ab",
+        "fd3b8e45-e847-5ea8-b494-d2a0122c7921",
+        "4ebd1251-a60b-52cc-9341-455a4e4fb53b",
+        "1f0ee17c-a030-562c-9fbf-4ad57cb25e14"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=27035"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=50 page_size=50"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=50 total_records=27035"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=27035 result_count=50"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=50"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=50"
+        },
+        {
+          "name": "tradeTime-window-match-request",
+          "passed": true,
+          "message": "rows=50 start=1765152000000 end=1766707200000"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "comparable_rows=50"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=27035 expected=27035"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14] expected=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    },
+    {
+      "name": "mixed-tier-window",
+      "category": "tier-mix",
+      "distribution": "hotspot-overlap",
+      "page_size": 50,
+      "page_number": 1,
+      "offset": 0,
+      "result_count": 50,
+      "total_records": 27035,
+      "duration": 1774097411,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "e70edd9b-24b8-5932-83d0-947260ec3379",
+        "1f745e42-bc88-5742-86db-d5847a4e9916",
+        "3d04c13f-854f-5020-be34-ba82c7a02c5a",
+        "e7698336-228e-5776-83b6-6feb789eb245",
+        "f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7",
+        "fb4c2906-5ff0-559b-8f33-67e759363596",
+        "16cefa1e-d145-5fa3-8b6f-63b197ff2718",
+        "bb139dc4-c030-5cb3-bb05-34d334fe0c4d",
+        "179546f7-c57a-5a67-a2ad-e82e322f31eb",
+        "2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f",
+        "1e9efd9a-e471-5771-b187-6d19f9584062",
+        "ef671cc9-e5f8-5516-9d7e-d6b5766395d5",
+        "998e3f7d-5bdc-56c4-b545-314ebb542a16",
+        "42cb166c-b445-501b-9bda-df53f0a4bc5d",
+        "50418bad-5ef0-573a-b483-308648729c72",
+        "7513f8f9-dbb6-565c-897b-e69a80fe5082",
+        "a07672d3-26fb-5a78-8f25-4bddc081abd1",
+        "e58f6604-f47d-59ab-ac68-806e0501573d",
+        "7bdf0a9d-d903-5b24-8a17-1f18f73db19a",
+        "c68d9a2c-f774-5190-9142-ddf0cf54c4cf",
+        "fa7eac38-96b4-5c08-8d9d-12afb2847911",
+        "bdeff7ca-f3be-5710-bb0c-5d7e82dd1835",
+        "a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e",
+        "aee0b1c2-b725-56fc-8dc6-80911eccbe7c",
+        "13be0f47-4adf-5612-bd53-0d7cc9d2d948",
+        "b0d20d15-c191-5764-b30d-722b59f4491a",
+        "b31b8626-6ac1-5e39-a62f-4a3751939843",
+        "c190e192-e700-5b0f-8590-4c2479a08fc6",
+        "4023cbb1-ad53-5cdf-af16-11af885d4307",
+        "54a15efe-c698-5142-93aa-bce0c0c0ca34",
+        "9abf75f3-3e7f-5762-810d-37a0f98d659f",
+        "080d5ccd-567a-5598-bcb3-e44284f628a4",
+        "7a15778f-a107-5000-b3e3-53bc35518297",
+        "bac0d944-a90e-5dcb-9ce9-68d45cd90262",
+        "c9edfac4-939b-5c62-9424-1b00053de3e3",
+        "dee35cb0-a161-542f-a9b5-3e43f7ad4fb5",
+        "fd57d193-99fd-5199-8925-4d27f93322c5",
+        "f3597ea6-0cde-571a-9437-13a9782c740f",
+        "9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a",
+        "90c96248-8396-542e-8e08-965ed69d1e78",
+        "b79a81df-af4c-5121-ad46-f44a2bd6841b",
+        "c306987c-0b98-5d64-8cd6-28275e823f41",
+        "d0c4e74a-0588-5cb5-99d7-c063a5f24b27",
+        "0c16e4ee-798b-539e-8fef-a474a1a27462",
+        "d07fb64d-26cc-5149-88ca-03600599950f",
+        "051dcf60-baf9-545f-a8d8-46ea05cebdf8",
+        "322010a8-aa74-59ea-a67f-d51f674739ab",
+        "fd3b8e45-e847-5ea8-b494-d2a0122c7921",
+        "4ebd1251-a60b-52cc-9341-455a4e4fb53b",
+        "1f0ee17c-a030-562c-9fbf-4ad57cb25e14"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=27035"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=50 page_size=50"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=50 total_records=27035"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=0 total=27035 result_count=50"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=50"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=50"
+        },
+        {
+          "name": "tradeTime-window-match-request",
+          "passed": true,
+          "message": "rows=50 start=1765152000000 end=1766707200000"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "comparable_rows=50"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=27035 expected=27035"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14] expected=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14]"
+        },
+        {
+          "name": "repeated-run-failure-kind-stable",
+          "passed": true,
+          "message": "previous= current="
+        },
+        {
+          "name": "repeated-run-total-records-stable",
+          "passed": true,
+          "message": "previous=27035 current=27035"
+        },
+        {
+          "name": "repeated-run-page-row-ids-stable",
+          "passed": true,
+          "message": "previous=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14] current=[e70edd9b-24b8-5932-83d0-947260ec3379 1f745e42-bc88-5742-86db-d5847a4e9916 3d04c13f-854f-5020-be34-ba82c7a02c5a e7698336-228e-5776-83b6-6feb789eb245 f996ffc4-9bbe-5cec-b4e3-4bb59c69c1d7 fb4c2906-5ff0-559b-8f33-67e759363596 16cefa1e-d145-5fa3-8b6f-63b197ff2718 bb139dc4-c030-5cb3-bb05-34d334fe0c4d 179546f7-c57a-5a67-a2ad-e82e322f31eb 2fe29b9f-413a-5ed7-ae6e-ce8c3eaa757f 1e9efd9a-e471-5771-b187-6d19f9584062 ef671cc9-e5f8-5516-9d7e-d6b5766395d5 998e3f7d-5bdc-56c4-b545-314ebb542a16 42cb166c-b445-501b-9bda-df53f0a4bc5d 50418bad-5ef0-573a-b483-308648729c72 7513f8f9-dbb6-565c-897b-e69a80fe5082 a07672d3-26fb-5a78-8f25-4bddc081abd1 e58f6604-f47d-59ab-ac68-806e0501573d 7bdf0a9d-d903-5b24-8a17-1f18f73db19a c68d9a2c-f774-5190-9142-ddf0cf54c4cf fa7eac38-96b4-5c08-8d9d-12afb2847911 bdeff7ca-f3be-5710-bb0c-5d7e82dd1835 a63c54a0-8764-5ba9-9cac-c4ce6abf0b3e aee0b1c2-b725-56fc-8dc6-80911eccbe7c 13be0f47-4adf-5612-bd53-0d7cc9d2d948 b0d20d15-c191-5764-b30d-722b59f4491a b31b8626-6ac1-5e39-a62f-4a3751939843 c190e192-e700-5b0f-8590-4c2479a08fc6 4023cbb1-ad53-5cdf-af16-11af885d4307 54a15efe-c698-5142-93aa-bce0c0c0ca34 9abf75f3-3e7f-5762-810d-37a0f98d659f 080d5ccd-567a-5598-bcb3-e44284f628a4 7a15778f-a107-5000-b3e3-53bc35518297 bac0d944-a90e-5dcb-9ce9-68d45cd90262 c9edfac4-939b-5c62-9424-1b00053de3e3 dee35cb0-a161-542f-a9b5-3e43f7ad4fb5 fd57d193-99fd-5199-8925-4d27f93322c5 f3597ea6-0cde-571a-9437-13a9782c740f 9ba5b7d5-a0f1-581e-8a03-25bbae7c9d5a 90c96248-8396-542e-8e08-965ed69d1e78 b79a81df-af4c-5121-ad46-f44a2bd6841b c306987c-0b98-5d64-8cd6-28275e823f41 d0c4e74a-0588-5cb5-99d7-c063a5f24b27 0c16e4ee-798b-539e-8fef-a474a1a27462 d07fb64d-26cc-5149-88ca-03600599950f 051dcf60-baf9-545f-a8d8-46ea05cebdf8 322010a8-aa74-59ea-a67f-d51f674739ab fd3b8e45-e847-5ea8-b494-d2a0122c7921 4ebd1251-a60b-52cc-9341-455a4e4fb53b 1f0ee17c-a030-562c-9fbf-4ad57cb25e14]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    },
+    {
+      "name": "deep-page-1000",
+      "category": "deep-pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1000,
+      "offset": 19980,
+      "result_count": 20,
+      "total_records": 96265,
+      "duration": 1930453211,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "0f625859-cfc7-533e-ac3f-0dc5b81488a7",
+        "3ff214fa-084b-5465-89fd-0aba54b0411c",
+        "5bc0db04-8f8f-5281-919c-5bbe4345b639",
+        "11e6519e-450e-581a-9665-77b6ac5dcc28",
+        "e38addb3-8b45-550b-b4fc-0abeef2c40cb",
+        "6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866",
+        "8eceba94-2d72-5806-8939-d85ae71ff895",
+        "48d8a129-a407-58c5-b966-d5a38676749d",
+        "585acb07-3407-5da9-b19c-22c01e70c2f9",
+        "f756d4dd-be6a-5494-bf3f-4695cbf3153c",
+        "004612cc-bf0c-5a19-80c0-326020d6d5e9",
+        "20b1b4c8-d602-54dc-9df5-18faae18c3d6",
+        "8b8d6518-8f6d-54ee-8b19-57d02431ac9f",
+        "4620f49e-b4ef-5653-9797-531c986c29d2",
+        "6ec7b5ba-c039-5048-92cb-46ebcd4df843",
+        "6053a7fd-7ffe-5164-8f56-10b4d52466b2",
+        "5e348f25-4025-5df5-a6f4-6f8c7064d6eb",
+        "650598fa-0fd8-5469-aeaa-2dfcd425491c",
+        "cc891c74-a213-5a14-9759-427c6aee6e48",
+        "e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=19980 total=96265 result_count=20"
+        },
+        {
+          "name": "deep-page-empty-when-offset-exceeds-total",
+          "passed": true,
+          "message": "offset=19980 total=96265 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=20"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "comparable_rows=20"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494] expected=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494]"
+        },
+        {
+          "name": "non-decreasing-offsets-across-pagination-runs",
+          "passed": true,
+          "message": "previous_offset=0 current_offset=19980"
+        },
+        {
+          "name": "no-overlap-across-page-slices",
+          "passed": true,
+          "message": "previous_rows=20 current_rows=20"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    },
+    {
+      "name": "deep-page-1000",
+      "category": "deep-pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 1000,
+      "offset": 19980,
+      "result_count": 20,
+      "total_records": 96265,
+      "duration": 1914921385,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "row_ids": [
+        "0f625859-cfc7-533e-ac3f-0dc5b81488a7",
+        "3ff214fa-084b-5465-89fd-0aba54b0411c",
+        "5bc0db04-8f8f-5281-919c-5bbe4345b639",
+        "11e6519e-450e-581a-9665-77b6ac5dcc28",
+        "e38addb3-8b45-550b-b4fc-0abeef2c40cb",
+        "6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866",
+        "8eceba94-2d72-5806-8939-d85ae71ff895",
+        "48d8a129-a407-58c5-b966-d5a38676749d",
+        "585acb07-3407-5da9-b19c-22c01e70c2f9",
+        "f756d4dd-be6a-5494-bf3f-4695cbf3153c",
+        "004612cc-bf0c-5a19-80c0-326020d6d5e9",
+        "20b1b4c8-d602-54dc-9df5-18faae18c3d6",
+        "8b8d6518-8f6d-54ee-8b19-57d02431ac9f",
+        "4620f49e-b4ef-5653-9797-531c986c29d2",
+        "6ec7b5ba-c039-5048-92cb-46ebcd4df843",
+        "6053a7fd-7ffe-5164-8f56-10b4d52466b2",
+        "5e348f25-4025-5df5-a6f4-6f8c7064d6eb",
+        "650598fa-0fd8-5469-aeaa-2dfcd425491c",
+        "cc891c74-a213-5a14-9759-427c6aee6e48",
+        "e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494"
+      ],
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=20 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=20 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=19980 total=96265 result_count=20"
+        },
+        {
+          "name": "deep-page-empty-when-offset-exceeds-total",
+          "passed": true,
+          "message": "offset=19980 total=96265 result_count=20"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=20"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=20"
+        },
+        {
+          "name": "sorted-by-tradeTime-desc",
+          "passed": true,
+          "message": "comparable_rows=20"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494] expected=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494]"
+        },
+        {
+          "name": "non-decreasing-offsets-across-pagination-runs",
+          "passed": true,
+          "message": "previous_offset=19980 current_offset=19980"
+        },
+        {
+          "name": "repeated-run-failure-kind-stable",
+          "passed": true,
+          "message": "previous= current="
+        },
+        {
+          "name": "repeated-run-total-records-stable",
+          "passed": true,
+          "message": "previous=96265 current=96265"
+        },
+        {
+          "name": "repeated-run-page-row-ids-stable",
+          "passed": true,
+          "message": "previous=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494] current=[0f625859-cfc7-533e-ac3f-0dc5b81488a7 3ff214fa-084b-5465-89fd-0aba54b0411c 5bc0db04-8f8f-5281-919c-5bbe4345b639 11e6519e-450e-581a-9665-77b6ac5dcc28 e38addb3-8b45-550b-b4fc-0abeef2c40cb 6e2ed8d8-3f3a-56ea-8a6a-c6c7098e1866 8eceba94-2d72-5806-8939-d85ae71ff895 48d8a129-a407-58c5-b966-d5a38676749d 585acb07-3407-5da9-b19c-22c01e70c2f9 f756d4dd-be6a-5494-bf3f-4695cbf3153c 004612cc-bf0c-5a19-80c0-326020d6d5e9 20b1b4c8-d602-54dc-9df5-18faae18c3d6 8b8d6518-8f6d-54ee-8b19-57d02431ac9f 4620f49e-b4ef-5653-9797-531c986c29d2 6ec7b5ba-c039-5048-92cb-46ebcd4df843 6053a7fd-7ffe-5164-8f56-10b4d52466b2 5e348f25-4025-5df5-a6f4-6f8c7064d6eb 650598fa-0fd8-5469-aeaa-2dfcd425491c cc891c74-a213-5a14-9759-427c6aee6e48 e47e7b1d-3b63-5fb3-bd88-75ff0ce7d494]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned"
+      ]
+    },
+    {
+      "name": "deep-page-100000",
+      "category": "deep-pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 100000,
+      "offset": 1999980,
+      "result_count": 0,
+      "total_records": 96265,
+      "duration": 915421187,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=0 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=0 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=1999980 total=96265 result_count=0"
+        },
+        {
+          "name": "deep-page-empty-when-offset-exceeds-total",
+          "passed": true,
+          "message": "offset=1999980 total=96265 result_count=0"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=0"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=0"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[] expected=[]"
+        },
+        {
+          "name": "non-decreasing-offsets-across-pagination-runs",
+          "passed": true,
+          "message": "previous_offset=19980 current_offset=1999980"
+        },
+        {
+          "name": "no-overlap-across-page-slices",
+          "passed": true,
+          "message": "previous_rows=20 current_rows=0"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned",
+        "empty_page_short_circuit"
+      ]
+    },
+    {
+      "name": "deep-page-100000",
+      "category": "deep-pagination",
+      "distribution": "hotspot-overlap",
+      "page_size": 20,
+      "page_number": 100000,
+      "offset": 1999980,
+      "result_count": 0,
+      "total_records": 96265,
+      "duration": 899272974,
+      "passed": true,
+      "oracle_mode": "loaded-state",
+      "assertions": [
+        {
+          "name": "non-negative-total-records",
+          "passed": true,
+          "message": "total_records=96265"
+        },
+        {
+          "name": "page-size-bound",
+          "passed": true,
+          "message": "result_count=0 page_size=20"
+        },
+        {
+          "name": "result-count-within-total-records",
+          "passed": true,
+          "message": "result_count=0 total_records=96265"
+        },
+        {
+          "name": "empty-page-only-when-offset-reaches-total",
+          "passed": true,
+          "message": "offset=1999980 total=96265 result_count=0"
+        },
+        {
+          "name": "deep-page-empty-when-offset-exceeds-total",
+          "passed": true,
+          "message": "offset=1999980 total=96265 result_count=0"
+        },
+        {
+          "name": "unique-row-ids-within-page",
+          "passed": true,
+          "message": "rows=0"
+        },
+        {
+          "name": "schema-scoped-results-match-target",
+          "passed": true,
+          "message": "schema=trade rows=0"
+        },
+        {
+          "name": "total-records-match-expected",
+          "passed": true,
+          "message": "actual=96265 expected=96265"
+        },
+        {
+          "name": "page-row-ids-match-expected",
+          "passed": true,
+          "message": "actual=[] expected=[]"
+        },
+        {
+          "name": "non-decreasing-offsets-across-pagination-runs",
+          "passed": true,
+          "message": "previous_offset=1999980 current_offset=1999980"
+        },
+        {
+          "name": "repeated-run-failure-kind-stable",
+          "passed": true,
+          "message": "previous= current="
+        },
+        {
+          "name": "repeated-run-total-records-stable",
+          "passed": true,
+          "message": "previous=96265 current=96265"
+        },
+        {
+          "name": "repeated-run-page-row-ids-stable",
+          "passed": true,
+          "message": "previous=[] current=[]"
+        }
+      ],
+      "plan_notes": [
+        "dirty_ids_excluded:12958",
+        "base_files_scanned",
+        "delta_files_scanned",
+        "hot_buffer_scanned",
+        "empty_page_short_circuit"
+      ]
+    }
+  ],
+  "notes": [
+    "loaded TPC-E-inspired schema fixtures",
+    "generated dataset with distribution=hotspot-overlap",
+    "loaded tiered dataset profile=balanced-60-30-10",
+    "loaded-state snapshot rows=114032",
+    "oracle_modes loaded_state=4 truth_pass=0",
+    "prefer_hot expresses workload intent and report provenance, not hard execution routing",
+    "executed supported federated query workloads"
+  ],
+  "oracle_modes": {
+    "baseline-page-1": "loaded-state",
+    "deep-page-1000": "loaded-state",
+    "deep-page-100000": "loaded-state",
+    "mixed-tier-window": "loaded-state"
+  }
+}

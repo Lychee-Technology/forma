@@ -1,0 +1,5 @@
+status=keep
+reason=Restructures final SELECT to compute page membership via narrowed subquery, reducing row width in window/sort/offset pipeline
+scenario=Two-stage deep-page: narrow dedup+sort on row_id/ver_ts only, then hash-join back for wide columns
+description=Replaced flat QUALIFY+ORDER BY+LIMIT with a subquery that deduplicates and paginates using only row_id/ver_ts before joining back to unified for full column projection
+evidence=ROW_NUMBER/ORDER BY/OFFSET now operate on 2-column rows instead of 7-column rows, reducing memory and cache pressure during the most expensive deep-page stages

@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "format_version": "v1",
+    "benchmark_id": "bench-3e87a82eb3e68160",
+    "workload_names": [
+      "baseline-page-1",
+      "mixed-tier-window",
+      "deep-page-1000"
+    ],
+    "environment": {
+      "go_version": "go1.26.2",
+      "goos": "linux",
+      "goarch": "amd64",
+      "num_cpu": 32,
+      "hostname": "cachyos-aimax"
+    }
+  },
+  "oracle_modes": {
+    "baseline-page-1": "loaded-state",
+    "deep-page-1000": "loaded-state",
+    "mixed-tier-window": "loaded-state"
+  },
+  "execution_count": 3,
+  "passed": false,
+  "failure_count": 3,
+  "infra_failures": 3,
+  "min": 0,
+  "p50": 0,
+  "p95": 0,
+  "p99": 0,
+  "max": 0,
+  "avg": 0,
+  "total_duration": 0,
+  "qps": 0,
+  "assertion_stats": {},
+  "workloads": [
+    {
+      "name": "baseline-page-1",
+      "category": "pagination",
+      "target_schema": "trade",
+      "execution_source": "service",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": false,
+      "failure_count": 1,
+      "infra_failures": 1,
+      "page_size": 20,
+      "min": 0,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "avg": 0,
+      "total_duration": 0,
+      "qps": 0
+    },
+    {
+      "name": "deep-page-1000",
+      "category": "deep-pagination",
+      "target_schema": "trade",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": false,
+      "failure_count": 1,
+      "infra_failures": 1,
+      "page_size": 20,
+      "max_offset": 19980,
+      "min": 0,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "avg": 0,
+      "total_duration": 0,
+      "qps": 0
+    },
+    {
+      "name": "mixed-tier-window",
+      "category": "tier-mix",
+      "target_schema": "trade",
+      "oracle_mode": "loaded-state",
+      "distribution": "hotspot-overlap",
+      "execution_count": 1,
+      "passed": false,
+      "failure_count": 1,
+      "infra_failures": 1,
+      "page_size": 50,
+      "min": 0,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "avg": 0,
+      "total_duration": 0,
+      "qps": 0
+    }
+  ]
+}
