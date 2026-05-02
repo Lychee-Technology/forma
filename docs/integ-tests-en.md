@@ -20,7 +20,7 @@ Pure unit-test-level assertions are out of scope.
 
 ### 2.1 Minimum Dependencies
 
-- Go 1.21+
+- Go 1.26+
 - Docker / Docker Compose
 - PostgreSQL (local default: `localhost:5432/forma`)
 - S3-compatible storage (commonly RustFS locally)
@@ -373,4 +373,4 @@ Note: These manual cases close automation gaps and cover pre-production must-che
 - Federated E2E: `internal/e2e_harness/federated/*_test.go`  
 - Bun E2E scripts: `tests/e2e/scripts/*.ts`  
 - Load testing: `tests/e2e/k6/scenarios.ts`  
-- Service APIs: `cmd/server/handlers.go`, `cmd/lambda/handlers.go`
+- Service APIs: `internal/httpapi/server.go`, `cmd/lambda/main.go`

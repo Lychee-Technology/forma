@@ -2,7 +2,7 @@
 
 ## 允许的Schema变更操作类型 （backwards compatible）
 
-当用户进行允许的Schema变更时，LTBase会支持对已有数据的平滑迁移，确保数据的一致性和可用性。允许的Schema变更类型包括但不限于：
+当用户进行允许的Schema变更时，Forma会支持对已有数据的平滑迁移，确保数据的一致性和可用性。允许的Schema变更类型包括但不限于：
 
 1.  **添加新的可选字段 (Add Optional Field)**
     *   在 `properties` 中增加新的字段定义。
@@ -26,7 +26,7 @@
 
 ## 不允许的Schema变更操作类型 （NOT backwards compatible）
 
-如果用户尝试进行不允许的Schema变更，LTBase会拒绝该变更请求，并返回相应的错误信息。不允许的Schema变更类型包括但不限于：
+如果用户尝试进行不允许的Schema变更，Forma会拒绝该变更请求，并返回相应的错误信息。不允许的Schema变更类型包括但不限于：
 
 1.  **添加新的必填字段 (Add Required Field)**
     *   在 `properties` 中增加新字段，并将其加入 `required` 列表。

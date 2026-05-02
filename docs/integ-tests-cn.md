@@ -20,7 +20,7 @@
 
 ### 2.1 最低依赖
 
-- Go 1.21+
+- Go 1.26+
 - Docker / Docker Compose
 - PostgreSQL（本地默认：`localhost:5432/forma`）
 - S3 兼容存储（本地常用 RustFS）
@@ -373,4 +373,4 @@
 - Federated E2E：`internal/e2e_harness/federated/*_test.go`  
 - Bun E2E：`tests/e2e/scripts/*.ts`  
 - 负载测试：`tests/e2e/k6/scenarios.ts`  
-- 服务 API：`cmd/server/handlers.go`、`cmd/lambda/handlers.go`
+- 服务 API：`internal/httpapi/server.go`、`cmd/lambda/main.go`

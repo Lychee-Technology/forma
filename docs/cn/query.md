@@ -1,6 +1,6 @@
 # 查询数据功能
 
-LTBase 支持基于JSON Schema自动生成数据CRUD API功能。基于 (Model)[./model.md] 中定义的数据模型，系统支持CRUD查询操作。
+Forma 支持基于JSON Schema自动生成数据CRUD API功能。基于 [Model](./model.md) 中定义的数据模型，系统支持CRUD查询操作。
 
 
 
@@ -8,7 +8,7 @@ LTBase 支持基于JSON Schema自动生成数据CRUD API功能。基于 (Model)[
 
 ### 定义Schema
 
-JSON Schema定义了实体的属性和数据类型。用户可以通过Control Plane API创建和管理Schema。LTBase扩展了JSON Schema，允许用户指定：
+JSON Schema定义了实体的属性和数据类型。用户可以通过Control Plane API创建和管理Schema。Forma扩展了JSON Schema，允许用户指定：
 
 1. 哪些属性需要存储在`entity main`表中以优化查询性能。
 2. 哪些属性需要索引以支持高效的过滤查询。
@@ -49,7 +49,7 @@ UUID类型的属性优先存储在uuid列中。如果uuid列已经用尽，则�
 
 ### 元数据映射
 
-LTBase自己也维护了一些元数据：
+Forma自己也维护了一些元数据：
 * `RowID`，每条记录的唯一标识符，UUIDv7格式。
 * `CreatedAt`，记录创建时间，Unix时间戳，毫秒级别的整数（bigint）
 * `UpdatedAt`，记录最后更新时间，Unix时间戳，毫秒级别的整数（bigint）
@@ -63,7 +63,7 @@ LTBase自己也维护了一些元数据：
 
 ### 为Schema 的 Metadata 
 
-为了记录Schema中的字段与数据库中字段的映射关系，LTBase自动根据用户对Schema的配置生成Schema Metadata信息。Schema Metadata结构如下：
+为了记录Schema中的字段与数据库中字段的映射关系，Forma自动根据用户对Schema的配置生成Schema Metadata信息。Schema Metadata结构如下：
 
 ```json
 {
@@ -90,7 +90,7 @@ Data Plane提供基于Schema的CRUD查询API。
 
 ## 字段映射
 
-一个entity中的属性根据Schema的定义会被映射到数据库中的`entity main`表或者`eav data`表中。LTBase会根据Schema的Metadata信息来决定每个属性的存储位置。LTBase会根据Schema Metadata来生成相应的SQL语句以实现CRUD操作。
+一个entity中的属性根据Schema的定义会被映射到数据库中的`entity main`表或者`eav data`表中。Forma会根据Schema的Metadata信息来决定每个属性的存储位置。Forma会根据Schema Metadata来生成相应的SQL语句以实现CRUD操作。
 
 
 ### 从JSON对象到PersistentRecord的转换
