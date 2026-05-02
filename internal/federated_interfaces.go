@@ -1,5 +1,9 @@
 package internal
 
+import (
+	"github.com/lychee-technology/forma"
+)
+
 // Federated query related types and options.
 // These extend the existing AttributeQuery to carry hints for
 // multi-tier federated execution (Postgres + DuckDB/S3).
@@ -32,6 +36,12 @@ type FederatedAttributeQuery struct {
 	// DuckDBHints carries optional DuckDB-specific rendering hints, e.g. external
 	// parquet path templates or casting preferences.
 	DuckDBHints *DuckDBRenderHints
+
+	// KeysetCursor enables keyset-based pagination as an alternative to offset.
+	// When non-nil, the repository generates keyset WHERE clauses instead of (or
+	// in addition to) LIMIT/OFFSET. The cursor carries the last-seen row's sort
+	// column values and the pagination direction (after/before).
+	KeysetCursor *KeysetCursor
 }
 
 // DuckDBRenderHints provides optional parameters that guide DuckDB SQL generation.
@@ -56,6 +66,10 @@ type FederatedQueryOptions struct {
 	// AllowPartialDegradedMode if true will allow executing the query with only a subset
 	// of data tiers available (useful for the early MVP).
 	AllowPartialDegradedMode bool
+
+	// KeysetEnabled makes the repository prefer the keyset execution path over offset-based
+	// pagination when a KeysetCursor is supplied on the query.
+	KeysetEnabled bool
 
 	// IncludeExecutionPlan when true instructs the repository to collect an execution plan
 	// for debugging/observability. If set, the repository will allocate and populate
@@ -141,4 +155,36 @@ type MergePlan struct {
 
 	// Notes optional additional details about attribute-level merging.
 	Notes []string
+}
+
+// KeysetCursorMode declares how keyset pagination is driven.
+type KeysetCursorMode string
+
+const (
+	// KeysetCursorModeAfter requests rows after the cursor (forward pagination).
+	KeysetCursorModeAfter KeysetCursorMode = "after"
+	// KeysetCursorModeBefore requests rows before the cursor (backward pagination).
+	KeysetCursorModeBefore KeysetCursorMode = "before"
+)
+
+// KeysetColumn declares one column in a keyset pagination cursor.
+type KeysetColumn struct {
+	// Attribute is the attribute name (e.g. "trade_time", "row_id").
+	Attribute string
+	// Direction is the sort direction for this column.
+	Direction forma.SortOrder
+}
+
+// KeysetCursor carries the last-seen row's values for cursor-based pagination.
+// When supplied on a FederatedAttributeQuery, the repository generates keyset
+// WHERE clauses to fetch only rows after (or before) the cursor, avoiding the
+// cost of scanning and discarding already-seen rows.
+type KeysetCursor struct {
+	// Columns defines the column order of the cursor values. This should match
+	// the query's sort order plus a row_id tiebreaker.
+	Columns []KeysetColumn
+	// Values are the last-row column values, in the same order as Columns.
+	Values []interface{}
+	// Mode indicates whether to fetch rows after or before the cursor.
+	Mode KeysetCursorMode
 }

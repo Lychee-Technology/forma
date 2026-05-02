@@ -38,6 +38,7 @@ type WorkloadDefinition struct {
 	PreferHot             bool             `json:"prefer_hot,omitempty"`
 	UsesEAVFilter         bool             `json:"uses_eav_filter,omitempty"`
 	LargePageJump         bool             `json:"large_page_jump,omitempty"`
+	UseKeysetPagination   bool             `json:"use_keyset_pagination,omitempty"`
 	OracleMode            OracleMode       `json:"oracle_mode,omitempty"`
 }
 
@@ -234,6 +235,44 @@ func DefaultWorkloads() []WorkloadDefinition {
 			PageNumber:            100000,
 			SupportsDistributions: allDistributions(),
 			LargePageJump:         true,
+			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "keyset-page-1",
+			Description:           "Keyset-based first page (equivalent to offset page 1).",
+			Category:              WorkloadCategoryPagination,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			PageSize:              20,
+			PageNumber:            1,
+			SupportsDistributions: allDistributions(),
+			UseKeysetPagination:   true,
+			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "keyset-page-1000",
+			Description:           "Keyset-based page 1,000 for deep-page comparison.",
+			Category:              WorkloadCategoryDeepPage,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			PageSize:              20,
+			PageNumber:            1000,
+			SupportsDistributions: allDistributions(),
+			LargePageJump:         true,
+			UseKeysetPagination:   true,
+			OracleMode:            OracleModeLoadedState,
+		},
+		{
+			Name:                  "keyset-page-100000",
+			Description:           "Keyset-based page 100,000 for large jump comparison.",
+			Category:              WorkloadCategoryDeepPage,
+			TargetSchema:          "trade",
+			ExecutionSource:       "service",
+			PageSize:              20,
+			PageNumber:            100000,
+			SupportsDistributions: allDistributions(),
+			LargePageJump:         true,
+			UseKeysetPagination:   true,
 			OracleMode:            OracleModeLoadedState,
 		},
 		{

@@ -67,12 +67,24 @@ SELECT
   {{.OuterSelect}},
   COUNT(DISTINCT row_id) OVER() AS total_records,
   CEIL(COUNT(DISTINCT row_id) OVER()::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0))::BIGINT AS total_pages,
+  {{if .HAS_KEYSET}}
+  1::BIGINT AS current_page
+  {{else}}
   (FLOOR({{.OFFSET}}::DOUBLE / NULLIF({{.PAGE_SIZE}}, 0)) + 1)::BIGINT AS current_page
+  {{end}}
 FROM unified
 WHERE
+  {{if .HAS_KEYSET}}
+  ({{.KEYSET_WHERE_CLAUSE}}) AND
+  {{end}}
   ({{.LOGICAL_WHERE_CLAUSE}})
   AND (deleted_ts IS NULL OR deleted_ts = 0)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
+{{if .HAS_KEYSET}}
+ORDER BY {{.ORDER_BY}}
+LIMIT {{.PAGE_SIZE}}
+{{else}}
 ORDER BY created_at DESC
-LIMIT {{.PAGE_SIZE}} OFFSET {{.OFFSET}};
+LIMIT {{.PAGE_SIZE}} OFFSET {{.OFFSET}}
+{{end}};
 `))

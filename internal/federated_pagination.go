@@ -31,6 +31,10 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 		offset = 0
 	}
 
+	if opts != nil && opts.KeysetEnabled && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
+		return r.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
+	}
+
 	// Build shared hybrid WHERE clause
 	clause, args, err := r.buildHybridConditions(tables.EAVData, tables.EntityMain, fq.AttributeQuery, 0, fq.UseMainAsAnchor)
 	if err != nil {
@@ -108,4 +112,80 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	page := merged[start:end]
 
 	return page, total, nil
+}
+
+// executeFederatedKeysetQuery performs a keyset-cursor-based federated query.
+// It delegates to DuckDB's federated template which applies the keyset WHERE
+// clause to the unified source (both S3 parquet and Postgres via postgres_scan).
+// Results are merged with LWW semantics via the template's QUALIFY clause and
+// the requested page is returned along with the total count and next cursor.
+func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
+	ctx context.Context,
+	tables StorageTables,
+	fq *FederatedAttributeQuery,
+	limit int,
+	attributeOrders []AttributeOrder,
+	opts *FederatedQueryOptions,
+) ([]*PersistentRecord, int64, error) {
+	maxRows := federatedMaxRows
+	if opts != nil && opts.MaxRows > 0 {
+		maxRows = opts.MaxRows
+	}
+	// Clamp limit to maxRows to prevent unbounded fetch
+	if maxRows > 0 && limit > maxRows {
+		limit = maxRows
+	}
+
+	// Fetch from DuckDB (cold and warm via S3, hot via postgres_scan).
+	// The template applies the keyset WHERE in the unified CTE, so both
+	// Postgres and S3 data are filtered by the cursor before LWW dedup.
+	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
+		opts.ExecutionPlan.Routing = RoutingDecision{
+			Tiers:     []DataTier{DataTierHot, DataTierWarm, DataTierCold},
+			UseDuckDB: true,
+			Reason:    "keyset pagination",
+		}
+		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "keyset pagination")
+	}
+
+	duckRecs, total, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, 0, attributeOrders, opts)
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
+	}
+
+	// With keyset, the DuckDB template handles LWW dedup via QUALIFY,
+	// so we apply limit directly to the returned records.
+	var page []*PersistentRecord
+	if limit > 0 && limit < len(duckRecs) {
+		page = duckRecs[:limit]
+	} else {
+		page = duckRecs
+	}
+
+	// Compute total count without the keyset constraint.
+	// We strip the cursor and re-query with a minimal limit to get the count.
+	countTotal, err := r.computeFederatedCount(ctx, tables, fq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("compute federated count: %w", err)
+	}
+
+	return page, max(total, countTotal), nil
+}
+
+// computeFederatedCount returns the total number of unique rows matching the
+// filter conditions across all tiers. It strips the keyset cursor to get the
+// full unfiltered count via a lightweight query.
+func (r *DBPersistentRecordRepository) computeFederatedCount(
+	ctx context.Context,
+	tables StorageTables,
+	fq *FederatedAttributeQuery,
+) (int64, error) {
+	strippedQuery := *fq
+	strippedQuery.KeysetCursor = nil
+
+	_, total, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &FederatedQueryOptions{MaxRows: 1})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
