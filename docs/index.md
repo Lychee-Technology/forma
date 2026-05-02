@@ -58,8 +58,20 @@ Forma solves this with a modern take on the EAV pattern:
 git clone https://github.com/ruoshui/forma.git
 cd forma
 
-# Start the development environment
-make dev
+# Start PostgreSQL
+docker compose -f deploy/docker-compose.yml up -d
+
+# Build all binaries
+make build-all
+
+# Initialize database
+./build/tools init-db \
+  --db-host localhost --db-port 5432 --db-name forma \
+  --db-user postgres --db-password postgres --db-ssl-mode disable \
+  --schema-dir cmd/server/schemas
+
+# Start the server
+SCHEMA_DIR=cmd/server/schemas ./build/server
 
 # Run tests
 make test

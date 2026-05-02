@@ -2,4 +2,4 @@
 
 ## Upcoming Features
 
-- CLI Tooling for generating client code (ETA Q4 2025)
+- CLI Tooling for generating client code

@@ -1,5 +1,12 @@
 # Forma Refactor Plan (Findings Only)
 
+> **注意**：本文档中的文件路径（如 `cmd/server/handlers.go`、`cmd/server/factory.go`、`cmd/lambda/handlers.go`）对应重构前（≈2026-02 之前）的代码结构。当前代码中这些模块已迁移至：
+> - HTTP 处理 → `internal/httpapi/server.go`
+> - 启动/配置构建 → `internal/bootstrap/`
+> - Lambda 处理 → `cmd/lambda/main.go`（不再有独立 handlers.go）
+>
+> Finding 部分保留原始路径以忠实记录重构前的发现。
+
 ## 评审基准
 - 参考 [Refactoring.Guru - Code Smells](https://refactoring.guru/refactoring/smells) 及其子类（尤其是 `Duplicate Code`, `Long Method`, `Long Parameter List`, `Data Clumps`, `Large Class`, `Switch Statements`, `Shotgun Surgery`, `Divergent Change`）。
 - 本文仅记录重构发现，不包含代码修改方案的落地实现。

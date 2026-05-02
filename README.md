@@ -1,37 +1,157 @@
 # Forma
 
-## Why Develop Forma?
+Forma is a general-purpose data management system built on PostgreSQL. It uses JSON Schema for data definition and a dual storage model (Hot Fields Table + EAV Table) to handle highly dynamic data structures without schema migrations.
 
-Forma is a general-purpose data management system designed to address the limitations of traditional relational databases (RDBMS) when handling highly dynamic and diverse data structures. As modern applications increasingly demand flexibility and scalability, Forma provides an efficient and easily extensible solution that allows developers to store, query, and manage various types of data without the need for frequent database schema modifications.
+## Prerequisites
 
-Forma chooses **JSON Schema** as the core method for data definition, enabling users to flexibly define and adjust data structures without worrying about the complexity of table structure changes in traditional databases. By storing data in a dual storage structure of **"Hot Fields Table + EAV Table"**, Forma supports complex query and sorting operations while maintaining high performance.
+- **Go** 1.26+
+- **Docker & Docker Compose** (for local PostgreSQL and S3-compatible storage)
+- **Bun** (for E2E test scripts)
+- **k6** (for load testing; Docker fallback available)
 
-## Why Choose Forma?
+## Quick Start
 
-### Forma vs RDBMS
+```bash
+# Clone and enter the project
+git clone https://github.com/lychee-technology/forma.git
+cd forma
 
-*   **Schema Evolution**: Modifying table structures (Schema Migration) in traditional RDBMS often involves table locking and downtime risks. Forma uses **JSON Schema** to define logical structures, utilizing a **"Hot Fields Table (Entity Main) + EAV Table"** dual storage pattern underneath. Adding or modifying attributes only requires updating metadata without touching the physical table structure, achieving zero-downtime evolution.
-*   **Complex Structure Support**: Traditional RDBMS usually requires multi-table joins to handle nested objects or arrays. Forma's **Transformer** layer automatically flattens nested JSON for storage while maintaining the ability to query arrays and deep attributes.
+# Start PostgreSQL via Docker Compose
+docker compose -f deploy/docker-compose.yml up -d
 
-### Forma vs MongoDB
+# Build all binaries
+make build-all
 
-*   **ACID Transaction Guarantee**: Built on top of **PostgreSQL**, Forma naturally inherits strict ACID transaction properties, ensuring strong consistency for core business data and avoiding the shortcomings of some NoSQL databases in strong consistency scenarios.
-*   **Power of SQL Optimizer**: Forma doesn't just store JSON; its built-in `SQLGenerator` compiles complex JSON filter conditions into efficient SQL queries (utilizing CTEs and Exists subqueries). This fully leverages Postgres's powerful query optimizer and avoids the common N+1 query problem found in EAV models.
+# Initialize database tables (required once)
+./build/tools init-db \
+  --db-host localhost \
+  --db-port 5432 \
+  --db-name forma \
+  --db-user postgres \
+  --db-password postgres \
+  --db-ssl-mode disable \
+  --schema-dir cmd/server/schemas
 
-### Forma vs KV Store
+# Start the server
+SCHEMA_DIR=cmd/server/schemas ./build/server
+```
 
-*   **Multi-dimensional Retrieval Capabilities**: KV Stores excel at retrieving Values by Key but struggle with complex conditional filtering (e.g., `age > 20 AND status = 'active'`). Forma supports combination filtering, sorting, and pagination on arbitrary attributes, and even cross-schema search.
-*   **Data Validation & Type Safety**: KV Stores typically treat Values as black boxes. Forma strictly follows JSON Schema for data validation (types, formats, required fields), ensuring the quality of incoming data.
+Or use the convenience script that does all of the above:
 
-## Use Cases
+```bash
+./scripts/local_server.sh
+```
 
-### OLTP Applications
+The server listens on port `8080` by default. Configure via environment variables:
 
-*   **Dynamic Business Systems**: Ideal for systems like CRM, ERP, or CMS that require frequent data model adjustments or support for user-defined fields (Custom Fields).
-*   **Automated RESTful API**: Developers only need to define the JSON Schema, and Forma automatically provides standard CRUD interfaces (Create, Read, Update, Delete), significantly shortening the backend development cycle.
-*   **High-Performance Read/Write**: Core high-frequency fields are stored in the "Hot Fields Table", ensuring read/write performance on critical paths is comparable to native SQL tables, while supporting high-concurrency transaction processing.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_NAME` | `forma` | Database name |
+| `DB_USER` | `postgres` | Database user |
+| `DB_PASSWORD` | `` | Database password |
+| `DB_SSL_MODE` | `disable` | SSL mode |
+| `SCHEMA_DIR` | `` | Directory containing schema JSON files |
+| `PORT` | `8080` | HTTP listen port |
 
-### OLAP Applications
+## API Reference
 
-*   **Real-time Operational Analysis**: Leverages Postgres's query capabilities to support real-time statistics and aggregation analysis of business data.
-*   **Data Lake Integration**: Supports exporting structured data to columnar formats like Parquet and storing it in S3, enabling integration with big data platforms for offline analysis and report generation. Parquet files can be partitioned by `schema_id` and `row_id` for efficient updates and queries.
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/{schema}` | Create records (single object or array) |
+| `GET` | `/api/v1/{schema}/{row_id}` | Get a single record |
+| `GET` | `/api/v1/{schema}` | Query records with pagination (`?page=&items_per_page=&sort_by=&sort_order=&attrs=`) |
+| `PUT` | `/api/v1/{schema}/{row_id}` | Update a record |
+| `DELETE` | `/api/v1/{schema}` | Batch delete (JSON body: array of row_id strings) |
+| `GET` | `/api/v1/search` | Cross-schema search (`?schemas=&q=&page=&items_per_page=`) |
+| `POST` | `/api/v1/advanced_query` | Advanced query with condition DSL (JSON body) |
+
+## Testing
+
+### Unit & Integration Tests
+
+```bash
+# Run all unit and integration tests
+make test
+
+# Run with coverage report
+make coverage
+
+# Run linter
+make lint
+```
+
+### Go E2E Harness (container-based)
+
+Requires Docker. Validates the three-tier federated query architecture (Postgres Hot + S3 Delta/Base → DuckDB merge-on-read).
+
+```bash
+# Smoke test: verify infrastructure starts
+go test -v ./internal/e2e_harness/... -timeout=5m
+
+# Full federated suite (functional + consistency + failure modes)
+go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m
+
+# Performance tests only (longer timeout)
+go test -v ./internal/e2e_harness/federated/... -run TestPerformance -tags=e2e -timeout=60m
+```
+
+### Bun E2E (black-box API validation)
+
+Requires a running Forma server and PostgreSQL.
+
+```bash
+cd tests/e2e
+cp .env.example .env
+bun install
+
+# Default pipeline: register schemas → generate data → CDC flush → federated check
+bun run test
+
+# Individual steps
+bun run register-schemas
+bun run gen-data -- --schema all --count 10000
+bun run cdc-flush
+bun run federated-check
+
+# Extended steps
+bun run cdc-init          # Backfill base parquet
+bun run compactor -- --all # Merge delta into base
+```
+
+### k6 Load Testing
+
+```bash
+cd tests/e2e
+bun run build-k6
+
+bun run k6-smoke   # 5 VUs, 30s
+bun run k6-full    # 30 VUs, 2m
+bun run k6-perf    # 100 VUs, 5m
+```
+
+### Benchmarks
+
+```bash
+make benchmark-smoke       # CI smoke validation
+make benchmark-regression  # Small live subset
+make benchmark-heavy       # Heavy planning set
+```
+
+## Documentation
+
+- [Documentation Index](docs/index.md)
+- [E2E Test Matrix](docs/e2e-tests-en.md)
+- [Integration Test Cases](docs/integ-tests-en.md)
+- [Go E2E Harness README](internal/e2e_harness/README.md)
+- [Bun E2E README](tests/e2e/README.md)
+
+## Why Forma?
+
+Forma targets the gap between rigid RDBMS schemas and schema-less NoSQL stores:
+
+- **Zero-Downtime Schema Evolution** — Add or modify fields by updating JSON Schema metadata; no `ALTER TABLE` required.
+- **ACID on PostgreSQL** — Inherits full transactional guarantees from Postgres.
+- **Smart SQL Generation** — CTE + JSON_AGG eliminates N+1 queries in EAV models.
+- **Federated Query (Lakehouse)** — PostgreSQL for OLTP, DuckDB + Parquet on S3 for OLAP. Anti-Join + Dirty Set ensures consistency across tiers.
