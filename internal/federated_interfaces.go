@@ -55,6 +55,21 @@ type DuckDBRenderHints struct {
 	TimeEncodingHint string
 }
 
+// ConsistencyMode controls the required freshness/availability contract for
+// federated query execution.
+type ConsistencyMode string
+
+const (
+	// ConsistencyModeStrict requires PostgreSQL availability for dirty-set
+	// evaluation and hot-tier reads. Federated queries fail if PG is down.
+	ConsistencyModeStrict ConsistencyMode = "strict"
+
+	// ConsistencyModeEventual permits S3-only degraded execution when
+	// PostgreSQL is unavailable, accepting possible ghost reads or stale
+	// visibility (hot-tier rows and dirty-set exclusion are skipped).
+	ConsistencyModeEventual ConsistencyMode = "eventual"
+)
+
 // FederatedQueryOptions contains runtime options for federated execution.
 type FederatedQueryOptions struct {
 	// MaxRows limits the number of rows read from remote/columnar sources per shard.
@@ -79,6 +94,10 @@ type FederatedQueryOptions struct {
 	// ExecutionPlan is populated by the repository when IncludeExecutionPlan==true.
 	// Callers should pass a non-nil opts pointer and inspect this field after call.
 	ExecutionPlan *ExecutionPlan
+
+	// ConsistencyMode controls the freshness/availability contract.
+	// Defaults to "strict" when empty.
+	ConsistencyMode ConsistencyMode
 }
 
 // ExecutionPlan is a diagnostic structure capturing the federated query execution
