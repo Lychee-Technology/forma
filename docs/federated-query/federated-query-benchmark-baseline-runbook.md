@@ -162,3 +162,42 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 - selective hot/EAV workloads may use a truth-pass-backed oracle mode to align expected results with the executable federated filter semantics
 - baseline capture is designed for artifact stability first, not for production-like throughput measurement
 - CI integration and operator workflow guidance are documented in `docs/federated-query/federated-query-benchmark-ci-and-ops-guide.md`
+
+## Historical Trend Analysis
+
+The `benchmark trend` subcommand provides longitudinal regression tracking across stored runs.
+
+### Capturing History
+
+Tag each run with provenance metadata so the trend engine can group and order runs:
+
+```bash
+go run ./cmd/benchmark baseline \
+  -preset small-live \
+  -output-dir .artifacts/benchmark/history \
+  -channel ci \
+  -git-sha $(git rev-parse HEAD) \
+  -git-ref $(git rev-parse --abbrev-ref HEAD)
+```
+
+### Running Trend Analysis
+
+```bash
+go run ./cmd/benchmark trend \
+  -history-dir .artifacts/benchmark/history \
+  -baseline-window 5
+```
+
+Optional flags:
+- `-candidate` — pin a specific `benchmark-summary.json` as the candidate
+- `-drift-window` — number of older runs for baseline drift detection (default 5)
+- `-protected-workloads` — comma-separated override of protected workloads
+- `-json-out` / `-md-out` — write trend report to a file
+
+### Interpreting Trend Output
+
+- `status=pass` — no regressions or methodology changes detected
+- `status=hard_stop_regression` — protected workload correctness or instability regressed
+- `status=baseline_drift` — recent baseline window already trending slower than older runs
+- `status=methodology_change` — oracle mode or workload set changed between runs
+- `status=regression` — latency or qps regression detected (review-only)

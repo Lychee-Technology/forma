@@ -244,13 +244,58 @@ Interpretation guidance:
 - missing baseline artifacts: the output directory was not writable or `-baseline-dir` was omitted
 - harness-backed benchmark test failure: fixture registration, seeded dataset loading, or federated query execution regressed
 
+## Longitudinal Trend Analysis
+
+The `benchmark trend` subcommand scans stored `benchmark-summary.json` artifacts and surfaces regressions, baseline drift, and methodology changes across runs.
+
+### Quick Start
+
+```bash
+go run ./cmd/benchmark trend -history-dir .artifacts/benchmark/history
+```
+
+### Recommended History Layout
+
+```
+.artifacts/benchmark/history/<channel>/<preset>/<distribution>/<timestamp>-<shortsha>/
+  benchmark-result.json
+  benchmark-result.md
+  benchmark-summary.json
+```
+
+Runs should carry provenance metadata (`-channel`, `-git-sha`, `-git-ref`) so the trend engine can group and order them correctly.
+
+### PR CI Behavior
+
+- Correctness regressions in any protected workload return a non-zero exit code.
+- Latency regressions (`p95`) are surfaced in the trend report but do not block PR CI.
+- Use `-protected-workloads` to target the standard set or a custom subset.
+
+### Nightly / Manual Review
+
+- Accumulate history via scheduled `make benchmark-regression` runs with provenance flags.
+- Run `benchmark trend` against the accumulated directory before release review.
+- Check `baseline_drift` signals to distinguish new feature impact from pre-existing platform drift.
+
+### Protected Workload Defaults
+
+```
+baseline-page-1
+hot-selective-page
+hot-low-selectivity-page
+eav-selective-page
+mixed-hot-eav-page
+mixed-tier-window
+hot-only-window
+cold-only-window
+deep-page-1000
+```
+
 ## Deferred Work
 
 These items remain intentionally out of scope for the current operating model:
 
 - official CI performance gating on large-scale thresholds
-- benchmark trend dashboards and longitudinal regression tracking
 - keyset pagination comparison workloads
 - distributed benchmark agents
-
-Until those arrive, use this guide as a safe execution policy rather than as a production-grade benchmark SLO gate.
+- full production-grade hosted dashboards

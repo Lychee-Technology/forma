@@ -110,3 +110,10 @@ jobs:
 
       - name: Run benchmark smoke validation
         run: make benchmark-smoke
+
+      - name: Upload benchmark smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke
+          path: .artifacts/benchmark/smoke/
+          retention-days: 14
