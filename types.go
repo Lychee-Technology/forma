@@ -157,6 +157,7 @@ type FederatedQueryRequest struct {
 	S3ParquetPathTemplate     string   `json:"s3_parquet_path_template,omitempty"`
 	AllowPartialDegradedMode  bool     `json:"allow_partial_degraded_mode,omitempty"`
 	IncludeExecutionPlan      bool     `json:"include_execution_plan,omitempty"`
+	ConsistencyMode           string   `json:"consistency_mode,omitempty"`
 }
 
 func unmarshalConditionField(data []byte) (Condition, bool, error) {

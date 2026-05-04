@@ -56,19 +56,34 @@ The **Query Translator** is responsible for "Dual-Path Translation" to enable **
 
 ### **4.1 Input DSL (JSON)**
 
-```JSON
+The federated query path is activated by including a `"federated"` block on the standard `QueryRequest` payload:
 
-{  
-  "filters": {  
-    "l": "and",  
-    "c": [  
-      { "a": "age", "v": "gt:18" },        // Mapped to entity_main.integer_01  
-      { "a": "name", "v": "^:John" },      // Mapped to entity_main.text_01  
-      { "a": "tag",  "v": "eq:developer" } // Mapped to eav_data.attr_id=205  
-    ]  
-  }  
+```JSON
+{
+  "schema_name": "trade",
+  "page": 1,
+  "items_per_page": 50,
+  "condition": {
+    "l": "and",
+    "c": [
+      { "a": "symbol", "v": "eq:AAPL" },
+      { "a": "trade_type", "v": "eq:2" }
+    ]
+  },
+  "federated": {
+    "enabled": true,
+    "preferred_tiers": ["hot", "warm", "cold"],
+    "prefer_hot": false,
+    "use_main_as_anchor": true,
+    "s3_parquet_path_template": "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
+    "allow_partial_degraded_mode": true,
+    "consistency_mode": "strict",
+    "include_execution_plan": true
+  }
 }
 ```
+
+When the federated block is absent or `enabled` is false, the query executes on the standard PostgreSQL-only OLTP path.
 
 ### **4.2 Translation Output**
 
@@ -88,6 +103,28 @@ The translator must traverse the filter tree and generate two distinct SQL fragm
 * **Scope:** All attributes (Main + EAV).  
 * **Syntax:** Logical JSON Paths / Parquet Column Names.  
 * *Example:* (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+
+### **4.3 Federated Request Controls**
+
+The `"federated"` object carries optional controls that affect execution routing and failure semantics:
+
+| Field | Type | Default | Description |
+| :---- | :---- | :---- | :---- |
+| `enabled` | bool | false | Routes the query through the federated (DuckDB/S3) path. |
+| `preferred_tiers` | []string | `["hot","warm","cold"]` | Ordered list of data tiers to query. |
+| `prefer_hot` | bool | false | Strong preference for Postgres hot tier. |
+| `use_main_as_anchor` | bool | true | Use entity_main as the anchor for predicate pushdown. |
+| `s3_parquet_path_template` | string | — | Template for locating Parquet files in S3. |
+| `allow_partial_degraded_mode` | bool | false | Permit execution with a subset of available tiers. |
+| `consistency_mode` | string | `"strict"` | Freshness/availability contract (`"strict"` or `"eventual"`). |
+| `include_execution_plan` | bool | false | Attach diagnostic execution plan to the response. |
+
+**Consistency modes:**
+
+* **`strict`** (default): Requires PostgreSQL availability for dirty-set evaluation and hot-tier reads. Federated queries fail when PostgreSQL is unreachable.
+* **`eventual`**: Permits S3-only degraded execution when PostgreSQL is unavailable, accepting possible ghost reads (deleted data reappearing) and missing hot-tier rows. Suitable for best-effort analytics where bounded staleness is acceptable.
+
+These controls are part of the request payload; they are not conveyed via HTTP headers.
 
 ## **5. SQL Execution Template**
 
@@ -237,17 +274,26 @@ LIMIT $PAGE_SIZE OFFSET $OFFSET;
 1. **S3 Unavailable:**  
    * Log Error.  
    * Rewrite query to select *only* from pg_source.  
-   * Return HTTP 200 with metadata: {"partial_result": true, "warning": "Historical data unavailable"}.  
+   * Return HTTP 200 with metadata: `{"partial_result": true, "warning": "Historical data unavailable"}`.  
 2. **PostgreSQL Unavailable:**  
-   * Cannot query dirty_ids.  
+   * Cannot query dirty_ids or hot-tier rows.  
    * Rewrite query to select *only* from s3_source.  
-   * **Risk:** "Ghost Reads" (Deleted data reappearing).  
-   * Action: Only permissible if consistency=eventual is set in headers; otherwise return HTTP 503.
+   * **Risk:** "Ghost Reads" (Deleted data reappearing) and missing unflushed hot rows.  
+   * Action: Only permissible if `federated.consistency_mode = "eventual"` is set on the request; otherwise return HTTP 503.  
+   * S3-only responses carry metadata: `{"partial_result": true, "warning": "Hot-tier data unavailable, results may be stale"}`, plus an `X-Forma-Consistency: eventual` HTTP warning header.
 
 ## **8. Observability**
 
 The following metrics MUST be emitted to opentelemetry:
 
-* fed_query_latency_histogram: Labeled by {stage: "translation", "execution", "streaming"}.  
-* fed_query_row_count: Count of rows returned by S3 vs. PG (helps tune compaction frequency).  
-* fed_query_pushdown_efficiency: Ratio of PG_Scan_Rows / Final_Result_Rows. High ratio indicates poor pushdown logic.
+* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.  
+* `fed_query_row_count`: Count of rows returned by S3 vs. PG (helps tune compaction frequency).  
+* `fed_query_pushdown_efficiency`: Ratio of PG_Scan_Rows / Final_Result_Rows. High ratio indicates poor pushdown logic.
+
+The execution plan and response metadata MUST include:
+
+* `consistency_mode`: The requested freshness contract (`strict` or `eventual`).  
+* `degraded_mode`: Boolean indicating whether results are partial due to a degraded data source.  
+* `circuit_breaker_state`: Current breaker state (`closed`, `open`, `half_open`) when relevant.  
+* `source_availability`: Per-source status snapshot (PG available, S3 available).  
+* `warning`: Human-readable warning when results are partial or consistency is reduced.
