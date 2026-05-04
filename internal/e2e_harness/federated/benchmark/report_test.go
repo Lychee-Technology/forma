@@ -403,7 +403,7 @@ func TestReadTrendHistory(t *testing.T) {
 	dir := t.TempDir()
 	makeSummary := func(id string, ts time.Time, preset string, mode, scale string, workloads []string) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		workloadSummaries := make([]WorkloadSummary, 0, len(workloads))
 		for _, name := range workloads {
 			workloadSummaries = append(workloadSummaries, WorkloadSummary{
@@ -429,7 +429,7 @@ func TestReadTrendHistory(t *testing.T) {
 			Workloads: workloadSummaries,
 		}
 		data, _ := json.MarshalIndent(summary, "", "  ")
-		os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
+		_ = os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
 	}
 	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	ts2 := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
@@ -715,7 +715,7 @@ func TestAnalyzeTrend(t *testing.T) {
 	dir := t.TempDir()
 	makeSummary := func(id string, ts time.Time, p95 time.Duration, qps float64, correctnessFailures int, passed bool) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := SummaryReport{
 			Metadata: ArtifactMetadata{BenchmarkID: id},
 			Provenance: &RunProvenance{
@@ -740,7 +740,7 @@ func TestAnalyzeTrend(t *testing.T) {
 			},
 		}
 		data, _ := json.MarshalIndent(summary, "", "  ")
-		os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
+		_ = os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
 	}
 	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	ts2 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
@@ -774,7 +774,7 @@ func TestAnalyzeTrendWithCorrectnessRegression(t *testing.T) {
 	dir := t.TempDir()
 	makeSummary := func(id string, ts time.Time, correctnessFailures int, passed bool) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := SummaryReport{
 			Metadata: ArtifactMetadata{BenchmarkID: id},
 			Provenance: &RunProvenance{
@@ -798,7 +798,7 @@ func TestAnalyzeTrendWithCorrectnessRegression(t *testing.T) {
 			},
 		}
 		data, _ := json.MarshalIndent(summary, "", "  ")
-		os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
+		_ = os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
 	}
 	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
@@ -821,7 +821,7 @@ func TestAnalyzeTrendWithMethodologyChange(t *testing.T) {
 	dir := t.TempDir()
 	makeSummary := func(id string, ts time.Time, oracleMode string) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := SummaryReport{
 			Metadata: ArtifactMetadata{BenchmarkID: id},
 			OracleModes: map[string]string{"q1": oracleMode},
@@ -839,7 +839,7 @@ func TestAnalyzeTrendWithMethodologyChange(t *testing.T) {
 			},
 		}
 		data, _ := json.MarshalIndent(summary, "", "  ")
-		os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
+		_ = os.WriteFile(filepath.Join(subDir, "benchmark-summary.json"), data, 0o644)
 	}
 	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
