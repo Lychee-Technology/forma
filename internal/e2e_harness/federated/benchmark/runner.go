@@ -59,6 +59,7 @@ type WorkloadRunResult struct {
 	PerTier      *PerTierMetrics         `json:"per_tier,omitempty"`
 	RouteEngine  string                  `json:"route_engine,omitempty"`
 	RouteReason  string                  `json:"route_reason,omitempty"`
+	PaginationMode string               `json:"pagination_mode,omitempty"`
 }
 
 // PerTierMetrics captures per-engine row counts and pushdown efficiency from the execution plan.
@@ -451,7 +452,17 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 	req, pageSize := queryRequestForWorkload(workload, r.config.PageSize)
 	start := time.Now()
 	capturePlan := workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix
-	result, records, plan, err := executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, capturePlan)
+
+	var result *forma.QueryResult
+	var records []*internal.PersistentRecord
+	var plan *internal.ExecutionPlan
+	var err error
+
+	if workload.UseKeysetPagination {
+		result, records, plan, err = r.executeKeysetServiceQuery(ctx, h, workload)
+	} else {
+		result, records, plan, err = executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, capturePlan)
+	}
 	if err != nil {
 		return WorkloadRunResult{}, nil, err
 	}
@@ -471,11 +482,188 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 		PlanNotes:    []string{"entity_manager_query_service"},
 		PerTier:      extractPerTierMetrics(plan),
 	}
+	if workload.UseKeysetPagination {
+		run.PaginationMode = "keyset"
+		run.PlanNotes = append(run.PlanNotes, "keyset_pagination")
+	}
 	if engine, reason := extractRouteInfo(plan); engine != "" {
 		run.RouteEngine = engine
 		run.RouteReason = reason
 	}
 	return run, records, nil
+}
+
+func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (*forma.QueryResult, []*internal.PersistentRecord, *internal.ExecutionPlan, error) {
+	if h == nil || h.PGDSN == "" {
+		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
+	}
+	pool, err := pgxpool.New(ctx, h.PGDSN)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("connect benchmark pgx pool: %w", err)
+	}
+	defer pool.Close()
+
+	if err := RegisterFixtureSchemas(h); err != nil {
+		return nil, nil, nil, fmt.Errorf("register fixture schemas: %w", err)
+	}
+	schemaTable, err := ensureBenchmarkSchemaRegistry(ctx, pool)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
+	}
+
+	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
+	}
+	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
+	}
+
+	duckCfg := forma.DuckDBConfig{}
+	if h.Duck != nil {
+		duckCfg = forma.DuckDBConfig{
+			Enabled:        true,
+			DBPath:         ":memory:",
+			EnableS3:       true,
+			EnableParquet:  true,
+			S3Endpoint:     h.S3Endpoint,
+			S3AccessKey:    h.S3AccessKey,
+			S3SecretKey:    h.S3SecretKey,
+			S3Region:       h.S3Region,
+			MaxConnections: 4,
+			QueryTimeout:   60 * time.Second,
+			MaxParallelism: 4,
+		}
+	}
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+
+	schemaName := workload.TargetSchema
+	if schemaName == "" {
+		schemaName = "trade"
+	}
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName(schemaName)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve schema %s: %w", schemaName, err)
+	}
+
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = r.config.PageSize
+	}
+	pageNumber := workload.PageNumber
+	if pageNumber < 1 {
+		pageNumber = 1
+	}
+
+	tables := internal.StorageTables{
+		EAVData:    h.CDCConfig.EAVDataTable,
+		EntityMain:  h.CDCConfig.EntityMainTable,
+		ChangeLog:   h.CDCConfig.ChangeLogTable,
+	}
+
+	// Build attribute orders for sort
+	attrOrders := []internal.AttributeOrder{}
+	if cache, ok := metadata.GetSchemaCacheByID(schemaID); ok {
+		if meta, found := cache["tradeTime"]; found {
+			attrOrders = append(attrOrders, internal.AttributeOrder{
+				AttrID:    meta.AttributeID,
+				ValueType: meta.ValueType,
+				SortOrder: forma.SortOrderDesc,
+			})
+		}
+	}
+	_ = attrOrders
+
+	// Build the federated query with filter conditions
+	fq := &internal.FederatedAttributeQuery{
+		AttributeQuery: internal.AttributeQuery{
+			SchemaID: schemaID,
+			Limit:    pageSize,
+			Offset:   0,
+		},
+	}
+	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
+		fq.Condition = conditionForWorkload(workload)
+	}
+	if h.Duck != nil {
+		fq.DuckDBHints = &internal.DuckDBRenderHints{
+			S3ParquetPathTemplate: benchmarkS3ParquetPathTemplate(h),
+		}
+	}
+
+	start := time.Now()
+	var totalRecords int64
+
+	if pageNumber == 1 {
+		// Page 1: keyset with no cursor is equivalent to offset 0.
+		// For page 1 of a keyset workload, use a nil cursor.
+		recs, total, err := repo.ExecuteDuckDBFederatedQuery(ctx, tables, fq, pageSize, 0, nil, &internal.FederatedQueryOptions{
+			IncludeExecutionPlan: true,
+		})
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("keyset page 1: %w", err)
+		}
+		totalRecords = total
+		result := &forma.QueryResult{TotalRecords: int(totalRecords), ItemsPerPage: pageSize, CurrentPage: 1}
+		return result, recs, nil, nil
+	}
+
+	// For page N > 1: fetch the cursor row (page N-1's last row) via offset,
+	// then use keyset to fetch page N.
+	cursorOffset := (pageNumber-1)*pageSize - 1
+	cursorFq := *fq
+	cursorFq.Limit = 1
+	cursorFq.Offset = cursorOffset
+	cursorRecs, _, err := repo.ExecuteDuckDBFederatedQuery(ctx, tables, &cursorFq, 1, cursorOffset, nil, &internal.FederatedQueryOptions{MaxRows: 1})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("fetch cursor row: %w", err)
+	}
+	if len(cursorRecs) == 0 {
+		result := &forma.QueryResult{TotalRecords: 0, ItemsPerPage: pageSize, CurrentPage: pageNumber}
+		return result, nil, nil, nil
+	}
+
+	// Build the keyset cursor from the cursor row.
+	// Benchmark schema sorts by created_at (trade_time) DESC + row_id ASC tiebreaker.
+	cursor := &internal.KeysetCursor{
+		Columns: []internal.KeysetColumn{
+			{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		},
+		Values: []interface{}{
+			cursorRecs[0].CreatedAt,
+			cursorRecs[0].RowID.String(),
+		},
+		Mode: internal.KeysetCursorModeAfter,
+	}
+
+	fq.KeysetCursor = cursor
+	opts := &internal.FederatedQueryOptions{
+		KeysetEnabled:        true,
+		IncludeExecutionPlan: true,
+	}
+
+	recs, total, err := repo.ExecuteFederatedPaginatedQuery(ctx, tables, fq, pageSize, 0, nil, opts)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("keyset query page %d: %w", pageNumber, err)
+	}
+	totalRecords = total
+
+	plan := opts.ExecutionPlan
+	if plan == nil {
+		plan = &internal.ExecutionPlan{Notes: []string{"keyset_pagination"}, Timings: map[string]int64{}}
+	} else {
+		plan.Notes = append(plan.Notes, "keyset_pagination")
+	}
+	_ = start
+
+	result := &forma.QueryResult{
+		TotalRecords: int(totalRecords),
+		ItemsPerPage: pageSize,
+		CurrentPage:  pageNumber,
+	}
+	return result, recs, plan, nil
 }
 
 func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int) (*forma.QueryResult, []*internal.PersistentRecord, error) {

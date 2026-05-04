@@ -79,6 +79,7 @@ type QueryOptions struct {
 	TradeTimeStart int64
 	TradeTimeEnd   int64
 	CountOnly      bool
+	KeysetCursor   *internal.KeysetCursor
 }
 
 // Filter defines query filter conditions.

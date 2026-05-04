@@ -82,6 +82,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
 			whereArgs = append(whereArgs, dual.PgMainArgs...)
 		}
+		whereArgs = appendKeysetArgs(m, whereArgs)
 
 		merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
 		return RenderDuckDBQuery(tpl, merged, whereArgs)
@@ -104,6 +105,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 		}
 	}
 	injectDuckDBTemplateParams(m, q, nil)
+	whereArgs = appendKeysetArgs(m, whereArgs)
 
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
 	return RenderDuckDBQuery(tpl, merged, whereArgs)
@@ -187,6 +189,17 @@ func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuer
 			age AS integer_01,
 			'[]'::TEXT AS attributes_json`, schemaID)
 	}
+
+	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.
+	if q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
+		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "", 0)
+		params["HAS_KEYSET"] = true
+		params["KEYSET_WHERE_CLAUSE"] = keysetClause
+		params["KEYSET_ARGS"] = keysetArgs
+		params["ORDER_BY"] = buildKeysetOrderBy(q.KeysetCursor)
+	} else {
+		params["HAS_KEYSET"] = false
+	}
 }
 
 func formatDuckDBPathList(paths []string) string {
@@ -198,4 +211,20 @@ func formatDuckDBPathList(paths []string) string {
 		return quoted[0]
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// appendKeysetArgs extracts KEYSET_ARGS from the params map and appends them
+// to the provided args slice. The keyset args are removed from params so the
+// template renderer does not see them.
+func appendKeysetArgs(params map[string]any, args []any) []any {
+	raw, ok := params["KEYSET_ARGS"]
+	if !ok {
+		return args
+	}
+	keysetArgs, ok := raw.([]interface{})
+	if !ok || len(keysetArgs) == 0 {
+		return args
+	}
+	delete(params, "KEYSET_ARGS")
+	return append(args, keysetArgs...)
 }
