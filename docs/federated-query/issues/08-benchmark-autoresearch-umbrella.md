@@ -37,14 +37,19 @@ The current benchmark foundation is useful for validation and early workload exe
 
 ## Benchmark-Driven Automation
 
-- [ ] #49 Scaffold a performance-oriented autoresearch loop around benchmark evidence
-- [ ] #53 Add autoresearch performance targets and benchmark gate scripts
+- [x] #49 Scaffold a performance-oriented autoresearch loop around benchmark evidence
+- [x] #53 Add autoresearch performance targets and benchmark gate scripts
 
 ## Optimization Waves
 
-- [ ] #46 Optimize the federated deep-pagination path using benchmark evidence
-- [ ] #51 Optimize federated filter pushdown and EAV behavior using benchmark evidence
-- [ ] #54 Optimize federated routing and concurrency behavior using benchmark evidence
+- [x] #46 Optimize the federated deep-pagination path using benchmark evidence
+- [x] #51 Optimize federated filter pushdown and EAV behavior using benchmark evidence
+- [x] #54 Optimize federated routing and concurrency behavior using benchmark evidence
+
+## Post-Optimization Bottleneck Harvest
+
+- [x] #101 Harvest remaining bottlenecks from the 3 completed optimization waves
+- See `docs/federated-query/federated-query-post-optimization-bottleneck-catalog.md` for the full bottleneck catalog
 
 ## References
 
