@@ -61,17 +61,30 @@ coverage: create-build-dir
 benchmark-smoke: create-build-dir
 	@echo "Running benchmark smoke validation..."
 	@mkdir -p .artifacts/benchmark/smoke
-	@$(GOENV) go run ./cmd/benchmark baseline -preset ci-smoke -output-dir .artifacts/benchmark/smoke
+	@$(GOENV) go run ./cmd/benchmark baseline -preset ci-smoke -output-dir .artifacts/benchmark/smoke \
+		-channel ci \
+		-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
+		-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 
 benchmark-regression: create-build-dir
 	@echo "Running benchmark regression live subset..."
 	@mkdir -p .artifacts/benchmark/regression
-	@$(GOENV) go run ./cmd/benchmark baseline -preset small-live -output-dir .artifacts/benchmark/regression
+	@$(GOENV) go run ./cmd/benchmark baseline -preset small-live -output-dir .artifacts/benchmark/regression \
+		-channel manual \
+		-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
+		-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+benchmark-trend: create-build-dir
+	@echo "Running benchmark trend analysis..."
+	@$(GOENV) go run ./cmd/benchmark trend -history-dir .artifacts/benchmark
 
 benchmark-heavy: create-build-dir
 	@echo "Running benchmark heavy planning set..."
 	@mkdir -p .artifacts/benchmark/heavy
-	@$(GOENV) go run ./cmd/benchmark baseline -preset heavy-plan -output-dir .artifacts/benchmark/heavy
+	@$(GOENV) go run ./cmd/benchmark baseline -preset heavy-plan -output-dir .artifacts/benchmark/heavy \
+		-channel manual \
+		-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
+		-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 
 # Build server for current platform
 build-server: create-build-dir

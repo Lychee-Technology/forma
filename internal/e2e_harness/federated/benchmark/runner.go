@@ -21,6 +21,7 @@ type RunResult struct {
 	Config         Config               `json:"config"`
 	Generator      GeneratorConfig      `json:"generator"`
 	Metadata       ArtifactMetadata     `json:"metadata"`
+	Provenance     *RunProvenance       `json:"provenance,omitempty"`
 	StartedAt      time.Time            `json:"started_at"`
 	CompletedAt    time.Time            `json:"completed_at"`
 	ValidationOnly bool                 `json:"validation_only"`

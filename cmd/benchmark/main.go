@@ -75,6 +75,8 @@ func runBenchmarkMain(ctx context.Context, args []string, out, errOut io.Writer)
 		return runBaseline(ctx, args[1:], out, errOut)
 	case "run":
 		return runBenchmark(ctx, args[1:], out, errOut)
+	case "trend":
+		return runTrend(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		printUsage(out)
@@ -90,6 +92,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  compare    Compare two benchmark summary artifacts")
 	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
 	fmt.Fprintln(out, "  run        Execute benchmark validation or live runtime")
+	fmt.Fprintln(out, "  trend      Analyze longitudinal benchmark trends and regressions")
 }
 
 func runDescribe(out io.Writer) int {
@@ -130,6 +133,10 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
 	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
 	compareTo := flags.String("compare-to", "", "Optional path to an existing benchmark-summary.json for diff output")
+	channel := flags.String("channel", "", "Provenance channel: ci, nightly, manual")
+	gitSHA := flags.String("git-sha", "", "Provenance git commit SHA")
+	gitRef := flags.String("git-ref", "", "Provenance git ref")
+	label := flags.String("label", "", "Provenance human-readable label")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -138,7 +145,13 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 		fmt.Fprintf(errOut, "baseline setup failed: %v\n", err)
 		return 1
 	}
-	outputs := runOutputs{baselineDir: filepath.Join(*outputDir, dirName)}
+	outputs := runOutputs{
+		baselineDir: filepath.Join(*outputDir, dirName),
+		channel:     *channel,
+		gitSHA:      *gitSHA,
+		gitRef:      *gitRef,
+		label:       *label,
+	}
 	exitCode := executeBenchmarkRun(ctx, config, outputs, out, errOut)
 	if *compareTo == "" {
 		return exitCode
@@ -191,10 +204,65 @@ func compareSummaryFiles(baselinePath, candidatePath string, out, errOut io.Writ
 	return writeJSON(out, diff)
 }
 
+func runTrend(args []string, out, errOut io.Writer) int {
+	flags := flag.NewFlagSet("trend", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	historyDir := flags.String("history-dir", "", "Directory containing historical benchmark-summary.json artifacts")
+	candidate := flags.String("candidate", "", "Optional path to a specific candidate benchmark-summary.json")
+	baselineWindow := flags.Int("baseline-window", 5, "Number of recent comparable runs to use as baseline")
+	driftWindow := flags.Int("drift-window", 5, "Number of older comparable runs for drift detection")
+	protectedWorkloads := flags.String("protected-workloads", "", "Comma-separated protected workload names (defaults to standard set)")
+	jsonOut := flags.String("json-out", "", "Optional path for JSON trend report output")
+	mdOut := flags.String("md-out", "", "Optional path for Markdown trend report output")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if strings.TrimSpace(*historyDir) == "" {
+		fmt.Fprintln(errOut, "trend requires -history-dir")
+		return 1
+	}
+	var protected []string
+	if strings.TrimSpace(*protectedWorkloads) != "" {
+		protected = parseWorkloads(*protectedWorkloads)
+	} else {
+		protected = bench.DefaultProtectedWorkloads()
+	}
+	report, err := bench.AnalyzeTrend(*historyDir, *candidate, *baselineWindow, *driftWindow, protected)
+	if err != nil {
+		fmt.Fprintf(errOut, "trend analysis failed: %v\n", err)
+		return 1
+	}
+	if *jsonOut != "" {
+		if err := bench.WriteTrendReport(*jsonOut, &report); err != nil {
+			fmt.Fprintf(errOut, "failed to write trend report: %v\n", err)
+			return 1
+		}
+	}
+	if *mdOut != "" {
+		if err := bench.WriteTrendReport(*mdOut, &report); err != nil {
+			fmt.Fprintf(errOut, "failed to write trend markdown: %v\n", err)
+			return 1
+		}
+	}
+	fmt.Fprintln(errOut, bench.FormatTrendSummary(report))
+	exitCode := writeJSON(out, report)
+	if exitCode != 0 {
+		return exitCode
+	}
+	if report.Status == bench.TrendStatusHardStopRegression || report.Status == bench.TrendStatusRegression {
+		return 1
+	}
+	return 0
+}
+
 type runOutputs struct {
 	jsonOut     string
 	mdOut       string
 	baselineDir string
+	channel     string
+	gitSHA      string
+	gitRef      string
+	label       string
 }
 
 func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, int) {
@@ -217,6 +285,10 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 	mdOut := flags.String("md-out", "", "Optional path for Markdown benchmark output")
 	baselineDir := flags.String("baseline-dir", "", "Optional directory for baseline capture outputs")
 	workloads := flags.String("workloads", "", "Comma-separated workload names (defaults to all)")
+	channel := flags.String("channel", "", "Provenance channel: ci, nightly, manual")
+	gitSHA := flags.String("git-sha", "", "Provenance git commit SHA")
+	gitRef := flags.String("git-ref", "", "Provenance git ref")
+	label := flags.String("label", "", "Provenance human-readable label")
 	if err := flags.Parse(args); err != nil {
 		return bench.Config{}, runOutputs{}, 1
 	}
@@ -237,6 +309,10 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 		Workloads:     parseWorkloads(*workloads),
 	}.WithDefaults()
 	outputs := runOutputs{jsonOut: *jsonOut, mdOut: *mdOut, baselineDir: *baselineDir}
+	outputs.channel = *channel
+	outputs.gitSHA = *gitSHA
+	outputs.gitRef = *gitRef
+	outputs.label = *label
 	return cfg, outputs, 0
 }
 
@@ -256,6 +332,20 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 	if err != nil {
 		fmt.Fprintf(errOut, "benchmark run failed: %v\n", err)
 		return 1
+	}
+	if outputs.channel != "" || outputs.gitSHA != "" || outputs.gitRef != "" || outputs.label != "" {
+		result.Provenance = &bench.RunProvenance{
+			StartedAt:    result.StartedAt,
+			CompletedAt:  result.CompletedAt,
+			Channel:      outputs.channel,
+			GitSHA:       outputs.gitSHA,
+			GitRef:       outputs.gitRef,
+			Label:        outputs.label,
+			Mode:         string(result.Config.Mode),
+			Scale:        string(result.Config.Scale),
+			Distribution: string(result.Config.Distribution),
+			TierProfile:  result.Config.TierProfile,
+		}
 	}
 	if outputs.jsonOut != "" {
 		if err := bench.WriteJSONReport(outputs.jsonOut, result); err != nil {

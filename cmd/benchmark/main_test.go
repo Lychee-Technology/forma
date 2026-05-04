@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
 )
@@ -194,5 +195,223 @@ func writeSummaryFixture(t *testing.T, path string, summary bench.SummaryReport)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write summary fixture: %v", err)
+	}
+}
+
+func TestRunBenchmarkMainTrendMissingHistoryDir(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend"}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 for missing -history-dir, got %d", exitCode)
+	}
+	if !bytes.Contains(errOut.Bytes(), []byte("requires -history-dir")) {
+		t.Fatalf("expected error message about missing history dir")
+	}
+}
+
+func TestRunBenchmarkMainTrend(t *testing.T) {
+	dir := t.TempDir()
+	makeRun := func(id string, ts time.Time, p95 time.Duration) {
+		subDir := filepath.Join(dir, "run-"+id)
+		os.MkdirAll(subDir, 0o755)
+		summary := bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
+			Provenance: &bench.RunProvenance{
+				StartedAt:    ts,
+				CompletedAt:  ts.Add(5 * time.Second),
+				Channel:      "ci",
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+			},
+			Passed: true,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P95: p95, QPS: 10, Passed: true},
+			},
+		}
+		writeSummaryFixture(t, filepath.Join(subDir, "benchmark-summary.json"), summary)
+	}
+	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	makeRun("bench-1", ts1, 100*time.Millisecond)
+	makeRun("bench-2", ts2, 100*time.Millisecond)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend", "-history-dir", dir}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 for clean trend, got %d: %s", exitCode, errOut.String())
+	}
+	if out.Len() == 0 {
+		t.Fatalf("trend should emit JSON output")
+	}
+	if errOut.Len() == 0 {
+		t.Fatalf("trend should emit console summary")
+	}
+	if !bytes.Contains(errOut.Bytes(), []byte("Benchmark Trend Analysis")) {
+		t.Fatalf("expected trend analysis header in stderr: %s", errOut.String())
+	}
+}
+
+func TestRunBenchmarkMainTrendWithCandidate(t *testing.T) {
+	dir := t.TempDir()
+	makeRun := func(id string, ts time.Time) {
+		subDir := filepath.Join(dir, "run-"+id)
+		os.MkdirAll(subDir, 0o755)
+		summary := bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
+			Provenance: &bench.RunProvenance{
+				StartedAt:    ts,
+				CompletedAt:  ts.Add(5 * time.Second),
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+			},
+			Passed: true,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P95: 100 * time.Millisecond, QPS: 10, Passed: true},
+			},
+		}
+		writeSummaryFixture(t, filepath.Join(subDir, "benchmark-summary.json"), summary)
+	}
+	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	makeRun("bench-1", ts1)
+	makeRun("bench-2", ts2)
+
+	candidatePath := filepath.Join(dir, "run-bench-1", "benchmark-summary.json")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend", "-history-dir", dir, "-candidate", candidatePath}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 for trend with candidate, got %d: %s", exitCode, errOut.String())
+	}
+	if out.Len() == 0 {
+		t.Fatalf("trend should emit JSON output")
+	}
+}
+
+func TestRunBenchmarkMainTrendRegressionExitCode(t *testing.T) {
+	dir := t.TempDir()
+	makeRun := func(id string, ts time.Time, correctnessFailures int, passed bool) {
+		subDir := filepath.Join(dir, "run-"+id)
+		os.MkdirAll(subDir, 0o755)
+		summary := bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
+			Provenance: &bench.RunProvenance{
+				StartedAt:    ts,
+				CompletedAt:  ts.Add(5 * time.Second),
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+			},
+			Passed: passed,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P95: 100 * time.Millisecond, QPS: 10, CorrectnessFailures: correctnessFailures, Passed: passed},
+			},
+		}
+		writeSummaryFixture(t, filepath.Join(subDir, "benchmark-summary.json"), summary)
+	}
+	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	makeRun("bench-1", ts1, 0, true)
+	makeRun("bench-2", ts2, 1, false)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend", "-history-dir", dir}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected non-zero exit code for correctness regression, got %d", exitCode)
+	}
+	if out.Len() == 0 {
+		t.Fatalf("trend should emit JSON output even on regression")
+	}
+}
+
+func TestRunBenchmarkMainTrendJSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	makeRun := func(id string, ts time.Time) {
+		subDir := filepath.Join(dir, "run-"+id)
+		os.MkdirAll(subDir, 0o755)
+		summary := bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
+			Provenance: &bench.RunProvenance{
+				StartedAt:    ts,
+				CompletedAt:  ts.Add(5 * time.Second),
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+			},
+			Passed: true,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P95: 100 * time.Millisecond, QPS: 10, Passed: true},
+			},
+		}
+		writeSummaryFixture(t, filepath.Join(subDir, "benchmark-summary.json"), summary)
+	}
+	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	makeRun("bench-1", ts1)
+	makeRun("bench-2", ts2)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend", "-history-dir", dir}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	var report bench.TrendReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("expected valid JSON trend report: %v", err)
+	}
+	if report.Status != bench.TrendStatusPass {
+		t.Fatalf("expected pass status, got %q", report.Status)
+	}
+	if len(report.WorkloadTrends) != 1 {
+		t.Fatalf("expected 1 workload trend, got %d", len(report.WorkloadTrends))
+	}
+}
+
+func TestRunBenchmarkMainTrendFileOutput(t *testing.T) {
+	dir := t.TempDir()
+	makeRun := func(id string, ts time.Time) {
+		subDir := filepath.Join(dir, "run-"+id)
+		os.MkdirAll(subDir, 0o755)
+		summary := bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
+			Provenance: &bench.RunProvenance{
+				StartedAt:    ts,
+				CompletedAt:  ts.Add(5 * time.Second),
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+			},
+			Passed: true,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P95: 100 * time.Millisecond, QPS: 10, Passed: true},
+			},
+		}
+		writeSummaryFixture(t, filepath.Join(subDir, "benchmark-summary.json"), summary)
+	}
+	ts1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	makeRun("bench-1", ts1)
+	makeRun("bench-2", ts2)
+
+	jsonOut := filepath.Join(dir, "trend.json")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"trend", "-history-dir", dir, "-json-out", jsonOut}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", exitCode, errOut.String())
+	}
+	if _, err := os.Stat(jsonOut); err != nil {
+		t.Fatalf("expected trend report file to exist: %v", err)
 	}
 }
