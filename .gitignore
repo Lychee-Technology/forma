@@ -62,3 +62,10 @@ tests/e2e/reports/
 *.pyc
 __pycache__/
 *.local-backup
+
+# ignore binary files in the root folder
+/benchmark
+/lambda
+/sample
+/server
+/tools
