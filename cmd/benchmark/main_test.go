@@ -214,7 +214,7 @@ func TestRunBenchmarkMainTrend(t *testing.T) {
 	dir := t.TempDir()
 	makeRun := func(id string, ts time.Time, p95 time.Duration) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := bench.SummaryReport{
 			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
 			Provenance: &bench.RunProvenance{
@@ -259,7 +259,7 @@ func TestRunBenchmarkMainTrendWithCandidate(t *testing.T) {
 	dir := t.TempDir()
 	makeRun := func(id string, ts time.Time) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := bench.SummaryReport{
 			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
 			Provenance: &bench.RunProvenance{
@@ -298,7 +298,7 @@ func TestRunBenchmarkMainTrendRegressionExitCode(t *testing.T) {
 	dir := t.TempDir()
 	makeRun := func(id string, ts time.Time, correctnessFailures int, passed bool) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := bench.SummaryReport{
 			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
 			Provenance: &bench.RunProvenance{
@@ -336,7 +336,7 @@ func TestRunBenchmarkMainTrendJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	makeRun := func(id string, ts time.Time) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := bench.SummaryReport{
 			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
 			Provenance: &bench.RunProvenance{
@@ -381,7 +381,7 @@ func TestRunBenchmarkMainTrendFileOutput(t *testing.T) {
 	dir := t.TempDir()
 	makeRun := func(id string, ts time.Time) {
 		subDir := filepath.Join(dir, "run-"+id)
-		os.MkdirAll(subDir, 0o755)
+		_ = os.MkdirAll(subDir, 0o755)
 		summary := bench.SummaryReport{
 			Metadata: bench.ArtifactMetadata{BenchmarkID: id},
 			Provenance: &bench.RunProvenance{

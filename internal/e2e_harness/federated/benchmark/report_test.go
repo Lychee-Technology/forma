@@ -955,7 +955,7 @@ func TestMedianP95FromTrendRuns(t *testing.T) {
 
 func TestReadTrendHistorySkipsInvalid(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "benchmark-summary.json"), []byte("not json"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "benchmark-summary.json"), []byte("not json"), 0o644)
 	runs, err := ReadTrendHistory(dir)
 	if err != nil {
 		t.Fatalf("ReadTrendHistory should not error on invalid files: %v", err)
@@ -973,7 +973,7 @@ func TestReadTrendHistorySkipsNoTimestamp(t *testing.T) {
 		Passed:     true,
 	}
 	data, _ := json.MarshalIndent(summary, "", "  ")
-	os.WriteFile(filepath.Join(dir, "benchmark-summary.json"), data, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "benchmark-summary.json"), data, 0o644)
 	runs, err := ReadTrendHistory(dir)
 	if err != nil {
 		t.Fatalf("ReadTrendHistory failed: %v", err)
