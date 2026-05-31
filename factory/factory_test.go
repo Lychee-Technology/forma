@@ -333,10 +333,30 @@ func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
 	assert.Contains(t, err.Error(), "required tables are missing")
 }
 
+func TestNewEntityManagerWithConfig_Unit_MissingEntityMainTable(t *testing.T) {
+	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+		// schema_registry and eav_data present, but entity_main is absent
+		return []string{"schema_registry", "eav_data"}, nil
+	})
+
+	config := forma.DefaultConfig(newMockSchemaRegistry())
+	config.Database.TableNames = forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+	}
+
+	em, err := NewEntityManagerWithConfig(config, nil)
+
+	assert.Nil(t, em)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "required tables are missing")
+}
+
 func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 	cache := internal.NewMetadataCache()
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: fmt.Errorf("simulated loader error")}
@@ -346,6 +366,7 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
@@ -359,7 +380,7 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 	cache := internal.NewMetadataCache()
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: nil}
@@ -369,6 +390,7 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
@@ -382,7 +404,7 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	cache := internal.NewMetadataCache()
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: nil}
@@ -392,6 +414,7 @@ func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
@@ -405,7 +428,7 @@ func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T)
 	cache := internal.NewMetadataCache()
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		assert.Equal(t, "tenant.schema_registry", schemaTable)
@@ -417,6 +440,7 @@ func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T)
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "tenant.schema_registry",
 		EAVData:        "tenant.eav_data",
+		EntityMain:     "tenant.entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
@@ -430,7 +454,7 @@ func TestNewEntityManagerWithConfig_Unit_SchemaParamQualifiesUnqualifiedTableNam
 	cache := internal.NewMetadataCache()
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		assert.Equal(t, "tenant.schema_registry", schemaTable)
@@ -460,7 +484,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToTableCollecto
 
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.ErrorIs(t, ctx.Err(), context.Canceled)
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: nil}
@@ -470,6 +494,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToTableCollecto
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
@@ -485,7 +510,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 	cancel()
 
 	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data"}, nil
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
 	})
 	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: nil}
@@ -499,6 +524,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 	config.DuckDB.Enabled = true

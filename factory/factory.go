@@ -81,10 +81,15 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, err
 	}
 
-	requiredSchemaRegistry := normalizeTableName(effectiveConfig.Database.TableNames.SchemaRegistry)
-	requiredEAVData := normalizeTableName(effectiveConfig.Database.TableNames.EAVData)
-	if len(tables) < 2 || !slices.Contains(tables, requiredSchemaRegistry) || !slices.Contains(tables, requiredEAVData) {
-		return nil, fmt.Errorf("required tables are missing in the database")
+	requiredTables := []string{
+		normalizeTableName(effectiveConfig.Database.TableNames.SchemaRegistry),
+		normalizeTableName(effectiveConfig.Database.TableNames.EAVData),
+		normalizeTableName(effectiveConfig.Database.TableNames.EntityMain),
+	}
+	for _, required := range requiredTables {
+		if required == "" || !slices.Contains(tables, required) {
+			return nil, fmt.Errorf("required tables are missing in the database")
+		}
 	}
 
 	// Load metadata from database at startup
