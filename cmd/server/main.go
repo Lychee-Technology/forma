@@ -117,6 +117,6 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 
 	return &serverRuntime{
 		pool:   pool,
-		server: httpapi.NewServer(manager, httpapi.Options{}),
+		server: httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
 	}, nil
 }

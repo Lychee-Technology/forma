@@ -282,3 +282,29 @@ func TestHandleSearchMapsConflictErrors(t *testing.T) {
 		t.Fatalf("expected status 409, got %d", rec.Code)
 	}
 }
+
+func TestNewServer_HealthRouteDisabledByDefault(t *testing.T) {
+	server := NewServer(&mockEntityManager{}, Options{})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	// /health is not registered; the mux falls through to the catch-all
+	// /api/v1/ handler which returns an error, not 200.
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected /health to not respond 200 when disabled, got %d", rec.Code)
+	}
+}
+
+func TestNewServer_HealthRouteEnabledWhenOptionSet(t *testing.T) {
+	server := NewServer(&mockEntityManager{}, Options{EnableHealth: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /health when EnableHealth=true, got %d", rec.Code)
+	}
+}
