@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -24,7 +23,6 @@ func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.Database
 	}
 
 	poolConfig.MaxConns = int32(config.MaxConnections)
-	poolConfig.MinConns = int32(config.MaxIdleConns)
 	poolConfig.MaxConnLifetime = config.ConnMaxLifetime
 	poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
 	poolConfig.ConnConfig.ConnectTimeout = config.Timeout
@@ -49,9 +47,6 @@ func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.Database
 
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("failed to ping database: %w", err)
-		}
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
