@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -44,7 +45,11 @@ func main() {
 
 	port := bootstrap.Env("PORT", "8080")
 	zap.S().Infow("starting server", "port", port)
-	if err := http.ListenAndServe(":"+port, runtime.server.Handler()); err != nil {
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: runtime.server.Handler(),
+	}
+	if err := runServer(rootCtx, srv); err != nil {
 		sugar.Fatalf("server error: %v", err)
 	}
 }
@@ -117,6 +122,29 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 
 	return &serverRuntime{
 		pool:   pool,
-		server: httpapi.NewServer(manager, httpapi.Options{}),
+		server: httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
 	}, nil
+}
+
+// runServer starts srv in a background goroutine and blocks until either the
+// server fails or ctx is cancelled. On cancellation it calls Shutdown with a
+// 5-second grace period, allowing in-flight requests to complete.
+func runServer(ctx context.Context, srv *http.Server) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
 }
