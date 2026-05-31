@@ -545,7 +545,7 @@ func TestNewEntityManagerWithConfig_Integration_Success(t *testing.T) {
 	defer cancel()
 
 	pool := connectTestPostgres(t, ctx)
-	schemaRegistryTable, _, eavDataTable := createTempTables(t, ctx, pool)
+	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
 	dir := t.TempDir()
@@ -577,6 +577,7 @@ func TestNewEntityManagerWithConfig_Integration_Success(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: schemaRegistryTable,
 		EAVData:        eavDataTable,
+		EntityMain:     entityMainTable,
 	}
 	config.Entity.SchemaDirectory = dir
 
@@ -612,7 +613,7 @@ func TestNewEntityManagerWithConfig_Integration_NilSchemaRegistry(t *testing.T) 
 	defer cancel()
 
 	pool := connectTestPostgres(t, ctx)
-	schemaRegistryTable, _, eavDataTable := createTempTables(t, ctx, pool)
+	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
 	dir := t.TempDir()
@@ -637,6 +638,7 @@ func TestNewEntityManagerWithConfig_Integration_NilSchemaRegistry(t *testing.T) 
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: schemaRegistryTable,
 		EAVData:        eavDataTable,
+		EntityMain:     entityMainTable,
 	}
 	config.Entity.SchemaDirectory = dir
 	config.SchemaRegistry = nil
@@ -653,7 +655,7 @@ func TestNewEntityManagerWithConfig_Integration_MetadataLoaderError(t *testing.T
 	defer cancel()
 
 	pool := connectTestPostgres(t, ctx)
-	schemaRegistryTable, _, eavDataTable := createTempTables(t, ctx, pool)
+	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Don't insert any schemas - this will cause metadata loader to fail
 
@@ -661,6 +663,7 @@ func TestNewEntityManagerWithConfig_Integration_MetadataLoaderError(t *testing.T
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: schemaRegistryTable,
 		EAVData:        eavDataTable,
+		EntityMain:     entityMainTable,
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 

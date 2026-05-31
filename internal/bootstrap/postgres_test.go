@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 )
 
@@ -44,23 +43,16 @@ func testDatabaseConfig() forma.DatabaseConfig {
 	}
 }
 
-func TestNewPostgresPoolFromConfigContext_DoesNotSetMinConns(t *testing.T) {
-	// Verify that MaxIdleConns is NOT mapped to MinConns.
-	// We do this by parsing a pool config and applying the same pool-config
-	// assignments that the production code uses, then confirming MinConns = 0.
+func TestBuildPoolConfig_DoesNotSetMinConns(t *testing.T) {
+	// Verify that MaxIdleConns is NOT mapped to MinConns by calling the
+	// production buildPoolConfig function directly.
 	cfg := testDatabaseConfig()
-	cfg.MaxIdleConns = 7 // non-zero: if MinConns were still set, this would propagate
+	cfg.MaxIdleConns = 7 // non-zero: if MinConns were still mapped, it would propagate
 
-	connString := buildDSN(cfg)
-	poolConfig, err := pgxpool.ParseConfig(connString)
+	poolConfig, err := buildPoolConfig(cfg)
 	if err != nil {
-		t.Fatalf("ParseConfig: %v", err)
+		t.Fatalf("buildPoolConfig: %v", err)
 	}
-
-	// Apply only the pool-config assignments that exist after the fix (no MinConns).
-	poolConfig.MaxConns = int32(cfg.MaxConnections)
-	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = cfg.ConnMaxIdleTime
 
 	// MinConns must remain at its zero value (pgxpool default = 0).
 	if poolConfig.MinConns != 0 {

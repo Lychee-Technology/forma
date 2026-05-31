@@ -10,22 +10,30 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
+// buildPoolConfig converts a DatabaseConfig into a pgxpool.Config.
+// Extracted so that the pool-field assignments (MaxConns, lifetimes, timeout)
+// can be verified in unit tests without requiring a live database connection.
+func buildPoolConfig(config forma.DatabaseConfig) (*pgxpool.Config, error) {
+	poolConfig, err := pgxpool.ParseConfig(buildDSN(config))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse connection string: %w", err)
+	}
+	poolConfig.MaxConns = int32(config.MaxConnections)
+	poolConfig.MaxConnLifetime = config.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
+	poolConfig.ConnConfig.ConnectTimeout = config.Timeout
+	return poolConfig, nil
+}
+
 func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.DatabaseConfig) (*pgxpool.Pool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("postgres bootstrap context: %w", err)
 	}
 
-	connString := buildDSN(config)
-
-	poolConfig, err := pgxpool.ParseConfig(connString)
+	poolConfig, err := buildPoolConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection string: %w", err)
+		return nil, err
 	}
-
-	poolConfig.MaxConns = int32(config.MaxConnections)
-	poolConfig.MaxConnLifetime = config.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
-	poolConfig.ConnConfig.ConnectTimeout = config.Timeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
