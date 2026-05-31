@@ -381,3 +381,11 @@ Run these questions explicitly during review:
 11. Are package responsibilities cohesive, or is this becoming a dumping-ground package?
 12. Does the import graph trend toward wide/flat decoupling, or tall/narrow dependency chains?
 13. Should this concrete dependency be pushed up to `main` and replaced by a narrow interface here?
+
+---
+
+## 12) Review Log
+
+| Date | Scope | Issues Filed | Reviewer |
+|------|-------|-------------|----------|
+| 2026-05-31 | Full codebase scan: HTTP entry, CRUD, query, federated pagination, schema/metadata, concurrency, test gaps | #108 #109 #110 #111 #112 #113 #114 | AI review (iceboundrock) |
