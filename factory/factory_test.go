@@ -324,6 +324,7 @@ func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
 	config.Database.TableNames = forma.TableNames{
 		SchemaRegistry: "schema_registry",
 		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
 	}
 
 	em, err := NewEntityManagerWithConfig(config, nil)
