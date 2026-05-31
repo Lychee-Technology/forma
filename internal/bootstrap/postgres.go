@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,15 +16,7 @@ func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.Database
 		return nil, fmt.Errorf("postgres bootstrap context: %w", err)
 	}
 
-	connString := fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		config.Username,
-		config.Password,
-		config.Host,
-		config.Port,
-		config.Database,
-		config.SSLMode,
-	)
+	connString := buildDSN(config)
 
 	poolConfig, err := pgxpool.ParseConfig(connString)
 	if err != nil {
@@ -67,4 +60,22 @@ func NewPostgresPoolFromConfigContext(ctx context.Context, config forma.Database
 
 func NewPostgresPoolFromConfig(config forma.DatabaseConfig) (*pgxpool.Pool, error) {
 	return NewPostgresPoolFromConfigContext(context.Background(), config)
+}
+
+// buildDSN constructs a postgres:// DSN from DatabaseConfig, correctly
+// percent-encoding the username and password so that reserved characters
+// (e.g. @, :, /) do not break URL parsing in pgxpool.ParseConfig.
+func buildDSN(config forma.DatabaseConfig) string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(config.Username, config.Password),
+		Host:   fmt.Sprintf("%s:%d", config.Host, config.Port),
+		Path:   "/" + config.Database,
+	}
+	q := u.Query()
+	if config.SSLMode != "" {
+		q.Set("sslmode", config.SSLMode)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
