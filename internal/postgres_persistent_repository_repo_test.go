@@ -563,6 +563,75 @@ func TestQueryPersistentRecordsMissingCache(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBatchDeletePersistentRecords_WhenRowMissing_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+
+	rowID1 := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	rowID2 := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	keys := []PersistentRecordKey{
+		{SchemaID: 1, RowID: rowID1},
+		{SchemaID: 1, RowID: rowID2},
+	}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	mock.ExpectBegin()
+	// First key deletes successfully.
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID1).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec(`^DELETE FROM "eav_table"`).
+		WithArgs(int16(1), rowID1).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectExec(`^INSERT INTO "change_log"`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// Second key row does not exist — 0 rows affected.
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID2).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	mock.ExpectRollback()
+
+	err = repo.BatchDeletePersistentRecords(ctx, tables, keys)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+	require.Contains(t, err.Error(), "key[1]")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBatchDeletePersistentRecords_WhenRowMissing_DoesNotWriteEAVOrChangelog(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+
+	rowID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	keys := []PersistentRecordKey{{SchemaID: 1, RowID: rowID}}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	// No EAV delete, no changelog upsert expected — transaction rolls back.
+	mock.ExpectRollback()
+
+	err = repo.BatchDeletePersistentRecords(ctx, tables, keys)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestParseEAVAttribute_NilSchemaID_ReturnsError(t *testing.T) {
 	_, err := parseEAVAttribute(map[string]any{
 		"schema_id": nil,

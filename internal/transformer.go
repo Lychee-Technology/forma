@@ -262,7 +262,7 @@ func (t *transformer) flattenToAttributes(
 			if value == nil {
 				candidateName := strings.Join(append(path, key), ".")
 				if isKnownAttributeOrParent(candidateName, cache) {
-					return fmt.Errorf("attribute '%s' cannot be set to null; omit the key to preserve its current value", candidateName)
+					return fmt.Errorf("attribute '%s' cannot be set to null; omit the key to preserve its current value: %w", candidateName, forma.ErrInvalidInput)
 				}
 				continue
 			}
@@ -273,6 +273,13 @@ func (t *transformer) flattenToAttributes(
 		}
 	case []any:
 		for i, item := range v {
+			if item == nil {
+				attrName := strings.Join(path, ".")
+				if isKnownAttributeOrParent(attrName, cache) {
+					return fmt.Errorf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value: %w", attrName, i, forma.ErrInvalidInput)
+				}
+				continue
+			}
 			newIndices := append(indices, i)
 			if err := t.flattenToAttributes(schemaID, rowID, path, item, newIndices, cache, result); err != nil {
 				return err

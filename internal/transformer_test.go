@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"testing"
@@ -601,6 +602,109 @@ func TestTransformer_ToAttributes_NullUnknownField_IsSilentlySkipped(t *testing.
 		"unknown_field": nil, // not in schema — should be skipped without error
 	})
 	require.NoError(t, err)
+	require.Len(t, attrs, 1)
+	assert.Equal(t, int16(1), attrs[0].AttrID) // name
+}
+
+// F3 null errors must be classified as ErrInvalidInput so callers get HTTP 400.
+
+func TestTransformer_ToAttributes_NullLeafAttribute_WrapsErrInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{"name": nil})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+func TestTransformer_ToAttributes_NullNestedAttribute_WrapsErrInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"person": map[string]any{"name": nil},
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+func TestTransformer_ToAttributes_NullParentObject_WrapsErrInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{"person": nil})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+// F2: null elements inside arrays must also be rejected.
+
+// A null primitive inside a schema-defined array leaf must return an error.
+func TestTransformer_ToAttributes_NullPrimitiveArrayItem_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry() // "items" is a schema-defined text leaf
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"items": []any{"valid", nil}, // null at index 1
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "items")
+	assert.Contains(t, err.Error(), "null")
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+// A null object inside a schema-defined array must return an error.
+func TestTransformer_ToAttributes_NullObjectArrayItem_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := &stubSchemaRegistry{
+		schemaID:   305,
+		schemaName: "contacts_schema",
+		cache: forma.SchemaAttributeCache{
+			"contacts.name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		},
+	}
+	tr := NewTransformer(reg)
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("contacts_schema")
+	require.NoError(t, err)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"contacts": []any{
+			map[string]any{"name": "Alice"},
+			nil, // null object at index 1
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contacts")
+	assert.Contains(t, err.Error(), "null")
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+// A null inside an array whose path is NOT in the schema must be silently skipped.
+func TestTransformer_ToAttributes_NullUnknownArrayItem_IsSilentlySkipped(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry() // "unknown_list" is not in schema
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	attrs, err := tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"name":         "Alice",
+		"unknown_list": []any{"x", nil},
+	})
+	require.NoError(t, err)
+	// Only "name" should be stored; unknown_list is skipped entirely.
 	require.Len(t, attrs, 1)
 	assert.Equal(t, int16(1), attrs[0].AttrID) // name
 }
