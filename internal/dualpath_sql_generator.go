@@ -159,7 +159,13 @@ func isFullyPushableToMain(cond forma.Condition, cache forma.SchemaAttributeCach
 // buildPgMainCompositeClause handles CompositeCondition for Postgres main table.
 func buildPgMainCompositeClause(c *forma.CompositeCondition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
 	if len(c.Conditions) == 0 {
-		return "", nil, nil
+		// Empty AND is vacuously TRUE; empty OR is vacuously FALSE.
+		// Return the identity values so that parent OR/AND clauses compute
+		// correct truth values when this composite is a child branch.
+		if c.Logic == forma.LogicOr {
+			return "1=0", nil, nil
+		}
+		return "1=1", nil, nil
 	}
 
 	// For OR logic every branch must be pushable to main table. If any branch
@@ -263,6 +269,10 @@ func buildDuckClause(cond forma.Condition, cache forma.SchemaAttributeCache) (st
 // buildDuckCompositeClause handles CompositeCondition for DuckDB.
 func buildDuckCompositeClause(c *forma.CompositeCondition, cache forma.SchemaAttributeCache) (string, []any, error) {
 	if len(c.Conditions) == 0 {
+		// Empty AND matches everything; empty OR matches nothing.
+		if c.Logic == forma.LogicOr {
+			return "1=0", nil, nil
+		}
 		return "1=1", nil, nil
 	}
 
@@ -285,6 +295,10 @@ func buildDuckCompositeClause(c *forma.CompositeCondition, cache forma.SchemaAtt
 	}
 
 	if len(parts) == 0 {
+		// All children produced empty clauses — apply same identity semantics.
+		if c.Logic == forma.LogicOr {
+			return "1=0", nil, nil
+		}
 		return "1=1", nil, nil
 	}
 	return strings.Join(parts, joiner), args, nil

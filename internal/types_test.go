@@ -48,7 +48,7 @@ func TestAttributeOrder_ValueColumn(t *testing.T) {
 		{name: "date uses numeric column", valueType: forma.ValueTypeDate, want: "value_numeric"},
 		{name: "datetime uses numeric column", valueType: forma.ValueTypeDateTime, want: "value_numeric"},
 		{name: "uuid defaults to text", valueType: forma.ValueTypeUUID, want: "value_text"},
-		{name: "bool defaults to text", valueType: forma.ValueTypeBool, want: "value_text"},
+		{name: "bool uses numeric column", valueType: forma.ValueTypeBool, want: "value_numeric"},
 		{name: "unknown defaults to text", valueType: forma.ValueType("unknown"), want: "value_text"},
 		{name: "empty defaults to text", valueType: forma.ValueType(""), want: "value_text"},
 	}

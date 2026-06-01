@@ -220,25 +220,27 @@ func formatDuckDBPathList(paths []string) string {
 }
 
 // buildNonKeysetOrderBy constructs an ORDER BY fragment from a query's AttributeOrders.
-// Only main-table columns (those with a ColumnName) can be resolved to a stable DuckDB
-// column reference in the unified CTE; EAV-only attributes are skipped. When no
-// resolvable columns remain the default "created_at DESC" is returned.
+// Main-table attributes are sorted by their bound ColumnName; EAV attributes are sorted
+// by their logical AttrName, which the unified CTE exposes as a named column via the
+// EAV pivot. When no resolvable columns remain the default "created_at DESC" is returned.
 func buildNonKeysetOrderBy(q *FederatedAttributeQuery) string {
 	if q == nil || len(q.AttributeOrders) == 0 {
 		return "created_at DESC"
 	}
 	var parts []string
 	for _, ao := range q.AttributeOrders {
-		if !ao.IsMainColumn() {
-			// EAV attributes require schema-specific pivot alias resolution which
-			// is unavailable here; skip them to preserve correctness.
-			continue
-		}
 		dir := "ASC"
 		if ao.Desc() {
 			dir = "DESC"
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", ao.ColumnName, dir))
+		if ao.IsMainColumn() {
+			parts = append(parts, fmt.Sprintf("%s %s", ao.ColumnName, dir))
+		} else if ao.AttrName != "" {
+			// EAV attributes are projected as named columns in the unified CTE via the
+			// EAV pivot (MAX(CASE WHEN attr_id = N THEN value_col END) AS attr_name).
+			parts = append(parts, fmt.Sprintf("%s %s", ao.AttrName, dir))
+		}
+		// If neither ColumnName nor AttrName is set the attribute is unresolvable; skip it.
 	}
 	if len(parts) == 0 {
 		return "created_at DESC"

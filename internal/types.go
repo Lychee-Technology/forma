@@ -25,6 +25,7 @@ type AttributeOrder struct {
 	SortOrder       forma.SortOrder
 	StorageLocation forma.AttributeStorageLocation // main or eav
 	ColumnName      string                         // main table column name if StorageLocation == main
+	AttrName        string                         // logical attribute name (used for EAV column alias in unified CTE)
 }
 
 // AttrIDInt returns the attribute ID as an int (for template compatibility).
@@ -41,6 +42,7 @@ func (ao *AttributeOrder) ValueColumn() string {
 		forma.ValueTypeInteger,
 		forma.ValueTypeBigInt,
 		forma.ValueTypeSmallInt,
+		forma.ValueTypeBool,
 		forma.ValueTypeDate,
 		forma.ValueTypeDateTime:
 		return "value_numeric"
