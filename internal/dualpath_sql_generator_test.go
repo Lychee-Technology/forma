@@ -349,3 +349,74 @@ func TestToDualClauses_DateMainColumnEncoding_UnixMsArgument(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, parsed.UnixMilli(), got)
 }
+
+// TestBuildPgMainClause_OR_MixedPushability_SkipsEntireOR verifies that when an OR
+// composite has at least one branch that cannot be pushed to the main table (no column
+// binding), the entire OR is skipped rather than silently emitting a partial OR that
+// would drop rows matched only by the non-pushable branch.
+func TestBuildPgMainClause_OR_MixedPushability_SkipsEntireOR(t *testing.T) {
+	paramIndex := 0
+	cache := forma.SchemaAttributeCache{
+		// branch1 has a column binding → pushable
+		"username": forma.AttributeMetadata{
+			AttributeID: 1,
+			ValueType:   forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("text_01"),
+			},
+		},
+		// branch2 has no column binding → NOT pushable
+		"tag": forma.AttributeMetadata{
+			AttributeID: 2,
+			ValueType:   forma.ValueTypeText,
+			// ColumnBinding nil → EAV-only, cannot be pushed to main table
+		},
+	}
+
+	b1 := &forma.KvCondition{Attr: "username", Value: "equals:Alice"}
+	b2 := &forma.KvCondition{Attr: "tag", Value: "equals:admin"}
+	orCond := &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{b1, b2}}
+
+	// When: building Postgres main clause for OR with mixed pushability
+	pgClause, pgArgs, err := buildPgMainClause(orCond, cache, &paramIndex)
+	require.NoError(t, err)
+
+	// Then: the entire OR must be skipped (empty clause) to avoid dropping rows that
+	// match only the non-pushable branch. paramIndex must NOT have advanced.
+	require.Equal(t, "", pgClause, "OR with mixed pushability must produce empty main clause")
+	require.Nil(t, pgArgs)
+	require.Equal(t, 0, paramIndex, "paramIndex must not advance when OR is skipped")
+}
+
+// TestBuildPgMainClause_OR_AllPushable_ProducesClause verifies that an OR whose every
+// branch is pushable is correctly emitted as an OR clause.
+func TestBuildPgMainClause_OR_AllPushable_ProducesClause(t *testing.T) {
+	paramIndex := 0
+	cache := forma.SchemaAttributeCache{
+		"first_name": forma.AttributeMetadata{
+			AttributeID: 10,
+			ValueType:   forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("text_01"),
+			},
+		},
+		"last_name": forma.AttributeMetadata{
+			AttributeID: 11,
+			ValueType:   forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("text_02"),
+			},
+		},
+	}
+
+	b1 := &forma.KvCondition{Attr: "first_name", Value: "equals:Alice"}
+	b2 := &forma.KvCondition{Attr: "last_name", Value: "equals:Smith"}
+	orCond := &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{b1, b2}}
+
+	pgClause, pgArgs, err := buildPgMainClause(orCond, cache, &paramIndex)
+	require.NoError(t, err)
+	require.NotEmpty(t, pgClause, "all-pushable OR must produce a clause")
+	require.Contains(t, pgClause, "OR")
+	require.Equal(t, []any{"Alice", "Smith"}, pgArgs)
+	require.Equal(t, 2, paramIndex)
+}

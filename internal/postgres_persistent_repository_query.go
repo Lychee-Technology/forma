@@ -201,7 +201,11 @@ func (b *hybridConditionBuilder) build(c forma.Condition) (string, []any, error)
 
 func (b *hybridConditionBuilder) buildComposite(cond *forma.CompositeCondition) (string, []any, error) {
 	if len(cond.Conditions) == 0 {
-		return "", nil, nil
+		// Empty AND matches everything; empty OR matches nothing.
+		if cond.Logic == forma.LogicOr {
+			return "1=0", nil, nil
+		}
+		return "1=1", nil, nil
 	}
 	var parts []string
 	var args []any

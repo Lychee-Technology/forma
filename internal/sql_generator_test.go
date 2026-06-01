@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSQLGenerator_ToSQLClauses(t *testing.T) {
@@ -85,4 +86,56 @@ func TestSQLGenerator_ToSQLClauses(t *testing.T) {
 	if paramCounter != 7 {
 		t.Fatalf("unexpected param counter, expected 7 got %d", paramCounter)
 	}
+}
+
+// TestSQLGenerator_EmptyComposite_AND_Returns1_1 verifies that an empty AND composite
+// produces "1=1" (matches everything) instead of an empty string.
+func TestSQLGenerator_EmptyComposite_AND_Returns1_1(t *testing.T) {
+	gen := NewSQLGenerator()
+	paramIndex := 1
+	cond := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: nil}
+	clause, args, err := gen.ToSQLClauses(cond, "eav", 1, forma.SchemaAttributeCache{}, &paramIndex)
+	require.NoError(t, err)
+	require.Equal(t, "1=1", clause)
+	require.Empty(t, args)
+}
+
+// TestSQLGenerator_EmptyComposite_OR_Returns1_0 verifies that an empty OR composite
+// produces "1=0" (matches nothing) instead of an empty string.
+func TestSQLGenerator_EmptyComposite_OR_Returns1_0(t *testing.T) {
+	gen := NewSQLGenerator()
+	paramIndex := 1
+	cond := &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: nil}
+	clause, args, err := gen.ToSQLClauses(cond, "eav", 1, forma.SchemaAttributeCache{}, &paramIndex)
+	require.NoError(t, err)
+	require.Equal(t, "1=0", clause)
+	require.Empty(t, args)
+}
+
+// TestBuildHybridConditions_EmptyComposite_AND verifies that buildHybridConditions with
+// an empty AND composite returns "1=1" (not an empty string) so runOptimizedQuery accepts it.
+func TestBuildHybridConditions_EmptyComposite_AND(t *testing.T) {
+	r := &DBPersistentRecordRepository{}
+	query := AttributeQuery{
+		SchemaID:  1,
+		Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: nil},
+	}
+	clause, args, err := r.buildHybridConditions("eav_data", "entity_main", query, 1, false)
+	require.NoError(t, err)
+	require.Equal(t, "1=1", clause)
+	require.Empty(t, args)
+}
+
+// TestBuildHybridConditions_EmptyComposite_OR verifies that buildHybridConditions with
+// an empty OR composite returns "1=0" (not an empty string).
+func TestBuildHybridConditions_EmptyComposite_OR(t *testing.T) {
+	r := &DBPersistentRecordRepository{}
+	query := AttributeQuery{
+		SchemaID:  1,
+		Condition: &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: nil},
+	}
+	clause, args, err := r.buildHybridConditions("eav_data", "entity_main", query, 1, false)
+	require.NoError(t, err)
+	require.Equal(t, "1=0", clause)
+	require.Empty(t, args)
 }

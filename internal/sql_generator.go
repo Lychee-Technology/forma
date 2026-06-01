@@ -94,7 +94,11 @@ func (g *SQLGenerator) buildComposite(
 	paramIndex *int,
 ) (string, []any, error) {
 	if len(c.Conditions) == 0 {
-		return "", nil, nil
+		// Empty AND matches everything; empty OR matches nothing.
+		if c.Logic == forma.LogicOr {
+			return "1=0", nil, nil
+		}
+		return "1=1", nil, nil
 	}
 
 	var sqlJoiner string

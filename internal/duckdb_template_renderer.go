@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
 // RenderDuckDBQuery renders a DuckDB SQL template (which uses "?" placeholders)
 // and combines the provided whereArgs (typically from GenerateDuckDBWhereClause)
 // with the template-collected args. The order is: whereArgs first, then template args.
@@ -78,7 +77,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 				whereArgs = append(whereArgs, dual.DuckArgs...)
 			}
 		}
-		injectDuckDBTemplateParams(m, q, dual)
+		injectDuckDBTemplateParams(m, q, dual, len(whereArgs))
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
 			whereArgs = append(whereArgs, dual.PgMainArgs...)
 		}
@@ -104,7 +103,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 			whereArgs = append(whereArgs, whereArgs...)
 		}
 	}
-	injectDuckDBTemplateParams(m, q, nil)
+	injectDuckDBTemplateParams(m, q, nil, len(whereArgs))
 	whereArgs = appendKeysetArgs(m, whereArgs)
 
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
@@ -118,7 +117,7 @@ func defaultIfEmpty(s, fallback string) string {
 	return s
 }
 
-func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuery, dual *DualClauses) {
+func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuery, dual *DualClauses, keysetParamOffset int) {
 	if q == nil {
 		return
 	}
@@ -191,14 +190,21 @@ func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuer
 	}
 
 	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.
+	// keysetParamOffset is the number of args already accumulated in whereArgs so
+	// the generated $n placeholders correctly reference the appended keyset values.
 	if q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
-		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "", 0)
+		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "", keysetParamOffset)
 		params["HAS_KEYSET"] = true
 		params["KEYSET_WHERE_CLAUSE"] = keysetClause
 		params["KEYSET_ARGS"] = keysetArgs
 		params["ORDER_BY"] = buildKeysetOrderBy(q.KeysetCursor)
 	} else {
 		params["HAS_KEYSET"] = false
+	}
+
+	// Non-keyset ORDER BY: use AttributeOrders when present, fall back to created_at DESC.
+	if _, ok := params["NON_KEYSET_ORDER_BY"]; !ok {
+		params["NON_KEYSET_ORDER_BY"] = buildNonKeysetOrderBy(q)
 	}
 }
 
@@ -211,6 +217,33 @@ func formatDuckDBPathList(paths []string) string {
 		return quoted[0]
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// buildNonKeysetOrderBy constructs an ORDER BY fragment from a query's AttributeOrders.
+// Only main-table columns (those with a ColumnName) can be resolved to a stable DuckDB
+// column reference in the unified CTE; EAV-only attributes are skipped. When no
+// resolvable columns remain the default "created_at DESC" is returned.
+func buildNonKeysetOrderBy(q *FederatedAttributeQuery) string {
+	if q == nil || len(q.AttributeOrders) == 0 {
+		return "created_at DESC"
+	}
+	var parts []string
+	for _, ao := range q.AttributeOrders {
+		if !ao.IsMainColumn() {
+			// EAV attributes require schema-specific pivot alias resolution which
+			// is unavailable here; skip them to preserve correctness.
+			continue
+		}
+		dir := "ASC"
+		if ao.Desc() {
+			dir = "DESC"
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", ao.ColumnName, dir))
+	}
+	if len(parts) == 0 {
+		return "created_at DESC"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // appendKeysetArgs extracts KEYSET_ARGS from the params map and appends them

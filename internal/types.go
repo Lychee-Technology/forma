@@ -33,9 +33,16 @@ func (ao *AttributeOrder) AttrIDInt() int {
 }
 
 // ValueColumn returns the EAV table column name for this attribute's value type.
+// Numeric-family types (numeric, integer, bigint, smallint) and temporal types
+// (date, datetime) are stored in value_numeric; all other types use value_text.
 func (ao *AttributeOrder) ValueColumn() string {
 	switch ao.ValueType {
-	case forma.ValueTypeNumeric:
+	case forma.ValueTypeNumeric,
+		forma.ValueTypeInteger,
+		forma.ValueTypeBigInt,
+		forma.ValueTypeSmallInt,
+		forma.ValueTypeDate,
+		forma.ValueTypeDateTime:
 		return "value_numeric"
 	default:
 		return "value_text"

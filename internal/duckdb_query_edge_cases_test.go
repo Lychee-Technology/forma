@@ -436,3 +436,66 @@ func TestGenerateDuckDBWhereClause_EmptyCompositeCondition(t *testing.T) {
 	// Implementation-dependent
 	require.True(t, err != nil || clause != "")
 }
+
+// TestBuildDuckDBQuery_NonKeysetSort_RespectsAttributeOrders verifies that when
+// AttributeOrders contains a main-column sort key and no keyset cursor is provided,
+// the rendered DuckDB SQL's ORDER BY clause uses the specified column rather than the
+// hardcoded "created_at DESC" fallback.
+func TestBuildDuckDBQuery_NonKeysetSort_RespectsAttributeOrders(t *testing.T) {
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			SchemaID: 1,
+			Limit:    10,
+			Offset:   0,
+			AttributeOrders: []AttributeOrder{
+				{
+					AttrID:          42,
+					ValueType:       forma.ValueTypeNumeric,
+					SortOrder:       forma.SortOrderAsc,
+					StorageLocation: forma.AttributeStorageLocationMain,
+					ColumnName:      "integer_01",
+				},
+			},
+		},
+		// No KeysetCursor → non-keyset path
+	}
+
+	dual := &DualClauses{
+		DuckClause: "1=1",
+		DuckArgs:   nil,
+	}
+
+	params := map[string]any{}
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
+	require.NoError(t, err)
+
+	// The non-keyset ORDER BY must use the requested sort column, not "created_at DESC".
+	require.Contains(t, sql, "integer_01 ASC",
+		"non-keyset ORDER BY should reflect AttributeOrders[0]")
+	require.NotContains(t, sql, "ORDER BY created_at DESC",
+		"hardcoded fallback must not appear when AttributeOrders is populated")
+}
+
+// TestBuildDuckDBQuery_NonKeysetSort_FallbackWhenNoOrders verifies that the default
+// "created_at DESC" fallback is still used when no AttributeOrders are specified.
+func TestBuildDuckDBQuery_NonKeysetSort_FallbackWhenNoOrders(t *testing.T) {
+	q := &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{
+			SchemaID: 1,
+			Limit:    10,
+			Offset:   0,
+		},
+	}
+
+	dual := &DualClauses{
+		DuckClause: "1=1",
+		DuckArgs:   nil,
+	}
+
+	params := map[string]any{}
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
+	require.NoError(t, err)
+
+	require.Contains(t, sql, "created_at DESC",
+		"fallback ORDER BY should be 'created_at DESC' when no AttributeOrders supplied")
+}
