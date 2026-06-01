@@ -189,15 +189,15 @@ func (g *SQLGenerator) buildKv(
 			return "", nil, fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
 		}
 	case forma.ValueTypeBool:
-		valueColumn = "value_text"
+		valueColumn = "value_numeric"
 		parsedInt, err := strconv.Atoi(valStr)
 		if err != nil {
 			return "", nil, fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)
 		}
 		if parsedInt > 0 {
-			parsedValue = "1"
+			parsedValue = float64(1)
 		} else {
-			parsedValue = "0"
+			parsedValue = float64(0)
 		}
 	default:
 		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)

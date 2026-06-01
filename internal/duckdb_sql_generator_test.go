@@ -392,3 +392,12 @@ func TestGenerateDuckDBWhereClause_GivenNestedAndOrConditions_WhenClauseBuilt_Th
 	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DOUBLE)) OR (email LIKE ?))", clause)
 	require.Equal(t, []any{"active", 10.0, "ops%"}, args)
 }
+
+// TestEAVValueColumn_BoolUsesValueNumeric verifies that eavValueColumn returns
+// "value_numeric" for ValueTypeBool, matching the storage path where booleans
+// are written as float64 into value_numeric (see attribute_converter.go).
+func TestEAVValueColumn_BoolUsesValueNumeric(t *testing.T) {
+	got := eavValueColumn(forma.ValueTypeBool)
+	require.Equal(t, "value_numeric", got,
+		"bool EAV values are stored as float64 in value_numeric, not value_text")
+}

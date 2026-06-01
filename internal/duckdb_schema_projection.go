@@ -215,7 +215,8 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 func eavValueColumn(vt forma.ValueType) string {
 	switch vt {
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt,
-		forma.ValueTypeSmallInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
+		forma.ValueTypeSmallInt, forma.ValueTypeDate, forma.ValueTypeDateTime,
+		forma.ValueTypeBool:
 		return "value_numeric"
 	default:
 		return "value_text"
