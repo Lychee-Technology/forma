@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma"
 )
 
 func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
@@ -117,8 +118,12 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("key[%d] has empty row id", i)
 		}
 
-		if _, err := tx.Exec(ctx, deleteMain, key.SchemaID, key.RowID); err != nil {
+		tag, err := tx.Exec(ctx, deleteMain, key.SchemaID, key.RowID)
+		if err != nil {
 			return fmt.Errorf("delete entity_main row for key[%d]: %w", i, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("entity not found for key[%d] (schema=%d row=%s): %w", i, key.SchemaID, key.RowID, forma.ErrNotFound)
 		}
 		if _, err := tx.Exec(ctx, deleteEAV, key.SchemaID, key.RowID); err != nil {
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)

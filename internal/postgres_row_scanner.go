@@ -204,7 +204,10 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 
 	record.OtherAttributes = make([]EAVRecord, 0, len(attributes))
 	for _, attrObj := range attributes {
-		attr := parseEAVAttribute(attrObj)
+		attr, err := parseEAVAttribute(attrObj)
+		if err != nil {
+			return fmt.Errorf("parse eav attribute: %w", err)
+		}
 		record.OtherAttributes = append(record.OtherAttributes, attr)
 	}
 
@@ -212,10 +215,18 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 }
 
 // parseEAVAttribute converts a JSON object to an EAVRecord
-func parseEAVAttribute(attrObj map[string]any) EAVRecord {
+func parseEAVAttribute(attrObj map[string]any) (EAVRecord, error) {
+	schemaIDRaw, ok := attrObj["schema_id"].(float64)
+	if !ok {
+		return EAVRecord{}, fmt.Errorf("schema_id is missing or not a number: %v", attrObj["schema_id"])
+	}
+	attrIDRaw, ok := attrObj["attr_id"].(float64)
+	if !ok {
+		return EAVRecord{}, fmt.Errorf("attr_id is missing or not a number: %v", attrObj["attr_id"])
+	}
 	attr := EAVRecord{
-		SchemaID: int16(attrObj["schema_id"].(float64)),
-		AttrID:   int16(attrObj["attr_id"].(float64)),
+		SchemaID: int16(schemaIDRaw),
+		AttrID:   int16(attrIDRaw),
 	}
 
 	if rowIDStr, ok := attrObj["row_id"].(string); ok {
@@ -235,7 +246,7 @@ func parseEAVAttribute(attrObj map[string]any) EAVRecord {
 		attr.ValueNumeric = &valueNumeric
 	}
 
-	return attr
+	return attr, nil
 }
 
 // cleanupEmptyMaps removes empty maps from the record to avoid nil-map checks

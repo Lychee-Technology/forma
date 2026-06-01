@@ -202,8 +202,12 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
 	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", sanitizeIdentifier(tables.EntityMain))
-	if _, err := tx.Exec(ctx, deleteMain, schemaID, rowID); err != nil {
+	tag, err := tx.Exec(ctx, deleteMain, schemaID, rowID)
+	if err != nil {
 		return fmt.Errorf("delete entity_main row: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("entity not found (schema=%d row=%s): %w", schemaID, rowID, forma.ErrNotFound)
 	}
 
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
