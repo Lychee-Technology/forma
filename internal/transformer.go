@@ -226,6 +226,21 @@ func (t *transformer) ValidateAgainstSchema(ctx context.Context, jsonSchema any,
 	return nil
 }
 
+// isKnownAttributeOrParent returns true if name is a leaf attribute in the cache
+// or is a parent path prefix of at least one cached attribute.
+func isKnownAttributeOrParent(name string, cache forma.SchemaAttributeCache) bool {
+	if _, ok := cache[name]; ok {
+		return true
+	}
+	prefix := name + "."
+	for attrName := range cache {
+		if strings.HasPrefix(attrName, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *transformer) flattenToAttributes(
 	schemaID int16,
 	rowID uuid.UUID,
@@ -245,6 +260,10 @@ func (t *transformer) flattenToAttributes(
 		for _, key := range keys {
 			value := v[key]
 			if value == nil {
+				candidateName := strings.Join(append(path, key), ".")
+				if isKnownAttributeOrParent(candidateName, cache) {
+					return fmt.Errorf("attribute '%s' cannot be set to null; omit the key to preserve its current value", candidateName)
+				}
 				continue
 			}
 			newPath := append(path, key)

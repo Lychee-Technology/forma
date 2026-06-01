@@ -534,3 +534,73 @@ func TestPopulateTypedValueOptionalSkipsOnError(t *testing.T) {
 	require.NotEmpty(t, entries)
 	assert.Equal(t, "optional", entries[0].ContextMap()["attribute"])
 }
+
+// F3: null-clear divergence tests
+
+// Setting a known leaf attribute to null must return an error, not silently skip it.
+func TestTransformer_ToAttributes_NullLeafAttribute_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"name": nil,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+	assert.Contains(t, err.Error(), "null")
+}
+
+// Setting a known nested leaf attribute to null must return an error.
+func TestTransformer_ToAttributes_NullNestedAttribute_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"person": map[string]any{
+			"name": nil,
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "person.name")
+	assert.Contains(t, err.Error(), "null")
+}
+
+// Setting a parent object key to null (which would clear its entire subtree in EAV)
+// must return an error because one or more child attributes are schema-defined.
+func TestTransformer_ToAttributes_NullParentObject_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"person": nil, // parent of person.name and person.age
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "person")
+	assert.Contains(t, err.Error(), "null")
+}
+
+// A null value for a key that is not in the schema must be silently skipped.
+func TestTransformer_ToAttributes_NullUnknownField_IsSilentlySkipped(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	attrs, err := tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"name":          "Alice",
+		"unknown_field": nil, // not in schema — should be skipped without error
+	})
+	require.NoError(t, err)
+	require.Len(t, attrs, 1)
+	assert.Equal(t, int16(1), attrs[0].AttrID) // name
+}

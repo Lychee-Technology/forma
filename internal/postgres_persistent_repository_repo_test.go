@@ -185,6 +185,133 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestDeletePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	rowID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0)) // 0 rows affected
+	mock.ExpectRollback()
+
+	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDeletePersistentRecord_WhenRowMissing_DoesNotWriteChangelog(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	rowID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+		WithArgs(int16(1), rowID).
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+	// No EAV delete, no changelog upsert expected — transaction rolls back
+	mock.ExpectRollback()
+
+	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+	fixedMillis := fixed.UnixMilli()
+
+	rowID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	record := &PersistentRecord{
+		SchemaID:  1,
+		RowID:     rowID,
+		UpdatedAt: fixedMillis,
+		TextItems: map[string]string{"text_01": "hello"},
+	}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, record)
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	// UPDATE affects 0 rows — row does not exist
+	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+		WithArgs(updateArgs...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
+
+	err = repo.UpdatePersistentRecord(ctx, tables, record)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdatePersistentRecord_WhenRowMissing_DoesNotWriteEAVOrChangelog(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+	fixedMillis := fixed.UnixMilli()
+
+	rowID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	text := "v"
+	record := &PersistentRecord{
+		SchemaID:        1,
+		RowID:           rowID,
+		UpdatedAt:       fixedMillis,
+		TextItems:       map[string]string{"text_01": "hello"},
+		OtherAttributes: []EAVRecord{{SchemaID: 1, RowID: rowID, AttrID: 5, ValueText: &text}},
+	}
+	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, record)
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+		WithArgs(updateArgs...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	// No EAV delete, no EAV insert, no changelog upsert expected — transaction rolls back
+	mock.ExpectRollback()
+
+	err = repo.UpdatePersistentRecord(ctx, tables, record)
+	require.Error(t, err)
+	require.ErrorIs(t, err, forma.ErrNotFound)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	ctx := context.Background()
 	mock, err := pgxmock.NewPool()
@@ -434,4 +561,64 @@ func TestQueryPersistentRecordsMissingCache(t *testing.T) {
 		SchemaID: 1,
 	})
 	require.Error(t, err)
+}
+
+func TestParseEAVAttribute_NilSchemaID_ReturnsError(t *testing.T) {
+	_, err := parseEAVAttribute(map[string]any{
+		"schema_id": nil,
+		"attr_id":   float64(10),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "schema_id")
+}
+
+func TestParseEAVAttribute_NilAttrID_ReturnsError(t *testing.T) {
+	_, err := parseEAVAttribute(map[string]any{
+		"schema_id": float64(1),
+		"attr_id":   nil,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "attr_id")
+}
+
+func TestParseEAVAttribute_WrongTypeSchemaID_ReturnsError(t *testing.T) {
+	_, err := parseEAVAttribute(map[string]any{
+		"schema_id": "not-a-number",
+		"attr_id":   float64(10),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "schema_id")
+}
+
+func TestParseEAVAttribute_ValidFields_Succeeds(t *testing.T) {
+	rowID := uuid.New()
+	valueText := "hello"
+	valueNumeric := float64(42)
+
+	attr, err := parseEAVAttribute(map[string]any{
+		"schema_id":     float64(5),
+		"attr_id":       float64(11),
+		"row_id":        rowID.String(),
+		"array_indices": "0,1",
+		"value_text":    valueText,
+		"value_numeric": valueNumeric,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int16(5), attr.SchemaID)
+	assert.Equal(t, int16(11), attr.AttrID)
+	assert.Equal(t, rowID, attr.RowID)
+	assert.Equal(t, "0,1", attr.ArrayIndices)
+	require.NotNil(t, attr.ValueText)
+	assert.Equal(t, "hello", *attr.ValueText)
+	require.NotNil(t, attr.ValueNumeric)
+	assert.Equal(t, float64(42), *attr.ValueNumeric)
+}
+
+func TestParseAttributesJSON_MalformedAttribute_ReturnsError(t *testing.T) {
+	record := &PersistentRecord{}
+	// schema_id is null in the JSON blob
+	malformed := []byte(`[{"schema_id":null,"attr_id":10,"row_id":"00000000-0000-0000-0000-000000000001","array_indices":"","value_text":"x","value_numeric":null}]`)
+	err := parseAttributesJSON(malformed, record)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "schema_id")
 }
