@@ -87,6 +87,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 			AttrID:    meta.AttributeID,
 			ValueType: meta.ValueType,
 			SortOrder: sortOrder,
+			AttrName:  sortAttr,
 		}
 		// Check if attribute has column_binding to main table.
 		if meta.ColumnBinding != nil {
