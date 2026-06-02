@@ -178,8 +178,18 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 	for _, a := range attrs {
 		if a.isColumn {
 			colName := string(a.meta.ColumnBinding.ColumnName)
-			expr := fmt.Sprintf("COALESCE(hot_vals.%s, m.%s) AS %s",
-				a.name, colName, a.name)
+			var expr string
+			if a.meta.ValueType == forma.ValueTypeBool {
+				// Normalize the main column to BOOLEAN so both sides of COALESCE
+				// are the same type. hot_vals.<attr> is already BOOLEAN (from the
+				// EAV pivot fix); m.<col> must be normalized by encoding.
+				mainBoolExpr := mainColBoolExpr(colName, a.meta.ColumnBinding.Encoding)
+				expr = fmt.Sprintf("COALESCE(hot_vals.%s, %s) AS %s",
+					a.name, mainBoolExpr, a.name)
+			} else {
+				expr = fmt.Sprintf("COALESCE(hot_vals.%s, m.%s) AS %s",
+					a.name, colName, a.name)
+			}
 			selectParts = append(selectParts, expr)
 			groupParts = append(groupParts, "m."+colName)
 		} else {
@@ -198,9 +208,19 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
 	for _, a := range attrs {
 		attrIDParts = append(attrIDParts, fmt.Sprintf("%d", a.attrID))
-		pivotParts = append(pivotParts, fmt.Sprintf(
-			"\t\t\t\tMAX(CASE WHEN attr_id = %d THEN %s END) AS %s",
-			a.attrID, eavValueColumn(a.meta.ValueType), a.name))
+		var pivotExpr string
+		if a.meta.ValueType == forma.ValueTypeBool {
+			// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE.
+			// DuckDB WHERE uses CAST(? AS BOOLEAN); the pivot output must match.
+			pivotExpr = fmt.Sprintf(
+				"(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)",
+				a.attrID)
+		} else {
+			pivotExpr = fmt.Sprintf(
+				"MAX(CASE WHEN attr_id = %d THEN %s END)",
+				a.attrID, eavValueColumn(a.meta.ValueType))
+		}
+		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s", pivotExpr, a.name))
 	}
 
 	if len(pivotParts) > 0 {
@@ -215,11 +235,24 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 func eavValueColumn(vt forma.ValueType) string {
 	switch vt {
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt,
-		forma.ValueTypeSmallInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
+		forma.ValueTypeSmallInt, forma.ValueTypeDate, forma.ValueTypeDateTime,
+		forma.ValueTypeBool:
 		return "value_numeric"
 	default:
 		return "value_text"
 	}
+}
+
+// mainColBoolExpr returns a DuckDB boolean expression that normalises a
+// column-bound bool main-table column to a BOOLEAN value.
+// bool_text encoding stores "1"/"0" as text; bool_smallint stores 0/1 as SMALLINT.
+// Both must produce a BOOLEAN so that COALESCE(hot_vals.<attr>, <expr>) is type-safe.
+func mainColBoolExpr(colName string, enc forma.MainColumnEncoding) string {
+	if enc == forma.MainColumnEncodingBoolText {
+		return fmt.Sprintf("m.%s = '1'", colName)
+	}
+	// Default covers MainColumnEncodingBoolInt and any other numeric-like encoding.
+	return fmt.Sprintf("m.%s <> 0", colName)
 }
 
 func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []string) {

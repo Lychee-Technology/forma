@@ -78,7 +78,7 @@ type MainColumnEncoding string
 
 const (
 	MainColumnEncodingDefault  MainColumnEncoding = "default"
-	MainColumnEncodingBoolText MainColumnEncoding = "bool_text" // "true"/"false" string
+	MainColumnEncodingBoolText MainColumnEncoding = "bool_text" // "1"/"0" string in a text column
 	MainColumnEncodingUnixMs   MainColumnEncoding = "unix_ms"
 	MainColumnEncodingBoolInt  MainColumnEncoding = "bool_smallint"
 	MainColumnEncodingISO8601  MainColumnEncoding = "iso8601"

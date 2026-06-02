@@ -139,3 +139,46 @@ func TestBuildHybridConditions_EmptyComposite_OR(t *testing.T) {
 	require.Equal(t, "1=0", clause)
 	require.Empty(t, args)
 }
+
+// TestSQLGenerator_BoolEAV_UsesValueNumeric verifies that a bool EAV filter generates
+// a predicate against value_numeric (not value_text) and binds float64(1)/float64(0)
+// arguments, matching the storage path in attribute_converter.go.
+func TestSQLGenerator_BoolEAV_UsesValueNumeric(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"active": forma.AttributeMetadata{
+			AttributeID: 20,
+			ValueType:   forma.ValueTypeBool,
+		},
+	}
+
+	tests := []struct {
+		name      string
+		value     string
+		wantArg   float64
+		wantOp    string
+	}{
+		{name: "truthy value=1", value: "1", wantArg: float64(1), wantOp: "="},
+		{name: "falsy value=0", value: "0", wantArg: float64(0), wantOp: "="},
+		{name: "not-equal truthy neq:1", value: "neq:1", wantArg: float64(1), wantOp: "!="},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cond := &forma.CompositeCondition{
+				Logic: forma.LogicAnd,
+				Conditions: []forma.Condition{
+					&forma.KvCondition{Attr: "active", Value: tc.value},
+				},
+			}
+			paramIndex := 1
+			gen := NewSQLGenerator()
+			clause, args, err := gen.ToSQLClauses(cond, "eav_data", 1, cache, &paramIndex)
+			require.NoError(t, err)
+			require.Contains(t, clause, "value_numeric", "bool filter must use value_numeric column")
+			require.NotContains(t, clause, "value_text", "bool filter must not use value_text column")
+			require.Len(t, args, 2)
+			require.Equal(t, int16(20), args[0], "first arg must be attr_id as int16")
+			require.Equal(t, tc.wantArg, args[1], "second arg must be float64")
+		})
+	}
+}
