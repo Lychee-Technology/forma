@@ -401,3 +401,81 @@ func TestEAVValueColumn_BoolUsesValueNumeric(t *testing.T) {
 	require.Equal(t, "value_numeric", got,
 		"bool EAV values are stored as float64 in value_numeric, not value_text")
 }
+
+// TestBuildSchemaProjection_BoolEAVOnly_PivotReturnsBoolExpr verifies that an
+// EAV-only bool attribute produces a boolean-typed pivot expression
+// "(MAX(CASE WHEN attr_id = X THEN value_numeric END) <> 0) AS active" so that
+// the unified column type is BOOLEAN and DuckDB WHERE comparisons are type-safe.
+func TestBuildSchemaProjection_BoolEAVOnly_PivotReturnsBoolExpr(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"active": forma.AttributeMetadata{
+			AttributeID: 7,
+			ValueType:   forma.ValueTypeBool,
+			// No ColumnBinding → EAV-only
+		},
+	}
+	sp, err := BuildSchemaProjection(1, cache)
+	require.NoError(t, err)
+
+	// EAV pivot must use a boolean comparison, not raw value_numeric
+	require.Contains(t, sp.EAVPivotSelect,
+		"(MAX(CASE WHEN attr_id = 7 THEN value_numeric END) <> 0) AS active",
+		"bool EAV pivot expression must be boolean-typed via <> 0 comparison")
+
+	// Must NOT contain a raw (non-wrapped) value_numeric for active
+	require.NotContains(t, sp.EAVPivotSelect,
+		"THEN value_numeric END) AS active",
+		"raw value_numeric pivot must not be used for bool; wrap with <> 0")
+}
+
+// TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE verifies that a
+// bool_smallint column-bound attribute emits a type-safe COALESCE expression
+// "COALESCE(hot_vals.active, m.smallint_01 <> 0) AS active" in PGSourceSelect,
+// so that both sides of the COALESCE are BOOLEAN and there is no type mismatch.
+func TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"active": forma.AttributeMetadata{
+			AttributeID: 7,
+			ValueType:   forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("smallint_01"),
+				Encoding:   forma.MainColumnEncodingBoolInt,
+			},
+		},
+	}
+	sp, err := BuildSchemaProjection(1, cache)
+	require.NoError(t, err)
+
+	// PGSourceSelect must normalize the main col to BOOLEAN via <> 0
+	require.Contains(t, sp.PGSourceSelect,
+		"COALESCE(hot_vals.active, m.smallint_01 <> 0) AS active",
+		"bool_smallint column-bound COALESCE must normalize main col to boolean")
+
+	// EAV pivot must also produce a boolean expression for this attribute
+	require.Contains(t, sp.EAVPivotSelect,
+		"(MAX(CASE WHEN attr_id = 7 THEN value_numeric END) <> 0) AS active",
+		"bool column-bound EAV pivot must also be boolean-typed")
+}
+
+// TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE verifies that a
+// bool_text column-bound attribute emits "COALESCE(hot_vals.active, m.text_01 = '1')
+// AS active" in PGSourceSelect, normalising the text main column to BOOLEAN.
+func TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"active": forma.AttributeMetadata{
+			AttributeID: 7,
+			ValueType:   forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{
+				ColumnName: forma.MainColumn("text_01"),
+				Encoding:   forma.MainColumnEncodingBoolText,
+			},
+		},
+	}
+	sp, err := BuildSchemaProjection(1, cache)
+	require.NoError(t, err)
+
+	// PGSourceSelect must normalize the text main col to BOOLEAN via = '1'
+	require.Contains(t, sp.PGSourceSelect,
+		"COALESCE(hot_vals.active, m.text_01 = '1') AS active",
+		"bool_text column-bound COALESCE must normalize main col to boolean")
+}
