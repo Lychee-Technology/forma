@@ -23,7 +23,9 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 	case forma.ValueTypeBigInt:
 		return "BIGINT"
 	case forma.ValueTypeNumeric:
-		return "DOUBLE"
+		// Use DECIMAL to preserve numeric precision instead of DOUBLE
+		// DuckDB DECIMAL defaults to DECIMAL(18,3) if not specified
+		return "DECIMAL"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Use TIMESTAMP for temporal types (configurable in future)
 		return "TIMESTAMP"

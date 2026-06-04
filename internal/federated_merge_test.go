@@ -61,3 +61,41 @@ func TestMergeLWW_PreferHotTie(t *testing.T) {
 		t.Fatalf("expected hot record to win on tie when preferHot=true; got tier record UpdatedAt=%d", results[0].UpdatedAt)
 	}
 }
+
+func TestMergeLWW_DeletedNewestSuppressesOlderActive(t *testing.T) {
+	rowID := uuid.New()
+	deletedAt := int64(300)
+	hot := makeRec(1, rowID, 200)
+	hot.DeletedAt = &deletedAt
+	cold := makeRec(1, rowID, 100)
+
+	results, err := MergePersistentRecordsByTier(map[DataTier][]*PersistentRecord{
+		DataTierHot:  {hot},
+		DataTierCold: {cold},
+	}, false)
+
+	if err != nil {
+		t.Fatalf("merge error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected deleted winner to suppress row, got %d results", len(results))
+	}
+}
+
+func TestMergeLWW_EqualTimestampUsesTierPriority(t *testing.T) {
+	rowID := uuid.New()
+	hot := makeRec(1, rowID, 100)
+	cold := makeRec(1, rowID, 100)
+
+	results, err := MergePersistentRecordsByTier(map[DataTier][]*PersistentRecord{
+		DataTierHot:  {hot},
+		DataTierCold: {cold},
+	}, false)
+
+	if err != nil {
+		t.Fatalf("merge error: %v", err)
+	}
+	if len(results) != 1 || results[0] != hot {
+		t.Fatalf("expected hot to win equal timestamp tie")
+	}
+}

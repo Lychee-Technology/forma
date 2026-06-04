@@ -47,7 +47,7 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 		{
 			name:     "ValueTypeNumeric",
 			vt:       forma.ValueTypeNumeric,
-			expected: "DOUBLE",
+			expected: "DECIMAL",
 		},
 		{
 			name:     "ValueTypeDate",
@@ -371,9 +371,9 @@ func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {
 	require.Equal(t, "LIST(BIGINT)", result)
 }
 
-func TestMapValueTypeToListDuckDBType_DoubleElement(t *testing.T) {
+func TestMapValueTypeToListDuckDBType_NumericElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeNumeric)
-	require.Equal(t, "LIST(DOUBLE)", result)
+	require.Equal(t, "LIST(DECIMAL)", result)
 }
 
 func TestMapValueTypeToListDuckDBType_BoolElement(t *testing.T) {

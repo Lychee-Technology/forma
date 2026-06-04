@@ -8,11 +8,24 @@ import (
 // These extend the existing AttributeQuery to carry hints for
 // multi-tier federated execution (Postgres + DuckDB/S3).
 
+// DataTier represents the storage tier where data resides.
+// The tier names reflect data freshness and latency characteristics:
+//   - Hot: Most recent data in Postgres (low latency, always consistent)
+//   - Warm: Recent data in S3 Parquet (medium latency, eventually consistent)
+//   - Cold: Historical data in S3 Parquet (medium latency, archival)
 type DataTier string
 
 const (
-	DataTierHot  DataTier = "hot"
+	// DataTierHot represents the Postgres hot tier with the most recent data.
+	// Also known as: "primary", "transactional", "online"
+	DataTierHot DataTier = "hot"
+
+	// DataTierWarm represents the S3 warm tier with recently exported data.
+	// Also known as: "delta", "incremental", "recent"
 	DataTierWarm DataTier = "warm"
+
+	// DataTierCold represents the S3 cold tier with historical/archival data.
+	// Also known as: "base", "historical", "archival"
 	DataTierCold DataTier = "cold"
 )
 
@@ -25,8 +38,10 @@ type FederatedAttributeQuery struct {
 	// Example: []DataTier{DataTierHot, DataTierWarm, DataTierCold}
 	PreferredTiers []DataTier
 
-	// PreferHot indicates strong preference for reading from the hot (Postgres) tier
-	// when the same data exists in multiple tiers.
+	// PreferHot indicates preference for routing queries to the hot (Postgres) tier.
+	// When true, routing logic prefers direct Postgres execution over federated DuckDB
+	// queries when both paths are available. This is a routing hint, not a merge semantic.
+	// Merge conflict resolution always uses deterministic tier priority (Hot > Warm > Cold).
 	PreferHot bool
 
 	// UseMainAsAnchor controls whether the main table (entity_main) should be used

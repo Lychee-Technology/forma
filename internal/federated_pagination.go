@@ -35,6 +35,21 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 		return r.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
 	}
 
+	// If explicit attribute ordering is requested, prefer DuckDB federated execution
+	// which can handle ordering correctly in SQL. Fall back to in-memory merge only
+	// if DuckDB is unavailable and AllowPartialDegradedMode is true.
+	if len(attributeOrders) > 0 {
+		if r.duckDBClient != nil && r.duckDBCfg.Enabled {
+			// Use DuckDB federated query which handles ordering correctly
+			return r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, offset, attributeOrders, opts)
+		}
+		// DuckDB unavailable - only allow if degraded mode permitted
+		if opts == nil || !opts.AllowPartialDegradedMode {
+			return nil, 0, fmt.Errorf("ordered federated pagination requires DuckDB but DuckDB is unavailable")
+		}
+		// Otherwise fall through to in-memory merge which will ignore ordering
+	}
+
 	// Build shared hybrid WHERE clause
 	clause, args, err := r.buildHybridConditions(tables.EAVData, tables.EntityMain, fq.AttributeQuery, 0, fq.UseMainAsAnchor)
 	if err != nil {
@@ -127,6 +142,13 @@ func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
 	attributeOrders []AttributeOrder,
 	opts *FederatedQueryOptions,
 ) ([]*PersistentRecord, int64, error) {
+	// Validate keyset cursor columns are supported
+	if fq.KeysetCursor != nil {
+		if err := validateKeysetColumns(fq.KeysetCursor.Columns); err != nil {
+			return nil, 0, err
+		}
+	}
+
 	maxRows := federatedMaxRows
 	if opts != nil && opts.MaxRows > 0 {
 		maxRows = opts.MaxRows

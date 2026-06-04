@@ -133,11 +133,36 @@ func recordColumnValue(record *PersistentRecord, col KeysetColumn) interface{} {
 
 // eavColumnValue looks up an EAV attribute value from the record's
 // OtherAttributes slice. Returns nil if not found.
+// NOTE: This is currently a stub - full EAV cursor extraction requires schema cache.
 func eavColumnValue(record *PersistentRecord, attrName string) interface{} {
 	// EAV attributes are identified by name only here; the caller is responsible
 	// for ensuring the attribute exists in the schema and is present in the record.
 	// We search OtherAttributes by matching AttrID via a helper lookup.
 	// For now, return nil — attribute-level extraction requires schema cache.
+	return nil
+}
+
+// isSupportedKeysetColumn returns true if the attribute is supported for keyset cursor extraction.
+// Currently only system columns and known main table columns are supported.
+// EAV-only attributes require schema cache integration and are not yet supported.
+func isSupportedKeysetColumn(attribute string) bool {
+	switch attribute {
+	case "row_id", "created_at", "updated_at", "deleted_at", "ver_ts", "deleted_ts", "schema_id":
+		return true
+	default:
+		// EAV attributes and main column attributes are not yet supported
+		return false
+	}
+}
+
+// validateKeysetColumns checks if all keyset cursor columns are supported.
+// Returns an error if any column is unsupported.
+func validateKeysetColumns(columns []KeysetColumn) error {
+	for _, col := range columns {
+		if !isSupportedKeysetColumn(col.Attribute) {
+			return fmt.Errorf("keyset pagination on attribute %q is not supported (EAV attributes require schema cache)", col.Attribute)
+		}
+	}
 	return nil
 }
 

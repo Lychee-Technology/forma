@@ -96,6 +96,10 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	rows, err := duck.DB.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		planCtx.recordQueryFailure(err)
+		// Record failure in circuit breaker
+		if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
+			breaker.RecordFailure()
+		}
 		return 0, fmt.Errorf("execute duckdb query: %w", err)
 	}
 	defer rows.Close()
@@ -103,7 +107,16 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	// Stream and process rows
 	totalRecords, rowCount, err := r.streamDuckDBRows(ctx, rows, rowHandler)
 	if err != nil {
+		// Record failure in circuit breaker
+		if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
+			breaker.RecordFailure()
+		}
 		return 0, err
+	}
+
+	// Record success in circuit breaker
+	if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
+		breaker.RecordSuccess()
 	}
 
 	// Finalize execution plan
@@ -291,13 +304,11 @@ func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache for
 		return
 	}
 	if len(cache) == 0 {
-		// No cache: fall back to defaults that match the fixed layout
+		// No cache: fall back to defaults that match the fixed layout without EAV
 		sqlParams["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
-		sqlParams["PGSourceSelect"] = "m.ltbase_row_id AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
+		sqlParams["PGSourceSelect"] = "m.ltbase_row_id::VARCHAR AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, ''::VARCHAR AS tag"
 		sqlParams["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
-		sqlParams["EAVPivotSelect"] = "MAX(CASE WHEN attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
-		sqlParams["EAVPivotAttrs"] = "205"
-		sqlParams["HasEAVPivot"] = true
+		sqlParams["HasEAVPivot"] = false
 		sqlParams["OuterSelect"] = fallbackOuterSelect(schemaID)
 		return
 	}
@@ -325,6 +336,20 @@ func fallbackOuterSelect(schemaID int16) string {
 			deleted_ts AS ltbase_deleted_at,
 			name AS text_01,
 			age AS integer_01,
+			tag AS text_02,
+			NULL::SMALLINT AS smallint_01,
+			NULL::INTEGER AS integer_02,
+			NULL::BIGINT AS bigint_01,
+			NULL::BIGINT AS bigint_02,
+			NULL::BIGINT AS bigint_03,
+			NULL::BIGINT AS bigint_04,
+			NULL::DOUBLE AS double_01,
+			NULL::DOUBLE AS double_02,
+			NULL::BOOLEAN AS boolean_01,
+			NULL::UUID AS uuid_01,
+			NULL::VARCHAR AS text_03,
+			NULL::VARCHAR AS text_04,
+			NULL::VARCHAR AS text_05,
 			'[]'::TEXT AS attributes_json`, schemaID)
 }
 
