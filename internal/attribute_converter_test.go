@@ -195,6 +195,17 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 	}
 }
 
+func TestExtractValueFromEAVRecord_ReturnsErrorOnStorageTypeMismatch(t *testing.T) {
+	textVal := "123"
+	_, err := extractValueFromEAVRecord(EAVRecord{ValueText: &textVal}, forma.ValueTypeNumeric)
+	if err == nil {
+		t.Fatal("expected storage/type mismatch error")
+	}
+	if !strings.Contains(err.Error(), "value_numeric") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestToFloat64ForEAV(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -338,6 +349,62 @@ func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(
 	}
 }
 
+func TestAttributeConverterFromEAVRecords_UnknownAttributeIDReturnsError(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   402,
+		schemaName: "unknown_attr_schema",
+		cache: forma.SchemaAttributeCache{
+			"name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	value := "mystery"
+	_, err := converter.FromEAVRecords([]EAVRecord{{
+		SchemaID:  402,
+		RowID:     rowID,
+		AttrID:    999,
+		ValueText: &value,
+	}})
+	if err == nil {
+		t.Fatal("expected unknown attr id error")
+	}
+	if !strings.Contains(err.Error(), "unknown attribute id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAttributeConverterFromEAVRecords_RequiredChildUsesArrayIndexContext(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   403,
+		schemaName: "indexed_required_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                           {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"propertyInterests.propertyId": {AttributeID: 2, ValueType: forma.ValueTypeText},
+			"propertyInterests.status":     {AttributeID: 3, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "lead-1"
+	propertyID := "p-1"
+	status := "viewed"
+
+	_, err := converter.FromEAVRecords([]EAVRecord{
+		{SchemaID: 403, RowID: rowID, AttrID: 1, ValueText: &idValue},
+		{SchemaID: 403, RowID: rowID, AttrID: 2, ArrayIndices: "0", ValueText: &propertyID},
+		{SchemaID: 403, RowID: rowID, AttrID: 3, ArrayIndices: "1", ValueText: &status},
+	})
+	if err == nil {
+		t.Fatal("expected per-index required validation error")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'propertyInterests.status'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestShouldEnforceRequiredAttribute(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -373,9 +440,9 @@ func TestShouldEnforceRequiredAttribute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			present := make(map[string]struct{}, len(tt.presentAttrName))
+			present := make(map[string]map[string]struct{}, len(tt.presentAttrName))
 			for _, name := range tt.presentAttrName {
-				present[name] = struct{}{}
+				present[name] = map[string]struct{}{"": {}}
 			}
 			got := shouldEnforceRequiredAttribute(tt.attrName, present)
 			if got != tt.expected {

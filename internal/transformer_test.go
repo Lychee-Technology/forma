@@ -12,8 +12,6 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest/observer"
 )
 
 type stubSchemaRegistry struct {
@@ -513,7 +511,7 @@ func TestPopulateTypedValueRequired(t *testing.T) {
 	assert.Nil(t, attr.ValueText)
 }
 
-func TestPopulateTypedValueOptionalSkipsOnError(t *testing.T) {
+func TestPopulateTypedValueOptionalReturnsError(t *testing.T) {
 	attr := EAVRecord{}
 	meta := forma.AttributeMetadata{
 		AttributeID: 2,
@@ -521,19 +519,43 @@ func TestPopulateTypedValueOptionalSkipsOnError(t *testing.T) {
 		Required:    false,
 	}
 
-	core, observed := observer.New(zap.WarnLevel)
-	logger := zap.New(core)
-	original := zap.L()
-	zap.ReplaceGlobals(logger)
-	t.Cleanup(func() { zap.ReplaceGlobals(original) })
-
 	set, err := populateTypedValue(&attr, "optional", "not-a-uuid", meta)
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.False(t, set)
 	assert.Nil(t, attr.ValueText)
-	entries := observed.FilterMessage("skip optional attribute").All()
-	require.NotEmpty(t, entries)
-	assert.Equal(t, "optional", entries[0].ContextMap()["attribute"])
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+func TestTransformer_ToAttributes_UnknownLeafAttribute_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"name":    "Alice",
+		"unknown": "value",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown")
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+func TestTransformer_ToAttributes_InvalidOptionalValue_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	reg := newStubSchemaRegistry()
+	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+	tr := NewTransformer(reg)
+
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+		"name": "Alice",
+		"age":  "not-a-number",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "age")
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
 }
 
 // F3: null-clear divergence tests
@@ -691,20 +713,19 @@ func TestTransformer_ToAttributes_NullObjectArrayItem_ReturnsError(t *testing.T)
 	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
 }
 
-// A null inside an array whose path is NOT in the schema must be silently skipped.
-func TestTransformer_ToAttributes_NullUnknownArrayItem_IsSilentlySkipped(t *testing.T) {
+// A null inside an array whose path is NOT in the schema must now be rejected.
+func TestTransformer_ToAttributes_NullUnknownArrayItem_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 	reg := newStubSchemaRegistry() // "unknown_list" is not in schema
 	schemaID, _, err := reg.GetSchemaAttributeCacheByName("test")
 	require.NoError(t, err)
 	tr := NewTransformer(reg)
 
-	attrs, err := tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
+	_, err = tr.ToAttributes(ctx, schemaID, uuid.New(), map[string]any{
 		"name":         "Alice",
 		"unknown_list": []any{"x", nil},
 	})
-	require.NoError(t, err)
-	// Only "name" should be stored; unknown_list is skipped entirely.
-	require.Len(t, attrs, 1)
-	assert.Equal(t, int16(1), attrs[0].AttrID) // name
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown_list")
+	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
 }

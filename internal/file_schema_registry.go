@@ -143,9 +143,18 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 	for _, mapping := range mappings {
 		schemaName := mapping.name
 		schemaID := mapping.id
+		if existingName, exists := r.idToName[schemaID]; exists {
+			return fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
+		}
+		if existingID, exists := r.nameToID[schemaName]; exists {
+			return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
+		}
 
 		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
+			return err
+		}
+		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
 		r.registerSchema(schemaName, schemaID, cache, schema)
@@ -312,6 +321,9 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 
 		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
+			return err
+		}
+		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
 		r.registerSchema(schemaName, schemaID, cache, schema)

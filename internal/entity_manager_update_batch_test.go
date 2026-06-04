@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -235,6 +236,55 @@ func TestEntityManager_BatchDelete_CollectsErrors(t *testing.T) {
 	}
 	if _, exists := mockRepo.records[schemaID][rowID]; exists {
 		t.Fatalf("expected record to be deleted")
+	}
+}
+
+func TestEntityManager_Update_InvalidOptionalValueReturnsErrorAndPreservesStoredRecord(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry := newStubSchemaRegistry()
+	transformer := NewPersistentRecordTransformer(registry)
+	mockRepo := newMockPersistentRecordRepository()
+
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
+	if err != nil {
+		t.Fatalf("failed to get schema metadata: %v", err)
+	}
+
+	rowID := uuid.New()
+	existing := buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{
+		"name": "Alice",
+		"age":  30,
+	})
+	mockRepo.storeRecord(existing)
+
+	em := NewEntityManager(transformer, mockRepo, registry, config)
+	req := &forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "test", RowID: rowID},
+		Type:             forma.OperationUpdate,
+		Updates: map[string]any{
+			"age": "not-a-number",
+		},
+	}
+
+	_, err = em.Update(ctx, req)
+	if err == nil {
+		t.Fatal("expected update to fail")
+	}
+	if !errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got: %v", err)
+	}
+
+	stored := mockRepo.records[schemaID][rowID]
+	if stored == nil {
+		t.Fatal("expected stored record to remain")
+	}
+	reloaded, err := transformer.FromPersistentRecord(ctx, stored)
+	if err != nil {
+		t.Fatalf("failed to reload stored record: %v", err)
+	}
+	if reloaded["age"] != float64(30) {
+		t.Fatalf("expected persisted age to remain 30, got %v", reloaded["age"])
 	}
 }
 

@@ -118,6 +118,24 @@ func TestParseAttributeMetadata(t *testing.T) {
 			expectErr: "attributeID",
 		},
 		{
+			name:     "error fractional attributeID",
+			attrName: "fractionalID",
+			attrData: map[string]any{
+				"attributeID": 1.5,
+				"valueType":   "text",
+			},
+			expectErr: "integer",
+		},
+		{
+			name:     "error out of range attributeID",
+			attrName: "overflowID",
+			attrData: map[string]any{
+				"attributeID": 40000.0,
+				"valueType":   "text",
+			},
+			expectErr: "out of range",
+		},
+		{
 			name:      "error invalid valueType",
 			attrName:  "missingValueType",
 			attrData:  map[string]any{"attributeID": 3.0},

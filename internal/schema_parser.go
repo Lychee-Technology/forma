@@ -214,11 +214,11 @@ func parseFileAttributeMetadata(attrName string, attrData map[string]any, source
 	meta := forma.AttributeMetadata{AttributeName: attrName}
 
 	// Parse attributeID
-	attrIDRaw, ok := attrData["attributeID"].(float64)
-	if !ok {
-		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, source)
+	attrID, err := parseAttributeID(attrData["attributeID"], attrName, source)
+	if err != nil {
+		return forma.AttributeMetadata{}, err
 	}
-	meta.AttributeID = int16(attrIDRaw)
+	meta.AttributeID = attrID
 
 	// Parse valueType
 	valueTypeStr, ok := attrData["valueType"].(string)
