@@ -47,7 +47,7 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 		{
 			name:     "ValueTypeNumeric",
 			vt:       forma.ValueTypeNumeric,
-			expected: "DECIMAL",
+			expected: "DECIMAL(38,10)",
 		},
 		{
 			name:     "ValueTypeDate",
@@ -248,21 +248,21 @@ func TestToDuckDBParam_Bool_InvalidType(t *testing.T) {
 func TestToDuckDBParam_Numeric_FromFloat64(t *testing.T) {
 	result, err := ToDuckDBParam(42.5, forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, 42.5, result)
+	require.Equal(t, "42.5", result)
 }
 
 func TestToDuckDBParam_Numeric_FromPointerFloat64(t *testing.T) {
 	val := 42.5
 	result, err := ToDuckDBParam(&val, forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, 42.5, result)
+	require.Equal(t, "42.5", result)
 }
 
 func TestToDuckDBParam_Numeric_FromFloat32(t *testing.T) {
 	val := float32(42.5)
 	result, err := ToDuckDBParam(val, forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, float64(42.5), result.(float64))
+	require.Equal(t, "42.5", result)
 }
 
 func TestToDuckDBParam_Numeric_FromInt(t *testing.T) {
@@ -289,7 +289,7 @@ func TestToDuckDBParam_Numeric_FromInt64(t *testing.T) {
 	val := int64(42)
 	result, err := ToDuckDBParam(val, forma.ValueTypeBigInt)
 	require.NoError(t, err)
-	require.Equal(t, float64(42), result)
+	require.Equal(t, "42", result)
 }
 
 func TestToDuckDBParam_Numeric_FromString(t *testing.T) {
@@ -373,7 +373,7 @@ func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {
 
 func TestMapValueTypeToListDuckDBType_NumericElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeNumeric)
-	require.Equal(t, "LIST(DECIMAL)", result)
+	require.Equal(t, "LIST(DECIMAL(38,10))", result)
 }
 
 func TestMapValueTypeToListDuckDBType_BoolElement(t *testing.T) {

@@ -690,7 +690,7 @@ func TestStreamDuckDBFederatedQuery_GivenBaseAndDeltaRowsWithoutHotData_WhenQuer
 func TestStreamDuckDBFederatedQuery_GivenSoftDeletedRowsAcrossMixedTiers_WhenQueried_ThenDeletedRowsAreExcluded(t *testing.T) {
 	withProductionDuckDBTemplateDescriptors(t)
 	env := setupProductionFederatedE2EEnv(t)
-	clearProductionFederatedData(t, env, 105)
+	clearProductionFederatedData(t, env, 103)
 
 	baseDeletedRowID := uuid.Must(uuid.NewV7())
 	hotDeletedRowID := uuid.Must(uuid.NewV7())
@@ -699,7 +699,7 @@ func TestStreamDuckDBFederatedQuery_GivenSoftDeletedRowsAcrossMixedTiers_WhenQue
 
 	writeProductionParquet(t, env, "base", "deleted_base.parquet", []productionTestRecord{{
 		RowID:     baseDeletedRowID,
-		SchemaID:  105,
+		SchemaID:  103,
 		Name:      "deleted-base",
 		Age:       7,
 		Tag:       "deleted-base-tag",
@@ -708,17 +708,17 @@ func TestStreamDuckDBFederatedQuery_GivenSoftDeletedRowsAcrossMixedTiers_WhenQue
 	}})
 	writeProductionParquet(t, env, "delta", "deleted_delta.parquet", []productionTestRecord{{
 		RowID:     uuid.Must(uuid.NewV7()),
-		SchemaID:  105,
+		SchemaID:  103,
 		Name:      "placeholder",
 		Age:       0,
 		Tag:       "placeholder",
 		ChangedAt: 0,
 		DeletedAt: deletedAt,
 	}})
-	insertProductionDeletedHotRecord(t, env, 105, hotDeletedRowID, now.Add(-1*time.Hour).UnixMilli(), deletedAt, "deleted-hot", 9)
+	insertProductionDeletedHotRecord(t, env, 103, hotDeletedRowID, now.Add(-1*time.Hour).UnixMilli(), deletedAt, "deleted-hot", 9)
 
 	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{SchemaID: 105, Limit: 10, Offset: 0},
+		AttributeQuery: AttributeQuery{SchemaID: 103, Limit: 10, Offset: 0},
 		DuckDBHints: &DuckDBRenderHints{
 			S3ParquetPathTemplate: fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", env.bucket, env.prefix, env.bucket, env.prefix),
 		},

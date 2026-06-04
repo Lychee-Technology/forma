@@ -146,7 +146,7 @@ func TestBuildListPredicate_StartsWith(t *testing.T) {
 func TestBuildListPredicate_Gt(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gt", "10", forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x > CAST(? AS DECIMAL))", sql)
+	require.Equal(t, "list_any_match(values, x -> x > CAST(? AS DECIMAL(38,10)))", sql)
 	require.Equal(t, "10", param)
 }
 
@@ -389,7 +389,7 @@ func TestGenerateDuckDBWhereClause_GivenNestedAndOrConditions_WhenClauseBuilt_Th
 
 	clause, args, err := GenerateDuckDBWhereClause(q)
 	require.NoError(t, err)
-	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DECIMAL)) OR (email LIKE ?))", clause)
+	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DECIMAL(38,10))) OR (email LIKE ?))", clause)
 	require.Equal(t, []any{"active", 10.0, "ops%"}, args)
 }
 

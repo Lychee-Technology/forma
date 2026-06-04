@@ -121,6 +121,8 @@ func recordColumnValue(record *PersistentRecord, col KeysetColumn) interface{} {
 		return record.CreatedAt
 	case "ver_ts", "updated_at":
 		return record.UpdatedAt
+	case "schema_id":
+		return int64(record.SchemaID)
 	case "deleted_ts", "deleted_at":
 		if record.DeletedAt != nil {
 			return *record.DeletedAt

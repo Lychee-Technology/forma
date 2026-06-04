@@ -91,6 +91,12 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	// Record translation in plan
 	planCtx.recordTranslation(sqlStr, translateMs, q.UseMainAsAnchor)
 
+	// Check circuit breaker before executing
+	if breaker := GetDuckDBCircuitBreaker(); breaker != nil && breaker.IsOpen() {
+		planCtx.recordClientUnavailable()
+		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected")
+	}
+
 	// Execute query
 	planCtx.recordQueryStart()
 	rows, err := duck.DB.QueryContext(ctx, sqlStr, args...)

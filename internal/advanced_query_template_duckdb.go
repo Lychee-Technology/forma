@@ -74,7 +74,7 @@ ranked AS (
   FROM unified
   WHERE
     {{if .HAS_KEYSET}}({{.KEYSET_WHERE_CLAUSE}}) AND{{end}}
-    ({{.LOGICAL_WHERE_CLAUSE}})
+    1=1
 ),
 
 visible AS (
@@ -82,6 +82,7 @@ visible AS (
   FROM ranked
   WHERE rn = 1
     AND (deleted_ts IS NULL OR deleted_ts = 0)
+    AND ({{.LOGICAL_WHERE_CLAUSE}})
 )
 
 SELECT
