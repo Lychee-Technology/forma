@@ -23,7 +23,10 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 	case forma.ValueTypeBigInt:
 		return "BIGINT"
 	case forma.ValueTypeNumeric:
-		return "DOUBLE"
+		// Use explicit-precision DECIMAL to preserve numeric precision instead of DOUBLE.
+		// DECIMAL(38,10) supports 38 digits total, 10 fractional — enough for financial
+		// and scientific use-cases without default truncation.
+		return "DECIMAL(38,10)"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Use TIMESTAMP for temporal types (configurable in future)
 		return "TIMESTAMP"
@@ -109,12 +112,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		default:
 			return nil, fmt.Errorf("cannot convert %T to BOOLEAN param", value)
 		}
-	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
-		if n, ok := value.(string); ok {
-			// leave parsing to caller; return string so it can be param-parsed by template renderer if desired
-			return n, nil
-		}
-
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
 		numeric, isNil, err := toOptionalFloat64Param(value)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert %T to numeric param", value)
@@ -123,6 +121,58 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 			return nil, nil
 		}
 		return numeric, nil
+	case forma.ValueTypeBigInt, forma.ValueTypeNumeric:
+		// Preserve exact precision by converting to string — DuckDB accepts
+		// string representations for DECIMAL and HUGEINT column bindings.
+		if s, ok := value.(string); ok {
+			return s, nil
+		}
+		switch v := value.(type) {
+		case *float64:
+			if v == nil {
+				return nil, nil
+			}
+			return decimalString(*v), nil
+		case *float32:
+			if v == nil {
+				return nil, nil
+			}
+			return decimalString(float64(*v)), nil
+		case *int:
+			if v == nil {
+				return nil, nil
+			}
+			return fmt.Sprintf("%d", *v), nil
+		case *int16:
+			if v == nil {
+				return nil, nil
+			}
+			return fmt.Sprintf("%d", *v), nil
+		case *int32:
+			if v == nil {
+				return nil, nil
+			}
+			return fmt.Sprintf("%d", *v), nil
+		case *int64:
+			if v == nil {
+				return nil, nil
+			}
+			return fmt.Sprintf("%d", *v), nil
+		case float64:
+			return decimalString(v), nil
+		case float32:
+			return decimalString(float64(v)), nil
+		case int64:
+			return fmt.Sprintf("%d", v), nil
+		case int:
+			return fmt.Sprintf("%d", v), nil
+		case int32:
+			return fmt.Sprintf("%d", v), nil
+		case int16:
+			return fmt.Sprintf("%d", v), nil
+		default:
+			return nil, fmt.Errorf("cannot convert %T to bigint/numeric param", value)
+		}
 	case forma.ValueTypeText:
 		switch s := value.(type) {
 		case string:
@@ -140,6 +190,10 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		// Fallback: return as-is
 		return value, nil
 	}
+}
+
+func decimalString(v float64) string {
+	return fmt.Sprintf("%.15g", v)
 }
 
 func toOptionalFloat64Param(value any) (float64, bool, error) {

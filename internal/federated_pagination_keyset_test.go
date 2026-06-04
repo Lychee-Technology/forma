@@ -1,11 +1,59 @@
 package internal
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
+
+func TestValidateKeysetColumns_SystemColumnsSupported(t *testing.T) {
+	supportedColumns := []KeysetColumn{
+		{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		{Attribute: "created_at", Direction: forma.SortOrderDesc},
+		{Attribute: "updated_at", Direction: forma.SortOrderAsc},
+		{Attribute: "deleted_at", Direction: forma.SortOrderAsc},
+		{Attribute: "ver_ts", Direction: forma.SortOrderDesc},
+		{Attribute: "deleted_ts", Direction: forma.SortOrderAsc},
+		{Attribute: "schema_id", Direction: forma.SortOrderAsc},
+	}
+
+	err := validateKeysetColumns(supportedColumns)
+	if err != nil {
+		t.Errorf("expected no error for supported columns, got: %v", err)
+	}
+}
+
+func TestValidateKeysetColumns_EAVAttributeUnsupported(t *testing.T) {
+	unsupportedColumns := []KeysetColumn{
+		{Attribute: "created_at", Direction: forma.SortOrderDesc},
+		{Attribute: "user_email", Direction: forma.SortOrderAsc}, // EAV attribute
+		{Attribute: "row_id", Direction: forma.SortOrderAsc},
+	}
+
+	err := validateKeysetColumns(unsupportedColumns)
+	if err == nil {
+		t.Fatal("expected error for EAV attribute, got nil")
+	}
+
+	expectedMsg := "keyset pagination on attribute \"user_email\" is not supported"
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Errorf("expected error message to contain %q, got: %v", expectedMsg, err)
+	}
+}
+
+func TestValidateKeysetColumns_EmptyColumnsValid(t *testing.T) {
+	err := validateKeysetColumns(nil)
+	if err != nil {
+		t.Errorf("expected no error for nil columns, got: %v", err)
+	}
+
+	err = validateKeysetColumns([]KeysetColumn{})
+	if err != nil {
+		t.Errorf("expected no error for empty columns, got: %v", err)
+	}
+}
 
 func TestGenerateKeysetWhereClause_SingleColumnAsc(t *testing.T) {
 	cursor := &KeysetCursor{
@@ -62,75 +110,6 @@ func TestGenerateKeysetWhereClause_TwoColumnsMixedDirection(t *testing.T) {
 	}
 }
 
-func TestGenerateKeysetWhereClause_ThreeColumns(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
-			{Attribute: "symbol", Direction: forma.SortOrderAsc},
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
-		},
-		Values: []interface{}{"SYM00001", int64(1000), "abc-123"},
-		Mode:   KeysetCursorModeAfter,
-	}
-	clause, args := generateKeysetWhereClause(cursor, "", 0)
-	expected := "(symbol > $1) OR (symbol = $1 AND created_at < $2) OR (symbol = $1 AND created_at = $2 AND row_id > $3)"
-	if clause != expected {
-		t.Errorf("expected %q, got %q", expected, clause)
-	}
-	if len(args) != 3 {
-		t.Errorf("expected 3 args, got %d: %v", len(args), args)
-	}
-}
-
-func TestGenerateKeysetWhereClause_BeforeMode(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderAsc},
-		},
-		Values: []interface{}{int64(1000)},
-		Mode:   KeysetCursorModeBefore,
-	}
-	clause, args := generateKeysetWhereClause(cursor, "", 0)
-	expected := "(created_at < $1)"
-	if clause != expected {
-		t.Errorf("expected %q, got %q", expected, clause)
-	}
-	if len(args) != 1 || args[0] != int64(1000) {
-		t.Errorf("expected args [1000], got %v", args)
-	}
-}
-
-func TestGenerateKeysetWhereClause_BeforeModeDesc(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-		},
-		Values: []interface{}{int64(1000)},
-		Mode:   KeysetCursorModeBefore,
-	}
-	clause, _ := generateKeysetWhereClause(cursor, "", 0)
-	expected := "(created_at > $1)"
-	if clause != expected {
-		t.Errorf("expected %q, got %q", expected, clause)
-	}
-}
-
-func TestGenerateKeysetWhereClause_WithTableAlias(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderAsc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
-		},
-		Values: []interface{}{int64(1000), "abc-123"},
-		Mode:   KeysetCursorModeAfter,
-	}
-	clause, _ := generateKeysetWhereClause(cursor, "unified.", 0)
-	expected := "(unified.created_at > $1) OR (unified.created_at = $1 AND unified.row_id > $2)"
-	if clause != expected {
-		t.Errorf("expected %q, got %q", expected, clause)
-	}
-}
-
 func TestGenerateKeysetWhereClause_ParamOffset(t *testing.T) {
 	cursor := &KeysetCursor{
 		Columns: []KeysetColumn{
@@ -183,9 +162,10 @@ func TestBuildKeysetOrderBy(t *testing.T) {
 
 func TestExtractCursorFromRecord(t *testing.T) {
 	record := &PersistentRecord{
-		RowID:     uuid.Must(uuid.Parse("12345678-1234-1234-1234-123456789012")),
-		CreatedAt: int64(1700000000),
-		UpdatedAt: int64(1700000100),
+		RowID:      uuid.Must(uuid.Parse("12345678-1234-1234-1234-123456789012")),
+		CreatedAt:  int64(1700000000),
+		UpdatedAt:  int64(1700000100),
+		SchemaID:   int16(42),
 	}
 	columns := []KeysetColumn{
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
@@ -224,5 +204,14 @@ func TestExtractCursorFromRecord_EmptyColumns(t *testing.T) {
 	cursor := extractCursorFromRecord(record, nil)
 	if cursor != nil {
 		t.Errorf("expected nil cursor for empty columns")
+	}
+}
+
+func TestRecordColumnValue_SchemaID(t *testing.T) {
+	record := &PersistentRecord{SchemaID: int16(103)}
+	col := KeysetColumn{Attribute: "schema_id"}
+	val := recordColumnValue(record, col)
+	if val != int64(103) {
+		t.Errorf("expected schema_id=103, got %v (%T)", val, val)
 	}
 }

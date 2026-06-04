@@ -226,12 +226,12 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				wg.Add(1)
 				go func(wid, iter int) {
 					defer wg.Done()
-					<-barrier
+				<-barrier
 
-					run, records, err := r.executeWorkload(ctx, h, workload)
-					if err != nil {
-						run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
-					}
+				run, records, err := r.executeWorkloadWithRetry(ctx, h, workload)
+				if err != nil {
+					run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
+				}
 					run.WorkerID = wid
 					run.GroupID = iter
 					resultsChan <- concurrentResult{run: run, records: records}
@@ -357,6 +357,27 @@ func (r *Runner) validateFixtures() error {
 		}
 	}
 	return nil
+}
+
+var maxInfraRetries = 2
+
+func (r *Runner) executeWorkloadWithRetry(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxInfraRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return WorkloadRunResult{}, nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		run, records, err := r.executeWorkload(ctx, h, workload)
+		if err == nil {
+			return run, records, nil
+		}
+		lastErr = err
+	}
+	return WorkloadRunResult{}, nil, lastErr
 }
 
 func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
