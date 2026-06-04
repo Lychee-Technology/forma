@@ -662,8 +662,9 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 		}
 	}
 
-	// Build S3 source projection
-	s3Parts := []string{"row_id", "ltbase_created_at AS created_at", "ltbase_updated_at AS ver_ts", "ltbase_deleted_at AS deleted_ts"}
+	// Benchmark parquet files expose changed_at/deleted_at directly rather than the
+	// production ltbase_* columns used by exported entity_main projections.
+	s3Parts := []string{"row_id", "changed_at AS created_at", "changed_at AS ver_ts", "deleted_at AS deleted_ts"}
 	for _, a := range allAttrs {
 		s3Parts = append(s3Parts, a.s3Expr)
 	}
