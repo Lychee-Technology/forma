@@ -1,4 +1,4 @@
-.PHONY: test test-unit lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy build-all build-lambda clean all create-build-dir link
+.PHONY: test test-unit lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -97,6 +97,19 @@ build-tools: create-build-dir
 	@echo "Building $(GOOS)-$(GOARCH) -> $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH)"
 	@$(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH) $(MAIN_TOOLS)
 	@echo "Tools build complete."
+
+validate-schema-consistency: build-tools link
+	@echo "Running schema consistency validator..."
+	@./$(BUILD_DIR)/$(BINARY_TOOLS) validate-schema-consistency \
+		--db-host $${DB_HOST:-localhost} \
+		--db-port $${DB_PORT:-5432} \
+		--db-user $${DB_USER:-postgres} \
+		--db-password $${DB_PASSWORD:-postgres} \
+		--db-name $${DB_NAME:-forma} \
+		--db-ssl-mode $${DB_SSL_MODE:-disable} \
+		--schema-registry-table $${SCHEMA_TABLE:-schema_registry_dev} \
+		--schema-dir $${SCHEMA_DIR:-cmd/server/schemas} \
+		--eav-table $${EAV_TABLE:-eav_data_dev}
 
 # Build sample for current platform
 build-sample: create-build-dir

@@ -15,6 +15,8 @@ type toolCommand struct {
 	exitOnError bool
 }
 
+var runValidateSchemaConsistencyFn = runValidateSchemaConsistency
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -58,6 +60,7 @@ func toolCommands() []toolCommand {
 		{name: "generate-attributes", run: runGenerateAttributes},
 		{name: "init-db", run: runInitDB},
 		{name: "inline-schema", run: runInlineSchema},
+		{name: "validate-schema-consistency", run: runValidateSchemaConsistencyFn, exitOnError: true},
 		{name: "cdc-flush", run: runCDCFlush, exitOnError: true},
 		{name: "cdc-init", run: runCDCInit, exitOnError: true},
 		{name: "compactor", run: runCompactor, exitOnError: true},
@@ -71,6 +74,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
 	fmt.Fprintln(out, "  init-db               Create PostgreSQL tables and indexes for Forma")
 	fmt.Fprintln(out, "  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
+	fmt.Fprintln(out, "  validate-schema-consistency Validate schema metadata and EAV storage before upgrade")
 	fmt.Fprintln(out, "  cdc-flush             Run CDC change_log flush to S3 parquet files")
 	fmt.Fprintln(out, "  cdc-init              Initialize S3 parquet base files from existing data")
 	fmt.Fprintln(out, "  compactor             Run compaction on parquet files for a schema")
