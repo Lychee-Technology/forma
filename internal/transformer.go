@@ -1,5 +1,14 @@
 package internal
 
+// Error handling strategy:
+//
+// Write-path validation errors wrap forma.ErrInvalidInput so callers can map
+// them to user-facing 4xx responses.
+//
+// Read-path consistency failures, such as metadata drift or storage-column
+// mismatches, return plain errors because they indicate system state problems
+// rather than invalid caller input.
+
 import (
 	"context"
 	"encoding/json"
@@ -10,7 +19,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"go.uber.org/zap"
 )
 
 type transformer struct {
@@ -289,8 +297,7 @@ func (t *transformer) flattenToAttributes(
 		attrName := strings.Join(path, ".")
 		meta, ok := cache[attrName]
 		if !ok {
-			zap.S().Warnf("attribute '%s' not defined for schema %d", attrName, schemaID)
-			return nil
+			return fmt.Errorf("attribute '%s' is not defined for schema %d: %w", attrName, schemaID, forma.ErrInvalidInput)
 		}
 
 		attr := EAVRecord{
@@ -314,12 +321,12 @@ func (t *transformer) flattenToAttributes(
 
 func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
 	handleConversionError := func(err error) (bool, error) {
-		policy := meta.EffectiveRequiredPolicy()
-		if policy == forma.RequiredPolicyAlways || policy == forma.RequiredPolicyIfParentPresent {
-			return false, err
-		}
-		zap.S().Warnw("skip optional attribute", "attribute", attrName, "attributeID", meta.AttributeID, "err", err)
-		return false, nil
+		return false, fmt.Errorf(
+			"invalid value for attribute '%s' (attrID=%d): %w",
+			attrName,
+			meta.AttributeID,
+			fmt.Errorf("%w: %v", forma.ErrInvalidInput, err),
+		)
 	}
 
 	switch meta.ValueType {

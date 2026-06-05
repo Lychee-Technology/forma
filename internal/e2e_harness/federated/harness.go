@@ -30,6 +30,7 @@ type FederatedTestHarness struct {
 	S3Bucket  string
 	S3Prefix  string
 	CDCConfig cdc.CDCConfig
+	Registry  forma.SchemaRegistry
 
 	// Postgres connection info for DuckDB postgres_scan
 	PGHost     string

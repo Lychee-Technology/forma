@@ -188,8 +188,10 @@ func ToTestRecords(records []GeneratedRecord) []federated.TestRecord {
 			attrs[key] = value
 		}
 		attrs["version"] = record.Version
-		if _, ok := attrs["name"]; !ok {
-			attrs["name"] = benchmarkDisplayName(record)
+		if shouldBackfillBenchmarkName(record.SchemaName) {
+			if _, ok := attrs["name"]; !ok {
+				attrs["name"] = benchmarkDisplayName(record)
+			}
 		}
 		out = append(out, federated.TestRecord{
 			RowID:      record.RowID,
@@ -201,6 +203,15 @@ func ToTestRecords(records []GeneratedRecord) []federated.TestRecord {
 		})
 	}
 	return out
+}
+
+func shouldBackfillBenchmarkName(schemaName string) bool {
+	switch schemaName {
+	case "customer", "security":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateTierMixProfile(profile TierMixProfile) error {

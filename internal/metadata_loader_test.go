@@ -258,6 +258,94 @@ func TestLoadMetadata_MissingAttributesFileFails(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestLoadMetadata_DuplicateSchemaIDFails(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	dir := t.TempDir()
+
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).
+		AddRow("alpha", int16(1)).
+		AddRow("beta", int16(1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("dup_reg"))).WillReturnRows(rows)
+
+	writeJSONFile(t, filepath.Join(dir, "alpha_attributes.json"), map[string]any{
+		"name": map[string]any{"attributeID": float64(10), "valueType": "text"},
+	})
+	writeJSONFile(t, filepath.Join(dir, "beta_attributes.json"), map[string]any{
+		"status": map[string]any{"attributeID": float64(20), "valueType": "text"},
+	})
+
+	loader := NewMetadataLoader(mock, "dup_reg", dir)
+	_, err = loader.LoadMetadata(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate schema id")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoadMetadata_DuplicateAttributeIDFails(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	dir := t.TempDir()
+
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("dupattrs", int16(1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("dup_attr_reg"))).WillReturnRows(rows)
+
+	writeJSONFile(t, filepath.Join(dir, "dupattrs_attributes.json"), map[string]any{
+		"first":  map[string]any{"attributeID": float64(7), "valueType": "text"},
+		"second": map[string]any{"attributeID": float64(7), "valueType": "text"},
+	})
+
+	loader := NewMetadataLoader(mock, "dup_attr_reg", dir)
+	_, err = loader.LoadMetadata(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate attribute id")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLoadMetadata_DuplicateColumnBindingFails(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	dir := t.TempDir()
+
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("dupbinding", int16(1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("dup_binding_reg"))).WillReturnRows(rows)
+
+	writeJSONFile(t, filepath.Join(dir, "dupbinding_attributes.json"), map[string]any{
+		"first": map[string]any{
+			"attributeID": float64(7),
+			"valueType":   "text",
+			"column_binding": map[string]any{
+				"col_name": "text_01",
+			},
+		},
+		"second": map[string]any{
+			"attributeID": float64(8),
+			"valueType":   "text",
+			"column_binding": map[string]any{
+				"col_name": "text_01",
+			},
+		},
+	})
+
+	loader := NewMetadataLoader(mock, "dup_binding_reg", dir)
+	_, err = loader.LoadMetadata(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate column binding")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // helper to write JSON to file
 func writeJSONFile(t *testing.T, path string, v any) {
 	t.Helper()

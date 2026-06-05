@@ -148,25 +148,23 @@ func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) 
 	sort.Strings(keys)
 	for _, name := range keys {
 		value := r.Attributes[name]
-		var valueText sql.NullString
-		var valueNumeric sql.NullFloat64
+		valueText, valueNumeric := eavValueColumns(value)
 
-		switch v := value.(type) {
-		case string:
-			valueText = sql.NullString{String: v, Valid: true}
-		case int, int64, float64:
-			valueNumeric = sql.NullFloat64{Float64: toFloat64(v), Valid: true}
-		default:
-			valueText = sql.NullString{String: fmt.Sprintf("%v", v), Valid: true}
+		attrID, shouldInsert, err := h.attributeIDForRecord(r.SchemaID, name)
+		if err != nil {
+			return fmt.Errorf("resolve attribute id for %s: %w", name, err)
+		}
+		if !shouldInsert {
+			continue
 		}
 
-		_, err := h.PGDB.ExecContext(ctx, `
+		_, err = h.PGDB.ExecContext(ctx, `
 			INSERT INTO eav_data (schema_id, row_id, attr_id, array_indices, value_text, value_numeric)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (schema_id, row_id, attr_id, array_indices) DO UPDATE SET
 				value_text = EXCLUDED.value_text,
 				value_numeric = EXCLUDED.value_numeric
-		`, r.SchemaID, r.RowID, DeterministicAttributeID(r.SchemaID, name), "", valueText, valueNumeric)
+		`, r.SchemaID, r.RowID, attrID, "", valueText, valueNumeric)
 		if err != nil {
 			return fmt.Errorf("insert eav_data for %s: %w", name, err)
 		}
@@ -174,7 +172,60 @@ func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) 
 	return nil
 }
 
+func eavValueColumns(value any) (sql.NullString, sql.NullFloat64) {
+	var valueText sql.NullString
+	var valueNumeric sql.NullFloat64
+
+	switch v := value.(type) {
+	case string:
+		valueText = sql.NullString{String: v, Valid: true}
+	case bool:
+		if v {
+			valueNumeric = sql.NullFloat64{Float64: 1, Valid: true}
+		} else {
+			valueNumeric = sql.NullFloat64{Float64: 0, Valid: true}
+		}
+	case int, int64, float64:
+		valueNumeric = sql.NullFloat64{Float64: toFloat64(v), Valid: true}
+	default:
+		valueText = sql.NullString{String: fmt.Sprintf("%v", v), Valid: true}
+	}
+
+	return valueText, valueNumeric
+}
+
+func (h *FederatedTestHarness) attributeIDForRecord(schemaID int16, name string) (int16, bool, error) {
+	if h.Registry == nil {
+		return int16(DeterministicAttributeID(schemaID, name)), true, nil
+	}
+	_, cache, err := h.Registry.GetSchemaAttributeCacheByID(schemaID)
+	if err != nil {
+		return 0, false, err
+	}
+	if cache == nil {
+		return 0, false, fmt.Errorf("schema %d not found in registry", schemaID)
+	}
+	metadata, ok := cache[name]
+	if !ok {
+		if isBenchmarkMetadataAttribute(name) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("attribute %s not found in schema cache for schema %d", name, schemaID)
+	}
+	return metadata.AttributeID, true, nil
+}
+
+func isBenchmarkMetadataAttribute(name string) bool {
+	switch name {
+	case "name", "version":
+		return true
+	default:
+		return false
+	}
+}
+
 // DeterministicAttributeID returns a stable test-only attribute ID for a schema/name pair.
+// Deprecated: benchmark-backed seeding should use schema metadata IDs via FederatedTestHarness.Registry.
 func DeterministicAttributeID(schemaID int16, name string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(strconv.FormatInt(int64(schemaID), 10)))

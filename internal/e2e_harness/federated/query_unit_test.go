@@ -96,7 +96,7 @@ func TestBuildFederatedDeduplicatedCTEUsesStableTieBreaks(t *testing.T) {
 func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
 	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, &QueryOptions{TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true}, true, false)
-	for _, expected := range []string{"epoch_ms(tradeTime) >= 1000", "epoch_ms(tradeTime) <= 2000", "COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000"} {
+	for _, expected := range []string{"COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) >= 1000", "COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) <= 2000", "COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected combined query to include %q: %s", expected, query)
 		}
@@ -141,8 +141,8 @@ func TestProjectionSelectionHelpers(t *testing.T) {
 }
 
 func TestBuildParquetTierQueryAppliesProjectedTradeTimeFilter(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "AND epoch_ms(tradeTime) <= 2000", true, false)
-	if !strings.Contains(query, "epoch_ms(tradeTime) <= 2000") {
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "AND COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) <= 2000", true, false)
+	if !strings.Contains(query, "COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) <= 2000") {
 		t.Fatalf("expected projected trade time filter in parquet query: %s", query)
 	}
 	if strings.Contains(query, "AND tradeTime <= epoch_ms(2000)") {
@@ -168,7 +168,7 @@ func TestBuildPostgresOnlyQueriesSupportBenchmarkFilters(t *testing.T) {
 
 func TestBuildParquetTierQueryTradeTimeOnlyProjection(t *testing.T) {
 	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "", true, true)
-	for _, expected := range []string{"'' as name", "'' as symbol", "'' as exchange", "'' as region", "0 as tradeType", "epoch_ms(tradeTime) as tradeTime"} {
+	for _, expected := range []string{"'' as name", "'' as symbol", "'' as exchange", "'' as region", "0 as tradeType", "COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) as tradeTime"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected tradeTime-only parquet projection to include %q: %s", expected, query)
 		}
@@ -211,7 +211,6 @@ func TestHotTierEAVMappingForSchemaTrade(t *testing.T) {
 		"AS exchange",
 		"AS tradeType",
 		"AS tradeTime",
-		"AS name",
 	} {
 		if !strings.Contains(m.pivotColumns, expected) {
 			t.Fatalf("expected trade pivot to include %q: %s", expected, m.pivotColumns)
@@ -220,7 +219,7 @@ func TestHotTierEAVMappingForSchemaTrade(t *testing.T) {
 	if !strings.Contains(m.selectExprs, "COALESCE(hot_vals.exchange, '')") {
 		t.Fatalf("expected trade select to include exchange fallback: %s", m.selectExprs)
 	}
-	if m.nameExpr != "COALESCE(hot_vals.name, hot_vals.symbol, '')" {
+	if m.nameExpr != "COALESCE(hot_vals.symbol, em.text_01, '')" {
 		t.Fatalf("expected trade name expression: %s", m.nameExpr)
 	}
 	if !strings.Contains(m.attrIDList, ",") {
@@ -256,7 +255,7 @@ func TestBuildHotTierQueryTargetedTrade(t *testing.T) {
 		"AND COALESCE(hot_vals.exchange, '') = 'NYSE'",
 		"AND COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000")
 	for _, expected := range []string{
-		"COALESCE(hot_vals.name, hot_vals.symbol, '') as name",
+		"COALESCE(hot_vals.symbol, em.text_01, '') as name",
 		"COALESCE(hot_vals.symbol, em.text_01) as symbol",
 		"COALESCE(hot_vals.exchange, '') as exchange",
 		"COALESCE(hot_vals.region, em.text_02) as region",

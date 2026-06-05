@@ -155,6 +155,13 @@ func (ml *MetadataLoader) loadSchemaRegistry(ctx context.Context, cache *Metadat
 			return fmt.Errorf("failed to scan schema row: %w", err)
 		}
 
+		if existingName, exists := cache.schemaIDToName[schemaID]; exists {
+			return fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
+		}
+		if existingID, exists := cache.schemaNameToID[schemaName]; exists {
+			return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
+		}
+
 		cache.schemaNameToID[schemaName] = schemaID
 		cache.schemaIDToName[schemaID] = schemaName
 		zap.S().Infow("Cached schema", "schema_id", schemaID, "schema_name", schemaName)
@@ -218,6 +225,9 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			}
 			attrMap[attrName] = meta
 			schemaCache[attrName] = meta
+		}
+		if err := validateSchemaAttributeCache(schemaName, schemaCache); err != nil {
+			return err
 		}
 
 		cache.attributeMetadata[schemaID] = attrMap

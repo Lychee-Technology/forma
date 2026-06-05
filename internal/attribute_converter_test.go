@@ -195,6 +195,47 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 	}
 }
 
+func TestExtractValueFromEAVRecord_ReturnsErrorOnStorageTypeMismatch(t *testing.T) {
+	textVal := "123"
+	_, err := extractValueFromEAVRecord(EAVRecord{ValueText: &textVal}, forma.ValueTypeNumeric)
+	if err == nil {
+		t.Fatal("expected storage/type mismatch error")
+	}
+	if !strings.Contains(err.Error(), "storage type mismatch") || !strings.Contains(err.Error(), "value_text should not be populated") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExtractValueFromEAVRecord_BothColumnsPopulatedReturnsError(t *testing.T) {
+	textVal := "text"
+	numericVal := 123.0
+
+	tests := []struct {
+		name      string
+		valueType forma.ValueType
+		wantErr   string
+	}{
+		{name: "text type", valueType: forma.ValueTypeText, wantErr: "value_numeric should not be populated"},
+		{name: "numeric type", valueType: forma.ValueTypeNumeric, wantErr: "value_text should not be populated"},
+		{name: "uuid type", valueType: forma.ValueTypeUUID, wantErr: "value_numeric should not be populated"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := extractValueFromEAVRecord(EAVRecord{
+				ValueText:    &textVal,
+				ValueNumeric: &numericVal,
+			}, tt.valueType)
+			if err == nil {
+				t.Fatal("expected storage/type mismatch error")
+			}
+			if !strings.Contains(err.Error(), "storage type mismatch") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestToFloat64ForEAV(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -338,6 +379,134 @@ func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(
 	}
 }
 
+func TestAttributeConverterFromEAVRecords_UnknownAttributeIDReturnsError(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   402,
+		schemaName: "unknown_attr_schema",
+		cache: forma.SchemaAttributeCache{
+			"name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	value := "mystery"
+	_, err := converter.FromEAVRecords([]EAVRecord{{
+		SchemaID:  402,
+		RowID:     rowID,
+		AttrID:    999,
+		ValueText: &value,
+	}})
+	if err == nil {
+		t.Fatal("expected unknown attr id error")
+	}
+	if !strings.Contains(err.Error(), "unknown attribute id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAttributeConverterFromEAVRecords_RequiredChildUsesArrayIndexContext(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   403,
+		schemaName: "indexed_required_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                           {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"propertyInterests.propertyId": {AttributeID: 2, ValueType: forma.ValueTypeText},
+			"propertyInterests.status":     {AttributeID: 3, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "lead-1"
+	propertyID := "p-1"
+	status := "viewed"
+
+	_, err := converter.FromEAVRecords([]EAVRecord{
+		{SchemaID: 403, RowID: rowID, AttrID: 1, ValueText: &idValue},
+		{SchemaID: 403, RowID: rowID, AttrID: 2, ArrayIndices: "0", ValueText: &propertyID},
+		{SchemaID: 403, RowID: rowID, AttrID: 3, ArrayIndices: "1", ValueText: &status},
+	})
+	if err == nil {
+		t.Fatal("expected per-index required validation error")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'propertyInterests.status'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAttributeConverterFromEAVRecords_NestedArrayRequiredUsesFullIndexPath(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   404,
+		schemaName: "nested_array_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                    {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"orders.items.name":     {AttributeID: 2, ValueType: forma.ValueTypeText},
+			"orders.items.price":    {AttributeID: 3, ValueType: forma.ValueTypeNumeric, Required: true},
+			"contact.email":         {AttributeID: 4, ValueType: forma.ValueTypeText, Required: true},
+			"contact.phones.number": {AttributeID: 5, ValueType: forma.ValueTypeText},
+			"contact.phones.kind":   {AttributeID: 6, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "lead-1"
+	itemNameA := "item-a"
+	itemPriceA := 10.0
+	itemNameB := "item-b"
+	email := "test@example.com"
+	phoneNumber := "555-1234"
+
+	_, err := converter.FromEAVRecords([]EAVRecord{
+		{SchemaID: 404, RowID: rowID, AttrID: 1, ValueText: &idValue},
+		{SchemaID: 404, RowID: rowID, AttrID: 2, ArrayIndices: "0.0", ValueText: &itemNameA},
+		{SchemaID: 404, RowID: rowID, AttrID: 3, ArrayIndices: "0.0", ValueNumeric: &itemPriceA},
+		{SchemaID: 404, RowID: rowID, AttrID: 2, ArrayIndices: "0.1", ValueText: &itemNameB},
+		{SchemaID: 404, RowID: rowID, AttrID: 4, ArrayIndices: "", ValueText: &email},
+		{SchemaID: 404, RowID: rowID, AttrID: 5, ArrayIndices: "0", ValueText: &phoneNumber},
+	})
+	if err == nil {
+		t.Fatal("expected nested-array required validation error")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute '") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "orders.items.price") && !strings.Contains(err.Error(), "contact.phones.kind") {
+		t.Fatalf("expected nested required attribute error, got %v", err)
+	}
+}
+
+func TestAttributeConverterFromEAVRecords_MixedArrayAndNonArrayChildrenDoNotConflict(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   405,
+		schemaName: "mixed_contact_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":                    {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"contact.email":         {AttributeID: 2, ValueType: forma.ValueTypeText, Required: true},
+			"contact.phones.number": {AttributeID: 3, ValueType: forma.ValueTypeText},
+			"contact.phones.kind":   {AttributeID: 4, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "lead-1"
+	email := "test@example.com"
+	phoneNumber := "555-1234"
+	phoneKind := "mobile"
+
+	_, err := converter.FromEAVRecords([]EAVRecord{
+		{SchemaID: 405, RowID: rowID, AttrID: 1, ValueText: &idValue},
+		{SchemaID: 405, RowID: rowID, AttrID: 2, ArrayIndices: "", ValueText: &email},
+		{SchemaID: 405, RowID: rowID, AttrID: 3, ArrayIndices: "0", ValueText: &phoneNumber},
+		{SchemaID: 405, RowID: rowID, AttrID: 4, ArrayIndices: "0", ValueText: &phoneKind},
+	})
+	if err != nil {
+		t.Fatalf("expected mixed array/non-array required attributes to pass, got %v", err)
+	}
+}
+
 func TestShouldEnforceRequiredAttribute(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -373,9 +542,9 @@ func TestShouldEnforceRequiredAttribute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			present := make(map[string]struct{}, len(tt.presentAttrName))
+			present := make(map[string]map[string]struct{}, len(tt.presentAttrName))
 			for _, name := range tt.presentAttrName {
-				present[name] = struct{}{}
+				present[name] = map[string]struct{}{"": {}}
 			}
 			got := shouldEnforceRequiredAttribute(tt.attrName, present)
 			if got != tt.expected {

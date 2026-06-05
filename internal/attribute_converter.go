@@ -3,7 +3,6 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -131,17 +130,21 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 		return nil, err
 	}
 
-	copyIdToName := make(map[int16]string, len(idToName))
-	maps.Copy(copyIdToName, idToName)
-	presentAttrNames := make(map[string]struct{}, len(records))
+	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
 
 	attributes := make([]EntityAttribute, 0, len(records))
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
-			continue
+			// Read-path unknown attribute IDs indicate metadata drift, not invalid user input.
+			return nil, fmt.Errorf("unknown attribute id %d for schema %d (attribute not in metadata cache)", record.AttrID, record.SchemaID)
 		}
-		presentAttrNames[attrName] = struct{}{}
+		indexSet := presentAttrIndices[attrName]
+		if indexSet == nil {
+			indexSet = make(map[string]struct{})
+			presentAttrIndices[attrName] = indexSet
+		}
+		indexSet[record.ArrayIndices] = struct{}{}
 
 		meta := cache[attrName]
 		attr, err := c.FromEAVRecord(record, meta.ValueType)
@@ -149,25 +152,25 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
 		attributes = append(attributes, attr)
-		delete(copyIdToName, record.AttrID)
 	}
 
-	if len(copyIdToName) > 0 {
-		zap.S().Infow("missing EAV records for attrIDs.", "idToName", copyIdToName)
-		for missingAttrID, missingAttrName := range copyIdToName {
-			metadata, ok := cache[missingAttrName]
-			if !ok {
-				zap.S().Warnw("missing attribute metadata for missing EAV record", "attrID", missingAttrID, "attrName", missingAttrName)
-				continue
+	missingRequired := make(map[int16]string)
+	for attrName, metadata := range cache {
+		switch metadata.EffectiveRequiredPolicy() {
+		case forma.RequiredPolicyAlways:
+			if isRequiredAttributeMissing(attrName, presentAttrIndices, true) {
+				missingRequired[metadata.AttributeID] = attrName
 			}
-			switch metadata.EffectiveRequiredPolicy() {
-			case forma.RequiredPolicyAlways:
-				return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
-			case forma.RequiredPolicyIfParentPresent:
-				if shouldEnforceRequiredAttribute(missingAttrName, presentAttrNames) {
-					return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
-				}
+		case forma.RequiredPolicyIfParentPresent:
+			if isRequiredAttributeMissing(attrName, presentAttrIndices, false) {
+				missingRequired[metadata.AttributeID] = attrName
 			}
+		}
+	}
+	if len(missingRequired) > 0 {
+		zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
+		for missingAttrID, missingAttrName := range missingRequired {
+			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
 		}
 	}
 
@@ -321,20 +324,78 @@ func parseTrimmedFloat64(value string) (float64, error) {
 	return parsed, nil
 }
 
-func shouldEnforceRequiredAttribute(attrName string, presentAttrNames map[string]struct{}) bool {
+// shouldEnforceRequiredAttribute applies RequiredPolicyIfParentPresent semantics
+// to an attribute using the observed EAV array-index context.
+func shouldEnforceRequiredAttribute(attrName string, presentAttrIndices map[string]map[string]struct{}) bool {
+	return isRequiredAttributeMissing(attrName, presentAttrIndices, false)
+}
+
+// isRequiredAttributeMissing reports whether a required attribute is missing.
+//
+// For nested attributes, the required check is contextual:
+//   - RequiredPolicyAlways enforces the attribute even when its parent path is absent.
+//   - RequiredPolicyIfParentPresent enforces the attribute only when its parent path
+//     is present in the observed EAV records.
+//   - Array-backed attributes must exist for every parent array index that is present.
+func isRequiredAttributeMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, enforceWhenParentMissing bool) bool {
+	if indices, ok := presentAttrIndices[attrName]; ok && len(indices) > 0 {
+		return parentIndexMissing(attrName, presentAttrIndices, indices, enforceWhenParentMissing)
+	}
+
 	parentPath, hasParent := attributeParentPath(attrName)
 	if !hasParent {
 		return true
 	}
 
-	prefix := parentPath + "."
-	for presentAttrName := range presentAttrNames {
-		if presentAttrName == parentPath || strings.HasPrefix(presentAttrName, prefix) {
+	parentIndices := collectParentIndices(parentPath, presentAttrIndices)
+	if len(parentIndices) == 0 {
+		return enforceWhenParentMissing
+	}
+	// The attribute is absent entirely while its parent context exists, so the
+	// required attribute is missing for every observed parent context.
+	return true
+}
+
+// parentIndexMissing verifies that a child attribute is present for every parent
+// context that appears in the EAV records.
+func parentIndexMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, childIndices map[string]struct{}, enforceWhenParentMissing bool) bool {
+	parentPath, hasParent := attributeParentPath(attrName)
+	if !hasParent {
+		return len(childIndices) == 0
+	}
+
+	parentIndices := collectParentIndices(parentPath, presentAttrIndices)
+	if len(parentIndices) == 0 {
+		// No parent context exists, so only RequiredPolicyAlways should fail here.
+		return enforceWhenParentMissing && len(childIndices) == 0
+	}
+	if _, hasNonArrayChild := childIndices[""]; hasNonArrayChild {
+		_, hasNonArrayParent := parentIndices[""]
+		return !hasNonArrayParent
+	}
+	for idx := range parentIndices {
+		if _, ok := childIndices[idx]; !ok {
 			return true
 		}
 	}
-
 	return false
+}
+
+// collectParentIndices gathers the array-index contexts that imply a parent path
+// exists in the current EAV row. Descendant attributes contribute their observed
+// indices so required children can be checked against the same contexts.
+func collectParentIndices(parentPath string, presentAttrIndices map[string]map[string]struct{}) map[string]struct{} {
+	parentIndices := make(map[string]struct{})
+	prefix := parentPath + "."
+	for presentAttrName, indexSet := range presentAttrIndices {
+		if presentAttrName != parentPath && !strings.HasPrefix(presentAttrName, prefix) {
+			continue
+		}
+		for idx := range indexSet {
+			parentIndices[idx] = struct{}{}
+		}
+	}
+	return parentIndices
 }
 
 func attributeParentPath(attrPath string) (string, bool) {
@@ -422,36 +483,54 @@ func ToFloat64(v any) (float64, bool) {
 func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any, error) {
 	switch valueType {
 	case forma.ValueTypeText:
+		if record.ValueNumeric != nil {
+			return nil, storageTypeMismatchError(valueType, "value_numeric", "value_text")
+		}
 		if record.ValueText == nil {
 			return nil, nil
 		}
 		return *record.ValueText, nil
 
 	case forma.ValueTypeSmallInt:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int16(*record.ValueNumeric), nil
 
 	case forma.ValueTypeInteger:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int32(*record.ValueNumeric), nil
 
 	case forma.ValueTypeBigInt:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return int64(*record.ValueNumeric), nil
 
 	case forma.ValueTypeNumeric:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
 		return *record.ValueNumeric, nil
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
@@ -459,6 +538,9 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		return timeVal, nil
 
 	case forma.ValueTypeUUID:
+		if record.ValueNumeric != nil {
+			return nil, storageTypeMismatchError(valueType, "value_numeric", "value_text")
+		}
 		if record.ValueText == nil {
 			return nil, nil
 		}
@@ -469,6 +551,9 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		return uuidVal, nil
 
 	case forma.ValueTypeBool:
+		if record.ValueText != nil {
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
@@ -484,4 +569,13 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		}
 		return nil, nil
 	}
+}
+
+func storageTypeMismatchError(valueType forma.ValueType, populatedColumn, expectedColumn string) error {
+	return fmt.Errorf(
+		"storage type mismatch for %s: %s should not be populated (expected %s)",
+		valueType,
+		populatedColumn,
+		expectedColumn,
+	)
 }

@@ -860,6 +860,49 @@ func TestNewFileSchemaRegistry_Integration_MissingAttributesFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read attributes file")
 }
 
+func TestNewFileSchemaRegistry_Integration_DuplicateSchemaIDFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+
+	suffix := time.Now().UnixNano()
+	tableName := fmt.Sprintf("schema_registry_dup_id_%d", suffix)
+
+	_, err := pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			schema_name TEXT PRIMARY KEY,
+			schema_id SMALLINT NOT NULL
+		)
+	`, tableName))
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+	})
+
+	_, err = pool.Exec(ctx, fmt.Sprintf(
+		"INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2), ($3, $4)",
+		tableName,
+	), "alpha", int16(1), "beta", int16(1))
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	writeAttributesFile(t, dir, "alpha", map[string]any{
+		"id": map[string]any{"attributeID": float64(1), "valueType": "text"},
+	})
+	writeAttributesFile(t, dir, "beta", map[string]any{
+		"id": map[string]any{"attributeID": float64(2), "valueType": "text"},
+	})
+
+	registry, err := NewFileSchemaRegistry(pool, tableName, dir)
+	assert.Nil(t, registry)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate schema id")
+}
+
 func TestNewFileSchemaRegistry_NilPool(t *testing.T) {
 	// This will panic with nil pool
 	assert.Panics(t, func() {

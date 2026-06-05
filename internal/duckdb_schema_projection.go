@@ -459,7 +459,6 @@ func BuildBenchmarkS3Projection(schemaID int16) string {
 			"customerId",
 			"try_cast(json_extract_string(attributes_json, '$.exchange') AS VARCHAR) as exchange",
 			"try_cast(json_extract_string(attributes_json, '$.isCash') AS BOOLEAN) as isCash",
-			"name",
 			"try_cast(json_extract_string(attributes_json, '$.orderChannel') AS VARCHAR) as orderChannel",
 			"price",
 			"quantity",
@@ -520,11 +519,9 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 			benchmarkEAVJSONArray(schemaID, 102, "",
 				eavJSONAttr{id: 8, name: "exchange", type_: "text"},
 				eavJSONAttr{id: 9, name: "commission", type_: "numeric"},
-				eavJSONAttr{id: 10, name: "isCash", type_: "text"},
+				eavJSONAttr{id: 10, name: "isCash", type_: "numeric"},
 				eavJSONAttr{id: 11, name: "brokerId", type_: "text"},
 				eavJSONAttr{id: 12, name: "orderChannel", type_: "text"},
-				eavJSONAttr{id: benchmarkHashAttrID(102, "name"), name: "name", type_: "text"},
-				eavJSONAttr{id: benchmarkHashAttrID(102, "version"), name: "version", type_: "text"},
 			)))
 	case 100: // customer
 		parts = append(parts, "CAST(taxId AS VARCHAR) AS text_01")
@@ -541,10 +538,8 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 		}
 		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
 			benchmarkEAVJSONArray(schemaID, 100, "",
-				eavJSONAttr{id: benchmarkHashAttrID(100, "name"), name: "name", type_: "text"},
 				eavJSONAttr{id: 5, name: "email", type_: "text"},
 				eavJSONAttr{id: 6, name: "creditRating", type_: "numeric"},
-				eavJSONAttr{id: benchmarkHashAttrID(100, "version"), name: "version", type_: "text"},
 			)))
 	case 101: // security
 		parts = append(parts, "CAST(symbol AS VARCHAR) AS text_01")
@@ -563,8 +558,6 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 				eavJSONAttr{id: 3, name: "companyName", type_: "text"},
 				eavJSONAttr{id: 4, name: "dividend", type_: "numeric"},
 				eavJSONAttr{id: 5, name: "marketCap", type_: "numeric"},
-				eavJSONAttr{id: benchmarkHashAttrID(101, "name"), name: "name", type_: "text"},
-				eavJSONAttr{id: benchmarkHashAttrID(101, "version"), name: "version", type_: "text"},
 			)))
 	}
 
@@ -588,23 +581,11 @@ func restMainColumnNames(exclude []string) []string {
 
 // benchmarkAttr describes a benchmark attribute used to build matching S3 and PG projections.
 type benchmarkAttr struct {
-	name     string
-	colName  string // entity_main column name, empty if EAV-only
-	attrID   int
-	eavJSON  bool // true if extracted from attributes_json in S3 parquet
-	s3Expr   string
-}
-
-// benchmarkHashAttrID computes deterministic attribute IDs using the same FNV hash
-// algorithm used by the benchmark harness (benchmarkAttributeID).
-func benchmarkHashAttrID(schemaID int16, name string) int {
-	hash := uint32(2166136261)
-	input := fmt.Sprintf("%d:%s", schemaID, name)
-	for i := 0; i < len(input); i++ {
-		hash ^= uint32(input[i])
-		hash *= 16777619
-	}
-	return int(hash%30000) + 1
+	name    string
+	colName string // entity_main column name, empty if EAV-only
+	attrID  int
+	eavJSON bool // true if extracted from attributes_json in S3 parquet
+	s3Expr  string
 }
 
 // BuildBenchmarkProjections builds a SchemaProjection with matching S3 and PG sources
@@ -620,37 +601,28 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 	var allAttrs []benchmarkAttr
 	switch schemaID {
 	case 100: // customer
-		nameAttrID := benchmarkHashAttrID(100, "name")
 		allAttrs = []benchmarkAttr{
 			{name: "creditRating", eavJSON: false, attrID: 6, s3Expr: "creditRating"},
 			{name: "email", eavJSON: false, attrID: 5, s3Expr: "email"},
-			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
 			{name: "region", colName: "text_02", eavJSON: false, attrID: 3, s3Expr: "region"},
 			{name: "status", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "status"},
 			{name: "taxId", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "taxId"},
-			{name: "version", eavJSON: false, attrID: benchmarkHashAttrID(100, "version"), s3Expr: "version"},
 		}
 	case 101: // security
-		nameAttrID := benchmarkHashAttrID(101, "name")
 		allAttrs = []benchmarkAttr{
 			{name: "companyName", eavJSON: false, attrID: 3, s3Expr: "companyName"},
 			{name: "dividend", eavJSON: false, attrID: 4, s3Expr: "dividend"},
 			{name: "marketCap", eavJSON: false, attrID: 5, s3Expr: "marketCap"},
-			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
 			{name: "sector", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "sector"},
 			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
-			{name: "version", eavJSON: false, attrID: benchmarkHashAttrID(101, "version"), s3Expr: "version"},
 		}
 	case 102: // trade
-		nameAttrID := benchmarkHashAttrID(102, "name")
-		verAttrID := benchmarkHashAttrID(102, "version")
 		allAttrs = []benchmarkAttr{
 			{name: "brokerId", eavJSON: true, attrID: 11, s3Expr: "brokerId"},
 			{name: "commission", eavJSON: true, attrID: 9, s3Expr: "commission"},
 			{name: "customerId", colName: "uuid_01", eavJSON: false, attrID: 6, s3Expr: "customerId"},
 			{name: "exchange", eavJSON: true, attrID: 8, s3Expr: "exchange"},
 			{name: "isCash", eavJSON: true, attrID: 10, s3Expr: "isCash"},
-			{name: "name", eavJSON: false, attrID: nameAttrID, s3Expr: "name"},
 			{name: "orderChannel", eavJSON: true, attrID: 12, s3Expr: "orderChannel"},
 			{name: "price", colName: "double_01", eavJSON: false, attrID: 4, s3Expr: "price"},
 			{name: "quantity", colName: "bigint_01", eavJSON: false, attrID: 3, s3Expr: "quantity"},
@@ -658,7 +630,6 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
 			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "epoch_ms(try_cast(tradeTime AS TIMESTAMP)) as tradeTime"},
 			{name: "tradeType", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "tradeType"},
-			{name: "version", eavJSON: false, attrID: verAttrID, s3Expr: "version"},
 		}
 	}
 
@@ -727,13 +698,17 @@ func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs .
 	for _, a := range attrs {
 		valColumn := "value_text"
 		nullColumn := "value_numeric"
+		valueExpr := a.name
 		if a.type_ == "numeric" {
 			valColumn = "value_numeric"
 			nullColumn = "value_text"
+			if a.name == "isCash" {
+				valueExpr = "CASE WHEN isCash THEN 1 ELSE 0 END"
+			}
 		}
 		parts = append(parts, fmt.Sprintf(
 			`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', CAST(%s AS VARCHAR), '%s', NULL)`,
-			targetSchemaID, a.id, valColumn, a.name, nullColumn))
+			targetSchemaID, a.id, valColumn, valueExpr, nullColumn))
 	}
 	if len(parts) == 0 {
 		return "'[]'"

@@ -12,11 +12,11 @@ import (
 func parseAttributeMetadata(attrName string, attrData map[string]any, source string) (forma.AttributeMetadata, error) {
 	meta := forma.AttributeMetadata{AttributeName: attrName}
 
-	id, ok := attrData["attributeID"].(float64)
-	if !ok {
-		return forma.AttributeMetadata{}, fmt.Errorf("invalid or missing attributeID for attribute %s in %s", attrName, source)
+	id, err := parseAttributeID(attrData["attributeID"], attrName, source)
+	if err != nil {
+		return forma.AttributeMetadata{}, err
 	}
-	meta.AttributeID = int16(id)
+	meta.AttributeID = id
 
 	valueType, ok := attrData["valueType"].(string)
 	if !ok || valueType == "" {

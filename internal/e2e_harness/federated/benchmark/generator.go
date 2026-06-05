@@ -120,7 +120,7 @@ func (g *Generator) generateTrades(customers []benchmarkCustomer, securities []b
 				"tradeType":    tradeType,
 				"quantity":     quantity,
 				"price":        price,
-				"tradeTime":    time.UnixMilli(changedAt).UTC().Format(time.RFC3339),
+				"tradeTime":    strconv.FormatInt(changedAt, 10),
 				"customerId":   customer.rowID.String(),
 				"region":       customer.region,
 				"exchange":     g.pickExchange(security.symbol),
@@ -152,7 +152,7 @@ func (g *Generator) generateTrades(customers []benchmarkCustomer, securities []b
 		updated.Attributes["commission"] = round2((price * 1.015) * float64(quantity) * 0.0012)
 		updated.Attributes["isCash"] = !attributeBool(baseRecord.Attributes, "isCash")
 		updated.Attributes["orderChannel"] = benchmarkOrderChannels[(i+1)%len(benchmarkOrderChannels)]
-		updated.Attributes["tradeTime"] = time.UnixMilli(changedAt).UTC().Format(time.RFC3339)
+		updated.Attributes["tradeTime"] = strconv.FormatInt(changedAt, 10)
 		if i%7 == 0 {
 			updated.DeletedAt = changedAt + 5000
 		}

@@ -45,6 +45,9 @@ func (c *schemaMetadataCache) getSchemaMetadata(schemaID int16) (forma.SchemaAtt
 
 	idToName := make(map[int16]string, len(schemaCache))
 	for name, meta := range schemaCache {
+		if existingName, exists := idToName[meta.AttributeID]; exists {
+			return nil, nil, fmt.Errorf("duplicate attribute id %d for %s and %s", meta.AttributeID, existingName, name)
+		}
 		idToName[meta.AttributeID] = name
 	}
 
