@@ -11,27 +11,31 @@ import (
 //
 // Behavior:
 //   - Records are deduplicated by (SchemaID, RowID).
-//   - For each key, the record with the highest UpdatedAt is chosen. If equal and
-//     preferHot==true, the record coming from the Hot tier is chosen.
+//   - For each key, the record with the highest UpdatedAt is chosen. If UpdatedAt is equal,
+//     deterministic tier priority is used (Hot > Warm > Cold) to break ties.
 //   - If a record originates from the ChangeLog buffer (flushed_at == 0) it is
 //     considered the authoritative hot source and wins ties regardless of UpdatedAt.
 //   - The chosen record is returned with OtherAttributes merged across all source
 //     tiers for that (SchemaID, RowID) with attribute-level deduplication.
 //   - Attributes are deduplicated by (AttrID, ArrayIndices).
 //   - For an attribute present in multiple source records, the attribute from the
-//     record with the latest UpdatedAt is chosen. Ties are resolved using preferHot
-//     and deterministic tier ordering.
+//     record with the latest UpdatedAt is chosen. Ties are resolved using deterministic
+//     tier ordering (Hot > Warm > Cold).
+//   - Deleted records (DeletedAt != nil && DeletedAt != 0) are excluded from results.
 //   - Result slice is sorted by SchemaID then RowID for deterministic output.
+//
+// The preferHot parameter is deprecated and ignored; tier priority is always deterministic.
 func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, preferHot bool) ([]*PersistentRecord, error) {
 	if inputs == nil {
 		return nil, fmt.Errorf("inputs cannot be nil")
 	}
 
-	// Create an ordered tier priority used when preferHot=true and timestamps tie.
+	// Create tier priority for deterministic tie-breaking.
+	// Higher value = higher priority (Hot > Warm > Cold).
 	tierPriority := map[DataTier]int{
-		DataTierCold: 2,
-		DataTierWarm: 1,
-		DataTierHot:  0,
+		DataTierHot:  3,
+		DataTierWarm: 2,
+		DataTierCold: 1,
 	}
 
 	// Track winner per key (row-level LWW) as before, but also collect all seen records
@@ -85,9 +89,13 @@ func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, prefe
 		}
 	}
 
-	// Collect results deterministically
+	// Collect results deterministically, excluding deleted winners
 	results := make([]*PersistentRecord, 0, len(merged))
 	for _, v := range merged {
+		// Skip records that are deleted (soft-delete suppression)
+		if v.DeletedAt != nil && *v.DeletedAt != 0 {
+			continue
+		}
 		results = append(results, v)
 	}
 	sort.Slice(results, func(i, j int) bool {
@@ -130,20 +138,16 @@ func chooseLWW(existing *PersistentRecord, existingTier DataTier, newRec *Persis
 		return existing
 	}
 
-	// Timestamps equal -- apply PreferHot tiebreaker if requested.
-	if preferHot {
-		// Lower priority value means higher preference (0 = hot)
-		if tierPriority[newTier] < tierPriority[existingTier] {
-			return newRec
-		}
-		if tierPriority[newTier] > tierPriority[existingTier] {
-			return existing
-		}
-		// same tier, fallthrough to deterministic compare
+	// Timestamps equal -- use tier priority as deterministic tie-breaker.
+	// Higher priority value means higher preference (Hot=3, Warm=2, Cold=1).
+	if tierPriority[newTier] > tierPriority[existingTier] {
+		return newRec
+	}
+	if tierPriority[newTier] < tierPriority[existingTier] {
+		return existing
 	}
 
-	// Deterministic tie-breaker: choose by lexicographic tier name then row id.
-	// This makes outcomes reproducible even without PreferHot.
+	// Same tier, use deterministic fallback: lexicographic tier name then row id.
 	if string(newTier) < string(existingTier) {
 		return newRec
 	}
@@ -192,16 +196,13 @@ func mergeOtherAttributes(records []*PersistentRecord, tiers []DataTier, preferH
 			if rec.UpdatedAt < meta.updatedAt {
 				continue
 			}
-			// UpdatedAt equal: tie-breaker using preferHot and tierPriority
-			if preferHot {
-				if tierPriority[tier] < tierPriority[meta.tier] {
-					attrMap[key] = pickMeta{attr: attr, updatedAt: rec.UpdatedAt, tier: tier}
-					continue
-				}
-				if tierPriority[tier] > tierPriority[meta.tier] {
-					continue
-				}
-				// same priority, fallthrough
+			// UpdatedAt equal: use tier priority as deterministic tie-breaker
+			if tierPriority[tier] > tierPriority[meta.tier] {
+				attrMap[key] = pickMeta{attr: attr, updatedAt: rec.UpdatedAt, tier: tier}
+				continue
+			}
+			if tierPriority[tier] < tierPriority[meta.tier] {
+				continue
 			}
 			// Deterministic fallback: lexicographic tier
 			if string(tier) < string(meta.tier) {
