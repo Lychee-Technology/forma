@@ -5,6 +5,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
@@ -13,12 +14,20 @@ import (
 )
 
 var (
-	toolLoggerFactoryDev  = zap.NewDevelopment
-	toolLoggerFactoryProd = zap.NewProduction
-	toolPostgresPoolFn    = bootstrap.NewPostgresPoolFromConfigContext
-	toolSchemaRegistryFn  = internal.NewFileSchemaRegistryContext
-	toolLoadAWSConfigFn   = awsconfig.LoadDefaultConfig
+	toolLoggerFactoryDev    = zap.NewDevelopment
+	toolLoggerFactoryProd   = zap.NewProduction
+	toolPostgresPoolFn      = bootstrap.NewPostgresPoolFromConfigContext
+	toolSchemaRegistryFn    = internal.NewFileSchemaRegistryContext
+	toolLoadAWSConfigFn     = awsconfig.LoadDefaultConfig
+	buildToolPostgresPoolFn = func(ctx context.Context, cfg forma.DatabaseConfig) (toolDBPool, error) {
+		return toolPostgresPoolFn(ctx, cfg)
+	}
 )
+
+type toolDBPool interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Close()
+}
 
 func buildToolLogger(dev bool) (*zap.Logger, error) {
 	if dev {
@@ -29,6 +38,10 @@ func buildToolLogger(dev bool) (*zap.Logger, error) {
 
 func buildToolPostgresPool(ctx context.Context, cfg forma.DatabaseConfig) (*pgxpool.Pool, error) {
 	return toolPostgresPoolFn(ctx, cfg)
+}
+
+func buildSchemaConsistencyPool(ctx context.Context, cfg forma.DatabaseConfig) (toolDBPool, error) {
+	return buildToolPostgresPoolFn(ctx, cfg)
 }
 
 func buildToolS3Client(ctx context.Context, region, endpoint string, usePath bool) (*s3.Client, error) {
