@@ -588,18 +588,6 @@ type benchmarkAttr struct {
 	s3Expr  string
 }
 
-// benchmarkHashAttrID computes deterministic attribute IDs using the same FNV hash
-// algorithm used by the benchmark harness (benchmarkAttributeID).
-func benchmarkHashAttrID(schemaID int16, name string) int {
-	hash := uint32(2166136261)
-	input := fmt.Sprintf("%d:%s", schemaID, name)
-	for i := 0; i < len(input); i++ {
-		hash ^= uint32(input[i])
-		hash *= 16777619
-	}
-	return int(hash%30000) + 1
-}
-
 // BuildBenchmarkProjections builds a SchemaProjection with matching S3 and PG sources
 // for a benchmark schema. Both sources produce the same columns in the same order.
 func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
