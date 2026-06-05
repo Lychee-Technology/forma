@@ -81,4 +81,5 @@ make test
 
 - [Engineering Blog Series](/blog-series/) - Deep dive into Forma's architecture
 - [Documentation](/cn/README.cn) - API reference and guides
+- [Error Handling](./error-handling.md) - Write-path vs read-path error semantics
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues

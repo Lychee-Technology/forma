@@ -1,5 +1,14 @@
 package internal
 
+// Error handling strategy:
+//
+// Write-path validation errors wrap forma.ErrInvalidInput so callers can map
+// them to user-facing 4xx responses.
+//
+// Read-path consistency failures, such as metadata drift or storage-column
+// mismatches, return plain errors because they indicate system state problems
+// rather than invalid caller input.
+
 import (
 	"context"
 	"encoding/json"

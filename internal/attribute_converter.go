@@ -136,7 +136,8 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
-			return nil, fmt.Errorf("unknown attribute id %d for schema %d", record.AttrID, record.SchemaID)
+			// Read-path unknown attribute IDs indicate metadata drift, not invalid user input.
+			return nil, fmt.Errorf("unknown attribute id %d for schema %d (attribute not in metadata cache)", record.AttrID, record.SchemaID)
 		}
 		indexSet := presentAttrIndices[attrName]
 		if indexSet == nil {
@@ -323,10 +324,19 @@ func parseTrimmedFloat64(value string) (float64, error) {
 	return parsed, nil
 }
 
+// shouldEnforceRequiredAttribute applies RequiredPolicyIfParentPresent semantics
+// to an attribute using the observed EAV array-index context.
 func shouldEnforceRequiredAttribute(attrName string, presentAttrIndices map[string]map[string]struct{}) bool {
 	return isRequiredAttributeMissing(attrName, presentAttrIndices, false)
 }
 
+// isRequiredAttributeMissing reports whether a required attribute is missing.
+//
+// For nested attributes, the required check is contextual:
+//   - RequiredPolicyAlways enforces the attribute even when its parent path is absent.
+//   - RequiredPolicyIfParentPresent enforces the attribute only when its parent path
+//     is present in the observed EAV records.
+//   - Array-backed attributes must exist for every parent array index that is present.
 func isRequiredAttributeMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, enforceWhenParentMissing bool) bool {
 	if indices, ok := presentAttrIndices[attrName]; ok && len(indices) > 0 {
 		return parentIndexMissing(attrName, presentAttrIndices, indices, enforceWhenParentMissing)
@@ -341,9 +351,13 @@ func isRequiredAttributeMissing(attrName string, presentAttrIndices map[string]m
 	if len(parentIndices) == 0 {
 		return enforceWhenParentMissing
 	}
+	// The attribute is absent entirely while its parent context exists, so the
+	// required attribute is missing for every observed parent context.
 	return true
 }
 
+// parentIndexMissing verifies that a child attribute is present for every parent
+// context that appears in the EAV records.
 func parentIndexMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, childIndices map[string]struct{}, enforceWhenParentMissing bool) bool {
 	parentPath, hasParent := attributeParentPath(attrName)
 	if !hasParent {
@@ -352,7 +366,12 @@ func parentIndexMissing(attrName string, presentAttrIndices map[string]map[strin
 
 	parentIndices := collectParentIndices(parentPath, presentAttrIndices)
 	if len(parentIndices) == 0 {
+		// No parent context exists, so only RequiredPolicyAlways should fail here.
 		return enforceWhenParentMissing && len(childIndices) == 0
+	}
+	if _, hasNonArrayChild := childIndices[""]; hasNonArrayChild {
+		_, hasNonArrayParent := parentIndices[""]
+		return !hasNonArrayParent
 	}
 	for idx := range parentIndices {
 		if _, ok := childIndices[idx]; !ok {
@@ -362,6 +381,9 @@ func parentIndexMissing(attrName string, presentAttrIndices map[string]map[strin
 	return false
 }
 
+// collectParentIndices gathers the array-index contexts that imply a parent path
+// exists in the current EAV row. Descendant attributes contribute their observed
+// indices so required children can be checked against the same contexts.
 func collectParentIndices(parentPath string, presentAttrIndices map[string]map[string]struct{}) map[string]struct{} {
 	parentIndices := make(map[string]struct{})
 	prefix := parentPath + "."
@@ -462,7 +484,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 	switch valueType {
 	case forma.ValueTypeText:
 		if record.ValueNumeric != nil {
-			return nil, fmt.Errorf("value_text is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_numeric", "value_text")
 		}
 		if record.ValueText == nil {
 			return nil, nil
@@ -471,7 +493,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeSmallInt:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -480,7 +502,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeInteger:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -489,7 +511,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeBigInt:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -498,7 +520,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeNumeric:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -507,7 +529,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -517,7 +539,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeUUID:
 		if record.ValueNumeric != nil {
-			return nil, fmt.Errorf("value_text is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_numeric", "value_text")
 		}
 		if record.ValueText == nil {
 			return nil, nil
@@ -530,7 +552,7 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 
 	case forma.ValueTypeBool:
 		if record.ValueText != nil {
-			return nil, fmt.Errorf("value_numeric is required for value type %s", valueType)
+			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
@@ -547,4 +569,13 @@ func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any
 		}
 		return nil, nil
 	}
+}
+
+func storageTypeMismatchError(valueType forma.ValueType, populatedColumn, expectedColumn string) error {
+	return fmt.Errorf(
+		"storage type mismatch for %s: %s should not be populated (expected %s)",
+		valueType,
+		populatedColumn,
+		expectedColumn,
+	)
 }

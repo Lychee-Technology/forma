@@ -142,6 +142,7 @@ make benchmark-heavy       # Heavy planning set
 ## Documentation
 
 - [Documentation Index](docs/index.md)
+- [Error Handling](docs/error-handling.md)
 - [E2E Test Matrix](docs/e2e-tests-en.md)
 - [Integration Test Cases](docs/integ-tests-en.md)
 - [Go E2E Harness README](internal/e2e_harness/README.md)
