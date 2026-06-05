@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -480,5 +481,57 @@ func TestWorkloadResolvedFilterConditionsPrefersExplicitMap(t *testing.T) {
 	conditions = simple.ResolvedFilterConditions()
 	if len(conditions) != 1 || conditions["symbol"] != "SYM00001" {
 		t.Fatalf("expected simple filter fallback, got %+v", conditions)
+	}
+}
+
+func TestExecuteWorkloadWithRetry_RetriesTransientFailure(t *testing.T) {
+	t.Helper()
+
+	originalBackoff := retryBackoffDelay
+	retryBackoffDelay = func(int) time.Duration { return 0 }
+	defer func() { retryBackoffDelay = originalBackoff }()
+
+	attempts := 0
+	wantRecords := []*internal.PersistentRecord{{SchemaID: 101}}
+	wantRun := WorkloadRunResult{Name: "baseline-page-1", Passed: true}
+
+	run, records, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+		attempts++
+		if attempts < 3 {
+			return WorkloadRunResult{}, nil, errors.New("transient infra failure")
+		}
+		return wantRun, wantRecords, nil
+	})
+	if err != nil {
+		t.Fatalf("expected retry helper to recover, got %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+	if run.Name != wantRun.Name || !run.Passed {
+		t.Fatalf("unexpected run result: %+v", run)
+	}
+	if len(records) != 1 || records[0].SchemaID != wantRecords[0].SchemaID {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestExecuteWorkloadWithRetry_ReturnsLastErrorAfterRetries(t *testing.T) {
+	originalBackoff := retryBackoffDelay
+	retryBackoffDelay = func(int) time.Duration { return 0 }
+	defer func() { retryBackoffDelay = originalBackoff }()
+
+	attempts := 0
+	wantErr := errors.New("persistent infra failure")
+
+	_, _, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+		attempts++
+		return WorkloadRunResult{}, nil, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected last error %v, got %v", wantErr, err)
+	}
+	if attempts != maxInfraRetries+1 {
+		t.Fatalf("expected %d attempts, got %d", maxInfraRetries+1, attempts)
 	}
 }

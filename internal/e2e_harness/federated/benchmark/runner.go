@@ -37,41 +37,41 @@ type RunResult struct {
 
 // WorkloadRunResult captures one workload execution result.
 type WorkloadRunResult struct {
-	Name         string                  `json:"name"`
-	Category     string                  `json:"category"`
-	Distribution Distribution            `json:"distribution"`
-	PageSize     int                     `json:"page_size"`
-	PageNumber   int                     `json:"page_number"`
-	Offset       int                     `json:"offset"`
-	PreferHot    bool                    `json:"prefer_hot,omitempty"`
-	WorkerID     int                     `json:"worker_id,omitempty"`
-	GroupID      int                     `json:"group_id,omitempty"`
-	ResultCount  int                     `json:"result_count"`
-	TotalRecords int64                   `json:"total_records"`
-	Duration     time.Duration           `json:"duration"`
-	Passed       bool                    `json:"passed"`
-	FailureKind  string                  `json:"failure_kind,omitempty"`
-	OracleMode   string                  `json:"oracle_mode,omitempty"`
-	FailureCount int                     `json:"failure_count,omitempty"`
-	InfraError   string                  `json:"infra_error,omitempty"`
-	RowIDs       []string                `json:"row_ids,omitempty"`
-	Assertions   []AssertionResult       `json:"assertions,omitempty"`
-	PlanNotes    []string                `json:"plan_notes,omitempty"`
-	PerTier      *PerTierMetrics         `json:"per_tier,omitempty"`
-	RouteEngine  string                  `json:"route_engine,omitempty"`
-	RouteReason  string                  `json:"route_reason,omitempty"`
-	PaginationMode string               `json:"pagination_mode,omitempty"`
+	Name           string            `json:"name"`
+	Category       string            `json:"category"`
+	Distribution   Distribution      `json:"distribution"`
+	PageSize       int               `json:"page_size"`
+	PageNumber     int               `json:"page_number"`
+	Offset         int               `json:"offset"`
+	PreferHot      bool              `json:"prefer_hot,omitempty"`
+	WorkerID       int               `json:"worker_id,omitempty"`
+	GroupID        int               `json:"group_id,omitempty"`
+	ResultCount    int               `json:"result_count"`
+	TotalRecords   int64             `json:"total_records"`
+	Duration       time.Duration     `json:"duration"`
+	Passed         bool              `json:"passed"`
+	FailureKind    string            `json:"failure_kind,omitempty"`
+	OracleMode     string            `json:"oracle_mode,omitempty"`
+	FailureCount   int               `json:"failure_count,omitempty"`
+	InfraError     string            `json:"infra_error,omitempty"`
+	RowIDs         []string          `json:"row_ids,omitempty"`
+	Assertions     []AssertionResult `json:"assertions,omitempty"`
+	PlanNotes      []string          `json:"plan_notes,omitempty"`
+	PerTier        *PerTierMetrics   `json:"per_tier,omitempty"`
+	RouteEngine    string            `json:"route_engine,omitempty"`
+	RouteReason    string            `json:"route_reason,omitempty"`
+	PaginationMode string            `json:"pagination_mode,omitempty"`
 }
 
 // PerTierMetrics captures per-engine row counts and pushdown efficiency from the execution plan.
 type PerTierMetrics struct {
-	PGRows          int64   `json:"pg_rows"`
-	DuckDBRows      int64   `json:"duckdb_rows"`
-	FinalRows       int64   `json:"final_rows"`
-	PushdownRatio   float64 `json:"pushdown_ratio"`
-	PGDirtyCount    int64   `json:"pg_dirty_count,omitempty"`
-	HasPushdown     bool    `json:"has_pushdown"`
-	Sources         int     `json:"sources"`
+	PGRows        int64   `json:"pg_rows"`
+	DuckDBRows    int64   `json:"duckdb_rows"`
+	FinalRows     int64   `json:"final_rows"`
+	PushdownRatio float64 `json:"pushdown_ratio"`
+	PGDirtyCount  int64   `json:"pg_dirty_count,omitempty"`
+	HasPushdown   bool    `json:"has_pushdown"`
+	Sources       int     `json:"sources"`
 }
 
 const (
@@ -228,7 +228,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 					defer wg.Done()
 					<-barrier
 
-					run, records, err := r.executeWorkload(ctx, h, workload)
+					run, records, err := r.executeWorkloadWithRetry(ctx, h, workload)
 					if err != nil {
 						run = failedWorkloadRunResult(workload, r.genConfig.Distribution, r.config.PageSize, fmt.Sprintf("execute workload: %v", err))
 					}
@@ -357,6 +357,37 @@ func (r *Runner) validateFixtures() error {
 		}
 	}
 	return nil
+}
+
+var maxInfraRetries = 2
+
+var retryBackoffDelay = func(attempt int) time.Duration {
+	return time.Duration(attempt) * time.Second
+}
+
+func executeWorkloadWithRetry(ctx context.Context, execute func(context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error)) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxInfraRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return WorkloadRunResult{}, nil, ctx.Err()
+			case <-time.After(retryBackoffDelay(attempt)):
+			}
+		}
+		run, records, err := execute(ctx)
+		if err == nil {
+			return run, records, nil
+		}
+		lastErr = err
+	}
+	return WorkloadRunResult{}, nil, lastErr
+}
+
+func (r *Runner) executeWorkloadWithRetry(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	return executeWorkloadWithRetry(ctx, func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+		return r.executeWorkload(ctx, h, workload)
+	})
 }
 
 func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
@@ -559,8 +590,8 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 
 	tables := internal.StorageTables{
 		EAVData:    h.CDCConfig.EAVDataTable,
-		EntityMain:  h.CDCConfig.EntityMainTable,
-		ChangeLog:   h.CDCConfig.ChangeLogTable,
+		EntityMain: h.CDCConfig.EntityMainTable,
+		ChangeLog:  h.CDCConfig.ChangeLogTable,
 	}
 
 	// Build attribute orders for sort
