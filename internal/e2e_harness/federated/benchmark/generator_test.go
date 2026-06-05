@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -75,6 +76,28 @@ func TestHotspotDistributionCreatesDuplicateVersions(t *testing.T) {
 	tradeRecords := dataset.RecordsForSchema("trade")
 	if len(LatestRecords(tradeRecords)) >= len(tradeRecords) {
 		t.Fatalf("expected deduped trade records to be fewer than raw trade records")
+	}
+}
+
+func TestGeneratorEncodesTradeTimeAsUnixMillisString(t *testing.T) {
+	g, err := NewGenerator(GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform, Seed: 42, TradeCount: 10, CustomerCount: 4, SecurityCount: 3, BaseTime: defaultBaseTime})
+	if err != nil {
+		t.Fatalf("NewGenerator failed: %v", err)
+	}
+	dataset, err := g.Generate()
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	tradeRecords := dataset.RecordsForSchema("trade")
+	if len(tradeRecords) == 0 {
+		t.Fatal("expected generated trade records")
+	}
+	tradeTime, ok := tradeRecords[0].Attributes["tradeTime"].(string)
+	if !ok {
+		t.Fatalf("expected tradeTime to be stored as string, got %T", tradeRecords[0].Attributes["tradeTime"])
+	}
+	if _, err := strconv.ParseInt(tradeTime, 10, 64); err != nil {
+		t.Fatalf("expected tradeTime to be unix millis string, got %q: %v", tradeTime, err)
 	}
 }
 

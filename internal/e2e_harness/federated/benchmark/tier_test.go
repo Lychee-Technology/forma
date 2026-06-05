@@ -47,6 +47,9 @@ func TestToTestRecordsPreservesKeyFields(t *testing.T) {
 	if converted[0].SchemaID != SchemaIDTrade {
 		t.Fatalf("unexpected schema ID %d", converted[0].SchemaID)
 	}
+	if _, ok := converted[0].Attributes["name"]; ok {
+		t.Fatalf("expected trade records to avoid synthetic name attribute")
+	}
 }
 
 func TestLoadTieredDatasetUsesLoader(t *testing.T) {

@@ -189,6 +189,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	if err != nil {
 		return nil, err
 	}
+	h.Registry = r.registry
 	if err := LoadTieredDataset(ctx, h, tiered); err != nil {
 		return nil, err
 	}
@@ -1081,6 +1082,41 @@ func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHar
 }
 
 func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness) ([]GeneratedRecord, map[string]struct{}, error) {
+	registry, err := LoadFixtureRegistry()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load fixture registry: %w", err)
+	}
+	_, tradeCache, err := registry.GetSchemaAttributeCacheByID(SchemaIDTrade)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load trade schema cache: %w", err)
+	}
+	tradeAttrID := func(name string) (int16, error) {
+		meta, ok := tradeCache[name]
+		if !ok {
+			return 0, fmt.Errorf("trade attribute %s not found in fixture cache", name)
+		}
+		return meta.AttributeID, nil
+	}
+	symbolAttrID, err := tradeAttrID("symbol")
+	if err != nil {
+		return nil, nil, err
+	}
+	exchangeAttrID, err := tradeAttrID("exchange")
+	if err != nil {
+		return nil, nil, err
+	}
+	regionAttrID, err := tradeAttrID("region")
+	if err != nil {
+		return nil, nil, err
+	}
+	tradeTypeAttrID, err := tradeAttrID("tradeType")
+	if err != nil {
+		return nil, nil, err
+	}
+	tradeTimeAttrID, err := tradeAttrID("tradeTime")
+	if err != nil {
+		return nil, nil, err
+	}
 	rows, err := h.PGDB.QueryContext(ctx, `
 		SELECT cl.schema_id, cl.row_id, cl.changed_at, COALESCE(cl.deleted_at, 0),
 			em.text_01, em.text_02, em.smallint_01, em.bigint_02,
@@ -1101,12 +1137,12 @@ func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness)
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
 		WHERE cl.flushed_at = 0
 	`,
-		benchmarkAttributeID(SchemaIDTrade, "symbol"),
-		benchmarkAttributeID(SchemaIDTrade, "exchange"),
-		benchmarkAttributeID(SchemaIDTrade, "region"),
-		benchmarkAttributeID(SchemaIDTrade, "tradeType"),
-		benchmarkAttributeID(SchemaIDTrade, "tradeTime"),
-		benchmarkAttributeID(SchemaIDTrade, "name"),
+		symbolAttrID,
+		exchangeAttrID,
+		regionAttrID,
+		tradeTypeAttrID,
+		tradeTimeAttrID,
+		0,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load hot state snapshot: %w", err)
@@ -1141,7 +1177,7 @@ func scanLoadedHotRecord(rows *sql.Rows) (GeneratedRecord, error) {
 	var exchange sql.NullString
 	var region sql.NullString
 	var tradeType sql.NullFloat64
-	var tradeTime sql.NullString
+	var tradeTime any
 	var name sql.NullString
 	if err := rows.Scan(&schemaID, &rowID, &changedAt, &deletedAt, &text01, &text02, &smallint01, &bigint02, &symbol, &exchange, &region, &tradeType, &tradeTime, &name); err != nil {
 		return GeneratedRecord{}, fmt.Errorf("scan hot state row: %w", err)
@@ -1171,8 +1207,8 @@ func scanLoadedHotRecord(rows *sql.Rows) (GeneratedRecord, error) {
 		} else if smallint01.Valid {
 			attrs["tradeType"] = int64(smallint01.Int16)
 		}
-		if tradeTime.Valid {
-			attrs["tradeTime"] = tradeTime.String
+		if normalizedTradeTime := normalizeBenchmarkTradeTime(tradeTime); normalizedTradeTime != "" {
+			attrs["tradeTime"] = normalizedTradeTime
 		} else if bigint02.Valid {
 			attrs["tradeTime"] = strconv.FormatInt(bigint02.Int64, 10)
 		}
@@ -1201,6 +1237,27 @@ func scanLoadedHotRecord(rows *sql.Rows) (GeneratedRecord, error) {
 		}
 	}
 	return GeneratedRecord{SchemaID: schemaID, SchemaName: schemaName, RowID: rowID, Version: 0, ChangedAt: changedAt, DeletedAt: deletedAt, Attributes: attrs}, nil
+}
+
+func normalizeBenchmarkTradeTime(value any) string {
+	switch v := value.(type) {
+	case time.Time:
+		return strconv.FormatInt(v.UnixMilli(), 10)
+	case sql.NullTime:
+		if v.Valid {
+			return strconv.FormatInt(v.Time.UnixMilli(), 10)
+		}
+	case string:
+		if unixMillis, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return strconv.FormatInt(unixMillis, 10)
+		}
+		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+			return strconv.FormatInt(parsed.UnixMilli(), 10)
+		}
+	case []byte:
+		return normalizeBenchmarkTradeTime(string(v))
+	}
+	return ""
 }
 
 func schemaNameForID(schemaID int16) (string, error) {
@@ -1343,17 +1400,6 @@ func semanticsForWorkload(workload WorkloadDefinition, genCfg GeneratorConfig) w
 	}
 	return workloadSemantics{TradeTimeStart: start, TradeTimeEnd: end}
 }
-
-func benchmarkAttributeID(schemaID int16, name string) int {
-	hash := uint32(2166136261)
-	input := fmt.Sprintf("%d:%s", schemaID, name)
-	for i := 0; i < len(input); i++ {
-		hash ^= uint32(input[i])
-		hash *= 16777619
-	}
-	return int(hash%30000) + 1
-}
-
 func generatedRecordMatchesFilterForWorkload(record GeneratedRecord, workload WorkloadDefinition) bool {
 	for key, expected := range workload.ResolvedFilterConditions() {
 		value, ok := benchmarkVisibleAttributeValue(record, key)

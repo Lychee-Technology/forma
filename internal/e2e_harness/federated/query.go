@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,7 +148,8 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 		var name sql.NullString
 		var version sql.NullInt64
 		var symbol, exchange, region sql.NullString
-		var tradeType, tradeTime sql.NullInt64
+		var tradeType sql.NullInt64
+		var tradeTime any
 
 		if benchmarkProjection {
 			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
@@ -187,19 +189,53 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 		if version.Valid {
 			rec.Float64Items["version"] = float64(version.Int64)
 		}
-		if benchmarkProjection && (tradeType.Valid || tradeTime.Valid) {
+		normalizedTradeTime, tradeTimeOK := normalizeBenchmarkTradeTimeValue(tradeTime)
+		if benchmarkProjection && (tradeType.Valid || tradeTimeOK) {
 			rec.Int64Items = make(map[string]int64)
 			if tradeType.Valid {
 				rec.Int64Items["tradeType"] = tradeType.Int64
 			}
-			if tradeTime.Valid {
-				rec.Int64Items["tradeTime"] = tradeTime.Int64
+			if tradeTimeOK {
+				rec.Int64Items["tradeTime"] = normalizedTradeTime
 			}
 		}
 
 		records = append(records, rec)
 	}
 	return records, nil
+}
+
+func normalizeBenchmarkTradeTimeValue(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int32:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case time.Time:
+		return v.UnixMilli(), true
+	case sql.NullInt64:
+		if v.Valid {
+			return v.Int64, true
+		}
+	case sql.NullTime:
+		if v.Valid {
+			return v.Time.UnixMilli(), true
+		}
+	case string:
+		if unixMillis, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return unixMillis, true
+		}
+		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+			return parsed.UnixMilli(), true
+		}
+	case []byte:
+		return normalizeBenchmarkTradeTimeValue(string(v))
+	}
+	return 0, false
 }
 
 // buildExecutionPlan creates an execution plan with tier and timing info.
@@ -274,7 +310,7 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	}
 
 	// Always include hot buffer (Postgres)
-	hotQuery := buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+	hotQuery := h.buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
 	tierQueries = append(tierQueries, hotQuery)
 
 	// Combine all tier queries with UNION ALL
@@ -303,18 +339,18 @@ func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnly
 		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	default:
 		if tradeTimeOnlyProjection {
-			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, epoch_ms(tradeTime) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
+			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 		}
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, epoch_ms(tradeTime) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
+		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	}
 }
 
-func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
 		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {
-			return buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter)
+			return h.buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter)
 		}
-		return buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+		return h.buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 	}
 	return fmt.Sprintf(`
 		SELECT 
@@ -332,8 +368,12 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 			%s`, pgConnStr, schemaID, rowIDFilter, timeWindowFilter)
 }
 
-func buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string) string {
-	tradeTimeAttrID := benchmarkAttributeID(schemaID, "tradeTime")
+func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+	return (*FederatedTestHarness)(nil).buildHotTierQuery(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+}
+
+func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string) string {
+	tradeTimeAttrID := h.benchmarkAttributeID(schemaID, "tradeTime")
 	return fmt.Sprintf(`
 		SELECT 
 			cl.row_id::VARCHAR as row_id,
@@ -456,35 +496,50 @@ type hotTierEAVMapping struct {
 	nameExpr     string
 }
 
-func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
+func (h *FederatedTestHarness) benchmarkAttributeID(schemaID int16, name string) int {
+	if h != nil && h.Registry != nil {
+		if _, cache, err := h.Registry.GetSchemaAttributeCacheByID(schemaID); err == nil && cache != nil {
+			if metadata, ok := cache[name]; ok {
+				return int(metadata.AttributeID)
+			}
+		}
+	}
+	hash := uint32(2166136261)
+	input := fmt.Sprintf("%d:%s", schemaID, name)
+	for i := 0; i < len(input); i++ {
+		hash ^= uint32(input[i])
+		hash *= 16777619
+	}
+	return int(hash%30000) + 1
+}
+
+func (h *FederatedTestHarness) hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
 	switch schemaID {
 	case benchmarkSchemaIDTrade:
-		symbolID := benchmarkAttributeID(schemaID, "symbol")
-		exchangeID := benchmarkAttributeID(schemaID, "exchange")
-		regionID := benchmarkAttributeID(schemaID, "region")
-		tradeTypeID := benchmarkAttributeID(schemaID, "tradeType")
-		tradeTimeID := benchmarkAttributeID(schemaID, "tradeTime")
-		nameID := benchmarkAttributeID(schemaID, "name")
+		symbolID := h.benchmarkAttributeID(schemaID, "symbol")
+		exchangeID := h.benchmarkAttributeID(schemaID, "exchange")
+		regionID := h.benchmarkAttributeID(schemaID, "region")
+		tradeTypeID := h.benchmarkAttributeID(schemaID, "tradeType")
+		tradeTimeID := h.benchmarkAttributeID(schemaID, "tradeTime")
 		return hotTierEAVMapping{
-			attrIDList: fmt.Sprintf("%d, %d, %d, %d, %d, %d", symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID, nameID),
+			attrIDList: fmt.Sprintf("%d, %d, %d, %d, %d", symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID),
 			pivotColumns: fmt.Sprintf(
 				"MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,\n\t\t\t"+
 					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS exchange,\n\t\t\t"+
 					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,\n\t\t\t"+
 					"MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS tradeType,\n\t\t\t"+
-					"MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS tradeTime,\n\t\t\t"+
-					"MAX(CASE WHEN attr_id = %d THEN value_text END) AS name",
-				symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID, nameID),
+					"MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS tradeTime",
+				symbolID, exchangeID, regionID, tradeTypeID, tradeTimeID),
 			selectExprs: "COALESCE(hot_vals.symbol, em.text_01) as symbol,\n\t\t\t" +
 				"COALESCE(hot_vals.exchange, '') as exchange,\n\t\t\t" +
 				"COALESCE(hot_vals.region, em.text_02) as region,\n\t\t\t" +
 				"COALESCE(hot_vals.tradeType, em.smallint_01) as tradeType,\n\t\t\t" +
 				"COALESCE(hot_vals.tradeTime, em.bigint_02) as tradeTime",
-			nameExpr: "COALESCE(hot_vals.name, hot_vals.symbol, '')",
+			nameExpr: "COALESCE(hot_vals.symbol, em.text_01, '')",
 		}
 	case benchmarkSchemaIDCustomer:
-		regionID := benchmarkAttributeID(schemaID, "region")
-		nameID := benchmarkAttributeID(schemaID, "name")
+		regionID := h.benchmarkAttributeID(schemaID, "region")
+		nameID := h.benchmarkAttributeID(schemaID, "name")
 		return hotTierEAVMapping{
 			attrIDList: fmt.Sprintf("%d, %d", regionID, nameID),
 			pivotColumns: fmt.Sprintf(
@@ -499,8 +554,8 @@ func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
 			nameExpr: "COALESCE(hot_vals.name, '')",
 		}
 	case benchmarkSchemaIDSecurity:
-		symbolID := benchmarkAttributeID(schemaID, "symbol")
-		nameID := benchmarkAttributeID(schemaID, "companyName")
+		symbolID := h.benchmarkAttributeID(schemaID, "symbol")
+		nameID := h.benchmarkAttributeID(schemaID, "companyName")
 		return hotTierEAVMapping{
 			attrIDList: fmt.Sprintf("%d, %d", symbolID, nameID),
 			pivotColumns: fmt.Sprintf(
@@ -519,8 +574,12 @@ func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
 	}
 }
 
-func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
-	m := hotTierEAVMappingForSchema(schemaID)
+func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
+	return (*FederatedTestHarness)(nil).hotTierEAVMappingForSchema(schemaID)
+}
+
+func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
+	m := h.hotTierEAVMappingForSchema(schemaID)
 	return fmt.Sprintf(`
 		SELECT 
 			cl.row_id::VARCHAR as row_id,
@@ -550,6 +609,10 @@ func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, at
 		pgConnStr, pgConnStr,
 		m.pivotColumns, pgConnStr, m.attrIDList,
 		schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+}
+
+func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
+	return (*FederatedTestHarness)(nil).buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 }
 
 func needsBenchmarkDuckDBMacros(opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) bool {
@@ -632,7 +695,7 @@ func buildTradeTimeFilterClause(opts *QueryOptions) string {
 }
 
 func parquetTradeTimeFilterExpression() string {
-	return "epoch_ms(tradeTime)"
+	return "COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP)))"
 }
 
 func buildHotTradeTimeFilterClauseTargeted(opts *QueryOptions) string {
@@ -682,22 +745,21 @@ func benchmarkSQLLiteral(value any) string {
 	}
 }
 
-func benchmarkAttrNameSQLCase() string {
+func (h *FederatedTestHarness) benchmarkAttrNameSQLCase() string {
 	type attrKey struct {
 		schemaID int16
 		name     string
 	}
 	mapping := map[attrKey]int{
-		{benchmarkSchemaIDTrade, "symbol"}:    benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
-		{benchmarkSchemaIDTrade, "exchange"}:  benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
-		{benchmarkSchemaIDTrade, "region"}:    benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
-		{benchmarkSchemaIDTrade, "tradeType"}: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
-		{benchmarkSchemaIDTrade, "tradeTime"}: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
-		{benchmarkSchemaIDTrade, "name"}:      benchmarkAttributeID(benchmarkSchemaIDTrade, "name"),
-		{benchmarkSchemaIDCustomer, "region"}: benchmarkAttributeID(benchmarkSchemaIDCustomer, "region"),
-		{benchmarkSchemaIDCustomer, "name"}:   benchmarkAttributeID(benchmarkSchemaIDCustomer, "name"),
-		{benchmarkSchemaIDSecurity, "symbol"}: benchmarkAttributeID(benchmarkSchemaIDSecurity, "symbol"),
-		{benchmarkSchemaIDSecurity, "name"}:   benchmarkAttributeID(benchmarkSchemaIDSecurity, "companyName"),
+		{benchmarkSchemaIDTrade, "symbol"}:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
+		{benchmarkSchemaIDTrade, "exchange"}:  h.benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
+		{benchmarkSchemaIDTrade, "region"}:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
+		{benchmarkSchemaIDTrade, "tradeType"}: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
+		{benchmarkSchemaIDTrade, "tradeTime"}: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
+		{benchmarkSchemaIDCustomer, "region"}: h.benchmarkAttributeID(benchmarkSchemaIDCustomer, "region"),
+		{benchmarkSchemaIDCustomer, "name"}:   h.benchmarkAttributeID(benchmarkSchemaIDCustomer, "name"),
+		{benchmarkSchemaIDSecurity, "symbol"}: h.benchmarkAttributeID(benchmarkSchemaIDSecurity, "symbol"),
+		{benchmarkSchemaIDSecurity, "name"}:   h.benchmarkAttributeID(benchmarkSchemaIDSecurity, "companyName"),
 	}
 	parts := make([]string, 0, len(mapping))
 	for key, attrID := range mapping {
@@ -705,18 +767,7 @@ func benchmarkAttrNameSQLCase() string {
 	}
 	return strings.Join(parts, " ")
 }
-
-func benchmarkAttributeID(schemaID int16, name string) int {
-	hash := uint32(2166136261)
-	input := fmt.Sprintf("%d:%s", schemaID, name)
-	for i := 0; i < len(input); i++ {
-		hash ^= uint32(input[i])
-		hash *= 16777619
-	}
-	return int(hash%30000) + 1
-}
-
-func benchmarkFunctionsSQL() string {
+func (h *FederatedTestHarness) benchmarkFunctionsSQL() string {
 	return fmt.Sprintf(`
 		CREATE OR REPLACE MACRO benchmark_attr_name(schema_id, attr_id) AS (
 			CASE %s ELSE '' END
@@ -733,11 +784,11 @@ func benchmarkFunctionsSQL() string {
 		CREATE OR REPLACE MACRO benchmark_bigint(attr_map, attr_name, fallback_value) AS (
 			COALESCE(TRY_CAST(element_at(attr_map, attr_name) AS BIGINT), fallback_value)
 		);
-	`, benchmarkAttrNameSQLCase())
+	`, h.benchmarkAttrNameSQLCase())
 }
 
 func prepareBenchmarkDuckDBMacros(ctx context.Context, h *FederatedTestHarness) error {
-	_, err := h.Duck.DB.ExecContext(ctx, benchmarkFunctionsSQL())
+	_, err := h.Duck.DB.ExecContext(ctx, h.benchmarkFunctionsSQL())
 	if err != nil {
 		return fmt.Errorf("prepare benchmark duckdb macros: %w", err)
 	}
@@ -926,7 +977,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 
 func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) (string, []any) {
 	args := []any{h.SchemaID}
-	attrIDs := benchmarkPostgresAttributeIDs()
+	attrIDs := h.benchmarkPostgresAttributeIDs()
 	query := strings.Builder{}
 	query.WriteString(`
 		SELECT
@@ -973,7 +1024,7 @@ func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) 
 
 func (h *FederatedTestHarness) buildPostgresOnlyCountQuery(opts *QueryOptions) (string, []any) {
 	args := []any{h.SchemaID}
-	attrIDs := benchmarkPostgresAttributeIDs()
+	attrIDs := h.benchmarkPostgresAttributeIDs()
 	query := strings.Builder{}
 	query.WriteString(fmt.Sprintf(`
 		SELECT COUNT(*)
@@ -1063,14 +1114,35 @@ type postgresBenchmarkAttributeIDs struct {
 	name      int
 }
 
-func benchmarkPostgresAttributeIDs() postgresBenchmarkAttributeIDs {
+func (h *FederatedTestHarness) benchmarkPostgresAttributeIDs() postgresBenchmarkAttributeIDs {
+	if h != nil && h.Registry != nil {
+		if _, cache, err := h.Registry.GetSchemaAttributeCacheByID(benchmarkSchemaIDTrade); err == nil && cache != nil {
+			ids := postgresBenchmarkAttributeIDs{}
+			if meta, ok := cache["symbol"]; ok {
+				ids.symbol = int(meta.AttributeID)
+			}
+			if meta, ok := cache["exchange"]; ok {
+				ids.exchange = int(meta.AttributeID)
+			}
+			if meta, ok := cache["region"]; ok {
+				ids.region = int(meta.AttributeID)
+			}
+			if meta, ok := cache["tradeType"]; ok {
+				ids.tradeType = int(meta.AttributeID)
+			}
+			if meta, ok := cache["tradeTime"]; ok {
+				ids.tradeTime = int(meta.AttributeID)
+			}
+			return ids
+		}
+	}
 	return postgresBenchmarkAttributeIDs{
-		symbol:    benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
-		exchange:  benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
-		region:    benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
-		tradeType: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
-		tradeTime: benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
-		name:      benchmarkAttributeID(benchmarkSchemaIDTrade, "name"),
+		symbol:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
+		exchange:  h.benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
+		region:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
+		tradeType: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
+		tradeTime: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
+		name:      h.benchmarkAttributeID(benchmarkSchemaIDTrade, "name"),
 	}
 }
 
