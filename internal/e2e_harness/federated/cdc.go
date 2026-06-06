@@ -119,6 +119,9 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]uuid.U
 		}
 		rowIDs = append(rowIDs, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unflushed row ids: %w", err)
+	}
 	return rowIDs, nil
 }
 
@@ -184,39 +187,47 @@ func (h *FederatedTestHarness) RunCompaction(ctx context.Context) (*CompactionRe
 func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []string) ([]TestRecord, error) {
 	var allRecords []TestRecord
 	for _, f := range deltaFiles {
-		s3Path := fmt.Sprintf("s3://%s/%s", h.S3Bucket, f)
-		rows, err := h.Duck.DB.QueryContext(ctx, fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version
-			FROM read_parquet('%s')
-		`, s3Path))
-		if err != nil {
-			continue
-		}
-
-		for rows.Next() {
-			var rowID string
-			var schemaID int16
-			var changedAt, deletedAt int64
-			var name sql.NullString
-			var version sql.NullInt64
-
-			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
-				return nil, fmt.Errorf("scan row: %w", err)
+		if err := func(file string) error {
+			s3Path := fmt.Sprintf("s3://%s/%s", h.S3Bucket, file)
+			rows, err := h.Duck.DB.QueryContext(ctx, fmt.Sprintf(`
+				SELECT row_id, schema_id, changed_at, deleted_at, name, version
+				FROM read_parquet('%s')
+			`, s3Path))
+			if err != nil {
+				return nil
 			}
+			defer rows.Close()
 
-			rec := TestRecord{
-				RowID:     uuid.MustParse(rowID),
-				SchemaID:  schemaID,
-				ChangedAt: changedAt,
-				DeletedAt: deletedAt,
-				Attributes: map[string]any{
-					"name":    name.String,
-					"version": int(version.Int64),
-				},
+			for rows.Next() {
+				var rowID string
+				var schemaID int16
+				var changedAt, deletedAt int64
+				var name sql.NullString
+				var version sql.NullInt64
+
+				if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+					return fmt.Errorf("scan row: %w", err)
+				}
+
+				rec := TestRecord{
+					RowID:     uuid.MustParse(rowID),
+					SchemaID:  schemaID,
+					ChangedAt: changedAt,
+					DeletedAt: deletedAt,
+					Attributes: map[string]any{
+						"name":    name.String,
+						"version": int(version.Int64),
+					},
+				}
+				allRecords = append(allRecords, rec)
 			}
-			allRecords = append(allRecords, rec)
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate cdc records: %w", err)
+			}
+			return nil
+		}(f); err != nil {
+			return nil, err
 		}
-		rows.Close()
 	}
 	return allRecords, nil
 }

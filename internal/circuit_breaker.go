@@ -72,6 +72,13 @@ func (cb *CircuitBreaker) RecordFailure() {
 }
 
 // RecordSuccess resets failure history when operations succeed.
+//
+// Design note: this breaker forgives immediately on the first success after
+// the open period expires; it does not implement a half-open probe state.
+// That favors fast recovery when the downstream is healthy again, but it also
+// means a single success clears prior failures even if the dependency is still
+// unstable. If stricter half-open semantics are needed, extend this logic with
+// a probe counter guarded by mu.
 func (cb *CircuitBreaker) RecordSuccess() {
 	if cb == nil {
 		return

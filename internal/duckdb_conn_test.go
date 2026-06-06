@@ -111,6 +111,25 @@ func TestNewDuckDBClientContext_DeadlineExceeded(t *testing.T) {
 	require.Contains(t, err.Error(), "ping duckdb")
 }
 
+func TestNewDuckDBClientContext_ExtensionStepsUseCallerCtx(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MemoryLimitMB:  256,
+		MaxParallelism: 1,
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	duck, err := NewDuckDBClientContext(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, duck)
+	defer duck.Close()
+}
+
 func TestNewDuckDBClient_DisabledConfig(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: false,

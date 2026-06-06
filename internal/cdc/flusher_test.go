@@ -295,6 +295,22 @@ func TestGetUnflushedSchemaIDs_QueryError(t *testing.T) {
 	require.Contains(t, err.Error(), "query distinct schema ids")
 }
 
+func TestGetUnflushedSchemaIDs_CanceledContext(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, "change_log")
+	require.Error(t, err)
+	require.Nil(t, schemaIDs)
+	require.Contains(t, err.Error(), "query distinct schema ids")
+}
+
 func TestExecuteFlush_NoSelectedRowIDsReturnsWithoutExportWork(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -546,7 +562,6 @@ func TestExecuteBatch_SucceedsWhenManifestUpdateFails(t *testing.T) {
 	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
 
 	executor := &flushBatchExecutor{
-		ctx:              ctx,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
@@ -569,7 +584,7 @@ func TestExecuteBatch_SucceedsWhenManifestUpdateFails(t *testing.T) {
 		},
 	}
 
-	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
 	require.NoError(t, err)
 	require.True(t, exportCalled)
 
@@ -597,7 +612,6 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
-		ctx:           ctx,
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      &objectOnlyS3Client{},
@@ -613,7 +627,7 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 		},
 	}
 
-	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "duck export snapshot")
 
@@ -641,7 +655,6 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
-		ctx:           ctx,
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      &copyFailingS3Client{},
@@ -657,7 +670,7 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 		},
 	}
 
-	err = executor.executeBatch([]uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "copy tmp to final")
 
