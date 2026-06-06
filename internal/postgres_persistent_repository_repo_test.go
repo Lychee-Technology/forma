@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"testing"
 	"text/template"
@@ -550,21 +551,22 @@ func TestQueryPersistentRecordsFederated_FallsBackToPostgresWhenDuckDBCircuitBre
 	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
 		return nil, nil
 	}
+	duckRowID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
-		return `SELECT
+		return fmt.Sprintf(`SELECT
 			1::SMALLINT AS ltbase_schema_id,
-			'11111111-1111-1111-1111-111111111111'::TEXT AS ltbase_row_id,
+			'%s'::TEXT AS ltbase_row_id,
 			100::BIGINT AS ltbase_created_at,
 			200::BIGINT AS ltbase_updated_at,
 			NULL::BIGINT AS ltbase_deleted_at,
 			'[]'::TEXT AS attributes_json,
-			1::BIGINT AS total_records,
+			99::BIGINT AS total_records,
 			1::BIGINT AS total_pages,
-			1 AS current_page`, nil, nil
+			1 AS current_page`, duckRowID), nil, nil
 	}
 
-	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, 1)
+	pgRowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	columns, values := optimizedQueryFixtureColumnsAndValues(pgRowID, 1)
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 50, 0).WillReturnRows(rows)
 
@@ -582,7 +584,7 @@ func TestQueryPersistentRecordsFederated_FallsBackToPostgresWhenDuckDBCircuitBre
 	assert.Equal(t, int64(1), page.TotalRecords)
 	assert.Equal(t, 1, page.TotalPages)
 	assert.Equal(t, 1, page.CurrentPage)
-	assert.Equal(t, rowID, page.Records[0].RowID)
+	assert.Equal(t, pgRowID, page.Records[0].RowID)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
