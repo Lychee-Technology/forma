@@ -311,6 +311,58 @@ func TestGetUnflushedSchemaIDs_CanceledContext(t *testing.T) {
 	require.Contains(t, err.Error(), "query distinct schema ids")
 }
 
+func TestProcessSchemas_ContinuesAcrossFailuresAndJoinsErrors(t *testing.T) {
+	processed := make([]int16, 0, 3)
+	flushCtx := &schemaFlushContext{
+		logger: zap.NewNop(),
+		processSchemaFn: func(_ context.Context, schemaID int16) error {
+			processed = append(processed, schemaID)
+			if schemaID == 2 {
+				return errors.New("boom")
+			}
+			return nil
+		},
+	}
+
+	err := flushCtx.processSchemas(context.Background(), []int64{1, 2, 3})
+	require.Error(t, err)
+	require.Equal(t, []int16{1, 2, 3}, processed)
+	require.Contains(t, err.Error(), "schema 2")
+	require.Contains(t, err.Error(), "boom")
+}
+
+func TestProcessSchemas_ReturnsNilForNilOrEmptySchemaIDsWithoutProcessing(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		calls := 0
+		flushCtx := &schemaFlushContext{
+			logger: zap.NewNop(),
+			processSchemaFn: func(context.Context, int16) error {
+				calls++
+				return nil
+			},
+		}
+
+		err := flushCtx.processSchemas(context.Background(), nil)
+		require.NoError(t, err)
+		require.Zero(t, calls)
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		calls := 0
+		flushCtx := &schemaFlushContext{
+			logger: zap.NewNop(),
+			processSchemaFn: func(context.Context, int16) error {
+				calls++
+				return nil
+			},
+		}
+
+		err := flushCtx.processSchemas(context.Background(), []int64{})
+		require.NoError(t, err)
+		require.Zero(t, calls)
+	})
+}
+
 func TestExecuteFlush_NoSelectedRowIDsReturnsWithoutExportWork(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)

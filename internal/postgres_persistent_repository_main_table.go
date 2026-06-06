@@ -178,7 +178,7 @@ func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx
 	}
 	tag, err := tx.Exec(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("update entity_main: %w", err)
+		return fmt.Errorf("update entity_main: %w", classifyPgError(err))
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("entity not found (schema=%d row=%s): %w", record.SchemaID, record.RowID, forma.ErrNotFound)

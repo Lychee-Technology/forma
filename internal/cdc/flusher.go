@@ -127,19 +127,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		manifestResolver: manifestResolver,
 	}
 
-	var schemaErrs []error
-	for _, sid := range schemaIDs {
-		schemaID := int16(sid)
-		if err := flushCtx.processSchema(ctx, schemaID); err != nil {
-			logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
-			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
-		}
-	}
-	if len(schemaErrs) > 0 {
-		return errors.Join(schemaErrs...)
-	}
-
-	return nil
+	return flushCtx.processSchemas(ctx, schemaIDs)
 }
 
 // setupAWSClient initializes the AWS credentials and S3 client.
@@ -263,6 +251,32 @@ type schemaFlushContext struct {
 	releaseLock      func(context.Context, *sql.DB, int16) error
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
+	processSchemaFn  func(context.Context, int16) error
+}
+
+func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int64) error {
+	if len(schemaIDs) == 0 {
+		return nil
+	}
+
+	processSchema := c.processSchemaFn
+	if processSchema == nil {
+		processSchema = c.processSchema
+	}
+
+	var schemaErrs []error
+	for _, sid := range schemaIDs {
+		schemaID := int16(sid)
+		if err := processSchema(ctx, schemaID); err != nil {
+			c.logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
+			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
+		}
+	}
+	if len(schemaErrs) > 0 {
+		return errors.Join(schemaErrs...)
+	}
+
+	return nil
 }
 
 // processSchema handles the flush process for a single schema.

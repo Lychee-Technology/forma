@@ -16,6 +16,7 @@ import (
 type mockEntityManager struct {
 	advancedResult    *forma.QueryResult
 	advancedErr       error
+	advancedReq       *forma.QueryRequest
 	getResult         *forma.DataRecord
 	getErr            error
 	batchCreateResult *forma.BatchResult
@@ -46,6 +47,7 @@ func (m *mockEntityManager) Delete(ctx context.Context, req *forma.EntityOperati
 }
 
 func (m *mockEntityManager) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
+	m.advancedReq = req
 	if m.advancedResult != nil || m.advancedErr != nil {
 		return m.advancedResult, m.advancedErr
 	}
@@ -126,6 +128,37 @@ func TestHandleAdvancedQueryValidation(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleAdvancedQueryURLAttrsOverrideBodyAttrs(t *testing.T) {
+	manager := &mockEntityManager{
+		advancedResult: &forma.QueryResult{Data: []*forma.DataRecord{}},
+	}
+	server := &Server{manager: manager}
+
+	payload := []byte(`{
+		"schema_name": "lead",
+		"condition": {"l": "and", "c": [{"a": "status", "v": "equals:hot"}]},
+		"attrs": ["body_attr"],
+		"page": 1,
+		"items_per_page": 10
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query?attrs=url_one,url_two", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handleAdvancedQuery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if manager.advancedReq == nil {
+		t.Fatalf("expected Query request to be captured")
+	}
+
+	expectedAttrs := []string{"url_one", "url_two"}
+	if !reflect.DeepEqual(expectedAttrs, manager.advancedReq.Attrs) {
+		t.Fatalf("expected attrs %v, got %v", expectedAttrs, manager.advancedReq.Attrs)
 	}
 }
 
