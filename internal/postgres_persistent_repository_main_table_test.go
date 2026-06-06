@@ -2,10 +2,12 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
@@ -148,4 +150,50 @@ func TestInsertAndUpdateMainRow(t *testing.T) {
 	require.NoError(t, repo.updateMainRow(ctx, mock, "entity_main", record))
 
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateMainRowClassifiesUniqueViolationAsConflict(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	record := &PersistentRecord{
+		SchemaID:  1,
+		RowID:     rowID,
+		UpdatedAt: 20,
+		TextItems: map[string]string{"text_01": "hello"},
+	}
+
+	updateQuery, updateArgs, err := buildUpdateMainStatement("entity_main", record)
+	require.NoError(t, err)
+	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+		WithArgs(updateArgs...).
+		WillReturnError(&pgconn.PgError{Code: "23505", Detail: "duplicate key value violates unique constraint"})
+
+	repo := &DBPersistentRecordRepository{}
+	err = repo.updateMainRow(ctx, mock, "entity_main", record)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forma.ErrConflict)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestClassifyPgError(t *testing.T) {
+	t.Run("maps 23505 to conflict", func(t *testing.T) {
+		err := classifyPgError(&pgconn.PgError{Code: "23505", Detail: "duplicate key value violates unique constraint"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forma.ErrConflict)
+	})
+
+	t.Run("leaves other pg errors unchanged", func(t *testing.T) {
+		original := &pgconn.PgError{Code: "23503", Detail: "violates foreign key constraint"}
+		assert.Same(t, original, classifyPgError(original))
+	})
+
+	t.Run("leaves non pg errors unchanged", func(t *testing.T) {
+		original := errors.New("boom")
+		assert.Same(t, original, classifyPgError(original))
+	})
 }
