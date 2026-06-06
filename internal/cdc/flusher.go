@@ -241,6 +241,9 @@ func getUnflushedSchemaIDs(ctx context.Context, db *sql.DB, tableName string) ([
 		}
 		schemaIDs = append(schemaIDs, sid)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schema ids: %w", err)
+	}
 	return schemaIDs, nil
 }
 
@@ -321,7 +324,6 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 }
 
 type flushBatchExecutor struct {
-	ctx              context.Context
 	db               *sql.DB
 	duck             *DuckExporter
 	s3Client         S3ObjectClient
@@ -340,7 +342,7 @@ type flushBatchExecutor struct {
 	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
 }
 
-func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
+func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 	exportSnapshot := e.exportSnapshot
 	if exportSnapshot == nil {
@@ -349,11 +351,11 @@ func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, f
 		}
 	}
 
-	if err := exportSnapshot(e.duck, e.ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+	if err := exportSnapshot(e.duck, ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
 		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
 	}
 
-	if err := CopyTmpToFinal(e.ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {
+	if err := CopyTmpToFinal(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {
 		return fmt.Errorf("copy tmp to final (%s): %w", batchKind, err)
 	}
 
@@ -363,7 +365,7 @@ func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, f
 	}
 
 	flushedAt := time.Now().UnixMilli()
-	updatedIDs, err := MarkFlushedIDsAtSnapshot(e.ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
+	updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
 	if err != nil {
 		return fmt.Errorf("mark flushed at snapshot (%s): %w", batchKind, err)
 	}
@@ -374,7 +376,7 @@ func (e *flushBatchExecutor) executeBatch(batchIDs []uuid.UUID, tmpKey string, f
 	}
 
 	if e.manifestStore != nil {
-		if err := updateManifest(e.ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, e.logger); err != nil {
+		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, e.logger); err != nil {
 			e.logger.Sugar().Errorw("manifest update failed", "err", err)
 			// Don't return - the flush succeeded, manifest is non-critical.
 		}
@@ -429,7 +431,6 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 	}
 
 	executor := &flushBatchExecutor{
-		ctx:              ctx,
 		db:               c.db,
 		duck:             c.duck,
 		s3Client:         c.s3Client,
@@ -449,11 +450,15 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 
 	executeInChunks := executor.executeInChunks
 	if executeInChunks == nil {
-		executeInChunks = executeFlushInChunks
+		executeInChunks = func(e *flushBatchExecutor, ids []uuid.UUID, max int) error {
+			return executeFlushInChunks(ctx, e, ids, max)
+		}
 	}
 	executeSingle := executor.executeSingle
 	if executeSingle == nil {
-		executeSingle = executeFlushSingle
+		executeSingle = func(e *flushBatchExecutor, ids []uuid.UUID) error {
+			return executeFlushSingle(ctx, e, ids)
+		}
 	}
 
 	batchIDs := ids
@@ -471,6 +476,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 }
 
 func executeFlushInChunks(
+	ctx context.Context,
 	executor *flushBatchExecutor,
 	batchIDs []uuid.UUID,
 	maxRows int,
@@ -480,7 +486,7 @@ func executeFlushInChunks(
 		sub := batchIDs[start:end]
 
 		chunkTmpKey, chunkFinalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)
-		if err := executor.executeBatch(sub, chunkTmpKey, chunkFinalKey, "chunk"); err != nil {
+		if err := executor.executeBatch(ctx, sub, chunkTmpKey, chunkFinalKey, "chunk"); err != nil {
 			return err
 		}
 	}
@@ -488,11 +494,12 @@ func executeFlushInChunks(
 }
 
 func executeFlushSingle(
+	ctx context.Context,
 	executor *flushBatchExecutor,
 	batchIDs []uuid.UUID,
 ) error {
 	tmpKey, finalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)
-	return executor.executeBatch(batchIDs, tmpKey, finalKey, "batch")
+	return executor.executeBatch(ctx, batchIDs, tmpKey, finalKey, "batch")
 }
 
 // updateManifest appends a file entry to the schema's manifest.

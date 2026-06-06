@@ -80,9 +80,17 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
-	// Apply a small connection configuration
-	db.SetMaxOpenConns(1) // DuckDB typically uses a single connection
+	// Apply a small connection configuration.
+	// File-backed DuckDB in read/write mode is effectively single-writer; more
+	// than one pooled connection can surface "database locked" errors under load.
+	db.SetMaxOpenConns(1)
 	if cfg.MaxConnections > 0 {
+		if cfg.MaxConnections > 1 && dsn != ":memory:" {
+			zap.S().Warnw("duckdb: MaxConnections > 1 with file-backed database may cause database locked errors under concurrent load",
+				"dbPath", dsn,
+				"maxConnections", cfg.MaxConnections,
+			)
+		}
 		db.SetMaxOpenConns(cfg.MaxConnections)
 	}
 
@@ -94,17 +102,17 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 		return nil, fmt.Errorf("ping duckdb: %w", err)
 	}
 
-	if err := configureExtensions(pingCtx, db, cfg); err != nil {
+	if err := configureExtensions(ctx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	if err := configureS3(pingCtx, db, cfg); err != nil {
+	if err := configureS3(ctx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	if err := applyResourcePragmas(pingCtx, db, cfg); err != nil {
+	if err := applyResourcePragmas(ctx, db, cfg); err != nil {
 		db.Close()
 		return nil, err
 	}
