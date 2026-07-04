@@ -245,6 +245,16 @@ func TestExtractMainColumnBinding(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid column_binding format")
 	})
+
+	t.Run("returns error for typed-nil binding map", func(t *testing.T) {
+		raw := map[string]any{
+			"column_binding": map[string]any(nil),
+		}
+		binding, err := extractMainColumnBinding(attrName, raw, source)
+		assert.Nil(t, binding)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid columnName in columnBinding")
+	})
 }
 
 func TestParseBindingObject(t *testing.T) {

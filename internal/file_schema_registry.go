@@ -186,7 +186,10 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 }
 
 // schemaMetadataForID returns registry-owned metadata maps for internal read-only use.
-// Callers must not mutate the returned maps.
+// Callers must not mutate the returned maps. Returning internal references is
+// safe only because the registry is immutable after construction; if schema
+// hot-reload is ever introduced, this aliasing contract must be revisited
+// (copy-on-read or generational maps).
 func (r *fileSchemaRegistry) schemaMetadataForID(id int16) (forma.SchemaAttributeCache, map[int16]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

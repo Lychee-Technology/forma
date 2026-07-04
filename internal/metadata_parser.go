@@ -52,11 +52,9 @@ func extractMainColumnBinding(attrName string, attrData map[string]any, source s
 	if !ok {
 		return nil, fmt.Errorf("invalid column_binding format for attribute %s in %s", attrName, source)
 	}
-	if raw != nil {
-		return parseBindingObject(attrName, raw, source)
-	}
-
-	return nil, nil
+	// A typed-nil map (Go-constructed input only; JSON null fails the assertion
+	// above) proceeds and fails the col_name check — strict, not silently ignored.
+	return parseBindingObject(attrName, raw, source)
 }
 
 func parseBindingObject(attrName string, raw map[string]any, source string) (*forma.MainColumnBinding, error) {
