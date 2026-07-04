@@ -139,6 +139,8 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 	return records, totalRecords, nil
 }
 
+// RunOptimizedQuery exposes the optimized single-query path (prebuilt WHERE
+// clause and args) for the federated engine's PostgresFederatedSource seam.
 func (r *DBPersistentRecordRepository) RunOptimizedQuery(
 	ctx context.Context,
 	tables StorageTables,
@@ -191,6 +193,8 @@ func (r *DBPersistentRecordRepository) buildHybridConditions(
 	return builder.build(query.Condition)
 }
 
+// BuildHybridConditions builds the main-table/EAV hybrid WHERE clause for a
+// federated query, for the federated engine's PostgresFederatedSource seam.
 func (r *DBPersistentRecordRepository) BuildHybridConditions(tables StorageTables, fq *FederatedAttributeQuery) (string, []any, error) {
 	if fq == nil {
 		return "", nil, fmt.Errorf("federated query cannot be nil")

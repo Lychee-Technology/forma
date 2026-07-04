@@ -158,7 +158,7 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 		return s.repository.QueryPersistentRecords(ctx, query)
 	}
 	if s.federatedQueryEngine == nil {
-		return nil, fmt.Errorf("federated query engine is not initialized: %w", forma.ErrInvalidInput)
+		return nil, fmt.Errorf("federated query engine is not initialized")
 	}
 
 	fq := &FederatedAttributeQuery{

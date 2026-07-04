@@ -651,7 +651,6 @@ func TestDetectBaselineDrift(t *testing.T) {
 	sig := detectBaselineDrift(base, drift)
 	if sig == nil {
 		t.Fatalf("expected baseline drift to be detected (20%% increase)")
-		return
 	}
 	if !sig.Detected {
 		t.Fatalf("expected drift to be detected")

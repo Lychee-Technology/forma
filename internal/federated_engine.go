@@ -11,20 +11,32 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
+// PostgresFederatedSource is the Postgres-side seam the federated engine
+// queries for hot-tier records. It is intentionally wider than one method:
+// federated pagination needs the optimized clause/args path and hybrid
+// condition building, which QueryPersistentRecords cannot substitute.
 type PostgresFederatedSource interface {
 	QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
 	RunOptimizedQuery(ctx context.Context, tables StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []AttributeOrder, useMainTableAsAnchor bool) ([]*PersistentRecord, int64, error)
 	BuildHybridConditions(tables StorageTables, fq *FederatedAttributeQuery) (string, []any, error)
 }
 
+// DirtyIDFetcher retrieves row IDs from the change log that are newer than
+// the flushed Parquet tiers and must be excluded from DuckDB results.
 type DirtyIDFetcher interface {
 	FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error)
 }
 
+// DuckDBQueryExecutor executes SQL against DuckDB. A nil executor means
+// DuckDB is unavailable; the engine then degrades per FederatedQueryOptions.
 type DuckDBQueryExecutor interface {
 	Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error)
 }
 
+// DBFederatedQueryEngine executes federated queries across the Postgres hot
+// tier and the DuckDB/Parquet warm+cold tiers: routing policy, dirty-set
+// exclusion, DuckDB execution, merge, and pagination. It is the sole
+// implementation of the FederatedQueryEngine interface.
 type DBFederatedQueryEngine struct {
 	pgSource       PostgresFederatedSource
 	dirtyIDFetcher DirtyIDFetcher
@@ -37,6 +49,9 @@ type DBFederatedQueryEngine struct {
 	duckTemplate   *template.Template
 }
 
+// NewDBFederatedQueryEngine assembles the engine from its injected seams.
+// duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
+// nil breaker disables circuit breaking.
 func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *MetadataCache, pgConnString string) *DBFederatedQueryEngine {
 	return &DBFederatedQueryEngine{
 		pgSource:       pgSource,
@@ -50,6 +65,10 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 	}
 }
 
+// Query implements FederatedQueryEngine. Hot-only requests delegate directly
+// to Postgres; otherwise the routing policy decides between Postgres and the
+// DuckDB federated path, falling back to Postgres on DuckDB failure when
+// opts.AllowPartialDegradedMode is set.
 func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
@@ -132,14 +151,25 @@ func (e *DBFederatedQueryEngine) getDuckDBTemplate() *template.Template {
 	return AdvancedQueryTemplateDuckDB
 }
 
+// DuckDBClientQueryExecutor adapts a live *DuckDBClient to the
+// DuckDBQueryExecutor seam.
 type DuckDBClientQueryExecutor struct {
 	client *DuckDBClient
 }
 
-func NewDuckDBClientQueryExecutor(client *DuckDBClient) *DuckDBClientQueryExecutor {
+// NewDuckDBClientQueryExecutor wraps client as a DuckDBQueryExecutor. It
+// returns a nil interface when client (or its DB) is nil so that the engine's
+// duck==nil unavailability guard fires early — before dirty-set fetching and
+// without recording circuit-breaker failures — matching the pre-extraction
+// repository semantics.
+func NewDuckDBClientQueryExecutor(client *DuckDBClient) DuckDBQueryExecutor {
+	if client == nil || client.DB == nil {
+		return nil
+	}
 	return &DuckDBClientQueryExecutor{client: client}
 }
 
+// Query executes sql against the wrapped DuckDB client.
 func (e *DuckDBClientQueryExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
 	if e == nil || e.client == nil || e.client.DB == nil {
 		return nil, fmt.Errorf("duckdb client not available")
@@ -151,14 +181,19 @@ type dirtyIDPool interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
+// PostgresDirtyIDFetcher reads unflushed row IDs from the change_log table,
+// satisfying the DirtyIDFetcher seam with a live Postgres pool.
 type PostgresDirtyIDFetcher struct {
 	pool dirtyIDPool
 }
 
+// NewPostgresDirtyIDFetcher wraps pool as a DirtyIDFetcher.
 func NewPostgresDirtyIDFetcher(pool dirtyIDPool) *PostgresDirtyIDFetcher {
 	return &PostgresDirtyIDFetcher{pool: pool}
 }
 
+// FetchDirtyRowIDs returns the row IDs in changeLogTable for schemaID that
+// have not been flushed to Parquet yet.
 func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
 	if changeLogTable == "" {
 		return nil, fmt.Errorf("change log table name cannot be empty")
@@ -187,12 +222,14 @@ func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLog
 	return ids, nil
 }
 
-func DuckDBPostgresConnStringFromPool(pool any) string {
-	cfgPool, ok := pool.(*pgxpool.Pool)
-	if !ok || cfgPool == nil {
+// DuckDBPostgresConnStringFromPool derives the libpq-style connection string
+// DuckDB's postgres_scanner needs from an existing pgx pool. It returns ""
+// for a nil pool or pool config.
+func DuckDBPostgresConnStringFromPool(pool *pgxpool.Pool) string {
+	if pool == nil {
 		return ""
 	}
-	cfg := cfgPool.Config()
+	cfg := pool.Config()
 	if cfg == nil {
 		return ""
 	}

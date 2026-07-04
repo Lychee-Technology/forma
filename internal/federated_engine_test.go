@@ -147,3 +147,72 @@ func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndDirtyFetcher(t
 	require.Len(t, page.Records, 1)
 	require.Equal(t, rowID, page.Records[0].RowID)
 }
+
+func TestDBFederatedQueryEngine_DisabledRoutingDelegatesToPostgres(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &PersistentRecordPage{TotalRecords: 2}}
+	duck := &fakeDuckDBExecutor{}
+	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+
+	page, err := engine.Query(context.Background(), StorageTables{EntityMain: "main", EAVData: "eav"}, &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []DataTier{DataTierHot, DataTierCold},
+	}, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(2), page.TotalRecords)
+	require.Equal(t, 1, pg.queryCalls)
+	require.Equal(t, 0, duck.calls)
+}
+
+func TestDBFederatedQueryEngine_NilQueryReturnsError(t *testing.T) {
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+
+	page, err := engine.Query(context.Background(), StorageTables{EntityMain: "main", EAVData: "eav"}, nil, nil)
+
+	require.Nil(t, page)
+	require.EqualError(t, err, "federated query cannot be nil")
+}
+
+func TestDBFederatedQueryEngine_ExecutionPlanPopulated(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	pg := &fakePostgresFederatedSource{}
+	dirty := &fakeDirtyIDFetcher{}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+		return "SELECT fake", nil, nil
+	}
+
+	page, err := engine.Query(context.Background(), StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 7, Limit: 2000},
+		PreferredTiers: []DataTier{DataTierHot, DataTierCold},
+	}, &FederatedQueryOptions{IncludeExecutionPlan: true})
+
+	require.NoError(t, err)
+	require.NotNil(t, page.ExecutionPlan)
+	require.True(t, page.ExecutionPlan.Routing.UseDuckDB)
+	require.Contains(t, page.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
+	require.NotNil(t, page.ExecutionPlan.Timings)
+}
+
+func TestNewDuckDBClientQueryExecutorNilClientReturnsNil(t *testing.T) {
+	require.Nil(t, NewDuckDBClientQueryExecutor(nil))
+	require.Nil(t, NewDuckDBClientQueryExecutor(&DuckDBClient{}))
+}
+
+func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeDirtyFetch(t *testing.T) {
+	dirty := &fakeDirtyIDFetcher{}
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, nil, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+
+	opts := &FederatedQueryOptions{IncludeExecutionPlan: true}
+	_, err := engine.Query(context.Background(), StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &FederatedAttributeQuery{
+		AttributeQuery: AttributeQuery{SchemaID: 7, Limit: 2000},
+		PreferredTiers: []DataTier{DataTierHot, DataTierCold},
+	}, opts)
+
+	require.ErrorContains(t, err, "duckdb client not available")
+	require.Equal(t, 0, dirty.calls)
+	require.Contains(t, opts.ExecutionPlan.Notes, "duckdb client unavailable")
+}

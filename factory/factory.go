@@ -39,6 +39,16 @@ var tableCollector = collectTablesFromPool
 
 const defaultDatabaseSchema = "public"
 
+// DuckDB circuit-breaker parameters for the federated query engine. The
+// breaker is count-based (consecutive failures within a sliding window);
+// forma.DuckDBConfig.CircuitBreakerThreshold is a failure *rate* (0..1) and
+// does not map onto it — making these configurable is tracked in #129.
+const (
+	duckDBBreakerFailureThreshold = 5
+	duckDBBreakerWindow           = time.Minute
+	duckDBBreakerOpenDuration     = time.Minute
+)
+
 // collectTablesFromPool queries information_schema for table/view names and returns the list.
 func collectTablesFromPool(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 	inspectionSchema := normalizeSchemaName(schema)
@@ -136,7 +146,7 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		repository,
 		internal.NewPostgresDirtyIDFetcher(pool),
 		internal.NewDuckDBClientQueryExecutor(duckClient),
-		internal.NewCircuitBreaker(5, time.Minute, time.Minute),
+		internal.NewCircuitBreaker(duckDBBreakerFailureThreshold, duckDBBreakerWindow, duckDBBreakerOpenDuration),
 		effectiveConfig.DuckDB,
 		metadataCache,
 		internal.DuckDBPostgresConnStringFromPool(pool),

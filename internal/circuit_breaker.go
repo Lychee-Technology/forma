@@ -2,7 +2,6 @@ package internal
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -24,21 +23,6 @@ func NewCircuitBreaker(threshold int, window, openDuration time.Duration) *Circu
 		openDuration: openDuration,
 		failures:     make([]time.Time, 0, threshold),
 	}
-}
-
-// globalDuckDBBreaker stores the circuit breaker for DuckDB operations.
-// atomic.Pointer provides a lock-free, race-safe store/load for the pointer itself;
-// mutation of the CircuitBreaker value is still protected by CircuitBreaker.mu.
-var globalDuckDBBreaker atomic.Pointer[CircuitBreaker]
-
-// SetGlobalDuckDBCircuitBreaker registers the global breaker used for DuckDB-related operations.
-func SetGlobalDuckDBCircuitBreaker(cb *CircuitBreaker) {
-	globalDuckDBBreaker.Store(cb)
-}
-
-// GetDuckDBCircuitBreaker returns the global breaker instance (may be nil).
-func GetDuckDBCircuitBreaker() *CircuitBreaker {
-	return globalDuckDBBreaker.Load()
 }
 
 // RecordFailure records a failure occurrence and opens the breaker if threshold exceeded.
