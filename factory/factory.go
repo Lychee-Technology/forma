@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,28 +25,26 @@ type metadataLoader interface {
 	LoadMetadata(ctx context.Context) (*internal.MetadataCache, error)
 }
 
-// defaultMetadataLoaderFactory is the default factory function for creating metadata loaders.
-// It can be overridden in tests for injection.
-var defaultMetadataLoaderFactory = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-	return internal.NewMetadataLoader(pool, schemaTable, schemaDir)
+// entityManagerDependencies carries factory seams for EntityManager construction.
+// Only add fields that are strictly construction dependencies of the factory.
+// Business-logic seams belong on the EntityManager interface, not here.
+type entityManagerDependencies struct {
+	collectTables     func(context.Context, queryPool, string) ([]string, error)
+	newMetadataLoader func(*pgxpool.Pool, string, string) metadataLoader
+	newDuckDBClient   func(context.Context, forma.DuckDBConfig) (*internal.DuckDBClient, error)
 }
 
-var defaultDuckDBClientFactory = internal.NewDuckDBClientContext
-
-// tableCollector is a test hook for table discovery.
-var tableCollector = collectTablesFromPool
+func defaultEntityManagerDependencies() entityManagerDependencies {
+	return entityManagerDependencies{
+		collectTables: collectTablesFromPool,
+		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+			return internal.NewMetadataLoader(pool, schemaTable, schemaDir)
+		},
+		newDuckDBClient: internal.NewDuckDBClientContext,
+	}
+}
 
 const defaultDatabaseSchema = "public"
-
-// DuckDB circuit-breaker parameters for the federated query engine. The
-// breaker is count-based (consecutive failures within a sliding window);
-// forma.DuckDBConfig.CircuitBreakerThreshold is a failure *rate* (0..1) and
-// does not map onto it — making these configurable is tracked in #129.
-const (
-	duckDBBreakerFailureThreshold = 5
-	duckDBBreakerWindow           = time.Minute
-	duckDBBreakerOpenDuration     = time.Minute
-)
 
 // collectTablesFromPool queries information_schema for table/view names and returns the list.
 func collectTablesFromPool(ctx context.Context, pool queryPool, schema string) ([]string, error) {
@@ -85,9 +82,13 @@ UNION SELECT table_name FROM information_schema.views v WHERE table_schema = $1;
 //
 // See NewEntityManagerWithConfig for usage examples.
 func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool) (forma.EntityManager, error) {
+	return newEntityManagerWithConfigContext(ctx, config, pool, defaultEntityManagerDependencies())
+}
+
+func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool, deps entityManagerDependencies) (forma.EntityManager, error) {
 	schemaName := normalizeSchemaName(config.Database.Schema)
 	effectiveConfig := configWithQualifiedTables(config, schemaName)
-	tables, err := tableCollector(ctx, pool, schemaName)
+	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +106,7 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	// Load metadata from database at startup
 	zap.S().Info("Loading metadata from database...")
-	loader := defaultMetadataLoaderFactory(
+	loader := deps.newMetadataLoader(
 		pool,
 		effectiveConfig.Database.TableNames.SchemaRegistry,
 		effectiveConfig.Entity.SchemaDirectory,
@@ -134,7 +135,7 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Initialize DuckDB client if enabled in config
 	if effectiveConfig.DuckDB.Enabled {
 		zap.S().Infow("initializing DuckDB client", "dbPath", effectiveConfig.DuckDB.DBPath)
-		duckClient, err = defaultDuckDBClientFactory(ctx, effectiveConfig.DuckDB)
+		duckClient, err = deps.newDuckDBClient(ctx, effectiveConfig.DuckDB)
 		if err != nil {
 			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
 		} else {
@@ -146,13 +147,37 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		repository,
 		internal.NewPostgresDirtyIDFetcher(pool),
 		internal.NewDuckDBClientQueryExecutor(duckClient),
-		internal.NewCircuitBreaker(duckDBBreakerFailureThreshold, duckDBBreakerWindow, duckDBBreakerOpenDuration),
+		newDuckDBCircuitBreaker(effectiveConfig.DuckDB),
 		effectiveConfig.DuckDB,
 		metadataCache,
 		internal.DuckDBPostgresConnStringFromPool(pool),
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
+}
+
+func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *internal.CircuitBreaker {
+	// This is the one sanctioned reader of the deprecated field: it exists to
+	// warn callers who still set it.
+	if cfg.CircuitBreakerThreshold > 0 { //nolint:staticcheck // SA1019: intentional migration-warning read
+		zap.S().Warnw("circuitBreakerThreshold is deprecated and ignored; use circuitBreakerFailureThreshold instead", "oldValue", cfg.CircuitBreakerThreshold) //nolint:staticcheck // SA1019: intentional migration-warning read
+	}
+
+	defaults := forma.DefaultConfig(nil).DuckDB
+	failureThreshold := cfg.CircuitBreakerFailureThreshold
+	if failureThreshold <= 0 {
+		failureThreshold = defaults.CircuitBreakerFailureThreshold
+	}
+	window := cfg.CircuitBreakerWindow
+	if window <= 0 {
+		window = defaults.CircuitBreakerWindow
+	}
+	openDuration := cfg.CircuitBreakerOpenDuration
+	if openDuration <= 0 {
+		openDuration = defaults.CircuitBreakerOpenDuration
+	}
+
+	return internal.NewCircuitBreaker(failureThreshold, window, openDuration)
 }
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
