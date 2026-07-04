@@ -157,8 +157,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 }
 
 func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *internal.CircuitBreaker {
-	if cfg.CircuitBreakerThreshold > 0 {
-		zap.S().Warnw("circuitBreakerThreshold is deprecated and ignored; use circuitBreakerFailureThreshold instead", "oldValue", cfg.CircuitBreakerThreshold)
+	// This is the one sanctioned reader of the deprecated field: it exists to
+	// warn callers who still set it.
+	if cfg.CircuitBreakerThreshold > 0 { //nolint:staticcheck // SA1019: intentional migration-warning read
+		zap.S().Warnw("circuitBreakerThreshold is deprecated and ignored; use circuitBreakerFailureThreshold instead", "oldValue", cfg.CircuitBreakerThreshold) //nolint:staticcheck // SA1019: intentional migration-warning read
 	}
 
 	defaults := forma.DefaultConfig(nil).DuckDB

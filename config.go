@@ -158,20 +158,22 @@ type MetricsConfig struct {
 
 // DuckDBConfig contains DuckDB connection and S3 settings for federated queries
 type DuckDBConfig struct {
-	Enabled                 bool          `json:"enabled"`
-	DBPath                  string        `json:"dbPath"`        // path to local DuckDB file (or ":memory:")
-	MemoryLimitMB           int           `json:"memoryLimitMB"` // memory limit for DuckDB in MB
-	EnableS3                bool          `json:"enableS3"`      // enable S3/http file system
-	S3Endpoint              string        `json:"s3Endpoint"`    // custom S3 endpoint (for MinIO)
-	S3AccessKey             string        `json:"s3AccessKey"`
-	S3SecretKey             string        `json:"s3SecretKey"`
-	S3Region                string        `json:"s3Region"`
-	EnableParquet           bool          `json:"enableParquet"` // enable parquet extension
-	Extensions              []string      `json:"extensions"`    // additional extensions to load
-	MaxConnections          int           `json:"maxConnections"`
-	QueryTimeout            time.Duration `json:"queryTimeout"`            // per-query timeout for DuckDB access
-	MaxParallelism          int           `json:"maxParallelism"`          // max threads/pragmas for DuckDB
-	CircuitBreakerThreshold float64       `json:"circuitBreakerThreshold"` // Deprecated: ignored failure-rate threshold; use CircuitBreakerFailureThreshold instead.
+	Enabled        bool          `json:"enabled"`
+	DBPath         string        `json:"dbPath"`        // path to local DuckDB file (or ":memory:")
+	MemoryLimitMB  int           `json:"memoryLimitMB"` // memory limit for DuckDB in MB
+	EnableS3       bool          `json:"enableS3"`      // enable S3/http file system
+	S3Endpoint     string        `json:"s3Endpoint"`    // custom S3 endpoint (for MinIO)
+	S3AccessKey    string        `json:"s3AccessKey"`
+	S3SecretKey    string        `json:"s3SecretKey"`
+	S3Region       string        `json:"s3Region"`
+	EnableParquet  bool          `json:"enableParquet"` // enable parquet extension
+	Extensions     []string      `json:"extensions"`    // additional extensions to load
+	MaxConnections int           `json:"maxConnections"`
+	QueryTimeout   time.Duration `json:"queryTimeout"`   // per-query timeout for DuckDB access
+	MaxParallelism int           `json:"maxParallelism"` // max threads/pragmas for DuckDB
+	// Deprecated: ignored failure-rate threshold; use
+	// CircuitBreakerFailureThreshold instead.
+	CircuitBreakerThreshold float64 `json:"circuitBreakerThreshold"`
 
 	// CircuitBreakerFailureThreshold is the number of consecutive failures that
 	// opens the DuckDB circuit breaker. Zero means use the built-in default.
