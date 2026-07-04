@@ -45,7 +45,7 @@ func TestInsertPersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 3, 4, 5, 6, 7, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -102,7 +102,7 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -160,7 +160,7 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -194,7 +194,7 @@ func TestDeletePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	rowID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
@@ -218,7 +218,7 @@ func TestDeletePersistentRecord_WhenRowMissing_DoesNotWriteChangelog(t *testing.
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	rowID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	tables := StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
@@ -243,7 +243,7 @@ func TestUpdatePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 	fixedMillis := fixed.UnixMilli()
@@ -281,7 +281,7 @@ func TestUpdatePersistentRecord_WhenRowMissing_DoesNotWriteEAVOrChangelog(t *tes
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 	fixedMillis := fixed.UnixMilli()
@@ -321,7 +321,7 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	fixed := time.Date(2024, 6, 7, 8, 9, 10, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 	fixedMillis := fixed.UnixMilli()
@@ -379,7 +379,7 @@ func TestBatchDeletePersistentRecordsRollsBackOnError(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	rowID1 := uuid.MustParse("66666666-6666-6666-6666-666666666666")
 	rowID2 := uuid.MustParse("77777777-7777-7777-7777-777777777777")
@@ -438,7 +438,7 @@ func TestGetPersistentRecordNotFound(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	record, err := repo.GetPersistentRecord(ctx, StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
 	require.NoError(t, err)
 	assert.Nil(t, record)
@@ -487,7 +487,7 @@ func TestGetPersistentRecordWithAttributes(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(attrRows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	record, err := repo.GetPersistentRecord(ctx, StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -511,7 +511,7 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 50, 0).WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	page, err := repo.QueryPersistentRecords(ctx, &PersistentRecordQuery{
 		Tables:   StorageTables{EntityMain: "main_table", EAVData: "eav_table"},
 		SchemaID: 1,
@@ -528,7 +528,7 @@ func TestQueryPersistentRecordsWithMockPool(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestQueryPersistentRecordsFederated_FallsBackToPostgresWhenDuckDBCircuitBreakerOpen(t *testing.T) {
+func TestDBFederatedQueryEngine_FallsBackToPostgresWhenDuckDBCircuitBreakerOpen(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -541,18 +541,13 @@ func TestQueryPersistentRecordsFederated_FallsBackToPostgresWhenDuckDBCircuitBre
 	require.NoError(t, err)
 	defer duck.Close()
 
-	prevBreaker := GetDuckDBCircuitBreaker()
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
 	breaker.RecordFailure()
-	SetGlobalDuckDBCircuitBreaker(breaker)
-	defer SetGlobalDuckDBCircuitBreaker(prevBreaker)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, duck, forma.DuckDBConfig{Enabled: true})
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-		return nil, nil
-	}
+	repo := NewDBPersistentRecordRepository(mock, nil)
+	engine := NewDBFederatedQueryEngine(repo, testDirtyIDFetcher{}, NewDuckDBClientQueryExecutor(duck), breaker, forma.DuckDBConfig{Enabled: true}, nil, "")
 	duckRowID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 		return fmt.Sprintf(`SELECT
 			1::SMALLINT AS ltbase_schema_id,
 			'%s'::TEXT AS ltbase_row_id,
@@ -570,7 +565,7 @@ func TestQueryPersistentRecordsFederated_FallsBackToPostgresWhenDuckDBCircuitBre
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 50, 0).WillReturnRows(rows)
 
-	page, err := repo.QueryPersistentRecordsFederated(ctx, StorageTables{EntityMain: "main_table", EAVData: "eav_table"}, &FederatedAttributeQuery{
+	page, err := engine.Query(ctx, StorageTables{EntityMain: "main_table", EAVData: "eav_table"}, &FederatedAttributeQuery{
 		AttributeQuery: AttributeQuery{
 			SchemaID: 1,
 			Limit:    50,
@@ -600,7 +595,7 @@ func TestStreamOptimizedQuery_PropagatesRowHandlerError(t *testing.T) {
 	rows := pgxmock.NewRows(columns).AddRow(values...)
 	mock.ExpectQuery("WITH anchor").WithArgs(int16(1), 10, 0).WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	handlerCalls := 0
 	total, err := repo.StreamOptimizedQuery(ctx, StorageTables{EntityMain: "main_table", EAVData: "eav_table"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *PersistentRecord) error {
@@ -617,7 +612,7 @@ func TestStreamOptimizedQuery_PropagatesRowHandlerError(t *testing.T) {
 
 func TestQueryPersistentRecordsMissingCache(t *testing.T) {
 	cache := NewMetadataCache()
-	repo := NewDBPersistentRecordRepository(nil, cache, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(nil, cache)
 
 	_, err := repo.QueryPersistentRecords(context.Background(), &PersistentRecordQuery{
 		Tables:   StorageTables{EntityMain: "main_table", EAVData: "eav_table"},
@@ -633,7 +628,7 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_ReturnsNotFound(t *testing.
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	rowID1 := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
 	rowID2 := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
@@ -675,7 +670,7 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_DoesNotWriteEAVOrChangelog(
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	rowID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
 	keys := []PersistentRecordKey{{SchemaID: 1, RowID: rowID}}

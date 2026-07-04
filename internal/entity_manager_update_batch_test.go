@@ -40,7 +40,7 @@ func TestEntityManager_Update_MergesAndPreserves(t *testing.T) {
 	existingRecord.DeletedAt = &deleted
 	mockRepo.storeRecord(existingRecord)
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{
@@ -72,6 +72,7 @@ func TestEntityManager_Update_MergesAndPreserves(t *testing.T) {
 	stored := mockRepo.records[schemaID][rowID]
 	if stored == nil {
 		t.Fatalf("expected updated record to be stored")
+		return
 	}
 	if stored.CreatedAt != 111 {
 		t.Fatalf("expected CreatedAt preserved, got %d", stored.CreatedAt)
@@ -91,7 +92,7 @@ func TestEntityManager_BatchCreate_CollectsErrors(t *testing.T) {
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Operations: []forma.EntityOperation{
@@ -142,7 +143,7 @@ func TestEntityManager_BatchUpdate_CollectsErrors(t *testing.T) {
 	rowID := uuid.New()
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, visitPayload("visit-batch-update-1")))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Operations: []forma.EntityOperation{
@@ -200,7 +201,7 @@ func TestEntityManager_BatchDelete_CollectsErrors(t *testing.T) {
 	rowID := uuid.New()
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, visitPayload("visit-batch-delete-1")))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Operations: []forma.EntityOperation{
@@ -258,7 +259,7 @@ func TestEntityManager_Update_InvalidOptionalValueReturnsErrorAndPreservesStored
 	})
 	mockRepo.storeRecord(existing)
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{SchemaName: "test", RowID: rowID},
 		Type:             forma.OperationUpdate,
@@ -298,7 +299,7 @@ func TestEntityManager_BatchCreate_AtomicAllOrNothingOnRepositoryFailure(t *test
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.atomicInsertFailAt = 2
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Atomic: true,
@@ -339,7 +340,7 @@ func TestEntityManager_BatchCreate_AtomicSuccess(t *testing.T) {
 	}
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Atomic: true,
@@ -390,7 +391,7 @@ func TestEntityManager_BatchUpdate_AtomicAllOrNothingOnRepositoryFailure(t *test
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID1, visitPayload("visit-atomic-update-1")))
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID2, visitPayload("visit-atomic-update-2")))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Atomic: true,
@@ -459,7 +460,7 @@ func TestEntityManager_BatchDelete_AtomicAllOrNothingOnRepositoryFailure(t *test
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID1, visitPayload("visit-atomic-delete-1")))
 	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID2, visitPayload("visit-atomic-delete-2")))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.BatchOperation{
 		Atomic: true,

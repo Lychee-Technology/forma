@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -130,14 +131,18 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 			zap.S().Infow("duckdb client initialized")
 		}
 	}
-	repository := internal.NewDBPersistentRecordRepository(
-		pool,
-		metadataCache,
-		duckClient,
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache)
+	federatedEngine := internal.NewDBFederatedQueryEngine(
+		repository,
+		internal.NewPostgresDirtyIDFetcher(pool),
+		internal.NewDuckDBClientQueryExecutor(duckClient),
+		internal.NewCircuitBreaker(5, time.Minute, time.Minute),
 		effectiveConfig.DuckDB,
+		metadataCache,
+		internal.DuckDBPostgresConnStringFromPool(pool),
 	)
 	// Create and return entity manager
-	return internal.NewEntityManager(transformer, repository, registry, effectiveConfig), nil
+	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
 }
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.

@@ -30,6 +30,7 @@ func TestGeneratePlanBasic(t *testing.T) {
 
 	if plan == nil {
 		t.Fatal("plan should not be nil")
+		return
 	}
 
 	if plan.SQL == "" {
@@ -94,6 +95,7 @@ func TestGeneratePlanWithFilter(t *testing.T) {
 
 	if plan == nil {
 		t.Fatal("plan should not be nil")
+		return
 	}
 
 	if plan.SQL == "" {
@@ -155,6 +157,7 @@ func TestGeneratePlanWithCompositeFilter(t *testing.T) {
 
 	if plan == nil {
 		t.Fatal("plan should not be nil")
+		return
 	}
 
 	t.Logf("Generated SQL with composite filter:\n%s\n", plan.SQL)

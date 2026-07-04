@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +21,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(pool, nil)
 	fixed := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -92,7 +91,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(pool, nil)
 	rowID := uuid.New()
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -139,7 +138,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(pool, nil)
 	fixed := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 

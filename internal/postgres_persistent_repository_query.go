@@ -139,6 +139,19 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 	return records, totalRecords, nil
 }
 
+func (r *DBPersistentRecordRepository) RunOptimizedQuery(
+	ctx context.Context,
+	tables StorageTables,
+	schemaID int16,
+	clause string,
+	args []any,
+	limit, offset int,
+	attributeOrders []AttributeOrder,
+	useMainTableAsAnchor bool,
+) ([]*PersistentRecord, int64, error) {
+	return r.runOptimizedQuery(ctx, tables, schemaID, clause, args, limit, offset, attributeOrders, useMainTableAsAnchor)
+}
+
 // scanOptimizedRow is implemented in postgres_row_scanner.go
 
 // hasMainTableCondition, parseKvConditionForColumnWithMeta, and convertDateValueForQuery
@@ -176,6 +189,13 @@ func (r *DBPersistentRecordRepository) buildHybridConditions(
 	builder.initCache()
 
 	return builder.build(query.Condition)
+}
+
+func (r *DBPersistentRecordRepository) BuildHybridConditions(tables StorageTables, fq *FederatedAttributeQuery) (string, []any, error) {
+	if fq == nil {
+		return "", nil, fmt.Errorf("federated query cannot be nil")
+	}
+	return r.buildHybridConditions(tables.EAVData, tables.EntityMain, fq.AttributeQuery, 0, fq.UseMainAsAnchor)
 }
 
 func (b *hybridConditionBuilder) initCache() {

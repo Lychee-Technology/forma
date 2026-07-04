@@ -13,7 +13,7 @@ import (
 // Notes:
 // - This is an MVP coordinator: it caps per-source fetches (opts.MaxRows or default) to avoid OOM.
 // - For very large result sets a keys-only two-phase approach should be implemented later.
-func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
+func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	fq *FederatedAttributeQuery,
@@ -32,16 +32,16 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	}
 
 	if opts != nil && opts.KeysetEnabled && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
-		return r.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
+		return e.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
 	}
 
 	// If explicit attribute ordering is requested, prefer DuckDB federated execution
 	// which can handle ordering correctly in SQL. Fall back to in-memory merge only
 	// if DuckDB is unavailable and AllowPartialDegradedMode is true.
 	if len(attributeOrders) > 0 {
-		if r.duckDBClient != nil && r.duckDBCfg.Enabled {
+		if e.duck != nil && e.cfg.Enabled {
 			// Use DuckDB federated query which handles ordering correctly
-			return r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, offset, attributeOrders, opts)
+			return e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, offset, attributeOrders, opts)
 		}
 		// DuckDB unavailable - only allow if degraded mode permitted
 		if opts == nil || !opts.AllowPartialDegradedMode {
@@ -51,7 +51,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Build shared hybrid WHERE clause
-	clause, args, err := r.buildHybridConditions(tables.EAVData, tables.EntityMain, fq.AttributeQuery, 0, fq.UseMainAsAnchor)
+	clause, args, err := e.pgSource.BuildHybridConditions(tables, fq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("build hybrid conditions: %w", err)
 	}
@@ -64,7 +64,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 
 	// Fetch from Postgres (hot)
 	startPg := time.Now()
-	pgRecs, _, err := r.runOptimizedQuery(ctx, tables, fq.SchemaID, clause, args, maxRows, 0, attributeOrders, fq.UseMainAsAnchor)
+	pgRecs, _, err := e.pgSource.RunOptimizedQuery(ctx, tables, fq.SchemaID, clause, args, maxRows, 0, attributeOrders, fq.UseMainAsAnchor)
 	pgDuration := time.Since(startPg).Milliseconds()
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch postgres records: %w", err)
@@ -86,7 +86,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Fetch from DuckDB (warm/cold)
-	duckRecs, _, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders, opts)
+	duckRecs, _, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders, opts)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
 	}
@@ -134,7 +134,7 @@ func (r *DBPersistentRecordRepository) ExecuteFederatedPaginatedQuery(
 // clause to the unified source (both S3 parquet and Postgres via postgres_scan).
 // Results are merged with LWW semantics via the template's QUALIFY clause and
 // the requested page is returned along with the total count and next cursor.
-func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
+func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	ctx context.Context,
 	tables StorageTables,
 	fq *FederatedAttributeQuery,
@@ -170,7 +170,7 @@ func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
 		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "keyset pagination")
 	}
 
-	duckRecs, total, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, 0, attributeOrders, opts)
+	duckRecs, total, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, 0, attributeOrders, opts)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
 	}
@@ -186,7 +186,7 @@ func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
 
 	// Compute total count without the keyset constraint.
 	// We strip the cursor and re-query with a minimal limit to get the count.
-	countTotal, err := r.computeFederatedCount(ctx, tables, fq)
+	countTotal, err := e.computeFederatedCount(ctx, tables, fq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("compute federated count: %w", err)
 	}
@@ -197,7 +197,7 @@ func (r *DBPersistentRecordRepository) executeFederatedKeysetQuery(
 // computeFederatedCount returns the total number of unique rows matching the
 // filter conditions across all tiers. It strips the keyset cursor to get the
 // full unfiltered count via a lightweight query.
-func (r *DBPersistentRecordRepository) computeFederatedCount(
+func (e *DBFederatedQueryEngine) computeFederatedCount(
 	ctx context.Context,
 	tables StorageTables,
 	fq *FederatedAttributeQuery,
@@ -205,7 +205,7 @@ func (r *DBPersistentRecordRepository) computeFederatedCount(
 	strippedQuery := *fq
 	strippedQuery.KeysetCursor = nil
 
-	_, total, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &FederatedQueryOptions{MaxRows: 1})
+	_, total, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &FederatedQueryOptions{MaxRows: 1})
 	if err != nil {
 		return 0, err
 	}

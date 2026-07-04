@@ -131,7 +131,7 @@ func TestEntityManager_Create(t *testing.T) {
 	// Create mock repository
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Test data
 	testData := map[string]any{
@@ -161,6 +161,7 @@ func TestEntityManager_Create(t *testing.T) {
 
 	if record == nil {
 		t.Fatal("Create returned nil record")
+		return
 	}
 
 	if record.SchemaName != "visit" {
@@ -186,7 +187,7 @@ func TestEntityManager_Create_StripsRelationFields(t *testing.T) {
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
@@ -255,7 +256,7 @@ func TestEntityManager_Get(t *testing.T) {
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.storeRecord(testRecord)
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Execute
 	req := &forma.QueryRequest{
@@ -272,6 +273,7 @@ func TestEntityManager_Get(t *testing.T) {
 
 	if record == nil {
 		t.Fatal("Get returned nil record")
+		return
 	}
 
 	if record.RowID != testRowID {
@@ -312,7 +314,7 @@ func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 		"stage":       "new",
 		"status":      "open",
 		"contact": map[string]any{
-			"isAnonymous": false,
+			"isAnonymous":  false,
 			"name":         "Parent Lead",
 			"primaryPhone": "123-456",
 		},
@@ -330,7 +332,7 @@ func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 		"status":           "scheduled",
 	}))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.QueryRequest{SchemaName: "visit", RowID: &visitRowID}
 	record, err := em.Get(ctx, req)
@@ -371,7 +373,7 @@ func TestEntityManager_Delete(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	testRowID := uuid.New()
 
@@ -407,7 +409,7 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	_, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
@@ -461,7 +463,7 @@ func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.QueryRequest{
 		SchemaName:   "visit",
@@ -489,7 +491,7 @@ func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 	}
 	transformer := NewPersistentRecordTransformer(reg)
 	mockRepo := newMockPersistentRecordRepository()
-	em := NewEntityManager(transformer, mockRepo, reg, config)
+	em := NewEntityManager(transformer, mockRepo, nil, reg, config)
 
 	condition := &forma.CompositeCondition{
 		Logic: forma.LogicAnd,
@@ -596,13 +598,17 @@ type mockPersistentRecordRepository struct {
 	deleteCalls        int
 	lastQuery          *PersistentRecordQuery
 	queries            []*PersistentRecordQuery
-	lastFederatedQuery *FederatedAttributeQuery
-	lastFederatedOpts  *FederatedQueryOptions
 	queryFunc          func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
-	federatedQueryFunc func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
 	atomicDeleteFailAt int
+}
+
+type mockFederatedQueryEngine struct {
+	lastTables StorageTables
+	lastQuery  *FederatedAttributeQuery
+	lastOpts   *FederatedQueryOptions
+	queryFunc  func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
 }
 
 func newMockPersistentRecordRepository() *mockPersistentRecordRepository {
@@ -698,24 +704,17 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 	}, nil
 }
 
-func (m *mockPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+func (m *mockFederatedQueryEngine) Query(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
 	}
-	m.lastFederatedQuery = fq
-	m.lastFederatedOpts = opts
-	if m.federatedQueryFunc != nil {
-		return m.federatedQueryFunc(ctx, tables, fq, opts)
+	m.lastTables = tables
+	m.lastQuery = fq
+	m.lastOpts = opts
+	if m.queryFunc != nil {
+		return m.queryFunc(ctx, tables, fq, opts)
 	}
-	prq := &PersistentRecordQuery{
-		Tables:          tables,
-		SchemaID:        fq.SchemaID,
-		Condition:       fq.Condition,
-		AttributeOrders: fq.AttributeOrders,
-		Limit:           fq.Limit,
-		Offset:          fq.Offset,
-	}
-	return m.QueryPersistentRecords(ctx, prq)
+	return &PersistentRecordPage{}, nil
 }
 
 func cloneRecordStore(src map[int16]map[uuid.UUID]*PersistentRecord) map[int16]map[uuid.UUID]*PersistentRecord {
@@ -804,7 +803,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	// Create mock repository with multi-schema support
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Setup test data for multiple schemas
 	visitSchemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
@@ -851,6 +850,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 
 	if result == nil {
 		t.Fatal("CrossSchemaSearch returned nil result")
+		return
 	}
 
 	if result.CurrentPage != 1 {
@@ -874,7 +874,7 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Test with invalid schema name
 	req := &forma.CrossSchemaRequest{
@@ -903,7 +903,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Test with empty schema names
 	req := &forma.CrossSchemaRequest{
@@ -932,7 +932,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Test with empty search term
 	req := &forma.CrossSchemaRequest{
@@ -966,7 +966,7 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	// Test with page 0 (should default to 1)
 	req := &forma.CrossSchemaRequest{
@@ -1016,7 +1016,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 		"status":           "scheduled",
 	}))
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",
@@ -1042,6 +1042,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 
 	if result == nil {
 		t.Fatal("Query returned nil result")
+		return
 	}
 
 	if len(result.Data) != 1 {
@@ -1088,7 +1089,7 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",
@@ -1138,11 +1139,12 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 		"status":           "scheduled",
 	})
 	mockRepo := newMockPersistentRecordRepository()
-	mockRepo.federatedQueryFunc = func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+	mockEngine := &mockFederatedQueryEngine{}
+	mockEngine.queryFunc = func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
 		return &PersistentRecordPage{Records: []*PersistentRecord{record}, TotalRecords: 1, TotalPages: 1, CurrentPage: 1}, nil
 	}
 
-	em := NewEntityManager(transformer, mockRepo, registry, config)
+	em := NewEntityManager(transformer, mockRepo, mockEngine, registry, config)
 	req := &forma.QueryRequest{
 		SchemaName:   "visit",
 		Page:         1,
@@ -1150,10 +1152,10 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 		SortBy:       []string{"scheduledStartAt"},
 		SortOrder:    forma.SortOrderDesc,
 		Federated: &forma.FederatedQueryRequest{
-			Enabled:                 true,
-			PreferredTiers:          []string{"hot", "warm", "cold"},
-			UseMainAsAnchor:         true,
-			S3ParquetPathTemplate:   "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
+			Enabled:                  true,
+			PreferredTiers:           []string{"hot", "warm", "cold"},
+			UseMainAsAnchor:          true,
+			S3ParquetPathTemplate:    "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
 			AllowPartialDegradedMode: true,
 		},
 	}
@@ -1165,33 +1167,33 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	if result == nil || len(result.Data) != 1 {
 		t.Fatalf("expected one result, got %+v", result)
 	}
-	if mockRepo.lastFederatedQuery == nil {
+	if mockEngine.lastQuery == nil {
 		t.Fatal("expected federated query to be captured")
 	}
-	if mockRepo.lastFederatedQuery.SchemaID != schemaID {
-		t.Fatalf("expected schema id %d, got %d", schemaID, mockRepo.lastFederatedQuery.SchemaID)
+	if mockEngine.lastQuery.SchemaID != schemaID {
+		t.Fatalf("expected schema id %d, got %d", schemaID, mockEngine.lastQuery.SchemaID)
 	}
-	if got := mockRepo.lastFederatedQuery.PreferredTiers; len(got) != 3 || got[0] != DataTierHot || got[1] != DataTierWarm || got[2] != DataTierCold {
+	if got := mockEngine.lastQuery.PreferredTiers; len(got) != 3 || got[0] != DataTierHot || got[1] != DataTierWarm || got[2] != DataTierCold {
 		t.Fatalf("unexpected preferred tiers: %+v", got)
 	}
-	if !mockRepo.lastFederatedQuery.UseMainAsAnchor {
+	if !mockEngine.lastQuery.UseMainAsAnchor {
 		t.Fatal("expected use main as anchor to be forwarded")
 	}
-	if mockRepo.lastFederatedQuery.DuckDBHints == nil || mockRepo.lastFederatedQuery.DuckDBHints.S3ParquetPathTemplate == "" {
+	if mockEngine.lastQuery.DuckDBHints == nil || mockEngine.lastQuery.DuckDBHints.S3ParquetPathTemplate == "" {
 		t.Fatal("expected duckdb hints to be forwarded")
 	}
-	if mockRepo.lastFederatedOpts == nil || !mockRepo.lastFederatedOpts.AllowPartialDegradedMode {
+	if mockEngine.lastOpts == nil || !mockEngine.lastOpts.AllowPartialDegradedMode {
 		t.Fatal("expected federated options to be forwarded")
 	}
-	if len(mockRepo.lastFederatedQuery.AttributeOrders) != 1 {
-		t.Fatalf("expected 1 attribute order, got %d", len(mockRepo.lastFederatedQuery.AttributeOrders))
+	if len(mockEngine.lastQuery.AttributeOrders) != 1 {
+		t.Fatalf("expected 1 attribute order, got %d", len(mockEngine.lastQuery.AttributeOrders))
 	}
 	atMeta, ok := cache["scheduledStartAt"]
 	if !ok {
 		t.Fatalf("expected scheduledStartAt metadata")
 	}
-	if mockRepo.lastFederatedQuery.AttributeOrders[0].AttrID != atMeta.AttributeID {
-		t.Fatalf("expected attrID %d, got %d", atMeta.AttributeID, mockRepo.lastFederatedQuery.AttributeOrders[0].AttrID)
+	if mockEngine.lastQuery.AttributeOrders[0].AttrID != atMeta.AttributeID {
+		t.Fatalf("expected attrID %d, got %d", atMeta.AttributeID, mockEngine.lastQuery.AttributeOrders[0].AttrID)
 	}
 }
 
@@ -1204,7 +1206,7 @@ func TestEntityManager_QueryWithNilConfigUsesDefaults(t *testing.T) {
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, registry, nil)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, nil)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",

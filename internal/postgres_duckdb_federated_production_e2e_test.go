@@ -35,6 +35,7 @@ type productionFederatedE2EEnv struct {
 	prefix      string
 	tmpDir      string
 	repo        *DBPersistentRecordRepository
+	engine      *DBFederatedQueryEngine
 	tables      StorageTables
 	pgConn      string
 }
@@ -100,7 +101,16 @@ func setupProductionFederatedE2EEnv(t *testing.T) *productionFederatedE2EEnv {
 
 	require.NoError(t, createProductionFederatedSchema(ctx, pool))
 	metadata := loadProductionFederatedMetadata(t, ctx, pool)
-	repo := NewDBPersistentRecordRepository(pool, metadata, duck, duckCfg)
+	repo := NewDBPersistentRecordRepository(pool, metadata)
+	engine := NewDBFederatedQueryEngine(
+		repo,
+		NewPostgresDirtyIDFetcher(pool),
+		NewDuckDBClientQueryExecutor(duck),
+		nil,
+		duckCfg,
+		metadata,
+		DuckDBPostgresConnStringFromPool(pool),
+	)
 
 	return &productionFederatedE2EEnv{
 		ctx:         ctx,
@@ -113,6 +123,7 @@ func setupProductionFederatedE2EEnv(t *testing.T) *productionFederatedE2EEnv {
 		prefix:      "prod-fed-tests",
 		tmpDir:      tmpDir,
 		repo:        repo,
+		engine:      engine,
 		tables:      StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: "change_log_dev"},
 		pgConn:      fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s", host, port, "postgres", "password", "postgres"),
 	}
@@ -383,7 +394,7 @@ func TestStreamDuckDBFederatedQuery_GivenBaseAndHotVersions_WhenQueried_ThenLate
 		},
 	}
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -437,7 +448,7 @@ func TestStreamDuckDBFederatedQuery_GivenConflictingCreatedAndUpdatedAt_WhenQuer
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -489,7 +500,7 @@ func TestStreamDuckDBFederatedQuery_GivenDirtyHotRow_WhenColdVersionExists_ThenC
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -548,7 +559,7 @@ func TestStreamDuckDBFederatedQuery_GivenBaseDeltaAndHotRows_WhenQueried_ThenAll
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -618,7 +629,7 @@ func TestStreamDuckDBFederatedQuery_GivenBaseDeltaAndHotOverlap_WhenQueried_Then
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -667,7 +678,7 @@ func TestStreamDuckDBFederatedQuery_GivenBaseAndDeltaRowsWithoutHotData_WhenQuer
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, opts, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})
@@ -725,7 +736,7 @@ func TestStreamDuckDBFederatedQuery_GivenSoftDeletedRowsAcrossMixedTiers_WhenQue
 	}
 
 	var got []*PersistentRecord
-	total, err := env.repo.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
+	total, err := env.engine.StreamDuckDBFederatedQuery(env.ctx, env.tables, q, 10, 0, nil, nil, func(_ context.Context, record *PersistentRecord) error {
 		got = append(got, record)
 		return nil
 	})

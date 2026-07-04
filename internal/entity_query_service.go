@@ -16,12 +16,13 @@ type dataRecordEnricher func(context.Context, string, []string, ...*forma.DataRe
 type storageTablesResolver func() StorageTables
 
 type entityQueryService struct {
-	repository        PersistentRecordRepository
-	registry          forma.SchemaRegistry
-	config            *forma.Config
-	toDataRecord      dataRecordConverter
-	enrichDataRecords dataRecordEnricher
-	storageTables     storageTablesResolver
+	repository           PersistentRecordRepository
+	federatedQueryEngine FederatedQueryEngine
+	registry             forma.SchemaRegistry
+	config               *forma.Config
+	toDataRecord         dataRecordConverter
+	enrichDataRecords    dataRecordEnricher
+	storageTables        storageTablesResolver
 }
 
 func newEntityQueryService(em *entityManager) *entityQueryService {
@@ -29,12 +30,13 @@ func newEntityQueryService(em *entityManager) *entityQueryService {
 		return &entityQueryService{}
 	}
 	return &entityQueryService{
-		repository:        em.repository,
-		registry:          em.registry,
-		config:            em.config,
-		toDataRecord:      em.toDataRecord,
-		enrichDataRecords: em.enrichDataRecords,
-		storageTables:     em.storageTables,
+		repository:           em.repository,
+		federatedQueryEngine: em.federatedQueryEngine,
+		registry:             em.registry,
+		config:               em.config,
+		toDataRecord:         em.toDataRecord,
+		enrichDataRecords:    em.enrichDataRecords,
+		storageTables:        em.storageTables,
 	}
 }
 
@@ -155,6 +157,9 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 	if req == nil || req.Federated == nil || !req.Federated.Enabled {
 		return s.repository.QueryPersistentRecords(ctx, query)
 	}
+	if s.federatedQueryEngine == nil {
+		return nil, fmt.Errorf("federated query engine is not initialized: %w", forma.ErrInvalidInput)
+	}
 
 	fq := &FederatedAttributeQuery{
 		AttributeQuery: AttributeQuery{
@@ -164,15 +169,15 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 			Limit:           query.Limit,
 			Offset:          query.Offset,
 		},
-		PreferredTiers: federatedPreferredTiers(req.Federated.PreferredTiers),
-		PreferHot:      req.Federated.PreferHot,
+		PreferredTiers:  federatedPreferredTiers(req.Federated.PreferredTiers),
+		PreferHot:       req.Federated.PreferHot,
 		UseMainAsAnchor: req.Federated.UseMainAsAnchor,
 	}
 	if req.Federated.S3ParquetPathTemplate != "" {
 		fq.DuckDBHints = &DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
 	}
 
-	return s.repository.QueryPersistentRecordsFederated(ctx, query.Tables, fq, &FederatedQueryOptions{
+	return s.federatedQueryEngine.Query(ctx, query.Tables, fq, &FederatedQueryOptions{
 		AllowPartialDegradedMode: req.Federated.AllowPartialDegradedMode,
 		IncludeExecutionPlan:     req.Federated.IncludeExecutionPlan,
 		ConsistencyMode:          ConsistencyMode(req.Federated.ConsistencyMode),

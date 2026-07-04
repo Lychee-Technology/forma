@@ -83,18 +83,14 @@ type PersistentRecordReader interface {
 	QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
 }
 
-type PersistentRecordFederatedQuerier interface {
-	// QueryPersistentRecordsFederated performs a federated query across configured data tiers
-	// (Postgres hot and DuckDB/S3 warm/cold). Implementations MUST preserve backwards
-	// compatibility for OLTP-only callers: if the federated query hints indicate hot-only
-	// execution, this SHOULD delegate to QueryPersistentRecords.
-	QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
+type FederatedQueryEngine interface {
+	// Query performs a federated query across configured data tiers.
+	Query(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
 }
 
 type PersistentRecordRepository interface {
 	PersistentRecordWriter
 	PersistentRecordReader
-	PersistentRecordFederatedQuerier
 }
 
 type AtomicBatchPersistentRecordRepository interface {

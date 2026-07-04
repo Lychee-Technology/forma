@@ -9,17 +9,19 @@ import (
 )
 
 type entityManager struct {
-	transformer PersistentRecordTransformer
-	repository  PersistentRecordRepository
-	registry    forma.SchemaRegistry
-	config      *forma.Config
-	relations   *RelationIndex
+	transformer          PersistentRecordTransformer
+	repository           PersistentRecordRepository
+	federatedQueryEngine FederatedQueryEngine
+	registry             forma.SchemaRegistry
+	config               *forma.Config
+	relations            *RelationIndex
 }
 
 // NewEntityManager creates a new EntityManager instance
 func NewEntityManager(
 	transformer PersistentRecordTransformer,
 	repository PersistentRecordRepository,
+	federatedQueryEngine FederatedQueryEngine,
 	registry forma.SchemaRegistry,
 	config *forma.Config,
 ) forma.EntityManager {
@@ -38,11 +40,12 @@ func NewEntityManager(
 		}
 	}
 	return &entityManager{
-		transformer: transformer,
-		repository:  repository,
-		registry:    registry,
-		config:      config,
-		relations:   relationIdx,
+		transformer:          transformer,
+		repository:           repository,
+		federatedQueryEngine: federatedQueryEngine,
+		registry:             registry,
+		config:               config,
+		relations:            relationIdx,
 	}
 }
 
