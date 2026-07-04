@@ -171,8 +171,19 @@ type DuckDBConfig struct {
 	MaxConnections          int           `json:"maxConnections"`
 	QueryTimeout            time.Duration `json:"queryTimeout"`            // per-query timeout for DuckDB access
 	MaxParallelism          int           `json:"maxParallelism"`          // max threads/pragmas for DuckDB
-	CircuitBreakerThreshold float64       `json:"circuitBreakerThreshold"` // failure rate to trip circuit breaker (0..1)
-	Routing                 RoutingPolicy `json:"routing"`                 // routing policy for federated queries
+	CircuitBreakerThreshold float64       `json:"circuitBreakerThreshold"` // Deprecated: ignored failure-rate threshold; use CircuitBreakerFailureThreshold instead.
+
+	// CircuitBreakerFailureThreshold is the number of consecutive failures that
+	// opens the DuckDB circuit breaker. Zero means use the built-in default.
+	CircuitBreakerFailureThreshold int `json:"circuitBreakerFailureThreshold"`
+	// CircuitBreakerWindow is the sliding window for counting DuckDB failures.
+	// Zero means use the built-in default.
+	CircuitBreakerWindow time.Duration `json:"circuitBreakerWindow"`
+	// CircuitBreakerOpenDuration is how long the DuckDB breaker stays open after
+	// tripping. Zero means use the built-in default.
+	CircuitBreakerOpenDuration time.Duration `json:"circuitBreakerOpenDuration"`
+
+	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
 
 // RoutingStrategy specifies the federated query routing algorithm.
@@ -493,16 +504,19 @@ func defaultReferenceConfig() ReferenceConfig {
 // defaultDuckDBConfig returns default DuckDB configuration.
 func defaultDuckDBConfig() DuckDBConfig {
 	return DuckDBConfig{
-		Enabled:                 false,
-		DBPath:                  ":memory:",
-		MemoryLimitMB:           0,
-		EnableS3:                false,
-		EnableParquet:           false,
-		Extensions:              []string{},
-		MaxConnections:          1,
-		QueryTimeout:            30 * time.Second,
-		MaxParallelism:          1,
-		CircuitBreakerThreshold: 0.5,
+		Enabled:                        false,
+		DBPath:                         ":memory:",
+		MemoryLimitMB:                  0,
+		EnableS3:                       false,
+		EnableParquet:                  false,
+		Extensions:                     []string{},
+		MaxConnections:                 1,
+		QueryTimeout:                   30 * time.Second,
+		MaxParallelism:                 1,
+		CircuitBreakerThreshold:        0,
+		CircuitBreakerFailureThreshold: 5,
+		CircuitBreakerWindow:           time.Minute,
+		CircuitBreakerOpenDuration:     time.Minute,
 		Routing: RoutingPolicy{
 			Strategy:          RoutingStrategyHybrid,
 			HotTTL:            5 * time.Minute,
@@ -544,6 +558,15 @@ func (c *Config) Validate() error {
 	}
 	if c.DuckDB.QueryTimeout < 0 {
 		return &ConfigError{Field: "duckdb.queryTimeout", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.CircuitBreakerFailureThreshold < 0 {
+		return &ConfigError{Field: "duckdb.circuitBreakerFailureThreshold", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.CircuitBreakerWindow < 0 {
+		return &ConfigError{Field: "duckdb.circuitBreakerWindow", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.CircuitBreakerOpenDuration < 0 {
+		return &ConfigError{Field: "duckdb.circuitBreakerOpenDuration", Message: "must be greater than or equal to 0"}
 	}
 	allowed := map[RoutingStrategy]bool{
 		RoutingStrategyFreshnessFirst: true,

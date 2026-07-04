@@ -15,6 +15,8 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // ---------------------------------------------------------------------------
@@ -275,50 +277,40 @@ func (m *mockMetadataLoader) LoadMetadata(ctx context.Context) (*internal.Metada
 	return m.cache, m.err
 }
 
-func withTableCollector(t *testing.T, collector func(context.Context, queryPool, string) ([]string, error)) {
-	t.Helper()
-	original := tableCollector
-	tableCollector = collector
-	t.Cleanup(func() {
-		tableCollector = original
-	})
-}
-
-func withMetadataLoaderFactory(t *testing.T, factory func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader) {
-	t.Helper()
-	original := defaultMetadataLoaderFactory
-	defaultMetadataLoaderFactory = factory
-	t.Cleanup(func() {
-		defaultMetadataLoaderFactory = original
-	})
-}
-
-func withDuckDBClientFactory(t *testing.T, factory func(context.Context, forma.DuckDBConfig) (*internal.DuckDBClient, error)) {
-	t.Helper()
-	original := defaultDuckDBClientFactory
-	defaultDuckDBClientFactory = factory
-	t.Cleanup(func() {
-		defaultDuckDBClientFactory = original
-	})
+func unitEntityManagerDeps(cache *internal.MetadataCache) entityManagerDependencies {
+	deps := defaultEntityManagerDependencies()
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+		return []string{"schema_registry", "eav_data", "entity_main"}, nil
+	}
+	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+		return &mockMetadataLoader{cache: cache, err: nil}
+	}
+	return deps
 }
 
 func TestNewEntityManagerWithConfig_Unit_TableCollectorError(t *testing.T) {
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	t.Parallel()
+
+	deps := defaultEntityManagerDependencies()
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		return nil, assert.AnError
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.Error(t, err)
 }
 
 func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	t.Parallel()
+
+	deps := defaultEntityManagerDependencies()
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry"}, nil
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -327,7 +319,7 @@ func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
 		EntityMain:     "entity_main",
 	}
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.Error(t, err)
@@ -335,10 +327,13 @@ func TestNewEntityManagerWithConfig_Unit_MissingRequiredTables(t *testing.T) {
 }
 
 func TestNewEntityManagerWithConfig_Unit_MissingEntityMainTable(t *testing.T) {
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	t.Parallel()
+
+	deps := defaultEntityManagerDependencies()
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		// schema_registry and eav_data present, but entity_main is absent
 		return []string{"schema_registry", "eav_data"}, nil
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -347,7 +342,7 @@ func TestNewEntityManagerWithConfig_Unit_MissingEntityMainTable(t *testing.T) {
 		EntityMain:     "entity_main",
 	}
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.Error(t, err)
@@ -355,13 +350,13 @@ func TestNewEntityManagerWithConfig_Unit_MissingEntityMainTable(t *testing.T) {
 }
 
 func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+	deps := unitEntityManagerDeps(cache)
+	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: fmt.Errorf("simulated loader error")}
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -371,7 +366,7 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.Error(t, err)
@@ -379,13 +374,10 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 }
 
 func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-		return &mockMetadataLoader{cache: cache, err: nil}
-	})
+	deps := unitEntityManagerDeps(cache)
 
 	config := forma.DefaultConfig(nil)
 	config.Database.TableNames = forma.TableNames{
@@ -395,7 +387,7 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.Error(t, err)
@@ -403,13 +395,10 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 }
 
 func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-		return &mockMetadataLoader{cache: cache, err: nil}
-	})
+	deps := unitEntityManagerDeps(cache)
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -419,22 +408,25 @@ func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.NotNil(t, em)
 	assert.NoError(t, err)
 }
 
 func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	deps := unitEntityManagerDeps(cache)
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+	}
+	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		assert.Equal(t, "tenant.schema_registry", schemaTable)
 		return &mockMetadataLoader{cache: cache, err: nil}
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.Schema = "tenant"
@@ -445,22 +437,25 @@ func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T)
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.NotNil(t, em)
 	assert.NoError(t, err)
 }
 
 func TestNewEntityManagerWithConfig_Unit_SchemaParamQualifiesUnqualifiedTableNames(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	deps := unitEntityManagerDeps(cache)
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
+	}
+	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		assert.Equal(t, "tenant.schema_registry", schemaTable)
 		return &mockMetadataLoader{cache: cache, err: nil}
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.Schema = "tenant"
@@ -472,24 +467,24 @@ func TestNewEntityManagerWithConfig_Unit_SchemaParamQualifiesUnqualifiedTableNam
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfig(config, nil)
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.NotNil(t, em)
 	assert.NoError(t, err)
 }
 
 func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToTableCollector(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
+	deps := unitEntityManagerDeps(cache)
+	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.ErrorIs(t, ctx.Err(), context.Canceled)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-		return &mockMetadataLoader{cache: cache, err: nil}
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -499,27 +494,24 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToTableCollecto
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 
-	em, err := NewEntityManagerWithConfigContext(ctx, config, nil)
+	em, err := newEntityManagerWithConfigContext(ctx, config, nil, deps)
 
 	assert.NotNil(t, em)
 	assert.NoError(t, err)
 }
 
 func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory(t *testing.T) {
+	t.Parallel()
+
 	cache := internal.NewMetadataCache()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	withTableCollector(t, func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
-		return []string{"schema_registry", "eav_data", "entity_main"}, nil
-	})
-	withMetadataLoaderFactory(t, func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-		return &mockMetadataLoader{cache: cache, err: nil}
-	})
-	withDuckDBClientFactory(t, func(ctx context.Context, cfg forma.DuckDBConfig) (*internal.DuckDBClient, error) {
+	deps := unitEntityManagerDeps(cache)
+	deps.newDuckDBClient = func(ctx context.Context, cfg forma.DuckDBConfig) (*internal.DuckDBClient, error) {
 		assert.ErrorIs(t, ctx.Err(), context.Canceled)
 		return nil, context.Canceled
-	})
+	}
 
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -530,10 +522,60 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 	config.Entity.SchemaDirectory = t.TempDir()
 	config.DuckDB.Enabled = true
 
-	em, err := NewEntityManagerWithConfigContext(ctx, config, nil)
+	em, err := newEntityManagerWithConfigContext(ctx, config, nil, deps)
 
 	assert.NotNil(t, em)
 	assert.NoError(t, err)
+}
+
+func TestNewDuckDBCircuitBreakerUsesDefaultParametersForZeroConfig(t *testing.T) {
+	t.Parallel()
+
+	breaker := newDuckDBCircuitBreaker(forma.DuckDBConfig{})
+
+	for i := 0; i < 4; i++ {
+		breaker.RecordFailure()
+		assert.False(t, breaker.IsOpen())
+	}
+	breaker.RecordFailure()
+	assert.True(t, breaker.IsOpen())
+}
+
+func TestNewDuckDBCircuitBreakerUsesConfiguredParameters(t *testing.T) {
+	t.Parallel()
+
+	breaker := newDuckDBCircuitBreaker(forma.DuckDBConfig{
+		CircuitBreakerFailureThreshold: 2,
+		CircuitBreakerWindow:           time.Minute,
+		CircuitBreakerOpenDuration:     time.Minute,
+	})
+
+	breaker.RecordFailure()
+	assert.False(t, breaker.IsOpen())
+	breaker.RecordFailure()
+	assert.True(t, breaker.IsOpen())
+}
+
+func TestNewDuckDBCircuitBreakerDoesNotWarnForDefaultThreshold(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	breaker := newDuckDBCircuitBreaker(forma.DefaultConfig(nil).DuckDB)
+
+	require.NotNil(t, breaker)
+	assert.Equal(t, 0, logs.FilterMessage("circuitBreakerThreshold is deprecated and ignored; use circuitBreakerFailureThreshold instead").Len())
+}
+
+func TestNewDuckDBCircuitBreakerWarnsForDeprecatedThreshold(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	breaker := newDuckDBCircuitBreaker(forma.DuckDBConfig{CircuitBreakerThreshold: 0.5})
+
+	require.NotNil(t, breaker)
+	assert.Equal(t, 1, logs.FilterMessage("circuitBreakerThreshold is deprecated and ignored; use circuitBreakerFailureThreshold instead").Len())
 }
 
 // ---------------------------------------------------------------------------
