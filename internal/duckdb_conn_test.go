@@ -30,9 +30,9 @@ func TestGenerateDuckDBWhereClause_SimpleKv(t *testing.T) {
 			},
 		},
 	}
-	where, args, err := GenerateDuckDBWhereClause(q)
+	where, args, err := buildDuckClause(q.Condition, nil)
 	if err != nil {
-		t.Fatalf("GenerateDuckDBWhereClause error: %v", err)
+		t.Fatalf("buildDuckClause error: %v", err)
 	}
 	if where != "username = ?" {
 		t.Fatalf("unexpected where clause: %s", where)

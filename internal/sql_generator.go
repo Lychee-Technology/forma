@@ -3,7 +3,6 @@ package internal
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma"
@@ -44,112 +43,18 @@ func NewSQLGenerator() *SQLGenerator {
 	return &SQLGenerator{}
 }
 
-// ToSQLClauses builds the SQL clause and arguments for a condition tree.
-func (g *SQLGenerator) ToSQLClauses(
-	condition forma.Condition,
-	eavTable string,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	paramIndex *int,
-) (string, []any, error) {
-	if condition == nil {
-		return "", nil, nil
-	}
-	return g.buildCondition(condition, eavTable, schemaID, cache, paramIndex)
+// pgEavLeafEmitter renders KvCondition leaves as EAV EXISTS subqueries with $N placeholders.
+type pgEavLeafEmitter struct {
+	eavTable   string
+	schemaID   int16
+	cache      forma.SchemaAttributeCache
+	paramIndex *int
 }
 
-// ToSqlClauses is kept for backward compatibility.
-func (g *SQLGenerator) ToSqlClauses(
-	condition forma.Condition,
-	eavTable string,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	paramIndex *int,
-) (string, []any, error) {
-	return g.ToSQLClauses(condition, eavTable, schemaID, cache, paramIndex)
-}
+func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error) {
+	_ = e.schemaID
 
-func (g *SQLGenerator) buildCondition(
-	condition forma.Condition,
-	eavTable string,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	paramIndex *int,
-) (string, []any, error) {
-	switch cond := condition.(type) {
-	case *forma.CompositeCondition:
-		return g.buildComposite(cond, eavTable, schemaID, cache, paramIndex)
-	case *forma.KvCondition:
-		return g.buildKv(cond, eavTable, schemaID, cache, paramIndex)
-	default:
-		return "", nil, fmt.Errorf("unsupported condition type %T", condition)
-	}
-}
-
-func (g *SQLGenerator) buildComposite(
-	c *forma.CompositeCondition,
-	eavTable string,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	paramIndex *int,
-) (string, []any, error) {
-	if len(c.Conditions) == 0 {
-		// Empty AND matches everything; empty OR matches nothing.
-		if c.Logic == forma.LogicOr {
-			return "1=0", nil, nil
-		}
-		return "1=1", nil, nil
-	}
-
-	var sqlJoiner string
-	switch c.Logic {
-	case forma.LogicAnd:
-		sqlJoiner = " AND "
-	case forma.LogicOr:
-		sqlJoiner = " OR "
-	default:
-		return "", nil, fmt.Errorf("unknown logic: %s", c.Logic)
-	}
-
-	var childClauses []string
-	var allArgs []any
-
-	for _, cond := range c.Conditions {
-		sql, args, err := g.buildCondition(cond, eavTable, schemaID, cache, paramIndex)
-		if err != nil {
-			return "", nil, err
-		}
-
-		if sql == "" {
-			continue
-		}
-
-		childClauses = append(childClauses, fmt.Sprintf("(%s)", sql))
-		allArgs = append(allArgs, args...)
-	}
-
-	if len(childClauses) == 0 {
-		return "", nil, nil
-	}
-
-	if len(childClauses) == 1 {
-		return childClauses[0], allArgs, nil
-	}
-
-	finalSql := "(" + strings.Join(childClauses, sqlJoiner) + ")"
-	return finalSql, allArgs, nil
-}
-
-func (g *SQLGenerator) buildKv(
-	kv *forma.KvCondition,
-	eavTable string,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	paramIndex *int,
-) (string, []any, error) {
-	_ = schemaID
-
-	meta, ok := cache[kv.Attr]
+	meta, ok := e.cache[kv.Attr]
 	if !ok {
 		return "", nil, fmt.Errorf("attribute not found in cache: %s", kv.Attr)
 	}
@@ -171,8 +76,6 @@ func (g *SQLGenerator) buildKv(
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		valueColumn = "value_numeric"
 		parsed := tryParseNumber(valStr)
-		// Ensure the value is float64 to match the value_numeric column type
-		// This prevents PostgreSQL from failing to determine the parameter type
 		switch v := parsed.(type) {
 		case int64:
 			parsedValue = float64(v)
@@ -221,17 +124,17 @@ func (g *SQLGenerator) buildKv(
 
 	var args []any
 
-	*paramIndex++
-	attrIdPlaceholder := fmt.Sprintf("$%d", *paramIndex)
+	*e.paramIndex++
+	attrIdPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
 	args = append(args, meta.AttributeID)
 
-	*paramIndex++
-	valuePlaceholder := fmt.Sprintf("$%d", *paramIndex)
+	*e.paramIndex++
+	valuePlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
 	args = append(args, parsedValue)
 
 	sql := fmt.Sprintf(
 		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND x.%s %s %s)",
-		eavTable,
+		e.eavTable,
 		attrIdPlaceholder,
 		valueColumn,
 		sqlOp,
@@ -239,4 +142,35 @@ func (g *SQLGenerator) buildKv(
 	)
 
 	return sql, args, nil
+}
+
+// ToSQLClauses builds the SQL clause and arguments for a condition tree.
+func (g *SQLGenerator) ToSQLClauses(
+	condition forma.Condition,
+	eavTable string,
+	schemaID int16,
+	cache forma.SchemaAttributeCache,
+	paramIndex *int,
+) (string, []any, error) {
+	if condition == nil {
+		return "", nil, nil
+	}
+	emitter := &pgEavLeafEmitter{
+		eavTable:   eavTable,
+		schemaID:   schemaID,
+		cache:      cache,
+		paramIndex: paramIndex,
+	}
+	return walkCondition(condition, pgEavStyle, nil, emitter)
+}
+
+// ToSqlClauses is kept for backward compatibility.
+func (g *SQLGenerator) ToSqlClauses(
+	condition forma.Condition,
+	eavTable string,
+	schemaID int16,
+	cache forma.SchemaAttributeCache,
+	paramIndex *int,
+) (string, []any, error) {
+	return g.ToSQLClauses(condition, eavTable, schemaID, cache, paramIndex)
 }

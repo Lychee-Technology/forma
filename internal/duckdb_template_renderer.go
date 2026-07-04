@@ -87,14 +87,15 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 		return RenderDuckDBQuery(tpl, merged, whereArgs)
 	}
 
-	// Legacy path
-	if isAdvancedTemplate {
-		whereClause, whereArgs, err = GenerateDuckDBWhereClause(q)
-	} else {
-		whereClause, whereArgs, err = GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
-	}
+	// Legacy path (preserved for tests with dual=nil; production always uses dual path).
+	whereClause, whereArgs, err = buildDuckClause(q.Condition, nil)
 	if err != nil {
 		return "", nil, err
+	}
+	if !isAdvancedTemplate && len(dirtyIDs) > 0 {
+		var exclArgs []any
+		whereClause, exclArgs = AppendDirtyExclusion(whereClause, dirtyIDs)
+		whereArgs = append(whereArgs, exclArgs...)
 	}
 	anchor["Condition"] = whereClause
 	if isAdvancedTemplate {
