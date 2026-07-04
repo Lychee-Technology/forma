@@ -11,7 +11,7 @@ import (
 )
 
 // ============================================================================
-// TC-1: GenerateDuckDBWhereClause Tests
+// TC-1: DuckDB WHERE-clause tests (ported from the retired legacy generator to buildDuckClause)
 // ============================================================================
 
 func TestGenerateDuckDBWhereClause_SimpleKVEquals(t *testing.T) {
@@ -255,9 +255,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 	}
 
 	clause, args, err := buildDuckClause(q.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)

@@ -103,13 +103,10 @@ func TestHybrid_EAVLeaf_AnchorFalse(t *testing.T) {
 	cond := &forma.KvCondition{Attr: "name", Value: "equals:Alice"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
-	require.Contains(t, clause, "x.schema_id = t.schema_id")
-	require.Contains(t, clause, "x.row_id = t.row_id")
-	require.NotContains(t, clause, "e.row_id")
-	require.NotContains(t, clause, "e.schema_id")
-	require.Len(t, args, 2)
-	require.Equal(t, int16(7), args[0])
-	require.Equal(t, "Alice", args[1])
+	require.Equal(t,
+		"EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $2 AND x.value_text = $3)",
+		clause)
+	require.Equal(t, []any{int16(7), "Alice"}, args)
 }
 
 // TestHybrid_EAVLeaf_AnchorTrue asserts that an EAV-only attribute with
@@ -119,12 +116,10 @@ func TestHybrid_EAVLeaf_AnchorTrue(t *testing.T) {
 	cond := &forma.KvCondition{Attr: "name", Value: "equals:Alice"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
-	require.Contains(t, clause, "x.schema_id = m.ltbase_schema_id")
-	require.Contains(t, clause, "x.row_id = m.ltbase_row_id")
-	require.NotContains(t, clause, "e.row_id")
-	require.NotContains(t, clause, "e.schema_id")
-	require.Len(t, args, 2)
-	require.Equal(t, int16(7), args[0])
+	require.Equal(t,
+		"EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = m.ltbase_schema_id AND x.row_id = m.ltbase_row_id AND x.attr_id = $2 AND x.value_text = $3)",
+		clause)
+	require.Equal(t, []any{int16(7), "Alice"}, args)
 }
 
 // TestHybrid_MixedMainAndEAV_AND asserts that mixing a main-table column and an
@@ -141,22 +136,13 @@ func TestHybrid_MixedMainAndEAV_AND(t *testing.T) {
 	clause, args, err := h.build(root)
 	require.NoError(t, err)
 
-	require.Contains(t, clause, "AND")
-	require.Contains(t, clause, "EXISTS")
-	require.Contains(t, clause, "m.ltbase_row_id = t.row_id")
-	require.Contains(t, clause, "x.schema_id = t.schema_id")
-	require.Contains(t, clause, "x.row_id = t.row_id")
-
-	// Placeholders cross boundaries: $2 (age value), $3 (eav attr_id), $4 (eav value)
-	require.Contains(t, clause, "$2")
-	require.Contains(t, clause, "$3")
-	require.Contains(t, clause, "$4")
-
-	// Args: [int64(18), int16(8), "Alice"]
-	require.Len(t, args, 3)
-	require.Equal(t, int64(18), args[0])
-	require.Equal(t, int16(7), args[1])
-	require.Equal(t, "Alice", args[2])
+	// Sub-clauses each wrapped in (), joined with AND, no outer parens; $N
+	// placeholders continuous across the main→EAV boundary ($2 age, $3 attr_id, $4 value).
+	require.Equal(t,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" > $2)) AND (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4))`,
+		clause)
+	// Args: [int64(18), int16(7) (attr_id of "name"), "Alice"]
+	require.Equal(t, []any{int64(18), int16(7), "Alice"}, args)
 }
 
 // TestHybrid_EmptyCompositeAndNestedOR asserts correct handling of empty composite
@@ -176,11 +162,10 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 	clause, args, err := h.build(root)
 	require.NoError(t, err)
 	// empty AND produces "1=1" which becomes a wrapped sub-clause "(1=1)"
-	require.Contains(t, clause, "1=1")
-	require.Contains(t, clause, "AND")
-	require.Contains(t, clause, "EXISTS")
-	require.Len(t, args, 1)
-	require.Equal(t, int64(25), args[0])
+	require.Equal(t,
+		`(1=1) AND (EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2))`,
+		clause)
+	require.Equal(t, []any{int64(25)}, args)
 
 	// Mixed with nested OR
 	nameCond := &forma.KvCondition{Attr: "name", Value: "equals:Alice"}
@@ -196,21 +181,11 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 
 	clause2, args2, err := h.build(root2)
 	require.NoError(t, err)
-	require.Contains(t, clause2, "OR")
-	require.Contains(t, clause2, "AND")
-	// Placeholders: $2 (age), $3 (attr_id name), $4 (value name), $5 (attr_id tag), $6 (value tag)
-	require.Contains(t, clause2, "$2")
-	require.Contains(t, clause2, "$3")
-	require.Contains(t, clause2, "$4")
-	require.Contains(t, clause2, "$5")
-	require.Contains(t, clause2, "$6")
-	// args: [int64(25), int16(7), "Alice", int16(9), "admin"]
-	require.Len(t, args2, 5)
-	require.Equal(t, int64(25), args2[0])
-	require.Equal(t, int16(7), args2[1])
-	require.Equal(t, "Alice", args2[2])
-	require.Equal(t, int16(9), args2[3])
-	require.Equal(t, "admin", args2[4])
+	// Nested OR wrapped as one AND-child; placeholders $2 (age), $3/$4 (name), $5/$6 (tag).
+	require.Equal(t,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2)) AND ((EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4)) OR (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $5 AND x.value_text = $6)))`,
+		clause2)
+	require.Equal(t, []any{int64(25), int16(7), "Alice", int16(9), "admin"}, args2)
 }
 
 // TestHybrid_NilCondition asserts that a nil condition produces "1=1".
@@ -229,13 +204,10 @@ func TestHybrid_AnchorTrue_EAVAliasRewrite(t *testing.T) {
 	cond := &forma.KvCondition{Attr: "name", Value: "contains:foo"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
-	require.Contains(t, clause, "m.ltbase_schema_id")
-	require.Contains(t, clause, "m.ltbase_row_id")
-	require.Contains(t, clause, "value_text LIKE")
-	require.Len(t, args, 2)
-	// EAV: attr_id gets $2, value gets $3
-	require.Equal(t, int16(7), args[0])
-	require.Equal(t, "%foo%", args[1])
+	require.Equal(t,
+		"EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = m.ltbase_schema_id AND x.row_id = m.ltbase_row_id AND x.attr_id = $2 AND x.value_text LIKE $3)",
+		clause)
+	require.Equal(t, []any{int16(7), "%foo%"}, args)
 }
 
 // TestHybrid_MainTableLikeOperator ensures LIKE operators on main-table columns work correctly.

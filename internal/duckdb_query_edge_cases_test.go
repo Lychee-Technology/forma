@@ -276,9 +276,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet100(t *testing.T
 	}
 
 	clause, args, err := buildDuckClause(query.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)
@@ -307,9 +305,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet1000(t *testing.
 	}
 
 	clause, args, err := buildDuckClause(query.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)
@@ -339,9 +335,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_MaxInt16DirtyIDs(t *testing.T) 
 	}
 
 	clause, args, err := buildDuckClause(query.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)
@@ -375,9 +369,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_DuplicateDirtyIDs(t *testing.T)
 	}
 
 	clause, args, err := buildDuckClause(query.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)
@@ -426,9 +418,7 @@ func TestGenerateDuckDBWhereClause_ComplexNestedWithUnicodeAndLargeDirtySet(t *t
 	}
 
 	clause, args, err := buildDuckClause(query.Condition, nil)
-	if err != nil {
-		return
-	}
+	require.NoError(t, err)
 	var exclArgs []any
 	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)

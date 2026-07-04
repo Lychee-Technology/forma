@@ -24,8 +24,8 @@ type compositeGuard interface {
 type allEmptyBehavior int
 
 const (
-	allEmptyOmit    allEmptyBehavior = iota // return ""
-	allEmptyIdentity                       // return "1=1" / "1=0" per Logic
+	allEmptyOmit     allEmptyBehavior = iota // return ""
+	allEmptyIdentity                         // return "1=1" / "1=0" per Logic
 )
 
 type nilNodeBehavior int
@@ -38,39 +38,39 @@ const (
 
 // compositeStyle parameterises the composite traversal semantics.
 type compositeStyle struct {
-	emptyAnd, emptyOr    string           // e.g. "1=1" / "1=0"
-	outerParensOnMulti   bool             // wrap whole join in (...) when len(parts) > 1
-	allEmpty             allEmptyBehavior // what to return when all children produce ""
-	nilNode              nilNodeBehavior  // what to do when cond is nil
-	strictLogic          bool             // error on unknown Logic
+	emptyAnd, emptyOr  string           // e.g. "1=1" / "1=0"
+	outerParensOnMulti bool             // wrap whole join in (...) when len(parts) > 1
+	allEmpty           allEmptyBehavior // what to return when all children produce ""
+	nilNode            nilNodeBehavior  // what to do when cond is nil
+	strictLogic        bool             // error on unknown Logic
 }
 
 var (
 	pgEavStyle = compositeStyle{
-		emptyAnd:          "1=1",
-		emptyOr:           "1=0",
+		emptyAnd:           "1=1",
+		emptyOr:            "1=0",
 		outerParensOnMulti: true,
 		allEmpty:           allEmptyOmit,
 		nilNode:            nilNodeError,
 		strictLogic:        true,
 	}
 	pgMainStyle = compositeStyle{
-		emptyAnd:          "1=1",
-		emptyOr:           "1=0",
+		emptyAnd:           "1=1",
+		emptyOr:            "1=0",
 		outerParensOnMulti: true,
 		allEmpty:           allEmptyOmit,
 		nilNode:            nilNodeSkip,
 	}
 	duckStyle = compositeStyle{
-		emptyAnd:          "1=1",
-		emptyOr:           "1=0",
+		emptyAnd:           "1=1",
+		emptyOr:            "1=0",
 		outerParensOnMulti: false,
 		allEmpty:           allEmptyIdentity,
 		nilNode:            nilNodeTrue,
 	}
 	hybridStyle = compositeStyle{
-		emptyAnd:          "1=1",
-		emptyOr:           "1=0",
+		emptyAnd:           "1=1",
+		emptyOr:            "1=0",
 		outerParensOnMulti: false,
 		allEmpty:           allEmptyOmit,
 		nilNode:            nilNodeError,

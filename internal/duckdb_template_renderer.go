@@ -6,9 +6,11 @@ import (
 	"text/template"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
+
 // RenderDuckDBQuery renders a DuckDB SQL template (which uses "?" placeholders)
-// and combines the provided whereArgs (typically from GenerateDuckDBWhereClause)
+// and combines the provided whereArgs (typically from buildDuckClause)
 // with the template-collected args. The order is: whereArgs first, then template args.
 func RenderDuckDBQuery(tpl *template.Template, params any, whereArgs []any) (string, []any, error) {
 	sql, tplArgs, err := RenderSQLTemplate(tpl, params)
@@ -88,7 +90,12 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQ
 	}
 
 	// Legacy path (preserved for tests with dual=nil; production always uses dual path).
-	whereClause, whereArgs, err = buildDuckClause(q.Condition, nil)
+	// A nil query must keep the old GenerateDuckDBWhereClause(nil) contract: "1=1".
+	var fallbackCond forma.Condition
+	if q != nil {
+		fallbackCond = q.Condition
+	}
+	whereClause, whereArgs, err = buildDuckClause(fallbackCond, nil)
 	if err != nil {
 		return "", nil, err
 	}

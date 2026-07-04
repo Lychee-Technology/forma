@@ -3,6 +3,7 @@ package internal
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -344,4 +345,58 @@ func TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE(t *testing.T) {
 	require.Contains(t, sp.PGSourceSelect,
 		"COALESCE(hot_vals.active, m.text_01 = '1') AS active",
 		"bool_text column-bound COALESCE must normalize main col to boolean")
+}
+
+// ============================================================================
+// Exact-output tests restored from the retired legacy generator (issue #127
+// review): the datetime cases port with a DateTime cache entry so the
+// CAST(? AS TIMESTAMP) expectation is preserved; the nested case ports with
+// no cache (dual walker's literal type inference).
+// ============================================================================
+
+func TestBuildDuckClause_GivenBareRFC3339Literal_WhenClauseBuilt_ThenItDefaultsToEqualsTimestamp(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"created_at": forma.AttributeMetadata{AttributeID: 7, ValueType: forma.ValueTypeDateTime},
+	}
+	cond := &forma.KvCondition{Attr: "created_at", Value: "2020-01-02T03:04:05Z"}
+
+	clause, args, err := buildDuckClause(cond, cache)
+	require.NoError(t, err)
+	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Len(t, args, 1)
+	require.Equal(t, time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), args[0])
+}
+
+func TestBuildDuckClause_GivenEpochMillisLiteral_WhenClauseBuilt_ThenItUsesTimestampCast(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"created_at": forma.AttributeMetadata{AttributeID: 7, ValueType: forma.ValueTypeDateTime},
+	}
+	cond := &forma.KvCondition{Attr: "created_at", Value: "1700000000000"}
+
+	clause, args, err := buildDuckClause(cond, cache)
+	require.NoError(t, err)
+	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Len(t, args, 1)
+	require.Equal(t, time.UnixMilli(1700000000000).UTC(), args[0])
+}
+
+func TestBuildDuckClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGroupingAndArgumentOrderArePreserved(t *testing.T) {
+	cond := &forma.CompositeCondition{
+		Logic: forma.LogicAnd,
+		Conditions: []forma.Condition{
+			&forma.KvCondition{Attr: "status", Value: "active"},
+			&forma.CompositeCondition{
+				Logic: forma.LogicOr,
+				Conditions: []forma.Condition{
+					&forma.KvCondition{Attr: "score", Value: "gt:10"},
+					&forma.KvCondition{Attr: "email", Value: "starts_with:ops"},
+				},
+			},
+		},
+	}
+
+	clause, args, err := buildDuckClause(cond, nil)
+	require.NoError(t, err)
+	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DECIMAL(38,10))) OR (email LIKE ?))", clause)
+	require.Equal(t, []any{"active", "10", "ops%"}, args)
 }
