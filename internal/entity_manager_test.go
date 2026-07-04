@@ -161,7 +161,6 @@ func TestEntityManager_Create(t *testing.T) {
 
 	if record == nil {
 		t.Fatal("Create returned nil record")
-		return
 	}
 
 	if record.SchemaName != "visit" {
@@ -273,7 +272,6 @@ func TestEntityManager_Get(t *testing.T) {
 
 	if record == nil {
 		t.Fatal("Get returned nil record")
-		return
 	}
 
 	if record.RowID != testRowID {
@@ -853,7 +851,6 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 
 	if result == nil {
 		t.Fatal("CrossSchemaSearch returned nil result")
-		return
 	}
 
 	if result.CurrentPage != 1 {
@@ -1045,7 +1042,6 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 
 	if result == nil {
 		t.Fatal("Query returned nil result")
-		return
 	}
 
 	if len(result.Data) != 1 {

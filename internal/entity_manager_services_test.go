@@ -7,8 +7,6 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-var _ forma.EntityManager = (*entityManager)(nil)
-
 func TestNewEntityManagerInitializesLongLivedServices(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()

@@ -21,6 +21,8 @@ type entityManager struct {
 	relation *entityRelationService
 }
 
+var _ forma.EntityManager = (*entityManager)(nil)
+
 // NewEntityManager creates a new EntityManager instance
 func NewEntityManager(
 	transformer PersistentRecordTransformer,
@@ -52,7 +54,7 @@ func NewEntityManager(
 	em.relation = newEntityRelationService(em)
 	em.crud = newEntityCRUDService(em)
 	em.query = newEntityQueryService(em)
-	em.batch = newEntityBatchService(em)
+	em.batch = newEntityBatchService(em, em.crud)
 	return em
 }
 

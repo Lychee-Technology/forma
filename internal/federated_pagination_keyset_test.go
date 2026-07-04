@@ -174,7 +174,6 @@ func TestExtractCursorFromRecord(t *testing.T) {
 	cursor := extractCursorFromRecord(record, columns)
 	if cursor == nil {
 		t.Fatal("expected non-nil cursor")
-		return
 	}
 	if cursor.Mode != KeysetCursorModeAfter {
 		t.Errorf("expected after mode, got %s", cursor.Mode)

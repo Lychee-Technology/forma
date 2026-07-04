@@ -21,17 +21,20 @@ type entityBatchService struct {
 	deleteOp      func(context.Context, *forma.EntityOperation) error
 }
 
-func newEntityBatchService(em *entityManager) *entityBatchService {
+// newEntityBatchService takes the CRUD service as an explicit parameter so the
+// batch service's dependency on it is visible at the construction site instead
+// of relying on em.crud having been assigned first.
+func newEntityBatchService(em *entityManager, crud *entityCRUDService) *entityBatchService {
 	if em == nil {
 		return &entityBatchService{}
 	}
 	var createOp func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
 	var updateOp func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
 	var deleteOp func(context.Context, *forma.EntityOperation) error
-	if em.crud != nil {
-		createOp = em.crud.Create
-		updateOp = em.crud.Update
-		deleteOp = em.crud.Delete
+	if crud != nil {
+		createOp = crud.Create
+		updateOp = crud.Update
+		deleteOp = crud.Delete
 	}
 	return &entityBatchService{
 		repository:    em.repository,
