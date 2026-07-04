@@ -26,6 +26,7 @@ type fileSchemaRegistry struct {
 	nameToID              map[string]int16
 	idToName              map[int16]string
 	schemaAttributeCaches map[int16]forma.SchemaAttributeCache
+	attrIDToName          map[int16]map[int16]string
 	schemas               map[int16]forma.JSONSchema
 }
 
@@ -48,6 +49,7 @@ func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schem
 		nameToID:              make(map[string]int16),
 		idToName:              make(map[int16]string),
 		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
+		attrIDToName:          make(map[int16]map[int16]string),
 		schemas:               make(map[int16]forma.JSONSchema),
 	}
 
@@ -72,7 +74,7 @@ func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int
 
 	cache := make(forma.SchemaAttributeCache)
 	for attrName, attrData := range rawAttributes {
-		meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
+		meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -95,13 +97,31 @@ func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int
 	return cache, &jsonSchema, nil
 }
 
-func (r *fileSchemaRegistry) registerSchema(schemaName string, schemaID int16, cache forma.SchemaAttributeCache, schema *forma.JSONSchema) {
+func (r *fileSchemaRegistry) registerSchema(schemaName string, schemaID int16, cache forma.SchemaAttributeCache, schema *forma.JSONSchema) error {
+	attrIDToName, err := buildAttrIDToName(schemaName, cache)
+	if err != nil {
+		return err
+	}
+
 	r.nameToID[schemaName] = schemaID
 	r.idToName[schemaID] = schemaName
 	r.schemaAttributeCaches[schemaID] = cache
+	r.attrIDToName[schemaID] = attrIDToName
 	if schema != nil {
 		r.schemas[schemaID] = *schema
 	}
+	return nil
+}
+
+func buildAttrIDToName(schemaName string, cache forma.SchemaAttributeCache) (map[int16]string, error) {
+	attrIDToName := make(map[int16]string, len(cache))
+	for attrName, meta := range cache {
+		if existingAttr, exists := attrIDToName[meta.AttributeID]; exists {
+			return nil, fmt.Errorf("schema %s has duplicate attribute id %d for %s and %s", schemaName, meta.AttributeID, existingAttr, attrName)
+		}
+		attrIDToName[meta.AttributeID] = attrName
+	}
+	return attrIDToName, nil
 }
 
 // loadSchemasFromDB reads schema mappings from the database and loads attribute
@@ -157,10 +177,35 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
-		r.registerSchema(schemaName, schemaID, cache, schema)
+		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// schemaMetadataForID returns registry-owned metadata maps for internal read-only use.
+// Callers must not mutate the returned maps.
+func (r *fileSchemaRegistry) schemaMetadataForID(id int16) (forma.SchemaAttributeCache, map[int16]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if _, exists := r.idToName[id]; !exists {
+		return nil, nil, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
+	}
+
+	schema, exists := r.schemaAttributeCaches[id]
+	if !exists {
+		return nil, nil, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
+	}
+
+	idToName, exists := r.attrIDToName[id]
+	if !exists {
+		return nil, nil, fmt.Errorf("attribute id index not found for ID: %d: %w", id, forma.ErrNotFound)
+	}
+
+	return schema, idToName, nil
 }
 
 // GetSchemaAttributeCacheByName retrieves schema ID and schema definition by schema name
@@ -265,8 +310,6 @@ func copyFileSchemaAttributeCache(cache forma.SchemaAttributeCache) forma.Schema
 	return result
 }
 
-// parseFileAttributeMetadata and parseFileColumnBinding are implemented in schema_parser.go
-
 // NewFileSchemaRegistryFromDirectory creates a schema registry that scans
 // a directory for schema files and auto-assigns IDs (starting from 100).
 // This mode does not require a database connection.
@@ -281,6 +324,7 @@ func NewFileSchemaRegistryFromDirectory(schemaDir string) (forma.SchemaRegistry,
 		nameToID:              make(map[string]int16),
 		idToName:              make(map[int16]string),
 		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
+		attrIDToName:          make(map[int16]map[int16]string),
 		schemas:               make(map[int16]forma.JSONSchema),
 	}
 
@@ -326,7 +370,9 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
-		r.registerSchema(schemaName, schemaID, cache, schema)
+		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
+			return err
+		}
 		nextSchemaID++
 	}
 

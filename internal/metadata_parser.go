@@ -43,7 +43,16 @@ func parseAttributeMetadata(attrName string, attrData map[string]any, source str
 }
 
 func extractMainColumnBinding(attrName string, attrData map[string]any, source string) (*forma.MainColumnBinding, error) {
-	if raw, ok := attrData["column_binding"].(map[string]any); ok {
+	rawValue, exists := attrData["column_binding"]
+	if !exists {
+		return nil, nil
+	}
+
+	raw, ok := rawValue.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid column_binding format for attribute %s in %s", attrName, source)
+	}
+	if raw != nil {
 		return parseBindingObject(attrName, raw, source)
 	}
 
