@@ -25,16 +25,23 @@ func newEntityBatchService(em *entityManager) *entityBatchService {
 	if em == nil {
 		return &entityBatchService{}
 	}
-	crudSvc := newEntityCRUDService(em)
+	var createOp func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
+	var updateOp func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
+	var deleteOp func(context.Context, *forma.EntityOperation) error
+	if em.crud != nil {
+		createOp = em.crud.Create
+		updateOp = em.crud.Update
+		deleteOp = em.crud.Delete
+	}
 	return &entityBatchService{
 		repository:    em.repository,
 		transformer:   em.transformer,
 		registry:      em.registry,
 		relations:     em.relations,
 		storageTables: em.storageTables,
-		createOp:      crudSvc.Create,
-		updateOp:      crudSvc.Update,
-		deleteOp:      crudSvc.Delete,
+		createOp:      createOp,
+		updateOp:      updateOp,
+		deleteOp:      deleteOp,
 	}
 }
 

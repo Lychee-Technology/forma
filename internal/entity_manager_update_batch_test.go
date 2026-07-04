@@ -72,6 +72,7 @@ func TestEntityManager_Update_MergesAndPreserves(t *testing.T) {
 	stored := mockRepo.records[schemaID][rowID]
 	if stored == nil {
 		t.Fatalf("expected updated record to be stored")
+		return
 	}
 	if stored.CreatedAt != 111 {
 		t.Fatalf("expected CreatedAt preserved, got %d", stored.CreatedAt)

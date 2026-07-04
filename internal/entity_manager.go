@@ -14,6 +14,11 @@ type entityManager struct {
 	registry    forma.SchemaRegistry
 	config      *forma.Config
 	relations   *RelationIndex
+
+	crud     *entityCRUDService
+	query    *entityQueryService
+	batch    *entityBatchService
+	relation *entityRelationService
 }
 
 // NewEntityManager creates a new EntityManager instance
@@ -37,13 +42,18 @@ func NewEntityManager(
 			relationIdx = idx
 		}
 	}
-	return &entityManager{
+	em := &entityManager{
 		transformer: transformer,
 		repository:  repository,
 		registry:    registry,
 		config:      config,
 		relations:   relationIdx,
 	}
+	em.relation = newEntityRelationService(em)
+	em.crud = newEntityCRUDService(em)
+	em.query = newEntityQueryService(em)
+	em.batch = newEntityBatchService(em)
+	return em
 }
 
 func (em *entityManager) storageTables() StorageTables {
@@ -90,4 +100,53 @@ func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, re
 		RowID:      record.RowID,
 		Attributes: attributes,
 	}, nil
+}
+
+// Create creates a new entity with the provided data.
+func (em *entityManager) Create(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
+	return em.crud.Create(ctx, req)
+}
+
+// Get retrieves an entity by schema name and row ID.
+func (em *entityManager) Get(ctx context.Context, req *forma.QueryRequest) (*forma.DataRecord, error) {
+	return em.crud.Get(ctx, req)
+}
+
+// Update updates an existing entity.
+func (em *entityManager) Update(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
+	return em.crud.Update(ctx, req)
+}
+
+// Delete deletes an entity.
+func (em *entityManager) Delete(ctx context.Context, req *forma.EntityOperation) error {
+	return em.crud.Delete(ctx, req)
+}
+
+// Query queries entities with filters and pagination.
+func (em *entityManager) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
+	return em.query.Query(ctx, req)
+}
+
+// CrossSchemaSearch searches across multiple schemas using a single optimized query.
+func (em *entityManager) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {
+	return em.query.CrossSchemaSearch(ctx, req)
+}
+
+// BatchCreate creates multiple entities.
+func (em *entityManager) BatchCreate(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {
+	return em.batch.BatchCreate(ctx, req)
+}
+
+// BatchUpdate updates multiple entities.
+func (em *entityManager) BatchUpdate(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {
+	return em.batch.BatchUpdate(ctx, req)
+}
+
+// BatchDelete deletes multiple entities.
+func (em *entityManager) BatchDelete(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {
+	return em.batch.BatchDelete(ctx, req)
+}
+
+func (em *entityManager) enrichDataRecords(ctx context.Context, schemaName string, requested []string, records ...*forma.DataRecord) error {
+	return em.relation.enrichDataRecords(ctx, schemaName, requested, records...)
 }
