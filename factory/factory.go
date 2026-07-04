@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,6 +38,16 @@ var defaultDuckDBClientFactory = internal.NewDuckDBClientContext
 var tableCollector = collectTablesFromPool
 
 const defaultDatabaseSchema = "public"
+
+// DuckDB circuit-breaker parameters for the federated query engine. The
+// breaker is count-based (consecutive failures within a sliding window);
+// forma.DuckDBConfig.CircuitBreakerThreshold is a failure *rate* (0..1) and
+// does not map onto it — making these configurable is tracked in #129.
+const (
+	duckDBBreakerFailureThreshold = 5
+	duckDBBreakerWindow           = time.Minute
+	duckDBBreakerOpenDuration     = time.Minute
+)
 
 // collectTablesFromPool queries information_schema for table/view names and returns the list.
 func collectTablesFromPool(ctx context.Context, pool queryPool, schema string) ([]string, error) {
@@ -130,14 +141,18 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 			zap.S().Infow("duckdb client initialized")
 		}
 	}
-	repository := internal.NewDBPersistentRecordRepository(
-		pool,
-		metadataCache,
-		duckClient,
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache)
+	federatedEngine := internal.NewDBFederatedQueryEngine(
+		repository,
+		internal.NewPostgresDirtyIDFetcher(pool),
+		internal.NewDuckDBClientQueryExecutor(duckClient),
+		internal.NewCircuitBreaker(duckDBBreakerFailureThreshold, duckDBBreakerWindow, duckDBBreakerOpenDuration),
 		effectiveConfig.DuckDB,
+		metadataCache,
+		internal.DuckDBPostgresConnStringFromPool(pool),
 	)
 	// Create and return entity manager
-	return internal.NewEntityManager(transformer, repository, registry, effectiveConfig), nil
+	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
 }
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.

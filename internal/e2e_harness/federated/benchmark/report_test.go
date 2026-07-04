@@ -318,11 +318,11 @@ func TestWriteBaselineCaptureIncludesProvenance(t *testing.T) {
 	dir := t.TempDir()
 	baseTime := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	result := &RunResult{
-		Passed:       true,
-		StartedAt:    baseTime,
-		CompletedAt:  baseTime.Add(10 * time.Second),
-		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
-		Config:       Config{Mode: ExecutionModeLive, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name},
+		Passed:      true,
+		StartedAt:   baseTime,
+		CompletedAt: baseTime.Add(10 * time.Second),
+		Generator:   GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Config:      Config{Mode: ExecutionModeLive, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name},
 		Provenance: &RunProvenance{
 			Channel:      "ci",
 			GitSHA:       "abc123",
@@ -373,11 +373,11 @@ func TestWriteBaselineCaptureIncludesProvenance(t *testing.T) {
 func TestProvenancePopulatedFromResultWithoutExplicitProvenance(t *testing.T) {
 	baseTime := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	result := &RunResult{
-		Passed:       true,
-		StartedAt:    baseTime,
-		CompletedAt:  baseTime.Add(10 * time.Second),
-		Config:       Config{Mode: ExecutionModeSmoke, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name},
-		Generator:    GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
+		Passed:      true,
+		StartedAt:   baseTime,
+		CompletedAt: baseTime.Add(10 * time.Second),
+		Config:      Config{Mode: ExecutionModeSmoke, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name},
+		Generator:   GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform},
 		Workloads: []WorkloadDefinition{
 			{Name: "q1", Category: WorkloadCategoryPagination, TargetSchema: "trade", OracleMode: OracleModeLoadedState},
 		},
@@ -501,9 +501,9 @@ func TestBuildComparabilityIdentity(t *testing.T) {
 		t.Fatalf("expected different comparability keys for different scales")
 	}
 	d := SummaryReport{
-		Metadata:    ArtifactMetadata{BenchmarkID: "bench-d"},
-		Provenance:  nil,
-		Workloads: []WorkloadSummary{{Name: "q1"}},
+		Metadata:   ArtifactMetadata{BenchmarkID: "bench-d"},
+		Provenance: nil,
+		Workloads:  []WorkloadSummary{{Name: "q1"}},
 	}
 	keyD := buildComparabilityIdentity(d)
 	if keyD != "bench-d" {
@@ -620,13 +620,13 @@ func TestDetectRegressionsP95Latency(t *testing.T) {
 	}
 	trends := []WorkloadTrend{
 		{
-			Name:             "q1",
-			TargetSchema:     "trade",
-			BaselineP95:      100 * time.Millisecond,
-			CandidateP95:     150 * time.Millisecond,
-			P95Delta:         50 * time.Millisecond,
-			P95DeltaPercent:  50,
-			Classification:   TrendClassRegression,
+			Name:            "q1",
+			TargetSchema:    "trade",
+			BaselineP95:     100 * time.Millisecond,
+			CandidateP95:    150 * time.Millisecond,
+			P95Delta:        50 * time.Millisecond,
+			P95DeltaPercent: 50,
+			Classification:  TrendClassRegression,
 		},
 	}
 	regressions := detectRegressions(trends, candidate)
@@ -823,7 +823,7 @@ func TestAnalyzeTrendWithMethodologyChange(t *testing.T) {
 		subDir := filepath.Join(dir, "run-"+id)
 		_ = os.MkdirAll(subDir, 0o755)
 		summary := SummaryReport{
-			Metadata: ArtifactMetadata{BenchmarkID: id},
+			Metadata:    ArtifactMetadata{BenchmarkID: id},
 			OracleModes: map[string]string{"q1": oracleMode},
 			Provenance: &RunProvenance{
 				StartedAt:    ts,
@@ -866,17 +866,17 @@ func TestFormatTrendSummary(t *testing.T) {
 				Provenance: &RunProvenance{Mode: string(ExecutionModeLive), Scale: string(ScaleSmall)},
 			},
 		},
-		BaselineWindow:    make([]TrendRun, 5),
-		ComparabilityKey:  "live|small|uniform|balanced|q1",
-		Status:            TrendStatusPass,
+		BaselineWindow:     make([]TrendRun, 5),
+		ComparabilityKey:   "live|small|uniform|balanced|q1",
+		Status:             TrendStatusPass,
 		ProtectedWorkloads: []string{"q1"},
 		WorkloadTrends: []WorkloadTrend{
 			{
-				Name:         "q1",
-				TargetSchema: "trade",
-				BaselineP95:  100 * time.Millisecond,
-				CandidateP95: 105 * time.Millisecond,
-				P95Delta:     5 * time.Millisecond,
+				Name:           "q1",
+				TargetSchema:   "trade",
+				BaselineP95:    100 * time.Millisecond,
+				CandidateP95:   105 * time.Millisecond,
+				P95Delta:       5 * time.Millisecond,
 				Classification: TrendClassStable,
 			},
 		},
@@ -902,9 +902,9 @@ func TestWriteAndReadTrendReport(t *testing.T) {
 				Metadata: ArtifactMetadata{BenchmarkID: "bench-cand"},
 			},
 		},
-		BaselineWindow:    make([]TrendRun, 3),
-		ComparabilityKey:  "test-key",
-		Status:            TrendStatusPass,
+		BaselineWindow:     make([]TrendRun, 3),
+		ComparabilityKey:   "test-key",
+		Status:             TrendStatusPass,
 		ProtectedWorkloads: []string{"q1"},
 	}
 	if err := WriteTrendReport(path, report); err != nil {

@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"text/template"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,44 +20,15 @@ type persistentRecordPool interface {
 type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *MetadataCache
-	duckDBClient  *DuckDBClient
-	duckDBCfg     forma.DuckDBConfig
 	nowFunc       func() time.Time
-	fetchDirtyIDs func(context.Context, string, int16) ([]uuid.UUID, error)
-	buildDuckSQL  func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *DualClauses) (string, []any, error)
-	duckTemplate  *template.Template
 }
 
-func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache, duckDBClient *DuckDBClient, duckDBCfg forma.DuckDBConfig) *DBPersistentRecordRepository {
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache) *DBPersistentRecordRepository {
 	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
-		duckDBClient:  duckDBClient,
-		duckDBCfg:     duckDBCfg,
 		nowFunc:       time.Now,
-		duckTemplate:  AdvancedQueryTemplateDuckDB,
 	}
-}
-
-func (r *DBPersistentRecordRepository) getDirtyIDFetcher() func(context.Context, string, int16) ([]uuid.UUID, error) {
-	if r.fetchDirtyIDs != nil {
-		return r.fetchDirtyIDs
-	}
-	return r.FetchDirtyRowIDs
-}
-
-func (r *DBPersistentRecordRepository) getDuckDBQueryBuilder() func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *DualClauses) (string, []any, error) {
-	if r.buildDuckSQL != nil {
-		return r.buildDuckSQL
-	}
-	return BuildDuckDBQuery
-}
-
-func (r *DBPersistentRecordRepository) getDuckDBTemplate() *template.Template {
-	if r.duckTemplate != nil {
-		return r.duckTemplate
-	}
-	return AdvancedQueryTemplateDuckDB
 }
 
 func (r *DBPersistentRecordRepository) withClock(now func() time.Time) {
@@ -324,119 +294,5 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 		TotalRecords: totalRecords,
 		TotalPages:   computeTotalPages(totalRecords, limit),
 		CurrentPage:  currentPage,
-	}, nil
-}
-
-// FetchDirtyRowIDs returns all row_ids present in the change_log with flushed_at = 0
-// for the given schema. This can be used by federated query coordinator to exclude
-// dirty rows from columnar/duckdb reads (anti-join).
-func (r *DBPersistentRecordRepository) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
-	if changeLogTable == "" {
-		return nil, fmt.Errorf("change log table name cannot be empty")
-	}
-	query := fmt.Sprintf(`SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, sanitizeIdentifier(changeLogTable))
-	rows, err := r.pool.Query(ctx, query, schemaID)
-	if err != nil {
-		return nil, fmt.Errorf("query dirty row ids: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan dirty row id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
-	}
-	return ids, nil
-}
-
-// QueryPersistentRecordsFederated performs a federated query across configured data tiers.
-// Backwards compatible: hot-only hints delegate to QueryPersistentRecords.
-func (r *DBPersistentRecordRepository) QueryPersistentRecordsFederated(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
-	if fq == nil {
-		return nil, fmt.Errorf("federated query cannot be nil")
-	}
-	// If no explicit tiers or a hot-only preference is indicated, delegate to existing OLTP path.
-	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == DataTierHot) {
-		prq := &PersistentRecordQuery{
-			Tables:          tables,
-			SchemaID:        fq.SchemaID,
-			Condition:       fq.Condition,
-			AttributeOrders: fq.AttributeOrders,
-			Limit:           fq.Limit,
-			Offset:          fq.Offset,
-		}
-		return r.QueryPersistentRecords(ctx, prq)
-	}
-
-	// Initialize execution plan if requested
-	if opts != nil && opts.IncludeExecutionPlan {
-		if opts.ExecutionPlan == nil {
-			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
-		}
-		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
-	}
-
-	decision := EvaluateRoutingPolicy(r.duckDBCfg, fq, opts)
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		opts.ExecutionPlan.Routing = decision
-	}
-
-	if !decision.UseDuckDB {
-		// route to Postgres-only
-		prq := &PersistentRecordQuery{
-			Tables:          tables,
-			SchemaID:        fq.SchemaID,
-			Condition:       fq.Condition,
-			AttributeOrders: fq.AttributeOrders,
-			Limit:           fq.Limit,
-			Offset:          fq.Offset,
-		}
-		return r.QueryPersistentRecords(ctx, prq)
-	}
-
-	// Attempt DuckDB federated execution.
-	records, totalRecords, err := r.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
-	if err != nil {
-		// Fallback to Postgres-only when partial degraded mode allowed.
-		if opts != nil && opts.AllowPartialDegradedMode {
-			prq := &PersistentRecordQuery{
-				Tables:          tables,
-				SchemaID:        fq.SchemaID,
-				Condition:       fq.Condition,
-				AttributeOrders: fq.AttributeOrders,
-				Limit:           fq.Limit,
-				Offset:          fq.Offset,
-			}
-			return r.QueryPersistentRecords(ctx, prq)
-		}
-		return nil, fmt.Errorf("duckdb federated query: %w", err)
-	}
-
-	currentPage := 1
-	limit := fq.Limit
-	if limit <= 0 {
-		limit = defaultPageSize
-	}
-	if limit > 0 {
-		currentPage = fq.Offset/limit + 1
-	}
-
-	var execPlan *ExecutionPlan
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		execPlan = opts.ExecutionPlan
-	}
-
-	return &PersistentRecordPage{
-		Records:       records,
-		TotalRecords:  totalRecords,
-		TotalPages:    computeTotalPages(totalRecords, limit),
-		CurrentPage:   currentPage,
-		ExecutionPlan: execPlan,
 	}, nil
 }

@@ -61,8 +61,8 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	require.NoError(t, err)
 
 	transformer := NewPersistentRecordTransformer(registry)
-	repo := NewDBPersistentRecordRepository(pool, metadataCache, nil, forma.DuckDBConfig{})
-	manager := NewEntityManager(transformer, repo, registry, config)
+	repo := NewDBPersistentRecordRepository(pool, metadataCache)
+	manager := NewEntityManager(transformer, repo, nil, registry, config)
 
 	return &integrationEnv{
 		ctx:          ctx,

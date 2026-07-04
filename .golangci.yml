@@ -1,0 +1,14 @@
+# Keeps golangci-lint's default linter set unchanged. The only customization:
+# suppress staticcheck SA5011 ("possible nil pointer dereference") inside test
+# files. t.Fatal/t.Fatalf terminate the test goroutine, so the guarded
+# dereference after `if x == nil { t.Fatal(...) }` is unreachable — but some
+# Go-toolchain/golangci-lint combinations lose that fact and demand dead
+# `return` statements after t.Fatal (this bit PRs #132 and #133). The linter
+# version is pinned in Makefile and .github/workflows/ci.yml for the same
+# reason: keep local `make lint` and CI byte-identical.
+issues:
+  exclude-rules:
+    - path: _test\.go$
+      linters:
+        - staticcheck
+      text: "SA5011"

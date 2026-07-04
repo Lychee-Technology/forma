@@ -14,7 +14,7 @@ func TestNewEntityManagerInitializesLongLivedServices(t *testing.T) {
 	transformer := NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	manager := NewEntityManager(transformer, mockRepo, registry, config)
+	manager := NewEntityManager(transformer, mockRepo, nil, registry, config)
 	em, ok := manager.(*entityManager)
 	if !ok {
 		t.Fatalf("expected *entityManager, got %T", manager)

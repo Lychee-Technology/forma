@@ -15,7 +15,7 @@ import (
 )
 
 func TestWithClockAndNowMillis(t *testing.T) {
-	repo := NewDBPersistentRecordRepository(nil, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(nil, nil)
 	fixed := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -25,12 +25,6 @@ func TestWithClockAndNowMillis(t *testing.T) {
 	repo.withClock(nil)
 	got = repo.nowMillis()
 	assert.Equal(t, fixed.UnixMilli(), got)
-}
-
-func TestNewDBPersistentRecordRepository_AssignsDuckDBClient(t *testing.T) {
-	duck := &DuckDBClient{}
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, forma.DuckDBConfig{})
-	require.Same(t, duck, repo.duckDBClient)
 }
 
 func TestValidateTables(t *testing.T) {
@@ -410,7 +404,7 @@ func TestRunOptimizedQueryWithMockPool(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)

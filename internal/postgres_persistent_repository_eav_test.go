@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,7 +88,7 @@ func TestFetchAttributes(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	attrs, err := repo.fetchAttributes(ctx, "eav_table", 1, rowID)
 	require.NoError(t, err)
 	require.Len(t, attrs, 2)

@@ -7,29 +7,14 @@ import (
 )
 
 func TestCircuitBreakerWiring(t *testing.T) {
-	// This test verifies that the circuit breaker integration compiles and the
-	// functions GetDuckDBCircuitBreaker, RecordFailure, and RecordSuccess are
-	// available and can be called without panicking.
-	
-	// Setup circuit breaker
+	// The breaker is injected into DBFederatedQueryEngine at construction; this
+	// verifies the basic record/inspect cycle on a directly constructed breaker.
 	breaker := NewCircuitBreaker(2, 10*time.Second, 5*time.Second)
-	SetGlobalDuckDBCircuitBreaker(breaker)
-	defer SetGlobalDuckDBCircuitBreaker(nil)
 
-	// Verify we can retrieve the breaker
-	retrieved := GetDuckDBCircuitBreaker()
-	if retrieved == nil {
-		t.Fatal("expected non-nil circuit breaker after SetGlobalDuckDBCircuitBreaker")
-	}
+	breaker.RecordFailure()
+	breaker.RecordSuccess()
 
-	// Verify RecordFailure doesn't panic
-	retrieved.RecordFailure()
-
-	// Verify RecordSuccess doesn't panic
-	retrieved.RecordSuccess()
-
-	// Verify IsOpen works
-	if retrieved.IsOpen() {
+	if breaker.IsOpen() {
 		t.Error("circuit breaker should not be open after single failure and success")
 	}
 }

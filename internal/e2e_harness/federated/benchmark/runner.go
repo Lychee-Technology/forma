@@ -569,7 +569,16 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 			MaxParallelism: 4,
 		}
 	}
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	engine := internal.NewDBFederatedQueryEngine(
+		repo,
+		internal.NewPostgresDirtyIDFetcher(pool),
+		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		nil,
+		duckCfg,
+		metadata,
+		internal.DuckDBPostgresConnStringFromPool(pool),
+	)
 
 	schemaName := workload.TargetSchema
 	if schemaName == "" {
@@ -631,7 +640,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	if pageNumber == 1 {
 		// Page 1: keyset with no cursor is equivalent to offset 0.
 		// For page 1 of a keyset workload, use a nil cursor.
-		recs, total, err := repo.ExecuteDuckDBFederatedQuery(ctx, tables, fq, pageSize, 0, nil, &internal.FederatedQueryOptions{
+		recs, total, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, fq, pageSize, 0, nil, &internal.FederatedQueryOptions{
 			IncludeExecutionPlan: true,
 		})
 		if err != nil {
@@ -648,7 +657,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	cursorFq := *fq
 	cursorFq.Limit = 1
 	cursorFq.Offset = cursorOffset
-	cursorRecs, _, err := repo.ExecuteDuckDBFederatedQuery(ctx, tables, &cursorFq, 1, cursorOffset, nil, &internal.FederatedQueryOptions{MaxRows: 1})
+	cursorRecs, _, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, &cursorFq, 1, cursorOffset, nil, &internal.FederatedQueryOptions{MaxRows: 1})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("fetch cursor row: %w", err)
 	}
@@ -677,7 +686,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		IncludeExecutionPlan: true,
 	}
 
-	recs, total, err := repo.ExecuteFederatedPaginatedQuery(ctx, tables, fq, pageSize, 0, nil, opts)
+	recs, total, err := engine.ExecuteFederatedPaginatedQuery(ctx, tables, fq, pageSize, 0, nil, opts)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("keyset query page %d: %w", pageNumber, err)
 	}
@@ -743,7 +752,16 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		}
 	}
 
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	engine := internal.NewDBFederatedQueryEngine(
+		repo,
+		internal.NewPostgresDirtyIDFetcher(pool),
+		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		nil,
+		duckCfg,
+		metadata,
+		internal.DuckDBPostgresConnStringFromPool(pool),
+	)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
 			TableNames: forma.TableNames{
@@ -763,7 +781,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		DuckDB: duckCfg,
 	}
 	transformer := internal.NewPersistentRecordTransformer(registry)
-	manager := internal.NewEntityManager(transformer, repo, registry, config)
+	manager := internal.NewEntityManager(transformer, repo, engine, registry, config)
 	if req != nil && req.Federated != nil && req.Federated.Enabled {
 		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
 	}
@@ -835,7 +853,16 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 			MaxParallelism: 4,
 		}
 	}
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata, h.Duck, duckCfg)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	engine := internal.NewDBFederatedQueryEngine(
+		repo,
+		internal.NewPostgresDirtyIDFetcher(pool),
+		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		nil,
+		duckCfg,
+		metadata,
+		internal.DuckDBPostgresConnStringFromPool(pool),
+	)
 
 	pageSize := benchmarkDefaultPageSize(defaultPageSize)
 	limit := pageSize
@@ -897,9 +924,12 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		fq.PreferHot = true
 	}
 
-	_, err = repo.QueryPersistentRecordsFederated(ctx, tables, fq, fqOpts)
+	_, err = engine.Query(ctx, tables, fq, fqOpts)
 	if err != nil {
 		return result, records, plan, nil
+	}
+	if fqOpts.ExecutionPlan == nil || !fqOpts.ExecutionPlan.Routing.UseDuckDB {
+		return result, records, plan, fmt.Errorf("federated benchmark query did not route to duckdb")
 	}
 
 	return result, records, plan, nil

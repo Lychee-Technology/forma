@@ -46,7 +46,7 @@ test-unit:
 # Run linter (same as CI lint job)
 lint:
 	@echo "Installing golangci-lint..."
-	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	@echo "Running golangci-lint..."
 	@PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --timeout=5m
 

@@ -66,7 +66,7 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	require.NotNil(t, record)
@@ -110,7 +110,7 @@ func TestLoadMainRecordNotFound(t *testing.T) {
 		WithArgs(int16(1), rowID).
 		WillReturnRows(rows)
 
-	repo := NewDBPersistentRecordRepository(mock, nil, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(mock, nil)
 	record, err := repo.loadMainRecord(ctx, "entity_main", 1, rowID)
 	require.NoError(t, err)
 	assert.Nil(t, record)

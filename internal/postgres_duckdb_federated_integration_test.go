@@ -14,6 +14,21 @@ import (
 
 // Tests covering federated routing and basic DuckDB execution path handling.
 
+type testDirtyIDFetcher struct {
+	fn func(context.Context, string, int16) ([]uuid.UUID, error)
+}
+
+func (f testDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+	if f.fn == nil {
+		return nil, nil
+	}
+	return f.fn(ctx, table, schemaID)
+}
+
+func newTestFederatedEngine(repo PostgresFederatedSource, metadata *MetadataCache, duck *DuckDBClient, cfg forma.DuckDBConfig) *DBFederatedQueryEngine {
+	return NewDBFederatedQueryEngine(repo, testDirtyIDFetcher{}, NewDuckDBClientQueryExecutor(duck), nil, cfg, metadata, "")
+}
+
 func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
@@ -113,8 +128,8 @@ func TestEvaluateRoutingPolicy_QueryShapeAware(t *testing.T) {
 func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 	env := setupIntegrationEnv(t)
 
-	// Ensure no global DuckDB client is set
-	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata, nil, forma.DuckDBConfig{})
+	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata)
+	engine := newTestFederatedEngine(repo, env.metadata, nil, forma.DuckDBConfig{})
 
 	// Build a minimal federated query
 	q := &FederatedAttributeQuery{
@@ -126,7 +141,7 @@ func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
 	}
 
 	// Call should error when DuckDB client not available
-	_, _, err := repo.ExecuteDuckDBFederatedQuery(context.Background(), env.tables, q, q.Limit, q.Offset, nil, nil)
+	_, _, err := engine.ExecuteDuckDBFederatedQuery(context.Background(), env.tables, q, q.Limit, q.Offset, nil, nil)
 	require.Error(t, err)
 }
 
@@ -343,9 +358,10 @@ func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
 
-	_, _, err = repo.ExecuteDuckDBFederatedQuery(context.Background(), StorageTables{}, nil, 10, 0, nil, nil)
+	_, _, err = engine.ExecuteDuckDBFederatedQuery(context.Background(), StorageTables{}, nil, 10, 0, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "query cannot be nil")
 }
@@ -404,11 +420,10 @@ func TestStreamDuckDBFederatedQuery_RowHandlerErrorStopsIteration(t *testing.T) 
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-		return nil, nil
-	}
-	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
+	engine.dirtyIDFetcher = testDirtyIDFetcher{}
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 		rowID := uuid.New().String()
 		createdAt := time.Now().UnixMilli()
 		return fmt.Sprintf(
@@ -431,7 +446,7 @@ func TestStreamDuckDBFederatedQuery_RowHandlerErrorStopsIteration(t *testing.T) 
 
 	handlerCallCount := 0
 	expectedErr := fmt.Errorf("row handler forced error")
-	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(ctx context.Context, record *PersistentRecord) error {
+	_, err = engine.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(ctx context.Context, record *PersistentRecord) error {
 		handlerCallCount++
 		return expectedErr
 	})
@@ -453,16 +468,17 @@ func TestStreamDuckDBFederatedQuery_DirtyIDFetcherErrorIsInjectable(t *testing.T
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
+	engine.dirtyIDFetcher = testDirtyIDFetcher{fn: func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
 		return nil, fmt.Errorf("forced dirty-id fetch failure")
-	}
+	}}
 
 	q := &FederatedAttributeQuery{AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0}}
 	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: "change_log_dev"}
 
 	handlerCalled := false
-	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
+	_, err = engine.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
 		handlerCalled = true
 		return nil
 	})
@@ -484,8 +500,9 @@ func TestStreamDuckDBFederatedQuery_QueryBuilderErrorIsInjectable(t *testing.T) 
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 		return "", nil, fmt.Errorf("forced duckdb query build failure")
 	}
 
@@ -493,7 +510,7 @@ func TestStreamDuckDBFederatedQuery_QueryBuilderErrorIsInjectable(t *testing.T) 
 	tables := StorageTables{EntityMain: "entity_main_dev", EAVData: "eav_data_dev", ChangeLog: ""}
 
 	handlerCalled := false
-	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
+	_, err = engine.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, nil, func(context.Context, *PersistentRecord) error {
 		handlerCalled = true
 		return nil
 	})
@@ -504,7 +521,7 @@ func TestStreamDuckDBFederatedQuery_QueryBuilderErrorIsInjectable(t *testing.T) 
 }
 
 func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
-	repo := &DBPersistentRecordRepository{}
+	engine := &DBFederatedQueryEngine{}
 	opts := &FederatedQueryOptions{
 		IncludeExecutionPlan: false,
 		ExecutionPlan:        &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
@@ -512,7 +529,7 @@ func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
 	planCtx := newDuckDBExecutionPlanContext(opts)
 	require.NotNil(t, planCtx)
 
-	repo.finalizeDuckDBExecutionPlan(context.Background(), planCtx, nil, 10, 5)
+	engine.finalizeDuckDBExecutionPlan(context.Background(), planCtx, nil, 10, 5)
 
 	require.Empty(t, opts.ExecutionPlan.Timings, "Timings must not be attached when capture is disabled")
 	require.Empty(t, opts.ExecutionPlan.Notes, "Notes must not be attached when capture is disabled")
@@ -530,11 +547,10 @@ func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureDisabled(t *testing.T) {
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-		return nil, nil
-	}
-	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
+	engine.dirtyIDFetcher = testDirtyIDFetcher{}
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 		return "SELECT 1 AS val", nil, nil
 	}
 
@@ -547,7 +563,7 @@ func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureDisabled(t *testing.T) {
 	}
 
 	handlerCalled := false
-	_, err = repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(context.Context, *PersistentRecord) error {
+	_, err = engine.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(context.Context, *PersistentRecord) error {
 		handlerCalled = true
 		return nil
 	})
@@ -575,12 +591,11 @@ func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureEnabled_MetadataAttached
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-		return nil, nil
-	}
+	repo := NewDBPersistentRecordRepository(nil, nil)
+	engine := newTestFederatedEngine(repo, nil, duck, cfg)
+	engine.dirtyIDFetcher = testDirtyIDFetcher{}
 
-	repo.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 		rowID := uuid.New().String()
 		createdAt := time.Now().UnixMilli()
 		return fmt.Sprintf(
@@ -607,7 +622,7 @@ func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureEnabled_MetadataAttached
 	}
 
 	handlerCalled := false
-	total, err := repo.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(ctx context.Context, record *PersistentRecord) error {
+	total, err := engine.StreamDuckDBFederatedQuery(context.Background(), tables, q, 10, 0, nil, opts, func(ctx context.Context, record *PersistentRecord) error {
 		handlerCalled = true
 		return nil
 	})
@@ -638,14 +653,12 @@ func TestStreamDuckDBFederatedQuery_RowsIteratorErrorPropagates(t *testing.T) {
 	require.NoError(t, err)
 	defer duck.Close()
 
-	repo := NewDBPersistentRecordRepository(nil, nil, duck, cfg)
-	repo.fetchDirtyIDs = func(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-		return nil, nil
-	}
+	engine := newTestFederatedEngine(NewDBPersistentRecordRepository(nil, nil), nil, duck, cfg)
+	engine.dirtyIDFetcher = testDirtyIDFetcher{}
 
 	fakeRows := &fakeDuckDBRowsIteratorWithError{err: fmt.Errorf("iterator error after rows exhausted")}
 	handlerCalled := false
-	_, _, err = streamDuckDBRowsViaPublicAPI(repo, fakeRows, func(ctx context.Context, record *PersistentRecord) error {
+	_, _, err = streamDuckDBRowsViaPublicAPI(engine, fakeRows, func(ctx context.Context, record *PersistentRecord) error {
 		handlerCalled = true
 		return nil
 	})
@@ -674,6 +687,10 @@ func (f *fakeDuckDBRowsIteratorWithError) Err() error {
 	return f.err
 }
 
-func streamDuckDBRowsViaPublicAPI(repo *DBPersistentRecordRepository, rows duckDBRowsIterator, handler func(context.Context, *PersistentRecord) error) (int64, int64, error) {
-	return repo.streamDuckDBRows(context.Background(), rows, handler)
+func (f *fakeDuckDBRowsIteratorWithError) Close() error {
+	return nil
+}
+
+func streamDuckDBRowsViaPublicAPI(engine *DBFederatedQueryEngine, rows duckDBRowsIterator, handler func(context.Context, *PersistentRecord) error) (int64, int64, error) {
+	return engine.streamDuckDBRows(context.Background(), rows, handler)
 }

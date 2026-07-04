@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/telemetry"
 )
@@ -16,6 +15,7 @@ type duckDBRowsIterator interface {
 	Next() bool
 	Scan(dest ...any) error
 	Err() error
+	Close() error
 }
 
 // ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
@@ -30,7 +30,7 @@ type duckDBRowsIterator interface {
 //   - total_records (bigint)
 //   - total_pages (bigint)
 //   - current_page (int)
-func (r *DBPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
+func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	q *FederatedAttributeQuery,
@@ -40,7 +40,7 @@ func (r *DBPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 ) ([]*PersistentRecord, int64, error) {
 	// Backwards-compatible wrapper that uses the streaming iterator internally
 	var recs []*PersistentRecord
-	total, err := r.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *PersistentRecord) error {
+	total, err := e.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *PersistentRecord) error {
 		recs = append(recs, rp)
 		return nil
 	})
@@ -53,7 +53,7 @@ func (r *DBPersistentRecordRepository) ExecuteDuckDBFederatedQuery(
 // StreamDuckDBFederatedQuery streams DuckDB federated query results using a rowHandler callback.
 // It reuses the same rowHandler semantics as Postgres' StreamOptimizedQuery to avoid loading the
 // entire result set into memory.
-func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
+func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	ctx context.Context,
 	tables StorageTables,
 	q *FederatedAttributeQuery,
@@ -69,21 +69,19 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	// Initialize execution plan tracking
 	planCtx := newDuckDBExecutionPlanContext(opts)
 
-	// Acquire DuckDB client
-	duck := r.duckDBClient
-	if duck == nil || duck.DB == nil {
+	if e == nil || e.duck == nil {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb client not available")
 	}
 
 	// Fetch dirty IDs and record in execution plan
-	dirtyIDs, err := r.fetchAndRecordDirtyIDs(ctx, tables, q.SchemaID, planCtx)
+	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q.SchemaID, planCtx)
 	if err != nil {
 		return 0, err
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := r.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, planCtx)
 	if err != nil {
 		return 0, err
 	}
@@ -92,47 +90,47 @@ func (r *DBPersistentRecordRepository) StreamDuckDBFederatedQuery(
 	planCtx.recordTranslation(sqlStr, translateMs, q.UseMainAsAnchor)
 
 	// Check circuit breaker before executing
-	if breaker := GetDuckDBCircuitBreaker(); breaker != nil && breaker.IsOpen() {
+	if e.breaker != nil && e.breaker.IsOpen() {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected")
 	}
 
 	// Execute query
 	planCtx.recordQueryStart()
-	rows, err := duck.DB.QueryContext(ctx, sqlStr, args...)
+	rows, err := e.duck.Query(ctx, sqlStr, args...)
 	if err != nil {
 		planCtx.recordQueryFailure(err)
 		// Record failure in circuit breaker
-		if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
-			breaker.RecordFailure()
+		if e.breaker != nil {
+			e.breaker.RecordFailure()
 		}
 		return 0, fmt.Errorf("execute duckdb query: %w", err)
 	}
 	defer rows.Close()
 
 	// Stream and process rows
-	totalRecords, rowCount, err := r.streamDuckDBRows(ctx, rows, rowHandler)
+	totalRecords, rowCount, err := e.streamDuckDBRows(ctx, rows, rowHandler)
 	if err != nil {
 		// Record failure in circuit breaker
-		if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
-			breaker.RecordFailure()
+		if e.breaker != nil {
+			e.breaker.RecordFailure()
 		}
 		return 0, err
 	}
 
 	// Record success in circuit breaker
-	if breaker := GetDuckDBCircuitBreaker(); breaker != nil {
-		breaker.RecordSuccess()
+	if e.breaker != nil {
+		e.breaker.RecordSuccess()
 	}
 
 	// Finalize execution plan
-	r.finalizeDuckDBExecutionPlan(ctx, planCtx, dirtyIDs, totalRecords, rowCount)
+	e.finalizeDuckDBExecutionPlan(ctx, planCtx, dirtyIDs, totalRecords, rowCount)
 
 	return totalRecords, nil
 }
 
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.
-func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
+func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	ctx context.Context,
 	tables StorageTables,
 	schemaID int16,
@@ -141,8 +139,11 @@ func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
 	if tables.ChangeLog == "" {
 		return nil, nil
 	}
+	if e == nil || e.dirtyIDFetcher == nil {
+		return nil, fmt.Errorf("dirty id fetcher not available")
+	}
 
-	dirtyIDs, err := r.getDirtyIDFetcher()(ctx, tables.ChangeLog, schemaID)
+	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, schemaID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch dirty ids: %w", err)
 	}
@@ -157,7 +158,7 @@ func (r *DBPersistentRecordRepository) fetchAndRecordDirtyIDs(
 }
 
 // buildDuckDBQueryWithPlan builds the DuckDB query with execution plan recording.
-func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
+func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	ctx context.Context,
 	tables StorageTables,
 	q *FederatedAttributeQuery,
@@ -192,7 +193,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 		"PageSize": limit,
 	}
 
-	if connStr := r.duckDBPostgresConnString(); connStr != "" {
+	if connStr := e.pgConnString; connStr != "" {
 		sqlParams["DuckDBPGConnString"] = connStr
 	}
 	if paths := duckDBParquetPathsForQuery(q); len(paths) > 0 {
@@ -203,8 +204,8 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 
 	// Build dual clauses (PG pushdown + DuckDB logical) if metadata cache available
 	var cache forma.SchemaAttributeCache
-	if r.metadataCache != nil {
-		if c, ok := r.metadataCache.GetSchemaCacheByID(q.SchemaID); ok {
+	if e.metadataCache != nil {
+		if c, ok := e.metadataCache.GetSchemaCacheByID(q.SchemaID); ok {
 			cache = c
 		}
 	}
@@ -241,7 +242,7 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
 	}
 
-	sqlStr, args, err := r.getDuckDBQueryBuilder()(r.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
+	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	telemetry.EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
@@ -249,26 +250,6 @@ func (r *DBPersistentRecordRepository) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
-}
-
-func (r *DBPersistentRecordRepository) duckDBPostgresConnString() string {
-	if r.pool == nil {
-		return ""
-	}
-	if cfgPool, ok := r.pool.(*pgxpool.Pool); ok && cfgPool != nil {
-		cfg := cfgPool.Config()
-		if cfg != nil {
-			connCfg := cfg.ConnConfig
-			return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s",
-				connCfg.Host,
-				connCfg.Port,
-				connCfg.User,
-				connCfg.Password,
-				connCfg.Database,
-			)
-		}
-	}
-	return ""
 }
 
 func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
@@ -378,7 +359,7 @@ func duckDBPostgresScanLocation(name string) (string, string) {
 }
 
 // streamDuckDBRows iterates through DuckDB rows and invokes the handler.
-func (r *DBPersistentRecordRepository) streamDuckDBRows(
+func (e *DBFederatedQueryEngine) streamDuckDBRows(
 	ctx context.Context,
 	rows duckDBRowsIterator,
 	rowHandler func(context.Context, *PersistentRecord) error,
@@ -432,7 +413,7 @@ func (r *DBPersistentRecordRepository) streamDuckDBRows(
 }
 
 // finalizeDuckDBExecutionPlan completes the execution plan with timing and metrics.
-func (r *DBPersistentRecordRepository) finalizeDuckDBExecutionPlan(
+func (e *DBFederatedQueryEngine) finalizeDuckDBExecutionPlan(
 	ctx context.Context,
 	planCtx *duckDBExecutionPlanContext,
 	dirtyIDs []uuid.UUID,

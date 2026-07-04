@@ -162,10 +162,10 @@ func TestBuildKeysetOrderBy(t *testing.T) {
 
 func TestExtractCursorFromRecord(t *testing.T) {
 	record := &PersistentRecord{
-		RowID:      uuid.Must(uuid.Parse("12345678-1234-1234-1234-123456789012")),
-		CreatedAt:  int64(1700000000),
-		UpdatedAt:  int64(1700000100),
-		SchemaID:   int16(42),
+		RowID:     uuid.Must(uuid.Parse("12345678-1234-1234-1234-123456789012")),
+		CreatedAt: int64(1700000000),
+		UpdatedAt: int64(1700000100),
+		SchemaID:  int16(42),
 	}
 	columns := []KeysetColumn{
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
