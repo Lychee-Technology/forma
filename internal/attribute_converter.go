@@ -15,14 +15,12 @@ import (
 // AttributeConverter provides conversion between EntityAttribute and EAVRecord
 type AttributeConverter struct {
 	registry forma.SchemaRegistry
-	*schemaMetadataCache
 }
 
 // NewAttributeConverter creates a new AttributeConverter instance
 func NewAttributeConverter(registry forma.SchemaRegistry) *AttributeConverter {
 	return &AttributeConverter{
-		registry:            registry,
-		schemaMetadataCache: newSchemaMetadataCache(registry),
+		registry: registry,
 	}
 }
 
@@ -125,7 +123,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 
 	// Get schema metadata to determine value types
 	schemaID := records[0].SchemaID
-	cache, idToName, err := c.getSchemaMetadata(schemaID)
+	cache, idToName, err := getSchemaMetadata(c.registry, schemaID)
 	if err != nil {
 		return nil, err
 	}

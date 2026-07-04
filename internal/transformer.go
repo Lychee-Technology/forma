@@ -22,15 +22,15 @@ import (
 )
 
 type transformer struct {
-	*schemaMetadataCache
+	registry  forma.SchemaRegistry
 	converter *AttributeConverter
 }
 
 // NewTransformer creates a new Transformer instance backed by the provided schema registry.
 func NewTransformer(registry forma.SchemaRegistry) Transformer {
 	return &transformer{
-		schemaMetadataCache: newSchemaMetadataCache(registry),
-		converter:           NewAttributeConverter(registry),
+		registry:  registry,
+		converter: NewAttributeConverter(registry),
 	}
 }
 
@@ -39,7 +39,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		return []EntityAttribute{}, nil
 	}
 
-	cache, _, err := t.getSchemaMetadata(schemaID)
+	cache, _, err := getSchemaMetadata(t.registry, schemaID)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []EntityAtt
 	result := make(map[string]any)
 
 	for _, attr := range attributes {
-		_, idToName, err := t.getSchemaMetadata(attr.SchemaID)
+		_, idToName, err := getSchemaMetadata(t.registry, attr.SchemaID)
 		if err != nil {
 			return nil, err
 		}

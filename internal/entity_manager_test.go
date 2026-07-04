@@ -27,6 +27,7 @@ func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error
 		nameToID:              make(map[string]int16),
 		idToName:              make(map[int16]string),
 		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
+		attrIDToName:          make(map[int16]map[int16]string),
 		schemas:               make(map[int16]forma.JSONSchema),
 	}
 
@@ -87,11 +88,15 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 		// Convert to SchemaAttributeCache
 		cache := make(forma.SchemaAttributeCache)
 		for attrName, attrData := range rawAttributes {
-			meta, err := parseFileAttributeMetadata(attrName, attrData, attributesFile)
+			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
 			if err != nil {
 				return err
 			}
 			cache[attrName] = meta
+		}
+		attrIDToName, err := buildAttrIDToName(schemaName, cache)
+		if err != nil {
+			return err
 		}
 
 		// Load main schema JSON file (e.g., lead.json)
@@ -112,6 +117,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDir() error {
 		r.nameToID[schemaName] = schemaID
 		r.idToName[schemaID] = schemaName
 		r.schemaAttributeCaches[schemaID] = cache
+		r.attrIDToName[schemaID] = attrIDToName
 	}
 
 	return nil

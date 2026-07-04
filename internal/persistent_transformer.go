@@ -12,15 +12,13 @@ import (
 type persistentRecordTransformer struct {
 	registry        forma.SchemaRegistry
 	jsonTransformer Transformer
-	*schemaMetadataCache
 }
 
 // NewPersistentRecordTransformer creates a new PersistentRecordTransformer instance
 func NewPersistentRecordTransformer(registry forma.SchemaRegistry) PersistentRecordTransformer {
 	return &persistentRecordTransformer{
-		registry:            registry,
-		jsonTransformer:     NewTransformer(registry),
-		schemaMetadataCache: newSchemaMetadataCache(registry),
+		registry:        registry,
+		jsonTransformer: NewTransformer(registry),
 	}
 }
 
@@ -43,7 +41,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	}
 
 	// Get schema metadata
-	cache, _, err := t.getSchemaMetadata(schemaID)
+	cache, _, err := getSchemaMetadata(t.registry, schemaID)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +99,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	}
 
 	// Get schema metadata
-	cache, _, err := t.getSchemaMetadata(record.SchemaID)
+	cache, _, err := getSchemaMetadata(t.registry, record.SchemaID)
 	if err != nil {
 		return nil, err
 	}

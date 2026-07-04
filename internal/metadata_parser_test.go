@@ -184,6 +184,16 @@ func TestParseAttributeMetadata(t *testing.T) {
 			},
 			expectErr: "columnName",
 		},
+		{
+			name:     "error from non-object binding",
+			attrName: "badBindingType",
+			attrData: map[string]any{
+				"attributeID":    9.0,
+				"valueType":      "text",
+				"column_binding": "not-a-map",
+			},
+			expectErr: "invalid column_binding format",
+		},
 	}
 
 	for _, tt := range tests {
@@ -219,13 +229,31 @@ func TestExtractMainColumnBinding(t *testing.T) {
 		}
 	})
 
-	t.Run("returns nil when binding missing or wrong type", func(t *testing.T) {
+	t.Run("returns nil when binding missing", func(t *testing.T) {
+		raw := map[string]any{}
+		binding, err := extractMainColumnBinding(attrName, raw, source)
+		require.NoError(t, err)
+		assert.Nil(t, binding)
+	})
+
+	t.Run("returns error when binding has wrong type", func(t *testing.T) {
 		raw := map[string]any{
 			"column_binding": "not-a-map",
 		}
 		binding, err := extractMainColumnBinding(attrName, raw, source)
-		require.NoError(t, err)
 		assert.Nil(t, binding)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid column_binding format")
+	})
+
+	t.Run("returns error for typed-nil binding map", func(t *testing.T) {
+		raw := map[string]any{
+			"column_binding": map[string]any(nil),
+		}
+		binding, err := extractMainColumnBinding(attrName, raw, source)
+		assert.Nil(t, binding)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid columnName in columnBinding")
 	})
 }
 
