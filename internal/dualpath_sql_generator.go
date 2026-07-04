@@ -80,13 +80,11 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 	// Decide based on value type and operator
 	switch meta.ValueType {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
-		// Text supports equals, starts_with, contains
 		if opStr == "equals" || opStr == "starts_with" || opStr == "contains" {
 			return true, "text supported"
 		}
 		return false, "text operator not supported"
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		// numeric supports comparison
 		switch opStr {
 		case "equals", "gt", "gte", "lt", "lte", "not_equals":
 			return true, "numeric supported"
@@ -94,7 +92,6 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 			return false, "numeric operator not supported"
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		// date comparisons allowed; assume main column encoding supports it
 		switch opStr {
 		case "equals", "gt", "gte", "lt", "lte", "not_equals":
 			return true, "date supported"
@@ -108,25 +105,6 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 		return false, "bool operator not supported"
 	default:
 		return false, "unknown value type"
-	}
-}
-
-// buildPgMainClause traverses the condition tree and emits a WHERE fragment targeting entity_main (m.*)
-// It returns the clause string (with $n placeholders) and args slice, advancing paramIndex as needed.
-func buildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
-	if cond == nil {
-		return "", nil, nil
-	}
-
-	switch c := cond.(type) {
-	case *forma.CompositeCondition:
-		return buildPgMainCompositeClause(c, cache, paramIndex)
-
-	case *forma.KvCondition:
-		return buildPgMainKvClause(c, cache, paramIndex)
-
-	default:
-		return "", nil, fmt.Errorf("unsupported condition type %T", cond)
 	}
 }
 
@@ -156,55 +134,26 @@ func isFullyPushableToMain(cond forma.Condition, cache forma.SchemaAttributeCach
 	}
 }
 
-// buildPgMainCompositeClause handles CompositeCondition for Postgres main table.
-func buildPgMainCompositeClause(c *forma.CompositeCondition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
-	if len(c.Conditions) == 0 {
-		// Empty AND is vacuously TRUE; empty OR is vacuously FALSE.
-		// Return the identity values so that parent OR/AND clauses compute
-		// correct truth values when this composite is a child branch.
-		if c.Logic == forma.LogicOr {
-			return "1=0", nil, nil
-		}
-		return "1=1", nil, nil
-	}
-
-	// For OR logic every branch must be pushable to main table. If any branch
-	// cannot be pushed we must skip the entire OR: emitting a partial OR would
-	// silently drop rows that are matched only by the non-pushable branch.
-	if c.Logic == forma.LogicOr && !isFullyPushableToMain(c, cache) {
-		return "", nil, nil
-	}
-
-	parts := make([]string, 0, len(c.Conditions))
-	args := []any{}
-	joiner := " AND "
-	if c.Logic == forma.LogicOr {
-		joiner = " OR "
-	}
-
-	for _, child := range c.Conditions {
-		p, a, err := buildPgMainClause(child, cache, paramIndex)
-		if err != nil {
-			return "", nil, err
-		}
-		if p != "" {
-			parts = append(parts, fmt.Sprintf("(%s)", p))
-			args = append(args, a...)
-		}
-	}
-
-	if len(parts) == 0 {
-		return "", nil, nil
-	}
-	if len(parts) == 1 {
-		return parts[0], args, nil
-	}
-	return "(" + strings.Join(parts, joiner) + ")", args, nil
+// pgMainGuard implements compositeGuard with OR veto for pg-main.
+type pgMainGuard struct {
+	cache forma.SchemaAttributeCache
 }
 
-// buildPgMainKvClause handles KvCondition for Postgres main table pushdown.
-func buildPgMainKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
-	meta, ok := cache[c.Attr]
+func (g *pgMainGuard) SkipComposite(c *forma.CompositeCondition) bool {
+	if c.Logic == forma.LogicOr {
+		return !isFullyPushableToMain(c, g.cache)
+	}
+	return false
+}
+
+// pgMainLeafEmitter renders KvCondition leaves for PG main table pushdown.
+type pgMainLeafEmitter struct {
+	cache      forma.SchemaAttributeCache
+	paramIndex *int
+}
+
+func (e *pgMainLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
+	meta, ok := e.cache[c.Attr]
 	if !ok {
 		// unknown attribute -> cannot push
 		return "", nil, nil
@@ -241,71 +190,29 @@ func buildPgMainKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache,
 	}
 
 	// Create placeholder and clause
-	*paramIndex++
-	ph := fmt.Sprintf("$%d", *paramIndex)
+	*e.paramIndex++
+	ph := fmt.Sprintf("$%d", *e.paramIndex)
 	sql := fmt.Sprintf("%s %s %s", colName, sqlOpResult.sqlOp, ph)
 	return sql, []any{parsedValue}, nil
 }
 
-// buildDuckClause traverses the condition tree and produces a DuckDB-compatible WHERE clause.
-// This mirrors GenerateDuckDBWhereClause but uses attribute metadata to resolve column bindings.
-func buildDuckClause(cond forma.Condition, cache forma.SchemaAttributeCache) (string, []any, error) {
+// buildPgMainClause traverses the condition tree and emits a WHERE fragment targeting entity_main (m.*)
+// It returns the clause string (with $n placeholders) and args slice, advancing paramIndex as needed.
+func buildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
 	if cond == nil {
-		return "1=1", nil, nil
+		return "", nil, nil
 	}
-
-	switch c := cond.(type) {
-	case *forma.CompositeCondition:
-		return buildDuckCompositeClause(c, cache)
-
-	case *forma.KvCondition:
-		return buildDuckKvClause(c, cache)
-
-	default:
-		return "", nil, fmt.Errorf("unsupported condition type %T", cond)
-	}
+	guard := &pgMainGuard{cache: cache}
+	emitter := &pgMainLeafEmitter{cache: cache, paramIndex: paramIndex}
+	return walkCondition(cond, pgMainStyle, guard, emitter)
 }
 
-// buildDuckCompositeClause handles CompositeCondition for DuckDB.
-func buildDuckCompositeClause(c *forma.CompositeCondition, cache forma.SchemaAttributeCache) (string, []any, error) {
-	if len(c.Conditions) == 0 {
-		// Empty AND matches everything; empty OR matches nothing.
-		if c.Logic == forma.LogicOr {
-			return "1=0", nil, nil
-		}
-		return "1=1", nil, nil
-	}
-
-	parts := make([]string, 0, len(c.Conditions))
-	args := []any{}
-	joiner := " AND "
-	if c.Logic == forma.LogicOr {
-		joiner = " OR "
-	}
-
-	for _, child := range c.Conditions {
-		p, a, err := buildDuckClause(child, cache)
-		if err != nil {
-			return "", nil, err
-		}
-		if p != "" {
-			parts = append(parts, fmt.Sprintf("(%s)", p))
-			args = append(args, a...)
-		}
-	}
-
-	if len(parts) == 0 {
-		// All children produced empty clauses — apply same identity semantics.
-		if c.Logic == forma.LogicOr {
-			return "1=0", nil, nil
-		}
-		return "1=1", nil, nil
-	}
-	return strings.Join(parts, joiner), args, nil
+// duckLeafEmitter renders KvCondition leaves for DuckDB with ? placeholders and CAST expressions.
+type duckLeafEmitter struct {
+	cache forma.SchemaAttributeCache
 }
 
-// buildDuckKvClause handles KvCondition for DuckDB.
-func buildDuckKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache) (string, []any, error) {
+func (e *duckLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
 	// Parse operator and value
 	opVal := parseOperatorValue(c.Value)
 
@@ -316,12 +223,12 @@ func buildDuckKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache) (
 	}
 
 	// Resolve column name using metadata
-	colName := resolveDuckDBColumn(c.Attr, cache)
+	colName := resolveDuckDBColumn(c.Attr, e.cache)
 
 	// Get metadata and determine value type
 	var meta forma.AttributeMetadata
 	var hasMeta bool
-	if m, ok := cache[c.Attr]; ok {
+	if m, ok := e.cache[c.Attr]; ok {
 		meta = m
 		hasMeta = true
 	}
@@ -363,4 +270,13 @@ func buildDuckKvClause(c *forma.KvCondition, cache forma.SchemaAttributeCache) (
 	}
 
 	return clause, []any{param}, nil
+}
+
+// buildDuckClause traverses the condition tree and produces a DuckDB-compatible WHERE clause.
+func buildDuckClause(cond forma.Condition, cache forma.SchemaAttributeCache) (string, []any, error) {
+	if cond == nil {
+		return "1=1", nil, nil
+	}
+	emitter := &duckLeafEmitter{cache: cache}
+	return walkCondition(cond, duckStyle, nil, emitter)
 }

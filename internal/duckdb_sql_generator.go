@@ -3,14 +3,11 @@ package internal
 import (
 	"bytes"
 	"fmt"
-	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // ErrListInOrderBy is returned when a LIST type attribute is used in ORDER BY.
@@ -126,196 +123,6 @@ func RenderS3ParquetPath(tmpl string, schemaID int16) (string, error) {
 	return buf.String(), nil
 }
 
-// GenerateDuckDBWhereClause produces a minimal DuckDB WHERE clause for a FederatedAttributeQuery.
-// This is an intentionally small helper for the initial integration: it supports CompositeCondition
-// with KvCondition children and translates simple operators. It returns the clause and a list of args
-// suitable for use with database/sql parameter placeholders ($1, $2 style are left for later templating).
-//
-// NOTE: This is a minimal implementation to allow compilation and unit testing of rendering logic.
-// Full query translation (including EAV-to-column mapping and proper parameter indexing) will be
-// implemented in follow-up tasks.
-func GenerateDuckDBWhereClause(q *FederatedAttributeQuery) (string, []any, error) {
-	if q == nil || q.Condition == nil {
-		return "1=1", nil, nil
-	}
-	return generateDuckDBCondition(q.Condition)
-}
-
-// generateDuckDBCondition recursively builds DuckDB WHERE clause from a condition tree.
-func generateDuckDBCondition(c forma.Condition) (string, []any, error) {
-	switch cond := c.(type) {
-	case *forma.CompositeCondition:
-		return generateDuckDBCompositeCondition(cond)
-	case *forma.KvCondition:
-		return generateDuckDBKvCondition(cond)
-	default:
-		return "", nil, fmt.Errorf("unsupported condition type %T", c)
-	}
-}
-
-// generateDuckDBCompositeCondition handles CompositeCondition for DuckDB WHERE generation.
-func generateDuckDBCompositeCondition(cond *forma.CompositeCondition) (string, []any, error) {
-	if len(cond.Conditions) == 0 {
-		return "1=1", nil, nil
-	}
-
-	parts := make([]string, 0, len(cond.Conditions))
-	args := []any{}
-	joiner := " AND "
-	if cond.Logic == forma.LogicOr {
-		joiner = " OR "
-	}
-
-	for _, child := range cond.Conditions {
-		p, a, err := generateDuckDBCondition(child)
-		if err != nil {
-			return "", nil, err
-		}
-		if p != "" {
-			parts = append(parts, fmt.Sprintf("(%s)", p))
-			args = append(args, a...)
-		}
-	}
-
-	if len(parts) == 0 {
-		return "1=1", nil, nil
-	}
-	return joinStrings(parts, joiner), args, nil
-}
-
-// generateDuckDBKvCondition handles KvCondition for DuckDB WHERE generation.
-func generateDuckDBKvCondition(cond *forma.KvCondition) (string, []any, error) {
-	parsed := conditionexpr.ParseOperatorValueLenient(cond.Value)
-	opStr := parsed.Operator
-	valStr := parsed.Value
-
-	// Convert to SQL operator
-	sqlOp, valStr, err := duckDBSQLOperator(opStr, valStr)
-	if err != nil {
-		return "", nil, err
-	}
-
-	// For LIKE operators, keep text comparison
-	if sqlOp == "LIKE" {
-		clause := fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
-		return clause, []any{valStr}, nil
-	}
-
-	// Detect type and emit CAST on the parameter
-	valueType := detectDuckDBValueType(valStr)
-	duckType := MapValueTypeToDuckDBType(valueType)
-
-	var clause string
-	if duckType == "VARCHAR" {
-		clause = fmt.Sprintf("%s %s ?", cond.Attr, sqlOp)
-	} else {
-		clause = fmt.Sprintf("%s %s CAST(? AS %s)", cond.Attr, sqlOp, duckType)
-	}
-
-	param := parseDuckDBParamValue(valStr, valueType)
-	return clause, []any{param}, nil
-}
-
-// duckDBSQLOperator converts a DSL operator to SQL operator and modifies value for LIKE patterns.
-func duckDBSQLOperator(op, value string) (string, string, error) {
-	switch op {
-	case "equals":
-		return "=", value, nil
-	case "gt":
-		return ">", value, nil
-	case "gte":
-		return ">=", value, nil
-	case "lt":
-		return "<", value, nil
-	case "lte":
-		return "<=", value, nil
-	case "not_equals":
-		return "!=", value, nil
-	case "starts_with":
-		return "LIKE", value + "%", nil
-	case "contains":
-		return "LIKE", "%" + value + "%", nil
-	default:
-		return "", "", fmt.Errorf("unsupported operator: %s", op)
-	}
-}
-
-// detectDuckDBValueType infers the forma.ValueType from a string literal.
-func detectDuckDBValueType(s string) forma.ValueType {
-	// Try UUID
-	if _, err := uuid.Parse(s); err == nil {
-		return forma.ValueTypeUUID
-	}
-	// Try bool
-	ls := strings.ToLower(s)
-	if ls == "true" || ls == "false" || ls == "1" || ls == "0" {
-		return forma.ValueTypeBool
-	}
-	// Try timestamp (RFC3339 or unix millis)
-	if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return forma.ValueTypeDateTime
-	}
-	trimmed := strings.TrimPrefix(s, "-")
-	if len(trimmed) >= 12 {
-		if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return forma.ValueTypeDateTime
-		}
-	}
-	// Try numeric
-	if _, err := strconv.ParseFloat(s, 64); err == nil {
-		return forma.ValueTypeNumeric
-	}
-	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-		// ambiguous integer: treat as numeric/bigint; choose numeric for comparisons
-		return forma.ValueTypeNumeric
-	}
-	return forma.ValueTypeText
-}
-
-// parseDuckDBParamValue parses a string value into a typed Go value for DuckDB parameters.
-func parseDuckDBParamValue(s string, vt forma.ValueType) any {
-	switch vt {
-	case forma.ValueTypeUUID:
-		return s
-	case forma.ValueTypeBool:
-		b, err := strconv.ParseBool(strings.ToLower(s))
-		if err == nil {
-			return b
-		}
-		if s == "1" {
-			return true
-		}
-		if s == "0" {
-			return false
-		}
-		return s
-	case forma.ValueTypeNumeric:
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			return f
-		}
-		return s
-	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		if t, err := conditionexpr.ParseRFC3339OrUnixMs(s); err == nil {
-			return t.UTC()
-		}
-		return s
-	default:
-		return s
-	}
-}
-
-// helper: join strings
-func joinStrings(parts []string, joiner string) string {
-	var buf bytes.Buffer
-	for i, p := range parts {
-		if i > 0 {
-			buf.WriteString(joiner)
-		}
-		buf.WriteString(p)
-	}
-	return buf.String()
-}
-
 // AppendDirtyExclusion adds a NOT IN clause excluding dirty row ids.
 // dirtyIDs are converted to strings for DuckDB parameterization using ? placeholders.
 func AppendDirtyExclusion(baseClause string, dirtyIDs []uuid.UUID) (string, []any) {
@@ -328,21 +135,6 @@ func AppendDirtyExclusion(baseClause string, dirtyIDs []uuid.UUID) (string, []an
 		placeholders[i] = "?"
 		args[i] = id.String()
 	}
-	excl := fmt.Sprintf("%s AND row_id NOT IN (%s)", baseClause, joinStrings(placeholders, ","))
+	excl := fmt.Sprintf("%s AND row_id NOT IN (%s)", baseClause, strings.Join(placeholders, ","))
 	return excl, args
-}
-
-// GenerateDuckDBWhereClauseWithExclusions builds a DuckDB WHERE clause for the query
-// and appends an exclusion for dirty row ids (to be used as an anti-join).
-func GenerateDuckDBWhereClauseWithExclusions(q *FederatedAttributeQuery, dirtyIDs []uuid.UUID) (string, []any, error) {
-	where, args, err := GenerateDuckDBWhereClause(q)
-	if err != nil {
-		return "", nil, err
-	}
-	clause, exclArgs := AppendDirtyExclusion(where, dirtyIDs)
-	// Combine args: WHERE args first, then exclusion args
-	combined := make([]any, 0, len(args)+len(exclArgs))
-	combined = append(combined, args...)
-	combined = append(combined, exclArgs...)
-	return clause, combined, nil
 }

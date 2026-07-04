@@ -213,48 +213,10 @@ func (b *hybridConditionBuilder) initCache() {
 }
 
 func (b *hybridConditionBuilder) build(c forma.Condition) (string, []any, error) {
-	switch cond := c.(type) {
-	case *forma.CompositeCondition:
-		return b.buildComposite(cond)
-	case *forma.KvCondition:
-		return b.buildKv(cond)
-	default:
-		return "", nil, fmt.Errorf("unsupported condition type %T", c)
-	}
+	return walkCondition(c, hybridStyle, nil, b)
 }
 
-func (b *hybridConditionBuilder) buildComposite(cond *forma.CompositeCondition) (string, []any, error) {
-	if len(cond.Conditions) == 0 {
-		// Empty AND matches everything; empty OR matches nothing.
-		if cond.Logic == forma.LogicOr {
-			return "1=0", nil, nil
-		}
-		return "1=1", nil, nil
-	}
-	var parts []string
-	var args []any
-	joiner := " AND "
-	if cond.Logic == forma.LogicOr {
-		joiner = " OR "
-	}
-
-	for _, child := range cond.Conditions {
-		p, a, err := b.build(child)
-		if err != nil {
-			return "", nil, err
-		}
-		if p != "" {
-			parts = append(parts, fmt.Sprintf("(%s)", p))
-			args = append(args, a...)
-		}
-	}
-	if len(parts) == 0 {
-		return "", nil, nil
-	}
-	return strings.Join(parts, joiner), args, nil
-}
-
-func (b *hybridConditionBuilder) buildKv(cond *forma.KvCondition) (string, []any, error) {
+func (b *hybridConditionBuilder) EmitLeaf(cond *forma.KvCondition) (string, []any, error) {
 	colName := b.resolveColumnName(cond.Attr)
 	if colName != "" {
 		return b.buildMainTableCondition(cond, colName)

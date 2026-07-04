@@ -11,7 +11,7 @@ import (
 )
 
 // ============================================================================
-// TC-1: GenerateDuckDBWhereClause Tests
+// TC-1: DuckDB WHERE-clause tests (ported from the retired legacy generator to buildDuckClause)
 // ============================================================================
 
 func TestGenerateDuckDBWhereClause_SimpleKVEquals(t *testing.T) {
@@ -24,7 +24,7 @@ func TestGenerateDuckDBWhereClause_SimpleKVEquals(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Equal(t, "name = ?", clause)
 	require.Len(t, args, 1)
@@ -41,11 +41,11 @@ func TestGenerateDuckDBWhereClause_KVWithGTOperator(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "age >")
 	require.Len(t, args, 1)
-	require.Equal(t, 30.0, args[0])
+	require.Equal(t, "30", args[0])
 }
 
 func TestGenerateDuckDBWhereClause_KVWithStartsWith(t *testing.T) {
@@ -58,7 +58,7 @@ func TestGenerateDuckDBWhereClause_KVWithStartsWith(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "email LIKE")
 	require.Len(t, args, 1)
@@ -75,7 +75,7 @@ func TestGenerateDuckDBWhereClause_KVWithContains(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "description LIKE")
 	require.Len(t, args, 1)
@@ -95,7 +95,7 @@ func TestGenerateDuckDBWhereClause_CompositeAND(t *testing.T) {
 		AttributeQuery: AttributeQuery{Condition: comp},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, " AND ")
 	require.Len(t, args, 2)
@@ -115,7 +115,7 @@ func TestGenerateDuckDBWhereClause_CompositeOR(t *testing.T) {
 		AttributeQuery: AttributeQuery{Condition: comp},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, " OR ")
 	require.Len(t, args, 2)
@@ -126,14 +126,14 @@ func TestGenerateDuckDBWhereClause_NilCondition(t *testing.T) {
 		AttributeQuery: AttributeQuery{Condition: nil},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(q)
+	clause, args, err := buildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Equal(t, "1=1", clause)
 	require.Nil(t, args)
 }
 
 func TestGenerateDuckDBWhereClause_NilQuery(t *testing.T) {
-	clause, args, err := GenerateDuckDBWhereClause(nil)
+	clause, args, err := buildDuckClause(nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "1=1", clause)
 	require.Nil(t, args)
@@ -156,7 +156,10 @@ func TestGenerateDuckDBWhereClauseWithExclusions_AppendsDirtyIDs(t *testing.T) {
 	u1 := uuid.New()
 	u2 := uuid.New()
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(q, []uuid.UUID{u1, u2})
+	clause, args, err := buildDuckClause(q.Condition, nil)
+	require.NoError(t, err)
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{u1, u2})
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "age >")
 	require.Contains(t, clause, "row_id NOT IN")
@@ -180,7 +183,10 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ParameterOrder(t *testing.T) {
 	u2 := uuid.New()
 	u3 := uuid.New()
 
-	_, args, err := GenerateDuckDBWhereClauseWithExclusions(q, []uuid.UUID{u1, u2, u3})
+	whereClause, args, err := buildDuckClause(q.Condition, nil)
+	require.NoError(t, err)
+	_, exclArgs := AppendDirtyExclusion(whereClause, []uuid.UUID{u1, u2, u3})
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Len(t, args, 5) // 2 query args + 3 dirty ID args
 
@@ -204,7 +210,10 @@ func TestGenerateDuckDBWhereClauseWithExclusions_EmptyDirtyIDs(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(q, []uuid.UUID{})
+	clause, args, err := buildDuckClause(q.Condition, nil)
+	require.NoError(t, err)
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{})
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Equal(t, "name = ?", clause)
 	require.Len(t, args, 1)
@@ -218,7 +227,10 @@ func TestGenerateDuckDBWhereClauseWithExclusions_SingleDirtyID(t *testing.T) {
 
 	u1 := uuid.New()
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(q, []uuid.UUID{u1})
+	clause, args, err := buildDuckClause(q.Condition, nil)
+	require.NoError(t, err)
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{u1})
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "1=1")
 	require.Contains(t, clause, "row_id NOT IN")
@@ -242,7 +254,11 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 		dirtyIDs[i] = uuid.New()
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(q, dirtyIDs)
+	clause, args, err := buildDuckClause(q.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "row_id NOT IN")
 	// 1 query arg (true) + 10 dirty ID args

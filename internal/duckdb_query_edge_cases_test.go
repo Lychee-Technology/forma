@@ -51,7 +51,7 @@ func TestGenerateDuckDBWhereClause_DeeplyNestedComposite(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Greater(t, len(args), 0)
@@ -98,7 +98,7 @@ func TestGenerateDuckDBWhereClause_TriplyNestedComposite(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Len(t, args, 4) // Should have 4 parameters
@@ -123,7 +123,7 @@ func TestGenerateDuckDBWhereClause_ManyTopLevelConditions(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.Len(t, args, 25)
 	// Verify the clause contains many AND operators
@@ -145,7 +145,7 @@ func TestGenerateDuckDBWhereClause_UnicodeCharacters(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Len(t, args, 1)
@@ -163,7 +163,7 @@ func TestGenerateDuckDBWhereClause_SpecialCharactersInValue(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Equal(t, "user+tag@example.com", args[0])
@@ -179,7 +179,7 @@ func TestGenerateDuckDBWhereClause_QuotesAndApostrophes(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Special characters should be preserved (escaping done by driver)
@@ -197,7 +197,7 @@ func TestGenerateDuckDBWhereClause_SQLSpecialCharacters(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Should preserve the value (parameterized queries prevent injection)
@@ -214,7 +214,7 @@ func TestGenerateDuckDBWhereClause_EmptyStringValue(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Len(t, args, 1)
@@ -233,7 +233,7 @@ func TestGenerateDuckDBWhereClause_VeryLongStringValue(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Equal(t, longValue, args[0])
@@ -249,7 +249,7 @@ func TestGenerateDuckDBWhereClause_NewlinesAndWhitespace(t *testing.T) {
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClause(query)
+	clause, args, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	require.Equal(t, "line1\nline2\r\nline3\ttab", args[0])
@@ -275,7 +275,11 @@ func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet100(t *testing.T
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(query, dirtyIDs)
+	clause, args, err := buildDuckClause(query.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Should have at least 101 args: 1 for the condition + 100 for dirty IDs
@@ -300,7 +304,11 @@ func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet1000(t *testing.
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(query, dirtyIDs)
+	clause, args, err := buildDuckClause(query.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Should have at least 1001 args
@@ -326,7 +334,11 @@ func TestGenerateDuckDBWhereClauseWithExclusions_MaxInt16DirtyIDs(t *testing.T) 
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(query, dirtyIDs)
+	clause, args, err := buildDuckClause(query.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(args), 501)
 	// Verify clause structure is valid
@@ -356,7 +368,11 @@ func TestGenerateDuckDBWhereClauseWithExclusions_DuplicateDirtyIDs(t *testing.T)
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(query, dirtyIDs)
+	clause, args, err := buildDuckClause(query.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Implementation should handle duplicates gracefully
@@ -401,7 +417,11 @@ func TestGenerateDuckDBWhereClause_ComplexNestedWithUnicodeAndLargeDirtySet(t *t
 		},
 	}
 
-	clause, args, err := GenerateDuckDBWhereClauseWithExclusions(query, dirtyIDs)
+	clause, args, err := buildDuckClause(query.Condition, nil)
+	require.NoError(t, err)
+	var exclArgs []any
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
+	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.NotEmpty(t, clause)
 	// Should contain condition values and dirty IDs
@@ -415,7 +435,7 @@ func TestGenerateDuckDBWhereClause_EdgeCaseWithNilCondition(t *testing.T) {
 		},
 	}
 
-	clause, _, err := GenerateDuckDBWhereClause(query)
+	clause, _, err := buildDuckClause(query.Condition, nil)
 	require.NoError(t, err)
 	// Should default to "1=1" when no condition
 	require.Equal(t, "1=1", clause)
@@ -431,7 +451,7 @@ func TestGenerateDuckDBWhereClause_EmptyCompositeCondition(t *testing.T) {
 		},
 	}
 
-	clause, _, err := GenerateDuckDBWhereClause(query)
+	clause, _, err := buildDuckClause(query.Condition, nil)
 	// Empty composite should be handled (either error or default)
 	// Implementation-dependent
 	require.True(t, err != nil || clause != "")
