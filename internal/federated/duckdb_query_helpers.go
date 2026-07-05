@@ -11,6 +11,51 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
+// nullDuckDBUUID scans a nullable UUID column from DuckDB. The duckdb-go
+// driver returns UUID values as 16 raw bytes (not their text form), so a
+// plain sql.NullString silently yields an unparseable value and the record
+// ends up with a zero row id (#147).
+type nullDuckDBUUID struct {
+	UUID  uuid.UUID
+	Valid bool
+}
+
+// Scan implements sql.Scanner for text, raw-byte, and native UUID sources.
+func (n *nullDuckDBUUID) Scan(src any) error {
+	n.UUID, n.Valid = uuid.Nil, false
+	switch v := src.(type) {
+	case nil:
+		return nil
+	case string:
+		parsed, err := uuid.Parse(v)
+		if err != nil {
+			return fmt.Errorf("scan duckdb uuid %q: %w", v, err)
+		}
+		n.UUID, n.Valid = parsed, true
+		return nil
+	case []byte:
+		if len(v) == 16 {
+			parsed, err := uuid.FromBytes(v)
+			if err != nil {
+				return fmt.Errorf("scan duckdb uuid bytes: %w", err)
+			}
+			n.UUID, n.Valid = parsed, true
+			return nil
+		}
+		parsed, err := uuid.ParseBytes(v)
+		if err != nil {
+			return fmt.Errorf("scan duckdb uuid %q: %w", string(v), err)
+		}
+		n.UUID, n.Valid = parsed, true
+		return nil
+	case uuid.UUID:
+		n.UUID, n.Valid = v, true
+		return nil
+	default:
+		return fmt.Errorf("scan duckdb uuid: unsupported source type %T", src)
+	}
+}
+
 // duckDBScanBuffers holds pre-allocated scan buffers for DuckDB row scanning.
 type duckDBScanBuffers struct {
 	textVals   []sql.NullString
@@ -18,7 +63,7 @@ type duckDBScanBuffers struct {
 	intVals    []sql.NullInt64
 	bigVals    []sql.NullInt64
 	doubleVals []sql.NullFloat64
-	uuidVals   []sql.NullString
+	uuidVals   []nullDuckDBUUID
 }
 
 // newDuckDBScanBuffers creates scan buffers sized according to model.EntityMainColumnDescriptors.
@@ -47,7 +92,7 @@ func newDuckDBScanBuffers() *duckDBScanBuffers {
 		intVals:    make([]sql.NullInt64, intCount),
 		bigVals:    make([]sql.NullInt64, bigCount),
 		doubleVals: make([]sql.NullFloat64, doubleCount),
-		uuidVals:   make([]sql.NullString, uuidCount),
+		uuidVals:   make([]nullDuckDBUUID, uuidCount),
 	}
 }
 
@@ -75,7 +120,6 @@ func (b *duckDBScanBuffers) buildScanArgs() ([]any, *sql.NullString, *sql.NullIn
 			scanArgs = append(scanArgs, &b.doubleVals[doubleIdx])
 			doubleIdx++
 		case model.ColumnKindUUID:
-			// DuckDB will typically return UUID as text; use NullString and parse
 			scanArgs = append(scanArgs, &b.uuidVals[uuidIdx])
 			uuidIdx++
 		default:
@@ -157,12 +201,10 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *model.PersistentRecord {
 		case model.ColumnKindUUID:
 			val := b.uuidVals[uuidIdx]
 			if val.Valid {
-				if parsed, err := uuid.Parse(val.String); err == nil {
-					if desc.Name == "ltbase_row_id" {
-						record.RowID = parsed
-					} else {
-						record.UUIDItems[desc.Name] = parsed
-					}
+				if desc.Name == "ltbase_row_id" {
+					record.RowID = val.UUID
+				} else {
+					record.UUIDItems[desc.Name] = val.UUID
 				}
 			}
 			uuidIdx++
