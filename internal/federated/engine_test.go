@@ -224,3 +224,40 @@ func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeDirtyFetch(t *testin
 	require.Equal(t, 0, dirty.calls)
 	require.Contains(t, opts.ExecutionPlan.Notes, "duckdb client unavailable")
 }
+
+// TestSchemaProjectionCache pins #142: the second projection build for the
+// same schema is served from the engine cache, the execution plan records
+// hit/miss, and Reset invalidates.
+func TestSchemaProjectionCache(t *testing.T) {
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	cache := forma.SchemaAttributeCache{
+		"name": {AttributeID: 5, ValueType: forma.ValueTypeText},
+	}
+
+	sp1, hit, err := engine.schemaProjection(7, cache)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.NotNil(t, sp1)
+
+	sp2, hit, err := engine.schemaProjection(7, cache)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Same(t, sp1, sp2, "cached projection must be shared (read-only contract)")
+
+	hits, misses := engine.projections.Stats()
+	require.Equal(t, int64(1), hits)
+	require.Equal(t, int64(1), misses)
+
+	engine.projections.Reset()
+	_, hit, err = engine.schemaProjection(7, cache)
+	require.NoError(t, err)
+	require.False(t, hit, "Reset must invalidate cached projections")
+
+	// Plan note observability via injectSchemaProjections.
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
+	planCtx := newDuckDBExecutionPlanContext(opts)
+	params := map[string]any{}
+	hitFlag := engine.injectSchemaProjections(params, 7, cache)
+	planCtx.recordProjectionCache(hitFlag)
+	require.Contains(t, opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
+}

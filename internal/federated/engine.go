@@ -52,6 +52,10 @@ type DBFederatedQueryEngine struct {
 	pgConnString   string
 	buildDuckSQL   func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error)
 	duckTemplate   *template.Template
+	// projections caches per-schema DuckDB projection negotiation (#142);
+	// valid for the engine's lifetime because metadata is immutable after
+	// construction. Reset exists for future reload scenarios.
+	projections *sqlgen.ProjectionCache
 }
 
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
@@ -67,6 +71,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 		metadataCache:  metadataCache,
 		pgConnString:   pgConnString,
 		duckTemplate:   sqlgen.AdvancedQueryTemplateDuckDB,
+		projections:    sqlgen.NewProjectionCache(),
 	}
 }
 

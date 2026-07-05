@@ -297,6 +297,19 @@ func (c *duckDBExecutionPlanContext) recordQueryFailure(err error) {
 	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, fmt.Sprintf("duckdb query failed: %v", err))
 }
 
+// recordProjectionCache notes whether the schema projection came from the
+// per-engine cache (#142).
+func (c *duckDBExecutionPlanContext) recordProjectionCache(hit bool) {
+	if c == nil || c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
+		return
+	}
+	if hit {
+		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
+	} else {
+		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "schema_projection_cache_miss")
+	}
+}
+
 // recordClientUnavailable records when the DuckDB client is not available.
 func (c *duckDBExecutionPlanContext) recordClientUnavailable() {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {

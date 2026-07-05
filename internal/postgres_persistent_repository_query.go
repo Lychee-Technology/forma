@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/conditionexpr"
@@ -53,9 +54,15 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		"PageSize": fmt.Sprintf("$%d", len(args)+2),
 	}
 
-	query, err := renderTemplate(optimizedQuerySQLTemplate, sqlParams)
+	query, cacheHit, err := r.renderCache.GetOrRender(
+		optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders),
+		func() (string, error) { return renderTemplate(optimizedQuerySQLTemplate, sqlParams) },
+	)
 	if err != nil {
 		return 0, fmt.Errorf("build optimized query: %w", err)
+	}
+	if !cacheHit {
+		zap.S().Debugw("optimized query render cache miss", "schemaID", schemaID)
 	}
 
 	queryArgs := make([]any, 0, len(args)+3)
@@ -97,6 +104,35 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	}
 
 	return totalRecords, nil
+}
+
+// optimizedQueryShapeKey fingerprints every input that influences the
+// rendered optimized-query SQL text (#142): table names, anchor choice, the
+// value-free WHERE clause, the arg count (placeholder numbering), and each
+// sort key's template-visible fields. Values are bound per request and never
+// enter the key. The leading version tag pins the template identity.
+func optimizedQueryShapeKey(tables model.StorageTables, useMainTableAsAnchor bool, clause string, argCount int, orders []model.AttributeOrder) uint64 {
+	parts := make([]string, 0, 6+6*len(orders))
+	parts = append(parts,
+		"pg-optimized-v1",
+		tables.EAVData,
+		tables.EntityMain,
+		tables.ChangeLog,
+		strconv.FormatBool(useMainTableAsAnchor),
+		clause,
+		strconv.Itoa(argCount),
+	)
+	for _, o := range orders {
+		parts = append(parts,
+			strconv.Itoa(int(o.AttrID)),
+			string(o.ValueType),
+			string(o.SortOrder),
+			string(o.StorageLocation),
+			o.ColumnName,
+			o.AttrName,
+		)
+	}
+	return sqlgen.HashShapeParts(parts...)
 }
 
 // runOptimizedQuery executes an optimized single-query approach that joins entity_main

@@ -7,6 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,10 @@ type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *schemameta.MetadataCache
 	nowFunc       func() time.Time
+	// renderCache caches the rendered optimized-query SQL per query shape
+	// (#142). Valid for the repository's lifetime: everything the key covers
+	// is either request-shape or construction-time-immutable metadata.
+	renderCache *sqlgen.RenderCache
 }
 
 func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache) *DBPersistentRecordRepository {
@@ -31,6 +36,7 @@ func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *s
 		pool:          pool,
 		metadataCache: metadataCache,
 		nowFunc:       time.Now,
+		renderCache:   sqlgen.NewRenderCache(1024),
 	}
 }
 
