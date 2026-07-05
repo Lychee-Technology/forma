@@ -314,3 +314,76 @@ func TestEvaluateRoutingPolicy_CostFirstStrategy(t *testing.T) {
 	dec = EvaluateRoutingPolicy(cfg, nil, &FederatedQueryOptions{MaxRows: 100000})
 	require.True(t, dec.UseDuckDB)
 }
+
+func TestValidateDuckDBConfig_InvalidMemoryLimit(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:       true,
+		MemoryLimitMB: -1,
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid memory_limit_mb")
+}
+
+func TestValidateDuckDBConfig_InvalidParallelism(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		MemoryLimitMB:  256,
+		MaxParallelism: -1,
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid max_parallelism")
+}
+
+func TestValidateDuckDBConfig_InvalidMaxConnections(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		MemoryLimitMB:  256,
+		MaxParallelism: 2,
+		MaxConnections: 0,
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "max_connections must be >= 1")
+}
+
+func TestValidateDuckDBConfig_InvalidQueryTimeout(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		MemoryLimitMB:  256,
+		MaxParallelism: 2,
+		MaxConnections: 1,
+		QueryTimeout:   0,
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "query_timeout must be > 0")
+}
+
+func TestValidateDuckDBConfig_DisabledIsValid(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled: false,
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.NoError(t, err)
+}
+
+func TestValidateDuckDBConfig_ValidConfig(t *testing.T) {
+	cfg := forma.DuckDBConfig{
+		Enabled:        true,
+		MemoryLimitMB:  256,
+		MaxParallelism: 2,
+		MaxConnections: 1,
+		QueryTimeout:   5 * time.Second,
+		DBPath:         ":memory:",
+	}
+
+	err := ValidateDuckDBConfig(cfg)
+	require.NoError(t, err)
+}

@@ -16,12 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type testDirtyIDFetcher struct{}
-
-func (f testDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-	return nil, nil
-}
-
 func optimizedQueryFixtureColumnsAndValues(rowID uuid.UUID, totalRecords int64) ([]string, []any) {
 	columns := make([]string, 0, len(model.EntityMainColumnDescriptors)+4)
 	values := make([]any, 0, len(model.EntityMainColumnDescriptors)+4)

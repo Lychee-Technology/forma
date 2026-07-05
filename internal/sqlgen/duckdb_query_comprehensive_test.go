@@ -1,13 +1,10 @@
-package internal
+package sqlgen
 
 import (
 	"testing"
 	"text/template"
-	"time"
 
-	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -15,7 +12,7 @@ import (
 )
 
 // ============================================================================
-// TC-1: DuckDB WHERE-clause tests (ported from the retired legacy generator to sqlgen.BuildDuckClause)
+// TC-1: DuckDB WHERE-clause tests (ported from the retired legacy generator to BuildDuckClause)
 // ============================================================================
 
 func TestGenerateDuckDBWhereClause_SimpleKVEquals(t *testing.T) {
@@ -28,7 +25,7 @@ func TestGenerateDuckDBWhereClause_SimpleKVEquals(t *testing.T) {
 		},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Equal(t, "name = ?", clause)
 	require.Len(t, args, 1)
@@ -45,7 +42,7 @@ func TestGenerateDuckDBWhereClause_KVWithGTOperator(t *testing.T) {
 		},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "age >")
 	require.Len(t, args, 1)
@@ -62,7 +59,7 @@ func TestGenerateDuckDBWhereClause_KVWithStartsWith(t *testing.T) {
 		},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "email LIKE")
 	require.Len(t, args, 1)
@@ -79,7 +76,7 @@ func TestGenerateDuckDBWhereClause_KVWithContains(t *testing.T) {
 		},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, "description LIKE")
 	require.Len(t, args, 1)
@@ -99,7 +96,7 @@ func TestGenerateDuckDBWhereClause_CompositeAND(t *testing.T) {
 		AttributeQuery: model.AttributeQuery{Condition: comp},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, " AND ")
 	require.Len(t, args, 2)
@@ -119,7 +116,7 @@ func TestGenerateDuckDBWhereClause_CompositeOR(t *testing.T) {
 		AttributeQuery: model.AttributeQuery{Condition: comp},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Contains(t, clause, " OR ")
 	require.Len(t, args, 2)
@@ -130,14 +127,14 @@ func TestGenerateDuckDBWhereClause_NilCondition(t *testing.T) {
 		AttributeQuery: model.AttributeQuery{Condition: nil},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	require.Equal(t, "1=1", clause)
 	require.Nil(t, args)
 }
 
 func TestGenerateDuckDBWhereClause_NilQuery(t *testing.T) {
-	clause, args, err := sqlgen.BuildDuckClause(nil, nil)
+	clause, args, err := BuildDuckClause(nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "1=1", clause)
 	require.Nil(t, args)
@@ -160,9 +157,9 @@ func TestGenerateDuckDBWhereClauseWithExclusions_AppendsDirtyIDs(t *testing.T) {
 	u1 := uuid.New()
 	u2 := uuid.New()
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
-	clause, exclArgs := sqlgen.AppendDirtyExclusion(clause, []uuid.UUID{u1, u2})
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{u1, u2})
 	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "age >")
@@ -187,9 +184,9 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ParameterOrder(t *testing.T) {
 	u2 := uuid.New()
 	u3 := uuid.New()
 
-	whereClause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	whereClause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
-	_, exclArgs := sqlgen.AppendDirtyExclusion(whereClause, []uuid.UUID{u1, u2, u3})
+	_, exclArgs := AppendDirtyExclusion(whereClause, []uuid.UUID{u1, u2, u3})
 	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Len(t, args, 5) // 2 query args + 3 dirty ID args
@@ -214,9 +211,9 @@ func TestGenerateDuckDBWhereClauseWithExclusions_EmptyDirtyIDs(t *testing.T) {
 		},
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
-	clause, exclArgs := sqlgen.AppendDirtyExclusion(clause, []uuid.UUID{})
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{})
 	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Equal(t, "name = ?", clause)
@@ -231,9 +228,9 @@ func TestGenerateDuckDBWhereClauseWithExclusions_SingleDirtyID(t *testing.T) {
 
 	u1 := uuid.New()
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
-	clause, exclArgs := sqlgen.AppendDirtyExclusion(clause, []uuid.UUID{u1})
+	clause, exclArgs := AppendDirtyExclusion(clause, []uuid.UUID{u1})
 	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "1=1")
@@ -258,10 +255,10 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 		dirtyIDs[i] = uuid.New()
 	}
 
-	clause, args, err := sqlgen.BuildDuckClause(q.Condition, nil)
+	clause, args, err := BuildDuckClause(q.Condition, nil)
 	require.NoError(t, err)
 	var exclArgs []any
-	clause, exclArgs = sqlgen.AppendDirtyExclusion(clause, dirtyIDs)
+	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
 	args = append(args, exclArgs...)
 	require.NoError(t, err)
 	require.Contains(t, clause, "row_id NOT IN")
@@ -275,7 +272,7 @@ func TestGenerateDuckDBWhereClauseWithExclusions_ManyDirtyIDs(t *testing.T) {
 }
 
 // ============================================================================
-// TC-3: sqlgen.AppendDirtyExclusion Tests
+// TC-3: AppendDirtyExclusion Tests
 // ============================================================================
 
 func TestAppendDirtyExclusion_BasicUsage(t *testing.T) {
@@ -283,7 +280,7 @@ func TestAppendDirtyExclusion_BasicUsage(t *testing.T) {
 	u1 := uuid.New()
 	u2 := uuid.New()
 
-	clause, args := sqlgen.AppendDirtyExclusion(baseClause, []uuid.UUID{u1, u2})
+	clause, args := AppendDirtyExclusion(baseClause, []uuid.UUID{u1, u2})
 	require.Contains(t, clause, "age > 30")
 	require.Contains(t, clause, "row_id NOT IN")
 	require.Len(t, args, 2)
@@ -293,7 +290,7 @@ func TestAppendDirtyExclusion_BasicUsage(t *testing.T) {
 
 func TestAppendDirtyExclusion_EmptyDirtyIDs(t *testing.T) {
 	baseClause := "status = ?"
-	clause, args := sqlgen.AppendDirtyExclusion(baseClause, []uuid.UUID{})
+	clause, args := AppendDirtyExclusion(baseClause, []uuid.UUID{})
 	require.Equal(t, baseClause, clause)
 	require.Len(t, args, 0)
 }
@@ -306,19 +303,19 @@ func TestRenderDirtyIDsValuesCSV_MultipleUUIDs(t *testing.T) {
 	u1 := uuid.New()
 	u2 := uuid.New()
 
-	csv := sqlgen.RenderDirtyIDsValuesCSV([]uuid.UUID{u1, u2})
+	csv := RenderDirtyIDsValuesCSV([]uuid.UUID{u1, u2})
 	require.Contains(t, csv, "(")
 	require.Contains(t, csv, u1.String())
 	require.Contains(t, csv, u2.String())
 }
 
 func TestRenderDirtyIDsValuesCSV_EmptyList(t *testing.T) {
-	csv := sqlgen.RenderDirtyIDsValuesCSV([]uuid.UUID{})
+	csv := RenderDirtyIDsValuesCSV([]uuid.UUID{})
 	require.Equal(t, "", csv)
 }
 
 // ============================================================================
-// TC-5: sqlgen.BuildDuckDBQuery Tests
+// TC-5: BuildDuckDBQuery Tests
 // ============================================================================
 
 func TestBuildDuckDBQuery_SimpleTemplate(t *testing.T) {
@@ -334,7 +331,7 @@ func TestBuildDuckDBQuery_SimpleTemplate(t *testing.T) {
 	}
 
 	q := &model.FederatedAttributeQuery{}
-	sql, args, err := sqlgen.BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{}, nil)
+	sql, args, err := BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{}, nil)
 
 	require.NoError(t, err)
 	require.Contains(t, sql, "SELECT 1")
@@ -356,7 +353,7 @@ func TestBuildDuckDBQuery_WithDirtyIDs(t *testing.T) {
 	u2 := uuid.New()
 
 	q := &model.FederatedAttributeQuery{}
-	sql, args, err := sqlgen.BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{u1, u2}, nil)
+	sql, args, err := BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{u1, u2}, nil)
 
 	require.NoError(t, err)
 	require.Contains(t, sql, "row_id NOT IN")
@@ -368,76 +365,3 @@ func TestBuildDuckDBQuery_WithDirtyIDs(t *testing.T) {
 // ============================================================================
 // TC-6: Routing & Configuration Tests
 // ============================================================================
-
-func TestValidateDuckDBConfig_InvalidMemoryLimit(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:       true,
-		MemoryLimitMB: -1,
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid memory_limit_mb")
-}
-
-func TestValidateDuckDBConfig_InvalidParallelism(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:        true,
-		MemoryLimitMB:  256,
-		MaxParallelism: -1,
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid max_parallelism")
-}
-
-func TestValidateDuckDBConfig_InvalidMaxConnections(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:        true,
-		MemoryLimitMB:  256,
-		MaxParallelism: 2,
-		MaxConnections: 0,
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "max_connections must be >= 1")
-}
-
-func TestValidateDuckDBConfig_InvalidQueryTimeout(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:        true,
-		MemoryLimitMB:  256,
-		MaxParallelism: 2,
-		MaxConnections: 1,
-		QueryTimeout:   0,
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "query_timeout must be > 0")
-}
-
-func TestValidateDuckDBConfig_DisabledIsValid(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled: false,
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.NoError(t, err)
-}
-
-func TestValidateDuckDBConfig_ValidConfig(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:        true,
-		MemoryLimitMB:  256,
-		MaxParallelism: 2,
-		MaxConnections: 1,
-		QueryTimeout:   5 * time.Second,
-		DBPath:         ":memory:",
-	}
-
-	err := federated.ValidateDuckDBConfig(cfg)
-	require.NoError(t, err)
-}

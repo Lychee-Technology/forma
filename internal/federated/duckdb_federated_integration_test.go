@@ -11,21 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type testDirtyIDFetcher struct {
-	fn func(context.Context, string, int16) ([]uuid.UUID, error)
-}
-
-func (f testDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, table string, schemaID int16) ([]uuid.UUID, error) {
-	if f.fn == nil {
-		return nil, nil
-	}
-	return f.fn(ctx, table, schemaID)
-}
-
-func newTestFederatedEngine(repo PostgresFederatedSource, metadata *MetadataCache, duck *DuckDBClient, cfg forma.DuckDBConfig) *DBFederatedQueryEngine {
-	return NewDBFederatedQueryEngine(repo, testDirtyIDFetcher{}, NewDuckDBClientQueryExecutor(duck), nil, cfg, metadata, "")
-}
-
 func TestEvaluateRoutingPolicy_VariousStrategies(t *testing.T) {
 	cfg := forma.DuckDBConfig{
 		Enabled: true,
@@ -115,18 +100,6 @@ func TestStreamDuckDBFederatedQuery_BasicExecution(t *testing.T) {
 	t.Skip("requires root symbols (setupIntegrationEnv, NewDBPersistentRecordRepository); covered by root integration tests")
 }
 
-func TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestBuildDuckDBQuery_TemplateRendering(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
 func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 	engine := &DBFederatedQueryEngine{}
 	_, _, err := engine.ExecuteDuckDBFederatedQuery(context.Background(), StorageTables{}, nil, 10, 0, nil, nil)
@@ -137,62 +110,10 @@ func TestBuildDuckDBQuery_InvalidTemplateSyntax(t *testing.T) {
 	t.Skip("requires root symbols (NewDBPersistentRecordRepository); covered by root integration tests")
 }
 
-func TestRenderDuckDBQuery_ParameterMerging(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_RowHandlerErrorStopsIteration(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_DirtyIDFetcherErrorIsInjectable(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_QueryBuilderErrorIsInjectable(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
 func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
 	engine := &DBFederatedQueryEngine{}
 	planCtx := &duckDBExecutionPlanContext{opts: &FederatedQueryOptions{}, startTotal: time.Now()}
 	engine.finalizeDuckDBExecutionPlan(context.Background(), planCtx, nil, 0, 0)
-}
-
-func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureDisabled(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_ExecutionPlanCaptureEnabled_MetadataAttached(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-func TestStreamDuckDBFederatedQuery_RowsIteratorErrorPropagates(t *testing.T) {
-	t.Skip("requires root symbols; covered by root integration tests")
-}
-
-type fakeDuckDBRowsIteratorWithError struct {
-	called bool
-}
-
-func (f *fakeDuckDBRowsIteratorWithError) Next() bool {
-	if !f.called {
-		f.called = true
-		return true
-	}
-	return false
-}
-
-func (f *fakeDuckDBRowsIteratorWithError) Scan(dest ...any) error {
-	return nil
-}
-
-func (f *fakeDuckDBRowsIteratorWithError) Err() error {
-	return nil
-}
-
-func (f *fakeDuckDBRowsIteratorWithError) Close() error {
-	return nil
 }
 
 func TestBuildDuckDBQuery_AdvancedTemplate(t *testing.T) {
