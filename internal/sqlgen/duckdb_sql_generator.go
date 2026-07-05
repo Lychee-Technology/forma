@@ -6,6 +6,8 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -92,9 +94,9 @@ func ValidateOrderByForListTypes(orderBy []forma.OrderBy, getValueType func(attr
 	return nil
 }
 
-// ValidateOrderByAttributesForListTypes checks if resolved AttributeOrder entries are LIST types.
-// This variant works with the internal AttributeOrder type used after attribute resolution.
-func ValidateOrderByAttributesForListTypes(orderBy []AttributeOrder) error {
+// ValidateOrderByAttributesForListTypes checks if resolved model.AttributeOrder entries are LIST types.
+// This variant works with the internal model.AttributeOrder type used after attribute resolution.
+func ValidateOrderByAttributesForListTypes(orderBy []model.AttributeOrder) error {
 	for _, o := range orderBy {
 		if o.ValueType == forma.ValueTypeList {
 			return fmt.Errorf("%w: attribute ID %d", ErrListInOrderBy, o.AttrID)

@@ -25,7 +25,7 @@ type duckDBRowsIterator interface {
 }
 
 // ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
-// FederatedAttributeQuery. It fetches dirty IDs from the Postgres change_log (if available),
+// model.FederatedAttributeQuery. It fetches dirty IDs from the Postgres change_log (if available),
 // injects exclusions into the DuckDB WHERE clause, executes the query against the global
 // DuckDB client, and returns matched PersistentRecords along with the total record count.
 //
@@ -38,15 +38,15 @@ type duckDBRowsIterator interface {
 //   - current_page (int)
 func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	ctx context.Context,
-	tables StorageTables,
-	q *FederatedAttributeQuery,
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
-	opts *FederatedQueryOptions,
-) ([]*PersistentRecord, int64, error) {
+	attributeOrders []model.AttributeOrder,
+	opts *model.FederatedQueryOptions,
+) ([]*model.PersistentRecord, int64, error) {
 	// Backwards-compatible wrapper that uses the streaming iterator internally
-	var recs []*PersistentRecord
-	total, err := e.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *PersistentRecord) error {
+	var recs []*model.PersistentRecord
+	total, err := e.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *model.PersistentRecord) error {
 		recs = append(recs, rp)
 		return nil
 	})
@@ -61,12 +61,12 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 // entire result set into memory.
 func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	ctx context.Context,
-	tables StorageTables,
-	q *FederatedAttributeQuery,
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
-	opts *FederatedQueryOptions,
-	rowHandler func(context.Context, *PersistentRecord) error,
+	attributeOrders []model.AttributeOrder,
+	opts *model.FederatedQueryOptions,
+	rowHandler func(context.Context, *model.PersistentRecord) error,
 ) (int64, error) {
 	if q == nil {
 		return 0, fmt.Errorf("query cannot be nil")
@@ -138,7 +138,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.
 func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	schemaID int16,
 	planCtx *duckDBExecutionPlanContext,
 ) ([]uuid.UUID, error) {
@@ -166,10 +166,10 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 // buildDuckDBQueryWithPlan builds the DuckDB query with execution plan recording.
 func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	ctx context.Context,
-	tables StorageTables,
-	q *FederatedAttributeQuery,
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
 	dirtyIDs []uuid.UUID,
-	attributeOrders []AttributeOrder,
+	attributeOrders []model.AttributeOrder,
 	limit, offset int,
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
@@ -258,7 +258,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	return sqlStr, args, translateMs, nil
 }
 
-func duckDBParquetPathsForQuery(q *FederatedAttributeQuery) []string {
+func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) []string {
 	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
 		return nil
 	}
@@ -368,7 +368,7 @@ func duckDBPostgresScanLocation(name string) (string, string) {
 func (e *DBFederatedQueryEngine) streamDuckDBRows(
 	ctx context.Context,
 	rows duckDBRowsIterator,
-	rowHandler func(context.Context, *PersistentRecord) error,
+	rowHandler func(context.Context, *model.PersistentRecord) error,
 ) (int64, int64, error) {
 	buffers := newDuckDBScanBuffers()
 
@@ -483,7 +483,7 @@ func translateDuckClauseToBenchmark(clause string, cache forma.SchemaAttributeCa
 // needsEAVJoin checks whether the federated query requires an EAV data JOIN.
 // It returns false when all filter conditions and sort keys reference only
 // column-bound attributes, meaning the eav_data scan can be safely skipped.
-func needsEAVJoin(q *FederatedAttributeQuery, cache forma.SchemaAttributeCache) bool {
+func needsEAVJoin(q *model.FederatedAttributeQuery, cache forma.SchemaAttributeCache) bool {
 	if q == nil || len(cache) == 0 {
 		return true
 	}
@@ -521,7 +521,7 @@ func needsEAVForCondition(cond forma.Condition, cache forma.SchemaAttributeCache
 	return false
 }
 
-func computePgRowCount(plan *ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
+func computePgRowCount(plan *model.ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
 	var pgRows int64
 	for _, src := range plan.Sources {
 		if src.Engine == "postgres" {

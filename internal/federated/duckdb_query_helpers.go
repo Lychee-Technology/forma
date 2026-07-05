@@ -96,9 +96,9 @@ func (b *duckDBScanBuffers) buildScanArgs() ([]any, *sql.NullString, *sql.NullIn
 	return scanArgs, &attrsJSON, &totalRec, &totalPages, &currentPage
 }
 
-// buildRecordFromBuffers constructs a PersistentRecord from the scanned buffer values.
-func (b *duckDBScanBuffers) buildRecordFromBuffers() *PersistentRecord {
-	record := &PersistentRecord{
+// buildRecordFromBuffers constructs a model.PersistentRecord from the scanned buffer values.
+func (b *duckDBScanBuffers) buildRecordFromBuffers() *model.PersistentRecord {
+	record := &model.PersistentRecord{
 		TextItems:    make(map[string]string),
 		Int16Items:   make(map[string]int16),
 		Int32Items:   make(map[string]int32),
@@ -194,7 +194,7 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *PersistentRecord {
 
 // parseDuckDBAttributesJSON parses the attributes JSON string from DuckDB into EAVRecords.
 // This is similar to model.ParseAttributesJSON but takes a string instead of []byte.
-func parseDuckDBAttributesJSON(attrsJSON string, record *PersistentRecord) error {
+func parseDuckDBAttributesJSON(attrsJSON string, record *model.PersistentRecord) error {
 	if attrsJSON == "" || attrsJSON == "[]" {
 		return nil
 	}
@@ -204,13 +204,13 @@ func parseDuckDBAttributesJSON(attrsJSON string, record *PersistentRecord) error
 
 // duckDBExecutionPlanContext holds execution plan tracking state.
 type duckDBExecutionPlanContext struct {
-	opts       *FederatedQueryOptions
+	opts       *model.FederatedQueryOptions
 	startTotal time.Time
 	startQuery time.Time
 }
 
 // newDuckDBExecutionPlanContext initializes execution plan tracking if requested.
-func newDuckDBExecutionPlanContext(opts *FederatedQueryOptions) *duckDBExecutionPlanContext {
+func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions) *duckDBExecutionPlanContext {
 	ctx := &duckDBExecutionPlanContext{
 		opts:       opts,
 		startTotal: time.Now(),
@@ -218,7 +218,7 @@ func newDuckDBExecutionPlanContext(opts *FederatedQueryOptions) *duckDBExecution
 
 	if opts != nil && opts.IncludeExecutionPlan {
 		if opts.ExecutionPlan == nil {
-			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+			opts.ExecutionPlan = &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
 		}
 		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "StreamDuckDBFederatedQuery started")
 	}
@@ -232,8 +232,8 @@ func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, 
 		return
 	}
 
-	dpDirty := DataSourcePlan{
-		Tier:        DataTierHot,
+	dpDirty := model.DataSourcePlan{
+		Tier:        model.DataTierHot,
 		Engine:      "postgres",
 		SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sqlutil.SanitizeIdentifier(changeLogTable)),
 		RowEstimate: int64(dirtyCount),
@@ -248,8 +248,8 @@ func (c *duckDBExecutionPlanContext) recordPushdownFragment(pgMainClause string)
 		return
 	}
 
-	pgDP := DataSourcePlan{
-		Tier:              DataTierHot,
+	pgDP := model.DataSourcePlan{
+		Tier:              model.DataTierHot,
 		Engine:            "postgres",
 		SQL:               pgMainClause,
 		RowEstimate:       0,
@@ -267,8 +267,8 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, translateM
 		return
 	}
 
-	dp := DataSourcePlan{
-		Tier:              DataTierCold,
+	dp := model.DataSourcePlan{
+		Tier:              model.DataTierCold,
 		Engine:            "duckdb",
 		SQL:               sqlStr,
 		RowEstimate:       0,

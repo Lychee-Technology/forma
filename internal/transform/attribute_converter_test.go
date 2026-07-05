@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -19,20 +21,20 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		record    EAVRecord
+		record    model.EAVRecord
 		valueType forma.ValueType
 		want      any
 		wantErr   string
 	}{
 		{
 			name:      "text nil returns nil",
-			record:    EAVRecord{},
+			record:    model.EAVRecord{},
 			valueType: forma.ValueTypeText,
 			want:      nil,
 		},
 		{
 			name: "text returns string",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueText: &textVal,
 			},
 			valueType: forma.ValueTypeText,
@@ -40,7 +42,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "smallint from numeric",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &numericVal,
 			},
 			valueType: forma.ValueTypeSmallInt,
@@ -48,7 +50,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "integer from numeric",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &numericVal,
 			},
 			valueType: forma.ValueTypeInteger,
@@ -56,7 +58,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "bigint from numeric",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &numericVal,
 			},
 			valueType: forma.ValueTypeBigInt,
@@ -64,7 +66,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "numeric returns float64",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &numericVal,
 			},
 			valueType: forma.ValueTypeNumeric,
@@ -72,7 +74,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "date from unix millis",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &unixMillis,
 			},
 			valueType: forma.ValueTypeDate,
@@ -80,7 +82,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "datetime from unix millis",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &unixMillis,
 			},
 			valueType: forma.ValueTypeDateTime,
@@ -88,7 +90,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "uuid from text",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueText: new(uuidVal.String()),
 			},
 			valueType: forma.ValueTypeUUID,
@@ -96,7 +98,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "uuid parse error",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueText: new("not-a-uuid"),
 			},
 			valueType: forma.ValueTypeUUID,
@@ -104,7 +106,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "bool true",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: new(0.6),
 			},
 			valueType: forma.ValueTypeBool,
@@ -112,7 +114,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "bool false at threshold",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: new(0.5),
 			},
 			valueType: forma.ValueTypeBool,
@@ -120,7 +122,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "unsupported uses text fallback",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueText: &textVal,
 			},
 			valueType: forma.ValueType("unknown"),
@@ -128,7 +130,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name: "unsupported uses numeric fallback",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: &numericVal,
 			},
 			valueType: forma.ValueType("unknown"),
@@ -136,13 +138,13 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 		},
 		{
 			name:      "unsupported nil returns nil",
-			record:    EAVRecord{},
+			record:    model.EAVRecord{},
 			valueType: forma.ValueType("unknown"),
 			want:      nil,
 		},
 		{
 			name: "numeric nil returns nil",
-			record: EAVRecord{
+			record: model.EAVRecord{
 				ValueNumeric: nil,
 			},
 			valueType: forma.ValueTypeNumeric,
@@ -197,7 +199,7 @@ func TestExtractValueFromEAVRecord(t *testing.T) {
 
 func TestExtractValueFromEAVRecord_ReturnsErrorOnStorageTypeMismatch(t *testing.T) {
 	textVal := "123"
-	_, err := extractValueFromEAVRecord(EAVRecord{ValueText: &textVal}, forma.ValueTypeNumeric)
+	_, err := extractValueFromEAVRecord(model.EAVRecord{ValueText: &textVal}, forma.ValueTypeNumeric)
 	if err == nil {
 		t.Fatal("expected storage/type mismatch error")
 	}
@@ -222,7 +224,7 @@ func TestExtractValueFromEAVRecord_BothColumnsPopulatedReturnsError(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := extractValueFromEAVRecord(EAVRecord{
+			_, err := extractValueFromEAVRecord(model.EAVRecord{
 				ValueText:    &textVal,
 				ValueNumeric: &numericVal,
 			}, tt.valueType)
@@ -344,7 +346,7 @@ func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(
 	rowID := uuid.Must(uuid.NewV7())
 
 	idValue := "lead-1"
-	recordsWithoutParent := []EAVRecord{
+	recordsWithoutParent := []model.EAVRecord{
 		{
 			SchemaID:  400,
 			RowID:     rowID,
@@ -359,7 +361,7 @@ func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(
 	}
 
 	propertyID := "p-1"
-	recordsWithParent := []EAVRecord{
+	recordsWithParent := []model.EAVRecord{
 		recordsWithoutParent[0],
 		{
 			SchemaID:     400,
@@ -391,7 +393,7 @@ func TestAttributeConverterFromEAVRecords_UnknownAttributeIDReturnsError(t *test
 	converter := NewAttributeConverter(registry)
 	rowID := uuid.Must(uuid.NewV7())
 	value := "mystery"
-	_, err := converter.FromEAVRecords([]EAVRecord{{
+	_, err := converter.FromEAVRecords([]model.EAVRecord{{
 		SchemaID:  402,
 		RowID:     rowID,
 		AttrID:    999,
@@ -422,7 +424,7 @@ func TestAttributeConverterFromEAVRecords_RequiredChildUsesArrayIndexContext(t *
 	propertyID := "p-1"
 	status := "viewed"
 
-	_, err := converter.FromEAVRecords([]EAVRecord{
+	_, err := converter.FromEAVRecords([]model.EAVRecord{
 		{SchemaID: 403, RowID: rowID, AttrID: 1, ValueText: &idValue},
 		{SchemaID: 403, RowID: rowID, AttrID: 2, ArrayIndices: "0", ValueText: &propertyID},
 		{SchemaID: 403, RowID: rowID, AttrID: 3, ArrayIndices: "1", ValueText: &status},
@@ -458,7 +460,7 @@ func TestAttributeConverterFromEAVRecords_NestedArrayRequiredUsesFullIndexPath(t
 	email := "test@example.com"
 	phoneNumber := "555-1234"
 
-	_, err := converter.FromEAVRecords([]EAVRecord{
+	_, err := converter.FromEAVRecords([]model.EAVRecord{
 		{SchemaID: 404, RowID: rowID, AttrID: 1, ValueText: &idValue},
 		{SchemaID: 404, RowID: rowID, AttrID: 2, ArrayIndices: "0.0", ValueText: &itemNameA},
 		{SchemaID: 404, RowID: rowID, AttrID: 3, ArrayIndices: "0.0", ValueNumeric: &itemPriceA},
@@ -496,7 +498,7 @@ func TestAttributeConverterFromEAVRecords_MixedArrayAndNonArrayChildrenDoNotConf
 	phoneNumber := "555-1234"
 	phoneKind := "mobile"
 
-	_, err := converter.FromEAVRecords([]EAVRecord{
+	_, err := converter.FromEAVRecords([]model.EAVRecord{
 		{SchemaID: 405, RowID: rowID, AttrID: 1, ValueText: &idValue},
 		{SchemaID: 405, RowID: rowID, AttrID: 2, ArrayIndices: "", ValueText: &email},
 		{SchemaID: 405, RowID: rowID, AttrID: 3, ArrayIndices: "0", ValueText: &phoneNumber},
@@ -568,7 +570,7 @@ func TestAttributeConverterFromEAVRecords_RequiredAlwaysIgnoresParentPresence(t 
 	converter := NewAttributeConverter(registry)
 	rowID := uuid.Must(uuid.NewV7())
 	idValue := "lead-1"
-	records := []EAVRecord{
+	records := []model.EAVRecord{
 		{
 			SchemaID:  401,
 			RowID:     rowID,

@@ -57,7 +57,7 @@ func TestStreamDuckDBRows_WhenRowHandlerFails_ItStopsAndReturnsTheError(t *testi
 	}
 
 	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *PersistentRecord) error {
+	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
 		handlerCalls++
 		return fmt.Errorf("forced row handler failure")
 	})
@@ -82,7 +82,7 @@ func TestStreamDuckDBRows_WhenScanFails_ItStopsAndReturnsScanError(t *testing.T)
 	}
 
 	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *PersistentRecord) error {
+	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
 		handlerCalls++
 		return nil
 	})
@@ -109,7 +109,7 @@ func TestStreamDuckDBRows_WhenIteratorEndsWithError_ItReturnsIterationError(t *t
 	}
 
 	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *PersistentRecord) error {
+	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
 		handlerCalls++
 		return nil
 	})

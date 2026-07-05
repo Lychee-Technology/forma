@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
@@ -243,7 +245,7 @@ func TestValidateOrderByForListTypes_UnknownAttribute(t *testing.T) {
 // ============================================================================
 
 func TestValidateOrderByAttributesForListTypes_NoListTypes(t *testing.T) {
-	orderBy := []AttributeOrder{
+	orderBy := []model.AttributeOrder{
 		{AttrID: 1, ValueType: forma.ValueTypeText},
 		{AttrID: 2, ValueType: forma.ValueTypeInteger},
 	}
@@ -252,7 +254,7 @@ func TestValidateOrderByAttributesForListTypes_NoListTypes(t *testing.T) {
 }
 
 func TestValidateOrderByAttributesForListTypes_WithListType(t *testing.T) {
-	orderBy := []AttributeOrder{
+	orderBy := []model.AttributeOrder{
 		{AttrID: 1, ValueType: forma.ValueTypeText},
 		{AttrID: 2, ValueType: forma.ValueTypeList},
 	}

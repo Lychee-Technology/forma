@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 )
 
@@ -22,7 +24,7 @@ import (
 // The tableAlias is used as a prefix for column references (e.g. "unified.").
 //
 // Returns the combined WHERE clause string and the argument slice in order.
-func generateKeysetWhereClause(cursor *KeysetCursor, tableAlias string, paramOffset int) (string, []interface{}) {
+func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string, paramOffset int) (string, []interface{}) {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "1=1", nil
 	}
@@ -76,8 +78,8 @@ func generateKeysetWhereClause(cursor *KeysetCursor, tableAlias string, paramOff
 
 // keysetComparisonOp returns the SQL comparison operator for a keyset column
 // given its sort direction and the cursor mode.
-func keysetComparisonOp(direction forma.SortOrder, mode KeysetCursorMode) string {
-	isAfter := mode == KeysetCursorModeAfter
+func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {
+	isAfter := mode == model.KeysetCursorModeAfter
 	switch direction {
 	case forma.SortOrderDesc:
 		if isAfter {
@@ -93,9 +95,9 @@ func keysetComparisonOp(direction forma.SortOrder, mode KeysetCursorMode) string
 	}
 }
 
-// extractCursorFromRecord builds a KeysetCursor from the last row of a page.
+// extractCursorFromRecord builds a model.KeysetCursor from the last row of a page.
 // The columns must match the query's sort columns plus a row_id tiebreaker.
-func extractCursorFromRecord(record *PersistentRecord, columns []KeysetColumn) *KeysetCursor {
+func extractCursorFromRecord(record *model.PersistentRecord, columns []model.KeysetColumn) *model.KeysetCursor {
 	if record == nil || len(columns) == 0 {
 		return nil
 	}
@@ -103,17 +105,17 @@ func extractCursorFromRecord(record *PersistentRecord, columns []KeysetColumn) *
 	for i, col := range columns {
 		values[i] = recordColumnValue(record, col)
 	}
-	return &KeysetCursor{
+	return &model.KeysetCursor{
 		Columns: columns,
 		Values:  values,
-		Mode:    KeysetCursorModeAfter,
+		Mode:    model.KeysetCursorModeAfter,
 	}
 }
 
-// recordColumnValue extracts a single column value from a PersistentRecord.
+// recordColumnValue extracts a single column value from a model.PersistentRecord.
 // It handles special columns like "row_id" and "created_at" transparently,
 // and falls back to EAV attribute lookup for other columns.
-func recordColumnValue(record *PersistentRecord, col KeysetColumn) interface{} {
+func recordColumnValue(record *model.PersistentRecord, col model.KeysetColumn) interface{} {
 	switch col.Attribute {
 	case "row_id":
 		return record.RowID.String()
@@ -136,7 +138,7 @@ func recordColumnValue(record *PersistentRecord, col KeysetColumn) interface{} {
 // eavColumnValue looks up an EAV attribute value from the record's
 // OtherAttributes slice. Returns nil if not found.
 // NOTE: This is currently a stub - full EAV cursor extraction requires schema cache.
-func eavColumnValue(record *PersistentRecord, attrName string) interface{} {
+func eavColumnValue(record *model.PersistentRecord, attrName string) interface{} {
 	// EAV attributes are identified by name only here; the caller is responsible
 	// for ensuring the attribute exists in the schema and is present in the record.
 	// We search OtherAttributes by matching AttrID via a helper lookup.
@@ -159,7 +161,7 @@ func isSupportedKeysetColumn(attribute string) bool {
 
 // validateKeysetColumns checks if all keyset cursor columns are supported.
 // Returns an error if any column is unsupported.
-func validateKeysetColumns(columns []KeysetColumn) error {
+func validateKeysetColumns(columns []model.KeysetColumn) error {
 	for _, col := range columns {
 		if !isSupportedKeysetColumn(col.Attribute) {
 			return fmt.Errorf("keyset pagination on attribute %q is not supported (EAV attributes require schema cache)", col.Attribute)
@@ -171,7 +173,7 @@ func validateKeysetColumns(columns []KeysetColumn) error {
 // buildKeysetOrderBy generates a dynamic ORDER BY clause from keyset columns.
 // This produces the ORDER BY fragment to use instead of the hardcoded
 // "created_at DESC" when keyset pagination is active.
-func buildKeysetOrderBy(cursor *KeysetCursor) string {
+func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "created_at DESC"
 	}

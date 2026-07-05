@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
@@ -23,8 +25,8 @@ func TestRenderS3ParquetPath(t *testing.T) {
 }
 
 func TestGenerateDuckDBWhereClause_SimpleKv(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
 			Condition: &forma.KvCondition{
 				Attr:  "username",
 				Value: "equals:alice",
@@ -282,7 +284,7 @@ func TestEvaluateRoutingPolicy_PreferHotOverride(t *testing.T) {
 		},
 	}
 
-	fq := &FederatedAttributeQuery{PreferHot: true}
+	fq := &model.FederatedAttributeQuery{PreferHot: true}
 	dec := EvaluateRoutingPolicy(cfg, fq, nil)
 	require.False(t, dec.UseDuckDB)
 }
@@ -307,11 +309,11 @@ func TestEvaluateRoutingPolicy_CostFirstStrategy(t *testing.T) {
 
 	// Small scan: cost-first doesn't explicitly disable duckdb for small rows
 	// (so it stays enabled by default)
-	dec := EvaluateRoutingPolicy(cfg, nil, &FederatedQueryOptions{MaxRows: 500})
+	dec := EvaluateRoutingPolicy(cfg, nil, &model.FederatedQueryOptions{MaxRows: 500})
 	require.True(t, dec.UseDuckDB) // remains enabled
 
 	// Large scan should explicitly enable duckdb
-	dec = EvaluateRoutingPolicy(cfg, nil, &FederatedQueryOptions{MaxRows: 100000})
+	dec = EvaluateRoutingPolicy(cfg, nil, &model.FederatedQueryOptions{MaxRows: 100000})
 	require.True(t, dec.UseDuckDB)
 }
 

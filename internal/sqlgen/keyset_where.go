@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 )
 
-func generateKeysetWhereClause(cursor *KeysetCursor, tableAlias string, paramOffset int) (string, []interface{}) {
+func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string, paramOffset int) (string, []interface{}) {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "1=1", nil
 	}
@@ -49,8 +51,8 @@ func generateKeysetWhereClause(cursor *KeysetCursor, tableAlias string, paramOff
 	return strings.Join(clauses, " OR "), args
 }
 
-func keysetComparisonOp(direction forma.SortOrder, mode KeysetCursorMode) string {
-	isAfter := mode == KeysetCursorModeAfter
+func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {
+	isAfter := mode == model.KeysetCursorModeAfter
 	switch direction {
 	case forma.SortOrderDesc:
 		if isAfter {
@@ -65,7 +67,7 @@ func keysetComparisonOp(direction forma.SortOrder, mode KeysetCursorMode) string
 	}
 }
 
-func buildKeysetOrderBy(cursor *KeysetCursor) string {
+func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "created_at DESC"
 	}

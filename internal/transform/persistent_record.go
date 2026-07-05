@@ -24,7 +24,7 @@ func NewPersistentRecordTransformer(registry forma.SchemaRegistry) model.Persist
 	}
 }
 
-func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) (*PersistentRecord, error) {
+func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) (*model.PersistentRecord, error) {
 	if jsonData == nil {
 		return nil, fmt.Errorf("jsonData cannot be nil")
 	}
@@ -49,7 +49,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	}
 
 	// Initialize the persistent record
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:     schemaID,
 		RowID:        rowID,
 		TextItems:    make(map[string]string),
@@ -95,7 +95,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	return record, nil
 }
 
-func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *PersistentRecord) (map[string]any, error) {
+func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
 	if record == nil {
 		return nil, fmt.Errorf("record cannot be nil")
 	}
@@ -107,7 +107,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	}
 
 	// Reconstruct attributes from main table columns
-	attributes := make([]EAVRecord, 0)
+	attributes := make([]model.EAVRecord, 0)
 
 	// Process each attribute in the cache to see if it has column binding
 	for attrName, meta := range cache {
@@ -143,7 +143,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	return result, nil
 }
 
-func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord, attr EAVRecord, binding *forma.MainColumnBinding) error {
+func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) error {
 	// Ignore system column bindings - system columns can only be set internally by code
 	switch binding.ColumnName {
 	case forma.MainColumnRowID, forma.MainColumnSchemaID,
@@ -235,7 +235,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *PersistentRecord
 
 // readFromMainColumn reads an attribute value from the main table columns.
 // It delegates to specialized functions based on column type.
-func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, error) {
+func (t *persistentRecordTransformer) readFromMainColumn(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, error) {
 	// First, check if this is a system column (RowID, SchemaID, timestamps)
 	if attr := t.readFromSystemColumn(record, meta, binding); attr != nil {
 		return attr, nil
@@ -264,8 +264,8 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *PersistentRecor
 
 // readFromSystemColumn handles reading from system columns (RowID, SchemaID, timestamps).
 // Returns nil if the column is not a system column.
-func (t *persistentRecordTransformer) readFromSystemColumn(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) *EAVRecord {
-	baseAttr := EAVRecord{
+func (t *persistentRecordTransformer) readFromSystemColumn(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) *model.EAVRecord {
+	baseAttr := model.EAVRecord{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
 		AttrID:       meta.AttributeID,
@@ -307,10 +307,10 @@ func (t *persistentRecordTransformer) readFromSystemColumn(record *PersistentRec
 
 // readWithEncoding handles reading values with special encodings (UnixMs, BoolInt, BoolText, ISO8601).
 // Returns (attr, hasValue, error).
-func (t *persistentRecordTransformer) readWithEncoding(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, bool, error) {
+func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, bool, error) {
 	columnName := string(binding.ColumnName)
 
-	attr := &EAVRecord{
+	attr := &model.EAVRecord{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
 		AttrID:       meta.AttributeID,
@@ -360,10 +360,10 @@ func (t *persistentRecordTransformer) readWithEncoding(record *PersistentRecord,
 
 // readWithDefaultEncoding handles reading values with default encoding based on column type.
 // Returns (attr, hasValue, error).
-func (t *persistentRecordTransformer) readWithDefaultEncoding(record *PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*EAVRecord, bool, error) {
+func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, bool, error) {
 	columnName := string(binding.ColumnName)
 
-	attr := &EAVRecord{
+	attr := &model.EAVRecord{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
 		AttrID:       meta.AttributeID,

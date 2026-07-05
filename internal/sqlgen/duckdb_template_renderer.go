@@ -5,6 +5,8 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -28,7 +30,7 @@ func RenderDuckDBQuery(tpl *template.Template, params any, whereArgs []any) (str
 // the DuckClause and DuckArgs as the base where clause and inject PgMainClause into template
 // params so the template (or tests) can observe the pushdown fragment. Dirty-ID exclusions
 // are appended to the DuckDB clause regardless of source.
-func BuildDuckDBQuery(tpl *template.Template, params any, q *FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
+func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
 	isAdvancedTemplate := tpl == AdvancedQueryTemplateDuckDB
 
 	// Prepare where variables
@@ -125,7 +127,7 @@ func defaultIfEmpty(s, fallback string) string {
 	return s
 }
 
-func injectDuckDBTemplateParams(params map[string]any, q *FederatedAttributeQuery, dual *DualClauses, keysetParamOffset int) {
+func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses, keysetParamOffset int) {
 	if q == nil {
 		return
 	}
@@ -231,7 +233,7 @@ func formatDuckDBPathList(paths []string) string {
 // Main-table attributes are sorted by their bound ColumnName; EAV attributes are sorted
 // by their logical AttrName, which the unified CTE exposes as a named column via the
 // EAV pivot. When no resolvable columns remain the default "created_at DESC" is returned.
-func buildNonKeysetOrderBy(q *FederatedAttributeQuery) string {
+func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
 	if q == nil || len(q.AttributeOrders) == 0 {
 		return "created_at DESC"
 	}

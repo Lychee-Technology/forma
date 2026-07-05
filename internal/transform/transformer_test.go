@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
@@ -159,7 +161,7 @@ func TestTransformer_FromAttributes(t *testing.T) {
 	rowID := uuid.Must(uuid.NewV7())
 	createdAt := time.Date(2024, 3, 14, 9, 26, 0, 0, time.UTC)
 
-	eavRecords := []EAVRecord{
+	eavRecords := []model.EAVRecord{
 		newTestAttribute(t, registry, schemaID, rowID, "name", "", "Jane Doe"),
 		newTestAttribute(t, registry, schemaID, rowID, "age", "", 42),
 		newTestAttribute(t, registry, schemaID, rowID, "person.name", "", "Bob"),
@@ -447,8 +449,8 @@ func TestTransformer_ToAttributes_RequiredAlwaysEnforcedEvenWhenParentMissing(t 
 	assert.Contains(t, err.Error(), "missing required attribute 'contact.email'")
 }
 
-func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []EAVRecord) map[string]*EAVRecord {
-	result := make(map[string]*EAVRecord)
+func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []model.EAVRecord) map[string]*model.EAVRecord {
+	result := make(map[string]*model.EAVRecord)
 	cacheBySchema := make(map[int16]forma.SchemaAttributeCache)
 
 	for i := range attrs {
@@ -477,14 +479,14 @@ func buildAttributeLookup(t *testing.T, registry forma.SchemaRegistry, attrs []E
 	return result
 }
 
-func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) EAVRecord {
+func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int16, rowID uuid.UUID, name string, indices string, value any) model.EAVRecord {
 	_, cache, err := registry.GetSchemaAttributeCacheByID(schemaID)
 	require.NoError(t, err)
 
 	meta, ok := cache[name]
 	require.True(t, ok, "attribute %s not found", name)
 
-	attr := EAVRecord{
+	attr := model.EAVRecord{
 		SchemaID:     schemaID,
 		RowID:        rowID,
 		AttrID:       meta.AttributeID,
@@ -498,7 +500,7 @@ func newTestAttribute(t *testing.T, registry forma.SchemaRegistry, schemaID int1
 }
 
 func TestPopulateTypedValueRequired(t *testing.T) {
-	attr := EAVRecord{}
+	attr := model.EAVRecord{}
 	meta := forma.AttributeMetadata{
 		AttributeID: 1,
 		ValueType:   forma.ValueTypeUUID,
@@ -512,7 +514,7 @@ func TestPopulateTypedValueRequired(t *testing.T) {
 }
 
 func TestPopulateTypedValueOptionalReturnsError(t *testing.T) {
-	attr := EAVRecord{}
+	attr := model.EAVRecord{}
 	meta := forma.AttributeMetadata{
 		AttributeID: 2,
 		ValueType:   forma.ValueTypeUUID,

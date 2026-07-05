@@ -2,12 +2,13 @@ package federated
 
 import (
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // EvaluateRoutingPolicy makes a routing decision based on config, query hints and options.
-func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) RoutingDecision {
-	dec := RoutingDecision{
-		Tiers:           []DataTier{DataTierHot, DataTierWarm, DataTierCold},
+func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) model.RoutingDecision {
+	dec := model.RoutingDecision{
+		Tiers:           []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
 		UseDuckDB:       cfg.Enabled,
 		Reason:          "default",
 		MaxScanRows:     cfg.Routing.MaxDuckDBScanRows,
@@ -33,7 +34,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 	if fq != nil && len(fq.PreferredTiers) > 0 {
 		hasHot := false
 		for _, t := range fq.PreferredTiers {
-			if t == DataTierHot {
+			if t == model.DataTierHot {
 				hasHot = true
 				break
 			}
@@ -42,7 +43,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 	}
 
 	// Determine effective rows for cost-based decisions.
-	// Prefer query-level Limit/Offset (AttributeQuery) over unset opts.MaxRows.
+	// Prefer query-level Limit/Offset (model.AttributeQuery) over unset opts.MaxRows.
 	effectiveLimit := 0
 	effectiveOffset := 0
 	if fq != nil {
@@ -56,7 +57,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 	case forma.RoutingStrategyFreshnessFirst:
 		if hotOnly {
 			dec.UseDuckDB = false
-			dec.Tiers = []DataTier{DataTierHot}
+			dec.Tiers = []model.DataTier{model.DataTierHot}
 			dec.Reason = "prefer hot"
 		} else if coldOnly {
 			dec.UseDuckDB = true
@@ -66,7 +67,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 		// hot-only preference takes priority over scan size
 		if hotOnly {
 			dec.UseDuckDB = false
-			dec.Tiers = []DataTier{DataTierHot}
+			dec.Tiers = []model.DataTier{model.DataTierHot}
 			dec.Reason = "cost-first prefer hot"
 			break
 		}
@@ -82,7 +83,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 	case forma.RoutingStrategyHybrid:
 		if hotOnly {
 			dec.UseDuckDB = false
-			dec.Tiers = []DataTier{DataTierHot}
+			dec.Tiers = []model.DataTier{model.DataTierHot}
 			dec.Reason = "hybrid prefer hot"
 		} else if coldOnly {
 			dec.UseDuckDB = true
@@ -107,7 +108,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 
 	// If DuckDB is disabled by decision, ensure tiers reflect that
 	if !dec.UseDuckDB {
-		dec.Tiers = []DataTier{DataTierHot}
+		dec.Tiers = []model.DataTier{model.DataTierHot}
 	}
 
 	return dec

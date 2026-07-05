@@ -21,9 +21,9 @@ import (
 // federated pagination needs the optimized clause/args path and hybrid
 // condition building, which QueryPersistentRecords cannot substitute.
 type PostgresFederatedSource interface {
-	QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
-	RunOptimizedQuery(ctx context.Context, tables StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []AttributeOrder, useMainTableAsAnchor bool) ([]*PersistentRecord, int64, error)
-	BuildHybridConditions(tables StorageTables, fq *FederatedAttributeQuery) (string, []any, error)
+	QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
+	RunOptimizedQuery(ctx context.Context, tables model.StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []model.AttributeOrder, useMainTableAsAnchor bool) ([]*model.PersistentRecord, int64, error)
+	BuildHybridConditions(tables model.StorageTables, fq *model.FederatedAttributeQuery) (string, []any, error)
 }
 
 // DirtyIDFetcher retrieves row IDs from the change log that are newer than
@@ -33,7 +33,7 @@ type DirtyIDFetcher interface {
 }
 
 // DuckDBQueryExecutor executes SQL against DuckDB. A nil executor means
-// DuckDB is unavailable; the engine then degrades per FederatedQueryOptions.
+// DuckDB is unavailable; the engine then degrades per model.FederatedQueryOptions.
 type DuckDBQueryExecutor interface {
 	Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error)
 }
@@ -50,7 +50,7 @@ type DBFederatedQueryEngine struct {
 	cfg            forma.DuckDBConfig
 	metadataCache  *schemameta.MetadataCache
 	pgConnString   string
-	buildDuckSQL   func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error)
+	buildDuckSQL   func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error)
 	duckTemplate   *template.Template
 }
 
@@ -74,20 +74,20 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 // to Postgres; otherwise the routing policy decides between Postgres and the
 // DuckDB federated path, falling back to Postgres on DuckDB failure when
 // opts.AllowPartialDegradedMode is set.
-func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
 	}
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
-	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == DataTierHot) {
+	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
 		return e.queryPostgresOnly(ctx, tables, fq)
 	}
 
 	if opts != nil && opts.IncludeExecutionPlan {
 		if opts.ExecutionPlan == nil {
-			opts.ExecutionPlan = &ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+			opts.ExecutionPlan = &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
 		}
 		opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes, "EvaluateRoutingPolicy")
 	}
@@ -117,12 +117,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables
 		currentPage = fq.Offset/limit + 1
 	}
 
-	var execPlan *ExecutionPlan
+	var execPlan *model.ExecutionPlan
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		execPlan = opts.ExecutionPlan
 	}
 
-	return &PersistentRecordPage{
+	return &model.PersistentRecordPage{
 		Records:       records,
 		TotalRecords:  totalRecords,
 		TotalPages:    model.ComputeTotalPages(totalRecords, limit),
@@ -131,8 +131,8 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables
 	}, nil
 }
 
-func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery) (*PersistentRecordPage, error) {
-	return e.pgSource.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {
+	return e.pgSource.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:          tables,
 		SchemaID:        fq.SchemaID,
 		Condition:       fq.Condition,
@@ -142,7 +142,7 @@ func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables S
 	})
 }
 
-func (e *DBFederatedQueryEngine) getDuckDBQueryBuilder() func(*template.Template, any, *FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error) {
+func (e *DBFederatedQueryEngine) getDuckDBQueryBuilder() func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error) {
 	if e != nil && e.buildDuckSQL != nil {
 		return e.buildDuckSQL
 	}

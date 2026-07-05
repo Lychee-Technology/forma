@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -37,9 +39,9 @@ func NewTransformer(registry forma.SchemaRegistry) *transformer {
 	}
 }
 
-func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) ([]EntityAttribute, error) {
+func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) ([]model.EntityAttribute, error) {
 	if jsonData == nil {
-		return []EntityAttribute{}, nil
+		return []model.EntityAttribute{}, nil
 	}
 
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, schemaID)
@@ -75,7 +77,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 	}
 
 	// First convert to EAVRecords internally
-	eavRecords := make([]EAVRecord, 0)
+	eavRecords := make([]model.EAVRecord, 0)
 	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &eavRecords); err != nil {
 		return nil, err
 	}
@@ -83,13 +85,13 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 	// Convert EAVRecords to EntityAttributes
 	attributes, err := t.converter.FromEAVRecords(eavRecords)
 	if err != nil {
-		return nil, fmt.Errorf("convert to EntityAttribute: %w", err)
+		return nil, fmt.Errorf("convert to model.EntityAttribute: %w", err)
 	}
 
 	return attributes, nil
 }
 
-func (t *transformer) FromAttributes(ctx context.Context, attributes []EntityAttribute) (map[string]any, error) {
+func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
 	if len(attributes) == 0 {
 		return make(map[string]any), nil
 	}
@@ -125,8 +127,8 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []EntityAtt
 	return result, nil
 }
 
-func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]EntityAttribute, error) {
-	attributes := make([]EntityAttribute, 0)
+func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {
+	attributes := make([]model.EntityAttribute, 0)
 
 	for _, obj := range jsonObjects {
 		var rowID uuid.UUID
@@ -155,13 +157,13 @@ func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jso
 	return attributes, nil
 }
 
-func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []EntityAttribute) ([]map[string]any, error) {
+func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []model.EntityAttribute) ([]map[string]any, error) {
 	if len(attributes) == 0 {
 		return []map[string]any{}, nil
 	}
 
-	// Group by RowID directly from EntityAttribute
-	groupedByRowID := make(map[uuid.UUID][]EntityAttribute)
+	// Group by RowID directly from model.EntityAttribute
+	groupedByRowID := make(map[uuid.UUID][]model.EntityAttribute)
 	for _, attr := range attributes {
 		groupedByRowID[attr.RowID] = append(groupedByRowID[attr.RowID], attr)
 	}
@@ -259,7 +261,7 @@ func (t *transformer) flattenToAttributes(
 	data any,
 	indices []int,
 	cache forma.SchemaAttributeCache,
-	result *[]EAVRecord,
+	result *[]model.EAVRecord,
 ) error {
 	switch v := data.(type) {
 	case map[string]any:
@@ -303,7 +305,7 @@ func (t *transformer) flattenToAttributes(
 			return fmt.Errorf("attribute '%s' is not defined for schema %d: %w", attrName, schemaID, forma.ErrInvalidInput)
 		}
 
-		attr := EAVRecord{
+		attr := model.EAVRecord{
 			SchemaID:     schemaID,
 			RowID:        rowID,
 			AttrID:       meta.AttributeID,
@@ -322,7 +324,7 @@ func (t *transformer) flattenToAttributes(
 	return nil
 }
 
-func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
+func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
 	handleConversionError := func(err error) (bool, error) {
 		return false, fmt.Errorf(
 			"invalid value for attribute '%s' (attrID=%d): %w",

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
@@ -192,13 +194,13 @@ func TestPersistentRecordTransformer_RoundTrip(t *testing.T) {
 
 	require.Len(t, record.OtherAttributes, 8)
 
-	lookup := func(attrID int16, indices string) EAVRecord {
+	lookup := func(attrID int16, indices string) model.EAVRecord {
 		for _, attr := range record.OtherAttributes {
 			if attr.AttrID == attrID && attr.ArrayIndices == indices {
 				return attr
 			}
 		}
-		return EAVRecord{}
+		return model.EAVRecord{}
 	}
 
 	notesAttr := lookup(8, "")
@@ -313,7 +315,7 @@ func TestPersistentRecordTransformer_InjectsBaseTimestamps(t *testing.T) {
 
 	created := time.Date(2024, time.January, 2, 15, 4, 5, 0, time.UTC).UnixMilli()
 	updated := created + int64(time.Minute/time.Millisecond)
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:  schemaID,
 		RowID:     uuid.Must(uuid.NewV7()),
 		CreatedAt: created,

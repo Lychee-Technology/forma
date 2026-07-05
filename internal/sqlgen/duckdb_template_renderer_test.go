@@ -3,6 +3,8 @@ package sqlgen
 import (
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
@@ -17,15 +19,15 @@ func TestBuildNonKeysetOrderBy_NilQuery_ReturnsDefault(t *testing.T) {
 }
 
 func TestBuildNonKeysetOrderBy_NoOrders_ReturnsDefault(t *testing.T) {
-	q := &FederatedAttributeQuery{}
+	q := &model.FederatedAttributeQuery{}
 	got := buildNonKeysetOrderBy(q)
 	require.Equal(t, "created_at DESC", got)
 }
 
 func TestBuildNonKeysetOrderBy_MainColumn_ASC(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
-			AttributeOrders: []AttributeOrder{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{
 				{
 					StorageLocation: forma.AttributeStorageLocationMain,
 					ColumnName:      "text_01",
@@ -40,9 +42,9 @@ func TestBuildNonKeysetOrderBy_MainColumn_ASC(t *testing.T) {
 }
 
 func TestBuildNonKeysetOrderBy_MainColumn_DESC(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
-			AttributeOrders: []AttributeOrder{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{
 				{
 					StorageLocation: forma.AttributeStorageLocationMain,
 					ColumnName:      "num_01",
@@ -59,9 +61,9 @@ func TestBuildNonKeysetOrderBy_MainColumn_DESC(t *testing.T) {
 // TestBuildNonKeysetOrderBy_EAVColumn uses the attribute's logical name (AttrName)
 // as the ORDER BY column, since the unified CTE projects EAV attributes by their name.
 func TestBuildNonKeysetOrderBy_EAVColumn_UsesAttrName(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
-			AttributeOrders: []AttributeOrder{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{
 				{
 					StorageLocation: forma.AttributeStorageLocationEAV,
 					AttrName:        "tag",
@@ -75,11 +77,11 @@ func TestBuildNonKeysetOrderBy_EAVColumn_UsesAttrName(t *testing.T) {
 }
 
 // TestBuildNonKeysetOrderBy_EAVColumn_NoAttrName_FallsBackToDefault ensures that
-// an EAV AttributeOrder with no AttrName set is skipped and the default is returned.
+// an EAV model.AttributeOrder with no AttrName set is skipped and the default is returned.
 func TestBuildNonKeysetOrderBy_EAVColumn_NoAttrName_FallsBackToDefault(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
-			AttributeOrders: []AttributeOrder{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{
 				{
 					StorageLocation: forma.AttributeStorageLocationEAV,
 					// AttrName intentionally empty — simulates legacy/incomplete data
@@ -94,9 +96,9 @@ func TestBuildNonKeysetOrderBy_EAVColumn_NoAttrName_FallsBackToDefault(t *testin
 // TestBuildNonKeysetOrderBy_Mixed_MainAndEAV confirms that both main-column and
 // EAV sort keys are resolved and combined in order.
 func TestBuildNonKeysetOrderBy_Mixed_MainAndEAV(t *testing.T) {
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
-			AttributeOrders: []AttributeOrder{
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{
 				{
 					StorageLocation: forma.AttributeStorageLocationMain,
 					ColumnName:      "text_01",

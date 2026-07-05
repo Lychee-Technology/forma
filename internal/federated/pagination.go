@@ -17,12 +17,12 @@ import (
 // - For very large result sets a keys-only two-phase approach should be implemented later.
 func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	ctx context.Context,
-	tables StorageTables,
-	fq *FederatedAttributeQuery,
+	tables model.StorageTables,
+	fq *model.FederatedAttributeQuery,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
-	opts *FederatedQueryOptions,
-) ([]*PersistentRecord, int64, error) {
+	attributeOrders []model.AttributeOrder,
+	opts *model.FederatedQueryOptions,
+) ([]*model.PersistentRecord, int64, error) {
 	if fq == nil {
 		return nil, 0, fmt.Errorf("federated query cannot be nil")
 	}
@@ -73,8 +73,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	}
 	// Record Postgres source info if execution plan requested
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		dp := DataSourcePlan{
-			Tier:              DataTierHot,
+		dp := model.DataSourcePlan{
+			Tier:              model.DataTierHot,
 			Engine:            "postgres",
 			SQL:               "", // SQL not captured here
 			RowEstimate:       0,
@@ -94,10 +94,10 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Merge across tiers using existing merge logic
-	inputs := map[DataTier][]*PersistentRecord{
-		DataTierHot:  pgRecs,
-		DataTierWarm: nil,
-		DataTierCold: duckRecs,
+	inputs := map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  pgRecs,
+		model.DataTierWarm: nil,
+		model.DataTierCold: duckRecs,
 	}
 
 	startMerge := time.Now()
@@ -108,8 +108,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	}
 	// Record merge plan if requested
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		opts.ExecutionPlan.Merge = MergePlan{
-			Strategy:   MergeStrategyLastWriteWins,
+		opts.ExecutionPlan.Merge = model.MergePlan{
+			Strategy:   model.MergeStrategyLastWriteWins,
 			PreferHot:  fq.PreferHot,
 			DedupKeys:  []string{"SchemaID:RowID"},
 			DurationMs: mergeMs,
@@ -123,7 +123,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	// Apply pagination on merged, which is deterministically ordered by MergePersistentRecordsByTier
 	start := offset
 	if start >= len(merged) {
-		return []*PersistentRecord{}, total, nil
+		return []*model.PersistentRecord{}, total, nil
 	}
 	end := min(start+limit, len(merged))
 	page := merged[start:end]
@@ -138,12 +138,12 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 // the requested page is returned along with the total count and next cursor.
 func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	ctx context.Context,
-	tables StorageTables,
-	fq *FederatedAttributeQuery,
+	tables model.StorageTables,
+	fq *model.FederatedAttributeQuery,
 	limit int,
-	attributeOrders []AttributeOrder,
-	opts *FederatedQueryOptions,
-) ([]*PersistentRecord, int64, error) {
+	attributeOrders []model.AttributeOrder,
+	opts *model.FederatedQueryOptions,
+) ([]*model.PersistentRecord, int64, error) {
 	// Validate keyset cursor columns are supported
 	if fq.KeysetCursor != nil {
 		if err := validateKeysetColumns(fq.KeysetCursor.Columns); err != nil {
@@ -164,8 +164,8 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	// The template applies the keyset WHERE in the unified CTE, so both
 	// Postgres and S3 data are filtered by the cursor before LWW dedup.
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		opts.ExecutionPlan.Routing = RoutingDecision{
-			Tiers:     []DataTier{DataTierHot, DataTierWarm, DataTierCold},
+		opts.ExecutionPlan.Routing = model.RoutingDecision{
+			Tiers:     []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
 			UseDuckDB: true,
 			Reason:    "keyset pagination",
 		}
@@ -179,7 +179,7 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 
 	// With keyset, the DuckDB template handles LWW dedup via QUALIFY,
 	// so we apply limit directly to the returned records.
-	var page []*PersistentRecord
+	var page []*model.PersistentRecord
 	if limit > 0 && limit < len(duckRecs) {
 		page = duckRecs[:limit]
 	} else {
@@ -201,13 +201,13 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 // full unfiltered count via a lightweight query.
 func (e *DBFederatedQueryEngine) computeFederatedCount(
 	ctx context.Context,
-	tables StorageTables,
-	fq *FederatedAttributeQuery,
+	tables model.StorageTables,
+	fq *model.FederatedAttributeQuery,
 ) (int64, error) {
 	strippedQuery := *fq
 	strippedQuery.KeysetCursor = nil
 
-	_, total, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &FederatedQueryOptions{MaxRows: 1})
+	_, total, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &model.FederatedQueryOptions{MaxRows: 1})
 	if err != nil {
 		return 0, err
 	}

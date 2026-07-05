@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -44,15 +46,15 @@ func TestAppendDirtyExclusion(t *testing.T) {
 // keysetParamOffset is passed, the keyset WHERE clause uses $offset+1, $offset+2, …
 // placeholders so they align with keyset values appended after existing whereArgs.
 func TestInjectDuckDBTemplateParams_KeysetParamOffset_NonZero(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderAsc},
 		},
 		Values: []interface{}{int64(999)},
-		Mode:   KeysetCursorModeAfter,
+		Mode:   model.KeysetCursorModeAfter,
 	}
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
 		KeysetCursor:   cursor,
 	}
 	params := map[string]any{}
@@ -74,13 +76,13 @@ func TestInjectDuckDBTemplateParams_KeysetParamOffset_NonZero(t *testing.T) {
 // placeholder in the rendered SQL starts at the correct position and the keyset
 // value appears at the matching position in the returned args slice.
 func TestBuildDuckDBQuery_KeysetArgPositionIsCorrect(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
 		Values:  []interface{}{int64(1000)},
-		Mode:    KeysetCursorModeAfter,
+		Mode:    model.KeysetCursorModeAfter,
 	}
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
 		KeysetCursor:   cursor,
 	}
 	// Two DuckDB filter args; no PG-main args.

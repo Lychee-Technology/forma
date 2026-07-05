@@ -4,12 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
 func TestValidateKeysetColumns_SystemColumnsSupported(t *testing.T) {
-	supportedColumns := []KeysetColumn{
+	supportedColumns := []model.KeysetColumn{
 		{Attribute: "row_id", Direction: forma.SortOrderAsc},
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
 		{Attribute: "updated_at", Direction: forma.SortOrderAsc},
@@ -26,7 +28,7 @@ func TestValidateKeysetColumns_SystemColumnsSupported(t *testing.T) {
 }
 
 func TestValidateKeysetColumns_EAVAttributeUnsupported(t *testing.T) {
-	unsupportedColumns := []KeysetColumn{
+	unsupportedColumns := []model.KeysetColumn{
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
 		{Attribute: "user_email", Direction: forma.SortOrderAsc}, // EAV attribute
 		{Attribute: "row_id", Direction: forma.SortOrderAsc},
@@ -49,19 +51,19 @@ func TestValidateKeysetColumns_EmptyColumnsValid(t *testing.T) {
 		t.Errorf("expected no error for nil columns, got: %v", err)
 	}
 
-	err = validateKeysetColumns([]KeysetColumn{})
+	err = validateKeysetColumns([]model.KeysetColumn{})
 	if err != nil {
 		t.Errorf("expected no error for empty columns, got: %v", err)
 	}
 }
 
 func TestGenerateKeysetWhereClause_SingleColumnAsc(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderAsc},
 		},
 		Values: []interface{}{int64(1000)},
-		Mode:   KeysetCursorModeAfter,
+		Mode:   model.KeysetCursorModeAfter,
 	}
 	clause, args := generateKeysetWhereClause(cursor, "", 0)
 	expected := "(created_at > $1)"
@@ -74,12 +76,12 @@ func TestGenerateKeysetWhereClause_SingleColumnAsc(t *testing.T) {
 }
 
 func TestGenerateKeysetWhereClause_SingleColumnDesc(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderDesc},
 		},
 		Values: []interface{}{int64(1000)},
-		Mode:   KeysetCursorModeAfter,
+		Mode:   model.KeysetCursorModeAfter,
 	}
 	clause, args := generateKeysetWhereClause(cursor, "", 0)
 	expected := "(created_at < $1)"
@@ -92,13 +94,13 @@ func TestGenerateKeysetWhereClause_SingleColumnDesc(t *testing.T) {
 }
 
 func TestGenerateKeysetWhereClause_TwoColumnsMixedDirection(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderDesc},
 			{Attribute: "row_id", Direction: forma.SortOrderAsc},
 		},
 		Values: []interface{}{int64(1000), "abc-123"},
-		Mode:   KeysetCursorModeAfter,
+		Mode:   model.KeysetCursorModeAfter,
 	}
 	clause, args := generateKeysetWhereClause(cursor, "", 0)
 	expected := "(created_at < $1) OR (created_at = $1 AND row_id > $2)"
@@ -111,12 +113,12 @@ func TestGenerateKeysetWhereClause_TwoColumnsMixedDirection(t *testing.T) {
 }
 
 func TestGenerateKeysetWhereClause_ParamOffset(t *testing.T) {
-	cursor := &KeysetCursor{
-		Columns: []KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderAsc},
 		},
 		Values: []interface{}{int64(1000)},
-		Mode:   KeysetCursorModeAfter,
+		Mode:   model.KeysetCursorModeAfter,
 	}
 	clause, args := generateKeysetWhereClause(cursor, "", 4)
 	expected := "(created_at > $5)"
@@ -130,8 +132,8 @@ func TestGenerateKeysetWhereClause_ParamOffset(t *testing.T) {
 
 func TestBuildKeysetOrderBy(t *testing.T) {
 	t.Run("single_asc", func(t *testing.T) {
-		cursor := &KeysetCursor{
-			Columns: []KeysetColumn{
+		cursor := &model.KeysetCursor{
+			Columns: []model.KeysetColumn{
 				{Attribute: "created_at", Direction: forma.SortOrderAsc},
 			},
 		}
@@ -141,8 +143,8 @@ func TestBuildKeysetOrderBy(t *testing.T) {
 		}
 	})
 	t.Run("mixed", func(t *testing.T) {
-		cursor := &KeysetCursor{
-			Columns: []KeysetColumn{
+		cursor := &model.KeysetCursor{
+			Columns: []model.KeysetColumn{
 				{Attribute: "created_at", Direction: forma.SortOrderDesc},
 				{Attribute: "row_id", Direction: forma.SortOrderAsc},
 			},
@@ -161,13 +163,13 @@ func TestBuildKeysetOrderBy(t *testing.T) {
 }
 
 func TestExtractCursorFromRecord(t *testing.T) {
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		RowID:     uuid.Must(uuid.Parse("12345678-1234-1234-1234-123456789012")),
 		CreatedAt: int64(1700000000),
 		UpdatedAt: int64(1700000100),
 		SchemaID:  int16(42),
 	}
-	columns := []KeysetColumn{
+	columns := []model.KeysetColumn{
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
 		{Attribute: "row_id", Direction: forma.SortOrderAsc},
 	}
@@ -175,7 +177,7 @@ func TestExtractCursorFromRecord(t *testing.T) {
 	if cursor == nil {
 		t.Fatal("expected non-nil cursor")
 	}
-	if cursor.Mode != KeysetCursorModeAfter {
+	if cursor.Mode != model.KeysetCursorModeAfter {
 		t.Errorf("expected after mode, got %s", cursor.Mode)
 	}
 	if len(cursor.Values) != 2 {
@@ -190,7 +192,7 @@ func TestExtractCursorFromRecord(t *testing.T) {
 }
 
 func TestExtractCursorFromRecord_NilRecord(t *testing.T) {
-	columns := []KeysetColumn{
+	columns := []model.KeysetColumn{
 		{Attribute: "created_at", Direction: forma.SortOrderDesc},
 	}
 	cursor := extractCursorFromRecord(nil, columns)
@@ -200,7 +202,7 @@ func TestExtractCursorFromRecord_NilRecord(t *testing.T) {
 }
 
 func TestExtractCursorFromRecord_EmptyColumns(t *testing.T) {
-	record := &PersistentRecord{}
+	record := &model.PersistentRecord{}
 	cursor := extractCursorFromRecord(record, nil)
 	if cursor != nil {
 		t.Errorf("expected nil cursor for empty columns")
@@ -208,8 +210,8 @@ func TestExtractCursorFromRecord_EmptyColumns(t *testing.T) {
 }
 
 func TestRecordColumnValue_SchemaID(t *testing.T) {
-	record := &PersistentRecord{SchemaID: int16(103)}
-	col := KeysetColumn{Attribute: "schema_id"}
+	record := &model.PersistentRecord{SchemaID: int16(103)}
+	col := model.KeysetColumn{Attribute: "schema_id"}
 	val := recordColumnValue(record, col)
 	if val != int64(103) {
 		t.Errorf("expected schema_id=103, got %v (%T)", val, val)

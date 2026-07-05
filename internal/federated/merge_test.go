@@ -3,11 +3,13 @@ package federated
 import (
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 )
 
-func makeRec(schema int16, id uuid.UUID, updated int64) *PersistentRecord {
-	return &PersistentRecord{
+func makeRec(schema int16, id uuid.UUID, updated int64) *model.PersistentRecord {
+	return &model.PersistentRecord{
 		SchemaID:  schema,
 		RowID:     id,
 		UpdatedAt: updated,
@@ -20,10 +22,10 @@ func TestMergeLWW_PrefersNewest(t *testing.T) {
 	warm := makeRec(1, rowID, 200)
 	cold := makeRec(1, rowID, 150)
 
-	inputs := map[DataTier][]*PersistentRecord{
-		DataTierHot:  {hot},
-		DataTierWarm: {warm},
-		DataTierCold: {cold},
+	inputs := map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  {hot},
+		model.DataTierWarm: {warm},
+		model.DataTierCold: {cold},
 	}
 
 	results, err := MergePersistentRecordsByTier(inputs, false)
@@ -43,9 +45,9 @@ func TestMergeLWW_PreferHotTie(t *testing.T) {
 	hot := makeRec(1, rowID, 100)
 	warm := makeRec(1, rowID, 100)
 
-	inputs := map[DataTier][]*PersistentRecord{
-		DataTierHot:  {hot},
-		DataTierWarm: {warm},
+	inputs := map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  {hot},
+		model.DataTierWarm: {warm},
 	}
 
 	// Without preferHot, deterministic tie-breaker may choose lexicographic tier;
@@ -69,9 +71,9 @@ func TestMergeLWW_DeletedNewestSuppressesOlderActive(t *testing.T) {
 	hot.DeletedAt = &deletedAt
 	cold := makeRec(1, rowID, 100)
 
-	results, err := MergePersistentRecordsByTier(map[DataTier][]*PersistentRecord{
-		DataTierHot:  {hot},
-		DataTierCold: {cold},
+	results, err := MergePersistentRecordsByTier(map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  {hot},
+		model.DataTierCold: {cold},
 	}, false)
 
 	if err != nil {
@@ -87,9 +89,9 @@ func TestMergeLWW_EqualTimestampUsesTierPriority(t *testing.T) {
 	hot := makeRec(1, rowID, 100)
 	cold := makeRec(1, rowID, 100)
 
-	results, err := MergePersistentRecordsByTier(map[DataTier][]*PersistentRecord{
-		DataTierHot:  {hot},
-		DataTierCold: {cold},
+	results, err := MergePersistentRecordsByTier(map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  {hot},
+		model.DataTierCold: {cold},
 	}, false)
 
 	if err != nil {

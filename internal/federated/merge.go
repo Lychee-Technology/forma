@@ -3,11 +3,13 @@ package federated
 import (
 	"fmt"
 	"sort"
+
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // MergePersistentRecordsByTier performs a merge-on-read across multiple data tiers.
-// Inputs are provided as a map from DataTier -> slice of *PersistentRecord.
-// Last-write-wins semantics are applied using PersistentRecord.UpdatedAt and ChangeLog flushed state.
+// Inputs are provided as a map from model.DataTier -> slice of *model.PersistentRecord.
+// Last-write-wins semantics are applied using model.PersistentRecord.UpdatedAt and ChangeLog flushed state.
 //
 // Behavior:
 //   - Records are deduplicated by (SchemaID, RowID).
@@ -25,27 +27,27 @@ import (
 //   - Result slice is sorted by SchemaID then RowID for deterministic output.
 //
 // The preferHot parameter is deprecated and ignored; tier priority is always deterministic.
-func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, preferHot bool) ([]*PersistentRecord, error) {
+func MergePersistentRecordsByTier(inputs map[model.DataTier][]*model.PersistentRecord, preferHot bool) ([]*model.PersistentRecord, error) {
 	if inputs == nil {
 		return nil, fmt.Errorf("inputs cannot be nil")
 	}
 
 	// Create tier priority for deterministic tie-breaking.
 	// Higher value = higher priority (Hot > Warm > Cold).
-	tierPriority := map[DataTier]int{
-		DataTierHot:  3,
-		DataTierWarm: 2,
-		DataTierCold: 1,
+	tierPriority := map[model.DataTier]int{
+		model.DataTierHot:  3,
+		model.DataTierWarm: 2,
+		model.DataTierCold: 1,
 	}
 
 	// Track winner per key (row-level LWW) as before, but also collect all seen records
 	// per key so we can merge OtherAttributes across tiers.
-	merged := make(map[string]*PersistentRecord)
-	mergedSourceTier := make(map[string]DataTier)
+	merged := make(map[string]*model.PersistentRecord)
+	mergedSourceTier := make(map[string]model.DataTier)
 
 	// recordsByKey holds all records seen for a particular merge key.
-	recordsByKey := make(map[string][]*PersistentRecord)
-	tiersByKey := make(map[string][]DataTier)
+	recordsByKey := make(map[string][]*model.PersistentRecord)
+	tiersByKey := make(map[string][]model.DataTier)
 
 	for tier, records := range inputs {
 		if records == nil {
@@ -90,7 +92,7 @@ func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, prefe
 	}
 
 	// Collect results deterministically, excluding deleted winners
-	results := make([]*PersistentRecord, 0, len(merged))
+	results := make([]*model.PersistentRecord, 0, len(merged))
 	for _, v := range merged {
 		// Skip records that are deleted (soft-delete suppression)
 		if v.DeletedAt != nil && *v.DeletedAt != 0 {
@@ -108,13 +110,13 @@ func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, prefe
 	return results, nil
 }
 
-func mergeKey(r *PersistentRecord) string {
+func mergeKey(r *model.PersistentRecord) string {
 	return fmt.Sprintf("%d:%s", r.SchemaID, r.RowID.String())
 }
 
 // chooseLWW returns the record that should win based on UpdatedAt and preferences.
 // existing and newRec are compared; existingTier / newTier indicate their source tiers.
-func chooseLWW(existing *PersistentRecord, existingTier DataTier, newRec *PersistentRecord, newTier DataTier, preferHot bool, tierPriority map[DataTier]int) *PersistentRecord {
+func chooseLWW(existing *model.PersistentRecord, existingTier model.DataTier, newRec *model.PersistentRecord, newTier model.DataTier, preferHot bool, tierPriority map[model.DataTier]int) *model.PersistentRecord {
 	// If either record has a ChangeLog origin marker (OtherAttributes may include a special meta),
 	// prefer the record that indicates it's from the ChangeLog buffer. We represent this by a
 	// convention: repositories providing inputs should set UpdatedAt and DeletedAt accordingly,
@@ -165,14 +167,14 @@ func chooseLWW(existing *PersistentRecord, existingTier DataTier, newRec *Persis
 // mergeOtherAttributes merges EAV attributes across multiple source records for the same row.
 // Deduplication key: (AttrID, ArrayIndices).
 // Selection: attribute from record with highest UpdatedAt; ties resolved with preferHot and deterministic tier ordering.
-func mergeOtherAttributes(records []*PersistentRecord, tiers []DataTier, preferHot bool, tierPriority map[DataTier]int) []EAVRecord {
+func mergeOtherAttributes(records []*model.PersistentRecord, tiers []model.DataTier, preferHot bool, tierPriority map[model.DataTier]int) []model.EAVRecord {
 	if len(records) == 0 {
 		return nil
 	}
 	type pickMeta struct {
-		attr      EAVRecord
+		attr      model.EAVRecord
 		updatedAt int64
-		tier      DataTier
+		tier      model.DataTier
 	}
 
 	attrMap := make(map[string]pickMeta) // key -> chosen attr meta
@@ -213,7 +215,7 @@ func mergeOtherAttributes(records []*PersistentRecord, tiers []DataTier, preferH
 	}
 
 	// Collect and sort attributes for deterministic output
-	out := make([]EAVRecord, 0, len(attrMap))
+	out := make([]model.EAVRecord, 0, len(attrMap))
 	for _, m := range attrMap {
 		out = append(out, m.attr)
 	}

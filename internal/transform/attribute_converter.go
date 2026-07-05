@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/numutil"
@@ -13,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// AttributeConverter provides conversion between EntityAttribute and EAVRecord
+// AttributeConverter provides conversion between model.EntityAttribute and model.EAVRecord
 type AttributeConverter struct {
 	registry forma.SchemaRegistry
 }
@@ -25,9 +27,9 @@ func NewAttributeConverter(registry forma.SchemaRegistry) *AttributeConverter {
 	}
 }
 
-// ToEAVRecord converts an EntityAttribute to an EAVRecord
-func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) (EAVRecord, error) {
-	record := EAVRecord{
+// ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord
+func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.UUID) (model.EAVRecord, error) {
+	record := model.EAVRecord{
 		SchemaID:     attr.SchemaID,
 		RowID:        rowID,
 		AttrID:       attr.AttrID,
@@ -84,9 +86,9 @@ func (c *AttributeConverter) ToEAVRecord(attr EntityAttribute, rowID uuid.UUID) 
 	return record, nil
 }
 
-// FromEAVRecord converts an EAVRecord to an EntityAttribute
-func (c *AttributeConverter) FromEAVRecord(record EAVRecord, valueType forma.ValueType) (EntityAttribute, error) {
-	attr := EntityAttribute{
+// FromEAVRecord converts an model.EAVRecord to an model.EntityAttribute
+func (c *AttributeConverter) FromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (model.EntityAttribute, error) {
+	attr := model.EntityAttribute{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
 		AttrID:       record.AttrID,
@@ -104,8 +106,8 @@ func (c *AttributeConverter) FromEAVRecord(record EAVRecord, valueType forma.Val
 }
 
 // ToEAVRecords converts a slice of EntityAttributes to EAVRecords
-func (c *AttributeConverter) ToEAVRecords(attributes []EntityAttribute, rowID uuid.UUID) ([]EAVRecord, error) {
-	records := make([]EAVRecord, 0, len(attributes))
+func (c *AttributeConverter) ToEAVRecords(attributes []model.EntityAttribute, rowID uuid.UUID) ([]model.EAVRecord, error) {
+	records := make([]model.EAVRecord, 0, len(attributes))
 	for _, attr := range attributes {
 		record, err := c.ToEAVRecord(attr, rowID)
 		if err != nil {
@@ -117,9 +119,9 @@ func (c *AttributeConverter) ToEAVRecords(attributes []EntityAttribute, rowID uu
 }
 
 // FromEAVRecords converts a slice of EAVRecords to EntityAttributes
-func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttribute, error) {
+func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
-		return []EntityAttribute{}, nil
+		return []model.EntityAttribute{}, nil
 	}
 
 	// Get schema metadata to determine value types
@@ -131,7 +133,7 @@ func (c *AttributeConverter) FromEAVRecords(records []EAVRecord) ([]EntityAttrib
 
 	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
 
-	attributes := make([]EntityAttribute, 0, len(records))
+	attributes := make([]model.EntityAttribute, 0, len(records))
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
@@ -455,7 +457,7 @@ func ToFloat64(v any) (float64, bool) {
 	return numutil.ToFloat64(v)
 }
 
-func extractValueFromEAVRecord(record EAVRecord, valueType forma.ValueType) (any, error) {
+func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (any, error) {
 	switch valueType {
 	case forma.ValueTypeText:
 		if record.ValueNumeric != nil {
