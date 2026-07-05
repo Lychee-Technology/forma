@@ -3,13 +3,14 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -420,7 +421,7 @@ func TestStreamOptimizedQueryRenderCache(t *testing.T) {
 		_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"integer_01\" > $2", []any{int64(5)}, 10, 0, nil, true, nil)
 		require.NoError(t, err)
 	}
-	hits, misses := repo.renderCache.Stats()
+	hits, misses := repo.planCache.Stats()
 	require.Equal(t, int64(1), hits, "second identical shape must hit the render cache")
 	require.Equal(t, int64(1), misses)
 
@@ -430,7 +431,7 @@ func TestStreamOptimizedQueryRenderCache(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"row_id"}))
 	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"text_01\" = $2", []any{"x"}, 10, 0, nil, true, nil)
 	require.NoError(t, err)
-	_, misses = repo.renderCache.Stats()
+	_, misses = repo.planCache.Stats()
 	require.Equal(t, int64(2), misses)
 }
 
@@ -476,10 +477,14 @@ func BenchmarkOptimizedQueryRender(b *testing.B) {
 	})
 
 	b.Run("cached", func(b *testing.B) {
-		cache := sqlgen.NewRenderCache(16)
-		key := optimizedQueryShapeKey(tables, true, `m."integer_01" > $2`, 1, nil)
+		cache := queryplan.NewCache(16)
+		key := queryplan.Key{
+			Kind:      "postgres_optimized_template",
+			SchemaID:  1,
+			ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, true, `m."integer_01" > $2`, 1, nil), 16),
+		}
 		for i := 0; i < b.N; i++ {
-			if _, _, err := cache.GetOrRender(key, func() (string, error) {
+			if _, _, err := cache.GetOrBuild(key, func() (any, error) {
 				return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
 			}); err != nil {
 				b.Fatal(err)

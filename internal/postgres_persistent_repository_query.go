@@ -8,6 +8,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -54,13 +55,18 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		"PageSize": fmt.Sprintf("$%d", len(args)+2),
 	}
 
-	query, cacheHit, err := r.renderCache.GetOrRender(
-		optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders),
-		func() (string, error) { return renderTemplate(optimizedQuerySQLTemplate, sqlParams) },
-	)
+	renderKey := queryplan.Key{
+		Kind:      "postgres_optimized_template",
+		SchemaID:  schemaID,
+		ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders), 16),
+	}
+	queryAny, cacheHit, err := r.planCache.GetOrBuild(renderKey, func() (any, error) {
+		return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("build optimized query: %w", err)
 	}
+	query := queryAny.(string)
 	if !cacheHit {
 		zap.S().Debugw("optimized query render cache miss", "schemaID", schemaID)
 	}
