@@ -9,6 +9,11 @@ import (
 	"sync"
 	"time"
 
+	fedengine "github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	forma "github.com/lychee-technology/forma"
@@ -212,7 +217,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	}
 	type concurrentResult struct {
 		run     WorkloadRunResult
-		records []*internal.PersistentRecord
+		records []*model.PersistentRecord
 	}
 	for _, workload := range r.workloads {
 		if !workload.SupportsDistribution(r.genConfig.Distribution) {
@@ -366,7 +371,7 @@ var retryBackoffDelay = func(attempt int) time.Duration {
 	return time.Duration(attempt) * time.Second
 }
 
-func executeWorkloadWithRetry(ctx context.Context, execute func(context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error)) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+func executeWorkloadWithRetry(ctx context.Context, execute func(context.Context) (WorkloadRunResult, []*model.PersistentRecord, error)) (WorkloadRunResult, []*model.PersistentRecord, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxInfraRetries; attempt++ {
 		if attempt > 0 {
@@ -385,13 +390,13 @@ func executeWorkloadWithRetry(ctx context.Context, execute func(context.Context)
 	return WorkloadRunResult{}, nil, lastErr
 }
 
-func (r *Runner) executeWorkloadWithRetry(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
-	return executeWorkloadWithRetry(ctx, func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+func (r *Runner) executeWorkloadWithRetry(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*model.PersistentRecord, error) {
+	return executeWorkloadWithRetry(ctx, func(ctx context.Context) (WorkloadRunResult, []*model.PersistentRecord, error) {
 		return r.executeWorkload(ctx, h, workload)
 	})
 }
 
-func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*model.PersistentRecord, error) {
 	if workload.ExecutionSource == "service" {
 		return r.executeServiceWorkload(ctx, h, workload)
 	}
@@ -448,7 +453,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 	return run, result.Records, nil
 }
 
-func extractRouteInfo(plan *internal.ExecutionPlan) (engine, reason string) {
+func extractRouteInfo(plan *model.ExecutionPlan) (engine, reason string) {
 	if plan == nil {
 		return "", ""
 	}
@@ -481,14 +486,14 @@ func routeInfoFromPlanNotes(notes []string) (engine, reason string) {
 	return
 }
 
-func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (WorkloadRunResult, []*model.PersistentRecord, error) {
 	req, pageSize := queryRequestForWorkload(workload, r.config.PageSize)
 	start := time.Now()
 	capturePlan := workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix
 
 	var result *forma.QueryResult
-	var records []*internal.PersistentRecord
-	var plan *internal.ExecutionPlan
+	var records []*model.PersistentRecord
+	var plan *model.ExecutionPlan
 	var err error
 
 	if workload.UseKeysetPagination {
@@ -526,7 +531,7 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 	return run, records, nil
 }
 
-func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (*forma.QueryResult, []*internal.PersistentRecord, *internal.ExecutionPlan, error) {
+func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -544,11 +549,11 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		return nil, nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
 	}
 
-	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
+	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
 	}
-	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
+	metadata, err := schemameta.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
@@ -570,14 +575,14 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		}
 	}
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
-	engine := internal.NewDBFederatedQueryEngine(
+	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
-		internal.NewPostgresDirtyIDFetcher(pool),
-		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		fedengine.NewPostgresDirtyIDFetcher(pool),
+		fedengine.NewDuckDBClientQueryExecutor(h.Duck),
 		nil,
 		duckCfg,
 		metadata,
-		internal.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.DuckDBPostgresConnStringFromPool(pool),
 	)
 
 	schemaName := workload.TargetSchema
@@ -598,17 +603,17 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		pageNumber = 1
 	}
 
-	tables := internal.StorageTables{
+	tables := model.StorageTables{
 		EAVData:    h.CDCConfig.EAVDataTable,
 		EntityMain: h.CDCConfig.EntityMainTable,
 		ChangeLog:  h.CDCConfig.ChangeLogTable,
 	}
 
 	// Build attribute orders for sort
-	attrOrders := []internal.AttributeOrder{}
+	attrOrders := []model.AttributeOrder{}
 	if cache, ok := metadata.GetSchemaCacheByID(schemaID); ok {
 		if meta, found := cache["tradeTime"]; found {
-			attrOrders = append(attrOrders, internal.AttributeOrder{
+			attrOrders = append(attrOrders, model.AttributeOrder{
 				AttrID:    meta.AttributeID,
 				ValueType: meta.ValueType,
 				SortOrder: forma.SortOrderDesc,
@@ -618,8 +623,8 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	_ = attrOrders
 
 	// Build the federated query with filter conditions
-	fq := &internal.FederatedAttributeQuery{
-		AttributeQuery: internal.AttributeQuery{
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
 			SchemaID: schemaID,
 			Limit:    pageSize,
 			Offset:   0,
@@ -629,7 +634,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		fq.Condition = conditionForWorkload(workload)
 	}
 	if h.Duck != nil {
-		fq.DuckDBHints = &internal.DuckDBRenderHints{
+		fq.DuckDBHints = &model.DuckDBRenderHints{
 			S3ParquetPathTemplate: benchmarkS3ParquetPathTemplate(h),
 		}
 	}
@@ -640,7 +645,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	if pageNumber == 1 {
 		// Page 1: keyset with no cursor is equivalent to offset 0.
 		// For page 1 of a keyset workload, use a nil cursor.
-		recs, total, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, fq, pageSize, 0, nil, &internal.FederatedQueryOptions{
+		recs, total, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, fq, pageSize, 0, nil, &model.FederatedQueryOptions{
 			IncludeExecutionPlan: true,
 		})
 		if err != nil {
@@ -657,7 +662,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	cursorFq := *fq
 	cursorFq.Limit = 1
 	cursorFq.Offset = cursorOffset
-	cursorRecs, _, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, &cursorFq, 1, cursorOffset, nil, &internal.FederatedQueryOptions{MaxRows: 1})
+	cursorRecs, _, err := engine.ExecuteDuckDBFederatedQuery(ctx, tables, &cursorFq, 1, cursorOffset, nil, &model.FederatedQueryOptions{MaxRows: 1})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("fetch cursor row: %w", err)
 	}
@@ -668,8 +673,8 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 
 	// Build the keyset cursor from the cursor row.
 	// Benchmark schema sorts by created_at (trade_time) DESC + row_id ASC tiebreaker.
-	cursor := &internal.KeysetCursor{
-		Columns: []internal.KeysetColumn{
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderDesc},
 			{Attribute: "row_id", Direction: forma.SortOrderAsc},
 		},
@@ -677,11 +682,11 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 			cursorRecs[0].CreatedAt,
 			cursorRecs[0].RowID.String(),
 		},
-		Mode: internal.KeysetCursorModeAfter,
+		Mode: model.KeysetCursorModeAfter,
 	}
 
 	fq.KeysetCursor = cursor
-	opts := &internal.FederatedQueryOptions{
+	opts := &model.FederatedQueryOptions{
 		KeysetEnabled:        true,
 		IncludeExecutionPlan: true,
 	}
@@ -694,7 +699,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 
 	plan := opts.ExecutionPlan
 	if plan == nil {
-		plan = &internal.ExecutionPlan{Notes: []string{"keyset_pagination"}, Timings: map[string]int64{}}
+		plan = &model.ExecutionPlan{Notes: []string{"keyset_pagination"}, Timings: map[string]int64{}}
 	} else {
 		plan.Notes = append(plan.Notes, "keyset_pagination")
 	}
@@ -708,7 +713,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	return result, recs, plan, nil
 }
 
-func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int) (*forma.QueryResult, []*internal.PersistentRecord, error) {
+func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int) (*forma.QueryResult, []*model.PersistentRecord, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -726,11 +731,11 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		return nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
 	}
 
-	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
+	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
 	}
-	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
+	metadata, err := schemameta.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
@@ -753,14 +758,14 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	}
 
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
-	engine := internal.NewDBFederatedQueryEngine(
+	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
-		internal.NewPostgresDirtyIDFetcher(pool),
-		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		fedengine.NewPostgresDirtyIDFetcher(pool),
+		fedengine.NewDuckDBClientQueryExecutor(h.Duck),
 		nil,
 		duckCfg,
 		metadata,
-		internal.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.DuckDBPostgresConnStringFromPool(pool),
 	)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
@@ -780,7 +785,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		},
 		DuckDB: duckCfg,
 	}
-	transformer := internal.NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	manager := internal.NewEntityManager(transformer, repo, engine, registry, config)
 	if req != nil && req.Federated != nil && req.Federated.Enabled {
 		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
@@ -796,7 +801,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	return result, records, nil
 }
 
-func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool) (*forma.QueryResult, []*internal.PersistentRecord, *internal.ExecutionPlan, error) {
+func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -819,11 +824,11 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("prepare benchmark schema registry: %w", err)
 	}
-	registry, err := internal.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
+	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaTable, FixturesDir())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build benchmark schema registry: %w", err)
 	}
-	metadata, err := internal.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
+	metadata, err := schemameta.NewMetadataLoader(pool, schemaTable, FixturesDir()).LoadMetadata(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
@@ -854,14 +859,14 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		}
 	}
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
-	engine := internal.NewDBFederatedQueryEngine(
+	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
-		internal.NewPostgresDirtyIDFetcher(pool),
-		internal.NewDuckDBClientQueryExecutor(h.Duck),
+		fedengine.NewPostgresDirtyIDFetcher(pool),
+		fedengine.NewDuckDBClientQueryExecutor(h.Duck),
 		nil,
 		duckCfg,
 		metadata,
-		internal.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.DuckDBPostgresConnStringFromPool(pool),
 	)
 
 	pageSize := benchmarkDefaultPageSize(defaultPageSize)
@@ -873,14 +878,14 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		sortOrder = forma.SortOrderAsc
 	}
 
-	var attrOrders []internal.AttributeOrder
+	var attrOrders []model.AttributeOrder
 	if cache, ok := metadata.GetSchemaCacheByID(schemaID); ok {
 		for _, sortAttr := range req.SortBy {
 			meta, found := cache[sortAttr]
 			if !found {
 				continue
 			}
-			order := internal.AttributeOrder{
+			order := model.AttributeOrder{
 				AttrID:    meta.AttributeID,
 				ValueType: meta.ValueType,
 				SortOrder: sortOrder,
@@ -895,30 +900,30 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		}
 	}
 
-	plan := &internal.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
-	fqOpts := &internal.FederatedQueryOptions{
+	plan := &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	fqOpts := &model.FederatedQueryOptions{
 		IncludeExecutionPlan: true,
 		ExecutionPlan:        plan,
 	}
 
-	tables := internal.StorageTables{
+	tables := model.StorageTables{
 		EntityMain: h.CDCConfig.EntityMainTable,
 		EAVData:    h.CDCConfig.EAVDataTable,
 		ChangeLog:  h.CDCConfig.ChangeLogTable,
 	}
 
-	fq := &internal.FederatedAttributeQuery{
-		AttributeQuery: internal.AttributeQuery{
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
 			SchemaID:        schemaID,
 			Condition:       req.Condition,
 			AttributeOrders: attrOrders,
 			Limit:           limit,
 			Offset:          offset,
 		},
-		PreferredTiers: []internal.DataTier{internal.DataTierHot, internal.DataTierWarm, internal.DataTierCold},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
 	}
 	if req.Federated.S3ParquetPathTemplate != "" {
-		fq.DuckDBHints = &internal.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
+		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
 	}
 	if req.Federated.PreferHot {
 		fq.PreferHot = true
@@ -1004,12 +1009,12 @@ func conditionForWorkload(workload WorkloadDefinition) forma.Condition {
 	return &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: conditions}
 }
 
-func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryResult, registry forma.SchemaRegistry) ([]*internal.PersistentRecord, error) {
+func persistentRecordsForQueryResult(ctx context.Context, result *forma.QueryResult, registry forma.SchemaRegistry) ([]*model.PersistentRecord, error) {
 	if result == nil {
 		return nil, nil
 	}
-	transformer := internal.NewPersistentRecordTransformer(registry)
-	records := make([]*internal.PersistentRecord, 0, len(result.Data))
+	transformer := transform.NewPersistentRecordTransformer(registry)
+	records := make([]*model.PersistentRecord, 0, len(result.Data))
 	for _, data := range result.Data {
 		if data == nil {
 			continue
@@ -1709,7 +1714,7 @@ func partsToStr(parts []string) string {
 	return result
 }
 
-func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*internal.PersistentRecord, semantics workloadSemantics) []AssertionResult {
+func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunResult, records []*model.PersistentRecord, semantics workloadSemantics) []AssertionResult {
 	assertions := []AssertionResult{validateUniqueRows(run), validateSchemaScope(workload, records)}
 	if len(workload.ResolvedFilterConditions()) > 0 {
 		assertions = append(assertions, validateFilterMatch(workload, records))
@@ -1723,7 +1728,7 @@ func validateResultLevelAssertions(workload WorkloadDefinition, run WorkloadRunR
 	return assertions
 }
 
-func validateSchemaScope(workload WorkloadDefinition, records []*internal.PersistentRecord) AssertionResult {
+func validateSchemaScope(workload WorkloadDefinition, records []*model.PersistentRecord) AssertionResult {
 	expectedSchemaID, err := workloadSchemaID(workload.TargetSchema)
 	if err != nil {
 		return AssertionResult{Name: "schema-scoped-results-match-target", Passed: false, Message: err.Error()}
@@ -1767,7 +1772,7 @@ func validateUniqueRows(run WorkloadRunResult) AssertionResult {
 	return AssertionResult{Name: "unique-row-ids-within-page", Passed: true, Message: fmt.Sprintf("rows=%d", len(run.RowIDs))}
 }
 
-func validateFilterMatch(workload WorkloadDefinition, records []*internal.PersistentRecord) AssertionResult {
+func validateFilterMatch(workload WorkloadDefinition, records []*model.PersistentRecord) AssertionResult {
 	for _, record := range records {
 		for key, expected := range workload.ResolvedFilterConditions() {
 			if !recordMatchesFilter(record, key, fmt.Sprint(expected)) {
@@ -1778,7 +1783,7 @@ func validateFilterMatch(workload WorkloadDefinition, records []*internal.Persis
 	return AssertionResult{Name: "filter-results-match-request", Passed: true, Message: fmt.Sprintf("conditions=%v", workload.ResolvedFilterConditions())}
 }
 
-func validateTradeTimeWindow(records []*internal.PersistentRecord, semantics workloadSemantics) AssertionResult {
+func validateTradeTimeWindow(records []*model.PersistentRecord, semantics workloadSemantics) AssertionResult {
 	for _, record := range records {
 		tradeTime, ok := record.Int64Items["tradeTime"]
 		if !ok {
@@ -1794,7 +1799,7 @@ func validateTradeTimeWindow(records []*internal.PersistentRecord, semantics wor
 	return AssertionResult{Name: "tradeTime-window-match-request", Passed: true, Message: fmt.Sprintf("rows=%d start=%d end=%d", len(records), semantics.TradeTimeStart, semantics.TradeTimeEnd)}
 }
 
-func validateSortOrder(records []*internal.PersistentRecord, attribute string, desc bool) AssertionResult {
+func validateSortOrder(records []*model.PersistentRecord, attribute string, desc bool) AssertionResult {
 	values := make([]int64, 0, len(records))
 	for _, record := range records {
 		value, ok := record.Int64Items[attribute]
@@ -1816,7 +1821,7 @@ func validateSortOrder(records []*internal.PersistentRecord, attribute string, d
 	return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: true, Message: fmt.Sprintf("comparable_rows=%d", len(values))}
 }
 
-func recordMatchesFilter(record *internal.PersistentRecord, attribute, expected string) bool {
+func recordMatchesFilter(record *model.PersistentRecord, attribute, expected string) bool {
 	switch attribute {
 	case "symbol", "exchange", "region", "name":
 		return record.TextItems[attribute] == expected
@@ -1827,7 +1832,7 @@ func recordMatchesFilter(record *internal.PersistentRecord, attribute, expected 
 	}
 }
 
-func persistentRecordIDs(records []*internal.PersistentRecord) []string {
+func persistentRecordIDs(records []*model.PersistentRecord) []string {
 	ids := make([]string, 0, len(records))
 	for _, record := range records {
 		ids = append(ids, record.RowID.String())
@@ -1858,7 +1863,7 @@ func countFailedAssertions(assertions []AssertionResult) int {
 	return failed
 }
 
-func extractPerTierMetrics(plan *internal.ExecutionPlan) *PerTierMetrics {
+func extractPerTierMetrics(plan *model.ExecutionPlan) *PerTierMetrics {
 	if plan == nil {
 		return nil
 	}

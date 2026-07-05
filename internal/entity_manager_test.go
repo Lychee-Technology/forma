@@ -10,6 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -21,7 +25,7 @@ import (
 // Parameters:
 //   - schemaDir: Directory containing *_attributes.json files
 func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error) {
-	return NewFileSchemaRegistryFromDirectory(schemaDir)
+	return schemameta.NewFileSchemaRegistryFromDirectory(schemaDir)
 }
 
 // TestEntityManager_Create tests entity creation
@@ -33,7 +37,7 @@ func TestEntityManager_Create(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	// Create mock repository
 	mockRepo := newMockPersistentRecordRepository()
@@ -90,7 +94,7 @@ func TestEntityManager_Create_StripsRelationFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
@@ -140,7 +144,7 @@ func TestEntityManager_Get(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
@@ -197,7 +201,7 @@ func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	leadSchemaID, _, err := registry.GetSchemaByName("lead")
@@ -274,7 +278,7 @@ func TestEntityManager_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -310,7 +314,7 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -364,7 +368,7 @@ func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -394,7 +398,7 @@ func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(reg)
+	transformer := transform.NewPersistentRecordTransformer(reg)
 	mockRepo := newMockPersistentRecordRepository()
 	em := NewEntityManager(transformer, mockRepo, nil, reg, config)
 
@@ -498,52 +502,52 @@ func TestSchemaRegistry_GetSchemaByID(t *testing.T) {
 
 // Mock repository for testing
 type mockPersistentRecordRepository struct {
-	records            map[int16]map[uuid.UUID]*PersistentRecord
-	insertedRecords    []*PersistentRecord
+	records            map[int16]map[uuid.UUID]*model.PersistentRecord
+	insertedRecords    []*model.PersistentRecord
 	deleteCalls        int
-	lastQuery          *PersistentRecordQuery
-	queries            []*PersistentRecordQuery
-	queryFunc          func(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+	lastQuery          *model.PersistentRecordQuery
+	queries            []*model.PersistentRecordQuery
+	queryFunc          func(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
 	atomicDeleteFailAt int
 }
 
 type mockFederatedQueryEngine struct {
-	lastTables StorageTables
-	lastQuery  *FederatedAttributeQuery
-	lastOpts   *FederatedQueryOptions
-	queryFunc  func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error)
+	lastTables model.StorageTables
+	lastQuery  *model.FederatedAttributeQuery
+	lastOpts   *model.FederatedQueryOptions
+	queryFunc  func(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error)
 }
 
 func newMockPersistentRecordRepository() *mockPersistentRecordRepository {
 	return &mockPersistentRecordRepository{
-		records: make(map[int16]map[uuid.UUID]*PersistentRecord),
+		records: make(map[int16]map[uuid.UUID]*model.PersistentRecord),
 	}
 }
 
-func (m *mockPersistentRecordRepository) storeRecord(record *PersistentRecord) {
+func (m *mockPersistentRecordRepository) storeRecord(record *model.PersistentRecord) {
 	if record == nil {
 		return
 	}
 	if m.records[record.SchemaID] == nil {
-		m.records[record.SchemaID] = make(map[uuid.UUID]*PersistentRecord)
+		m.records[record.SchemaID] = make(map[uuid.UUID]*model.PersistentRecord)
 	}
 	m.records[record.SchemaID][record.RowID] = record
 }
 
-func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
 	m.insertedRecords = append(m.insertedRecords, record)
 	m.storeRecord(record)
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (m *mockPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
 	m.storeRecord(record)
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	m.deleteCalls++
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		delete(schemaRecords, rowID)
@@ -551,7 +555,7 @@ func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Cont
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		if record, ok := schemaRecords[rowID]; ok {
 			return record, nil
@@ -560,7 +564,7 @@ func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context
 	return nil, nil
 }
 
-func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
 	if m.lastQuery == nil {
 		m.lastQuery = query
 	}
@@ -586,7 +590,7 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 		end = start + query.Limit
 	}
 
-	selected := make([]*PersistentRecord, 0, end-start)
+	selected := make([]*model.PersistentRecord, 0, end-start)
 	for _, id := range rowIDs[start:end] {
 		selected = append(selected, schemaRecords[id])
 	}
@@ -601,7 +605,7 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 		currentPage = (query.Offset / query.Limit) + 1
 	}
 
-	return &PersistentRecordPage{
+	return &model.PersistentRecordPage{
 		Records:      selected,
 		TotalRecords: int64(total),
 		TotalPages:   totalPages,
@@ -609,7 +613,7 @@ func (m *mockPersistentRecordRepository) QueryPersistentRecords(ctx context.Cont
 	}, nil
 }
 
-func (m *mockFederatedQueryEngine) Query(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
+func (m *mockFederatedQueryEngine) Query(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	if fq == nil {
 		return nil, fmt.Errorf("federated query cannot be nil")
 	}
@@ -619,20 +623,20 @@ func (m *mockFederatedQueryEngine) Query(ctx context.Context, tables StorageTabl
 	if m.queryFunc != nil {
 		return m.queryFunc(ctx, tables, fq, opts)
 	}
-	return &PersistentRecordPage{}, nil
+	return &model.PersistentRecordPage{}, nil
 }
 
-func cloneRecordStore(src map[int16]map[uuid.UUID]*PersistentRecord) map[int16]map[uuid.UUID]*PersistentRecord {
-	cloned := make(map[int16]map[uuid.UUID]*PersistentRecord, len(src))
+func cloneRecordStore(src map[int16]map[uuid.UUID]*model.PersistentRecord) map[int16]map[uuid.UUID]*model.PersistentRecord {
+	cloned := make(map[int16]map[uuid.UUID]*model.PersistentRecord, len(src))
 	for schemaID, schemaRecords := range src {
-		inner := make(map[uuid.UUID]*PersistentRecord, len(schemaRecords))
+		inner := make(map[uuid.UUID]*model.PersistentRecord, len(schemaRecords))
 		maps.Copy(inner, schemaRecords)
 		cloned[schemaID] = inner
 	}
 	return cloned
 }
 
-func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
 	snapshot := cloneRecordStore(m.records)
 	insertedCount := len(m.insertedRecords)
 
@@ -651,7 +655,7 @@ func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx contex
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
 	snapshot := cloneRecordStore(m.records)
 
 	for i, record := range records {
@@ -667,7 +671,7 @@ func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx contex
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey) error {
+func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables model.StorageTables, keys []model.PersistentRecordKey) error {
 	snapshot := cloneRecordStore(m.records)
 	deleteCalls := m.deleteCalls
 
@@ -686,7 +690,7 @@ func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx contex
 	return nil
 }
 
-func buildPersistentRecord(t *testing.T, transformer PersistentRecordTransformer, schemaID int16, rowID uuid.UUID, data map[string]any) *PersistentRecord {
+func buildPersistentRecord(t *testing.T, transformer model.PersistentRecordTransformer, schemaID int16, rowID uuid.UUID, data map[string]any) *model.PersistentRecord {
 	t.Helper()
 	record, err := transformer.ToPersistentRecord(context.Background(), schemaID, rowID, data)
 	if err != nil {
@@ -703,7 +707,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	// Create mock repository with multi-schema support
 	mockRepo := newMockPersistentRecordRepository()
@@ -774,7 +778,7 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -803,7 +807,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -832,7 +836,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -866,7 +870,7 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -902,7 +906,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	schemaID, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
@@ -988,7 +992,7 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	mockRepo := newMockPersistentRecordRepository()
 
@@ -1025,7 +1029,7 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	schemaID, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
@@ -1043,8 +1047,8 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	})
 	mockRepo := newMockPersistentRecordRepository()
 	mockEngine := &mockFederatedQueryEngine{}
-	mockEngine.queryFunc = func(ctx context.Context, tables StorageTables, fq *FederatedAttributeQuery, opts *FederatedQueryOptions) (*PersistentRecordPage, error) {
-		return &PersistentRecordPage{Records: []*PersistentRecord{record}, TotalRecords: 1, TotalPages: 1, CurrentPage: 1}, nil
+	mockEngine.queryFunc = func(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
+		return &model.PersistentRecordPage{Records: []*model.PersistentRecord{record}, TotalRecords: 1, TotalPages: 1, CurrentPage: 1}, nil
 	}
 
 	em := NewEntityManager(transformer, mockRepo, mockEngine, registry, config)
@@ -1076,7 +1080,7 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	if mockEngine.lastQuery.SchemaID != schemaID {
 		t.Fatalf("expected schema id %d, got %d", schemaID, mockEngine.lastQuery.SchemaID)
 	}
-	if got := mockEngine.lastQuery.PreferredTiers; len(got) != 3 || got[0] != DataTierHot || got[1] != DataTierWarm || got[2] != DataTierCold {
+	if got := mockEngine.lastQuery.PreferredTiers; len(got) != 3 || got[0] != model.DataTierHot || got[1] != model.DataTierWarm || got[2] != model.DataTierCold {
 		t.Fatalf("unexpected preferred tiers: %+v", got)
 	}
 	if !mockEngine.lastQuery.UseMainAsAnchor {
@@ -1106,7 +1110,7 @@ func TestEntityManager_QueryWithNilConfigUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, nil, registry, nil)

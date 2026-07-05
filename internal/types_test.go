@@ -4,13 +4,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 )
 
 // =============================================================================
-// AttributeOrder Tests
+// model.AttributeOrder Tests
 // =============================================================================
 
 func TestAttributeOrder_AttrIDInt(t *testing.T) {
@@ -28,7 +30,7 @@ func TestAttributeOrder_AttrIDInt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ao := &AttributeOrder{AttrID: tt.attrID}
+			ao := &model.AttributeOrder{AttrID: tt.attrID}
 			assert.Equal(t, tt.want, ao.AttrIDInt())
 		})
 	}
@@ -55,7 +57,7 @@ func TestAttributeOrder_ValueColumn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ao := &AttributeOrder{ValueType: tt.valueType}
+			ao := &model.AttributeOrder{ValueType: tt.valueType}
 			assert.Equal(t, tt.want, ao.ValueColumn())
 		})
 	}
@@ -75,7 +77,7 @@ func TestAttributeOrder_Desc(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ao := &AttributeOrder{SortOrder: tt.sortOrder}
+			ao := &model.AttributeOrder{SortOrder: tt.sortOrder}
 			assert.Equal(t, tt.want, ao.Desc())
 		})
 	}
@@ -98,7 +100,7 @@ func TestAttributeOrder_IsMainColumn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ao := &AttributeOrder{
+			ao := &model.AttributeOrder{
 				StorageLocation: tt.storageLocation,
 				ColumnName:      tt.columnName,
 			}
@@ -120,14 +122,14 @@ func TestAttributeOrder_MainColumnName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ao := &AttributeOrder{ColumnName: tt.columnName}
+			ao := &model.AttributeOrder{ColumnName: tt.columnName}
 			assert.Equal(t, tt.want, ao.MainColumnName())
 		})
 	}
 }
 
 // =============================================================================
-// EntityAttribute Tests
+// model.EntityAttribute Tests
 // =============================================================================
 
 func TestEntityAttribute_Text(t *testing.T) {
@@ -135,34 +137,34 @@ func TestEntityAttribute_Text(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *string
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeText, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeText, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: "test"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: "test"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'text'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: 123},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: 123},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a string",
 		},
 		{
 			name:    "valid text value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeText, Value: textValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeText, Value: textValue},
 			want:    &textValue,
 			wantErr: false,
 		},
@@ -188,34 +190,34 @@ func TestEntityAttribute_SmallInt(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *int16
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: int16(10)},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: int16(10)},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'smallint'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: "not an int"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: "not an int"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not an int16",
 		},
 		{
 			name:    "valid smallint value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: smallIntValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeSmallInt, Value: smallIntValue},
 			want:    &smallIntValue,
 			wantErr: false,
 		},
@@ -241,34 +243,34 @@ func TestEntityAttribute_Integer(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *int32
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeInteger, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeInteger, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: int32(10)},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: int32(10)},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'integer'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeInteger, Value: "not an int"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeInteger, Value: "not an int"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not an int32",
 		},
 		{
 			name:    "valid integer value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeInteger, Value: intValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeInteger, Value: intValue},
 			want:    &intValue,
 			wantErr: false,
 		},
@@ -294,34 +296,34 @@ func TestEntityAttribute_BigInt(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *int64
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: int64(10)},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: int64(10)},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'bigint'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: "not an int"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: "not an int"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not an int64",
 		},
 		{
 			name:    "valid bigint value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: bigIntValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeBigInt, Value: bigIntValue},
 			want:    &bigIntValue,
 			wantErr: false,
 		},
@@ -347,34 +349,34 @@ func TestEntityAttribute_Numeric(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *float64
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: float64(10.5)},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: float64(10.5)},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'numeric'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: "not a float"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: "not a float"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a float64",
 		},
 		{
 			name:    "valid numeric value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: numericValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeNumeric, Value: numericValue},
 			want:    &numericValue,
 			wantErr: false,
 		},
@@ -400,34 +402,34 @@ func TestEntityAttribute_Date(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *time.Time
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeDate, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeDate, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: time.Now()},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: time.Now()},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'date'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeDate, Value: "2024-01-15"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeDate, Value: "2024-01-15"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a time.Time",
 		},
 		{
 			name:    "valid date value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeDate, Value: dateValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeDate, Value: dateValue},
 			want:    &dateValue,
 			wantErr: false,
 		},
@@ -453,34 +455,34 @@ func TestEntityAttribute_DateTime(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *time.Time
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: time.Now()},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: time.Now()},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'datetime'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: "2024-01-15T10:30:45Z"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: "2024-01-15T10:30:45Z"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a time.Time",
 		},
 		{
 			name:    "valid datetime value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: dateTimeValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeDateTime, Value: dateTimeValue},
 			want:    &dateTimeValue,
 			wantErr: false,
 		},
@@ -506,34 +508,34 @@ func TestEntityAttribute_UUID(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *uuid.UUID
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeUUID, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeUUID, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: uuid.New()},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: uuid.New()},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'uuid'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeUUID, Value: "550e8400-e29b-41d4-a716-446655440000"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeUUID, Value: "550e8400-e29b-41d4-a716-446655440000"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a uuid.UUID",
 		},
 		{
 			name:    "valid uuid value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeUUID, Value: uuidValue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeUUID, Value: uuidValue},
 			want:    &uuidValue,
 			wantErr: false,
 		},
@@ -560,40 +562,40 @@ func TestEntityAttribute_Bool(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		ea        EntityAttribute
+		ea        model.EntityAttribute
 		want      *bool
 		wantErr   bool
 		errSubstr string
 	}{
 		{
 			name:    "nil value returns nil",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeBool, Value: nil},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeBool, Value: nil},
 			want:    nil,
 			wantErr: false,
 		},
 		{
 			name:      "wrong value type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeText, Value: true},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeText, Value: true},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "expected ValueType 'bool'",
 		},
 		{
 			name:      "wrong go type returns error",
-			ea:        EntityAttribute{ValueType: forma.ValueTypeBool, Value: "true"},
+			ea:        model.EntityAttribute{ValueType: forma.ValueTypeBool, Value: "true"},
 			want:      nil,
 			wantErr:   true,
 			errSubstr: "value is not a bool",
 		},
 		{
 			name:    "valid bool true value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeBool, Value: boolValueTrue},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeBool, Value: boolValueTrue},
 			want:    &boolValueTrue,
 			wantErr: false,
 		},
 		{
 			name:    "valid bool false value",
-			ea:      EntityAttribute{ValueType: forma.ValueTypeBool, Value: boolValueFalse},
+			ea:      model.EntityAttribute{ValueType: forma.ValueTypeBool, Value: boolValueFalse},
 			want:    &boolValueFalse,
 			wantErr: false,
 		},

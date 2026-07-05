@@ -3,8 +3,9 @@ package internal
 import (
 	"context"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -13,14 +14,14 @@ import (
 
 func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	schemaID int16,
 	clause string,
 	args []any,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
+	attributeOrders []model.AttributeOrder,
 	useMainTableAsAnchor bool,
-	rowHandler func(*PersistentRecord) error,
+	rowHandler func(*model.PersistentRecord) error,
 ) (int64, error) {
 	if clause == "" {
 		return 0, fmt.Errorf("query condition cannot be empty")
@@ -101,14 +102,14 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 // with aggregated EAV data, eliminating the N+1 query problem.
 func (r *DBPersistentRecordRepository) runOptimizedQuery(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	schemaID int16,
 	clause string,
 	args []any,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
+	attributeOrders []model.AttributeOrder,
 	useMainTableAsAnchor bool,
-) ([]*PersistentRecord, int64, error) {
+) ([]*model.PersistentRecord, int64, error) {
 	if clause == "" {
 		return nil, 0, fmt.Errorf("query condition cannot be empty")
 	}
@@ -122,8 +123,8 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 		offset = 0
 	}
 
-	var records []*PersistentRecord
-	totalRecords, appendErr := r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, limit, offset, attributeOrders, useMainTableAsAnchor, func(rp *PersistentRecord) error {
+	var records []*model.PersistentRecord
+	totalRecords, appendErr := r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, limit, offset, attributeOrders, useMainTableAsAnchor, func(rp *model.PersistentRecord) error {
 		records = append(records, rp)
 		return nil
 	})
@@ -135,17 +136,17 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 }
 
 // RunOptimizedQuery exposes the optimized single-query path (prebuilt WHERE
-// clause and args) for the federated engine's PostgresFederatedSource seam.
+// clause and args) for the federated engine's federated.PostgresFederatedSource seam.
 func (r *DBPersistentRecordRepository) RunOptimizedQuery(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	schemaID int16,
 	clause string,
 	args []any,
 	limit, offset int,
-	attributeOrders []AttributeOrder,
+	attributeOrders []model.AttributeOrder,
 	useMainTableAsAnchor bool,
-) ([]*PersistentRecord, int64, error) {
+) ([]*model.PersistentRecord, int64, error) {
 	return r.runOptimizedQuery(ctx, tables, schemaID, clause, args, limit, offset, attributeOrders, useMainTableAsAnchor)
 }
 
@@ -167,7 +168,7 @@ type hybridConditionBuilder struct {
 
 func (r *DBPersistentRecordRepository) buildHybridConditions(
 	eavTable, mainTable string,
-	query AttributeQuery,
+	query model.AttributeQuery,
 	initArgIndex int,
 	useMainTableAsAnchor bool,
 ) (string, []any, error) {
@@ -189,8 +190,8 @@ func (r *DBPersistentRecordRepository) buildHybridConditions(
 }
 
 // BuildHybridConditions builds the main-table/EAV hybrid WHERE clause for a
-// federated query, for the federated engine's PostgresFederatedSource seam.
-func (r *DBPersistentRecordRepository) BuildHybridConditions(tables StorageTables, fq *FederatedAttributeQuery) (string, []any, error) {
+// federated query, for the federated engine's federated.PostgresFederatedSource seam.
+func (r *DBPersistentRecordRepository) BuildHybridConditions(tables model.StorageTables, fq *model.FederatedAttributeQuery) (string, []any, error) {
 	if fq == nil {
 		return "", nil, fmt.Errorf("federated query cannot be nil")
 	}
@@ -257,7 +258,7 @@ func (b *hybridConditionBuilder) buildEAVCondition(cond *forma.KvCondition) (str
 	if b.cache == nil {
 		return "", nil, fmt.Errorf("schema metadata cache not available for schema_id %d", b.schemaID)
 	}
-	gen := NewSQLGenerator()
+	gen := sqlgen.NewSQLGenerator()
 	pIdx := b.argCounter
 	clause, args, err := gen.ToSQLClauses(cond, b.eavTable, b.schemaID, b.cache, &pIdx)
 	if err != nil {

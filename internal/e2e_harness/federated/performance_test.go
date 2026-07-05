@@ -19,7 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -548,7 +549,7 @@ func TestPerformance_MemoryUsage(t *testing.T) {
 	// Run stream queries
 	t.Log("Memory usage test: running streaming queries...")
 	var streamedCount int
-	err = h.StreamFederatedQuery(ctx, &QueryOptions{Limit: 5000}, func(r *internal.PersistentRecord) error {
+	err = h.StreamFederatedQuery(ctx, &QueryOptions{Limit: 5000}, func(r *model.PersistentRecord) error {
 		streamedCount++
 		return nil
 	})

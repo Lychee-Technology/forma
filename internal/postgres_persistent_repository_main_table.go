@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"sort"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -65,7 +66,7 @@ func appendUpdateAssignmentsAndArgs[T any](assignments *[]string, args *[]any, s
 	return nil
 }
 
-func buildInsertMainStatement(table string, record *PersistentRecord) (string, []any, error) {
+func buildInsertMainStatement(table string, record *model.PersistentRecord) (string, []any, error) {
 	columns := []string{"ltbase_schema_id", "ltbase_row_id", "ltbase_created_at", "ltbase_updated_at"}
 	args := []any{record.SchemaID, record.RowID, record.CreatedAt, record.UpdatedAt}
 
@@ -108,7 +109,7 @@ func buildInsertMainStatement(table string, record *PersistentRecord) (string, [
 	return query, args, nil
 }
 
-func buildUpdateMainStatement(table string, record *PersistentRecord) (string, []any, error) {
+func buildUpdateMainStatement(table string, record *model.PersistentRecord) (string, []any, error) {
 	assignments := make([]string, 0, len(record.TextItems)+len(record.Int16Items)+len(record.Int32Items)+len(record.Int64Items)+len(record.Float64Items)+2)
 	args := make([]any, 0, cap(assignments)+2)
 
@@ -160,7 +161,7 @@ func buildUpdateMainStatement(table string, record *PersistentRecord) (string, [
 	return query, args, nil
 }
 
-func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildInsertMainStatement(table, record)
 	if err != nil {
 		return err
@@ -172,7 +173,7 @@ func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildUpdateMainStatement(table, record)
 	if err != nil {
 		return err
@@ -187,7 +188,7 @@ func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (r *DBPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
 	query := fmt.Sprintf(
 		"SELECT %s FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
 		model.EntityMainProjection,

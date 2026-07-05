@@ -1,10 +1,11 @@
 package federated
 
 import (
-	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"text/template"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

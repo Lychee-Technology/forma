@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	forma "github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 )
 
 const (
@@ -47,7 +48,7 @@ func FixturesDir() string {
 
 // LoadFixtureRegistry loads the benchmark schema fixtures through the standard file registry.
 func LoadFixtureRegistry() (forma.SchemaRegistry, error) {
-	registry, err := internal.NewFileSchemaRegistryFromDirectory(FixturesDir())
+	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(FixturesDir())
 	if err != nil {
 		return nil, fmt.Errorf("load fixture registry: %w", err)
 	}

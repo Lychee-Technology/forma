@@ -1,11 +1,12 @@
 package sqlgen
 
 import (
-	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"

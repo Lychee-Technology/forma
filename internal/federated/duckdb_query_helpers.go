@@ -3,8 +3,9 @@ package federated
 import (
 	"database/sql"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/sqlutil"

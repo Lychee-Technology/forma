@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 )
 
-func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -51,7 +53,7 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error {
+func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -92,7 +94,7 @@ func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey) error {
+func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables model.StorageTables, keys []model.PersistentRecordKey) error {
 	if len(keys) == 0 {
 		return nil
 	}

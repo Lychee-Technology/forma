@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
 
 type entityBatchService struct {
-	repository    PersistentRecordRepository
-	transformer   PersistentRecordTransformer
+	repository    model.PersistentRecordRepository
+	transformer   model.PersistentRecordTransformer
 	registry      forma.SchemaRegistry
 	relations     *RelationIndex
 	storageTables storageTablesResolver
@@ -166,8 +168,8 @@ func (s *entityBatchService) executeBestEffortBatch(
 	}, nil
 }
 
-func (s *entityBatchService) atomicRepository() (AtomicBatchPersistentRecordRepository, error) {
-	repo, ok := s.repository.(AtomicBatchPersistentRecordRepository)
+func (s *entityBatchService) atomicRepository() (model.AtomicBatchPersistentRecordRepository, error) {
+	repo, ok := s.repository.(model.AtomicBatchPersistentRecordRepository)
 	if !ok {
 		return nil, fmt.Errorf("repository does not support atomic batch operations")
 	}
@@ -182,7 +184,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 
 	startTime := time.Now()
 	tables := s.resolveTables()
-	persistentRecords := make([]*PersistentRecord, len(req.Operations))
+	persistentRecords := make([]*model.PersistentRecord, len(req.Operations))
 	successful := make([]*forma.DataRecord, len(req.Operations))
 
 	for i, op := range req.Operations {
@@ -242,7 +244,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 	startTime := time.Now()
 	tables := s.resolveTables()
-	persistentRecords := make([]*PersistentRecord, len(req.Operations))
+	persistentRecords := make([]*model.PersistentRecord, len(req.Operations))
 	successful := make([]*forma.DataRecord, len(req.Operations))
 
 	for i, op := range req.Operations {
@@ -315,7 +317,7 @@ func (s *entityBatchService) batchDeleteAtomic(ctx context.Context, req *forma.B
 
 	startTime := time.Now()
 	tables := s.resolveTables()
-	keys := make([]PersistentRecordKey, len(req.Operations))
+	keys := make([]model.PersistentRecordKey, len(req.Operations))
 	successful := make([]*forma.DataRecord, len(req.Operations))
 
 	for i, op := range req.Operations {
@@ -331,7 +333,7 @@ func (s *entityBatchService) batchDeleteAtomic(ctx context.Context, req *forma.B
 			return nil, fmt.Errorf("operation[%d]: failed to get schema: %w", i, err)
 		}
 
-		keys[i] = PersistentRecordKey{SchemaID: schemaID, RowID: op.RowID}
+		keys[i] = model.PersistentRecordKey{SchemaID: schemaID, RowID: op.RowID}
 		successful[i] = &forma.DataRecord{
 			SchemaName: op.SchemaName,
 			RowID:      op.RowID,
@@ -358,9 +360,9 @@ func (s *entityBatchService) validateDependencies() error {
 	return nil
 }
 
-func (s *entityBatchService) resolveTables() StorageTables {
+func (s *entityBatchService) resolveTables() model.StorageTables {
 	if s.storageTables == nil {
-		return StorageTables{}
+		return model.StorageTables{}
 	}
 	return s.storageTables()
 }

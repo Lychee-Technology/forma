@@ -6,6 +6,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
@@ -22,7 +26,7 @@ type queryPool interface {
 // metadataLoader is a minimal interface for loading metadata.
 // This allows tests to inject mock implementations.
 type metadataLoader interface {
-	LoadMetadata(ctx context.Context) (*internal.MetadataCache, error)
+	LoadMetadata(ctx context.Context) (*schemameta.MetadataCache, error)
 }
 
 // entityManagerDependencies carries factory seams for EntityManager construction.
@@ -31,16 +35,16 @@ type metadataLoader interface {
 type entityManagerDependencies struct {
 	collectTables     func(context.Context, queryPool, string) ([]string, error)
 	newMetadataLoader func(*pgxpool.Pool, string, string) metadataLoader
-	newDuckDBClient   func(context.Context, forma.DuckDBConfig) (*internal.DuckDBClient, error)
+	newDuckDBClient   func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error)
 }
 
 func defaultEntityManagerDependencies() entityManagerDependencies {
 	return entityManagerDependencies{
 		collectTables: collectTablesFromPool,
 		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
-			return internal.NewMetadataLoader(pool, schemaTable, schemaDir)
+			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
-		newDuckDBClient: internal.NewDuckDBClientContext,
+		newDuckDBClient: federated.NewDuckDBClientContext,
 	}
 }
 
@@ -127,10 +131,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	zap.S().Info("Using provided SchemaRegistry implementation")
 
 	// Initialize transformer
-	transformer := internal.NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 
 	// Initialize PostgreSQL persistent repository with metadata cache
-	var duckClient *internal.DuckDBClient = nil
+	var duckClient *federated.DuckDBClient = nil
 
 	// Initialize DuckDB client if enabled in config
 	if effectiveConfig.DuckDB.Enabled {
@@ -143,20 +147,20 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		}
 	}
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache)
-	federatedEngine := internal.NewDBFederatedQueryEngine(
+	federatedEngine := federated.NewDBFederatedQueryEngine(
 		repository,
-		internal.NewPostgresDirtyIDFetcher(pool),
-		internal.NewDuckDBClientQueryExecutor(duckClient),
+		federated.NewPostgresDirtyIDFetcher(pool),
+		federated.NewDuckDBClientQueryExecutor(duckClient),
 		newDuckDBCircuitBreaker(effectiveConfig.DuckDB),
 		effectiveConfig.DuckDB,
 		metadataCache,
-		internal.DuckDBPostgresConnStringFromPool(pool),
+		federated.DuckDBPostgresConnStringFromPool(pool),
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
 }
 
-func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *internal.CircuitBreaker {
+func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *federated.CircuitBreaker {
 	// This is the one sanctioned reader of the deprecated field: it exists to
 	// warn callers who still set it.
 	if cfg.CircuitBreakerThreshold > 0 { //nolint:staticcheck // SA1019: intentional migration-warning read
@@ -177,7 +181,7 @@ func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *internal.CircuitBreaker {
 		openDuration = defaults.CircuitBreakerOpenDuration
 	}
 
-	return internal.NewCircuitBreaker(failureThreshold, window, openDuration)
+	return federated.NewCircuitBreaker(failureThreshold, window, openDuration)
 }
 
 // NewEntityManagerWithConfig creates a new EntityManager with the provided configuration and database pool.
@@ -213,7 +217,7 @@ func NewEntityManagerWithConfig(config *forma.Config, pool *pgxpool.Pool) (forma
 }
 
 func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
-	return internal.NewFileSchemaRegistryContext(ctx, pool, schemaTable, schemaDir)
+	return schemameta.NewFileSchemaRegistryContext(ctx, pool, schemaTable, schemaDir)
 }
 
 func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {

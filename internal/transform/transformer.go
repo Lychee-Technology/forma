@@ -10,12 +10,13 @@ package transform
 // rather than invalid caller input.
 
 import (
-	"github.com/lychee-technology/forma/internal/numutil"
 	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"

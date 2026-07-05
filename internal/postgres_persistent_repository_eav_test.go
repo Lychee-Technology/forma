@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +32,7 @@ func TestInsertEAVAttributesExecutesBatch(t *testing.T) {
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	text := "foo"
 	num := 42.5
-	attrs := []EAVRecord{
+	attrs := []model.EAVRecord{
 		{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: &text},
 		{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: &num},
 	}
@@ -55,7 +57,7 @@ func TestReplaceEAVAttributes(t *testing.T) {
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	text := "foo"
-	attrs := []EAVRecord{
+	attrs := []model.EAVRecord{
 		{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: &text},
 	}
 

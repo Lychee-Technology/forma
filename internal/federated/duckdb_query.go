@@ -3,9 +3,10 @@ package federated
 import (
 	"context"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"

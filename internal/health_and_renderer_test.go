@@ -5,6 +5,9 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
+
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
@@ -45,17 +48,17 @@ func TestPostgresHealthCheck_EmptyDSN(t *testing.T) {
 	require.Error(t, err)
 }
 
-// Ensure BuildDuckDBQuery injects PgMainClause and Anchor.Condition when dual clauses are provided.
+// Ensure sqlgen.BuildDuckDBQuery injects PgMainClause and Anchor.Condition when dual clauses are provided.
 func TestBuildDuckDBQuery_Injection(t *testing.T) {
 	tpl := template.Must(template.New("test").Parse("PGCLAUSE:{{.PgMainClause}}|COND:{{.Anchor.Condition}}"))
-	dual := &DualClauses{
+	dual := &sqlgen.DualClauses{
 		DuckClause:   "age > ?",
 		DuckArgs:     []any{18},
 		PgMainClause: "integer_01 > 18",
 		PgMainArgs:   []any{18},
 	}
 
-	sql, args, err := BuildDuckDBQuery(tpl, map[string]any{}, nil, nil, dual)
+	sql, args, err := sqlgen.BuildDuckDBQuery(tpl, map[string]any{}, nil, nil, dual)
 	require.NoError(t, err)
 	require.Contains(t, sql, "PGCLAUSE:integer_01 > 18")
 	require.Contains(t, sql, "COND:age > ?")
@@ -66,16 +69,16 @@ func TestBuildDuckDBQuery_Injection(t *testing.T) {
 
 func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T) {
 	tpl := template.Must(template.New("test").Parse("PG={{.PG_CONN}}|S3={{.S3_PATHS}}|SCHEMA={{.SCHEMA_ID}}|PAGE={{.PAGE_SIZE}}|OFFSET={{.OFFSET}}|LOGICAL={{.LOGICAL_WHERE_CLAUSE}}|PUSH={{.PG_WHERE_CLAUSE}}"))
-	dual := &DualClauses{
+	dual := &sqlgen.DualClauses{
 		DuckClause:   "age > ?",
 		DuckArgs:     []any{18},
 		PgMainClause: "integer_01 > 18",
 	}
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
 	}
 
-	sql, args, err := BuildDuckDBQuery(tpl, map[string]any{"DuckDBPGConnString": "host=pg port=5432", "S3_PATHS": "'s3://bucket/prefix/42/base/*.parquet'", "Anchor": map[string]any{}}, q, nil, dual)
+	sql, args, err := sqlgen.BuildDuckDBQuery(tpl, map[string]any{"DuckDBPGConnString": "host=pg port=5432", "S3_PATHS": "'s3://bucket/prefix/42/base/*.parquet'", "Anchor": map[string]any{}}, q, nil, dual)
 	require.NoError(t, err)
 	require.Contains(t, sql, "PG=host=pg port=5432")
 	require.Contains(t, sql, "S3='s3://bucket/prefix/42/base/*.parquet'")
@@ -89,13 +92,13 @@ func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T
 }
 
 func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T) {
-	dual := &DualClauses{
+	dual := &sqlgen.DualClauses{
 		DuckClause:   "1=1",
 		PgMainClause: "1=1",
 	}
-	q := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
-		DuckDBHints:    &DuckDBRenderHints{S3ParquetPathTemplate: "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet"},
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 42, Limit: 25, Offset: 5},
+		DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet"},
 	}
 	params := map[string]any{
 		"DuckDBPGConnString": "host=pg port=5432",
@@ -108,7 +111,7 @@ func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T)
 		"Anchor":             map[string]any{},
 	}
 
-	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
+	sql, _, err := sqlgen.BuildDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
 	require.Contains(t, sql, "postgres_scan('host=pg port=5432', 'public', 'change_log')")
 	require.Contains(t, sql, "JOIN postgres_scan('host=pg port=5432',")

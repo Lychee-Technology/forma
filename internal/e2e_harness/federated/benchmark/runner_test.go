@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	forma "github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
@@ -58,7 +59,7 @@ func TestValidateBasicWorkloadAssertionsAllowsEmptyDeepPagePastTotal(t *testing.
 }
 
 func TestValidateResultLevelAssertionsDetectsUnsortedRows(t *testing.T) {
-	records := []*internal.PersistentRecord{
+	records := []*model.PersistentRecord{
 		{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 10}},
 		{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Int64Items: map[string]int64{"tradeTime": 20}},
 	}
@@ -137,7 +138,7 @@ func TestBenchmarkS3ParquetPathTemplateUsesHarnessLocation(t *testing.T) {
 }
 
 func TestValidateSchemaScopeDetectsCrossSchemaRows(t *testing.T) {
-	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000010"), SchemaID: SchemaIDTrade}}
+	records := []*model.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000010"), SchemaID: SchemaIDTrade}}
 	assertion := validateSchemaScope(WorkloadDefinition{Name: "customer-region-page", TargetSchema: "customer"}, records)
 	if assertion.Passed {
 		t.Fatalf("expected schema scope assertion to fail for mismatched schema")
@@ -338,11 +339,11 @@ func TestGeneratedRecordMatchesFilterForWorkloadSupportsMultipleConditions(t *te
 
 func TestValidateFilterMatchSupportsMultipleConditions(t *testing.T) {
 	workload := WorkloadDefinition{FilterConditions: map[string]any{"symbol": "SYM00001", "exchange": "NYSE"}}
-	passing := []*internal.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NYSE"}}}
+	passing := []*model.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NYSE"}}}
 	if assertion := validateFilterMatch(workload, passing); !assertion.Passed {
 		t.Fatalf("expected multi-condition filter assertion to pass: %+v", assertion)
 	}
-	failing := []*internal.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NASDAQ"}}}
+	failing := []*model.PersistentRecord{{TextItems: map[string]string{"symbol": "SYM00001", "exchange": "NASDAQ"}}}
 	if assertion := validateFilterMatch(workload, failing); assertion.Passed {
 		t.Fatalf("expected multi-condition filter assertion to fail")
 	}
@@ -350,7 +351,7 @@ func TestValidateFilterMatchSupportsMultipleConditions(t *testing.T) {
 
 func TestValidateTradeTimeWindowDetectsOutOfWindowRows(t *testing.T) {
 	semantics := workloadSemantics{TradeTimeStart: 100, TradeTimeEnd: 200}
-	records := []*internal.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 99}}}
+	records := []*model.PersistentRecord{{RowID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Int64Items: map[string]int64{"tradeTime": 99}}}
 	assertion := validateTradeTimeWindow(records, semantics)
 	if assertion.Passed {
 		t.Fatalf("expected trade time window assertion to fail")
@@ -492,10 +493,10 @@ func TestExecuteWorkloadWithRetry_RetriesTransientFailure(t *testing.T) {
 	defer func() { retryBackoffDelay = originalBackoff }()
 
 	attempts := 0
-	wantRecords := []*internal.PersistentRecord{{SchemaID: 101}}
+	wantRecords := []*model.PersistentRecord{{SchemaID: 101}}
 	wantRun := WorkloadRunResult{Name: "baseline-page-1", Passed: true}
 
-	run, records, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	run, records, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*model.PersistentRecord, error) {
 		attempts++
 		if attempts < 3 {
 			return WorkloadRunResult{}, nil, errors.New("transient infra failure")
@@ -524,7 +525,7 @@ func TestExecuteWorkloadWithRetry_ReturnsLastErrorAfterRetries(t *testing.T) {
 	attempts := 0
 	wantErr := errors.New("persistent infra failure")
 
-	_, _, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*internal.PersistentRecord, error) {
+	_, _, err := executeWorkloadWithRetry(context.Background(), func(ctx context.Context) (WorkloadRunResult, []*model.PersistentRecord, error) {
 		attempts++
 		return WorkloadRunResult{}, nil, wantErr
 	})

@@ -3,9 +3,10 @@ package internal
 import (
 	"context"
 	"errors"
-	"github.com/lychee-technology/forma/internal/model"
 	"regexp"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -126,7 +127,7 @@ func TestInsertAndUpdateMainRow(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:  1,
 		RowID:     rowID,
 		CreatedAt: 10,
@@ -160,7 +161,7 @@ func TestUpdateMainRowClassifiesUniqueViolationAsConflict(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:  1,
 		RowID:     rowID,
 		UpdatedAt: 20,

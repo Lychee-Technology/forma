@@ -5,19 +5,21 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
 
-var defaultFederatedPreferredTiers = []DataTier{DataTierHot, DataTierWarm, DataTierCold}
+var defaultFederatedPreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
 
-type dataRecordConverter func(context.Context, string, *PersistentRecord) (*forma.DataRecord, error)
+type dataRecordConverter func(context.Context, string, *model.PersistentRecord) (*forma.DataRecord, error)
 type dataRecordEnricher func(context.Context, string, []string, ...*forma.DataRecord) error
-type storageTablesResolver func() StorageTables
+type storageTablesResolver func() model.StorageTables
 
 type entityQueryService struct {
-	repository           PersistentRecordRepository
-	federatedQueryEngine FederatedQueryEngine
+	repository           model.PersistentRecordRepository
+	federatedQueryEngine model.FederatedQueryEngine
 	registry             forma.SchemaRegistry
 	config               *forma.Config
 	toDataRecord         dataRecordConverter
@@ -79,13 +81,13 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		sortOrder = forma.SortOrderAsc
 	}
 
-	attributeOrders := make([]AttributeOrder, 0, len(req.SortBy))
+	attributeOrders := make([]model.AttributeOrder, 0, len(req.SortBy))
 	for _, sortAttr := range req.SortBy {
 		meta, ok := schemaCache[sortAttr]
 		if !ok {
 			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", sortAttr, req.SchemaName)
 		}
-		order := AttributeOrder{
+		order := model.AttributeOrder{
 			AttrID:    meta.AttributeID,
 			ValueType: meta.ValueType,
 			SortOrder: sortOrder,
@@ -101,7 +103,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		attributeOrders = append(attributeOrders, order)
 	}
 
-	query := &PersistentRecordQuery{
+	query := &model.PersistentRecordQuery{
 		Tables:          s.resolveTables(),
 		SchemaID:        schemaID,
 		Condition:       req.Condition,
@@ -150,7 +152,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}, nil
 }
 
-func (s *entityQueryService) queryRecords(ctx context.Context, query *PersistentRecordQuery, req *forma.QueryRequest) (*PersistentRecordPage, error) {
+func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest) (*model.PersistentRecordPage, error) {
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
 	}
@@ -161,8 +163,8 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 		return nil, fmt.Errorf("federated query engine is not initialized")
 	}
 
-	fq := &FederatedAttributeQuery{
-		AttributeQuery: AttributeQuery{
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
 			SchemaID:        query.SchemaID,
 			Condition:       query.Condition,
 			AttributeOrders: query.AttributeOrders,
@@ -174,29 +176,29 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *Persistent
 		UseMainAsAnchor: req.Federated.UseMainAsAnchor,
 	}
 	if req.Federated.S3ParquetPathTemplate != "" {
-		fq.DuckDBHints = &DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
+		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
 	}
 
-	return s.federatedQueryEngine.Query(ctx, query.Tables, fq, &FederatedQueryOptions{
+	return s.federatedQueryEngine.Query(ctx, query.Tables, fq, &model.FederatedQueryOptions{
 		AllowPartialDegradedMode: req.Federated.AllowPartialDegradedMode,
 		IncludeExecutionPlan:     req.Federated.IncludeExecutionPlan,
-		ConsistencyMode:          ConsistencyMode(req.Federated.ConsistencyMode),
+		ConsistencyMode:          model.ConsistencyMode(req.Federated.ConsistencyMode),
 	})
 }
 
-func federatedPreferredTiers(tiers []string) []DataTier {
+func federatedPreferredTiers(tiers []string) []model.DataTier {
 	if len(tiers) == 0 {
-		return append([]DataTier(nil), defaultFederatedPreferredTiers...)
+		return append([]model.DataTier(nil), defaultFederatedPreferredTiers...)
 	}
-	out := make([]DataTier, 0, len(tiers))
+	out := make([]model.DataTier, 0, len(tiers))
 	for _, tier := range tiers {
-		switch DataTier(tier) {
-		case DataTierHot, DataTierWarm, DataTierCold:
-			out = append(out, DataTier(tier))
+		switch model.DataTier(tier) {
+		case model.DataTierHot, model.DataTierWarm, model.DataTierCold:
+			out = append(out, model.DataTier(tier))
 		}
 	}
 	if len(out) == 0 {
-		return append([]DataTier(nil), defaultFederatedPreferredTiers...)
+		return append([]model.DataTier(nil), defaultFederatedPreferredTiers...)
 	}
 	return out
 }
@@ -314,10 +316,10 @@ func (s *entityQueryService) buildSchemaContexts(schemaNames []string, condition
 }
 
 // countSchemaRecords counts total records for each schema.
-func (s *entityQueryService) countSchemaRecords(ctx context.Context, tables StorageTables, contexts []schemaContext) ([]int64, error) {
+func (s *entityQueryService) countSchemaRecords(ctx context.Context, tables model.StorageTables, contexts []schemaContext) ([]int64, error) {
 	totals := make([]int64, len(contexts))
 	for idx, schemaCtx := range contexts {
-		page, err := s.repository.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+		page, err := s.repository.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 			Tables:    tables,
 			SchemaID:  schemaCtx.id,
 			Condition: schemaCtx.condition,
@@ -349,7 +351,7 @@ func (s *entityQueryService) emptyQueryResult(page, itemsPerPage int, startTime 
 // fetchCrossSchemaResults fetches paginated results across multiple schemas.
 func (s *entityQueryService) fetchCrossSchemaResults(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	contexts []schemaContext,
 	schemaTotals []int64,
 	req *forma.CrossSchemaRequest,
@@ -392,12 +394,12 @@ func (s *entityQueryService) fetchCrossSchemaResults(
 // fetchSchemaBatch fetches a batch of records from a single schema.
 func (s *entityQueryService) fetchSchemaBatch(
 	ctx context.Context,
-	tables StorageTables,
+	tables model.StorageTables,
 	schemaCtx schemaContext,
 	offset, limit int,
 	attrs []string,
 ) ([]*forma.DataRecord, error) {
-	page, err := s.repository.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+	page, err := s.repository.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:    tables,
 		SchemaID:  schemaCtx.id,
 		Condition: schemaCtx.condition,
@@ -425,9 +427,9 @@ func (s *entityQueryService) fetchSchemaBatch(
 	return batchRecords, nil
 }
 
-func (s *entityQueryService) resolveTables() StorageTables {
+func (s *entityQueryService) resolveTables() model.StorageTables {
 	if s.storageTables == nil {
-		return StorageTables{}
+		return model.StorageTables{}
 	}
 	return s.storageTables()
 }

@@ -2,8 +2,9 @@ package internal
 
 import (
 	"context"
-	"github.com/lychee-technology/forma/internal/model"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/pashagolub/pgxmock/v4"
@@ -54,9 +55,9 @@ func TestStreamOptimizedQuery_RowHandlerInvokedPerRow(t *testing.T) {
 	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	counter := 0
-	var captured []*PersistentRecord
+	var captured []*model.PersistentRecord
 
-	total, err := repo.StreamOptimizedQuery(context.Background(), StorageTables{EntityMain: "entity_main", EAVData: "eav"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *PersistentRecord) error {
+	total, err := repo.StreamOptimizedQuery(context.Background(), model.StorageTables{EntityMain: "entity_main", EAVData: "eav"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *model.PersistentRecord) error {
 		counter++
 		captured = append(captured, rp)
 		return nil
@@ -92,8 +93,8 @@ func TestScanOptimizedRow_EmptyAttributes_NilMaps(t *testing.T) {
 
 	repo := NewDBPersistentRecordRepository(mock, nil)
 
-	var recs []*PersistentRecord
-	total, err := repo.StreamOptimizedQuery(context.Background(), StorageTables{EntityMain: "entity_main", EAVData: "eav"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *PersistentRecord) error {
+	var recs []*model.PersistentRecord
+	total, err := repo.StreamOptimizedQuery(context.Background(), model.StorageTables{EntityMain: "entity_main", EAVData: "eav"}, 1, "1=1", nil, 10, 0, nil, true, func(rp *model.PersistentRecord) error {
 		recs = append(recs, rp)
 		return nil
 	})

@@ -1,12 +1,13 @@
 package internal
 
 import (
-	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -27,7 +28,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	repo.withClock(func() time.Time { return fixed })
 
 	rowID := uuid.New()
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -45,7 +46,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 		Float64Items: map[string]float64{
 			"double_01": 3.14,
 		},
-		OtherAttributes: []EAVRecord{
+		OtherAttributes: []model.EAVRecord{
 			{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: new("foo")},
 			{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: new(99.0)},
 		},
@@ -97,7 +98,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return createdAt })
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -144,7 +145,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	repo.withClock(func() time.Time { return fixed })
 
 	rowID := uuid.New()
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -201,7 +202,7 @@ func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return pool
 }
 
-func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) StorageTables {
+func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) model.StorageTables {
 	t.Helper()
 
 	suffix := time.Now().UnixNano()
@@ -269,7 +270,7 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(changeLogTable)))
 	})
 
-	return StorageTables{
+	return model.StorageTables{
 		EntityMain: entityTable,
 		EAVData:    eavTable,
 		ChangeLog:  changeLogTable,

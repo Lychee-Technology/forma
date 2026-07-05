@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/lychee-technology/forma/internal"
+	fedengine "github.com/lychee-technology/forma/internal/federated"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -106,7 +106,7 @@ VALUES ($1,$2,$3,$4)
 
 // WriteParquetFiles creates base.parquet and delta.parquet via DuckDB by loading CSV and exporting parquet.
 // It returns local paths to generated parquet files.
-func WriteParquetFiles(ctx context.Context, duck *internal.DuckDBClient, outDir string) (string, string, error) {
+func WriteParquetFiles(ctx context.Context, duck *fedengine.DuckDBClient, outDir string) (string, string, error) {
 	if duck == nil || duck.DB == nil {
 		return "", "", fmt.Errorf("duckdb client is nil")
 	}

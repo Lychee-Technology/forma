@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"go.uber.org/zap"
 )
@@ -17,7 +18,7 @@ var (
 	toolLoggerFactoryDev    = zap.NewDevelopment
 	toolLoggerFactoryProd   = zap.NewProduction
 	toolPostgresPoolFn      = bootstrap.NewPostgresPoolFromConfigContext
-	toolSchemaRegistryFn    = internal.NewFileSchemaRegistryContext
+	toolSchemaRegistryFn    = schemameta.NewFileSchemaRegistryContext
 	toolLoadAWSConfigFn     = awsconfig.LoadDefaultConfig
 	buildToolPostgresPoolFn = func(ctx context.Context, cfg forma.DatabaseConfig) (toolDBPool, error) {
 		return toolPostgresPoolFn(ctx, cfg)

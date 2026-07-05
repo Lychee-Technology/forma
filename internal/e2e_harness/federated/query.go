@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal"
 )
 
 const (
@@ -28,7 +29,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 			return nil, err
 		}
 		if result.Plan == nil {
-			result.Plan = &internal.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
+			result.Plan = &model.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
 		}
 		result.Plan.Notes = append(result.Plan.Notes, "prefer_hot_override", "postgres_only_execution")
 		result.Plan.Timings["total"] = time.Since(start).Milliseconds()
@@ -139,8 +140,8 @@ func (h *FederatedTestHarness) checkTierFiles(ctx context.Context) (hasBase, has
 }
 
 // scanQueryResults scans DuckDB query rows into PersistentRecords.
-func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProjection bool) ([]*internal.PersistentRecord, error) {
-	var records []*internal.PersistentRecord
+func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProjection bool) ([]*model.PersistentRecord, error) {
+	var records []*model.PersistentRecord
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
@@ -161,7 +162,7 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 			}
 		}
 
-		rec := &internal.PersistentRecord{
+		rec := &model.PersistentRecord{
 			RowID:        uuid.MustParse(rowID),
 			SchemaID:     schemaID,
 			CreatedAt:    changedAt,
@@ -239,7 +240,7 @@ func normalizeBenchmarkTradeTimeValue(value any) (int64, bool) {
 }
 
 // buildExecutionPlan creates an execution plan with tier and timing info.
-func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.Duration) *internal.ExecutionPlan {
+func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.Duration) *model.ExecutionPlan {
 	planNotes := []string{fmt.Sprintf("dirty_ids_excluded:%d", dirtyIDCount)}
 	if hasBase {
 		planNotes = append(planNotes, "base_files_scanned")
@@ -249,7 +250,7 @@ func buildExecutionPlan(dirtyIDCount int, hasBase, hasDelta bool, duration time.
 	}
 	planNotes = append(planNotes, "hot_buffer_scanned")
 
-	return &internal.ExecutionPlan{
+	return &model.ExecutionPlan{
 		Notes: planNotes,
 		Timings: map[string]int64{
 			"total": duration.Milliseconds(),
@@ -916,7 +917,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 	defer rows.Close()
 
 	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
-	var records []*internal.PersistentRecord
+	var records []*model.PersistentRecord
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
@@ -934,7 +935,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 				return nil, err
 			}
 		}
-		rec := &internal.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: changedAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
+		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: changedAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
 		if deletedAt > 0 {
 			rec.DeletedAt = &deletedAt
 		}
@@ -1163,16 +1164,16 @@ func postgresOnlyFilterExpression(attribute string) string {
 	}
 }
 
-func buildPostgresOnlyExecutionPlan(duration time.Duration, preferHot bool) *internal.ExecutionPlan {
+func buildPostgresOnlyExecutionPlan(duration time.Duration, preferHot bool) *model.ExecutionPlan {
 	notes := []string{"hot_buffer_scanned", "postgres_only_execution"}
 	if preferHot {
 		notes = append(notes, "prefer_hot_override")
 	}
-	return &internal.ExecutionPlan{Notes: notes, Timings: map[string]int64{"total": duration.Milliseconds()}}
+	return &model.ExecutionPlan{Notes: notes, Timings: map[string]int64{"total": duration.Milliseconds()}}
 }
 
 // StreamFederatedQuery streams query results with a handler callback.
-func (h *FederatedTestHarness) StreamFederatedQuery(ctx context.Context, opts *QueryOptions, handler func(*internal.PersistentRecord) error) error {
+func (h *FederatedTestHarness) StreamFederatedQuery(ctx context.Context, opts *QueryOptions, handler func(*model.PersistentRecord) error) error {
 	result, err := h.ExecuteFederatedQuery(ctx, opts)
 	if err != nil {
 		return err

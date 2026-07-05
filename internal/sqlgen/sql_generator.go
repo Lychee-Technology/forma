@@ -1,10 +1,11 @@
 package sqlgen
 
 import (
-	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"

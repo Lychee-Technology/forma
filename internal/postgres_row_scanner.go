@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
@@ -11,7 +12,7 @@ import (
 
 // scanOptimizedRow scans a single row from the optimized query that includes
 // entity_main columns plus JSON-aggregated EAV attributes.
-func (r *DBPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*PersistentRecord, int64, error) {
+func (r *DBPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*model.PersistentRecord, int64, error) {
 	var (
 		attrsJSON    []byte
 		totalRecords int64
@@ -120,9 +121,9 @@ func buildScanArgs(buffers *columnScanBuffers) []any {
 	return scanArgs
 }
 
-// buildRecordFromScanBuffers creates a PersistentRecord from scanned values
-func buildRecordFromScanBuffers(buffers *columnScanBuffers) *PersistentRecord {
-	record := &PersistentRecord{
+// buildRecordFromScanBuffers creates a model.PersistentRecord from scanned values
+func buildRecordFromScanBuffers(buffers *columnScanBuffers) *model.PersistentRecord {
+	record := &model.PersistentRecord{
 		TextItems:    make(map[string]string),
 		Int16Items:   make(map[string]int16),
 		Int32Items:   make(map[string]int32),
@@ -139,7 +140,7 @@ func buildRecordFromScanBuffers(buffers *columnScanBuffers) *PersistentRecord {
 }
 
 // populateRecordField sets a single field in the record from scan buffers
-func populateRecordField(record *PersistentRecord, desc model.ColumnDescriptor, buffers *columnScanBuffers, idx int) {
+func populateRecordField(record *model.PersistentRecord, desc model.ColumnDescriptor, buffers *columnScanBuffers, idx int) {
 	switch desc.Kind {
 	case model.ColumnKindText:
 		val := buffers.textVals[buffers.typeIndex[idx]]

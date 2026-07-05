@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	fedengine "github.com/lychee-technology/forma/internal/federated"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -20,7 +21,7 @@ type TestHarness struct {
 	PGDB        *sql.DB
 	S3Container testcontainers.Container
 	S3Endpoint  string
-	Duck        *internal.DuckDBClient
+	Duck        *fedengine.DuckDBClient
 }
 
 // StartPostgres starts a postgres container and returns a DSN.
@@ -144,7 +145,7 @@ func (h *TestHarness) StopS3(ctx context.Context) error {
 // StartDuckDB creates a DuckDB client configured to optionally use S3/httpfs.
 // It reuses NewDuckDBClient defined in internal/duckdb_conn.go.
 func (h *TestHarness) StartDuckDB(cfg forma.DuckDBConfig) error {
-	c, err := internal.NewDuckDBClient(cfg)
+	c, err := fedengine.NewDuckDBClient(cfg)
 	if err != nil {
 		return err
 	}

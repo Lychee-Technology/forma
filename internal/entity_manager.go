@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
 
 type entityManager struct {
-	transformer          PersistentRecordTransformer
-	repository           PersistentRecordRepository
-	federatedQueryEngine FederatedQueryEngine
+	transformer          model.PersistentRecordTransformer
+	repository           model.PersistentRecordRepository
+	federatedQueryEngine model.FederatedQueryEngine
 	registry             forma.SchemaRegistry
 	config               *forma.Config
 	relations            *RelationIndex
@@ -26,9 +28,9 @@ var _ forma.EntityManager = (*entityManager)(nil)
 
 // NewEntityManager creates a new EntityManager instance
 func NewEntityManager(
-	transformer PersistentRecordTransformer,
-	repository PersistentRecordRepository,
-	federatedQueryEngine FederatedQueryEngine,
+	transformer model.PersistentRecordTransformer,
+	repository model.PersistentRecordRepository,
+	federatedQueryEngine model.FederatedQueryEngine,
 	registry forma.SchemaRegistry,
 	config *forma.Config,
 ) forma.EntityManager {
@@ -61,11 +63,11 @@ func NewEntityManager(
 	return em
 }
 
-func (em *entityManager) storageTables() StorageTables {
+func (em *entityManager) storageTables() model.StorageTables {
 	if em == nil || em.config == nil {
-		return StorageTables{}
+		return model.StorageTables{}
 	}
-	tables := StorageTables{}
+	tables := model.StorageTables{}
 	if em.config.Database.TableNames.EntityMain != "" {
 		tables.EntityMain = em.config.Database.TableNames.EntityMain
 	}
@@ -82,7 +84,7 @@ func (em *entityManager) storageTables() StorageTables {
 	return tables
 }
 
-func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, record *PersistentRecord) (*forma.DataRecord, error) {
+func (em *entityManager) toDataRecord(ctx context.Context, schemaName string, record *model.PersistentRecord) (*forma.DataRecord, error) {
 	if record == nil {
 		return nil, fmt.Errorf("persistent record cannot be nil")
 	}

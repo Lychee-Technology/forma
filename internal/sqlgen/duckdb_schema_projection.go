@@ -2,9 +2,10 @@ package sqlgen
 
 import (
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"sort"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/lychee-technology/forma"
 )

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
@@ -12,7 +14,7 @@ import (
 
 const attributesCount = 6
 
-func buildAttributeValuesClause(attributes []EAVRecord) (string, []any, error) {
+func buildAttributeValuesClause(attributes []model.EAVRecord) (string, []any, error) {
 	if len(attributes) == 0 {
 		return "", nil, nil
 	}
@@ -37,7 +39,7 @@ func buildAttributeValuesClause(attributes []EAVRecord) (string, []any, error) {
 	return strings.Join(values, ", "), args, nil
 }
 
-func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, tx pgx.Tx, table string, attributes []EAVRecord) error {
+func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, tx pgx.Tx, table string, attributes []model.EAVRecord) error {
 	if len(attributes) == 0 {
 		return nil
 	}
@@ -65,7 +67,7 @@ func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, 
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []EAVRecord) error {
+func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []model.EAVRecord) error {
 	deleteQuery := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(table))
 	if _, err := tx.Exec(ctx, deleteQuery, schemaID, rowID); err != nil {
 		return fmt.Errorf("delete existing eav attributes: %w", err)
@@ -73,7 +75,7 @@ func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context,
 	return r.insertEAVAttributes(ctx, tx, table, attributes)
 }
 
-func (r *DBPersistentRecordRepository) fetchAttributes(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) ([]EAVRecord, error) {
+func (r *DBPersistentRecordRepository) fetchAttributes(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) ([]model.EAVRecord, error) {
 	query := fmt.Sprintf(
 		"SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM %s WHERE schema_id = $1 AND row_id = $2",
 		sanitizeIdentifier(table),
@@ -84,9 +86,9 @@ func (r *DBPersistentRecordRepository) fetchAttributes(ctx context.Context, tabl
 	}
 	defer rows.Close()
 
-	var attributes []EAVRecord
+	var attributes []model.EAVRecord
 	for rows.Next() {
-		var attr EAVRecord
+		var attr model.EAVRecord
 		if err := rows.Scan(
 			&attr.SchemaID,
 			&attr.RowID,

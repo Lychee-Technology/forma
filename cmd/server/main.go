@@ -10,10 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/httpapi"
 	"go.uber.org/zap"
@@ -96,7 +97,7 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	}
 
 	// Create file-based schema registry from database
-	registry, err := internal.NewFileSchemaRegistryContext(startupCtx, pool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, pool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)

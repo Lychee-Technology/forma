@@ -1,10 +1,11 @@
 package internal
 
 import (
-	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"

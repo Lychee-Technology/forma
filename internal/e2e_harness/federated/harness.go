@@ -9,13 +9,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	forma "github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/e2e_harness"
 	"go.uber.org/zap"
@@ -47,7 +48,7 @@ type FederatedTestHarness struct {
 
 	// Internal clients
 	s3Client *s3.Client
-	tables   internal.StorageTables
+	tables   model.StorageTables
 	logger   *zap.Logger
 
 	// Test state tracking
@@ -80,7 +81,7 @@ type QueryOptions struct {
 	TradeTimeStart int64
 	TradeTimeEnd   int64
 	CountOnly      bool
-	KeysetCursor   *internal.KeysetCursor
+	KeysetCursor   *model.KeysetCursor
 }
 
 // Filter defines query filter conditions.
@@ -91,9 +92,9 @@ type Filter struct {
 
 // QueryResult wraps query results with metadata.
 type QueryResult struct {
-	Records      []*internal.PersistentRecord
+	Records      []*model.PersistentRecord
 	TotalRecords int64
-	Plan         *internal.ExecutionPlan
+	Plan         *model.ExecutionPlan
 	Duration     time.Duration
 }
 
@@ -250,7 +251,7 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 			S3AccessKeyID:     s3AccessKey,
 			S3SecretAccessKey: s3SecretKey,
 		},
-		tables: internal.StorageTables{
+		tables: model.StorageTables{
 			EntityMain: "entity_main",
 			EAVData:    "eav_data",
 			ChangeLog:  "change_log",

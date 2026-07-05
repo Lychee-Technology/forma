@@ -3,10 +3,12 @@ package internal
 import (
 	"context"
 	"fmt"
-	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -29,17 +31,17 @@ func TestWithClockAndNowMillis(t *testing.T) {
 }
 
 func TestValidateTables(t *testing.T) {
-	err := validateTables(StorageTables{})
+	err := validateTables(model.StorageTables{})
 	require.Error(t, err)
 
-	err = validateTables(StorageTables{EntityMain: "entity", EAVData: "eav"})
+	err = validateTables(model.StorageTables{EntityMain: "entity", EAVData: "eav"})
 	require.NoError(t, err)
 
 	// ChangeLog is optional; writes are allowed even if ChangeLog is not provided
-	err = validateWriteTables(StorageTables{EntityMain: "entity", EAVData: "eav"})
+	err = validateWriteTables(model.StorageTables{EntityMain: "entity", EAVData: "eav"})
 	require.NoError(t, err)
 
-	err = validateWriteTables(StorageTables{EntityMain: "entity", EAVData: "eav", ChangeLog: "change_log"})
+	err = validateWriteTables(model.StorageTables{EntityMain: "entity", EAVData: "eav", ChangeLog: "change_log"})
 	require.NoError(t, err)
 }
 
@@ -74,7 +76,7 @@ func TestBuildInsertMainStatement(t *testing.T) {
 	uuid2 := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	deleted := int64(300)
 
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:  7,
 		RowID:     rowID,
 		CreatedAt: 100,
@@ -150,7 +152,7 @@ func TestBuildInsertMainStatement(t *testing.T) {
 }
 
 func TestBuildInsertMainStatementRejectsUnknownColumn(t *testing.T) {
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    uuid.MustParse("11111111-1111-1111-1111-111111111111"),
 		TextItems: map[string]string{
@@ -164,7 +166,7 @@ func TestBuildInsertMainStatementRejectsUnknownColumn(t *testing.T) {
 
 func TestBuildUpdateMainStatement(t *testing.T) {
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID:  7,
 		RowID:     rowID,
 		UpdatedAt: 200,
@@ -203,7 +205,7 @@ func TestBuildAttributeValuesClause(t *testing.T) {
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	text := "foo"
 	num := 12.5
-	attrs := []EAVRecord{
+	attrs := []model.EAVRecord{
 		{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: &text},
 		{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: &num},
 	}
@@ -319,7 +321,7 @@ func TestHasMainTableCondition(t *testing.T) {
 
 func TestBuildHybridConditionsMainColumn(t *testing.T) {
 	repo := &DBPersistentRecordRepository{}
-	query := AttributeQuery{
+	query := model.AttributeQuery{
 		SchemaID:  1,
 		Condition: &forma.KvCondition{Attr: "text_01", Value: "hello"},
 	}
@@ -346,7 +348,7 @@ func TestBuildHybridConditionsMainColumn(t *testing.T) {
 }
 
 func TestBuildHybridConditionsBoundAuditColumn(t *testing.T) {
-	cache := NewMetadataCache()
+	cache := schemameta.NewMetadataCache()
 	require.NoError(t, cache.RegisterSchema("log", 1, forma.SchemaAttributeCache{
 		"createdBy": {
 			AttributeName: "createdBy",
@@ -356,7 +358,7 @@ func TestBuildHybridConditionsBoundAuditColumn(t *testing.T) {
 	repo := &DBPersistentRecordRepository{
 		metadataCache: cache,
 	}
-	query := AttributeQuery{
+	query := model.AttributeQuery{
 		SchemaID:  1,
 		Condition: &forma.KvCondition{Attr: "createdBy", Value: "equals:user-123"},
 	}
@@ -372,7 +374,7 @@ func TestRunOptimizedQueryValidation(t *testing.T) {
 
 	_, _, err := repo.runOptimizedQuery(
 		context.Background(),
-		StorageTables{EntityMain: "main", EAVData: "eav"},
+		model.StorageTables{EntityMain: "main", EAVData: "eav"},
 		1,
 		"",
 		nil,
@@ -385,7 +387,7 @@ func TestRunOptimizedQueryValidation(t *testing.T) {
 
 	_, _, err = repo.runOptimizedQuery(
 		context.Background(),
-		StorageTables{EntityMain: "main", EAVData: "eav"},
+		model.StorageTables{EntityMain: "main", EAVData: "eav"},
 		0,
 		"1=1",
 		nil,
@@ -437,7 +439,7 @@ func TestRunOptimizedQueryWithMockPool(t *testing.T) {
 
 	records, total, err := repo.runOptimizedQuery(
 		ctx,
-		StorageTables{EntityMain: "main_table", EAVData: "eav_table"},
+		model.StorageTables{EntityMain: "main_table", EAVData: "eav_table"},
 		1,
 		"1=1",
 		nil,

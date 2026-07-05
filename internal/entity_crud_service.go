@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
 
 type entityCRUDService struct {
-	transformer       PersistentRecordTransformer
-	repository        PersistentRecordRepository
+	transformer       model.PersistentRecordTransformer
+	repository        model.PersistentRecordRepository
 	registry          forma.SchemaRegistry
 	relations         *RelationIndex
 	toDataRecord      dataRecordConverter
@@ -230,9 +232,9 @@ func (s *entityCRUDService) validateDependencies() error {
 	return nil
 }
 
-func (s *entityCRUDService) resolveTables() StorageTables {
+func (s *entityCRUDService) resolveTables() model.StorageTables {
 	if s.storageTables == nil {
-		return StorageTables{}
+		return model.StorageTables{}
 	}
 	return s.storageTables()
 }

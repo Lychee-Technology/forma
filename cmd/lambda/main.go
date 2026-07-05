@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -18,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/httpapi"
 	"go.uber.org/zap"
@@ -96,7 +97,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	})
 
 	// Create file-based schema registry from database
-	registry, err := internal.NewFileSchemaRegistryContext(startupCtx, dbPool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, dbPool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}

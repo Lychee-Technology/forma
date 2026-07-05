@@ -1,10 +1,11 @@
 package federated
 
 import (
-	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // ExecuteFederatedPaginatedQuery performs a federated fetch across Postgres (hot) and DuckDB (cold/warm),

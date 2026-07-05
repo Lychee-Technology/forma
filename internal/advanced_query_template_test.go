@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +32,7 @@ func TestOptimizedQueryTemplate_ChangeLogUsesExistsForMainAnchor(t *testing.T) {
 		"Anchor": map[string]any{
 			"Condition": "m.\"text_01\" = $2",
 		},
-		"SortKeys": []AttributeOrder{},
+		"SortKeys": []model.AttributeOrder{},
 		"Limit":    "$3",
 		"Offset":   "$4",
 		"PageSize": "$3",
@@ -56,7 +58,7 @@ func TestOptimizedQueryTemplate_ChangeLogUsesExistsForEAVAnchor(t *testing.T) {
 		"Anchor": map[string]any{
 			"Condition": "t.attr_id = 42",
 		},
-		"SortKeys": []AttributeOrder{},
+		"SortKeys": []model.AttributeOrder{},
 		"Limit":    "$3",
 		"Offset":   "$4",
 		"PageSize": "$3",
@@ -82,7 +84,7 @@ func TestOptimizedQueryTemplate_WithoutChangeLogHasNoUnionBranch(t *testing.T) {
 		"Anchor": map[string]any{
 			"Condition": "m.\"text_01\" = $2",
 		},
-		"SortKeys": []AttributeOrder{},
+		"SortKeys": []model.AttributeOrder{},
 		"Limit":    "$3",
 		"Offset":   "$4",
 		"PageSize": "$3",
