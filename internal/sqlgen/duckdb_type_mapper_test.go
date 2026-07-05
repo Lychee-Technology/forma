@@ -395,3 +395,16 @@ func TestIsListType_False(t *testing.T) {
 	require.False(t, IsListType(forma.ValueTypeInteger))
 	require.False(t, IsListType(forma.ValueTypeBool))
 }
+
+// TestBuildSchemaProjectionDoesNotMutateInput pins #142 phase 3: the shared
+// registry snapshot passed in must not gain the synthetic name/version attrs.
+func TestBuildSchemaProjectionDoesNotMutateInput(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"age": {AttributeID: 3, ValueType: forma.ValueTypeInteger},
+	}
+	_, err := BuildSchemaProjection(7, cache)
+	require.NoError(t, err)
+	require.NotContains(t, cache, "name")
+	require.NotContains(t, cache, "version")
+	require.Len(t, cache, 1)
+}
