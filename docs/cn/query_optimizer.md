@@ -1,3 +1,5 @@
+> **⚠️ Superseded（2026-07-05，#139）**：本设计的实验实现 `internal/queryoptimizer` 从未接入生产路径，已删除。设计中已被主线独立实现的部分：main/EAV 谓词分类与主表下推（`internal/sqlgen` dualpath）、CTE 单查询（repository 层）。仍有效的未实现思路已立项：plan cache → #142；类型化谓词 IR / 谓词重排 / 选择性感知锚点 → #143。±0.1 区间重写经 #139 验证**不适用**于主线（读写解析路径位级对称，精确等值正确；bool-text 约定为 "1"/"0" 而非 "true"/"false"）。
+
 # 查询优化器
 
 本文设计一个基于 JSON Schema 与 Metadata 的查询优化器，生成可直接在 PostgreSQL/AWS DSQL 上执行的高性能 SQL。优化器的输出是「SQL + 参数 + 所需元数据」，可供 `DbPersistentRecordRepository` 或未来的查询服务直接使用。
