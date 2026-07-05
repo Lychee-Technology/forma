@@ -1,6 +1,10 @@
 package model
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/lychee-technology/forma"
+)
 
 // Column slices define the physical hot-storage columns available in entity_main.
 // These are declared once and treated as read-only after package init.
@@ -152,4 +156,25 @@ func GetMainColumnDescriptor(name string) *ColumnDescriptor {
 		}
 	}
 	return nil
+}
+
+// ColumnKindToValueType maps a physical column kind to the forma value type
+// used when a raw main-table column is referenced without schema metadata.
+func ColumnKindToValueType(kind ColumnKind) forma.ValueType {
+	switch kind {
+	case ColumnKindText:
+		return forma.ValueTypeText
+	case ColumnKindSmallint:
+		return forma.ValueTypeSmallInt
+	case ColumnKindInteger:
+		return forma.ValueTypeInteger
+	case ColumnKindBigint:
+		return forma.ValueTypeBigInt
+	case ColumnKindDouble:
+		return forma.ValueTypeNumeric
+	case ColumnKindUUID:
+		return forma.ValueTypeUUID
+	default:
+		return forma.ValueTypeText
+	}
 }
