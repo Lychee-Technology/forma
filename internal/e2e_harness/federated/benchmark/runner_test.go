@@ -573,3 +573,41 @@ func TestBuildExpectedWorkloadResultsRestrictsPostgresOnlyWorkloadsToHotKeys(t *
 		t.Fatalf("expected nil hot keys to keep all records, got %+v", unrestricted["hot-only-window"])
 	}
 }
+
+func TestRecordMatchesFilterHandlesStorageLayoutRecords(t *testing.T) {
+	// Issue #147: service-path workloads rebuild records in storage layout
+	// (column bindings + EAV entries) while harness-path records carry
+	// attribute names directly; the filter oracle must read both shapes.
+	nyse := "NYSE"
+	serviceShaped := &model.PersistentRecord{
+		SchemaID:   SchemaIDTrade,
+		TextItems:  map[string]string{"text_01": "SYM00001", "text_02": "EU"},
+		Int16Items: map[string]int16{"smallint_01": 3},
+		OtherAttributes: []model.EAVRecord{
+			{AttrID: 8, ValueText: &nyse},
+		},
+	}
+	harnessShaped := &model.PersistentRecord{
+		SchemaID:   SchemaIDTrade,
+		TextItems:  map[string]string{"symbol": "SYM00001", "exchange": "NYSE", "region": "EU"},
+		Int64Items: map[string]int64{"tradeType": 3},
+	}
+
+	for name, record := range map[string]*model.PersistentRecord{"service": serviceShaped, "harness": harnessShaped} {
+		if !recordMatchesFilter(record, "symbol", "SYM00001") {
+			t.Fatalf("%s record should match symbol filter", name)
+		}
+		if !recordMatchesFilter(record, "exchange", "NYSE") {
+			t.Fatalf("%s record should match exchange filter", name)
+		}
+		if !recordMatchesFilter(record, "region", "EU") {
+			t.Fatalf("%s record should match region filter", name)
+		}
+		if !recordMatchesFilter(record, "tradeType", "3") {
+			t.Fatalf("%s record should match tradeType filter", name)
+		}
+		if recordMatchesFilter(record, "symbol", "SYM99999") {
+			t.Fatalf("%s record should reject wrong symbol", name)
+		}
+	}
+}

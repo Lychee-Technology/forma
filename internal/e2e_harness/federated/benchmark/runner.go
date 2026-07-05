@@ -1861,15 +1861,58 @@ func validateSortOrder(records []*model.PersistentRecord, attribute string, desc
 	return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: true, Message: fmt.Sprintf("comparable_rows=%d", len(values))}
 }
 
+// benchmarkTradeFilterColumns and benchmarkTradeFilterEAVAttrs map trade filter
+// attributes to their storage layout (see schemas/trade_attributes.json):
+// service-path records are rebuilt via transform.ToPersistentRecord, which
+// stores column-bound attributes under entity_main column names and EAV-only
+// attributes as OtherAttributes entries.
+var benchmarkTradeFilterColumns = map[string]string{
+	"symbol": "text_01",
+	"region": "text_02",
+}
+
+var benchmarkTradeFilterEAVAttrs = map[string]int16{
+	"exchange": 8,
+}
+
 func recordMatchesFilter(record *model.PersistentRecord, attribute, expected string) bool {
 	switch attribute {
 	case "symbol", "exchange", "region", "name":
-		return record.TextItems[attribute] == expected
+		value, ok := benchmarkRecordTextValue(record, attribute)
+		return ok && value == expected
 	case "tradeType":
-		return fmt.Sprintf("%d", record.Int64Items[attribute]) == expected
+		if value, ok := record.Int64Items[attribute]; ok {
+			return fmt.Sprintf("%d", value) == expected
+		}
+		if value, ok := record.Int16Items["smallint_01"]; ok {
+			return fmt.Sprintf("%d", value) == expected
+		}
+		return false
 	default:
 		return true
 	}
+}
+
+// benchmarkRecordTextValue reads a benchmark text attribute from either record
+// shape: harness-path records carry attribute names directly, service-path
+// records carry the storage layout.
+func benchmarkRecordTextValue(record *model.PersistentRecord, attribute string) (string, bool) {
+	if value, ok := record.TextItems[attribute]; ok {
+		return value, true
+	}
+	if column, ok := benchmarkTradeFilterColumns[attribute]; ok {
+		if value, ok := record.TextItems[column]; ok {
+			return value, true
+		}
+	}
+	if attrID, ok := benchmarkTradeFilterEAVAttrs[attribute]; ok {
+		for _, eav := range record.OtherAttributes {
+			if eav.AttrID == attrID && eav.ValueText != nil {
+				return *eav.ValueText, true
+			}
+		}
+	}
+	return "", false
 }
 
 func persistentRecordIDs(records []*model.PersistentRecord) []string {
