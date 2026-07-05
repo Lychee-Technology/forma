@@ -55,10 +55,19 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		"PageSize": fmt.Sprintf("$%d", len(args)+2),
 	}
 
+	// SchemaVersion is defense-in-depth (PR #148 review): today every render
+	// input derives from key-covered values (metadata reaches the skeleton
+	// only through clause text and attributeOrders), but fingerprinting keeps
+	// the key correct if the template ever consumes metadata directly.
+	fingerprint := ""
+	if r.metadataCache != nil {
+		fingerprint, _ = r.metadataCache.SchemaFingerprint(schemaID)
+	}
 	renderKey := queryplan.Key{
-		Kind:      "postgres_optimized_template",
-		SchemaID:  schemaID,
-		ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders), 16),
+		Kind:          "postgres_optimized_template",
+		SchemaVersion: fingerprint,
+		SchemaID:      schemaID,
+		ShapeHash:     strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders), 16),
 	}
 	queryAny, cacheHit, err := r.planCache.GetOrBuild(renderKey, func() (any, error) {
 		return renderTemplate(optimizedQuerySQLTemplate, sqlParams)

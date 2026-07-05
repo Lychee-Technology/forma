@@ -3,7 +3,9 @@ package queryplan
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -105,4 +107,51 @@ func TestCacheConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestCacheSingleFlight pins the review fix on PR #148: concurrent misses on
+// one key run build exactly once; waiters share the result. misses therefore
+// equals builds, keeping benchmark artifact counters trustworthy.
+func TestCacheSingleFlight(t *testing.T) {
+	c := NewCache(8)
+	var builds atomic.Int64
+	var wg sync.WaitGroup
+	const goroutines = 32
+	results := make([]any, goroutines)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			v, _, err := c.GetOrBuild(k("sf"), func() (any, error) {
+				builds.Add(1)
+				time.Sleep(10 * time.Millisecond) // widen the race window
+				return "artifact", nil
+			})
+			require.NoError(t, err)
+			results[i] = v
+		}(g)
+	}
+	wg.Wait()
+
+	require.Equal(t, int64(1), builds.Load(), "concurrent misses must build exactly once")
+	for _, v := range results {
+		require.Equal(t, "artifact", v)
+	}
+	hits, misses := c.Stats()
+	require.Equal(t, int64(1), misses, "misses must equal builds")
+	require.Equal(t, int64(goroutines-1), hits, "waiters and re-checks count as hits")
+}
+
+// TestCacheSingleFlightErrorNotShareableForever pins that a failed flight
+// does not poison the key: the next caller rebuilds.
+func TestCacheSingleFlightErrorRetries(t *testing.T) {
+	c := NewCache(8)
+	calls := 0
+	_, _, err := c.GetOrBuild(k("err"), func() (any, error) { calls++; return nil, fmt.Errorf("boom") })
+	require.Error(t, err)
+	v, hit, err := c.GetOrBuild(k("err"), func() (any, error) { calls++; return "ok", nil })
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Equal(t, "ok", v)
+	require.Equal(t, 2, calls)
 }
