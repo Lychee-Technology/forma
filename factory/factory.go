@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/transform"
 
@@ -146,7 +147,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 			zap.S().Infow("duckdb client initialized")
 		}
 	}
-	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache)
+	// One plan cache shared by the repository and the federated engine (#142):
+	// its lifetime is the manager's, so compiled plans survive across requests.
+	planCache := queryplan.NewCache(4096)
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
 	federatedEngine := federated.NewDBFederatedQueryEngine(
 		repository,
 		federated.NewPostgresDirtyIDFetcher(pool),
@@ -155,6 +159,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		effectiveConfig.DuckDB,
 		metadataCache,
 		federated.DuckDBPostgresConnStringFromPool(pool),
+		federated.WithPlanCache(planCache),
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil

@@ -11,6 +11,7 @@ import (
 
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/transform"
 
@@ -32,6 +33,8 @@ type RunResult struct {
 	ValidationOnly bool                 `json:"validation_only"`
 	Passed         bool                 `json:"passed"`
 	FailureCount   int                  `json:"failure_count,omitempty"`
+	PlanCacheHits  int64                `json:"plan_cache_hits"`
+	PlanCacheMiss  int64                `json:"plan_cache_misses"`
 	InfraError     string               `json:"infra_error,omitempty"`
 	Schemas        []SchemaFixture      `json:"schemas"`
 	Workloads      []WorkloadDefinition `json:"workloads"`
@@ -98,6 +101,16 @@ type Runner struct {
 	schemas   []SchemaFixture
 	workloads []WorkloadDefinition
 	genConfig GeneratorConfig
+	// planCache is shared across every repo/engine the runner constructs so
+	// benchmark iterations exercise warm plan-cache hits like production
+	// (#142 review finding 1); PlanCacheStats exposes the evidence.
+	planCache *queryplan.Cache
+}
+
+// PlanCacheStats returns cumulative plan-cache hits and misses across all
+// benchmark queries (benchmark artifact evidence for #142).
+func (r *Runner) PlanCacheStats() (hits, misses int64) {
+	return r.planCache.Stats()
 }
 
 // NewRunner builds a runner using the benchmark fixture registry.
@@ -120,6 +133,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 		schemas:   DefaultSchemaFixtures(),
 		workloads: workloads,
 		genConfig: GeneratorConfigFromBenchmark(resolved),
+		planCache: queryplan.NewCache(4096),
 	}, nil
 }
 
@@ -300,6 +314,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 			}
 		}
 	}
+	planCacheHits, planCacheMisses := r.PlanCacheStats()
 	result := &RunResult{
 		Config:         r.config,
 		Generator:      r.genConfig,
@@ -308,6 +323,8 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		CompletedAt:    time.Now(),
 		ValidationOnly: false,
 		Passed:         passed,
+		PlanCacheHits:  planCacheHits,
+		PlanCacheMiss:  planCacheMisses,
 		FailureCount:   failureCount,
 		Schemas:        append([]SchemaFixture(nil), r.schemas...),
 		Workloads:      append([]WorkloadDefinition(nil), r.workloads...),
@@ -499,7 +516,7 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 	if workload.UseKeysetPagination {
 		result, records, plan, err = r.executeKeysetServiceQuery(ctx, h, workload)
 	} else {
-		result, records, plan, err = executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, capturePlan)
+		result, records, plan, err = executeServiceQueryWithPlan(ctx, h, req, r.config.PageSize, capturePlan, r.planCache)
 	}
 	if err != nil {
 		return WorkloadRunResult{}, nil, err
@@ -574,7 +591,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 			MaxParallelism: 4,
 		}
 	}
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(r.planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewPostgresDirtyIDFetcher(pool),
@@ -583,6 +600,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		duckCfg,
 		metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.WithPlanCache(r.planCache),
 	)
 
 	schemaName := workload.TargetSchema
@@ -713,7 +731,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	return result, recs, plan, nil
 }
 
-func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int) (*forma.QueryResult, []*model.PersistentRecord, error) {
+func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -757,7 +775,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		}
 	}
 
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewPostgresDirtyIDFetcher(pool),
@@ -766,6 +784,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		duckCfg,
 		metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.WithPlanCache(planCache),
 	)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{
@@ -801,7 +820,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	return result, records, nil
 }
 
-func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
+func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -811,7 +830,7 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 	}
 	defer pool.Close()
 
-	result, records, err := executeServiceQuery(ctx, h, req, defaultPageSize)
+	result, records, err := executeServiceQuery(ctx, h, req, defaultPageSize, planCache)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -858,7 +877,7 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 			MaxParallelism: 4,
 		}
 	}
-	repo := internal.NewDBPersistentRecordRepository(pool, metadata)
+	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewPostgresDirtyIDFetcher(pool),
@@ -867,6 +886,7 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		duckCfg,
 		metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(pool),
+		fedengine.WithPlanCache(planCache),
 	)
 
 	pageSize := benchmarkDefaultPageSize(defaultPageSize)
