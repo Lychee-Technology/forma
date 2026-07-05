@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"time"
@@ -236,7 +237,7 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 
 	limit := query.Limit
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	offset := max(query.Offset, 0)
 
@@ -292,7 +293,7 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 	return &PersistentRecordPage{
 		Records:      records,
 		TotalRecords: totalRecords,
-		TotalPages:   computeTotalPages(totalRecords, limit),
+		TotalPages:   model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:  currentPage,
 	}, nil
 }

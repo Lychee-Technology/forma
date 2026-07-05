@@ -201,7 +201,7 @@ func toFloat64ForEAV(value any) (float64, error) {
 		}
 		return parseTrimmedFloat64(str)
 	default:
-		return toFloat64(value)
+		return numutil.Float64(value)
 	}
 }
 
@@ -403,10 +403,6 @@ func attributeParentPath(attrPath string) (string, bool) {
 		return "", false
 	}
 	return attrPath[:lastDot], true
-}
-
-func toFloat64(value any) (float64, error) {
-	return numutil.Float64(value)
 }
 
 func toTime(value any) (time.Time, error) {

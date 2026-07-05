@@ -10,6 +10,7 @@ package transform
 // rather than invalid caller input.
 
 import (
+	"github.com/lychee-technology/forma/internal/numutil"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -345,7 +346,7 @@ func populateTypedValue(attr *EAVRecord, attrName string, value any, meta forma.
 		}
 		attr.ValueText = &strVal
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt, forma.ValueTypeInteger, forma.ValueTypeSmallInt:
-		numVal, err := toFloat64(value)
+		numVal, err := numutil.Float64(value)
 		if err != nil {
 			return handleConversionError(err)
 		}

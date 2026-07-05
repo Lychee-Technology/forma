@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"time"
@@ -25,7 +26,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		return nil, 0, fmt.Errorf("federated query cannot be nil")
 	}
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	if offset < 0 {
 		offset = 0
@@ -57,7 +58,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	}
 
 	// Determine per-source fetch cap
-	maxRows := federatedMaxRows
+	maxRows := model.FederatedMaxRows
 	if opts != nil && opts.MaxRows > 0 {
 		maxRows = opts.MaxRows
 	}
@@ -149,7 +150,7 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 		}
 	}
 
-	maxRows := federatedMaxRows
+	maxRows := model.FederatedMaxRows
 	if opts != nil && opts.MaxRows > 0 {
 		maxRows = opts.MaxRows
 	}

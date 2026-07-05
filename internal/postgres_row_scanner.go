@@ -1,8 +1,8 @@
 package internal
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,11 +32,11 @@ func (r *DBPersistentRecordRepository) scanOptimizedRow(rows pgx.Rows) (*Persist
 	record := buildRecordFromScanBuffers(scanBuffers)
 
 	// Parse JSON attributes
-	if err := parseAttributesJSON(attrsJSON, record); err != nil {
+	if err := model.ParseAttributesJSON(attrsJSON, record); err != nil {
 		return nil, 0, err
 	}
 
-	cleanupEmptyMaps(record)
+	model.CleanupEmptyMaps(record)
 
 	return record, totalRecords, nil
 }
@@ -52,22 +52,22 @@ type columnScanBuffers struct {
 	typeIndex  []int
 }
 
-// newColumnScanBuffers creates scan buffers based on entityMainColumnDescriptors
+// newColumnScanBuffers creates scan buffers based on model.EntityMainColumnDescriptors
 func newColumnScanBuffers() *columnScanBuffers {
 	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
-	for _, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
+	for _, desc := range model.EntityMainColumnDescriptors {
+		switch desc.Kind {
+		case model.ColumnKindText:
 			textCount++
-		case columnKindSmallint:
+		case model.ColumnKindSmallint:
 			smallCount++
-		case columnKindInteger:
+		case model.ColumnKindInteger:
 			intCount++
-		case columnKindBigint:
+		case model.ColumnKindBigint:
 			bigCount++
-		case columnKindDouble:
+		case model.ColumnKindDouble:
 			doubleCount++
-		case columnKindUUID:
+		case model.ColumnKindUUID:
 			uuidCount++
 		}
 	}
@@ -79,38 +79,38 @@ func newColumnScanBuffers() *columnScanBuffers {
 		bigVals:    make([]pgtype.Int8, bigCount),
 		doubleVals: make([]pgtype.Float8, doubleCount),
 		uuidVals:   make([]pgtype.UUID, uuidCount),
-		typeIndex:  make([]int, len(entityMainColumnDescriptors)),
+		typeIndex:  make([]int, len(model.EntityMainColumnDescriptors)),
 	}
 }
 
 // buildScanArgs creates scan arguments from buffers
 func buildScanArgs(buffers *columnScanBuffers) []any {
-	scanArgs := make([]any, 0, len(entityMainColumnDescriptors)+4)
+	scanArgs := make([]any, 0, len(model.EntityMainColumnDescriptors)+4)
 	textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
 
-	for i, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
+	for i, desc := range model.EntityMainColumnDescriptors {
+		switch desc.Kind {
+		case model.ColumnKindText:
 			scanArgs = append(scanArgs, &buffers.textVals[textIdx])
 			buffers.typeIndex[i] = textIdx
 			textIdx++
-		case columnKindSmallint:
+		case model.ColumnKindSmallint:
 			scanArgs = append(scanArgs, &buffers.smallVals[smallIdx])
 			buffers.typeIndex[i] = smallIdx
 			smallIdx++
-		case columnKindInteger:
+		case model.ColumnKindInteger:
 			scanArgs = append(scanArgs, &buffers.intVals[intIdx])
 			buffers.typeIndex[i] = intIdx
 			intIdx++
-		case columnKindBigint:
+		case model.ColumnKindBigint:
 			scanArgs = append(scanArgs, &buffers.bigVals[bigIdx])
 			buffers.typeIndex[i] = bigIdx
 			bigIdx++
-		case columnKindDouble:
+		case model.ColumnKindDouble:
 			scanArgs = append(scanArgs, &buffers.doubleVals[doubleIdx])
 			buffers.typeIndex[i] = doubleIdx
 			doubleIdx++
-		case columnKindUUID:
+		case model.ColumnKindUUID:
 			scanArgs = append(scanArgs, &buffers.uuidVals[uuidIdx])
 			buffers.typeIndex[i] = uuidIdx
 			uuidIdx++
@@ -131,7 +131,7 @@ func buildRecordFromScanBuffers(buffers *columnScanBuffers) *PersistentRecord {
 		UUIDItems:    make(map[string]uuid.UUID),
 	}
 
-	for i, desc := range entityMainColumnDescriptors {
+	for i, desc := range model.EntityMainColumnDescriptors {
 		populateRecordField(record, desc, buffers, i)
 	}
 
@@ -139,31 +139,31 @@ func buildRecordFromScanBuffers(buffers *columnScanBuffers) *PersistentRecord {
 }
 
 // populateRecordField sets a single field in the record from scan buffers
-func populateRecordField(record *PersistentRecord, desc columnDescriptor, buffers *columnScanBuffers, idx int) {
-	switch desc.kind {
-	case columnKindText:
+func populateRecordField(record *PersistentRecord, desc model.ColumnDescriptor, buffers *columnScanBuffers, idx int) {
+	switch desc.Kind {
+	case model.ColumnKindText:
 		val := buffers.textVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			record.TextItems[desc.name] = val.String
+			record.TextItems[desc.Name] = val.String
 		}
-	case columnKindSmallint:
+	case model.ColumnKindSmallint:
 		val := buffers.smallVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			if desc.name == "ltbase_schema_id" {
+			if desc.Name == "ltbase_schema_id" {
 				record.SchemaID = val.Int16
 			} else {
-				record.Int16Items[desc.name] = val.Int16
+				record.Int16Items[desc.Name] = val.Int16
 			}
 		}
-	case columnKindInteger:
+	case model.ColumnKindInteger:
 		val := buffers.intVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			record.Int32Items[desc.name] = val.Int32
+			record.Int32Items[desc.Name] = val.Int32
 		}
-	case columnKindBigint:
+	case model.ColumnKindBigint:
 		val := buffers.bigVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			switch desc.name {
+			switch desc.Name {
 			case "ltbase_created_at":
 				record.CreatedAt = val.Int64
 			case "ltbase_updated_at":
@@ -171,102 +171,22 @@ func populateRecordField(record *PersistentRecord, desc columnDescriptor, buffer
 			case "ltbase_deleted_at":
 				record.DeletedAt = &val.Int64
 			default:
-				record.Int64Items[desc.name] = val.Int64
+				record.Int64Items[desc.Name] = val.Int64
 			}
 		}
-	case columnKindDouble:
+	case model.ColumnKindDouble:
 		val := buffers.doubleVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			record.Float64Items[desc.name] = val.Float64
+			record.Float64Items[desc.Name] = val.Float64
 		}
-	case columnKindUUID:
+	case model.ColumnKindUUID:
 		val := buffers.uuidVals[buffers.typeIndex[idx]]
 		if val.Valid {
-			if desc.name == "ltbase_row_id" {
+			if desc.Name == "ltbase_row_id" {
 				record.RowID = uuid.UUID(val.Bytes)
 			} else {
-				record.UUIDItems[desc.name] = uuid.UUID(val.Bytes)
+				record.UUIDItems[desc.Name] = uuid.UUID(val.Bytes)
 			}
 		}
-	}
-}
-
-// parseAttributesJSON parses JSON-aggregated EAV attributes into the record
-func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
-	if len(attrsJSON) == 0 || string(attrsJSON) == "[]" {
-		return nil
-	}
-
-	var attributes []map[string]any
-	if err := json.Unmarshal(attrsJSON, &attributes); err != nil {
-		return fmt.Errorf("unmarshal attributes json: %w", err)
-	}
-
-	record.OtherAttributes = make([]EAVRecord, 0, len(attributes))
-	for _, attrObj := range attributes {
-		attr, err := parseEAVAttribute(attrObj)
-		if err != nil {
-			return fmt.Errorf("parse eav attribute: %w", err)
-		}
-		record.OtherAttributes = append(record.OtherAttributes, attr)
-	}
-
-	return nil
-}
-
-// parseEAVAttribute converts a JSON object to an EAVRecord
-func parseEAVAttribute(attrObj map[string]any) (EAVRecord, error) {
-	schemaIDRaw, ok := attrObj["schema_id"].(float64)
-	if !ok {
-		return EAVRecord{}, fmt.Errorf("schema_id is missing or not a number: %v", attrObj["schema_id"])
-	}
-	attrIDRaw, ok := attrObj["attr_id"].(float64)
-	if !ok {
-		return EAVRecord{}, fmt.Errorf("attr_id is missing or not a number: %v", attrObj["attr_id"])
-	}
-	attr := EAVRecord{
-		SchemaID: int16(schemaIDRaw),
-		AttrID:   int16(attrIDRaw),
-	}
-
-	if rowIDStr, ok := attrObj["row_id"].(string); ok {
-		if parsedUUID, err := uuid.Parse(rowIDStr); err == nil {
-			attr.RowID = parsedUUID
-		}
-	}
-
-	if indices, ok := attrObj["array_indices"].(string); ok {
-		attr.ArrayIndices = indices
-	}
-
-	if valueText, ok := attrObj["value_text"].(string); ok {
-		attr.ValueText = &valueText
-	}
-	if valueNumeric, ok := attrObj["value_numeric"].(float64); ok {
-		attr.ValueNumeric = &valueNumeric
-	}
-
-	return attr, nil
-}
-
-// cleanupEmptyMaps removes empty maps from the record to avoid nil-map checks
-func cleanupEmptyMaps(record *PersistentRecord) {
-	if len(record.TextItems) == 0 {
-		record.TextItems = nil
-	}
-	if len(record.Int16Items) == 0 {
-		record.Int16Items = nil
-	}
-	if len(record.Int32Items) == 0 {
-		record.Int32Items = nil
-	}
-	if len(record.Int64Items) == 0 {
-		record.Int64Items = nil
-	}
-	if len(record.Float64Items) == 0 {
-		record.Float64Items = nil
-	}
-	if len(record.UUIDItems) == 0 {
-		record.UUIDItems = nil
 	}
 }

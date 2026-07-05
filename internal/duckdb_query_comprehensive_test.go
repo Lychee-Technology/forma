@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"testing"
 	"text/template"
 	"time"
@@ -302,14 +303,14 @@ func TestRenderDirtyIDsValuesCSV_MultipleUUIDs(t *testing.T) {
 	u1 := uuid.New()
 	u2 := uuid.New()
 
-	csv := RenderDirtyIDsValuesCSV([]uuid.UUID{u1, u2})
+	csv := sqlgen.RenderDirtyIDsValuesCSV([]uuid.UUID{u1, u2})
 	require.Contains(t, csv, "(")
 	require.Contains(t, csv, u1.String())
 	require.Contains(t, csv, u2.String())
 }
 
 func TestRenderDirtyIDsValuesCSV_EmptyList(t *testing.T) {
-	csv := RenderDirtyIDsValuesCSV([]uuid.UUID{})
+	csv := sqlgen.RenderDirtyIDsValuesCSV([]uuid.UUID{})
 	require.Equal(t, "", csv)
 }
 

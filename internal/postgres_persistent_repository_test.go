@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 	"testing"
 	"time"
@@ -43,29 +44,29 @@ func TestValidateTables(t *testing.T) {
 }
 
 func TestSortedColumnKeys(t *testing.T) {
-	keys, err := sortedColumnKeys(map[string]string{"text_02": "b", "text_01": "a"}, allowedTextColumns)
+	keys, err := sortedColumnKeys(map[string]string{"text_02": "b", "text_01": "a"}, model.AllowedTextColumns)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"text_01", "text_02"}, keys)
 
-	_, err = sortedColumnKeys(map[string]string{"nope": "x"}, allowedTextColumns)
+	_, err = sortedColumnKeys(map[string]string{"nope": "x"}, model.AllowedTextColumns)
 	require.Error(t, err)
 }
 
 func TestMainColumnHelpers(t *testing.T) {
-	assert.True(t, isMainTableColumn("text_01"))
-	assert.True(t, isMainTableColumn("ltbase_schema_id"))
-	assert.True(t, isMainTableColumn("ltbase_created_by"))
-	assert.True(t, isMainTableColumn("ltbase_updated_by"))
-	assert.True(t, isMainTableColumn("ltbase_deleted_by"))
-	assert.False(t, isMainTableColumn("nope"))
+	assert.True(t, model.IsMainTableColumn("text_01"))
+	assert.True(t, model.IsMainTableColumn("ltbase_schema_id"))
+	assert.True(t, model.IsMainTableColumn("ltbase_created_by"))
+	assert.True(t, model.IsMainTableColumn("ltbase_updated_by"))
+	assert.True(t, model.IsMainTableColumn("ltbase_deleted_by"))
+	assert.False(t, model.IsMainTableColumn("nope"))
 
-	desc := getMainColumnDescriptor("ltbase_schema_id")
+	desc := model.GetMainColumnDescriptor("ltbase_schema_id")
 	require.NotNil(t, desc)
-	assert.Equal(t, columnKindSmallint, desc.kind)
-	desc = getMainColumnDescriptor("ltbase_created_by")
+	assert.Equal(t, model.ColumnKindSmallint, desc.Kind)
+	desc = model.GetMainColumnDescriptor("ltbase_created_by")
 	require.NotNil(t, desc)
-	assert.Equal(t, columnKindText, desc.kind)
-	assert.Nil(t, getMainColumnDescriptor("nope"))
+	assert.Equal(t, model.ColumnKindText, desc.Kind)
+	assert.Nil(t, model.GetMainColumnDescriptor("nope"))
 }
 
 func TestBuildInsertMainStatement(t *testing.T) {
@@ -234,10 +235,10 @@ func TestBuildAttributeValuesClause(t *testing.T) {
 }
 
 func TestComputeTotalPages(t *testing.T) {
-	assert.Equal(t, 0, computeTotalPages(0, 10))
-	assert.Equal(t, 0, computeTotalPages(10, 0))
-	assert.Equal(t, 2, computeTotalPages(10, 5))
-	assert.Equal(t, 3, computeTotalPages(11, 5))
+	assert.Equal(t, 0, model.ComputeTotalPages(0, 10))
+	assert.Equal(t, 0, model.ComputeTotalPages(10, 0))
+	assert.Equal(t, 2, model.ComputeTotalPages(10, 5))
+	assert.Equal(t, 3, model.ComputeTotalPages(11, 5))
 }
 
 func TestParseKvConditionForColumnWithMeta(t *testing.T) {
@@ -405,12 +406,12 @@ func TestRunOptimizedQueryWithMockPool(t *testing.T) {
 	repo := NewDBPersistentRecordRepository(mock, nil)
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)
-	values := make([]any, 0, len(entityMainColumnDescriptors)+4)
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors)+4)
+	values := make([]any, 0, len(model.EntityMainColumnDescriptors)+4)
 
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
-		switch desc.name {
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
+		switch desc.Name {
 		case "ltbase_schema_id":
 			values = append(values, int64(1))
 		case "ltbase_row_id":

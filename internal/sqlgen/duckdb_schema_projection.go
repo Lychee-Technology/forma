@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"sort"
 	"strings"
 
@@ -294,17 +295,17 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 	}
 
 	// For entity_main columns not mapped to any attribute, emit NULL
-	allMainCols := entityMainColumnDescriptors[len(systemColumnDescriptors):]
+	allMainCols := model.EntityMainColumnDescriptors[len(model.SystemColumnDescriptors):]
 	mappedCols := make(map[string]bool)
 	for _, col := range sp.AttrToMainColumn {
 		mappedCols[col] = true
 	}
 	for _, desc := range allMainCols {
-		if mappedCols[desc.name] {
+		if mappedCols[desc.Name] {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s",
-			duckDBColumnType(desc.kind), desc.name))
+			duckDBColumnType(desc.Kind), desc.Name))
 	}
 
 	// Build attributes_json for EAV-only attributes
@@ -403,19 +404,19 @@ func duckDBAttrCast(attr string, vt forma.ValueType) string {
 	}
 }
 
-func duckDBColumnType(k columnKind) string {
+func duckDBColumnType(k model.ColumnKind) string {
 	switch k {
-	case columnKindText:
+	case model.ColumnKindText:
 		return "VARCHAR"
-	case columnKindSmallint:
+	case model.ColumnKindSmallint:
 		return "SMALLINT"
-	case columnKindInteger:
+	case model.ColumnKindInteger:
 		return "INTEGER"
-	case columnKindBigint:
+	case model.ColumnKindBigint:
 		return "BIGINT"
-	case columnKindDouble:
+	case model.ColumnKindDouble:
 		return "DOUBLE"
-	case columnKindUUID:
+	case model.ColumnKindUUID:
 		return "UUID"
 	default:
 		return "VARCHAR"
@@ -511,12 +512,12 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 			"double_01", "uuid_01",
 		})
 		for _, col := range remaining {
-			desc := getMainColumnDescriptor(col)
+			desc := model.GetMainColumnDescriptor(col)
 			if desc == nil {
 				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
+			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
 		}
 		// attributes_json from EAV-only attributes
 		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
@@ -533,12 +534,12 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 		parts = append(parts, "CAST(status AS SMALLINT) AS smallint_01")
 		remaining := restMainColumnNames([]string{"text_01", "text_02", "smallint_01"})
 		for _, col := range remaining {
-			desc := getMainColumnDescriptor(col)
+			desc := model.GetMainColumnDescriptor(col)
 			if desc == nil {
 				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
+			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
 		}
 		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
 			benchmarkEAVJSONArray(schemaID, 100, "",
@@ -550,12 +551,12 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 		parts = append(parts, "CAST(sector AS SMALLINT) AS smallint_01")
 		remaining := restMainColumnNames([]string{"text_01", "smallint_01"})
 		for _, col := range remaining {
-			desc := getMainColumnDescriptor(col)
+			desc := model.GetMainColumnDescriptor(col)
 			if desc == nil {
 				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.kind), col))
+			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
 		}
 		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
 			benchmarkEAVJSONArray(schemaID, 101, "",
@@ -575,9 +576,9 @@ func restMainColumnNames(exclude []string) []string {
 		excludeSet[col] = true
 	}
 	var result []string
-	for _, desc := range entityMainColumnDescriptors[len(systemColumnDescriptors):] {
-		if !excludeSet[desc.name] {
-			result = append(result, desc.name)
+	for _, desc := range model.EntityMainColumnDescriptors[len(model.SystemColumnDescriptors):] {
+		if !excludeSet[desc.Name] {
+			result = append(result, desc.Name)
 		}
 	}
 	return result

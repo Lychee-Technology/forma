@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"strings"
@@ -216,22 +217,22 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		"ltbase_deleted_at BIGINT",
 	}
 
-	for _, col := range textColumns {
+	for _, col := range model.TextColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s TEXT", col))
 	}
-	for _, col := range smallintColumns {
+	for _, col := range model.SmallintColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s SMALLINT", col))
 	}
-	for _, col := range integerColumns {
+	for _, col := range model.IntegerColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s INTEGER", col))
 	}
-	for _, col := range bigintColumns {
+	for _, col := range model.BigintColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s BIGINT", col))
 	}
-	for _, col := range doubleColumns {
+	for _, col := range model.DoubleColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s DOUBLE PRECISION", col))
 	}
-	for _, col := range uuidColumns {
+	for _, col := range model.UUIDColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s UUID", col))
 	}
 

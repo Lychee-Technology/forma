@@ -191,17 +191,17 @@ type TrendRun struct {
 // TrendReport is a longitudinal analysis artifact that surfaces regressions,
 // baseline drift, and methodology changes across historical benchmark runs.
 type TrendReport struct {
-	Candidate           TrendRun              `json:"candidate"`
-	BaselineWindow      []TrendRun            `json:"baseline_window"`
-	DriftWindow         []TrendRun            `json:"drift_window,omitempty"`
-	ComparabilityKey    string                `json:"comparability_key"`
-	MethodologyChanges  []string              `json:"methodology_changes,omitempty"`
-	Regressions         []RegressionCandidate `json:"regressions,omitempty"`
-	Drift               *DriftSignal          `json:"drift,omitempty"`
-	WorkloadTrends      []WorkloadTrend       `json:"workload_trends"`
-	ProtectedWorkloads  []string              `json:"protected_workloads"`
-	WindowsToStable     bool                  `json:"windows_too_stable"`
-	Status              string                `json:"status"`
+	Candidate          TrendRun              `json:"candidate"`
+	BaselineWindow     []TrendRun            `json:"baseline_window"`
+	DriftWindow        []TrendRun            `json:"drift_window,omitempty"`
+	ComparabilityKey   string                `json:"comparability_key"`
+	MethodologyChanges []string              `json:"methodology_changes,omitempty"`
+	Regressions        []RegressionCandidate `json:"regressions,omitempty"`
+	Drift              *DriftSignal          `json:"drift,omitempty"`
+	WorkloadTrends     []WorkloadTrend       `json:"workload_trends"`
+	ProtectedWorkloads []string              `json:"protected_workloads"`
+	WindowsToStable    bool                  `json:"windows_too_stable"`
+	Status             string                `json:"status"`
 }
 
 // RegressionCandidate records a single regression signal detected during trend analysis.
@@ -389,12 +389,12 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 		summary.Provenance = &pc
 	} else if !result.StartedAt.IsZero() {
 		summary.Provenance = &RunProvenance{
-			StartedAt:   result.StartedAt,
-			CompletedAt: result.CompletedAt,
-			Mode:        string(result.Config.Mode),
-			Scale:       string(result.Config.Scale),
+			StartedAt:    result.StartedAt,
+			CompletedAt:  result.CompletedAt,
+			Mode:         string(result.Config.Mode),
+			Scale:        string(result.Config.Scale),
 			Distribution: string(result.Config.Distribution),
-			TierProfile: result.Config.TierProfile,
+			TierProfile:  result.Config.TierProfile,
 		}
 	}
 	if len(result.Executions) == 0 {

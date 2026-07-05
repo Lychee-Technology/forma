@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
 	"strconv"
 	"strings"
@@ -61,7 +62,7 @@ func convertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 		return valStr, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		parsed := tryParseNumber(valStr)
+		parsed := numutil.TryParseNumber(valStr)
 		switch v := parsed.(type) {
 		case int64:
 			return float64(v), nil

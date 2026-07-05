@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ type duckDBRowsIterator interface {
 //
 // Note: This implementation performs a best-effort scan of columns produced by the
 // optimized query template. It mirrors the column ordering used by the Postgres template:
-//   - main table projection (entity_main columns, order defined by entityMainColumnDescriptors)
+//   - main table projection (entity_main columns, order defined by model.EntityMainColumnDescriptors)
 //   - attributes_json (TEXT)
 //   - total_records (bigint)
 //   - total_pages (bigint)
@@ -185,7 +186,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 		"MainScanTable":        mainScanTable,
 		"EAVSchema":            eavSchema,
 		"EAVScanTable":         eavScanTable,
-		"MainProjection":       entityMainProjection,
+		"MainProjection":       model.EntityMainProjection,
 		"SchemaID":             q.SchemaID,
 		"UseMainTableAsAnchor": q.UseMainAsAnchor,
 		"Anchor": map[string]any{
@@ -392,7 +393,7 @@ func (e *DBFederatedQueryEngine) streamDuckDBRows(
 		}
 
 		// Clean up empty maps
-		cleanupEmptyMaps(record)
+		model.CleanupEmptyMaps(record)
 
 		if !totalSet && totalRec.Valid {
 			totalRecords = totalRec.Int64

@@ -3,19 +3,13 @@ package internal
 import (
 	"context"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
-
-func computeTotalPages(total int64, limit int) int {
-	if total == 0 || limit <= 0 {
-		return 0
-	}
-	return int((total + int64(limit) - 1) / int64(limit))
-}
 
 func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	ctx context.Context,
@@ -35,7 +29,7 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		return 0, fmt.Errorf("schema id must be positive")
 	}
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	if offset < 0 {
 		offset = 0
@@ -45,7 +39,7 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		"EAVTable":             sanitizeIdentifier(tables.EAVData),
 		"MainTable":            sanitizeIdentifier(tables.EntityMain),
 		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
-		"MainProjection":       entityMainProjection,
+		"MainProjection":       model.EntityMainProjection,
 		"SchemaID":             "$1",
 		"UseMainTableAsAnchor": useMainTableAsAnchor,
 		"Anchor": map[string]any{
@@ -122,7 +116,7 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 		return nil, 0, fmt.Errorf("schema id must be positive")
 	}
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	if offset < 0 {
 		offset = 0
@@ -226,7 +220,7 @@ func (b *hybridConditionBuilder) EmitLeaf(cond *forma.KvCondition) (string, []an
 }
 
 func (b *hybridConditionBuilder) resolveColumnName(attr string) string {
-	if isMainTableColumn(attr) {
+	if model.IsMainTableColumn(attr) {
 		return attr
 	}
 	if b.cache != nil {

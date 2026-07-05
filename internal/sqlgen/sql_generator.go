@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
 	"strconv"
 	"time"
@@ -79,7 +80,7 @@ func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error
 		parsedValue = valStr
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		valueColumn = "value_numeric"
-		parsed := tryParseNumber(valStr)
+		parsed := numutil.TryParseNumber(valStr)
 		switch v := parsed.(type) {
 		case int64:
 			parsedValue = float64(v)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"testing"
 
 	"github.com/google/uuid"
@@ -120,19 +121,19 @@ func TestStreamDuckDBRows_WhenIteratorEndsWithError_ItReturnsIterationError(t *t
 }
 
 func populateDuckDBRow(dest []any, schemaID int16, rowID uuid.UUID, createdAt int64, updatedAt int64, deletedAt *int64, attrsJSON string, totalRecords int64) error {
-	if len(dest) < len(entityMainColumnDescriptors)+4 {
+	if len(dest) < len(model.EntityMainColumnDescriptors)+4 {
 		return fmt.Errorf("insufficient scan destinations")
 	}
 
-	for i, scanDest := range dest[:len(entityMainColumnDescriptors)] {
+	for i, scanDest := range dest[:len(model.EntityMainColumnDescriptors)] {
 		switch typed := scanDest.(type) {
 		case *sql.NullString:
-			if entityMainColumnDescriptors[i].name == "ltbase_row_id" {
+			if model.EntityMainColumnDescriptors[i].Name == "ltbase_row_id" {
 				typed.String = rowID.String()
 				typed.Valid = true
 			}
 		case *sql.NullInt64:
-			switch entityMainColumnDescriptors[i].name {
+			switch model.EntityMainColumnDescriptors[i].Name {
 			case "ltbase_schema_id":
 				typed.Int64 = int64(schemaID)
 				typed.Valid = true
@@ -151,14 +152,14 @@ func populateDuckDBRow(dest []any, schemaID int16, rowID uuid.UUID, createdAt in
 		}
 	}
 
-	attrsDest, ok := dest[len(entityMainColumnDescriptors)].(*sql.NullString)
+	attrsDest, ok := dest[len(model.EntityMainColumnDescriptors)].(*sql.NullString)
 	if !ok {
 		return fmt.Errorf("attributes destination has unexpected type")
 	}
 	attrsDest.String = attrsJSON
 	attrsDest.Valid = true
 
-	totalDest, ok := dest[len(entityMainColumnDescriptors)+1].(*sql.NullInt64)
+	totalDest, ok := dest[len(model.EntityMainColumnDescriptors)+1].(*sql.NullInt64)
 	if !ok {
 		return fmt.Errorf("total destination has unexpected type")
 	}

@@ -3,6 +3,7 @@ package federated
 import (
 	"database/sql"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,22 +20,22 @@ type duckDBScanBuffers struct {
 	uuidVals   []sql.NullString
 }
 
-// newDuckDBScanBuffers creates scan buffers sized according to entityMainColumnDescriptors.
+// newDuckDBScanBuffers creates scan buffers sized according to model.EntityMainColumnDescriptors.
 func newDuckDBScanBuffers() *duckDBScanBuffers {
 	textCount, smallCount, intCount, bigCount, doubleCount, uuidCount := 0, 0, 0, 0, 0, 0
-	for _, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
+	for _, desc := range model.EntityMainColumnDescriptors {
+		switch desc.Kind {
+		case model.ColumnKindText:
 			textCount++
-		case columnKindSmallint:
+		case model.ColumnKindSmallint:
 			smallCount++
-		case columnKindInteger:
+		case model.ColumnKindInteger:
 			intCount++
-		case columnKindBigint:
+		case model.ColumnKindBigint:
 			bigCount++
-		case columnKindDouble:
+		case model.ColumnKindDouble:
 			doubleCount++
-		case columnKindUUID:
+		case model.ColumnKindUUID:
 			uuidCount++
 		}
 	}
@@ -52,27 +53,27 @@ func newDuckDBScanBuffers() *duckDBScanBuffers {
 // buildScanArgs constructs scan arguments for a single DuckDB row.
 // Returns the scan args slice and pointers for metadata columns.
 func (b *duckDBScanBuffers) buildScanArgs() ([]any, *sql.NullString, *sql.NullInt64, *sql.NullInt64, *sql.NullInt64) {
-	scanArgs := make([]any, 0, len(entityMainColumnDescriptors)+4)
+	scanArgs := make([]any, 0, len(model.EntityMainColumnDescriptors)+4)
 	textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
 
-	for _, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
+	for _, desc := range model.EntityMainColumnDescriptors {
+		switch desc.Kind {
+		case model.ColumnKindText:
 			scanArgs = append(scanArgs, &b.textVals[textIdx])
 			textIdx++
-		case columnKindSmallint:
+		case model.ColumnKindSmallint:
 			scanArgs = append(scanArgs, &b.smallVals[smallIdx])
 			smallIdx++
-		case columnKindInteger:
+		case model.ColumnKindInteger:
 			scanArgs = append(scanArgs, &b.intVals[intIdx])
 			intIdx++
-		case columnKindBigint:
+		case model.ColumnKindBigint:
 			scanArgs = append(scanArgs, &b.bigVals[bigIdx])
 			bigIdx++
-		case columnKindDouble:
+		case model.ColumnKindDouble:
 			scanArgs = append(scanArgs, &b.doubleVals[doubleIdx])
 			doubleIdx++
-		case columnKindUUID:
+		case model.ColumnKindUUID:
 			// DuckDB will typically return UUID as text; use NullString and parse
 			scanArgs = append(scanArgs, &b.uuidVals[uuidIdx])
 			uuidIdx++
@@ -106,35 +107,35 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *PersistentRecord {
 	}
 
 	textIdx, smallIdx, intIdx, bigIdx, doubleIdx, uuidIdx := 0, 0, 0, 0, 0, 0
-	for _, desc := range entityMainColumnDescriptors {
-		switch desc.kind {
-		case columnKindText:
+	for _, desc := range model.EntityMainColumnDescriptors {
+		switch desc.Kind {
+		case model.ColumnKindText:
 			val := b.textVals[textIdx]
 			if val.Valid {
-				record.TextItems[desc.name] = val.String
+				record.TextItems[desc.Name] = val.String
 			}
 			textIdx++
-		case columnKindSmallint:
+		case model.ColumnKindSmallint:
 			val := b.smallVals[smallIdx]
 			if val.Valid {
-				if desc.name == "ltbase_schema_id" {
+				if desc.Name == "ltbase_schema_id" {
 					record.SchemaID = int16(val.Int64)
 				} else {
-					record.Int16Items[desc.name] = int16(val.Int64)
+					record.Int16Items[desc.Name] = int16(val.Int64)
 				}
 			}
 			smallIdx++
-		case columnKindInteger:
+		case model.ColumnKindInteger:
 			val := b.intVals[intIdx]
 			if val.Valid {
-				record.Int32Items[desc.name] = int32(val.Int64)
+				record.Int32Items[desc.Name] = int32(val.Int64)
 			}
 			intIdx++
-		case columnKindBigint:
+		case model.ColumnKindBigint:
 			val := b.bigVals[bigIdx]
 			if val.Valid {
 				// Handle known system columns
-				switch desc.name {
+				switch desc.Name {
 				case "ltbase_created_at":
 					record.CreatedAt = val.Int64
 				case "ltbase_updated_at":
@@ -142,24 +143,24 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *PersistentRecord {
 				case "ltbase_deleted_at":
 					record.DeletedAt = &val.Int64
 				default:
-					record.Int64Items[desc.name] = val.Int64
+					record.Int64Items[desc.Name] = val.Int64
 				}
 			}
 			bigIdx++
-		case columnKindDouble:
+		case model.ColumnKindDouble:
 			val := b.doubleVals[doubleIdx]
 			if val.Valid {
-				record.Float64Items[desc.name] = val.Float64
+				record.Float64Items[desc.Name] = val.Float64
 			}
 			doubleIdx++
-		case columnKindUUID:
+		case model.ColumnKindUUID:
 			val := b.uuidVals[uuidIdx]
 			if val.Valid {
 				if parsed, err := uuid.Parse(val.String); err == nil {
-					if desc.name == "ltbase_row_id" {
+					if desc.Name == "ltbase_row_id" {
 						record.RowID = parsed
 					} else {
-						record.UUIDItems[desc.name] = parsed
+						record.UUIDItems[desc.Name] = parsed
 					}
 				}
 			}
@@ -191,13 +192,13 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *PersistentRecord {
 }
 
 // parseDuckDBAttributesJSON parses the attributes JSON string from DuckDB into EAVRecords.
-// This is similar to parseAttributesJSON in postgres_row_scanner.go but takes a string instead of []byte.
+// This is similar to model.ParseAttributesJSON but takes a string instead of []byte.
 func parseDuckDBAttributesJSON(attrsJSON string, record *PersistentRecord) error {
 	if attrsJSON == "" || attrsJSON == "[]" {
 		return nil
 	}
-	// Reuse the existing parseAttributesJSON which takes []byte
-	return parseAttributesJSON([]byte(attrsJSON), record)
+	// Reuse model.ParseAttributesJSON which takes []byte
+	return model.ParseAttributesJSON([]byte(attrsJSON), record)
 }
 
 // duckDBExecutionPlanContext holds execution plan tracking state.

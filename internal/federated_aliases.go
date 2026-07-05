@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/federated"
@@ -47,12 +46,6 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *FederatedAttributeQuery, 
 }
 func MergePersistentRecordsByTier(inputs map[DataTier][]*PersistentRecord, preferHot bool) ([]*PersistentRecord, error) {
 	return federated.MergePersistentRecordsByTier(inputs, preferHot)
-}
-func RenderDirtyIDsValuesCSV(dirtyIDs []uuid.UUID) string {
-	return federated.RenderDirtyIDsValuesCSV(dirtyIDs)
-}
-func MergeTemplateParamsWithDirtyIDs(params any, dirtyIDs []uuid.UUID) any {
-	return federated.MergeTemplateParamsWithDirtyIDs(params, dirtyIDs)
 }
 
 func DuckDBPostgresConnStringFromPool(pool *pgxpool.Pool) string {

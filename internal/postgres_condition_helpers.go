@@ -1,7 +1,9 @@
 package internal
 
 import (
+	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -31,7 +33,7 @@ func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCach
 			return false
 		}
 		// Check if it's a raw main table column name
-		if isMainTableColumn(c.Attr) {
+		if model.IsMainTableColumn(c.Attr) {
 			return true
 		}
 		// Check if it's an attribute with column_binding to main table
@@ -66,7 +68,7 @@ func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, me
 		valStr = "%" + valStr + "%"
 	}
 
-	desc := getMainColumnDescriptor(colName)
+	desc := model.GetMainColumnDescriptor(colName)
 	if desc == nil {
 		return "", nil, fmt.Errorf("unknown main table column: %s", colName)
 	}
@@ -98,17 +100,17 @@ func operatorToSQL(opStr string) (string, error) {
 }
 
 // parseColumnValue parses and converts a value string based on column type
-func parseColumnValue(desc *columnDescriptor, valStr string, meta *forma.AttributeMetadata) (any, error) {
-	switch desc.kind {
-	case columnKindText:
+func parseColumnValue(desc *model.ColumnDescriptor, valStr string, meta *forma.AttributeMetadata) (any, error) {
+	switch desc.Kind {
+	case model.ColumnKindText:
 		return valStr, nil
-	case columnKindSmallint, columnKindInteger, columnKindBigint, columnKindDouble:
+	case model.ColumnKindSmallint, model.ColumnKindInteger, model.ColumnKindBigint, model.ColumnKindDouble:
 		// Check if this is a date/time field that needs conversion
 		if meta != nil && (meta.ValueType == forma.ValueTypeDate || meta.ValueType == forma.ValueTypeDateTime) {
 			return convertDateValueForQuery(valStr, meta)
 		}
-		return tryParseNumber(valStr), nil
-	case columnKindUUID:
+		return numutil.TryParseNumber(valStr), nil
+	case model.ColumnKindUUID:
 		return valStr, nil
 	default:
 		return valStr, nil

@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"github.com/lychee-technology/forma/internal/model"
 	"testing"
 	"text/template"
 
@@ -13,8 +14,8 @@ import (
 )
 
 func initTestDescriptors() func() {
-	orig := entityMainColumnDescriptors
-	return func() { entityMainColumnDescriptors = orig }
+	orig := model.EntityMainColumnDescriptors
+	return func() { model.EntityMainColumnDescriptors = orig }
 }
 
 type fakePostgresFederatedSource struct {

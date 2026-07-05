@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"github.com/lychee-technology/forma/internal/model"
 	"context"
 	"fmt"
 	"text/template"
@@ -108,7 +109,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables
 
 	limit := fq.Limit
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	currentPage := 1
 	if limit > 0 {
@@ -123,7 +124,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables StorageTables
 	return &PersistentRecordPage{
 		Records:       records,
 		TotalRecords:  totalRecords,
-		TotalPages:    computeTotalPages(totalRecords, limit),
+		TotalPages:    model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:   currentPage,
 		ExecutionPlan: execPlan,
 	}, nil

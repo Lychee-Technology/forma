@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"github.com/lychee-technology/forma/internal/model"
 	"regexp"
 	"testing"
 	"time"
@@ -20,11 +21,11 @@ func (f testDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, table string, 
 }
 
 func optimizedQueryFixtureColumnsAndValues(rowID uuid.UUID, totalRecords int64) ([]string, []any) {
-	columns := make([]string, 0, len(entityMainColumnDescriptors)+4)
-	values := make([]any, 0, len(entityMainColumnDescriptors)+4)
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
-		switch desc.name {
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors)+4)
+	values := make([]any, 0, len(model.EntityMainColumnDescriptors)+4)
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
+		switch desc.Name {
 		case "ltbase_schema_id":
 			values = append(values, int64(1))
 		case "ltbase_row_id":
@@ -432,9 +433,9 @@ func TestGetPersistentRecordNotFound(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(entityMainColumnDescriptors))
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
 	}
 	rows := pgxmock.NewRows(columns)
 
@@ -457,11 +458,11 @@ func TestGetPersistentRecordWithAttributes(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(entityMainColumnDescriptors))
-	values := make([]any, 0, len(entityMainColumnDescriptors))
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
-		switch desc.name {
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
+	values := make([]any, 0, len(model.EntityMainColumnDescriptors))
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
+		switch desc.Name {
 		case "ltbase_schema_id":
 			values = append(values, int64(1))
 		case "ltbase_row_id":
@@ -643,7 +644,7 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_DoesNotWriteEAVOrChangelog(
 }
 
 func TestParseEAVAttribute_NilSchemaID_ReturnsError(t *testing.T) {
-	_, err := parseEAVAttribute(map[string]any{
+	_, err := model.ParseEAVAttribute(map[string]any{
 		"schema_id": nil,
 		"attr_id":   float64(10),
 	})
@@ -652,7 +653,7 @@ func TestParseEAVAttribute_NilSchemaID_ReturnsError(t *testing.T) {
 }
 
 func TestParseEAVAttribute_NilAttrID_ReturnsError(t *testing.T) {
-	_, err := parseEAVAttribute(map[string]any{
+	_, err := model.ParseEAVAttribute(map[string]any{
 		"schema_id": float64(1),
 		"attr_id":   nil,
 	})
@@ -661,7 +662,7 @@ func TestParseEAVAttribute_NilAttrID_ReturnsError(t *testing.T) {
 }
 
 func TestParseEAVAttribute_WrongTypeSchemaID_ReturnsError(t *testing.T) {
-	_, err := parseEAVAttribute(map[string]any{
+	_, err := model.ParseEAVAttribute(map[string]any{
 		"schema_id": "not-a-number",
 		"attr_id":   float64(10),
 	})
@@ -674,7 +675,7 @@ func TestParseEAVAttribute_ValidFields_Succeeds(t *testing.T) {
 	valueText := "hello"
 	valueNumeric := float64(42)
 
-	attr, err := parseEAVAttribute(map[string]any{
+	attr, err := model.ParseEAVAttribute(map[string]any{
 		"schema_id":     float64(5),
 		"attr_id":       float64(11),
 		"row_id":        rowID.String(),
@@ -697,7 +698,7 @@ func TestParseAttributesJSON_MalformedAttribute_ReturnsError(t *testing.T) {
 	record := &PersistentRecord{}
 	// schema_id is null in the JSON blob
 	malformed := []byte(`[{"schema_id":null,"attr_id":10,"row_id":"00000000-0000-0000-0000-000000000001","array_indices":"","value_text":"x","value_numeric":null}]`)
-	err := parseAttributesJSON(malformed, record)
+	err := model.ParseAttributesJSON(malformed, record)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema_id")
 }

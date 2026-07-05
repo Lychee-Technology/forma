@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"github.com/lychee-technology/forma/internal/numutil"
 	"fmt"
 	"time"
 
@@ -75,7 +76,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case uuid.UUID:
 			return t.String(), nil
 		case *uuid.UUID:
-			uuidValue, isNil := optionalPointerValue(t)
+			uuidValue, isNil := numutil.OptionalPointerValue(t)
 			if isNil {
 				return nil, nil
 			}
@@ -91,7 +92,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case time.Time:
 			return t.UTC(), nil
 		case *time.Time:
-			timeValue, isNil := optionalPointerValue(t)
+			timeValue, isNil := numutil.OptionalPointerValue(t)
 			if isNil {
 				return nil, nil
 			}
@@ -104,7 +105,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case bool:
 			return b, nil
 		case *bool:
-			boolValue, isNil := optionalPointerValue(b)
+			boolValue, isNil := numutil.OptionalPointerValue(b)
 			if isNil {
 				return nil, nil
 			}
@@ -178,7 +179,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		case string:
 			return s, nil
 		case *string:
-			textValue, isNil := optionalPointerValue(s)
+			textValue, isNil := numutil.OptionalPointerValue(s)
 			if isNil {
 				return nil, nil
 			}
@@ -199,19 +200,19 @@ func decimalString(v float64) string {
 func toOptionalFloat64Param(value any) (float64, bool, error) {
 	switch v := value.(type) {
 	case *float64:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	case *float32:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	case *int:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	case *int16:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	case *int32:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	case *int64:
-		return optionalFloat64FromPointer(v)
+		return numutil.OptionalFloat64FromPointer(v)
 	default:
-		num, err := toFloat64(value)
+		num, err := numutil.Float64(value)
 		if err != nil {
 			return 0, false, err
 		}

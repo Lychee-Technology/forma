@@ -1,4 +1,4 @@
-package federated
+package model
 
 import (
 	"encoding/json"
@@ -7,7 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
+// ParseAttributesJSON parses JSON-aggregated EAV attributes into the record
+func ParseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 	if len(attrsJSON) == 0 || string(attrsJSON) == "[]" {
 		return nil
 	}
@@ -19,7 +20,7 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 
 	record.OtherAttributes = make([]EAVRecord, 0, len(attributes))
 	for _, attrObj := range attributes {
-		attr, err := parseEAVAttribute(attrObj)
+		attr, err := ParseEAVAttribute(attrObj)
 		if err != nil {
 			return fmt.Errorf("parse eav attribute: %w", err)
 		}
@@ -29,7 +30,8 @@ func parseAttributesJSON(attrsJSON []byte, record *PersistentRecord) error {
 	return nil
 }
 
-func parseEAVAttribute(attrObj map[string]any) (EAVRecord, error) {
+// ParseEAVAttribute converts a JSON object to an EAVRecord
+func ParseEAVAttribute(attrObj map[string]any) (EAVRecord, error) {
 	schemaIDRaw, ok := attrObj["schema_id"].(float64)
 	if !ok {
 		return EAVRecord{}, fmt.Errorf("schema_id is missing or not a number: %v", attrObj["schema_id"])
@@ -63,7 +65,8 @@ func parseEAVAttribute(attrObj map[string]any) (EAVRecord, error) {
 	return attr, nil
 }
 
-func cleanupEmptyMaps(record *PersistentRecord) {
+// CleanupEmptyMaps removes empty maps from the record to avoid nil-map checks
+func CleanupEmptyMaps(record *PersistentRecord) {
 	if len(record.TextItems) == 0 {
 		record.TextItems = nil
 	}

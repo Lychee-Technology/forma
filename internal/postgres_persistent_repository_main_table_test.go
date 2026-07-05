@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"github.com/lychee-technology/forma/internal/model"
 	"regexp"
 	"testing"
 
@@ -23,11 +24,11 @@ func TestLoadMainRecordParsesColumns(t *testing.T) {
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	uuid2 := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 
-	columns := make([]string, 0, len(entityMainColumnDescriptors))
-	values := make([]any, 0, len(entityMainColumnDescriptors))
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
-		switch desc.name {
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
+	values := make([]any, 0, len(model.EntityMainColumnDescriptors))
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
+		switch desc.Name {
 		case "ltbase_schema_id":
 			values = append(values, int64(1))
 		case "ltbase_row_id":
@@ -100,9 +101,9 @@ func TestLoadMainRecordNotFound(t *testing.T) {
 	defer mock.Close()
 
 	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(entityMainColumnDescriptors))
-	for _, desc := range entityMainColumnDescriptors {
-		columns = append(columns, desc.name)
+	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
+	for _, desc := range model.EntityMainColumnDescriptors {
+		columns = append(columns, desc.Name)
 	}
 	rows := pgxmock.NewRows(columns)
 
