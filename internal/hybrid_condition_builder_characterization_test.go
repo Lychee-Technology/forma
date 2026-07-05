@@ -342,3 +342,29 @@ func TestHybrid_UnknownBoundColumnErrors(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown main table column")
 }
+
+// --- #140 post-switch semantics (disclosed behavior changes vs the retired
+// private parser; see issue #140 AC). ---
+
+// gt: (empty value) is treated by the lenient parser as equals(raw), where the
+// retired SplitN parser produced "> ”".
+func TestHybrid_EmptyOperatorValueFallsBackToEquals(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "text_01", Value: "gt:"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"text_01\" = $2", clause)
+	require.Equal(t, []any{"gt:"}, args)
+}
+
+// A bare RFC3339 value is recognized as an equals literal (the retired SplitN
+// parser mis-split it at "T03:" and errored).
+func TestHybrid_BareRFC3339ValueIsEquals(t *testing.T) {
+	h := newHybridTestHelper(true)
+	date := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	cond := &forma.KvCondition{Attr: "created", Value: date.Format(time.RFC3339)}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"bigint_01\" = $2", clause)
+	require.Equal(t, []any{date.UnixMilli()}, args)
+}

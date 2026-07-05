@@ -184,7 +184,7 @@ func (e *pgMainLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error
 	colName := resolveMainTableColumn(c.Attr, meta)
 
 	// Convert value based on metadata
-	parsedValue, err := convertPgMainValue(sqlOpResult.value, c.Attr, meta)
+	parsedValue, err := ConvertPgMainValue(sqlOpResult.value, c.Attr, meta)
 	if err != nil {
 		return "", nil, err
 	}

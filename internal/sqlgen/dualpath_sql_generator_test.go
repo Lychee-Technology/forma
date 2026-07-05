@@ -523,3 +523,18 @@ func TestBuildDuckClause_OR_AllNonPushable_Returns1_0(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1=0", clause)
 }
+
+// Migrated from the retired TestConvertDateValueForQuery (#140): ParseDateValue
+// must convert a UnixMs literal to an RFC3339 string for ISO8601-encoded
+// columns, and reject non-date input.
+func TestParseDateValue_ISO8601EncodingFromUnixMs(t *testing.T) {
+	meta := forma.AttributeMetadata{
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingISO8601},
+	}
+	val, err := ParseDateValue("1700000000000", meta)
+	require.NoError(t, err)
+	require.Equal(t, time.UnixMilli(1700000000000).Format(time.RFC3339), val)
+
+	_, err = ParseDateValue("not-a-date", meta)
+	require.Error(t, err)
+}

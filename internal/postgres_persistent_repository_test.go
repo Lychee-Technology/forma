@@ -243,63 +243,6 @@ func TestComputeTotalPages(t *testing.T) {
 	assert.Equal(t, 3, model.ComputeTotalPages(11, 5))
 }
 
-func TestParseKvConditionForColumnWithMeta(t *testing.T) {
-	textCond := &forma.KvCondition{Attr: "text_01", Value: "starts_with:hello"}
-	op, val, err := parseKvConditionForColumnWithMeta(textCond, "text_01", nil)
-	require.NoError(t, err)
-	assert.Equal(t, "LIKE", op)
-	assert.Equal(t, "hello%", val)
-
-	numericCond := &forma.KvCondition{Attr: "bigint_01", Value: "gt:42"}
-	op, val, err = parseKvConditionForColumnWithMeta(numericCond, "bigint_01", nil)
-	require.NoError(t, err)
-	assert.Equal(t, ">", op)
-	assert.Equal(t, int64(42), val)
-
-	date := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
-	meta := &forma.AttributeMetadata{
-		ValueType: forma.ValueTypeDateTime,
-		ColumnBinding: &forma.MainColumnBinding{
-			ColumnName: "bigint_01",
-			Encoding:   forma.MainColumnEncodingUnixMs,
-		},
-	}
-	dateCond := &forma.KvCondition{Attr: "bigint_01", Value: "equals:" + date.Format(time.RFC3339)}
-	op, val, err = parseKvConditionForColumnWithMeta(dateCond, "bigint_01", meta)
-	require.NoError(t, err)
-	assert.Equal(t, "=", op)
-	assert.Equal(t, date.UnixMilli(), val)
-
-	badCond := &forma.KvCondition{Attr: "text_01", Value: "nope:1"}
-	_, _, err = parseKvConditionForColumnWithMeta(badCond, "text_01", nil)
-	require.Error(t, err)
-
-	_, _, err = parseKvConditionForColumnWithMeta(textCond, "missing", nil)
-	require.Error(t, err)
-}
-
-func TestConvertDateValueForQuery(t *testing.T) {
-	when := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
-	meta := &forma.AttributeMetadata{
-		ColumnBinding: &forma.MainColumnBinding{
-			ColumnName: "bigint_01",
-			Encoding:   forma.MainColumnEncodingUnixMs,
-		},
-	}
-
-	val, err := convertDateValueForQuery(when.Format(time.RFC3339), meta)
-	require.NoError(t, err)
-	assert.Equal(t, when.UnixMilli(), val)
-
-	meta.ColumnBinding.Encoding = forma.MainColumnEncodingISO8601
-	val, err = convertDateValueForQuery("1700000000000", meta)
-	require.NoError(t, err)
-	assert.Equal(t, time.UnixMilli(1700000000000).Format(time.RFC3339), val)
-
-	_, err = convertDateValueForQuery("not-a-date", meta)
-	require.Error(t, err)
-}
-
 func TestHasMainTableCondition(t *testing.T) {
 	assert.True(t, hasMainTableCondition(nil, nil))
 

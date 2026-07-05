@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/lychee-technology/forma"
@@ -152,8 +153,7 @@ func (r *DBPersistentRecordRepository) RunOptimizedQuery(
 
 // scanOptimizedRow is implemented in postgres_row_scanner.go
 
-// hasMainTableCondition, parseKvConditionForColumnWithMeta, and convertDateValueForQuery
-// are implemented in postgres_condition_helpers.go
+// hasMainTableCondition is implemented in postgres_condition_helpers.go
 
 // hybridConditionBuilder encapsulates the state needed for building hybrid SQL conditions.
 type hybridConditionBuilder struct {
@@ -233,13 +233,17 @@ func (b *hybridConditionBuilder) resolveColumnName(attr string) string {
 }
 
 func (b *hybridConditionBuilder) buildMainTableCondition(cond *forma.KvCondition, colName string) (string, []any, error) {
-	var attrMeta *forma.AttributeMetadata
-	if b.cache != nil {
-		if meta, ok := b.cache[cond.Attr]; ok {
-			attrMeta = &meta
-		}
+	parsed := conditionexpr.ParseOperatorValueLenient(cond.Value)
+	sqlOpResult, err := conditionexpr.ToSQLOperator(parsed.Operator, parsed.Value)
+	if err != nil {
+		return "", nil, err
 	}
-	op, val, err := parseKvConditionForColumnWithMeta(cond, colName, attrMeta)
+
+	meta, err := b.resolveLeafMeta(cond, colName)
+	if err != nil {
+		return "", nil, err
+	}
+	parsedValue, err := sqlgen.ConvertPgMainValue(sqlOpResult.Value, cond.Attr, meta)
 	if err != nil {
 		return "", nil, err
 	}
@@ -248,10 +252,34 @@ func (b *hybridConditionBuilder) buildMainTableCondition(cond *forma.KvCondition
 	placeholder := fmt.Sprintf("$%d", b.argCounter)
 
 	if b.useMainTableAsAnchor {
-		return fmt.Sprintf("m.%s %s %s", sanitizeIdentifier(colName), op, placeholder), []any{val}, nil
+		return fmt.Sprintf("m.%s %s %s", sanitizeIdentifier(colName), sqlOpResult.SQLOperator, placeholder), []any{parsedValue}, nil
 	}
 	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.%s %s %s)",
-		sanitizeIdentifier(b.mainTable), sanitizeIdentifier(colName), op, placeholder), []any{val}, nil
+		sanitizeIdentifier(b.mainTable), sanitizeIdentifier(colName), sqlOpResult.SQLOperator, placeholder), []any{parsedValue}, nil
+}
+
+// resolveLeafMeta returns the attribute metadata driving value conversion for
+// a main-table leaf. The physical column is always validated against the
+// entity_main descriptors (preserving the pre-#140 "unknown main table
+// column" contract even for cache-bound attributes); raw column references
+// without schema metadata derive a minimal metadata from the descriptor kind.
+func (b *hybridConditionBuilder) resolveLeafMeta(cond *forma.KvCondition, colName string) (forma.AttributeMetadata, error) {
+	desc := model.GetMainColumnDescriptor(colName)
+	if desc == nil {
+		return forma.AttributeMetadata{}, fmt.Errorf("unknown main table column: %s", colName)
+	}
+	if b.cache != nil {
+		if meta, ok := b.cache[cond.Attr]; ok {
+			// Bound attributes may omit value_type (e.g. audit columns); the
+			// pre-#140 implementation converted by physical column kind, so
+			// derive the missing type from the descriptor to keep that contract.
+			if meta.ValueType == "" {
+				meta.ValueType = model.ColumnKindToValueType(desc.Kind)
+			}
+			return meta, nil
+		}
+	}
+	return forma.AttributeMetadata{ValueType: model.ColumnKindToValueType(desc.Kind)}, nil
 }
 
 func (b *hybridConditionBuilder) buildEAVCondition(cond *forma.KvCondition) (string, []any, error) {

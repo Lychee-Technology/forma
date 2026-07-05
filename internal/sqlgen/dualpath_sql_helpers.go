@@ -55,18 +55,21 @@ func toSQLOperator(op, value string) (sqlOperatorResult, error) {
 	}, nil
 }
 
-// convertPgMainValue converts a string value to the appropriate Go type based on attribute metadata.
-// This is used for Postgres main table pushdown predicates.
-func convertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
+// ConvertPgMainValue converts a string value to the appropriate Go type based
+// on attribute metadata. It is the canonical value converter for Postgres
+// main-table predicates, shared by the dual-path generator and the hybrid
+// condition builder. Numeric-family literals keep their own type via
+// TryParseNumber (integral → int64, lossless for bigint beyond 2^53;
+// fractional → float64).
+func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	switch meta.ValueType {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
 		return valStr, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		parsed := numutil.TryParseNumber(valStr)
-		switch v := parsed.(type) {
+		switch v := numutil.TryParseNumber(valStr).(type) {
 		case int64:
-			return float64(v), nil
+			return v, nil
 		case float64:
 			return v, nil
 		default:
