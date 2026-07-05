@@ -21,7 +21,7 @@
 - `DONE` #2 启动与连接池重复：已提取 `internal/bootstrap`；server/lambda 共用 env/config/pool 构建逻辑。
 - `DONE` #3 CDC flush/init 长方法：`flusher` 已引入 `schemaFlushContext + flushBatchExecutor`，将 schema 处理参数簇收敛为上下文对象并统一 chunk/single 的导出+copy+mark+manifest 批次管线；`cdc_init` 已引入 `initRunContext`，将 `runInit` 参数折叠为 `initRunOptions`、拆分 `processInitSchemas`，并将批次循环/批次导出下沉为 `iterateSchemaBatches + exportSchemaBatch` 子流程。
 - `DONE` #4 DuckDB 导出 SQL 重复：已提取共享 builder（`resolveExportSQLOptions`/`buildMainEntityQuery`/`buildEAVQuery`/`buildSchemaDrivenProjection`），`buildExportSQL` 与 `buildBaseExportSQL` 复用同一投影与 EAV 聚合逻辑。
-- `DONE` #5 条件解析重复：已提取共享 `internal/conditionexpr`（`op:value` 解析、operator 规范化、SQL operator 映射、numeric/date 字面量解析），`internal` 与 `queryoptimizer` 复用同一基础语义，减少并行实现与漂移风险。
+- `DONE` #5 条件解析重复：已提取共享 `internal/conditionexpr`（`op:value` 解析、operator 规范化、SQL operator 映射、numeric/date 字面量解析），`internal` 曾与 `queryoptimizer` 复用同一基础语义（该实验包已于 #139 移除）。
 - `DONE` #6 类型转换去重：已新增共享 `bool <-> numeric` 与 `time <-> unix_millis(float64)` helper（`boolToFloat64/float64ToBool/timeToUnixMillisFloat64/unixMillisFloat64ToTimeUTC`），并在 `attribute_converter`、`transformer`、`persistent_transformer` 收敛重复转换分支；`toFloat64ForEAV` 已复用 `toFloat64 + parseTrimmedFloat64`，`toBoolForEAV/toFloat64ForEAV/toTimeForEAV` 的空指针分支已统一到 `derefPointer`，并抽出 `boolFromPositive/boolFromNonZero`；`duckdb_type_mapper` 的 numeric/指针参数转换已收敛到 `toOptionalFloat64Param + requiredFloat64FromPointer/optionalFloat64FromPointer/optionalPointerValue` 共享路径。
 - `DONE` #7 `sanitizeIdentifier` 语义收敛：已统一到 `internal.SanitizeIdentifier`，`internal/cdc` 与 `cmd/tools/cdc_init` 复用同一实现，消除三份不一致逻辑。
 - `DONE` #8 主表 SQL 构建重复：`buildInsertMainStatement/buildUpdateMainStatement` 已提取共享字段追加器（insert/update），消除六类 map 遍历重复模板。
@@ -108,7 +108,7 @@
   - `internal/sql_generator.go:147`
   - `internal/dualpath_sql_helpers.go:21`
   - `internal/postgres_condition_helpers.go:81`
-  - `internal/queryoptimizer/normalizer.go:158`
+  - ~~`internal/queryoptimizer/normalizer.go:158`~~（包已于 #139 移除）
 - 说明:
   - `op:value` 解析、SQL 操作符映射、日期/数值转换在多处平行实现。
   - 新增操作符或修正语义时，必须跨多个模块同步，容易出现 PG/DuckDB 语义不一致。

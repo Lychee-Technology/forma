@@ -1,3 +1,5 @@
+> **⚠️ Superseded / Removed（2026-07-05，#139）**：本文所述 `internal/queryoptimizer` 包从未接入生产路径，且本文描述的部分方法（`buildMainQuery`、EAV 锚点 CTE 等）与最终提交的代码不符。包已随 #139 删除（git 历史可考古）。实际落地的查询优化见 `docs/cn/query_optimization_summary.md`（repository 层 CTE+JSON_AGG）；本文中仍有价值的未实现思路已立项：#142（plan cache）、#143（类型化谓词 IR）。
+
 # Query Optimizer Implementation Summary
 
 ## Overview
