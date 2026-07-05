@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
@@ -19,11 +22,11 @@ type persistentRecordPool interface {
 
 type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
-	metadataCache *MetadataCache
+	metadataCache *schemameta.MetadataCache
 	nowFunc       func() time.Time
 }
 
-func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *MetadataCache) *DBPersistentRecordRepository {
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache) *DBPersistentRecordRepository {
 	return &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
@@ -45,7 +48,7 @@ func (r *DBPersistentRecordRepository) nowMillis() int64 {
 	return r.nowFunc().UnixMilli()
 }
 
-func validateTables(tables StorageTables) error {
+func validateTables(tables model.StorageTables) error {
 	if tables.EntityMain == "" {
 		return fmt.Errorf("entity main table name cannot be empty")
 	}
@@ -55,7 +58,7 @@ func validateTables(tables StorageTables) error {
 	return nil
 }
 
-func validateWriteTables(tables StorageTables) error {
+func validateWriteTables(tables model.StorageTables) error {
 	if err := validateTables(tables); err != nil {
 		return err
 	}
@@ -84,7 +87,7 @@ func (r *DBPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx p
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -123,7 +126,7 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error {
+func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -160,7 +163,7 @@ func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Contex
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
 		return err
 	}
@@ -200,7 +203,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error) {
+func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
 	if err := validateTables(tables); err != nil {
 		return nil, err
 	}
@@ -222,7 +225,7 @@ func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, 
 	return record, nil
 }
 
-func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error) {
+func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
 	zap.S().Debugw("query persistent records", "query", query)
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
@@ -236,11 +239,11 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 
 	limit := query.Limit
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = model.DefaultPageSize
 	}
 	offset := max(query.Offset, 0)
 
-	attrQuery := AttributeQuery{
+	attrQuery := model.AttributeQuery{
 		SchemaID:  query.SchemaID,
 		Condition: query.Condition,
 	}
@@ -289,10 +292,10 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 		currentPage = offset/limit + 1
 	}
 
-	return &PersistentRecordPage{
+	return &model.PersistentRecordPage{
 		Records:      records,
 		TotalRecords: totalRecords,
-		TotalPages:   computeTotalPages(totalRecords, limit),
+		TotalPages:   model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:  currentPage,
 	}, nil
 }

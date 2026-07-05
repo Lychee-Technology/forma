@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -16,7 +18,7 @@ func TestEntityManager_Update_MergesAndPreserves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
@@ -88,7 +90,7 @@ func TestEntityManager_BatchCreate_CollectsErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
@@ -131,7 +133,7 @@ func TestEntityManager_BatchUpdate_CollectsErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
@@ -189,7 +191,7 @@ func TestEntityManager_BatchDelete_CollectsErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
@@ -243,7 +245,7 @@ func TestEntityManager_Update_InvalidOptionalValueReturnsErrorAndPreservesStored
 	ctx := context.Background()
 	config := createTestConfig()
 	registry := newStubSchemaRegistry()
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
@@ -295,7 +297,7 @@ func TestEntityManager_BatchCreate_AtomicAllOrNothingOnRepositoryFailure(t *test
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.atomicInsertFailAt = 2
 	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
@@ -337,7 +339,7 @@ func TestEntityManager_BatchCreate_AtomicSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
 
@@ -376,7 +378,7 @@ func TestEntityManager_BatchUpdate_AtomicAllOrNothingOnRepositoryFailure(t *test
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.atomicUpdateFailAt = 2
 
@@ -445,7 +447,7 @@ func TestEntityManager_BatchDelete_AtomicAllOrNothingOnRepositoryFailure(t *test
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.atomicDeleteFailAt = 2
 

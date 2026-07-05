@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
@@ -21,10 +24,8 @@ type hybridTestHelper struct {
 }
 
 func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
-	cache := NewMetadataCache()
-	cache.schemaNameToID["test"] = 1
-	cache.schemaIDToName[1] = "test"
-	cache.schemaCaches[1] = forma.SchemaAttributeCache{
+	cache := schemameta.NewMetadataCache()
+	if err := cache.RegisterSchema("test", 1, forma.SchemaAttributeCache{
 		"name": {
 			AttributeID: 7,
 			ValueType:   forma.ValueTypeText,
@@ -38,6 +39,8 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 			AttributeID: 9,
 			ValueType:   forma.ValueTypeText,
 		},
+	}); err != nil {
+		panic(err)
 	}
 	return hybridTestHelper{
 		repo: &DBPersistentRecordRepository{
@@ -53,13 +56,13 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 func (h hybridTestHelper) build(cond forma.Condition) (string, []any, error) {
 	return h.repo.buildHybridConditions(
 		h.eavTable, h.mainTable,
-		AttributeQuery{SchemaID: 1, Condition: cond},
+		model.AttributeQuery{SchemaID: 1, Condition: cond},
 		h.initArgIndex,
 		h.useMainAnchor,
 	)
 }
 
-func (h hybridTestHelper) buildFromQuery(query AttributeQuery) (string, []any, error) {
+func (h hybridTestHelper) buildFromQuery(query model.AttributeQuery) (string, []any, error) {
 	return h.repo.buildHybridConditions(
 		h.eavTable, h.mainTable, query,
 		h.initArgIndex,
@@ -191,7 +194,7 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 // TestHybrid_NilCondition asserts that a nil condition produces "1=1".
 func TestHybrid_NilCondition(t *testing.T) {
 	h := newHybridTestHelper(false)
-	query := AttributeQuery{SchemaID: 1, Condition: nil}
+	query := model.AttributeQuery{SchemaID: 1, Condition: nil}
 	clause, args, err := h.buildFromQuery(query)
 	require.NoError(t, err)
 	require.Equal(t, "1=1", clause)

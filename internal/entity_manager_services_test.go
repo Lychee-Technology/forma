@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/lychee-technology/forma"
 )
 
@@ -11,7 +13,7 @@ func TestNewEntityManagerInitializesLongLivedServices(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
 	registry := newStubSchemaRegistry()
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
 	manager := NewEntityManager(transformer, mockRepo, nil, registry, config)

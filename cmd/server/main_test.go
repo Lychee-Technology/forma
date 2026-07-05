@@ -42,4 +42,3 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 		t.Fatal("runServer did not return after context cancellation")
 	}
 }
-

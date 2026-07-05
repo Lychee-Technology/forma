@@ -4,7 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/numutil"
+
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // hasMainTableCondition checks if a condition contains predicates on main table columns
@@ -29,7 +34,7 @@ func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCach
 			return false
 		}
 		// Check if it's a raw main table column name
-		if isMainTableColumn(c.Attr) {
+		if model.IsMainTableColumn(c.Attr) {
 			return true
 		}
 		// Check if it's an attribute with column_binding to main table
@@ -64,7 +69,7 @@ func parseKvConditionForColumnWithMeta(kv *forma.KvCondition, colName string, me
 		valStr = "%" + valStr + "%"
 	}
 
-	desc := getMainColumnDescriptor(colName)
+	desc := model.GetMainColumnDescriptor(colName)
 	if desc == nil {
 		return "", nil, fmt.Errorf("unknown main table column: %s", colName)
 	}
@@ -88,25 +93,25 @@ func parseOperatorAndValue(value string) (string, string) {
 
 // operatorToSQL converts a string operator to its SQL equivalent
 func operatorToSQL(opStr string) (string, error) {
-	sqlOp, err := toSQLOperator(opStr, "")
+	sqlOp, err := conditionexpr.ToSQLOperator(opStr, "")
 	if err != nil {
 		return "", err
 	}
-	return sqlOp.sqlOp, nil
+	return sqlOp.SQLOperator, nil
 }
 
 // parseColumnValue parses and converts a value string based on column type
-func parseColumnValue(desc *columnDescriptor, valStr string, meta *forma.AttributeMetadata) (any, error) {
-	switch desc.kind {
-	case columnKindText:
+func parseColumnValue(desc *model.ColumnDescriptor, valStr string, meta *forma.AttributeMetadata) (any, error) {
+	switch desc.Kind {
+	case model.ColumnKindText:
 		return valStr, nil
-	case columnKindSmallint, columnKindInteger, columnKindBigint, columnKindDouble:
+	case model.ColumnKindSmallint, model.ColumnKindInteger, model.ColumnKindBigint, model.ColumnKindDouble:
 		// Check if this is a date/time field that needs conversion
 		if meta != nil && (meta.ValueType == forma.ValueTypeDate || meta.ValueType == forma.ValueTypeDateTime) {
 			return convertDateValueForQuery(valStr, meta)
 		}
-		return tryParseNumber(valStr), nil
-	case columnKindUUID:
+		return numutil.TryParseNumber(valStr), nil
+	case model.ColumnKindUUID:
 		return valStr, nil
 	default:
 		return valStr, nil
@@ -119,7 +124,7 @@ func parseColumnValue(desc *columnDescriptor, valStr string, meta *forma.Attribu
 func convertDateValueForQuery(valStr string, meta *forma.AttributeMetadata) (any, error) {
 	if meta == nil {
 		emptyMeta := forma.AttributeMetadata{}
-		return parseDateValue(valStr, emptyMeta)
+		return sqlgen.ParseDateValue(valStr, emptyMeta)
 	}
-	return parseDateValue(valStr, *meta)
+	return sqlgen.ParseDateValue(valStr, *meta)
 }

@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,19 +18,19 @@ import (
 // ============================================================================
 
 // AssertRecordCount verifies the expected number of records.
-func AssertRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...any) {
+func AssertRecordCount(t *testing.T, records []*model.PersistentRecord, expected int, msgAndArgs ...any) {
 	t.Helper()
 	assert.Len(t, records, expected, msgAndArgs...)
 }
 
 // RequireRecordCount verifies the expected number of records and fails immediately if not met.
-func RequireRecordCount(t *testing.T, records []*internal.PersistentRecord, expected int, msgAndArgs ...any) {
+func RequireRecordCount(t *testing.T, records []*model.PersistentRecord, expected int, msgAndArgs ...any) {
 	t.Helper()
 	require.Len(t, records, expected, msgAndArgs...)
 }
 
 // AssertNoDuplicates verifies that all records have unique row_ids.
-func AssertNoDuplicates(t *testing.T, records []*internal.PersistentRecord) {
+func AssertNoDuplicates(t *testing.T, records []*model.PersistentRecord) {
 	t.Helper()
 	seen := make(map[uuid.UUID]bool)
 	for _, r := range records {
@@ -41,7 +42,7 @@ func AssertNoDuplicates(t *testing.T, records []*internal.PersistentRecord) {
 }
 
 // RequireNoDuplicates verifies that all records have unique row_ids, failing immediately if not.
-func RequireNoDuplicates(t *testing.T, records []*internal.PersistentRecord) {
+func RequireNoDuplicates(t *testing.T, records []*model.PersistentRecord) {
 	t.Helper()
 	seen := make(map[uuid.UUID]bool)
 	for _, r := range records {
@@ -51,7 +52,7 @@ func RequireNoDuplicates(t *testing.T, records []*internal.PersistentRecord) {
 }
 
 // AssertNoDeleted verifies that no records are soft-deleted.
-func AssertNoDeleted(t *testing.T, records []*internal.PersistentRecord) {
+func AssertNoDeleted(t *testing.T, records []*model.PersistentRecord) {
 	t.Helper()
 	for _, r := range records {
 		if r.DeletedAt != nil && *r.DeletedAt > 0 {
@@ -61,7 +62,7 @@ func AssertNoDeleted(t *testing.T, records []*internal.PersistentRecord) {
 }
 
 // RequireNoDeleted verifies that no records are soft-deleted, failing immediately if found.
-func RequireNoDeleted(t *testing.T, records []*internal.PersistentRecord) {
+func RequireNoDeleted(t *testing.T, records []*model.PersistentRecord) {
 	t.Helper()
 	for _, r := range records {
 		if r.DeletedAt != nil {
@@ -71,7 +72,7 @@ func RequireNoDeleted(t *testing.T, records []*internal.PersistentRecord) {
 }
 
 // AssertAllRecordsHaveSchemaID verifies all records have the expected schema ID.
-func AssertAllRecordsHaveSchemaID(t *testing.T, records []*internal.PersistentRecord, schemaID int16) {
+func AssertAllRecordsHaveSchemaID(t *testing.T, records []*model.PersistentRecord, schemaID int16) {
 	t.Helper()
 	for _, r := range records {
 		assert.Equal(t, schemaID, r.SchemaID, "unexpected schema_id for row %s", r.RowID)
@@ -79,7 +80,7 @@ func AssertAllRecordsHaveSchemaID(t *testing.T, records []*internal.PersistentRe
 }
 
 // AssertRecordExists verifies that a record with the given row_id exists.
-func AssertRecordExists(t *testing.T, records []*internal.PersistentRecord, rowID uuid.UUID) {
+func AssertRecordExists(t *testing.T, records []*model.PersistentRecord, rowID uuid.UUID) {
 	t.Helper()
 	for _, r := range records {
 		if r.RowID == rowID {
@@ -90,7 +91,7 @@ func AssertRecordExists(t *testing.T, records []*internal.PersistentRecord, rowI
 }
 
 // AssertRecordNotExists verifies that no record with the given row_id exists.
-func AssertRecordNotExists(t *testing.T, records []*internal.PersistentRecord, rowID uuid.UUID) {
+func AssertRecordNotExists(t *testing.T, records []*model.PersistentRecord, rowID uuid.UUID) {
 	t.Helper()
 	for _, r := range records {
 		if r.RowID == rowID {
@@ -202,7 +203,7 @@ func AssertThroughput(t *testing.T, requestCount int, totalDuration time.Duratio
 // ============================================================================
 
 // AssertPlanContainsSource verifies that the execution plan includes a specific source.
-func AssertPlanContainsSource(t *testing.T, plan *internal.ExecutionPlan, source string) {
+func AssertPlanContainsSource(t *testing.T, plan *model.ExecutionPlan, source string) {
 	t.Helper()
 	if plan == nil {
 		t.Error("execution plan is nil")
@@ -217,7 +218,7 @@ func AssertPlanContainsSource(t *testing.T, plan *internal.ExecutionPlan, source
 }
 
 // AssertPlanContainsNote verifies that the execution plan contains a specific note.
-func AssertPlanContainsNote(t *testing.T, plan *internal.ExecutionPlan, noteSubstring string) {
+func AssertPlanContainsNote(t *testing.T, plan *model.ExecutionPlan, noteSubstring string) {
 	t.Helper()
 	if plan == nil {
 		t.Error("execution plan is nil")
@@ -232,7 +233,7 @@ func AssertPlanContainsNote(t *testing.T, plan *internal.ExecutionPlan, noteSubs
 }
 
 // AssertDirtyIDsExcluded verifies that dirty IDs were excluded in the execution plan.
-func AssertDirtyIDsExcluded(t *testing.T, plan *internal.ExecutionPlan, expectedCount int) {
+func AssertDirtyIDsExcluded(t *testing.T, plan *model.ExecutionPlan, expectedCount int) {
 	t.Helper()
 	AssertPlanContainsNote(t, plan, "dirty_ids_excluded")
 }

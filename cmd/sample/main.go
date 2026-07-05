@@ -8,10 +8,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
-	"github.com/lychee-technology/forma/internal"
 	"go.uber.org/zap"
 )
 
@@ -100,7 +101,7 @@ func main() {
 
 	// Create schema registry
 	sugar.Infof("Loading schemas from: %s", *schemaDir)
-	registry, err := internal.NewFileSchemaRegistryFromDirectory(*schemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(*schemaDir)
 	if err != nil {
 		sugar.Fatalf("Failed to create schema registry: %v", err)
 	}

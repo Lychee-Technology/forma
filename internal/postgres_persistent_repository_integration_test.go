@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,7 +28,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	repo.withClock(func() time.Time { return fixed })
 
 	rowID := uuid.New()
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -44,7 +46,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 		Float64Items: map[string]float64{
 			"double_01": 3.14,
 		},
-		OtherAttributes: []EAVRecord{
+		OtherAttributes: []model.EAVRecord{
 			{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: new("foo")},
 			{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "0", ValueNumeric: new(99.0)},
 		},
@@ -96,7 +98,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	repo.withClock(func() time.Time { return createdAt })
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -143,7 +145,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	repo.withClock(func() time.Time { return fixed })
 
 	rowID := uuid.New()
-	record := &PersistentRecord{
+	record := &model.PersistentRecord{
 		SchemaID: 1,
 		RowID:    rowID,
 		TextItems: map[string]string{
@@ -200,7 +202,7 @@ func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return pool
 }
 
-func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) StorageTables {
+func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) model.StorageTables {
 	t.Helper()
 
 	suffix := time.Now().UnixNano()
@@ -216,22 +218,22 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		"ltbase_deleted_at BIGINT",
 	}
 
-	for _, col := range textColumns {
+	for _, col := range model.TextColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s TEXT", col))
 	}
-	for _, col := range smallintColumns {
+	for _, col := range model.SmallintColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s SMALLINT", col))
 	}
-	for _, col := range integerColumns {
+	for _, col := range model.IntegerColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s INTEGER", col))
 	}
-	for _, col := range bigintColumns {
+	for _, col := range model.BigintColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s BIGINT", col))
 	}
-	for _, col := range doubleColumns {
+	for _, col := range model.DoubleColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s DOUBLE PRECISION", col))
 	}
-	for _, col := range uuidColumns {
+	for _, col := range model.UUIDColumns {
 		entityColumns = append(entityColumns, fmt.Sprintf("%s UUID", col))
 	}
 
@@ -268,7 +270,7 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(changeLogTable)))
 	})
 
-	return StorageTables{
+	return model.StorageTables{
 		EntityMain: entityTable,
 		EAVData:    eavTable,
 		ChangeLog:  changeLogTable,

@@ -7,8 +7,9 @@ import (
 	"os"
 	"strings"
 
+	fedengine "github.com/lychee-technology/forma/internal/federated"
+
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/lychee-technology/forma/internal"
 )
 
 const (
@@ -191,7 +192,7 @@ func (h *FederatedTestHarness) GetS3Client() *s3.Client {
 }
 
 // GetDuckDB returns the DuckDB client for direct access.
-func (h *FederatedTestHarness) GetDuckDB() *internal.DuckDBClient {
+func (h *FederatedTestHarness) GetDuckDB() *fedengine.DuckDBClient {
 	return h.Duck
 }
 

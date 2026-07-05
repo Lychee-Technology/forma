@@ -10,8 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
+
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 )
 
@@ -101,7 +102,7 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 }
 
 func (v schemaConsistencyValidator) run(ctx context.Context) error {
-	loader := internal.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir)
+	loader := schemameta.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir)
 	cache, err := loader.LoadMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("load schema metadata: %w", err)
@@ -123,7 +124,7 @@ func (v schemaConsistencyValidator) run(ctx context.Context) error {
 	return fmt.Errorf("schema consistency validation failed with %d issue(s)", len(issues))
 }
 
-func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *internal.MetadataCache) ([]validationIssue, error) {
+func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	var issues []validationIssue
 
 	unknownIssues, err := v.checkUnknownAttributeIDs(ctx, cache)
@@ -147,7 +148,7 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *in
 	return issues, nil
 }
 
-func (v schemaConsistencyValidator) checkUnknownAttributeIDs(ctx context.Context, cache *internal.MetadataCache) ([]validationIssue, error) {
+func (v schemaConsistencyValidator) checkUnknownAttributeIDs(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	knownAttrIDs := make(map[int16]map[int16]struct{})
 	for _, schemaName := range cache.ListSchemas() {
 		schemaID, ok := cache.GetSchemaID(schemaName)
@@ -200,7 +201,7 @@ ORDER BY e.schema_id, e.attr_id`, quoteIdentifier(v.eavTable))
 	return issues, nil
 }
 
-func (v schemaConsistencyValidator) checkStorageMismatches(ctx context.Context, cache *internal.MetadataCache) ([]validationIssue, error) {
+func (v schemaConsistencyValidator) checkStorageMismatches(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	textBacked := make(map[int16]map[int16]struct{})
 	numericBacked := make(map[int16]map[int16]struct{})
 

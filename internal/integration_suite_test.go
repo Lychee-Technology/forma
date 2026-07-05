@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/transform"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
@@ -18,8 +22,8 @@ type integrationEnv struct {
 	ctx          context.Context
 	manager      forma.EntityManager
 	registry     forma.SchemaRegistry
-	metadata     *MetadataCache
-	tables       StorageTables
+	metadata     *schemameta.MetadataCache
+	tables       model.StorageTables
 	schemaTable  string
 	postgresPool *pgxpool.Pool
 }
@@ -35,7 +39,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	tables := createTempPersistentTables(t, ctx, pool)
 	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool)
 
-	registry, err := NewFileSchemaRegistry(pool, schemaRegistryTable, "../cmd/server/schemas")
+	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaRegistryTable, "../cmd/server/schemas")
 	require.NoError(t, err)
 
 	config := &forma.Config{
@@ -56,11 +60,11 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 		},
 	}
 
-	loader := NewMetadataLoader(pool, config.Database.TableNames.SchemaRegistry, config.Entity.SchemaDirectory)
+	loader := schemameta.NewMetadataLoader(pool, config.Database.TableNames.SchemaRegistry, config.Entity.SchemaDirectory)
 	metadataCache, err := loader.LoadMetadata(ctx)
 	require.NoError(t, err)
 
-	transformer := NewPersistentRecordTransformer(registry)
+	transformer := transform.NewPersistentRecordTransformer(registry)
 	repo := NewDBPersistentRecordRepository(pool, metadataCache)
 	manager := NewEntityManager(transformer, repo, nil, registry, config)
 

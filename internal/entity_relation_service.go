@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
 
 type entityRelationService struct {
 	relations     *RelationIndex
-	repository    PersistentRecordRepository
+	repository    model.PersistentRecordRepository
 	registry      forma.SchemaRegistry
-	transformer   PersistentRecordTransformer
+	transformer   model.PersistentRecordTransformer
 	storageTables storageTablesResolver
 }
 
@@ -129,7 +131,7 @@ func (s *entityRelationService) fetchParents(ctx context.Context, rel RelationDe
 		cond = &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: conditions}
 	}
 
-	page, err := s.repository.QueryPersistentRecords(ctx, &PersistentRecordQuery{
+	page, err := s.repository.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:    s.resolveTables(),
 		SchemaID:  parentSchemaID,
 		Condition: cond,
@@ -156,9 +158,9 @@ func (s *entityRelationService) fetchParents(ctx context.Context, rel RelationDe
 	return parents, nil
 }
 
-func (s *entityRelationService) resolveTables() StorageTables {
+func (s *entityRelationService) resolveTables() model.StorageTables {
 	if s.storageTables == nil {
-		return StorageTables{}
+		return model.StorageTables{}
 	}
 	return s.storageTables()
 }

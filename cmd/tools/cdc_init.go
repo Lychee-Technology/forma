@@ -13,9 +13,9 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
 
@@ -626,7 +626,7 @@ func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, sc
 
 // sanitizeIdentifier performs a minimal whitelist for table names.
 func sanitizeIdentifier(name string) string {
-	return internal.SanitizeIdentifier(name)
+	return sqlutil.SanitizeIdentifier(name)
 }
 
 // estimateRowSizeBytes estimates the average row size in bytes based on schema attributes.

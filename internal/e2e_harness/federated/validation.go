@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal"
 )
 
 // CompareResults compares federated and postgres query results.
@@ -16,12 +17,12 @@ func (h *FederatedTestHarness) CompareResults(federated, postgres *QueryResult) 
 		Match:          true,
 	}
 
-	fedMap := make(map[uuid.UUID]*internal.PersistentRecord)
+	fedMap := make(map[uuid.UUID]*model.PersistentRecord)
 	for _, r := range federated.Records {
 		fedMap[r.RowID] = r
 	}
 
-	pgMap := make(map[uuid.UUID]*internal.PersistentRecord)
+	pgMap := make(map[uuid.UUID]*model.PersistentRecord)
 	for _, r := range postgres.Records {
 		pgMap[r.RowID] = r
 	}
@@ -57,7 +58,7 @@ func (h *FederatedTestHarness) CompareResults(federated, postgres *QueryResult) 
 }
 
 // compareRecordAttributes compares attributes between federated and postgres records.
-func (h *FederatedTestHarness) compareRecordAttributes(report *ComparisonReport, id uuid.UUID, fedRec, pgRec *internal.PersistentRecord) {
+func (h *FederatedTestHarness) compareRecordAttributes(report *ComparisonReport, id uuid.UUID, fedRec, pgRec *model.PersistentRecord) {
 	for k, fedVal := range fedRec.TextItems {
 		if pgVal, ok := pgRec.TextItems[k]; ok && fedVal != pgVal {
 			report.AttributeMismatches = append(report.AttributeMismatches, AttributeMismatch{
@@ -72,7 +73,7 @@ func (h *FederatedTestHarness) compareRecordAttributes(report *ComparisonReport,
 }
 
 // ValidateDeduplication verifies that records are properly deduplicated.
-func (h *FederatedTestHarness) ValidateDeduplication(records []*internal.PersistentRecord) error {
+func (h *FederatedTestHarness) ValidateDeduplication(records []*model.PersistentRecord) error {
 	seen := make(map[uuid.UUID]bool)
 	for _, r := range records {
 		if seen[r.RowID] {
@@ -84,7 +85,7 @@ func (h *FederatedTestHarness) ValidateDeduplication(records []*internal.Persist
 }
 
 // CalculateChecksum calculates a simple checksum of records.
-func (h *FederatedTestHarness) CalculateChecksum(records []*internal.PersistentRecord) string {
+func (h *FederatedTestHarness) CalculateChecksum(records []*model.PersistentRecord) string {
 	ids := make([]string, len(records))
 	for i, r := range records {
 		ids[i] = r.RowID.String()
