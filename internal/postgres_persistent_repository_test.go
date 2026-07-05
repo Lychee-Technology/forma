@@ -346,14 +346,12 @@ func TestBuildHybridConditionsMainColumn(t *testing.T) {
 
 func TestBuildHybridConditionsBoundAuditColumn(t *testing.T) {
 	cache := NewMetadataCache()
-	cache.schemaNameToID["log"] = 1
-	cache.schemaIDToName[1] = "log"
-	cache.schemaCaches[1] = forma.SchemaAttributeCache{
+	require.NoError(t, cache.RegisterSchema("log", 1, forma.SchemaAttributeCache{
 		"createdBy": {
 			AttributeName: "createdBy",
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnCreatedBy},
 		},
-	}
+	}))
 	repo := &DBPersistentRecordRepository{
 		metadataCache: cache,
 	}

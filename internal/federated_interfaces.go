@@ -1,224 +1,39 @@
 package internal
 
-import (
-	"github.com/lychee-technology/forma"
-)
+import "github.com/lychee-technology/forma/internal/model"
 
-// Federated query related types and options.
-// These extend the existing AttributeQuery to carry hints for
-// multi-tier federated execution (Postgres + DuckDB/S3).
-
-// DataTier represents the storage tier where data resides.
-// The tier names reflect data freshness and latency characteristics:
-//   - Hot: Most recent data in Postgres (low latency, always consistent)
-//   - Warm: Recent data in S3 Parquet (medium latency, eventually consistent)
-//   - Cold: Historical data in S3 Parquet (medium latency, archival)
-type DataTier string
+type DataTier = model.DataTier
 
 const (
-	// DataTierHot represents the Postgres hot tier with the most recent data.
-	// Also known as: "primary", "transactional", "online"
-	DataTierHot DataTier = "hot"
-
-	// DataTierWarm represents the S3 warm tier with recently exported data.
-	// Also known as: "delta", "incremental", "recent"
-	DataTierWarm DataTier = "warm"
-
-	// DataTierCold represents the S3 cold tier with historical/archival data.
-	// Also known as: "base", "historical", "archival"
-	DataTierCold DataTier = "cold"
+	DataTierHot  = model.DataTierHot
+	DataTierWarm = model.DataTierWarm
+	DataTierCold = model.DataTierCold
 )
 
-// FederatedAttributeQuery extends AttributeQuery with federated-specific hints.
-// It embeds the existing AttributeQuery so it remains compatible with existing code paths.
-type FederatedAttributeQuery struct {
-	AttributeQuery
-
-	// PreferredTiers is an ordered list of preferred data tiers to query.
-	// Example: []DataTier{DataTierHot, DataTierWarm, DataTierCold}
-	PreferredTiers []DataTier
-
-	// PreferHot indicates preference for routing queries to the hot (Postgres) tier.
-	// When true, routing logic prefers direct Postgres execution over federated DuckDB
-	// queries when both paths are available. This is a routing hint, not a merge semantic.
-	// Merge conflict resolution always uses deterministic tier priority (Hot > Warm > Cold).
-	PreferHot bool
-
-	// UseMainAsAnchor controls whether the main table (entity_main) should be used
-	// as the anchor for predicate pushdown. This mirrors existing repository logic.
-	UseMainAsAnchor bool
-
-	// DuckDBHints carries optional DuckDB-specific rendering hints, e.g. external
-	// parquet path templates or casting preferences.
-	DuckDBHints *DuckDBRenderHints
-
-	// KeysetCursor enables keyset-based pagination as an alternative to offset.
-	// When non-nil, the repository generates keyset WHERE clauses instead of (or
-	// in addition to) LIMIT/OFFSET. The cursor carries the last-seen row's sort
-	// column values and the pagination direction (after/before).
-	KeysetCursor *KeysetCursor
-}
-
-// DuckDBRenderHints provides optional parameters that guide DuckDB SQL generation.
-type DuckDBRenderHints struct {
-	// S3ParquetPathTemplate is a template (with placeholders) for locating parquet files in S3.
-	// Example: "s3://bucket/path/schema_{{.SchemaID}}/data.parquet"
-	S3ParquetPathTemplate string
-
-	// TimeEncodingHint indicates how date/time values should be encoded in DuckDB side.
-	// e.g. "unix_ms" or "iso8601"
-	TimeEncodingHint string
-}
-
-// ConsistencyMode controls the required freshness/availability contract for
-// federated query execution.
-type ConsistencyMode string
+type FederatedAttributeQuery = model.FederatedAttributeQuery
+type DuckDBRenderHints = model.DuckDBRenderHints
+type ConsistencyMode = model.ConsistencyMode
 
 const (
-	// ConsistencyModeStrict requires PostgreSQL availability for dirty-set
-	// evaluation and hot-tier reads. Federated queries fail if PG is down.
-	ConsistencyModeStrict ConsistencyMode = "strict"
-
-	// ConsistencyModeEventual permits S3-only degraded execution when
-	// PostgreSQL is unavailable, accepting possible ghost reads or stale
-	// visibility (hot-tier rows and dirty-set exclusion are skipped).
-	ConsistencyModeEventual ConsistencyMode = "eventual"
+	ConsistencyModeStrict   = model.ConsistencyModeStrict
+	ConsistencyModeEventual = model.ConsistencyModeEventual
 )
 
-// FederatedQueryOptions contains runtime options for federated execution.
-type FederatedQueryOptions struct {
-	// MaxRows limits the number of rows read from remote/columnar sources per shard.
-	MaxRows int
+type FederatedQueryOptions = model.FederatedQueryOptions
+type ExecutionPlan = model.ExecutionPlan
+type DataSourcePlan = model.DataSourcePlan
+type MergeStrategy = model.MergeStrategy
 
-	// Parallelism controls how many parallel DuckDB scan workers to use.
-	Parallelism int
+const MergeStrategyLastWriteWins = model.MergeStrategyLastWriteWins
 
-	// AllowPartialDegradedMode if true will allow executing the query with only a subset
-	// of data tiers available (useful for the early MVP).
-	AllowPartialDegradedMode bool
-
-	// KeysetEnabled makes the repository prefer the keyset execution path over offset-based
-	// pagination when a KeysetCursor is supplied on the query.
-	KeysetEnabled bool
-
-	// IncludeExecutionPlan when true instructs the repository to collect an execution plan
-	// for debugging/observability. If set, the repository will allocate and populate
-	// ExecutionPlan and assign it to ExecutionPlan (below) so callers may inspect it.
-	IncludeExecutionPlan bool
-
-	// ExecutionPlan is populated by the repository when IncludeExecutionPlan==true.
-	// Callers should pass a non-nil opts pointer and inspect this field after call.
-	ExecutionPlan *ExecutionPlan
-
-	// ConsistencyMode controls the freshness/availability contract.
-	// Defaults to "strict" when empty.
-	ConsistencyMode ConsistencyMode
-}
-
-// ExecutionPlan is a diagnostic structure capturing the federated query execution
-// choices and timings. It is intended for debugging and observability only.
-type ExecutionPlan struct {
-	// Routing decision snapshot (which tiers were considered/selected)
-	Routing RoutingDecision
-
-	// Per-source plans for each data source touched by the federated execution.
-	Sources []DataSourcePlan
-
-	// Merge describes the merge-on-read strategy applied to results across tiers.
-	Merge MergePlan
-
-	// Timings: coarse-grained durations in milliseconds for major stages.
-	// Keys typically: "translate", "postgres_fetch", "duckdb_fetch", "merge", "total"
-	Timings map[string]int64
-
-	// Notes and warnings captured during planning/execution.
-	Notes []string
-}
-
-// DataSourcePlan captures per-source execution details.
-type DataSourcePlan struct {
-	// Tier indicates the logical data tier (hot/warm/cold).
-	Tier DataTier
-
-	// Engine indicates the execution engine, e.g., "postgres" or "duckdb".
-	Engine string
-
-	// SQL optionally contains the generated SQL fragment or rendered template used.
-	// For privacy/performance reasons this may be truncated by the repository.
-	SQL string
-
-	// RowEstimate is the planner's estimated rows to be scanned/returned (if available).
-	RowEstimate int64
-
-	// PredicatePushdown indicates whether predicates were pushed to the source.
-	PredicatePushdown bool
-
-	// ActualRows contains the actual rows returned from this source (filled post-execution).
-	ActualRows int64
-
-	// DurationMs measures execution time for this source in milliseconds.
-	DurationMs int64
-
-	// Reason provides human-readable explanation for selection/behavior.
-	Reason string
-}
-
-// MergeStrategy describes the strategy used to reconcile records from multiple
-// data tiers during a federated merge-on-read operation.
-type MergeStrategy string
+type MergePlan = model.MergePlan
+type KeysetCursorMode = model.KeysetCursorMode
 
 const (
-	// MergeStrategyLastWriteWins selects the attribute value from the tier with
-	// the most recent write timestamp. This is the default merge strategy.
-	MergeStrategyLastWriteWins MergeStrategy = "last-write-wins"
+	KeysetCursorModeAfter  = model.KeysetCursorModeAfter
+	KeysetCursorModeBefore = model.KeysetCursorModeBefore
 )
 
-// MergePlan describes merge-on-read semantics used to combine tiered results.
-type MergePlan struct {
-	// Strategy name, e.g., MergeStrategyLastWriteWins.
-	Strategy MergeStrategy
-
-	// PreferHot indicates whether preferHot tiebreaker was used.
-	PreferHot bool
-
-	// DedupKeys lists the keys used for deduplication (typically SchemaID:RowID).
-	DedupKeys []string
-
-	// DurationMs time spent merging in milliseconds.
-	DurationMs int64
-
-	// Notes optional additional details about attribute-level merging.
-	Notes []string
-}
-
-// KeysetCursorMode declares how keyset pagination is driven.
-type KeysetCursorMode string
-
-const (
-	// KeysetCursorModeAfter requests rows after the cursor (forward pagination).
-	KeysetCursorModeAfter KeysetCursorMode = "after"
-	// KeysetCursorModeBefore requests rows before the cursor (backward pagination).
-	KeysetCursorModeBefore KeysetCursorMode = "before"
-)
-
-// KeysetColumn declares one column in a keyset pagination cursor.
-type KeysetColumn struct {
-	// Attribute is the attribute name (e.g. "trade_time", "row_id").
-	Attribute string
-	// Direction is the sort direction for this column.
-	Direction forma.SortOrder
-}
-
-// KeysetCursor carries the last-seen row's values for cursor-based pagination.
-// When supplied on a FederatedAttributeQuery, the repository generates keyset
-// WHERE clauses to fetch only rows after (or before) the cursor, avoiding the
-// cost of scanning and discarding already-seen rows.
-type KeysetCursor struct {
-	// Columns defines the column order of the cursor values. This should match
-	// the query's sort order plus a row_id tiebreaker.
-	Columns []KeysetColumn
-	// Values are the last-row column values, in the same order as Columns.
-	Values []interface{}
-	// Mode indicates whether to fetch rows after or before the cursor.
-	Mode KeysetCursorMode
-}
+type KeysetColumn = model.KeysetColumn
+type KeysetCursor = model.KeysetCursor
+type RoutingDecision = model.RoutingDecision

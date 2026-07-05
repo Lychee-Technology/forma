@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // hasMainTableCondition checks if a condition contains predicates on main table columns
@@ -88,11 +90,11 @@ func parseOperatorAndValue(value string) (string, string) {
 
 // operatorToSQL converts a string operator to its SQL equivalent
 func operatorToSQL(opStr string) (string, error) {
-	sqlOp, err := toSQLOperator(opStr, "")
+	sqlOp, err := conditionexpr.ToSQLOperator(opStr, "")
 	if err != nil {
 		return "", err
 	}
-	return sqlOp.sqlOp, nil
+	return sqlOp.SQLOperator, nil
 }
 
 // parseColumnValue parses and converts a value string based on column type
@@ -119,7 +121,7 @@ func parseColumnValue(desc *columnDescriptor, valStr string, meta *forma.Attribu
 func convertDateValueForQuery(valStr string, meta *forma.AttributeMetadata) (any, error) {
 	if meta == nil {
 		emptyMeta := forma.AttributeMetadata{}
-		return parseDateValue(valStr, emptyMeta)
+		return sqlgen.ParseDateValue(valStr, emptyMeta)
 	}
-	return parseDateValue(valStr, *meta)
+	return sqlgen.ParseDateValue(valStr, *meta)
 }

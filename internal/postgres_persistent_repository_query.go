@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
 
@@ -213,7 +214,7 @@ func (b *hybridConditionBuilder) initCache() {
 }
 
 func (b *hybridConditionBuilder) build(c forma.Condition) (string, []any, error) {
-	return walkCondition(c, hybridStyle, nil, b)
+	return sqlgen.WalkCondition(c, sqlgen.HybridStyle, nil, b)
 }
 
 func (b *hybridConditionBuilder) EmitLeaf(cond *forma.KvCondition) (string, []any, error) {

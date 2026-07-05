@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/numutil"
 	"go.uber.org/zap"
 )
 
@@ -206,7 +206,7 @@ func (o *Optimizer) buildMainPredicate(pred *Predicate, qb *queryBuilder) (strin
 	case AttributeFallbackNumericToDouble:
 		// Rewrite equality to range for floating point comparison
 		if pred.Operator == PredicateOpEquals {
-			val, ok := internal.ToFloat64(pred.Value)
+			val, ok := numutil.ToFloat64(pred.Value)
 			if !ok {
 				return "", fmt.Errorf("invalid numeric value for fallback")
 			}

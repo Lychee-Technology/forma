@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
-	formainternal "github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
 
@@ -170,7 +170,7 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 
 // sanitizeIdentifier performs a minimal whitelist for table names.
 func sanitizeIdentifier(name string) string {
-	return formainternal.SanitizeIdentifier(name)
+	return sqlutil.SanitizeIdentifier(name)
 }
 
 // validateS3Credential checks that an S3 credential value is safe to embed in a DuckDB SET

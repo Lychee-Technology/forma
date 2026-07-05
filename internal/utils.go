@@ -2,10 +2,9 @@ package internal
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // defaultPageSize is the fallback page size used when the caller supplies a
@@ -29,22 +28,7 @@ func tryParseNumber(s string) any {
 }
 
 func SanitizeIdentifier(name string) string {
-	if name == "" {
-		return ""
-	}
-	parts := strings.Split(name, ".")
-	clean := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.Trim(part, " \"")
-		if trimmed == "" {
-			continue
-		}
-		clean = append(clean, trimmed)
-	}
-	if len(clean) == 0 {
-		clean = []string{name}
-	}
-	return pgx.Identifier(clean).Sanitize()
+	return sqlutil.SanitizeIdentifier(name)
 }
 
 func sanitizeIdentifier(name string) string {

@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -22,105 +21,7 @@ import (
 // Parameters:
 //   - schemaDir: Directory containing *_attributes.json files
 func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error) {
-	registry := &fileSchemaRegistry{
-		schemaDir:             schemaDir,
-		nameToID:              make(map[string]int16),
-		idToName:              make(map[int16]string),
-		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
-		attrIDToName:          make(map[int16]map[int16]string),
-		schemas:               make(map[int16]forma.JSONSchema),
-	}
-
-	if err := registry.loadSchemasFromDir(); err != nil {
-		return nil, err
-	}
-
-	return registry, nil
-}
-
-// loadSchemasFromDir scans the schema directory for *_attributes.json files
-// and loads them, auto-assigning schema IDs alphabetically.
-func (r *fileSchemaRegistry) loadSchemasFromDir() error {
-	// Read directory contents
-	entries, err := os.ReadDir(r.schemaDir)
-	if err != nil {
-		return fmt.Errorf("failed to read schema directory %s: %w", r.schemaDir, err)
-	}
-
-	// Find all *_attributes.json files
-	var schemaNames []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if filepath.Ext(name) == ".json" && !hasSuffix(name, "_attributes.json") && !hasSuffix(name, "_full.json") {
-			// This is a schema definition file (e.g., visit.json)
-			schemaName := name[:len(name)-5] // remove .json extension
-			schemaNames = append(schemaNames, schemaName)
-		}
-	}
-
-	if len(schemaNames) == 0 {
-		return fmt.Errorf("no schema files found in directory: %s", r.schemaDir)
-	}
-
-	// Sort schema names to ensure consistent ID assignment
-	sort.Strings(schemaNames)
-
-	// Load each schema
-	for i, schemaName := range schemaNames {
-		schemaID := int16(i + 1) // IDs start at 1
-
-		// Load attribute metadata from corresponding _attributes.json file
-		attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
-		attributeData, err := os.ReadFile(attributesFile)
-		if err != nil {
-			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
-		}
-
-		// Parse attribute metadata JSON
-		var rawAttributes map[string]map[string]any
-		if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
-			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
-		}
-
-		// Convert to SchemaAttributeCache
-		cache := make(forma.SchemaAttributeCache)
-		for attrName, attrData := range rawAttributes {
-			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
-			if err != nil {
-				return err
-			}
-			cache[attrName] = meta
-		}
-		attrIDToName, err := buildAttrIDToName(schemaName, cache)
-		if err != nil {
-			return err
-		}
-
-		// Load main schema JSON file (e.g., lead.json)
-		schemaFile := filepath.Join(r.schemaDir, schemaName+".json")
-		schemaData, err := os.ReadFile(schemaFile)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
-			}
-		} else {
-			jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
-			if err != nil {
-				return fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
-			}
-			r.schemas[schemaID] = jsonSchema
-		}
-
-		r.nameToID[schemaName] = schemaID
-		r.idToName[schemaID] = schemaName
-		r.schemaAttributeCaches[schemaID] = cache
-		r.attrIDToName[schemaID] = attrIDToName
-	}
-
-	return nil
+	return NewFileSchemaRegistryFromDirectory(schemaDir)
 }
 
 // TestEntityManager_Create tests entity creation

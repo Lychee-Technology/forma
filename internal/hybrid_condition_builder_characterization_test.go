@@ -22,9 +22,7 @@ type hybridTestHelper struct {
 
 func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 	cache := NewMetadataCache()
-	cache.schemaNameToID["test"] = 1
-	cache.schemaIDToName[1] = "test"
-	cache.schemaCaches[1] = forma.SchemaAttributeCache{
+	if err := cache.RegisterSchema("test", 1, forma.SchemaAttributeCache{
 		"name": {
 			AttributeID: 7,
 			ValueType:   forma.ValueTypeText,
@@ -38,6 +36,8 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 			AttributeID: 9,
 			ValueType:   forma.ValueTypeText,
 		},
+	}); err != nil {
+		panic(err)
 	}
 	return hybridTestHelper{
 		repo: &DBPersistentRecordRepository{
