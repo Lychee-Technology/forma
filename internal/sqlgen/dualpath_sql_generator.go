@@ -152,44 +152,56 @@ type pgMainLeafEmitter struct {
 	paramIndex *int
 }
 
-func (e *pgMainLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
-	meta, ok := e.cache[c.Attr]
+// pgMainLeafValue is the value core shared by the string emitter and the
+// plan binder (#142): every pushability decision and conversion lives here
+// exactly once so bound args cannot diverge from emitted clauses.
+func pgMainLeafValue(c *forma.KvCondition, cache forma.SchemaAttributeCache) (any, bool, error) {
+	meta, ok := cache[c.Attr]
 	if !ok {
 		// unknown attribute -> cannot push
-		return "", nil, nil
+		return nil, false, nil
 	}
 
-	// Parse operator and value
 	opVal := parseOperatorValue(c.Value)
 
 	// Check if we can push to main table
 	useMain, _ := classifyPredicate(c, meta)
 	if !useMain {
 		if meta.ColumnBinding == nil {
-			return "", nil, nil
+			return nil, false, nil
 		}
-		return "", nil, fmt.Errorf("unsupported operator: %s", opVal.op)
+		return nil, false, fmt.Errorf("unsupported operator: %s", opVal.op)
 	}
 	if meta.ColumnBinding == nil {
-		return "", nil, nil
+		return nil, false, nil
 	}
 
-	// Convert operator to SQL
+	sqlOpResult, err := toSQLOperator(opVal.op, opVal.value)
+	if err != nil {
+		return nil, false, err
+	}
+
+	parsedValue, err := ConvertPgMainValue(sqlOpResult.value, c.Attr, meta)
+	if err != nil {
+		return nil, false, err
+	}
+	return parsedValue, true, nil
+}
+
+func (e *pgMainLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
+	parsedValue, emit, err := pgMainLeafValue(c, e.cache)
+	if err != nil || !emit {
+		return "", nil, err
+	}
+
+	meta := e.cache[c.Attr]
+	opVal := parseOperatorValue(c.Value)
 	sqlOpResult, err := toSQLOperator(opVal.op, opVal.value)
 	if err != nil {
 		return "", nil, err
 	}
-
-	// Resolve column name
 	colName := resolveMainTableColumn(c.Attr, meta)
 
-	// Convert value based on metadata
-	parsedValue, err := ConvertPgMainValue(sqlOpResult.value, c.Attr, meta)
-	if err != nil {
-		return "", nil, err
-	}
-
-	// Create placeholder and clause
 	*e.paramIndex++
 	ph := fmt.Sprintf("$%d", *e.paramIndex)
 	sql := fmt.Sprintf("%s %s %s", colName, sqlOpResult.sqlOp, ph)
@@ -216,34 +228,36 @@ type duckLeafEmitter struct {
 	cache forma.SchemaAttributeCache
 }
 
-func (e *duckLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
-	// Parse operator and value
+// duckLeafParts is the shape/value decomposition of a DuckDB leaf shared by
+// the string emitter and the plan binder (#142).
+type duckLeafParts struct {
+	sqlOp     string
+	valueType forma.ValueType
+	textLike  bool // emit `col op ?` with the string value (LIKE or text type)
+	param     any
+}
+
+// duckLeafValue is the value core shared by the string emitter and the plan
+// binder: operator/type/param decisions live here exactly once.
+func duckLeafValue(c *forma.KvCondition, cache forma.SchemaAttributeCache) (duckLeafParts, error) {
 	opVal := parseOperatorValue(c.Value)
 
-	// Convert operator to SQL
 	sqlOpResult, err := toSQLOperator(opVal.op, opVal.value)
 	if err != nil {
-		return "", nil, err
+		return duckLeafParts{}, err
 	}
 
-	// Resolve column name using metadata
-	colName := resolveDuckDBColumn(c.Attr, e.cache)
-
-	// Get metadata and determine value type
 	var meta forma.AttributeMetadata
 	var hasMeta bool
-	if m, ok := e.cache[c.Attr]; ok {
+	if m, ok := cache[c.Attr]; ok {
 		meta = m
 		hasMeta = true
 	}
 
-	// If LIKE operator, keep simple text comparison
 	if sqlOpResult.sqlOp == "LIKE" {
-		clause := fmt.Sprintf("%s %s ?", colName, sqlOpResult.sqlOp)
-		return clause, []any{sqlOpResult.value}, nil
+		return duckLeafParts{sqlOp: sqlOpResult.sqlOp, textLike: true, param: sqlOpResult.value}, nil
 	}
 
-	// Determine value type
 	var valueType forma.ValueType
 	if hasMeta {
 		valueType = meta.ValueType
@@ -251,29 +265,37 @@ func (e *duckLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) 
 		valueType = detectValueType(sqlOpResult.value)
 	}
 
-	// For text type, simple comparison
 	if valueType == forma.ValueTypeText {
-		clause := fmt.Sprintf("%s %s ?", colName, sqlOpResult.sqlOp)
-		return clause, []any{sqlOpResult.value}, nil
+		return duckLeafParts{sqlOp: sqlOpResult.sqlOp, valueType: valueType, textLike: true, param: sqlOpResult.value}, nil
 	}
 
-	// Use CastExpression to create CAST(? AS TYPE)
-	castExpr := CastExpression("?", valueType)
-	clause := fmt.Sprintf("%s %s %s", colName, sqlOpResult.sqlOp, castExpr)
-
-	// Parse param into typed form
 	rawParam, err := parseDuckDBRawParam(sqlOpResult.value, c.Attr, valueType)
+	if err != nil {
+		return duckLeafParts{}, err
+	}
+	param, err := ToDuckDBParam(rawParam, valueType)
+	if err != nil {
+		return duckLeafParts{}, fmt.Errorf("to duckdb param: %w", err)
+	}
+	return duckLeafParts{sqlOp: sqlOpResult.sqlOp, valueType: valueType, param: param}, nil
+}
+
+func (e *duckLeafEmitter) EmitLeaf(c *forma.KvCondition) (string, []any, error) {
+	parts, err := duckLeafValue(c, e.cache)
 	if err != nil {
 		return "", nil, err
 	}
 
-	// Normalize for DuckDB
-	param, err := ToDuckDBParam(rawParam, valueType)
-	if err != nil {
-		return "", nil, fmt.Errorf("to duckdb param: %w", err)
+	colName := resolveDuckDBColumn(c.Attr, e.cache)
+
+	if parts.textLike {
+		clause := fmt.Sprintf("%s %s ?", colName, parts.sqlOp)
+		return clause, []any{parts.param}, nil
 	}
 
-	return clause, []any{param}, nil
+	castExpr := CastExpression("?", parts.valueType)
+	clause := fmt.Sprintf("%s %s %s", colName, parts.sqlOp, castExpr)
+	return clause, []any{parts.param}, nil
 }
 
 // buildDuckClause traverses the condition tree and produces a DuckDB-compatible WHERE clause.
