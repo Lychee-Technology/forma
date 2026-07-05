@@ -3,11 +3,13 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
@@ -400,4 +402,93 @@ func TestRunOptimizedQueryWithMockPool(t *testing.T) {
 	assert.Nil(t, records[0].OtherAttributes)
 
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestStreamOptimizedQueryRenderCache pins #142: two calls with the same
+// query shape render the SQL template once; a different shape renders again.
+func TestStreamOptimizedQueryRenderCache(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	repo := NewDBPersistentRecordRepository(mock, nil)
+	tables := model.StorageTables{EntityMain: "main_t", EAVData: "eav_t", ChangeLog: "cl_t"}
+	for i := 0; i < 2; i++ {
+		mock.ExpectQuery("WITH").
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WillReturnRows(pgxmock.NewRows([]string{"row_id"}))
+		_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"integer_01\" > $2", []any{int64(5)}, 10, 0, nil, true, nil)
+		require.NoError(t, err)
+	}
+	hits, misses := repo.planCache.Stats()
+	require.Equal(t, int64(1), hits, "second identical shape must hit the render cache")
+	require.Equal(t, int64(1), misses)
+
+	// Different shape (different clause) renders again.
+	mock.ExpectQuery("WITH").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"row_id"}))
+	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"text_01\" = $2", []any{"x"}, 10, 0, nil, true, nil)
+	require.NoError(t, err)
+	_, misses = repo.planCache.Stats()
+	require.Equal(t, int64(2), misses)
+}
+
+// TestOptimizedQueryShapeKey pins that every render-affecting input changes
+// the key and that values do not participate.
+func TestOptimizedQueryShapeKey(t *testing.T) {
+	tables := model.StorageTables{EntityMain: "m", EAVData: "e", ChangeLog: "c"}
+	orders := []model.AttributeOrder{{AttrID: 7, ColumnName: "integer_01", SortOrder: forma.SortOrderDesc}}
+	base := optimizedQueryShapeKey(tables, true, "clause", 2, orders)
+
+	require.Equal(t, base, optimizedQueryShapeKey(tables, true, "clause", 2, orders))
+	require.NotEqual(t, base, optimizedQueryShapeKey(tables, false, "clause", 2, orders))
+	require.NotEqual(t, base, optimizedQueryShapeKey(tables, true, "other", 2, orders))
+	require.NotEqual(t, base, optimizedQueryShapeKey(tables, true, "clause", 3, orders))
+	require.NotEqual(t, base, optimizedQueryShapeKey(tables, true, "clause", 2, nil))
+	require.NotEqual(t, base, optimizedQueryShapeKey(model.StorageTables{EntityMain: "m2", EAVData: "e", ChangeLog: "c"}, true, "clause", 2, orders))
+}
+
+// BenchmarkOptimizedQueryRender quantifies the per-request template render
+// cost the #142 cache eliminates on the page-1 hot path.
+func BenchmarkOptimizedQueryRender(b *testing.B) {
+	tables := model.StorageTables{EntityMain: "main_t", EAVData: "eav_t", ChangeLog: "cl_t"}
+	sqlParams := map[string]any{
+		"EAVTable":             sanitizeIdentifier(tables.EAVData),
+		"MainTable":            sanitizeIdentifier(tables.EntityMain),
+		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
+		"MainProjection":       model.EntityMainProjection,
+		"SchemaID":             "$1",
+		"UseMainTableAsAnchor": true,
+		"Anchor":               map[string]any{"Condition": `m."integer_01" > $2`},
+		"SortKeys":             []model.AttributeOrder{},
+		"Limit":                "$3",
+		"Offset":               "$4",
+		"PageSize":             "$3",
+	}
+
+	b.Run("uncached", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := renderTemplate(optimizedQuerySQLTemplate, sqlParams); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("cached", func(b *testing.B) {
+		cache := queryplan.NewCache(16)
+		key := queryplan.Key{
+			Kind:      "postgres_optimized_template",
+			SchemaID:  1,
+			ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, true, `m."integer_01" > $2`, 1, nil), 16),
+		}
+		for i := 0; i < b.N; i++ {
+			if _, _, err := cache.GetOrBuild(key, func() (any, error) {
+				return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
+			}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

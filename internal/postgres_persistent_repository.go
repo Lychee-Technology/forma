@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
@@ -24,14 +25,32 @@ type DBPersistentRecordRepository struct {
 	pool          persistentRecordPool
 	metadataCache *schemameta.MetadataCache
 	nowFunc       func() time.Time
+	// planCache caches the rendered optimized-query SQL per query shape
+	// (#142). The default is repository-local; WithPlanCache injects a cache
+	// shared across repository instances so hits survive transient
+	// construction (the benchmark and production reuse lifecycle).
+	planCache *queryplan.Cache
 }
 
-func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache) *DBPersistentRecordRepository {
-	return &DBPersistentRecordRepository{
+// RepoOption customizes optional repository collaborators.
+type RepoOption func(*DBPersistentRecordRepository)
+
+// WithPlanCache injects a shared plan cache (#142).
+func WithPlanCache(c *queryplan.Cache) RepoOption {
+	return func(r *DBPersistentRecordRepository) { r.planCache = c }
+}
+
+func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache, opts ...RepoOption) *DBPersistentRecordRepository {
+	r := &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
 		nowFunc:       time.Now,
+		planCache:     queryplan.NewCache(1024),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 func (r *DBPersistentRecordRepository) withClock(now func() time.Time) {

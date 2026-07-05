@@ -57,17 +57,19 @@ type pgEavLeafEmitter struct {
 	paramIndex *int
 }
 
-func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error) {
-	_ = e.schemaID
-
-	meta, ok := e.cache[kv.Attr]
+// pgEavLeafValue is the value core shared by the string emitter and the plan
+// binder (#142): parsing, type conversion, and operator validation live here
+// exactly once. It returns the two bound args (attr_id, value) plus the
+// clause ingredients the string shell needs.
+func pgEavLeafValue(kv *forma.KvCondition, cache forma.SchemaAttributeCache) (int16, any, string, string, error) {
+	meta, ok := cache[kv.Attr]
 	if !ok {
-		return "", nil, fmt.Errorf("attribute not found in cache: %s", kv.Attr)
+		return 0, nil, "", "", fmt.Errorf("attribute not found in cache: %s", kv.Attr)
 	}
 
 	operator, err := parseOperatorValueStrict(kv.Value)
 	if err != nil {
-		return "", nil, err
+		return 0, nil, "", "", err
 	}
 	opStr := operator.op
 	valStr := operator.value
@@ -88,20 +90,20 @@ func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error
 		case float64:
 			parsedValue = v
 		default:
-			return "", nil, fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)
+			return 0, nil, "", "", fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		valueColumn = "value_numeric"
 		var err error
 		parsedValue, err = parseDateValue(valStr, meta)
 		if err != nil {
-			return "", nil, fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
+			return 0, nil, "", "", fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
 		}
 	case forma.ValueTypeBool:
 		valueColumn = "value_numeric"
 		parsedInt, err := strconv.Atoi(valStr)
 		if err != nil {
-			return "", nil, fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)
+			return 0, nil, "", "", fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)
 		}
 		if parsedInt > 0 {
 			parsedValue = float64(1)
@@ -109,12 +111,12 @@ func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error
 			parsedValue = float64(0)
 		}
 	default:
-		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)
+		return 0, nil, "", "", fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)
 	}
 
 	sqlOperator, err := toSQLOperator(opStr, valStr)
 	if err != nil {
-		return "", nil, err
+		return 0, nil, "", "", err
 	}
 	sqlOp := sqlOperator.sqlOp
 	if sqlOp == "LIKE" {
@@ -122,17 +124,28 @@ func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error
 	}
 
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return "", nil, fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)
+		return 0, nil, "", "", fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)
 	}
 	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return "", nil, fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)
+		return 0, nil, "", "", fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)
+	}
+
+	return meta.AttributeID, parsedValue, valueColumn, sqlOp, nil
+}
+
+func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error) {
+	_ = e.schemaID
+
+	attrID, parsedValue, valueColumn, sqlOp, err := pgEavLeafValue(kv, e.cache)
+	if err != nil {
+		return "", nil, err
 	}
 
 	var args []any
 
 	*e.paramIndex++
 	attrIdPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
-	args = append(args, meta.AttributeID)
+	args = append(args, attrID)
 
 	*e.paramIndex++
 	valuePlaceholder := fmt.Sprintf("$%d", *e.paramIndex)

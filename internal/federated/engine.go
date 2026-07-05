@@ -6,6 +6,7 @@ import (
 	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -52,13 +53,31 @@ type DBFederatedQueryEngine struct {
 	pgConnString   string
 	buildDuckSQL   func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error)
 	duckTemplate   *template.Template
+	// projections caches per-schema DuckDB projection negotiation (#142);
+	// valid for the engine's lifetime because metadata is immutable after
+	// construction. Reset exists for future reload scenarios.
+	projections *sqlgen.ProjectionCache
+	// planCache holds compiled DuckDB query plans. It is injected (shared
+	// across engine instances) so its lifetime spans repeated requests even
+	// when callers construct transient engines per query — the benchmark and
+	// production reuse lifecycle (#142 review finding 1). Nil disables plan
+	// caching.
+	planCache *queryplan.Cache
+}
+
+// EngineOption customizes optional engine collaborators.
+type EngineOption func(*DBFederatedQueryEngine)
+
+// WithPlanCache injects a shared compiled-plan cache (#142).
+func WithPlanCache(c *queryplan.Cache) EngineOption {
+	return func(e *DBFederatedQueryEngine) { e.planCache = c }
 }
 
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
 // duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
 // nil breaker disables circuit breaking.
-func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string) *DBFederatedQueryEngine {
-	return &DBFederatedQueryEngine{
+func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string, opts ...EngineOption) *DBFederatedQueryEngine {
+	e := &DBFederatedQueryEngine{
 		pgSource:       pgSource,
 		dirtyIDFetcher: dirtyIDFetcher,
 		duck:           duck,
@@ -67,7 +86,12 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 		metadataCache:  metadataCache,
 		pgConnString:   pgConnString,
 		duckTemplate:   sqlgen.AdvancedQueryTemplateDuckDB,
+		projections:    sqlgen.NewProjectionCache(),
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // Query implements FederatedQueryEngine. Hot-only requests delegate directly

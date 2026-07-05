@@ -358,3 +358,50 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 }
+
+func TestRegisterSchemaCopiesInput(t *testing.T) {
+	mc := NewMetadataCache()
+	original := forma.SchemaAttributeCache{
+		"name": {AttributeID: 5, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
+	}
+	require.NoError(t, mc.RegisterSchema("s", 1, original))
+
+	// Caller-side mutations must not reach the registered snapshot (#142).
+	original["injected"] = forma.AttributeMetadata{AttributeID: 99}
+	original["name"].ColumnBinding.ColumnName = forma.MainColumn("text_09")
+
+	snap, ok := mc.GetSchemaCacheByID(1)
+	require.True(t, ok)
+	require.NotContains(t, snap, "injected")
+	require.Equal(t, forma.MainColumn("text_01"), snap["name"].ColumnBinding.ColumnName)
+}
+
+func TestSchemaFingerprintTracksContent(t *testing.T) {
+	mcA := NewMetadataCache()
+	require.NoError(t, mcA.RegisterSchema("s", 1, forma.SchemaAttributeCache{
+		"age": {AttributeID: 3, ValueType: forma.ValueTypeInteger},
+	}))
+	fpA, ok := mcA.SchemaFingerprint(1)
+	require.True(t, ok)
+	require.NotEmpty(t, fpA)
+
+	// Equal content (fresh map) yields the same fingerprint.
+	mcB := NewMetadataCache()
+	require.NoError(t, mcB.RegisterSchema("s", 1, forma.SchemaAttributeCache{
+		"age": {AttributeID: 3, ValueType: forma.ValueTypeInteger},
+	}))
+	fpB, _ := mcB.SchemaFingerprint(1)
+	require.Equal(t, fpA, fpB)
+
+	// Different content yields a different fingerprint.
+	mcC := NewMetadataCache()
+	require.NoError(t, mcC.RegisterSchema("s", 1, forma.SchemaAttributeCache{
+		"age": {AttributeID: 3, ValueType: forma.ValueTypeBigInt},
+	}))
+	fpC, _ := mcC.SchemaFingerprint(1)
+	require.NotEqual(t, fpA, fpC)
+
+	_, ok = mcA.SchemaFingerprint(42)
+	require.False(t, ok)
+}

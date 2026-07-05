@@ -3,10 +3,12 @@ package federated
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -222,7 +224,8 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	// Compute schema-driven projections for the template
-	injectSchemaProjections(sqlParams, q.SchemaID, cache)
+	projectionCacheHit := e.injectSchemaProjections(sqlParams, q.SchemaID, cache)
+	planCtx.recordProjectionCache(projectionCacheHit)
 
 	// Determine if the EAV pivot can be skipped entirely (all filter/sort
 	// attributes are column-bound, no EAV-only attributes needed).
@@ -231,7 +234,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// which outputs a fixed entity_main layout.
 	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
 		sqlParams["HasEAVPivot"] = false
-		sp, _ := sqlgen.BuildSchemaProjection(q.SchemaID, cache)
+		sp, _, _ := e.schemaProjection(q.SchemaID, cache)
 		if sp != nil {
 			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
 			sqlParams["PGGroupBy"] = sp.BuildPGGroupByNoEAV()
@@ -248,6 +251,15 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
 	}
 
+	// Compiled-plan cache (#142): skeleton + template args are reused per
+	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
+	// request. Test hooks and non-advanced templates bypass the cache.
+	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, sqlParams, &dc, cache, planCtx); ok {
+		translateMs := time.Since(startTranslate).Milliseconds()
+		telemetry.EmitLatency(ctx, "translation", translateMs)
+		return sqlStr, args, translateMs, nil
+	}
+
 	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	telemetry.EmitLatency(ctx, "translation", translateMs)
@@ -256,6 +268,92 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+// duckCompiledEntry is the artifact stored in the shared plan cache: the
+// rendered skeleton plus the dual-clause plan used to bind condition args.
+type duckCompiledEntry struct {
+	compiled *sqlgen.DuckDBCompiledQuery
+	dualPlan *sqlgen.DualClausePlan
+}
+
+// serveFromPlanCache attempts the compiled-plan path. It returns ok=false
+// when the request is not cacheable (no cache injected, test hook installed,
+// non-advanced template, or shape hashing failed) — the caller then uses the
+// direct builder. On a miss the compile result serves the request too, so
+// rendering happens at most once per shape.
+func (e *DBFederatedQueryEngine) serveFromPlanCache(
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
+	dirtyIDs []uuid.UUID,
+	attributeOrders []model.AttributeOrder,
+	limit, offset int,
+	sqlParams map[string]any,
+	dc *sqlgen.DualClauses,
+	cache forma.SchemaAttributeCache,
+	planCtx *duckDBExecutionPlanContext,
+) (string, []any, bool) {
+	if e.planCache == nil || e.buildDuckSQL != nil || e.getDuckDBTemplate() != sqlgen.AdvancedQueryTemplateDuckDB {
+		return "", nil, false
+	}
+
+	shapeHash, err := queryplan.HashFederatedQueryShape(q)
+	if err != nil {
+		return "", nil, false
+	}
+	fingerprint := "no-fingerprint"
+	if e.metadataCache != nil {
+		if fp, ok := e.metadataCache.SchemaFingerprint(q.SchemaID); ok {
+			fingerprint = fp
+		}
+	}
+	scopeParts := []string{
+		"scope-v1",
+		tables.EAVData, tables.EntityMain, tables.ChangeLog,
+		e.pgConnString,
+		strconv.Itoa(limit), strconv.Itoa(offset),
+		strconv.FormatBool(len(dirtyIDs) > 0),
+	}
+	scopeParts = append(scopeParts, duckDBParquetPathsForQuery(q)...)
+	for _, o := range attributeOrders {
+		scopeParts = append(scopeParts, strconv.Itoa(int(o.AttrID)), o.AttrName, o.ColumnName,
+			string(o.StorageLocation), string(o.SortOrder))
+	}
+	key := queryplan.Key{
+		Kind:          "duckdb_federated",
+		SchemaVersion: fingerprint,
+		SchemaID:      q.SchemaID,
+		ShapeHash:     shapeHash,
+		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
+	}
+
+	entryAny, hit, err := e.planCache.GetOrBuild(key, func() (any, error) {
+		compiled, err := sqlgen.CompileDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, sqlParams, q, dc, len(dirtyIDs) > 0)
+		if err != nil || compiled == nil {
+			return nil, err
+		}
+		dualPlan := &sqlgen.DualClausePlan{
+			PgClause:     dc.PgClause,
+			PgMainClause: dc.PgMainClause,
+			DuckClause:   dc.DuckClause,
+		}
+		return &duckCompiledEntry{compiled: compiled, dualPlan: dualPlan}, nil
+	})
+	if err != nil || entryAny == nil {
+		return "", nil, false
+	}
+	entry := entryAny.(*duckCompiledEntry)
+	planCtx.recordPlanCache(hit)
+
+	bound := *dc
+	if hit {
+		// The request's own dual clauses were already built this call; args
+		// come from them, clauses from the cached plan (identical by key).
+		bound.PgMainClause = entry.dualPlan.PgMainClause
+		bound.DuckClause = entry.dualPlan.DuckClause
+	}
+	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs)
+	return sqlStr, args, true
 }
 
 func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) []string {
@@ -281,7 +379,19 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) []string {
 // cache and injects them into the template parameter map. For benchmark schemas
 // (IDs 100-102) it uses the benchmark parquet shape; for production it uses the
 // schema attribute cache for column bindings and EAV pivots.
-func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) {
+// schemaProjection returns the (cached) projection for schemaID; the hit flag
+// feeds the execution plan so cache behavior stays observable.
+func (e *DBFederatedQueryEngine) schemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*sqlgen.SchemaProjection, bool, error) {
+	var pc *sqlgen.ProjectionCache
+	if e != nil {
+		pc = e.projections
+	}
+	return pc.GetOrBuild(schemaID, func() (*sqlgen.SchemaProjection, error) {
+		return sqlgen.BuildSchemaProjection(schemaID, cache)
+	})
+}
+
+func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) (projectionCacheHit bool) {
 	if isBenchmarkSchemaID(schemaID) {
 		// Benchmark schemas: use hardcoded benchmarks projections that match
 		// the benchmark parquet shape exactly (flat columns for column-bound
@@ -294,7 +404,7 @@ func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache for
 		sqlParams["EAVPivotAttrs"] = proj.EAVPivotAttrs
 		sqlParams["HasEAVPivot"] = len(proj.EAVPivotAttrs) > 0
 		sqlParams["OuterSelect"] = sqlgen.BuildBenchmarkOuterSelect(schemaID)
-		return
+		return false
 	}
 	if len(cache) == 0 {
 		// No cache: fall back to defaults that match the fixed layout without EAV
@@ -303,13 +413,13 @@ func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache for
 		sqlParams["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
 		sqlParams["HasEAVPivot"] = false
 		sqlParams["OuterSelect"] = fallbackOuterSelect(schemaID)
-		return
+		return false
 	}
 
 	// Production schema: compute projections from the attribute cache
-	sp, err := sqlgen.BuildSchemaProjection(schemaID, cache)
+	sp, hit, err := e.schemaProjection(schemaID, cache)
 	if err != nil || sp == nil {
-		return
+		return hit
 	}
 	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
 	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
@@ -318,6 +428,7 @@ func injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache for
 	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
 	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
 	sqlParams["OuterSelect"] = sp.OuterSelect
+	return hit
 }
 
 // fallbackOuterSelect returns the fixed outer SELECT for the no-cache fallback path.

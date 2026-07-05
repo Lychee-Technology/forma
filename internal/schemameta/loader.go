@@ -2,10 +2,14 @@ package schemameta
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +31,11 @@ type MetadataCache struct {
 
 	// Schema caches for transformer
 	schemaCaches map[int16]forma.SchemaAttributeCache
+
+	// fingerprints holds a deterministic content hash per schema, computed at
+	// registration; plan caches key on it so metadata content changes orphan
+	// stale entries (#142).
+	fingerprints map[int16]string
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -36,6 +45,7 @@ func NewMetadataCache() *MetadataCache {
 		schemaIDToName:    make(map[int16]string),
 		attributeMetadata: make(map[int16]map[string]forma.AttributeMetadata),
 		schemaCaches:      make(map[int16]forma.SchemaAttributeCache),
+		fingerprints:      make(map[int16]string),
 	}
 }
 
@@ -49,11 +59,65 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	if existingID, exists := mc.schemaNameToID[schemaName]; exists && existingID != schemaID {
 		return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
 	}
+	// Store a private copy: the caller keeps ownership of its map, so later
+	// caller-side mutations cannot silently invalidate cached plans (#142).
+	snapshot := copySchemaAttributeCache(cache)
 	mc.schemaNameToID[schemaName] = schemaID
 	mc.schemaIDToName[schemaID] = schemaName
-	mc.schemaCaches[schemaID] = cache
-	mc.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(cache)
+	mc.schemaCaches[schemaID] = snapshot
+	mc.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(snapshot)
+	mc.fingerprints[schemaID] = fingerprintSchema(schemaName, snapshot)
 	return nil
+}
+
+func copySchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
+	snapshot := make(forma.SchemaAttributeCache, len(cache))
+	for name, meta := range cache {
+		if meta.ColumnBinding != nil {
+			binding := *meta.ColumnBinding
+			meta.ColumnBinding = &binding
+		}
+		snapshot[name] = meta
+	}
+	return snapshot
+}
+
+// fingerprintSchema hashes the registered metadata content deterministically
+// (sorted by attribute name) so equal content yields equal fingerprints.
+func fingerprintSchema(schemaName string, cache forma.SchemaAttributeCache) string {
+	names := make([]string, 0, len(cache))
+	for name := range cache {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	h := sha256.New()
+	write := func(parts ...string) {
+		for _, p := range parts {
+			_, _ = h.Write([]byte(p))
+			_, _ = h.Write([]byte{0})
+		}
+	}
+	write("schema-fp-v1", schemaName)
+	for _, name := range names {
+		meta := cache[name]
+		write(name, strconv.Itoa(int(meta.AttributeID)), string(meta.ValueType), strconv.FormatBool(meta.Required))
+		if meta.ColumnBinding != nil {
+			write(string(meta.ColumnBinding.ColumnName), string(meta.ColumnBinding.Encoding))
+		} else {
+			write("eav")
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SchemaFingerprint returns the content fingerprint recorded at registration;
+// plan-cache keys include it as the invalidation lever.
+func (mc *MetadataCache) SchemaFingerprint(schemaID int16) (string, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	fp, ok := mc.fingerprints[schemaID]
+	return fp, ok
 }
 
 // GetSchemaID retrieves schema ID by name (thread-safe)
@@ -78,12 +142,15 @@ func (mc *MetadataCache) GetSchemaName(schemaID int16) (string, bool) {
 	return name, ok
 }
 
-// GetSchemaCache retrieves the schema attribute cache for a schema (thread-safe)
+// GetSchemaCache retrieves the schema attribute cache for a schema
+// (thread-safe). The returned map is the registry-owned snapshot — callers
+// must treat it as read-only.
 func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
-	schemaId, ok := mc.GetSchemaID(schemaName)
+	schemaId, ok := mc.schemaNameToID[schemaName]
 	if !ok {
+		zap.S().Warnw("schema name not found in cache", "schema_name", schemaName, "cache_size", len(mc.schemaNameToID))
 		return nil, false
 	}
 	cache, ok := mc.schemaCaches[schemaId]
@@ -93,14 +160,13 @@ func (mc *MetadataCache) GetSchemaCache(schemaName string) (forma.SchemaAttribut
 	return cache, ok
 }
 
+// GetSchemaCacheByID is the schema-ID variant of GetSchemaCache; the same
+// read-only contract applies.
 func (mc *MetadataCache) GetSchemaCacheByID(schemaID int16) (forma.SchemaAttributeCache, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
-	schemaName, ok := mc.GetSchemaName(schemaID)
-	if !ok {
-		return nil, false
-	}
-	return mc.GetSchemaCache(schemaName)
+	cache, ok := mc.schemaCaches[schemaID]
+	return cache, ok
 }
 
 // ListSchemas returns all schema names (thread-safe)
