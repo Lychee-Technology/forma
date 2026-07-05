@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
@@ -38,6 +39,36 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 		"tag": {
 			AttributeID: 9,
 			ValueType:   forma.ValueTypeText,
+		},
+		"created": {
+			AttributeID:   10,
+			ValueType:     forma.ValueTypeDateTime,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bigint_01"), Encoding: forma.MainColumnEncodingUnixMs},
+		},
+		"created_iso": {
+			AttributeID:   11,
+			ValueType:     forma.ValueTypeDateTime,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingISO8601},
+		},
+		"active_int": {
+			AttributeID:   12,
+			ValueType:     forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("smallint_01"), Encoding: forma.MainColumnEncodingBoolInt},
+		},
+		"active_text": {
+			AttributeID:   13,
+			ValueType:     forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_03"), Encoding: forma.MainColumnEncodingBoolText},
+		},
+		"score": {
+			AttributeID:   14,
+			ValueType:     forma.ValueTypeNumeric,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("double_01")},
+		},
+		"badcol": {
+			AttributeID:   15,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_99")},
 		},
 	}); err != nil {
 		panic(err)
@@ -221,4 +252,93 @@ func TestHybrid_MainTableLikeOperator(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "m.\"text_01\" LIKE $2", clause)
 	require.Equal(t, []any{"A%"}, args)
+}
+
+// --- #140 characterization: pin main-table leaf conversion semantics before
+// switching to the canonical conditionexpr/sqlgen stack. ---
+
+func TestHybrid_DateTimeUnixMsEncoding(t *testing.T) {
+	h := newHybridTestHelper(true)
+	date := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	cond := &forma.KvCondition{Attr: "created", Value: "equals:" + date.Format(time.RFC3339)}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"bigint_01\" = $2", clause)
+	require.Equal(t, []any{date.UnixMilli()}, args)
+}
+
+func TestHybrid_DateTimeISO8601Encoding(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "created_iso", Value: "equals:2024-01-02T03:04:05Z"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"text_02\" = $2", clause)
+	require.Equal(t, []any{"2024-01-02T03:04:05Z"}, args)
+}
+
+func TestHybrid_BoolIntEncoding(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "active_int", Value: "equals:1"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"smallint_01\" = $2", clause)
+	require.Equal(t, []any{int64(1)}, args)
+}
+
+func TestHybrid_BoolTextEncoding(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "active_text", Value: "equals:1"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"text_03\" = $2", clause)
+	require.Equal(t, []any{"1"}, args)
+}
+
+func TestHybrid_UnsupportedOperatorErrors(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "age", Value: "nope:1"}
+	_, _, err := h.build(cond)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported operator")
+}
+
+func TestHybrid_RawColumnComposite(t *testing.T) {
+	h := newHybridTestHelper(true)
+	root := &forma.CompositeCondition{
+		Logic: forma.LogicAnd,
+		Conditions: []forma.Condition{
+			&forma.KvCondition{Attr: "text_01", Value: "hello"},
+			&forma.KvCondition{Attr: "bigint_01", Value: "gt:42"},
+		},
+	}
+	clause, args, err := h.build(root)
+	require.NoError(t, err)
+	require.Equal(t, "(m.\"text_01\" = $2) AND (m.\"bigint_01\" > $3)", clause)
+	require.Equal(t, []any{"hello", int64(42)}, args)
+}
+
+func TestHybrid_EqAliasNormalization(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "age", Value: "eq:10"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"integer_01\" = $2", clause)
+	require.Equal(t, []any{int64(10)}, args)
+}
+
+func TestHybrid_DoubleColumnIntegerLiteral(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "score", Value: "equals:25"}
+	clause, args, err := h.build(cond)
+	require.NoError(t, err)
+	require.Equal(t, "m.\"double_01\" = $2", clause)
+	require.Equal(t, []any{int64(25)}, args)
+}
+
+func TestHybrid_UnknownBoundColumnErrors(t *testing.T) {
+	h := newHybridTestHelper(true)
+	cond := &forma.KvCondition{Attr: "badcol", Value: "equals:x"}
+	_, _, err := h.build(cond)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown main table column")
 }
