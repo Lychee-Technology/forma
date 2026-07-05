@@ -3,10 +3,12 @@ package federated
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -249,6 +251,15 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
 	}
 
+	// Compiled-plan cache (#142): skeleton + template args are reused per
+	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
+	// request. Test hooks and non-advanced templates bypass the cache.
+	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, sqlParams, &dc, cache, planCtx); ok {
+		translateMs := time.Since(startTranslate).Milliseconds()
+		telemetry.EmitLatency(ctx, "translation", translateMs)
+		return sqlStr, args, translateMs, nil
+	}
+
 	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	telemetry.EmitLatency(ctx, "translation", translateMs)
@@ -257,6 +268,92 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+// duckCompiledEntry is the artifact stored in the shared plan cache: the
+// rendered skeleton plus the dual-clause plan used to bind condition args.
+type duckCompiledEntry struct {
+	compiled *sqlgen.DuckDBCompiledQuery
+	dualPlan *sqlgen.DualClausePlan
+}
+
+// serveFromPlanCache attempts the compiled-plan path. It returns ok=false
+// when the request is not cacheable (no cache injected, test hook installed,
+// non-advanced template, or shape hashing failed) — the caller then uses the
+// direct builder. On a miss the compile result serves the request too, so
+// rendering happens at most once per shape.
+func (e *DBFederatedQueryEngine) serveFromPlanCache(
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
+	dirtyIDs []uuid.UUID,
+	attributeOrders []model.AttributeOrder,
+	limit, offset int,
+	sqlParams map[string]any,
+	dc *sqlgen.DualClauses,
+	cache forma.SchemaAttributeCache,
+	planCtx *duckDBExecutionPlanContext,
+) (string, []any, bool) {
+	if e.planCache == nil || e.buildDuckSQL != nil || e.getDuckDBTemplate() != sqlgen.AdvancedQueryTemplateDuckDB {
+		return "", nil, false
+	}
+
+	shapeHash, err := queryplan.HashFederatedQueryShape(q)
+	if err != nil {
+		return "", nil, false
+	}
+	fingerprint := "no-fingerprint"
+	if e.metadataCache != nil {
+		if fp, ok := e.metadataCache.SchemaFingerprint(q.SchemaID); ok {
+			fingerprint = fp
+		}
+	}
+	scopeParts := []string{
+		"scope-v1",
+		tables.EAVData, tables.EntityMain, tables.ChangeLog,
+		e.pgConnString,
+		strconv.Itoa(limit), strconv.Itoa(offset),
+		strconv.FormatBool(len(dirtyIDs) > 0),
+	}
+	scopeParts = append(scopeParts, duckDBParquetPathsForQuery(q)...)
+	for _, o := range attributeOrders {
+		scopeParts = append(scopeParts, strconv.Itoa(int(o.AttrID)), o.AttrName, o.ColumnName,
+			string(o.StorageLocation), string(o.SortOrder))
+	}
+	key := queryplan.Key{
+		Kind:          "duckdb_federated",
+		SchemaVersion: fingerprint,
+		SchemaID:      q.SchemaID,
+		ShapeHash:     shapeHash,
+		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
+	}
+
+	entryAny, hit, err := e.planCache.GetOrBuild(key, func() (any, error) {
+		compiled, err := sqlgen.CompileDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, sqlParams, q, dc, len(dirtyIDs) > 0)
+		if err != nil || compiled == nil {
+			return nil, err
+		}
+		dualPlan := &sqlgen.DualClausePlan{
+			PgClause:     dc.PgClause,
+			PgMainClause: dc.PgMainClause,
+			DuckClause:   dc.DuckClause,
+		}
+		return &duckCompiledEntry{compiled: compiled, dualPlan: dualPlan}, nil
+	})
+	if err != nil || entryAny == nil {
+		return "", nil, false
+	}
+	entry := entryAny.(*duckCompiledEntry)
+	planCtx.recordPlanCache(hit)
+
+	bound := *dc
+	if hit {
+		// The request's own dual clauses were already built this call; args
+		// come from them, clauses from the cached plan (identical by key).
+		bound.PgMainClause = entry.dualPlan.PgMainClause
+		bound.DuckClause = entry.dualPlan.DuckClause
+	}
+	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs)
+	return sqlStr, args, true
 }
 
 func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) []string {

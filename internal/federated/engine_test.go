@@ -7,6 +7,8 @@ import (
 	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
+	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -57,15 +59,17 @@ func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTabl
 }
 
 type fakeDuckDBExecutor struct {
-	calls   int
-	lastSQL string
-	err     error
-	rows    duckDBRowsIterator
+	calls    int
+	lastSQL  string
+	lastArgs []any
+	err      error
+	rows     duckDBRowsIterator
 }
 
 func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
 	f.calls++
 	f.lastSQL = sql
+	f.lastArgs = args
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -260,4 +264,70 @@ func TestSchemaProjectionCache(t *testing.T) {
 	hitFlag := engine.injectSchemaProjections(params, 7, cache)
 	planCtx.recordProjectionCache(hitFlag)
 	require.Contains(t, opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
+}
+
+// TestEngineCompiledPlanCache pins #142 phase 5 end to end: two same-shape
+// requests through a shared plan cache render once, the second is a hit with
+// fresh operand args, and the execution plan records hit/miss.
+func TestEngineCompiledPlanCache(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	shared := queryplan.NewCache(64)
+	cache := forma.SchemaAttributeCache{
+		"age": {AttributeID: 6, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
+	}
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("test", 7, cache))
+
+	newEngine := func(duck *fakeDuckDBExecutor) *DBFederatedQueryEngine {
+		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+			forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+			mc, "host=x", WithPlanCache(shared))
+	}
+	query := func(val string) (*model.FederatedAttributeQuery, *model.FederatedQueryOptions) {
+		q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
+			SchemaID:  7,
+			Condition: &forma.KvCondition{Attr: "age", Value: "gt:" + val},
+			Limit:     2000,
+		}}
+		q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
+		opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
+			ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
+		return q, opts
+	}
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+
+	// First request: transient engine A — compile (miss).
+	duckA := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	qA, optsA := query("10")
+	_, _, err := newEngine(duckA).ExecuteDuckDBFederatedQuery(context.Background(), tables, qA, qA.Limit, 0, nil, optsA)
+	require.NoError(t, err)
+	require.Contains(t, optsA.ExecutionPlan.Notes, "plan_cache=miss")
+	require.Equal(t, int64(1), optsA.ExecutionPlan.Timings["plan_cache_miss"])
+
+	// Second request: a DIFFERENT transient engine sharing the cache (the
+	// benchmark lifecycle) — hit, same SQL, fresh operand value.
+	duckB := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	qB, optsB := query("77")
+	_, _, err = newEngine(duckB).ExecuteDuckDBFederatedQuery(context.Background(), tables, qB, qB.Limit, 0, nil, optsB)
+	require.NoError(t, err)
+	require.Contains(t, optsB.ExecutionPlan.Notes, "plan_cache=hit")
+	require.Equal(t, int64(1), optsB.ExecutionPlan.Timings["plan_cache_hit"])
+	require.Equal(t, duckA.lastSQL, duckB.lastSQL, "same shape must reuse the rendered skeleton")
+	require.Contains(t, duckB.lastArgs, int64(77), "hit must bind the second request's operand")
+	require.NotContains(t, duckB.lastArgs, int64(10))
+
+	hits, misses := shared.Stats()
+	require.Equal(t, int64(1), hits)
+	require.Equal(t, int64(1), misses)
+
+	// Different shape misses.
+	duckC := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	qC, optsC := query("5")
+	qC.Condition = &forma.KvCondition{Attr: "age", Value: "lt:5"}
+	_, _, err = newEngine(duckC).ExecuteDuckDBFederatedQuery(context.Background(), tables, qC, qC.Limit, 0, nil, optsC)
+	require.NoError(t, err)
+	require.Contains(t, optsC.ExecutionPlan.Notes, "plan_cache=miss")
 }
