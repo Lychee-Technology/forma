@@ -261,7 +261,7 @@ func TestBuildExpectedWorkloadResultsFromRecordsUsesLoadedTierState(t *testing.T
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 1, ChangedAt: 100, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:00:00Z"}},
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, Attributes: map[string]any{"symbol": "SYM99999", "tradeTime": "2026-01-01T00:01:00Z"}},
 	}
-	results := buildExpectedWorkloadResultsFromRecords([]GeneratedRecord{original[0]}, workloads, 20, DefaultGeneratorConfig())
+	results := buildExpectedWorkloadResultsFromRecords([]GeneratedRecord{original[0]}, workloads, 20, DefaultGeneratorConfig(), nil)
 	expected := results["hot-selective-page"]
 	if expected.TotalRecords != 1 {
 		t.Fatalf("expected loaded tier state to include visible row, got %+v", expected)
@@ -282,7 +282,7 @@ func TestBuildExpectedWorkloadResultsFromRecordsExcludesDeletedHotSelectiveRows(
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 1, ChangedAt: 100, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:00:00Z"}},
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, DeletedAt: 205, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:01:00Z"}},
 	}
-	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, DefaultGeneratorConfig())
+	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, DefaultGeneratorConfig(), nil)
 	if results["hot-selective-page"].TotalRecords != 0 {
 		t.Fatalf("expected deleted latest trade row to be excluded, got %+v", results["hot-selective-page"])
 	}
@@ -293,11 +293,11 @@ func TestExpectedWorkloadResultsCanUseLoadedHotStateSnapshot(t *testing.T) {
 	workloads := []WorkloadDefinition{{Name: "hot-selective-page", TargetSchema: "trade", FilterAttribute: "symbol", FilterValue: "SYM00001", PageSize: 20, PageNumber: 1}}
 	syntheticTiered := []GeneratedRecord{{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 2, ChangedAt: 200, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "2026-01-01T00:01:00Z"}}}
 	loadedHotSnapshot := []GeneratedRecord{{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: rowID, Version: 0, ChangedAt: 200, DeletedAt: 205, Attributes: map[string]any{"symbol": "SYM00001", "tradeTime": "1735689660000"}}}
-	fromSynthetic := buildExpectedWorkloadResultsFromRecords(syntheticTiered, workloads, 20, DefaultGeneratorConfig())
+	fromSynthetic := buildExpectedWorkloadResultsFromRecords(syntheticTiered, workloads, 20, DefaultGeneratorConfig(), nil)
 	if fromSynthetic["hot-selective-page"].TotalRecords != 1 {
 		t.Fatalf("expected synthetic tiered record to match filter, got %+v", fromSynthetic["hot-selective-page"])
 	}
-	fromLoaded := buildExpectedWorkloadResultsFromRecords(loadedHotSnapshot, workloads, 20, DefaultGeneratorConfig())
+	fromLoaded := buildExpectedWorkloadResultsFromRecords(loadedHotSnapshot, workloads, 20, DefaultGeneratorConfig(), nil)
 	if fromLoaded["hot-selective-page"].TotalRecords != 0 {
 		t.Fatalf("expected loaded hot snapshot to exclude deleted row, got %+v", fromLoaded["hot-selective-page"])
 	}
@@ -315,7 +315,7 @@ func TestBuildExpectedWorkloadResultsFromRecordsHonorsMixedTierWindow(t *testing
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: before, Version: 1, ChangedAt: semantics.TradeTimeStart - 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeStart-1000, 10)}},
 		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: after, Version: 1, ChangedAt: semantics.TradeTimeEnd + 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeEnd+1000, 10)}},
 	}
-	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, genCfg)
+	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, genCfg, nil)
 	expected := results["mixed-tier-window"]
 	if expected.TotalRecords != 1 {
 		t.Fatalf("expected one in-window record, got %+v", expected)
@@ -534,5 +534,42 @@ func TestExecuteWorkloadWithRetry_ReturnsLastErrorAfterRetries(t *testing.T) {
 	}
 	if attempts != maxInfraRetries+1 {
 		t.Fatalf("expected %d attempts, got %d", maxInfraRetries+1, attempts)
+	}
+}
+
+func TestBuildExpectedWorkloadResultsRestrictsPostgresOnlyWorkloadsToHotKeys(t *testing.T) {
+	// Issue #147: prefer-hot tier-mix workloads execute against the Postgres
+	// hot buffer only, so their loaded-state oracle must exclude records that
+	// live in parquet tiers even when those records fall inside the window.
+	genCfg := GeneratorConfig{Scale: ScaleSmall, Distribution: DistributionUniform, TimeWindowDays: 30, BaseTime: defaultBaseTime}.WithDefaults()
+	semantics := semanticsForWorkload(WorkloadDefinition{Name: "hot-only-window", TargetSchema: "trade"}, genCfg)
+	hotRow := deterministicRowID(8, "trade", 1)
+	coldRow := deterministicRowID(8, "trade", 2)
+	workloads := []WorkloadDefinition{{
+		Name:         "hot-only-window",
+		Category:     WorkloadCategoryTierMix,
+		TargetSchema: "trade",
+		PageSize:     50,
+		PageNumber:   1,
+		PreferHot:    true,
+	}}
+	records := []GeneratedRecord{
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: hotRow, Version: 1, ChangedAt: semantics.TradeTimeStart + 1000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeStart+1000, 10)}},
+		{SchemaID: SchemaIDTrade, SchemaName: "trade", RowID: coldRow, Version: 1, ChangedAt: semantics.TradeTimeStart + 2000, Attributes: map[string]any{"tradeTime": strconv.FormatInt(semantics.TradeTimeStart+2000, 10)}},
+	}
+	hotKeys := map[string]struct{}{schemaRowKey(SchemaIDTrade, hotRow): {}}
+
+	results := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, genCfg, hotKeys)
+	expected := results["hot-only-window"]
+	if expected.TotalRecords != 1 {
+		t.Fatalf("expected only the hot-tier record, got %+v", expected)
+	}
+	if len(expected.RowIDs) != 1 || expected.RowIDs[0] != hotRow.String() {
+		t.Fatalf("unexpected hot-only row ids: %+v", expected.RowIDs)
+	}
+
+	unrestricted := buildExpectedWorkloadResultsFromRecords(records, workloads, 20, genCfg, nil)
+	if unrestricted["hot-only-window"].TotalRecords != 2 {
+		t.Fatalf("expected nil hot keys to keep all records, got %+v", unrestricted["hot-only-window"])
 	}
 }

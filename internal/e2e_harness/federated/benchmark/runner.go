@@ -215,11 +215,11 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations*r.config.Concurrency)
 	pageRuns := make(map[string]WorkloadRunResult)
 	previousRuns := make(map[string]WorkloadRunResult)
-	loadedRecords, err := buildLoadedStateSnapshot(ctx, h, tiered)
+	loadedRecords, hotKeys, err := buildLoadedStateSnapshot(ctx, h, tiered)
 	if err != nil {
 		return nil, fmt.Errorf("build loaded state snapshot: %w", err)
 	}
-	expectedByWorkload, oracleModes, oracleNotes, err := r.buildExpectedResults(ctx, h, loadedRecords)
+	expectedByWorkload, oracleModes, oracleNotes, err := r.buildExpectedResults(ctx, h, loadedRecords, hotKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -343,8 +343,8 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	return result, nil
 }
 
-func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord) (map[string]expectedWorkloadResult, map[string]string, string, error) {
-	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
+func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord, hotKeys map[string]struct{}) (map[string]expectedWorkloadResult, map[string]string, string, error) {
+	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig, hotKeys)
 	oracleModes := make(map[string]string, len(r.workloads))
 	loadedStateCount := 0
 	truthPassCount := 0
@@ -432,7 +432,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		h.SchemaID = previousSchemaID
 	}()
 	opts := queryOptionsForWorkloadWithConfig(workload, r.config.PageSize, r.genConfig)
-	opts.PreferHot = workload.PreferHot && workload.Category == WorkloadCategoryTierMix
+	opts.PreferHot = workloadExecutesPostgresOnly(workload)
 	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
 		opts.Filter = &federated.Filter{Conditions: conditions}
 	}
@@ -1095,14 +1095,34 @@ func buildExpectedWorkloadResults(dataset *GeneratedDataset, workloads []Workloa
 	if dataset == nil {
 		return map[string]expectedWorkloadResult{}
 	}
-	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize, dataset.Config)
+	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize, dataset.Config, nil)
 }
 
-func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig) map[string]expectedWorkloadResult {
+// workloadExecutesPostgresOnly mirrors the execution override in executeWorkload:
+// prefer-hot tier-mix workloads run against the Postgres hot buffer only, so
+// their loaded-state oracle must be restricted to hot-tier records.
+func workloadExecutesPostgresOnly(workload WorkloadDefinition) bool {
+	return workload.PreferHot && workload.Category == WorkloadCategoryTierMix
+}
+
+func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig, hotKeys map[string]struct{}) map[string]expectedWorkloadResult {
 	results := make(map[string]expectedWorkloadResult, len(workloads))
 	visible := expectedVisibleRecords(records)
+	var hotVisible []GeneratedRecord
+	if hotKeys != nil {
+		hotVisible = make([]GeneratedRecord, 0, len(hotKeys))
+		for _, record := range visible {
+			if _, ok := hotKeys[schemaRowKey(record.SchemaID, record.RowID)]; ok {
+				hotVisible = append(hotVisible, record)
+			}
+		}
+	}
 	for _, workload := range workloads {
-		matching := filterExpectedRecordsForWorkload(visible, workload, semanticsForWorkload(workload, genCfg))
+		source := visible
+		if hotKeys != nil && workloadExecutesPostgresOnly(workload) {
+			source = hotVisible
+		}
+		matching := filterExpectedRecordsForWorkload(source, workload, semanticsForWorkload(workload, genCfg))
 		sortExpectedRecordsForWorkload(matching, workload)
 		pageSize := workload.PageSize
 		if pageSize <= 0 {
@@ -1115,13 +1135,13 @@ func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workload
 	return results
 }
 
-func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, error) {
+func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, map[string]struct{}, error) {
 	if h == nil || dataset == nil {
-		return nil, fmt.Errorf("harness and dataset are required")
+		return nil, nil, fmt.Errorf("harness and dataset are required")
 	}
 	hotRecords, hotKeys, err := loadHotStateRecords(ctx, h)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	records := make([]GeneratedRecord, 0, len(dataset.Base)+len(dataset.Delta)+len(hotRecords))
 	for _, bucket := range [][]GeneratedRecord{dataset.Base, dataset.Delta} {
@@ -1133,7 +1153,7 @@ func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHar
 		}
 	}
 	records = append(records, hotRecords...)
-	return records, nil
+	return records, hotKeys, nil
 }
 
 func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness) ([]GeneratedRecord, map[string]struct{}, error) {
