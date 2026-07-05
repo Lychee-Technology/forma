@@ -103,7 +103,7 @@ func TestPlanBindReusesPlanAcrossValues(t *testing.T) {
 func TestPlanBindParamSpan(t *testing.T) {
 	cache := dualPlanTestCache()
 	cond := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
-		&forma.KvCondition{Attr: "age", Value: "gt:10"},  // main: 1 slot; eav: 2 slots
+		&forma.KvCondition{Attr: "age", Value: "gt:10"},    // main: 1 slot; eav: 2 slots
 		&forma.KvCondition{Attr: "tag", Value: "equals:x"}, // eav: 2 slots
 	}}
 	plan, err := PlanDualClauses(cond, "eav_table", 7, cache, 3)
