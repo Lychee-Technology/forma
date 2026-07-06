@@ -2,10 +2,7 @@ package sqlgen
 
 import (
 	"fmt"
-	"strconv"
 	"time"
-
-	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
@@ -49,118 +46,47 @@ func NewSQLGenerator() *SQLGenerator {
 	return &SQLGenerator{}
 }
 
-// pgEavLeafEmitter renders KvCondition leaves as EAV EXISTS subqueries with $N placeholders.
-type pgEavLeafEmitter struct {
+// pgEavTypedEmitter renders typed predicate leaves as EAV EXISTS subqueries
+// with $N placeholders. All parsing and value conversion happened in the
+// normalizer; the emitter only assigns placeholders and formats the shell.
+type pgEavTypedEmitter struct {
 	eavTable   string
-	schemaID   int16
-	cache      forma.SchemaAttributeCache
 	paramIndex *int
 }
 
-// pgEavLeafValue is the value core shared by the string emitter and the plan
-// binder (#142): parsing, type conversion, and operator validation live here
-// exactly once. It returns the two bound args (attr_id, value) plus the
-// clause ingredients the string shell needs.
-func pgEavLeafValue(kv *forma.KvCondition, cache forma.SchemaAttributeCache) (int16, any, string, string, error) {
-	meta, ok := cache[kv.Attr]
-	if !ok {
-		return 0, nil, "", "", fmt.Errorf("attribute not found in cache: %s", kv.Attr)
-	}
-
-	operator, err := parseOperatorValueStrict(kv.Value)
-	if err != nil {
-		return 0, nil, "", "", err
-	}
-	opStr := operator.op
-	valStr := operator.value
-
-	var valueColumn string
-	var parsedValue any
-
-	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
-		valueColumn = "value_text"
-		parsedValue = valStr
-	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		valueColumn = "value_numeric"
-		parsed := numutil.TryParseNumber(valStr)
-		switch v := parsed.(type) {
-		case int64:
-			parsedValue = float64(v)
-		case float64:
-			parsedValue = v
-		default:
-			return 0, nil, "", "", fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)
-		}
-	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		valueColumn = "value_numeric"
-		var err error
-		parsedValue, err = parseDateValue(valStr, meta)
-		if err != nil {
-			return 0, nil, "", "", fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)
-		}
-	case forma.ValueTypeBool:
-		valueColumn = "value_numeric"
-		parsedInt, err := strconv.Atoi(valStr)
-		if err != nil {
-			return 0, nil, "", "", fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)
-		}
-		if parsedInt > 0 {
-			parsedValue = float64(1)
-		} else {
-			parsedValue = float64(0)
-		}
-	default:
-		return 0, nil, "", "", fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)
-	}
-
-	sqlOperator, err := toSQLOperator(opStr, valStr)
-	if err != nil {
-		return 0, nil, "", "", err
-	}
-	sqlOp := sqlOperator.sqlOp
-	if sqlOp == "LIKE" {
-		parsedValue = sqlOperator.value
-	}
-
-	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return 0, nil, "", "", fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)
-	}
-	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return 0, nil, "", "", fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)
-	}
-
-	return meta.AttributeID, parsedValue, valueColumn, sqlOp, nil
-}
-
-func (e *pgEavLeafEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error) {
-	_ = e.schemaID
-
-	attrID, parsedValue, valueColumn, sqlOp, err := pgEavLeafValue(kv, e.cache)
-	if err != nil {
-		return "", nil, err
+func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error) {
+	p := leaf.PgEav
+	if p.Err != nil {
+		return "", nil, p.Err
 	}
 
 	var args []any
 
 	*e.paramIndex++
 	attrIdPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
-	args = append(args, attrID)
+	args = append(args, p.AttrID)
 
 	*e.paramIndex++
 	valuePlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
-	args = append(args, parsedValue)
+	args = append(args, p.Value)
 
 	sql := fmt.Sprintf(
 		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND x.%s %s %s)",
 		e.eavTable,
 		attrIdPlaceholder,
-		valueColumn,
-		sqlOp,
+		p.ValueColumn,
+		p.SQLOp,
 		valuePlaceholder,
 	)
 
 	return sql, args, nil
+}
+
+// pgEavClausesFromTree walks an already-normalized predicate tree for the
+// EAV target, letting ToDualClauses share one normalization pass.
+func pgEavClausesFromTree(tree PredicateNode, eavTable string, paramIndex *int) (string, []any, error) {
+	emitter := &pgEavTypedEmitter{eavTable: eavTable, paramIndex: paramIndex}
+	return walkPredicate(tree, pgEavStyle, nil, emitter)
 }
 
 // ToSQLClauses builds the SQL clause and arguments for a condition tree.
@@ -174,13 +100,7 @@ func (g *SQLGenerator) ToSQLClauses(
 	if condition == nil {
 		return "", nil, nil
 	}
-	emitter := &pgEavLeafEmitter{
-		eavTable:   eavTable,
-		schemaID:   schemaID,
-		cache:      cache,
-		paramIndex: paramIndex,
-	}
-	return walkCondition(condition, pgEavStyle, nil, emitter)
+	return pgEavClausesFromTree(normalizePredicates(condition, cache, targetPgEav), eavTable, paramIndex)
 }
 
 // ToSqlClauses is kept for backward compatibility.

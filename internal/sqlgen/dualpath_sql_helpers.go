@@ -10,50 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
-
-// operatorValuePair holds a parsed operator and value from a kv condition value string.
-type operatorValuePair struct {
-	op    string
-	value string
-}
-
-// parseOperatorValue extracts operator and value from "op:value" format.
-// If no colon is found, defaults to "equals" operator with full string as value.
-func parseOperatorValue(kvValue string) operatorValuePair {
-	parsed := conditionexpr.ParseOperatorValueLenient(kvValue)
-	return operatorValuePair{op: parsed.Operator, value: parsed.Value}
-}
-
-// parseOperatorValueStrict validates "op:value" format when a separator is present.
-// It returns an error when either side is empty to avoid ambiguous predicates.
-func parseOperatorValueStrict(kvValue string) (operatorValuePair, error) {
-	parsed, err := conditionexpr.ParseOperatorValueStrict(kvValue)
-	if err != nil {
-		return operatorValuePair{}, err
-	}
-	return operatorValuePair{op: parsed.Operator, value: parsed.Value}, nil
-}
-
-// sqlOperatorResult holds the SQL operator and possibly modified value for LIKE patterns.
-type sqlOperatorResult struct {
-	sqlOp string
-	value string
-}
-
-// toSQLOperator converts a string operator to SQL operator syntax.
-// For LIKE operators, it also modifies the value to include wildcards.
-func toSQLOperator(op, value string) (sqlOperatorResult, error) {
-	normalized, err := conditionexpr.ToSQLOperator(op, value)
-	if err != nil {
-		return sqlOperatorResult{}, err
-	}
-	return sqlOperatorResult{
-		sqlOp: normalized.SQLOperator,
-		value: normalized.Value,
-	}, nil
-}
 
 // ConvertPgMainValue converts a string value to the appropriate Go type based
 // on attribute metadata. It is the canonical value converter for Postgres
