@@ -294,23 +294,14 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 		eavOnlySelects[attr] = true
 	}
 
-	for _, attr := range sortedAttrs {
-		col, isColumn := sp.AttrToMainColumn[attr]
-		if isColumn {
-			// Map attribute to its entity_main column with appropriate CAST
-			parts = append(parts, fmt.Sprintf("%s AS %s",
-				duckDBAttrCast(attr, sp.UnifiedColumnTypes[attr]), col))
-		}
-	}
-
-	// For entity_main columns not mapped to any attribute, emit NULL
+	// Emit EAV columns in descriptor order: streamDuckDBRows scans rows
+	// positionally against model.EntityMainColumnDescriptors, so any other
+	// order lands attribute values in the wrong record fields (#147).
 	allMainCols := model.EntityMainColumnDescriptors[len(model.SystemColumnDescriptors):]
-	mappedCols := make(map[string]bool)
-	for _, col := range sp.AttrToMainColumn {
-		mappedCols[col] = true
-	}
 	for _, desc := range allMainCols {
-		if mappedCols[desc.Name] {
+		if attr, ok := mainColToAttr[desc.Name]; ok {
+			parts = append(parts, fmt.Sprintf("%s AS %s",
+				duckDBAttrCast(attr, sp.UnifiedColumnTypes[attr]), desc.Name))
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s",
@@ -498,99 +489,64 @@ func BuildBenchmarkOuterSelect(schemaID int16) string {
 		"deleted_ts AS ltbase_deleted_at",
 	}
 
-	// Map known benchmark attributes to entity_main columns
+	// Map known benchmark attributes to entity_main column cast expressions.
+	var boundCols map[string]string
+	var eavJSON string
 	switch schemaID {
 	case 102: // trade
-		// text_01 = symbol
-		parts = append(parts, "CAST(symbol AS VARCHAR) AS text_01")
-		// text_02 = region
-		parts = append(parts, "CAST(region AS VARCHAR) AS text_02")
-		// smallint_01 = tradeType
-		parts = append(parts, "CAST(tradeType AS SMALLINT) AS smallint_01")
-		// bigint_01 = quantity
-		parts = append(parts, "CAST(quantity AS BIGINT) AS bigint_01")
-		// bigint_02 = tradeTime
-		parts = append(parts, "CAST(tradeTime AS BIGINT) AS bigint_02")
-		// double_01 = price
-		parts = append(parts, "CAST(price AS DOUBLE) AS double_01")
-		// uuid_01 = customerId
-		parts = append(parts, "CAST(customerId AS UUID) AS uuid_01")
-		// NULL for remaining entity_main columns
-		remaining := restMainColumnNames([]string{
-			"text_01", "text_02", "smallint_01", "bigint_01", "bigint_02",
-			"double_01", "uuid_01",
-		})
-		for _, col := range remaining {
-			desc := model.GetMainColumnDescriptor(col)
-			if desc == nil {
-				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
+		boundCols = map[string]string{
+			"text_01":     "CAST(symbol AS VARCHAR)",
+			"text_02":     "CAST(region AS VARCHAR)",
+			"smallint_01": "CAST(tradeType AS SMALLINT)",
+			"bigint_01":   "CAST(quantity AS BIGINT)",
+			"bigint_02":   "CAST(tradeTime AS BIGINT)",
+			"double_01":   "CAST(price AS DOUBLE)",
+			"uuid_01":     "CAST(customerId AS UUID)",
 		}
-		// attributes_json from EAV-only attributes
-		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
-			benchmarkEAVJSONArray(schemaID, 102, "",
-				eavJSONAttr{id: 8, name: "exchange", type_: "text"},
-				eavJSONAttr{id: 9, name: "commission", type_: "numeric"},
-				eavJSONAttr{id: 10, name: "isCash", type_: "numeric"},
-				eavJSONAttr{id: 11, name: "brokerId", type_: "text"},
-				eavJSONAttr{id: 12, name: "orderChannel", type_: "text"},
-			)))
+		eavJSON = benchmarkEAVJSONArray(schemaID, 102, "",
+			eavJSONAttr{id: 8, name: "exchange", type_: "text"},
+			eavJSONAttr{id: 9, name: "commission", type_: "numeric"},
+			eavJSONAttr{id: 10, name: "isCash", type_: "numeric"},
+			eavJSONAttr{id: 11, name: "brokerId", type_: "text"},
+			eavJSONAttr{id: 12, name: "orderChannel", type_: "text"},
+		)
 	case 100: // customer
-		parts = append(parts, "CAST(taxId AS VARCHAR) AS text_01")
-		parts = append(parts, "CAST(region AS VARCHAR) AS text_02")
-		parts = append(parts, "CAST(status AS SMALLINT) AS smallint_01")
-		remaining := restMainColumnNames([]string{"text_01", "text_02", "smallint_01"})
-		for _, col := range remaining {
-			desc := model.GetMainColumnDescriptor(col)
-			if desc == nil {
-				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
+		boundCols = map[string]string{
+			"text_01":     "CAST(taxId AS VARCHAR)",
+			"text_02":     "CAST(region AS VARCHAR)",
+			"smallint_01": "CAST(status AS SMALLINT)",
 		}
-		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
-			benchmarkEAVJSONArray(schemaID, 100, "",
-				eavJSONAttr{id: 5, name: "email", type_: "text"},
-				eavJSONAttr{id: 6, name: "creditRating", type_: "numeric"},
-			)))
+		eavJSON = benchmarkEAVJSONArray(schemaID, 100, "",
+			eavJSONAttr{id: 5, name: "email", type_: "text"},
+			eavJSONAttr{id: 6, name: "creditRating", type_: "numeric"},
+		)
 	case 101: // security
-		parts = append(parts, "CAST(symbol AS VARCHAR) AS text_01")
-		parts = append(parts, "CAST(sector AS SMALLINT) AS smallint_01")
-		remaining := restMainColumnNames([]string{"text_01", "smallint_01"})
-		for _, col := range remaining {
-			desc := model.GetMainColumnDescriptor(col)
-			if desc == nil {
-				parts = append(parts, fmt.Sprintf("NULL::VARCHAR AS %s", col))
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), col))
+		boundCols = map[string]string{
+			"text_01":     "CAST(symbol AS VARCHAR)",
+			"smallint_01": "CAST(sector AS SMALLINT)",
 		}
-		parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json",
-			benchmarkEAVJSONArray(schemaID, 101, "",
-				eavJSONAttr{id: 3, name: "companyName", type_: "text"},
-				eavJSONAttr{id: 4, name: "dividend", type_: "numeric"},
-				eavJSONAttr{id: 5, name: "marketCap", type_: "numeric"},
-			)))
+		eavJSON = benchmarkEAVJSONArray(schemaID, 101, "",
+			eavJSONAttr{id: 3, name: "companyName", type_: "text"},
+			eavJSONAttr{id: 4, name: "dividend", type_: "numeric"},
+			eavJSONAttr{id: 5, name: "marketCap", type_: "numeric"},
+		)
 	}
+
+	// Emit EAV columns in descriptor order: streamDuckDBRows scans rows
+	// positionally against model.EntityMainColumnDescriptors (#147).
+	for _, desc := range model.EntityMainColumnDescriptors[len(model.SystemColumnDescriptors):] {
+		if expr, ok := boundCols[desc.Name]; ok {
+			parts = append(parts, fmt.Sprintf("%s AS %s", expr, desc.Name))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", duckDBColumnType(desc.Kind), desc.Name))
+	}
+	if eavJSON == "" {
+		eavJSON = "'[]'"
+	}
+	parts = append(parts, fmt.Sprintf("%s::TEXT AS attributes_json", eavJSON))
 
 	return strings.Join(parts, ",\n\t\t\t")
-}
-
-// restMainColumnNames returns all entity_main EAV column names except those listed in exclude.
-func restMainColumnNames(exclude []string) []string {
-	excludeSet := make(map[string]bool)
-	for _, col := range exclude {
-		excludeSet[col] = true
-	}
-	var result []string
-	for _, desc := range model.EntityMainColumnDescriptors[len(model.SystemColumnDescriptors):] {
-		if !excludeSet[desc.Name] {
-			result = append(result, desc.Name)
-		}
-	}
-	return result
 }
 
 // benchmarkAttr describes a benchmark attribute used to build matching S3 and PG projections.
@@ -642,7 +598,7 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 			{name: "quantity", colName: "bigint_01", eavJSON: false, attrID: 3, s3Expr: "quantity"},
 			{name: "region", colName: "text_02", eavJSON: false, attrID: 7, s3Expr: "region"},
 			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
-			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "epoch_ms(try_cast(tradeTime AS TIMESTAMP)) as tradeTime"},
+			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "COALESCE(try_cast(tradeTime AS BIGINT), epoch_ms(try_cast(tradeTime AS TIMESTAMP))) as tradeTime"},
 			{name: "tradeType", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "tradeType"},
 		}
 	}

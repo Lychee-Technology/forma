@@ -300,6 +300,11 @@ func nullableUnixMillis(value any) sql.NullInt64 {
 	}
 	switch v := value.(type) {
 	case string:
+		// Benchmark generators emit datetime attributes as unix-millis digit
+		// strings (issue #147); accept both that and RFC3339 text.
+		if millis, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return sql.NullInt64{Int64: millis, Valid: true}
+		}
 		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
 			return sql.NullInt64{Int64: parsed.UnixMilli(), Valid: true}
 		}

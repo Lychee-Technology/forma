@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"testing"
 	"time"
 
@@ -730,4 +731,23 @@ func TestTransformer_ToAttributes_NullUnknownArrayItem_ReturnsError(t *testing.T
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown_list")
 	assert.True(t, errors.Is(err, forma.ErrInvalidInput), "expected ErrInvalidInput, got: %v", err)
+}
+
+func TestPopulateTypedValueDateTimeStoresUnixMillisNumeric(t *testing.T) {
+	// Issue #147: datetime attributes (e.g. benchmark tradeTime) must round-trip
+	// through populateTypedValue exactly like date attributes do.
+	meta := forma.AttributeMetadata{
+		AttributeID: 5,
+		ValueType:   forma.ValueTypeDateTime,
+	}
+	when := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+
+	for _, value := range []any{when, strconv.FormatInt(when.UnixMilli(), 10), when.Format(time.RFC3339)} {
+		attr := model.EAVRecord{}
+		set, err := populateTypedValue(&attr, "tradeTime", value, meta)
+		require.NoError(t, err, "value %v", value)
+		require.True(t, set)
+		require.NotNil(t, attr.ValueNumeric)
+		assert.Equal(t, float64(when.UnixMilli()), *attr.ValueNumeric, "value %v", value)
+	}
 }

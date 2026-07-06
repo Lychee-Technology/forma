@@ -122,3 +122,31 @@ func TestDeterministicAttributeIDStable(t *testing.T) {
 		t.Fatalf("expected different attributes to hash differently")
 	}
 }
+
+func TestNullableUnixMillisParsesUnixMillisStrings(t *testing.T) {
+	// The benchmark trade generator emits tradeTime as a unix-millis digit
+	// string (issue #147); seeding must land it in entity_main.bigint_02.
+	got := nullableUnixMillis("1748736000000")
+	if !got.Valid || got.Int64 != 1748736000000 {
+		t.Fatalf("expected unix-millis string to parse, got %+v", got)
+	}
+
+	got = nullableUnixMillis("2026-05-31T12:00:00Z")
+	if !got.Valid {
+		t.Fatalf("expected RFC3339 string to keep parsing, got %+v", got)
+	}
+
+	got = nullableUnixMillis("not-a-time")
+	if got.Valid {
+		t.Fatalf("expected invalid string to stay NULL, got %+v", got)
+	}
+}
+
+func TestBenchmarkMainColumnValuesPopulatesTradeTime(t *testing.T) {
+	_, _, _, _, bigint02, _, _ := benchmarkMainColumnValues(TestRecord{
+		Attributes: map[string]any{"tradeTime": "1748736000000"},
+	})
+	if !bigint02.Valid || bigint02.Int64 != 1748736000000 {
+		t.Fatalf("expected trade tradeTime to populate bigint_02, got %+v", bigint02)
+	}
+}

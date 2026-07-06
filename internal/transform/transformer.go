@@ -354,7 +354,7 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 			return handleConversionError(err)
 		}
 		attr.ValueNumeric = &numVal
-	case forma.ValueTypeDate:
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTime(value)
 		if err != nil {
 			return handleConversionError(err)

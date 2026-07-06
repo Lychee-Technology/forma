@@ -128,9 +128,9 @@ func populateDuckDBRow(dest []any, schemaID int16, rowID uuid.UUID, createdAt in
 
 	for i, scanDest := range dest[:len(model.EntityMainColumnDescriptors)] {
 		switch typed := scanDest.(type) {
-		case *sql.NullString:
+		case *nullDuckDBUUID:
 			if model.EntityMainColumnDescriptors[i].Name == "ltbase_row_id" {
-				typed.String = rowID.String()
+				typed.UUID = rowID
 				typed.Valid = true
 			}
 		case *sql.NullInt64:

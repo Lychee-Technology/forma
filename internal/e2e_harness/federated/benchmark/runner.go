@@ -215,11 +215,11 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	executions := make([]WorkloadRunResult, 0, len(r.workloads)*r.config.Iterations*r.config.Concurrency)
 	pageRuns := make(map[string]WorkloadRunResult)
 	previousRuns := make(map[string]WorkloadRunResult)
-	loadedRecords, err := buildLoadedStateSnapshot(ctx, h, tiered)
+	loadedRecords, hotKeys, err := buildLoadedStateSnapshot(ctx, h, tiered)
 	if err != nil {
 		return nil, fmt.Errorf("build loaded state snapshot: %w", err)
 	}
-	expectedByWorkload, oracleModes, oracleNotes, err := r.buildExpectedResults(ctx, h, loadedRecords)
+	expectedByWorkload, oracleModes, oracleNotes, err := r.buildExpectedResults(ctx, h, loadedRecords, hotKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -343,8 +343,8 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	return result, nil
 }
 
-func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord) (map[string]expectedWorkloadResult, map[string]string, string, error) {
-	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig)
+func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord, hotKeys map[string]struct{}) (map[string]expectedWorkloadResult, map[string]string, string, error) {
+	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig, hotKeys)
 	oracleModes := make(map[string]string, len(r.workloads))
 	loadedStateCount := 0
 	truthPassCount := 0
@@ -432,7 +432,7 @@ func (r *Runner) executeWorkload(ctx context.Context, h *federated.FederatedTest
 		h.SchemaID = previousSchemaID
 	}()
 	opts := queryOptionsForWorkloadWithConfig(workload, r.config.PageSize, r.genConfig)
-	opts.PreferHot = workload.PreferHot && workload.Category == WorkloadCategoryTierMix
+	opts.PreferHot = workloadExecutesPostgresOnly(workload)
 	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
 		opts.Filter = &federated.Filter{Conditions: conditions}
 	}
@@ -1095,14 +1095,34 @@ func buildExpectedWorkloadResults(dataset *GeneratedDataset, workloads []Workloa
 	if dataset == nil {
 		return map[string]expectedWorkloadResult{}
 	}
-	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize, dataset.Config)
+	return buildExpectedWorkloadResultsFromRecords(dataset.Records, workloads, defaultPageSize, dataset.Config, nil)
 }
 
-func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig) map[string]expectedWorkloadResult {
+// workloadExecutesPostgresOnly mirrors the execution override in executeWorkload:
+// prefer-hot tier-mix workloads run against the Postgres hot buffer only, so
+// their loaded-state oracle must be restricted to hot-tier records.
+func workloadExecutesPostgresOnly(workload WorkloadDefinition) bool {
+	return workload.PreferHot && workload.Category == WorkloadCategoryTierMix
+}
+
+func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workloads []WorkloadDefinition, defaultPageSize int, genCfg GeneratorConfig, hotKeys map[string]struct{}) map[string]expectedWorkloadResult {
 	results := make(map[string]expectedWorkloadResult, len(workloads))
 	visible := expectedVisibleRecords(records)
+	var hotVisible []GeneratedRecord
+	if hotKeys != nil {
+		hotVisible = make([]GeneratedRecord, 0, len(hotKeys))
+		for _, record := range visible {
+			if _, ok := hotKeys[schemaRowKey(record.SchemaID, record.RowID)]; ok {
+				hotVisible = append(hotVisible, record)
+			}
+		}
+	}
 	for _, workload := range workloads {
-		matching := filterExpectedRecordsForWorkload(visible, workload, semanticsForWorkload(workload, genCfg))
+		source := visible
+		if hotKeys != nil && workloadExecutesPostgresOnly(workload) {
+			source = hotVisible
+		}
+		matching := filterExpectedRecordsForWorkload(source, workload, semanticsForWorkload(workload, genCfg))
 		sortExpectedRecordsForWorkload(matching, workload)
 		pageSize := workload.PageSize
 		if pageSize <= 0 {
@@ -1115,13 +1135,13 @@ func buildExpectedWorkloadResultsFromRecords(records []GeneratedRecord, workload
 	return results
 }
 
-func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, error) {
+func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHarness, dataset *TieredDataset) ([]GeneratedRecord, map[string]struct{}, error) {
 	if h == nil || dataset == nil {
-		return nil, fmt.Errorf("harness and dataset are required")
+		return nil, nil, fmt.Errorf("harness and dataset are required")
 	}
 	hotRecords, hotKeys, err := loadHotStateRecords(ctx, h)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	records := make([]GeneratedRecord, 0, len(dataset.Base)+len(dataset.Delta)+len(hotRecords))
 	for _, bucket := range [][]GeneratedRecord{dataset.Base, dataset.Delta} {
@@ -1133,7 +1153,7 @@ func buildLoadedStateSnapshot(ctx context.Context, h *federated.FederatedTestHar
 		}
 	}
 	records = append(records, hotRecords...)
-	return records, nil
+	return records, hotKeys, nil
 }
 
 func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness) ([]GeneratedRecord, map[string]struct{}, error) {
@@ -1841,15 +1861,61 @@ func validateSortOrder(records []*model.PersistentRecord, attribute string, desc
 	return AssertionResult{Name: "sorted-by-tradeTime-desc", Passed: true, Message: fmt.Sprintf("comparable_rows=%d", len(values))}
 }
 
+// benchmarkTradeFilterColumns and benchmarkTradeFilterEAVAttrs map trade filter
+// attributes to their storage layout (see schemas/trade_attributes.json):
+// service-path records are rebuilt via transform.ToPersistentRecord, which
+// stores column-bound attributes under entity_main column names and EAV-only
+// attributes as OtherAttributes entries.
+var benchmarkTradeFilterColumns = map[string]string{
+	"symbol": "text_01",
+	"region": "text_02",
+}
+
+var benchmarkTradeFilterEAVAttrs = map[string]int16{
+	"exchange":     8,
+	"orderChannel": 12,
+}
+
 func recordMatchesFilter(record *model.PersistentRecord, attribute, expected string) bool {
 	switch attribute {
-	case "symbol", "exchange", "region", "name":
-		return record.TextItems[attribute] == expected
+	case "symbol", "exchange", "region", "name", "orderChannel":
+		value, ok := benchmarkRecordTextValue(record, attribute)
+		return ok && value == expected
 	case "tradeType":
-		return fmt.Sprintf("%d", record.Int64Items[attribute]) == expected
+		if value, ok := record.Int64Items[attribute]; ok {
+			return fmt.Sprintf("%d", value) == expected
+		}
+		if value, ok := record.Int16Items["smallint_01"]; ok {
+			return fmt.Sprintf("%d", value) == expected
+		}
+		return false
 	default:
-		return true
+		// Fail closed: an unmapped filter attribute means the oracle cannot
+		// verify the row, and silently passing would mask filter regressions.
+		return false
 	}
+}
+
+// benchmarkRecordTextValue reads a benchmark text attribute from either record
+// shape: harness-path records carry attribute names directly, service-path
+// records carry the storage layout.
+func benchmarkRecordTextValue(record *model.PersistentRecord, attribute string) (string, bool) {
+	if value, ok := record.TextItems[attribute]; ok {
+		return value, true
+	}
+	if column, ok := benchmarkTradeFilterColumns[attribute]; ok {
+		if value, ok := record.TextItems[column]; ok {
+			return value, true
+		}
+	}
+	if attrID, ok := benchmarkTradeFilterEAVAttrs[attribute]; ok {
+		for _, eav := range record.OtherAttributes {
+			if eav.AttrID == attrID && eav.ValueText != nil {
+				return *eav.ValueText, true
+			}
+		}
+	}
+	return "", false
 }
 
 func persistentRecordIDs(records []*model.PersistentRecord) []string {
