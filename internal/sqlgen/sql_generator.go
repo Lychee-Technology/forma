@@ -63,7 +63,7 @@ func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, e
 	var args []any
 
 	*e.paramIndex++
-	attrIdPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
+	attrIDPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
 	args = append(args, p.AttrID)
 
 	*e.paramIndex++
@@ -73,7 +73,7 @@ func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, e
 	sql := fmt.Sprintf(
 		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND x.%s %s %s)",
 		e.eavTable,
-		attrIdPlaceholder,
+		attrIDPlaceholder,
 		p.ValueColumn,
 		p.SQLOp,
 		valuePlaceholder,
