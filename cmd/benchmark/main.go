@@ -237,14 +237,12 @@ func runConcurrencyReport(args []string, out, errOut io.Writer) int {
 
 	var summaries []bench.SummaryReport
 	if *inputDir != "" {
-		runs, err := bench.ReadTrendHistory(*inputDir)
+		collected, err := bench.CollectConcurrencySummaries(*inputDir)
 		if err != nil {
 			fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
 			return 1
 		}
-		for _, run := range runs {
-			summaries = append(summaries, run.Summary)
-		}
+		summaries = append(summaries, collected...)
 	}
 	for _, path := range strings.Split(*inputs, ",") {
 		path = strings.TrimSpace(path)

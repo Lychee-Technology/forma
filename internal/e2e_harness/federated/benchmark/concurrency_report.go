@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type ConcurrencyReport struct {
 }
 
 // ConcurrencyLevelSummary is one whole-run row of the concurrency matrix.
+// The *DeltaVsBase fields carry the delta against the lowest concurrency
+// level in the report (zero on that baseline row itself).
 type ConcurrencyLevelSummary struct {
 	Concurrency         int                      `json:"concurrency"`
 	ExecutionCount      int                      `json:"execution_count"`
@@ -41,6 +44,9 @@ type ConcurrencyLevelSummary struct {
 	P50                 time.Duration            `json:"p50"`
 	P95                 time.Duration            `json:"p95"`
 	P99                 time.Duration            `json:"p99"`
+	P50DeltaVsBase      time.Duration            `json:"p50_delta_vs_base,omitempty"`
+	P95DeltaVsBase      time.Duration            `json:"p95_delta_vs_base,omitempty"`
+	P99DeltaVsBase      time.Duration            `json:"p99_delta_vs_base,omitempty"`
 	QPS                 float64                  `json:"qps"`
 	StabilityAssertions map[string]AssertionStat `json:"stability_assertions,omitempty"`
 }
@@ -53,6 +59,8 @@ type WorkloadConcurrencyTrend struct {
 }
 
 // WorkloadConcurrencyLevel is one workload row at one concurrency level.
+// The *DeltaVsBase fields carry the delta against the workload's own row at
+// its lowest concurrency level (zero on that baseline row itself).
 type WorkloadConcurrencyLevel struct {
 	Concurrency         int                      `json:"concurrency"`
 	ExecutionCount      int                      `json:"execution_count"`
@@ -60,6 +68,9 @@ type WorkloadConcurrencyLevel struct {
 	P50                 time.Duration            `json:"p50"`
 	P95                 time.Duration            `json:"p95"`
 	P99                 time.Duration            `json:"p99"`
+	P50DeltaVsBase      time.Duration            `json:"p50_delta_vs_base,omitempty"`
+	P95DeltaVsBase      time.Duration            `json:"p95_delta_vs_base,omitempty"`
+	P99DeltaVsBase      time.Duration            `json:"p99_delta_vs_base,omitempty"`
 	QPS                 float64                  `json:"qps"`
 	StabilityAssertions map[string]AssertionStat `json:"stability_assertions,omitempty"`
 }
@@ -137,7 +148,64 @@ func BuildConcurrencyReport(summaries []SummaryReport) (ConcurrencyReport, error
 		}
 	}
 
+	applyConcurrencyDeltas(&report)
+
 	return report, nil
+}
+
+// applyConcurrencyDeltas fills the *DeltaVsBase fields against the lowest
+// concurrency level present (overall) and each workload's own lowest-level
+// row. The baseline rows keep zero deltas.
+func applyConcurrencyDeltas(report *ConcurrencyReport) {
+	if len(report.Summary) > 0 {
+		base := report.Summary[0]
+		for i := range report.Summary[1:] {
+			row := &report.Summary[i+1]
+			row.P50DeltaVsBase = row.P50 - base.P50
+			row.P95DeltaVsBase = row.P95 - base.P95
+			row.P99DeltaVsBase = row.P99 - base.P99
+		}
+	}
+	for w := range report.Workloads {
+		levels := report.Workloads[w].Levels
+		if len(levels) == 0 {
+			continue
+		}
+		base := levels[0]
+		for i := range levels[1:] {
+			row := &levels[i+1]
+			row.P50DeltaVsBase = row.P50 - base.P50
+			row.P95DeltaVsBase = row.P95 - base.P95
+			row.P99DeltaVsBase = row.P99 - base.P99
+		}
+	}
+}
+
+// CollectConcurrencySummaries walks dir for benchmark-summary.json files for
+// evidence aggregation. Unlike ReadTrendHistory it fails loudly on unreadable
+// or malformed files (a silently dropped file would silently drop a
+// concurrency level from the evidence) and does not require provenance
+// timestamps (provenance-less artifacts count as C=1).
+func CollectConcurrencySummaries(dir string) ([]SummaryReport, error) {
+	var summaries []SummaryReport
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || info.Name() != "benchmark-summary.json" {
+			return nil
+		}
+		summary, readErr := ReadSummaryReport(path)
+		if readErr != nil {
+			return fmt.Errorf("read summary %s: %w", path, readErr)
+		}
+		summaries = append(summaries, summary)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return summaries, nil
 }
 
 func summaryConcurrency(summary SummaryReport) int {
@@ -202,11 +270,15 @@ func FormatConcurrencyMarkdown(report ConcurrencyReport) string {
 	}
 
 	b.WriteString("\n## Overall\n\n")
-	b.WriteString("| Concurrency | P50 | P95 | P99 | QPS | Executions | Passed |\n")
-	b.WriteString("|---|---|---|---|---|---|---|\n")
-	for _, row := range report.Summary {
-		b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %.2f | %d | %t |\n",
-			row.Concurrency, row.P50, row.P95, row.P99, row.QPS, row.ExecutionCount, row.Passed))
+	b.WriteString("| Concurrency | P50 | P95 | P99 | P50Δ | P95Δ | P99Δ | QPS | Executions | Passed |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
+	for i, row := range report.Summary {
+		b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s | %s | %s | %.2f | %d | %t |\n",
+			row.Concurrency, row.P50, row.P95, row.P99,
+			formatDeltaCell(row.P50DeltaVsBase, i == 0),
+			formatDeltaCell(row.P95DeltaVsBase, i == 0),
+			formatDeltaCell(row.P99DeltaVsBase, i == 0),
+			row.QPS, row.ExecutionCount, row.Passed))
 	}
 
 	for _, workload := range report.Workloads {
@@ -214,19 +286,43 @@ func FormatConcurrencyMarkdown(report ConcurrencyReport) string {
 		if workload.TargetSchema != "" {
 			b.WriteString(fmt.Sprintf("target schema: %s\n\n", workload.TargetSchema))
 		}
-		b.WriteString("| Concurrency | P50 | P95 | P99 | QPS | Executions | Passed | Stability |\n")
-		b.WriteString("|---|---|---|---|---|---|---|---|\n")
-		for _, row := range workload.Levels {
-			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %.2f | %d | %t | %s |\n",
-				row.Concurrency, row.P50, row.P95, row.P99, row.QPS, row.ExecutionCount, row.Passed,
+		b.WriteString("| Concurrency | P50 | P95 | P99 | P50Δ | P95Δ | P99Δ | QPS | Executions | Passed | Stability |\n")
+		b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|\n")
+		for i, row := range workload.Levels {
+			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s | %s | %s | %s | %.2f | %d | %t | %s |\n",
+				row.Concurrency, row.P50, row.P95, row.P99,
+				formatDeltaCell(row.P50DeltaVsBase, i == 0),
+				formatDeltaCell(row.P95DeltaVsBase, i == 0),
+				formatDeltaCell(row.P99DeltaVsBase, i == 0),
+				row.QPS, row.ExecutionCount, row.Passed,
 				formatStabilityCell(row.StabilityAssertions)))
 		}
 	}
 
+	writeStabilitySection(&b, report)
+
+	return b.String()
+}
+
+// writeStabilitySection reports the concurrency stability assertion outcome
+// in three distinct states: failures, missing evidence (a C>1 row without
+// assertion stats is NOT a pass), and all-passed.
+func writeStabilitySection(b *strings.Builder, report ConcurrencyReport) {
 	b.WriteString("\n## Concurrency Stability Assertions\n\n")
+
 	unstable := false
+	observed := 0
+	var missing []string
 	for _, workload := range report.Workloads {
 		for _, row := range workload.Levels {
+			if row.Concurrency <= 1 {
+				continue
+			}
+			if len(row.StabilityAssertions) == 0 {
+				missing = append(missing, fmt.Sprintf("%s @ C=%d", workload.Name, row.Concurrency))
+				continue
+			}
+			observed++
 			for _, name := range concurrencyStabilityAssertions {
 				if stat, ok := row.StabilityAssertions[name]; ok && stat.Failed > 0 {
 					b.WriteString(fmt.Sprintf("- FAIL %s @ C=%d: %s %d/%d passed\n",
@@ -236,11 +332,28 @@ func FormatConcurrencyMarkdown(report ConcurrencyReport) string {
 			}
 		}
 	}
-	if !unstable {
-		b.WriteString("All concurrency stability assertions passed at every level (C=1 rows are n/a: the assertions only fire at C>=2).\n")
+
+	for _, m := range missing {
+		b.WriteString(fmt.Sprintf("- MISSING evidence: %s has no concurrency stability assertion stats\n", m))
 	}
 
-	return b.String()
+	switch {
+	case observed == 0 && len(missing) == 0:
+		b.WriteString("n/a: all runs are sequential (C=1); the assertions only fire at C>=2.\n")
+	case !unstable && len(missing) == 0:
+		b.WriteString("All concurrency stability assertions passed at every level (C=1 rows are n/a: the assertions only fire at C>=2).\n")
+	}
+}
+
+// formatDeltaCell renders a signed delta; the baseline row shows "—".
+func formatDeltaCell(d time.Duration, isBase bool) string {
+	if isBase {
+		return "—"
+	}
+	if d > 0 {
+		return "+" + d.String()
+	}
+	return d.String()
 }
 
 func joinLevels(levels []int) string {

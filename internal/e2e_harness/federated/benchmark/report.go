@@ -843,8 +843,13 @@ func ReadTrendHistory(historyDir string) ([]TrendRun, error) {
 		if readErr != nil {
 			return nil
 		}
+		// Trend needs timestamps: summaries without provenance (manual or
+		// legacy artifacts) are skipped, never dereferenced.
+		if summary.Provenance == nil {
+			return nil
+		}
 		startedAt := summary.Provenance.StartedAt
-		if startedAt.IsZero() && summary.Provenance != nil {
+		if startedAt.IsZero() {
 			startedAt = summary.Provenance.CompletedAt
 		}
 		if startedAt.IsZero() {

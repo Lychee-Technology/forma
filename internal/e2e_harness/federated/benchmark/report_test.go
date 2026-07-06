@@ -535,6 +535,32 @@ func TestBuildComparabilityIdentity_ConcurrencySegment(t *testing.T) {
 	}
 }
 
+// TestReadTrendHistorySkipsNilProvenance: manual/legacy artifacts without
+// provenance must be skipped (trend needs timestamps), not panic.
+func TestReadTrendHistorySkipsNilProvenance(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "legacy")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := SummaryReport{Metadata: ArtifactMetadata{BenchmarkID: "legacy"}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "benchmark-summary.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	runs, err := ReadTrendHistory(dir)
+	if err != nil {
+		t.Fatalf("read trend history: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected provenance-less summary to be skipped, got %d runs", len(runs))
+	}
+}
+
 func TestBuildComparabilityIdentity(t *testing.T) {
 	a := SummaryReport{
 		Metadata: ArtifactMetadata{BenchmarkID: "bench-a"},
