@@ -45,6 +45,7 @@ type RunProvenance struct {
 	Scale        string    `json:"scale,omitempty"`
 	Distribution string    `json:"distribution,omitempty"`
 	TierProfile  string    `json:"tier_profile,omitempty"`
+	Concurrency  int       `json:"concurrency,omitempty"`
 }
 
 // DefaultProtectedWorkloads returns the standard set of workloads that trigger
@@ -386,6 +387,9 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 		if pc.CompletedAt.IsZero() {
 			pc.CompletedAt = result.CompletedAt
 		}
+		if pc.Concurrency == 0 {
+			pc.Concurrency = result.Config.Concurrency
+		}
 		summary.Provenance = &pc
 	} else if !result.StartedAt.IsZero() {
 		summary.Provenance = &RunProvenance{
@@ -395,6 +399,7 @@ func SummarizeRunResult(result *RunResult) SummaryReport {
 			Scale:        string(result.Config.Scale),
 			Distribution: string(result.Config.Distribution),
 			TierProfile:  result.Config.TierProfile,
+			Concurrency:  result.Config.Concurrency,
 		}
 	}
 	if len(result.Executions) == 0 {
@@ -870,12 +875,19 @@ func buildComparabilityIdentity(summary SummaryReport) string {
 		names = append(names, w.Name)
 	}
 	sort.Strings(names)
-	return fmt.Sprintf("%s|%s|%s|%s|%s",
+	identity := fmt.Sprintf("%s|%s|%s|%s|%s",
 		summary.Provenance.Mode,
 		summary.Provenance.Scale,
 		summary.Provenance.Distribution,
 		summary.Provenance.TierProfile,
 		strings.Join(names, ","))
+	// Concurrent runs form their own comparability group so they never mix
+	// into the sequential trend baseline; C<=1 keeps the legacy identity so
+	// historical artifacts stay comparable.
+	if summary.Provenance.Concurrency > 1 {
+		identity = fmt.Sprintf("%s|c%d", identity, summary.Provenance.Concurrency)
+	}
+	return identity
 }
 
 // findCandidateRun returns the specified candidate path or the newest comparable run.

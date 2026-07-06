@@ -138,6 +138,9 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	gitSHA := flags.String("git-sha", "", "Provenance git commit SHA")
 	gitRef := flags.String("git-ref", "", "Provenance git ref")
 	label := flags.String("label", "", "Provenance human-readable label")
+	concurrency := flags.Int("concurrency", 0, "Override preset concurrency (0 = preset value)")
+	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
+	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -145,6 +148,17 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	if err != nil {
 		fmt.Fprintf(errOut, "baseline setup failed: %v\n", err)
 		return 1
+	}
+	if *concurrency > 0 {
+		config.Concurrency = *concurrency
+	}
+	config.DuckDBThreads = *duckDBThreads
+	config.DuckDBMemoryLimitMB = *duckDBMemoryMB
+	// Concurrent baselines get their own artifact directory (-c{N}); C<=1
+	// keeps the preset directory so existing capture paths (and the
+	// make benchmark-regression contract) are untouched.
+	if config.Concurrency > 1 {
+		dirName = fmt.Sprintf("%s-c%d", dirName, config.Concurrency)
 	}
 	outputs := runOutputs{
 		baselineDir: filepath.Join(*outputDir, dirName),
@@ -278,6 +292,8 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 	tierProfile := flags.String("tier-profile", bench.DefaultTierMixProfile().Name, "Tier mix profile: balanced, high-hot, long-history, or explicit profile name")
 	seed := flags.Int64("seed", 42, "Deterministic benchmark seed")
 	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
+	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
+	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
 	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
 	securityCount := flags.Int("security-count", 0, "Override generated security row count")
 	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
@@ -308,6 +324,9 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 		OverlapRatio:  *overlapRatio,
 		DeleteRatio:   *deleteRatio,
 		Workloads:     parseWorkloads(*workloads),
+
+		DuckDBThreads:       *duckDBThreads,
+		DuckDBMemoryLimitMB: *duckDBMemoryMB,
 	}.WithDefaults()
 	outputs := runOutputs{jsonOut: *jsonOut, mdOut: *mdOut, baselineDir: *baselineDir}
 	outputs.channel = *channel
@@ -346,6 +365,7 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 			Scale:        string(result.Config.Scale),
 			Distribution: string(result.Config.Distribution),
 			TierProfile:  result.Config.TierProfile,
+			Concurrency:  result.Config.Concurrency,
 		}
 	}
 	if outputs.jsonOut != "" {

@@ -455,6 +455,65 @@ func TestReadTrendHistory(t *testing.T) {
 	}
 }
 
+func TestProvenanceCarriesConcurrency(t *testing.T) {
+	baseTime := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	result := &RunResult{
+		Passed:      true,
+		StartedAt:   baseTime,
+		CompletedAt: baseTime.Add(10 * time.Second),
+		Config:      Config{Mode: ExecutionModeLive, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name, Concurrency: 4},
+		Executions: []WorkloadRunResult{{
+			Name:     "q1",
+			Passed:   true,
+			Duration: 10 * time.Millisecond,
+		}},
+	}
+
+	summary := SummarizeRunResult(result)
+	if summary.Provenance == nil || summary.Provenance.Concurrency != 4 {
+		t.Fatalf("expected fallback provenance to carry concurrency 4, got %+v", summary.Provenance)
+	}
+
+	result.Provenance = &RunProvenance{Channel: "manual"}
+	summary = SummarizeRunResult(result)
+	if summary.Provenance == nil || summary.Provenance.Concurrency != 4 {
+		t.Fatalf("expected explicit provenance to be backfilled with concurrency 4, got %+v", summary.Provenance)
+	}
+}
+
+// TestBuildComparabilityIdentity_ConcurrencySegment: runs at concurrency > 1
+// must not share a trend baseline window with sequential runs, while C<=1
+// keeps the legacy identity so historical artifacts stay comparable.
+func TestBuildComparabilityIdentity_ConcurrencySegment(t *testing.T) {
+	mk := func(concurrency int) SummaryReport {
+		return SummaryReport{
+			Metadata: ArtifactMetadata{BenchmarkID: "bench"},
+			Provenance: &RunProvenance{
+				Mode:         string(ExecutionModeLive),
+				Scale:        string(ScaleSmall),
+				Distribution: string(DistributionUniform),
+				TierProfile:  DefaultTierMixProfile().Name,
+				Concurrency:  concurrency,
+			},
+			Workloads: []WorkloadSummary{{Name: "q1"}},
+		}
+	}
+
+	legacy := mk(0)
+	sequential := mk(1)
+	concurrent := mk(4)
+
+	if buildComparabilityIdentity(legacy) != buildComparabilityIdentity(sequential) {
+		t.Fatalf("expected C<=1 to keep the legacy comparability key")
+	}
+	if buildComparabilityIdentity(concurrent) == buildComparabilityIdentity(legacy) {
+		t.Fatalf("expected concurrent runs to form their own comparability group")
+	}
+	if !strings.HasSuffix(buildComparabilityIdentity(concurrent), "|c4") {
+		t.Fatalf("expected concurrency segment suffix, got %q", buildComparabilityIdentity(concurrent))
+	}
+}
+
 func TestBuildComparabilityIdentity(t *testing.T) {
 	a := SummaryReport{
 		Metadata: ArtifactMetadata{BenchmarkID: "bench-a"},
