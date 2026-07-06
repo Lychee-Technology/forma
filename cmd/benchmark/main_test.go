@@ -198,6 +198,74 @@ func writeSummaryFixture(t *testing.T, path string, summary bench.SummaryReport)
 	}
 }
 
+func TestRunBenchmarkMainConcurrencyReport(t *testing.T) {
+	dir := t.TempDir()
+	mkSummary := func(concurrency int, p99 time.Duration) bench.SummaryReport {
+		return bench.SummaryReport{
+			Metadata: bench.ArtifactMetadata{BenchmarkID: "bench"},
+			Provenance: &bench.RunProvenance{
+				Mode:         string(bench.ExecutionModeLive),
+				Scale:        string(bench.ScaleSmall),
+				Distribution: string(bench.DistributionUniform),
+				TierProfile:  bench.DefaultTierMixProfile().Name,
+				Concurrency:  concurrency,
+			},
+			Passed: true,
+			P50:    10 * time.Millisecond,
+			P95:    p99 / 2,
+			P99:    p99,
+			Workloads: []bench.WorkloadSummary{
+				{Name: "baseline-page-1", TargetSchema: "trade", P99: p99, Passed: true},
+			},
+		}
+	}
+	c1Path := filepath.Join(dir, "c1-summary.json")
+	c4Path := filepath.Join(dir, "c4-summary.json")
+	writeSummaryFixture(t, c1Path, mkSummary(1, 20*time.Millisecond))
+	writeSummaryFixture(t, c4Path, mkSummary(4, 80*time.Millisecond))
+	mdPath := filepath.Join(dir, "concurrency-report.md")
+	jsonPath := filepath.Join(dir, "concurrency-report.json")
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{
+		"concurrency-report", "-inputs", c1Path + "," + c4Path, "-md-out", mdPath, "-json-out", jsonPath,
+	}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("concurrency-report returned exit code %d: %s", exitCode, errOut.String())
+	}
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("expected markdown report: %v", err)
+	}
+	if !bytes.Contains(md, []byte("# Concurrency Benchmark Report")) || !bytes.Contains(md, []byte("| 4 |")) {
+		t.Fatalf("unexpected markdown content:\n%s", md)
+	}
+	var report bench.ConcurrencyReport
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("expected json report: %v", err)
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("unmarshal json report: %v", err)
+	}
+	if len(report.Levels) != 2 || report.Levels[1] != 4 {
+		t.Fatalf("unexpected levels in json report: %v", report.Levels)
+	}
+}
+
+func TestRunBenchmarkMainConcurrencyReportRequiresInputs(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"concurrency-report"}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 without inputs, got %d", exitCode)
+	}
+	if !bytes.Contains(errOut.Bytes(), []byte("requires -inputs or -input-dir")) {
+		t.Fatalf("expected usage error, got: %s", errOut.String())
+	}
+}
+
 func TestRunBenchmarkMainTrendMissingHistoryDir(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

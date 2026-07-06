@@ -78,6 +78,8 @@ func runBenchmarkMain(ctx context.Context, args []string, out, errOut io.Writer)
 		return runBenchmark(ctx, args[1:], out, errOut)
 	case "trend":
 		return runTrend(args[1:], out, errOut)
+	case "concurrency-report":
+		return runConcurrencyReport(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		printUsage(out)
@@ -94,6 +96,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
 	fmt.Fprintln(out, "  run        Execute benchmark validation or live runtime")
 	fmt.Fprintln(out, "  trend      Analyze longitudinal benchmark trends and regressions")
+	fmt.Fprintln(out, "  concurrency-report  Aggregate per-concurrency summaries into one p50/p95/p99 matrix")
 }
 
 func runDescribe(out io.Writer) int {
@@ -217,6 +220,67 @@ func compareSummaryFiles(baselinePath, candidatePath string, out, errOut io.Writ
 	}
 	fmt.Fprintln(errOut, bench.FormatDiffSummary(diff))
 	return writeJSON(out, diff)
+}
+
+// runConcurrencyReport aggregates one benchmark-summary.json per concurrency
+// level into a single publishable markdown/JSON artifact (#104).
+func runConcurrencyReport(args []string, out, errOut io.Writer) int {
+	flags := flag.NewFlagSet("concurrency-report", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	inputs := flags.String("inputs", "", "Comma-separated benchmark-summary.json paths (one per concurrency level)")
+	inputDir := flags.String("input-dir", "", "Directory tree scanned for benchmark-summary.json files")
+	mdOut := flags.String("md-out", "", "Path for the markdown report (omit to print to stdout)")
+	jsonOut := flags.String("json-out", "", "Optional path for the JSON report")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+
+	var summaries []bench.SummaryReport
+	if *inputDir != "" {
+		runs, err := bench.ReadTrendHistory(*inputDir)
+		if err != nil {
+			fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+			return 1
+		}
+		for _, run := range runs {
+			summaries = append(summaries, run.Summary)
+		}
+	}
+	for _, path := range strings.Split(*inputs, ",") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		summary, err := bench.ReadSummaryReport(path)
+		if err != nil {
+			fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+			return 1
+		}
+		summaries = append(summaries, summary)
+	}
+	if len(summaries) == 0 {
+		fmt.Fprintln(errOut, "concurrency-report requires -inputs or -input-dir")
+		return 1
+	}
+
+	report, err := bench.BuildConcurrencyReport(summaries)
+	if err != nil {
+		fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+		return 1
+	}
+	if err := bench.WriteConcurrencyReport(*jsonOut, *mdOut, report); err != nil {
+		fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+		return 1
+	}
+	if *mdOut == "" {
+		fmt.Fprint(out, bench.FormatConcurrencyMarkdown(report))
+	} else {
+		fmt.Fprintf(out, "concurrency report written to %s\n", *mdOut)
+	}
+	if !report.Comparable {
+		fmt.Fprintln(errOut, "warning: runs are not directly comparable; see report warnings")
+	}
+	return 0
 }
 
 func runTrend(args []string, out, errOut io.Writer) int {
