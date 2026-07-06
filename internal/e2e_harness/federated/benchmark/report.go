@@ -177,6 +177,7 @@ type WorkloadDiff struct {
 	QPSDelta                 float64       `json:"qps_delta"`
 	AvgLatencyDelta          time.Duration `json:"avg_latency_delta"`
 	P95LatencyDelta          time.Duration `json:"p95_latency_delta"`
+	P99LatencyDelta          time.Duration `json:"p99_latency_delta"`
 	AvgResultCountDelta      float64       `json:"avg_result_count_delta"`
 	AvgTotalRecordsDelta     float64       `json:"avg_total_records_delta"`
 	RouteEngineChanged       bool          `json:"route_engine_changed,omitempty"`
@@ -621,7 +622,7 @@ func FormatDiffSummary(diff DiffReport) string {
 		diff.Summary.P95LatencyDelta,
 	))
 	for _, workload := range diff.Workloads {
-		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t correctness_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f route_changed=%t\n",
+		b.WriteString(fmt.Sprintf("workload %s schema=%s missing_baseline=%t missing_candidate=%t passed_changed=%t correctness_delta=%d qps_delta=%.2f avg_latency_delta=%s p95_latency_delta=%s p99_latency_delta=%s avg_result_delta=%.2f avg_total_delta=%.2f route_changed=%t\n",
 			workload.Name,
 			workload.TargetSchema,
 			workload.MissingInBaseline,
@@ -631,6 +632,7 @@ func FormatDiffSummary(diff DiffReport) string {
 			workload.QPSDelta,
 			workload.AvgLatencyDelta,
 			workload.P95LatencyDelta,
+			workload.P99LatencyDelta,
 			workload.AvgResultCountDelta,
 			workload.AvgTotalRecordsDelta,
 			workload.RouteEngineChanged,
@@ -1382,6 +1384,7 @@ func compareWorkloadSummaries(baseline, candidate []WorkloadSummary) []WorkloadD
 			QPSDelta:                 cand.QPS - base.QPS,
 			AvgLatencyDelta:          cand.Avg - base.Avg,
 			P95LatencyDelta:          cand.P95 - base.P95,
+			P99LatencyDelta:          cand.P99 - base.P99,
 			AvgResultCountDelta:      cand.AvgResultCount - base.AvgResultCount,
 			AvgTotalRecordsDelta:     cand.AvgTotalRecords - base.AvgTotalRecords,
 			RouteEngineChanged:       routeEngineChanged,

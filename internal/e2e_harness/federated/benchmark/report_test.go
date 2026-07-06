@@ -266,6 +266,27 @@ func TestCompareSummaryReports(t *testing.T) {
 	}
 }
 
+func TestCompareWorkloadSummariesP99Delta(t *testing.T) {
+	baseline := SummaryReport{
+		Workloads: []WorkloadSummary{{Name: "q1", P99: 30 * time.Millisecond}},
+	}
+	candidate := SummaryReport{
+		Workloads: []WorkloadSummary{{Name: "q1", P99: 42 * time.Millisecond}},
+	}
+
+	diff := CompareSummaryReports(baseline, candidate)
+	if len(diff.Workloads) != 1 {
+		t.Fatalf("expected one workload diff, got %d", len(diff.Workloads))
+	}
+	if diff.Workloads[0].P99LatencyDelta != 12*time.Millisecond {
+		t.Fatalf("expected workload p99 delta of 12ms, got %s", diff.Workloads[0].P99LatencyDelta)
+	}
+	formatted := FormatDiffSummary(diff)
+	if !strings.Contains(formatted, "p99_latency_delta=") {
+		t.Fatalf("expected workload p99 delta in formatted diff: %s", formatted)
+	}
+}
+
 func TestWriteAndReadDiffReport(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "diff.json")
