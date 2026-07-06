@@ -65,15 +65,19 @@ type RoutingPolicy struct {
 // defaultDuckDBConfig returns default DuckDB configuration.
 func defaultDuckDBConfig() DuckDBConfig {
 	return DuckDBConfig{
-		Enabled:                        false,
-		DBPath:                         ":memory:",
-		MemoryLimitMB:                  0,
-		EnableS3:                       false,
-		EnableParquet:                  false,
-		Extensions:                     []string{},
+		Enabled:       false,
+		DBPath:        ":memory:",
+		EnableS3:      false,
+		EnableParquet: false,
+		Extensions:    []string{},
+		// MemoryLimitMB / MaxParallelism defaults mirror the PRAGMAs the
+		// federated query template used to hardcode (memory_limit='4GB',
+		// threads=4); connection-level pragmas are now the single source of
+		// truth, so these defaults keep the effective behavior unchanged.
+		MemoryLimitMB:                  4096,
 		MaxConnections:                 1,
 		QueryTimeout:                   30 * time.Second,
-		MaxParallelism:                 1,
+		MaxParallelism:                 4,
 		CircuitBreakerThreshold:        0,
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerWindow:           time.Minute,
@@ -97,6 +101,9 @@ func (c *Config) validateDuckDBConfig() error {
 	}
 	if c.DuckDB.QueryTimeout < 0 {
 		return &ConfigError{Field: "duckdb.queryTimeout", Message: "must be greater than or equal to 0"}
+	}
+	if c.DuckDB.MaxParallelism < 0 {
+		return &ConfigError{Field: "duckdb.maxParallelism", Message: "must be greater than or equal to 0"}
 	}
 	if c.DuckDB.CircuitBreakerFailureThreshold < 0 {
 		return &ConfigError{Field: "duckdb.circuitBreakerFailureThreshold", Message: "must be greater than or equal to 0"}
