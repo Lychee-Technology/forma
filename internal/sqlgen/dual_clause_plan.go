@@ -40,19 +40,22 @@ func PlanDualClauses(condition forma.Condition, eavTable string, schemaID int16,
 // Bind produces the per-request DualClauses for a condition tree with the
 // same shape the plan was compiled from: cached skeletons plus freshly bound
 // args. paramIndex is advanced by the plan's span, mirroring ToDualClauses.
+// The condition is normalized into the typed predicate tree once; all three
+// arg slices bind from that shared tree.
 func (p *DualClausePlan) Bind(condition forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (DualClauses, error) {
 	if p == nil {
 		return DualClauses{}, fmt.Errorf("dual clause plan is nil")
 	}
-	pgMainArgs, err := bindPgMainArgs(condition, cache)
+	tree := normalizePredicates(condition, cache, targetsAll)
+	pgMainArgs, err := bindArgsFromTree(tree, pgMainStyle, pgMainTypedGuard{}, bindPgMainValues)
 	if err != nil {
 		return DualClauses{}, fmt.Errorf("pg main binding: %w", err)
 	}
-	pgArgs, err := bindPgEavArgs(condition, cache)
+	pgArgs, err := bindArgsFromTree(tree, pgEavStyle, nil, bindPgEavValues)
 	if err != nil {
 		return DualClauses{}, fmt.Errorf("pg eav binding: %w", err)
 	}
-	duckArgs, err := bindDuckArgs(condition, cache)
+	duckArgs, err := bindArgsFromTree(tree, duckStyle, nil, bindDuckValues)
 	if err != nil {
 		return DualClauses{}, fmt.Errorf("duck binding: %w", err)
 	}
@@ -69,63 +72,53 @@ func (p *DualClausePlan) Bind(condition forma.Condition, cache forma.SchemaAttri
 	}, nil
 }
 
-// bindEmitter adapts a value core to the walker's leafEmitter contract: the
-// dummy non-empty SQL keeps the walker's skip/veto accounting identical to
-// the string-producing emitters, so args accumulate in the same order.
-type bindEmitter struct {
-	values func(kv *forma.KvCondition) ([]any, bool, error)
+// typedBindEmitter adapts a typed-leaf value function to the walker's
+// emitter contract: the dummy non-empty SQL keeps the walker's skip/veto
+// accounting identical to the string-producing emitters, so args accumulate
+// in the same order.
+type typedBindEmitter struct {
+	values func(leaf *PredicateLeaf) ([]any, bool, error)
 }
 
-func (b *bindEmitter) EmitLeaf(kv *forma.KvCondition) (string, []any, error) {
-	args, emit, err := b.values(kv)
+func (b *typedBindEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error) {
+	args, emit, err := b.values(leaf)
 	if err != nil || !emit {
 		return "", nil, err
 	}
 	return "x", args, nil
 }
 
-func bindPgMainArgs(cond forma.Condition, cache forma.SchemaAttributeCache) ([]any, error) {
-	if cond == nil {
+// bindArgsFromTree re-walks an already-normalized tree with a value-only
+// emitter. A top-level nil condition binds no args (matching the generation
+// entrypoints, which skip nil before walking).
+func bindArgsFromTree(tree PredicateNode, style compositeStyle, guard typedGuard, values func(leaf *PredicateLeaf) ([]any, bool, error)) ([]any, error) {
+	if _, ok := tree.(predicateNilNode); ok {
 		return nil, nil
 	}
-	guard := &pgMainGuard{cache: cache}
-	emitter := &bindEmitter{values: func(kv *forma.KvCondition) ([]any, bool, error) {
-		val, emit, err := pgMainLeafValue(kv, cache)
-		if err != nil || !emit {
-			return nil, false, err
-		}
-		return []any{val}, true, nil
-	}}
-	_, args, err := walkCondition(cond, pgMainStyle, guard, emitter)
+	_, args, err := walkPredicate(tree, style, guard, &typedBindEmitter{values: values})
 	return args, err
 }
 
-func bindPgEavArgs(cond forma.Condition, cache forma.SchemaAttributeCache) ([]any, error) {
-	if cond == nil {
-		return nil, nil
+func bindPgMainValues(leaf *PredicateLeaf) ([]any, bool, error) {
+	p := leaf.PgMain
+	if p.Err != nil || p.Skip {
+		return nil, false, p.Err
 	}
-	emitter := &bindEmitter{values: func(kv *forma.KvCondition) ([]any, bool, error) {
-		attrID, val, _, _, err := pgEavLeafValue(kv, cache)
-		if err != nil {
-			return nil, false, err
-		}
-		return []any{attrID, val}, true, nil
-	}}
-	_, args, err := walkCondition(cond, pgEavStyle, nil, emitter)
-	return args, err
+	return []any{p.Value}, true, nil
 }
 
-func bindDuckArgs(cond forma.Condition, cache forma.SchemaAttributeCache) ([]any, error) {
-	if cond == nil {
-		return nil, nil
+func bindPgEavValues(leaf *PredicateLeaf) ([]any, bool, error) {
+	p := leaf.PgEav
+	if p.Err != nil {
+		return nil, false, p.Err
 	}
-	emitter := &bindEmitter{values: func(kv *forma.KvCondition) ([]any, bool, error) {
-		parts, err := duckLeafValue(kv, cache)
-		if err != nil {
-			return nil, false, err
-		}
-		return []any{parts.param}, true, nil
-	}}
-	_, args, err := walkCondition(cond, duckStyle, nil, emitter)
-	return args, err
+	return []any{p.AttrID, p.Value}, true, nil
+}
+
+func bindDuckValues(leaf *PredicateLeaf) ([]any, bool, error) {
+	p := leaf.Duck
+	if p.Err != nil {
+		return nil, false, p.Err
+	}
+	return []any{p.Param}, true, nil
 }
