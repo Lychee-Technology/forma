@@ -330,40 +330,54 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 		Workloads:      append([]WorkloadDefinition(nil), r.workloads...),
 		Executions:     executions,
 		OracleModes:    oracleModes,
-		Notes: []string{
-			"loaded TPC-E-inspired schema fixtures",
-			fmt.Sprintf("generated dataset with distribution=%s", r.genConfig.Distribution),
-			fmt.Sprintf("loaded tiered dataset profile=%s", profile.Name),
-			fmt.Sprintf("loaded-state snapshot rows=%d", len(loadedRecords)),
-			oracleNotes,
-			"prefer_hot expresses workload intent and report provenance, not hard execution routing",
-			"executed supported federated query workloads",
-		},
 	}
+	notes := []string{
+		"loaded TPC-E-inspired schema fixtures",
+		fmt.Sprintf("generated dataset with distribution=%s", r.genConfig.Distribution),
+		fmt.Sprintf("loaded tiered dataset profile=%s", profile.Name),
+		fmt.Sprintf("loaded-state snapshot rows=%d", len(loadedRecords)),
+	}
+	notes = append(notes, oracleNotes...)
+	notes = append(notes,
+		"prefer_hot expresses workload intent and report provenance, not hard execution routing",
+		"executed supported federated query workloads",
+	)
+	result.Notes = notes
 	return result, nil
 }
 
-func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord, hotKeys map[string]struct{}) (map[string]expectedWorkloadResult, map[string]string, string, error) {
+func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.FederatedTestHarness, loadedRecords []GeneratedRecord, hotKeys map[string]struct{}) (map[string]expectedWorkloadResult, map[string]string, []string, error) {
 	results := buildExpectedWorkloadResultsFromRecords(loadedRecords, r.workloads, r.config.PageSize, r.genConfig, hotKeys)
 	oracleModes := make(map[string]string, len(r.workloads))
 	loadedStateCount := 0
 	truthPassCount := 0
+	sampledCount := 0
+	var sampleNotes []string
 	for _, workload := range r.workloads {
 		mode := string(workload.ResolvedOracleMode())
 		oracleModes[workload.Name] = mode
 		switch workload.ResolvedOracleMode() {
 		case OracleModeTruthPass:
-			expected, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, workload, r.config.PageSize, loadedRecords, r.genConfig)
+			expected, stats, err := buildExpectedWorkloadResultFromFederatedTruth(ctx, h, workload, r.config.PageSize, loadedRecords, r.genConfig, r.config.TruthPassSampleCap, r.config.Seed)
 			if err != nil {
-				return nil, nil, "", fmt.Errorf("build truth-pass expected result for %s: %w", workload.Name, err)
+				return nil, nil, nil, fmt.Errorf("build truth-pass expected result for %s: %w", workload.Name, err)
 			}
 			results[workload.Name] = expected
 			truthPassCount++
+			if stats.Applied {
+				oracleModes[workload.Name] = string(OracleModeTruthPassSampled)
+				sampledCount++
+				sampleNotes = append(sampleNotes, fmt.Sprintf("truth_pass_sample workload=%s cap=%d candidates=%d sampled=%d", workload.Name, stats.Cap, stats.Candidates, stats.Sampled))
+			}
 		default:
 			loadedStateCount++
 		}
 	}
-	return results, oracleModes, fmt.Sprintf("oracle_modes loaded_state=%d truth_pass=%d", loadedStateCount, truthPassCount), nil
+	summary := fmt.Sprintf("oracle_modes loaded_state=%d truth_pass=%d", loadedStateCount, truthPassCount)
+	if sampledCount > 0 {
+		summary = fmt.Sprintf("%s truth_pass_sampled=%d", summary, sampledCount)
+	}
+	return results, oracleModes, append([]string{summary}, sampleNotes...), nil
 }
 
 func (r *Runner) validateFixtures() error {
@@ -1309,47 +1323,90 @@ func schemaNameForID(schemaID int16) (string, error) {
 	return "", fmt.Errorf("unknown benchmark schema id %d", schemaID)
 }
 
-func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition, defaultPageSize int, loadedRecords []GeneratedRecord, genCfg GeneratorConfig) (expectedWorkloadResult, error) {
+// truthPassSampleStats reports how truth-pass verification was bounded.
+type truthPassSampleStats struct {
+	Applied    bool
+	Cap        int
+	Candidates int
+	Sampled    int
+}
+
+func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition, defaultPageSize int, loadedRecords []GeneratedRecord, genCfg GeneratorConfig, sampleCap int, seed int64) (expectedWorkloadResult, truthPassSampleStats, error) {
 	if h == nil {
-		return expectedWorkloadResult{}, fmt.Errorf("harness cannot be nil")
+		return expectedWorkloadResult{}, truthPassSampleStats{}, fmt.Errorf("harness cannot be nil")
 	}
 	semantics := semanticsForWorkload(workload, genCfg)
 	candidates := filterExpectedRecordsForWorkload(expectedVisibleRecords(loadedRecords), workload, semantics)
 	sortExpectedRecordsForWorkload(candidates, workload)
-	matching := make([]GeneratedRecord, 0, len(candidates))
-	pageSize := workload.PageSize
-	if pageSize <= 0 {
-		pageSize = defaultPageSize
-	}
 	previousSchemaID := h.SchemaID
 	schemaID, err := workloadSchemaID(workload.TargetSchema)
 	if err != nil {
-		return expectedWorkloadResult{}, err
+		return expectedWorkloadResult{}, truthPassSampleStats{}, err
 	}
 	h.SchemaID = schemaID
 	defer func() {
 		h.SchemaID = previousSchemaID
 	}()
-	for _, candidate := range candidates {
-		conditions := workload.ResolvedFilterConditions()
+	isVisible := func(ctx context.Context, candidate GeneratedRecord) (bool, error) {
 		result, err := h.ExecuteFederatedQuery(ctx, &federated.QueryOptions{
 			Limit: 1,
 			Filter: &federated.Filter{
 				RowID:      candidate.RowID,
-				Conditions: conditions,
+				Conditions: workload.ResolvedFilterConditions(),
 			},
 			SortBy:   "tradeTime",
 			SortDesc: true,
 		})
 		if err != nil {
-			return expectedWorkloadResult{}, err
+			return false, err
 		}
-		if result.TotalRecords > 0 {
-			matching = append(matching, candidate)
+		return result.TotalRecords > 0, nil
+	}
+	return buildTruthPassExpected(ctx, isVisible, workload, defaultPageSize, candidates, sampleCap, seed)
+}
+
+// buildTruthPassExpected derives the expected result for a truth-pass
+// workload. Uncapped (sampleCap <= 0 or candidates <= cap) it verifies every
+// candidate and keeps only the visible ones — existing behavior. Capped, it
+// keeps the full reconstructed candidate set as the expected result and
+// verifies a seeded deterministic sample; a sampled candidate the engine
+// cannot see means reconstruction and engine truth diverge, which no
+// sampling rate can absorb, so the run fails hard.
+func buildTruthPassExpected(ctx context.Context, isVisible func(context.Context, GeneratedRecord) (bool, error), workload WorkloadDefinition, defaultPageSize int, candidates []GeneratedRecord, sampleCap int, seed int64) (expectedWorkloadResult, truthPassSampleStats, error) {
+	pageSize := workload.PageSize
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	sampledIdx := truthPassSampleIndices(seed, workload.Name, len(candidates), sampleCap)
+	if sampledIdx == nil {
+		matching := make([]GeneratedRecord, 0, len(candidates))
+		for _, candidate := range candidates {
+			visible, err := isVisible(ctx, candidate)
+			if err != nil {
+				return expectedWorkloadResult{}, truthPassSampleStats{}, err
+			}
+			if visible {
+				matching = append(matching, candidate)
+			}
+		}
+		rowIDs := expectedPageRowIDs(matching, workload.DerivedOffset(defaultPageSize), pageSize)
+		return expectedWorkloadResult{TotalRecords: int64(len(matching)), RowIDs: rowIDs}, truthPassSampleStats{Candidates: len(candidates), Sampled: len(candidates)}, nil
+	}
+	stats := truthPassSampleStats{Applied: true, Cap: sampleCap, Candidates: len(candidates), Sampled: len(sampledIdx)}
+	for i, candidate := range candidates {
+		if _, ok := sampledIdx[i]; !ok {
+			continue
+		}
+		visible, err := isVisible(ctx, candidate)
+		if err != nil {
+			return expectedWorkloadResult{}, stats, err
+		}
+		if !visible {
+			return expectedWorkloadResult{}, stats, fmt.Errorf("truth-pass spot check failed for workload %s: sampled candidate row_id=%s is not visible through the engine; reconstruction diverges from engine truth — investigate at a smaller scale without the sample cap before trusting sampled oracles", workload.Name, candidate.RowID)
 		}
 	}
-	rowIDs := expectedPageRowIDs(matching, workload.DerivedOffset(defaultPageSize), pageSize)
-	return expectedWorkloadResult{TotalRecords: int64(len(matching)), RowIDs: rowIDs}, nil
+	rowIDs := expectedPageRowIDs(candidates, workload.DerivedOffset(defaultPageSize), pageSize)
+	return expectedWorkloadResult{TotalRecords: int64(len(candidates)), RowIDs: rowIDs}, stats, nil
 }
 
 func expectedVisibleRecords(records []GeneratedRecord) []GeneratedRecord {

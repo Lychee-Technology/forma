@@ -671,6 +671,9 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			workload.Distribution = runs[0].Distribution
 			workload.PageSize = def.PageSize
 		}
+		if mode, ok := result.OracleModes[name]; ok && mode != "" {
+			workload.OracleMode = mode
+		}
 		durations := make([]time.Duration, 0, len(runs))
 		var totalDuration time.Duration
 		var totalResultCount int

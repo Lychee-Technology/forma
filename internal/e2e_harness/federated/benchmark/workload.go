@@ -20,6 +20,11 @@ const (
 
 	OracleModeLoadedState OracleMode = "loaded-state"
 	OracleModeTruthPass   OracleMode = "truth-pass"
+	// OracleModeTruthPassSampled marks a truth-pass oracle whose engine
+	// verification was spot-checked on a seeded sample because the candidate
+	// set exceeded Config.TruthPassSampleCap (#100). The expected result is
+	// still the full reconstructed candidate set.
+	OracleModeTruthPassSampled OracleMode = "truth-pass-sampled"
 )
 
 // WorkloadDefinition declares a benchmark workload.
