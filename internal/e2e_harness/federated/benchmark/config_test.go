@@ -80,3 +80,24 @@ func TestDefaultWorkloadNamesIncludesSchemaScopedCoverage(t *testing.T) {
 		t.Fatalf("expected default workloads to include schema-scoped customer and security coverage: %v", names)
 	}
 }
+
+// TestConfigJSONOmitsZeroTruthPassSampleCap protects BenchmarkID continuity:
+// BuildArtifactMetadata hashes the whole Config, so an unset cap must not
+// change the serialized form of existing configs.
+func TestConfigJSONOmitsZeroTruthPassSampleCap(t *testing.T) {
+	raw, err := json.Marshal(DefaultConfig())
+	if err != nil {
+		t.Fatalf("marshal default config: %v", err)
+	}
+	if strings.Contains(string(raw), "truth_pass_sample_cap") {
+		t.Fatalf("zero TruthPassSampleCap must be omitted from JSON, got: %s", raw)
+	}
+}
+
+func TestConfigValidateRejectsNegativeTruthPassSampleCap(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TruthPassSampleCap = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative truth-pass sample cap to be rejected")
+	}
+}
