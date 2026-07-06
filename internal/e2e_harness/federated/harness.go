@@ -289,10 +289,13 @@ func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
 
 func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3SecretKey, s3Region string) error {
 	duckCfg := forma.DuckDBConfig{
-		Enabled:        true,
-		DBPath:         ":memory:",
-		MemoryLimitMB:  512,
-		EnableS3:       true,
+		Enabled: true,
+		DBPath:  ":memory:",
+		// 4096 matches the production default; the old 512 never actually
+		// governed federated queries because the query template re-set the
+		// instance to 4GB on every execution before #104 removed that PRAGMA.
+		MemoryLimitMB: 4096,
+		EnableS3:      true,
 		EnableParquet:  true,
 		S3Endpoint:     s3Endpoint,
 		S3AccessKey:    s3AccessKey,

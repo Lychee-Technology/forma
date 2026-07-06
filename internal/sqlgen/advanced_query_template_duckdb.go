@@ -7,13 +7,12 @@ import "text/template"
 // projection, EAV pivot, and final outer SELECT, supporting any schema layout.
 // Metadata columns (total_records, total_pages, current_page) are rendered in the
 // template directly so that PAGE_SIZE and OFFSET template vars are properly expanded.
+// Resource pragmas (threads / memory_limit) are deliberately absent: they are
+// connection-level configuration (DuckDBConfig via applyResourcePragmas), and a
+// per-query PRAGMA would override the configured values on every execution.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
--- PRAGMA & tuning
-PRAGMA memory_limit='4GB';
-PRAGMA threads=4;
-
 WITH
 dirty_ids AS (
   SELECT row_id
