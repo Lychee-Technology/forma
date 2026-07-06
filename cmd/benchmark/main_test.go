@@ -58,6 +58,44 @@ func TestRunBenchmarkMainBaseline(t *testing.T) {
 	}
 }
 
+// TestRunBenchmarkMainBaselineTierProfileOverride verifies -tier-profile on
+// the baseline subcommand overrides the preset's tier mix profile (#100
+// final-review Fix 4). ci-smoke is smoke mode (bench.Runner.Run, not
+// RunWithHarness) so this runs fast with no Docker/live harness required.
+func TestRunBenchmarkMainBaselineTierProfileOverride(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{
+		"baseline",
+		"-preset", "ci-smoke",
+		"-tier-profile", "high-hot-40-20-40",
+		"-output-dir", dir,
+	}, &out, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("baseline returned exit code %d: %s", exitCode, errOut.String())
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "ci-smoke*", "benchmark-result.json"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("expected baseline artifact benchmark-result.json to exist, err=%v matches=%v", err, matches)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("failed to read benchmark-result.json: %v", err)
+	}
+	var captured struct {
+		Config struct {
+			TierProfile string `json:"tier_profile"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(data, &captured); err != nil {
+		t.Fatalf("failed to unmarshal benchmark-result.json: %v", err)
+	}
+	if captured.Config.TierProfile != "high-hot-40-20-40" {
+		t.Fatalf("expected tier_profile override high-hot-40-20-40, got %q", captured.Config.TierProfile)
+	}
+}
+
 func TestResolveBenchmarkPresetSupportsAliasesAndPresets(t *testing.T) {
 	small, err := resolveBenchmarkPreset("small", bench.DistributionUniform)
 	if err != nil {

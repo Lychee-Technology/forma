@@ -281,7 +281,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				semantics := semanticsForWorkload(workload, r.genConfig)
 				run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
 				run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, result.records, semantics)...)
-				run.OracleMode = string(workload.ResolvedOracleMode())
+				run.OracleMode = resolvedRunOracleMode(oracleModes, workload)
 				if expected, ok := expectedByWorkload[workload.Name]; ok {
 					run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
 				}
@@ -378,6 +378,16 @@ func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.Federate
 		summary = fmt.Sprintf("%s truth_pass_sampled=%d", summary, sampledCount)
 	}
 	return results, oracleModes, append([]string{summary}, sampleNotes...), nil
+}
+
+// resolvedRunOracleMode returns the run-time oracle mode for a workload,
+// preferring the (possibly sampled) mode recorded in oracleModes and falling
+// back to the workload's static resolved mode when the map has no entry.
+func resolvedRunOracleMode(oracleModes map[string]string, workload WorkloadDefinition) string {
+	if mode, ok := oracleModes[workload.Name]; ok && mode != "" {
+		return mode
+	}
+	return string(workload.ResolvedOracleMode())
 }
 
 func (r *Runner) validateFixtures() error {

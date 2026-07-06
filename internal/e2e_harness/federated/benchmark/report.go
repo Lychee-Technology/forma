@@ -752,6 +752,9 @@ func summarizeOracleProvenance(result *RunResult) []OracleProvenance {
 	if len(result.Workloads) > 0 {
 		for _, workload := range result.Workloads {
 			mode := string(workload.ResolvedOracleMode())
+			if sampled, ok := result.OracleModes[workload.Name]; ok && sampled != "" {
+				mode = sampled
+			}
 			byMode[mode] = append(byMode[mode], workload.Name)
 		}
 	} else {

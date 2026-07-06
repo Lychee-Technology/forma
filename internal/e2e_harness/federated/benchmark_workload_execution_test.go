@@ -217,4 +217,28 @@ func TestBenchmarkTruthPassSampledSpotCheck_RunWithHarness(t *testing.T) {
 		}
 	}
 	require.True(t, sampledNote, "expected sampled oracle summary note, got %v", result.Notes)
+
+	sampledWorkloads := map[string]bool{"hot-selective-page": false, "eav-selective-page": false}
+	for _, execution := range result.Executions {
+		if _, ok := sampledWorkloads[execution.Name]; ok {
+			require.Equal(t, string(bench.OracleModeTruthPassSampled), execution.OracleMode,
+				"execution record for %s must carry the run-time (sampled) oracle mode", execution.Name)
+			sampledWorkloads[execution.Name] = true
+		}
+	}
+	for name, seen := range sampledWorkloads {
+		require.True(t, seen, "expected at least one execution record for workload %s", name)
+	}
+
+	summary := bench.SummarizeRunResult(result)
+	found := false
+	for _, provenance := range summary.OracleProvenance {
+		if provenance.Mode != string(bench.OracleModeTruthPassSampled) {
+			continue
+		}
+		found = true
+		require.Contains(t, provenance.Workloads, "hot-selective-page")
+		require.Contains(t, provenance.Workloads, "eav-selective-page")
+	}
+	require.True(t, found, "expected oracle provenance group for truth-pass-sampled, got %+v", summary.OracleProvenance)
 }
