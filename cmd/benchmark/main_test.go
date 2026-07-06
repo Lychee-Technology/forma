@@ -483,3 +483,52 @@ func TestRunBenchmarkMainTrendFileOutput(t *testing.T) {
 		t.Fatalf("expected trend report file to exist: %v", err)
 	}
 }
+
+func TestResolveBenchmarkPresetHeavyLive(t *testing.T) {
+	preset, err := resolveBenchmarkPreset("heavy", bench.DistributionHotspot)
+	if err != nil {
+		t.Fatalf("resolveBenchmarkPreset heavy failed: %v", err)
+	}
+	if preset.Name != "heavy-live" {
+		t.Fatalf("expected heavy alias to resolve to heavy-live, got %q", preset.Name)
+	}
+	if preset.Config.Mode != bench.ExecutionModeLive || preset.Config.Scale != bench.ScaleLarge {
+		t.Fatalf("expected live/large heavy-live config, got %+v", preset.Config)
+	}
+	if preset.Config.TruthPassSampleCap != 10000 {
+		t.Fatalf("expected heavy-live truth-pass sample cap 10000, got %d", preset.Config.TruthPassSampleCap)
+	}
+	if preset.Config.DuckDBMemoryLimitMB != 8192 {
+		t.Fatalf("expected heavy-live DuckDB memory 8192MB, got %d", preset.Config.DuckDBMemoryLimitMB)
+	}
+	if len(preset.Config.Workloads) != len(bench.DefaultWorkloadNames()) {
+		t.Fatalf("expected the full workload matrix, got %d workloads", len(preset.Config.Workloads))
+	}
+	if preset.CISafe {
+		t.Fatal("heavy-live must not be CI-safe")
+	}
+	if preset.BaselineDir != "heavy-live-hotspot-overlap" {
+		t.Fatalf("unexpected baseline dir %q", preset.BaselineDir)
+	}
+}
+
+func TestApplyDuckDBOverridesKeepsPresetValues(t *testing.T) {
+	cfg := bench.Config{DuckDBThreads: 4, DuckDBMemoryLimitMB: 8192}
+	got := applyDuckDBOverrides(cfg, 0, 0)
+	if got.DuckDBThreads != 4 || got.DuckDBMemoryLimitMB != 8192 {
+		t.Fatalf("zero flags must keep preset resources, got %+v", got)
+	}
+	got = applyDuckDBOverrides(cfg, 8, 16384)
+	if got.DuckDBThreads != 8 || got.DuckDBMemoryLimitMB != 16384 {
+		t.Fatalf("positive flags must override preset resources, got %+v", got)
+	}
+}
+
+func TestRunBaselineRunTimeoutExpires(t *testing.T) {
+	dir := t.TempDir()
+	var out, errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"baseline", "-preset", "ci-smoke", "-run-timeout", "1ns", "-output-dir", dir}, &out, &errOut)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit when run timeout expires, stderr=%s", errOut.String())
+	}
+}

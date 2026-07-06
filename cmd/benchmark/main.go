@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
@@ -127,13 +128,18 @@ func runBenchmark(ctx context.Context, args []string, out, errOut io.Writer) int
 	if exitCode != 0 {
 		return exitCode
 	}
+	if outputs.runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, outputs.runTimeout)
+		defer cancel()
+	}
 	return executeBenchmarkRun(ctx, config, outputs, out, errOut)
 }
 
 func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(errOut)
-	preset := flags.String("preset", "small", "Baseline preset: ci-smoke, small, small-live, medium, medium-live, or heavy-plan")
+	preset := flags.String("preset", "small", "Baseline preset: ci-smoke, small, small-live, medium, medium-live, heavy, heavy-live, or heavy-plan")
 	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
 	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
 	compareTo := flags.String("compare-to", "", "Optional path to an existing benchmark-summary.json for diff output")
@@ -144,6 +150,9 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	concurrency := flags.Int("concurrency", 0, "Override preset concurrency (0 = preset value)")
 	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
 	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
+	truthPassCap := flags.Int("truth-pass-sample-cap", -1, "Override truth-pass oracle sample cap (-1 = preset value, 0 = uncapped full truth pass)")
+	runTimeout := flags.Duration("run-timeout", 0, "Abort the entire run after this duration (0 = no timeout)")
+	tierProfile := flags.String("tier-profile", "", "Override preset tier mix profile (empty = preset value)")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -155,8 +164,18 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	if *concurrency > 0 {
 		config.Concurrency = *concurrency
 	}
-	config.DuckDBThreads = *duckDBThreads
-	config.DuckDBMemoryLimitMB = *duckDBMemoryMB
+	config = applyDuckDBOverrides(config, *duckDBThreads, *duckDBMemoryMB)
+	if *truthPassCap >= 0 {
+		config.TruthPassSampleCap = *truthPassCap
+	}
+	if *tierProfile != "" {
+		config.TierProfile = *tierProfile
+	}
+	if *runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *runTimeout)
+		defer cancel()
+	}
 	// Concurrent baselines get their own artifact directory (-c{N}); C<=1
 	// keeps the preset directory so existing capture paths (and the
 	// make benchmark-regression contract) are untouched.
@@ -340,6 +359,7 @@ type runOutputs struct {
 	gitSHA      string
 	gitRef      string
 	label       string
+	runTimeout  time.Duration
 }
 
 func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, int) {
@@ -356,6 +376,8 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
 	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
 	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
+	truthPassCap := flags.Int("truth-pass-sample-cap", 0, "Truth-pass oracle sample cap (0 = uncapped full truth pass)")
+	runTimeout := flags.Duration("run-timeout", 0, "Abort the entire run after this duration (0 = no timeout)")
 	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
 	securityCount := flags.Int("security-count", 0, "Override generated security row count")
 	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
@@ -389,12 +411,14 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 
 		DuckDBThreads:       *duckDBThreads,
 		DuckDBMemoryLimitMB: *duckDBMemoryMB,
+		TruthPassSampleCap:  *truthPassCap,
 	}.WithDefaults()
 	outputs := runOutputs{jsonOut: *jsonOut, mdOut: *mdOut, baselineDir: *baselineDir}
 	outputs.channel = *channel
 	outputs.gitSHA = *gitSHA
 	outputs.gitRef = *gitRef
 	outputs.label = *label
+	outputs.runTimeout = *runTimeout
 	return cfg, outputs, 0
 }
 
@@ -459,6 +483,20 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 	return 0
 }
 
+// applyDuckDBOverrides keeps preset-provided DuckDB resources unless the
+// operator explicitly overrides them (flag default 0 = keep preset/harness
+// value). Without this guard the zero-valued flags would erase preset
+// resource bounds such as heavy-live's 8192MB memory limit.
+func applyDuckDBOverrides(cfg bench.Config, threads, memoryMB int) bench.Config {
+	if threads > 0 {
+		cfg.DuckDBThreads = threads
+	}
+	if memoryMB > 0 {
+		cfg.DuckDBMemoryLimitMB = memoryMB
+	}
+	return cfg
+}
+
 func baselinePresetConfig(rawPreset string, distribution bench.Distribution) (bench.Config, string, error) {
 	preset, err := resolveBenchmarkPreset(rawPreset, distribution)
 	if err != nil {
@@ -505,6 +543,15 @@ func defaultBenchmarkPresets() []benchmarkPreset {
 			ExpectedUsage: "manual or nightly planning review only",
 			Config:        bench.Config{Mode: bench.ExecutionModePlan, Scale: bench.ScaleLarge, Distribution: bench.DistributionHotspot, Iterations: 3, PageSize: 20, Seed: 42, TierProfile: bench.DefaultTierMixProfile().Name, Workloads: bench.DefaultWorkloadNames()}.WithDefaults(),
 		},
+		{
+			Name:          "heavy-live",
+			Description:   "Full live workload matrix at large scale for capacity-aware baseline capture.",
+			RuntimeClass:  "heavy",
+			BaselineDir:   "heavy-live-hotspot-overlap",
+			CISafe:        false,
+			ExpectedUsage: "manual capacity-aware baseline capture only (idle machine, hours)",
+			Config:        bench.Config{Mode: bench.ExecutionModeLive, Scale: bench.ScaleLarge, Distribution: bench.DistributionHotspot, Iterations: 2, PageSize: 20, Seed: 42, TierProfile: bench.DefaultTierMixProfile().Name, Workloads: bench.DefaultWorkloadNames(), TruthPassSampleCap: 10000, DuckDBMemoryLimitMB: 8192}.WithDefaults(),
+		},
 	}
 }
 
@@ -515,6 +562,9 @@ func resolveBenchmarkPreset(rawPreset string, distribution bench.Distribution) (
 	}
 	if presetName == "medium" {
 		presetName = "medium-live"
+	}
+	if presetName == "heavy" {
+		presetName = "heavy-live"
 	}
 	for _, preset := range defaultBenchmarkPresets() {
 		if preset.Name != presetName {
