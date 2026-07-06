@@ -36,7 +36,8 @@ var (
 		if err != nil {
 			return nil, err
 		}
-		h, err := federated.NewFederatedTestHarness(ctx)
+		h, err := federated.NewFederatedTestHarness(ctx,
+			federated.WithDuckDBResources(cfg.DuckDBThreads, cfg.DuckDBMemoryLimitMB, 0))
 		if err != nil {
 			return nil, fmt.Errorf("create federated harness: %w", err)
 		}

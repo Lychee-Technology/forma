@@ -575,22 +575,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		return nil, nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
 
-	duckCfg := forma.DuckDBConfig{}
-	if h.Duck != nil {
-		duckCfg = forma.DuckDBConfig{
-			Enabled:        true,
-			DBPath:         ":memory:",
-			EnableS3:       true,
-			EnableParquet:  true,
-			S3Endpoint:     h.S3Endpoint,
-			S3AccessKey:    h.S3AccessKey,
-			S3SecretKey:    h.S3SecretKey,
-			S3Region:       h.S3Region,
-			MaxConnections: 4,
-			QueryTimeout:   60 * time.Second,
-			MaxParallelism: 4,
-		}
-	}
+	duckCfg := engineDuckDBConfig(h)
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(r.planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
@@ -731,6 +716,16 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	return result, recs, plan, nil
 }
 
+// engineDuckDBConfig returns the engine-level DuckDB config for a harness:
+// the exact configuration the harness started DuckDB with (single source of
+// truth for resource settings), or a zero config when DuckDB is not running.
+func engineDuckDBConfig(h *federated.FederatedTestHarness) forma.DuckDBConfig {
+	if h.Duck == nil {
+		return forma.DuckDBConfig{}
+	}
+	return h.DuckCfg
+}
+
 func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, error) {
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
@@ -758,22 +753,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		return nil, nil, fmt.Errorf("load benchmark metadata: %w", err)
 	}
 
-	duckCfg := forma.DuckDBConfig{}
-	if h.Duck != nil {
-		duckCfg = forma.DuckDBConfig{
-			Enabled:        true,
-			DBPath:         ":memory:",
-			EnableS3:       true,
-			EnableParquet:  true,
-			S3Endpoint:     h.S3Endpoint,
-			S3AccessKey:    h.S3AccessKey,
-			S3SecretKey:    h.S3SecretKey,
-			S3Region:       h.S3Region,
-			MaxConnections: 4,
-			QueryTimeout:   60 * time.Second,
-			MaxParallelism: 4,
-		}
-	}
+	duckCfg := engineDuckDBConfig(h)
 
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
@@ -861,22 +841,7 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		return nil, nil, nil, fmt.Errorf("resolve schema %s: %w", schemaName, err)
 	}
 
-	duckCfg := forma.DuckDBConfig{}
-	if h.Duck != nil {
-		duckCfg = forma.DuckDBConfig{
-			Enabled:        true,
-			DBPath:         ":memory:",
-			EnableS3:       true,
-			EnableParquet:  true,
-			S3Endpoint:     h.S3Endpoint,
-			S3AccessKey:    h.S3AccessKey,
-			S3SecretKey:    h.S3SecretKey,
-			S3Region:       h.S3Region,
-			MaxConnections: 4,
-			QueryTimeout:   60 * time.Second,
-			MaxParallelism: 4,
-		}
-	}
+	duckCfg := engineDuckDBConfig(h)
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
