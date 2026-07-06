@@ -4,6 +4,7 @@ package federated_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,4 +173,48 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	require.True(t, pushdownMixedSeen, "expected tier-pushdown-mixed workload to be executed")
 	require.True(t, pushdownColdOnlySeen, "expected tier-pushdown-cold-only workload to be executed")
 	require.True(t, pushdownAssertionsSeen, "expected pushdown assertions to be exercised")
+}
+
+func TestBenchmarkTruthPassSampledSpotCheck_RunWithHarness(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	h, err := federated.NewFederatedTestHarness(ctx)
+	require.NoError(t, err)
+	defer h.Cleanup(ctx)
+
+	runner, err := bench.NewRunner(bench.Config{
+		Mode:               bench.ExecutionModeLive,
+		Scale:              bench.ScaleSmall,
+		Distribution:       bench.DistributionHotspot,
+		Iterations:         1,
+		PageSize:           20,
+		Seed:               42,
+		TradeCount:         300,
+		CustomerCount:      20,
+		SecurityCount:      10,
+		OverlapRatio:       0.10,
+		DeleteRatio:        0.05,
+		TruthPassSampleCap: 5,
+		Workloads: []string{
+			"baseline-page-1",
+			"hot-selective-page",
+			"eav-selective-page",
+		},
+	}.WithDefaults())
+	require.NoError(t, err)
+
+	result, err := runner.RunWithHarness(ctx, h, bench.TierMixBalanced)
+	require.NoError(t, err)
+	require.True(t, result.Passed, "sampled heavy-live semantics must still pass at tiny scale")
+	require.Equal(t, string(bench.OracleModeTruthPassSampled), result.OracleModes["hot-selective-page"])
+	require.Equal(t, string(bench.OracleModeTruthPassSampled), result.OracleModes["eav-selective-page"])
+
+	sampledNote := false
+	for _, note := range result.Notes {
+		if strings.Contains(note, "truth_pass_sampled=2") {
+			sampledNote = true
+		}
+	}
+	require.True(t, sampledNote, "expected sampled oracle summary note, got %v", result.Notes)
 }
