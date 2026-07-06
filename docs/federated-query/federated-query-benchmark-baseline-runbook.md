@@ -5,7 +5,7 @@ Repository: `forma`
 
 ## Purpose
 
-This runbook defines a repeatable baseline capture flow for the federated query benchmark at `small` and `medium` scale.
+This runbook defines a repeatable baseline capture flow for the federated query benchmark at `small`, `medium`, and `large` (`heavy-live`) scale.
 
 ## Recommended Baseline Presets
 
@@ -105,7 +105,11 @@ the engine was consulted for a seeded sample of `truth_pass_sample_cap`
 candidates. A sampled pass is strictly weaker evidence than an uncapped
 truth pass; `compare` flags capped-vs-uncapped runs as a methodology change.
 A spot-check failure means reconstruction and engine truth diverge — rerun
-the failing workload uncapped at `small` scale to investigate.
+the failing workload uncapped at `small` scale to investigate. Sampling is
+applied per workload: a truth-pass workload whose candidate count is at or
+below the cap stays plain `truth-pass` rather than `truth-pass-sampled`, so a
+mixed-mode result (some workloads sampled, some not) within the same run is
+expected and not a defect.
 
 ### Tier-profile variants
 
@@ -235,7 +239,7 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 
 ## Current Limitations
 
-- live baseline capture now exists through `small-live` and `medium-live`, but CI should still default to the cheaper `ci-smoke` preset
+- live baseline capture now exists through `small-live`, `medium-live`, and `heavy-live`, but CI should still default to the cheaper `ci-smoke` preset
 - use `go run ./cmd/benchmark run -mode live ...` when you need a custom executable workload mix instead of the documented presets
 - live benchmark correctness checks compare query results against the benchmark's loaded tier state rather than only the pre-split generated dataset
 - selective hot/EAV workloads may use a truth-pass-backed oracle mode to align expected results with the executable federated filter semantics

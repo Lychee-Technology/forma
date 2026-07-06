@@ -110,7 +110,8 @@ go test -v ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecut
 - mode: live, full workload matrix
 - scale: `large` (10M trades / 1M customers / 100k securities)
 - distribution: `hotspot-overlap`; tier profile: `balanced-60-30-10`
-- truth-pass oracles are spot-check sampled (`truth_pass_sample_cap=10000`);
+- truth-pass oracles are spot-check sampled (`truth_pass_sample_cap=10000`),
+  per workload (a workload at or under the cap stays plain `truth-pass`);
   a sampled pass asserts reconstruction ≡ engine truth on the sample only —
   see the baseline runbook before comparing against uncapped baselines
 - resource bounds: DuckDB memory 8192MB (preset), `-duckdb-memory-mb` to

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a repeatable `heavy-live` benchmark preset that executes the full 16-workload matrix live at `large` scale (10M trades) with a sampled truth-pass oracle, a run timeout, and documented runtime/environment expectations.
+**Goal:** Add a repeatable `heavy-live` benchmark preset that executes the full workload matrix live at `large` scale (10M trades) with a sampled truth-pass oracle, a run timeout, and documented runtime/environment expectations.
 
 **Architecture:** Minimal wiring over the existing `RunWithHarness` live path. The only semantic change is a spot-check sampling cap on truth-pass oracle construction: expected results stay derived from the full reconstructed candidate set; federated truth queries run only on a seeded deterministic sample, and any sampled-candidate divergence is a hard failure. Everything else is preset/flag/Makefile/docs plumbing.
 
@@ -836,7 +836,7 @@ In `federated-query-benchmark-ci-and-ops-guide.md`, replace the `### Heavy Run` 
 ### Heavy Live Run
 
 - preset: `heavy-live`
-- mode: live, full 16-workload matrix
+- mode: live, full workload matrix
 - scale: `large` (10M trades / 1M customers / 100k securities)
 - distribution: `hotspot-overlap`; tier profile: `balanced-60-30-10`
 - truth-pass oracles are spot-check sampled (`truth_pass_sample_cap=10000`);

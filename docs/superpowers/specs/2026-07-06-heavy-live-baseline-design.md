@@ -17,7 +17,7 @@ expectations, and a captured baseline artifact set.
 |---|---|
 | Run environment / time envelope | Manual, on-demand only. No scheduled job. Document expected runtime instead of enforcing an envelope. |
 | Truth-pass oracle at 10M rows | Keep selective workloads; add a sampling cap with spot-check semantics (see §2). |
-| Workload set | Full 16 workloads, aligned with `heavy-plan` so plan-vs-live artifacts compare directly. |
+| Workload set | Full workload matrix, aligned with `heavy-plan` so plan-vs-live artifacts compare directly. |
 | Tier profile | Single run on default `balanced-60-30-10`. `high-hot-40-20-40` and `long-history-85-10-5` documented as manual `-tier-profile` variants. |
 | Implementation route | Minimal wiring over the existing `RunWithHarness` path + calibration ladder. Memory/streaming hardening only if the ladder proves it necessary (follow-up issue). |
 
@@ -41,7 +41,7 @@ queries ≈ 35 min idle (#147). At 10M rows an uncapped pass is days — hence �
 - New preset `heavy-live` in `defaultBenchmarkPresets()` (`cmd/benchmark/main.go`):
   - `Mode=Live, Scale=Large, Distribution=Hotspot, Iterations=2, PageSize=20, Seed=42`
   - `TierProfile=balanced-60-30-10` (default profile)
-  - `Workloads=bench.DefaultWorkloadNames()` (all 16)
+  - `Workloads=bench.DefaultWorkloadNames()` (full workload matrix)
   - `BaselineDir="heavy-live-hotspot-overlap"`, `RuntimeClass="heavy"`, `CISafe=false`
   - `ExpectedUsage`: manual capacity-aware baseline capture only
   - `TruthPassSampleCap=10000` (see §2)
