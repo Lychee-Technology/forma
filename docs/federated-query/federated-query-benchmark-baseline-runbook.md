@@ -13,6 +13,7 @@ This runbook defines a repeatable baseline capture flow for the federated query 
 - `small-live`: default live baseline subset for local or controlled review runs
 - `medium-live`: medium-scale live subset for manual regression review
 - `heavy-plan`: planning-only heavyweight set for manual or nightly use
+- `heavy-live`: full live workload matrix at large scale; manual capacity-aware capture only
 
 Use `go run ./cmd/benchmark describe` to inspect the current preset definitions and workload matrix. The CLI also accepts the legacy aliases `small` -> `small-live` and `medium` -> `medium-live` when running `benchmark baseline`.
 
@@ -56,6 +57,82 @@ The default baseline directory naming now follows the benchmark preset name, for
 - `.artifacts/benchmark/small-live-hotspot-overlap`
 - `.artifacts/benchmark/medium-live-zipf`
 - `.artifacts/benchmark/heavy-plan-hotspot-overlap`
+- `.artifacts/benchmark/heavy-live/heavy-live-hotspot-overlap`
+
+## Heavy-Live Baseline Capture
+
+`heavy-live` executes the full workload matrix live at `large` scale. It is
+the only preset that exercises deep pagination and tier hotness behavior at
+production-representative volume.
+
+### Calibration ladder (run before the first official capture)
+
+The large-scale pipeline holds the dataset in memory several times over
+(generation, tiering, loaded-state snapshot). Measure before committing to
+the full 10M run, recording wall clock, peak RSS, and Docker disk usage:
+
+```bash
+/usr/bin/time -l go run ./cmd/benchmark run -mode live -scale large \
+  -distribution hotspot-overlap -iterations 2 -seed 42 \
+  -trade-count 2000000 -customer-count 200000 -security-count 20000 \
+  -truth-pass-sample-cap 10000 -duckdb-memory-mb 8192 \
+  -json-out .artifacts/benchmark/heavy-live-probe/2m.json \
+  -md-out .artifacts/benchmark/heavy-live-probe/2m.md
+```
+
+Repeat with `-trade-count 5000000 -customer-count 500000 -security-count 50000`
+(outputs `5m.json` / `5m.md`). Extrapolate: if the projected 10M peak RSS
+exceeds machine RAM or the projected runtime is unacceptable, stop and file
+the streaming/batched-load follow-up instead of forcing the run.
+
+### Official capture
+
+```bash
+/usr/bin/time -l make benchmark-heavy-live
+```
+
+- idle machine only; check load first (truth-pass throughput drops 5-10x
+  under load)
+- use `-run-timeout` when running unattended
+- expected runtime / peak RSS / disk: fill in from the first successful
+  capture and keep current
+
+### Reading sampled truth-pass results
+
+`heavy-live` reports `truth-pass-sampled` oracle mode for selective
+workloads: the expected result is the full reconstructed candidate set, and
+the engine was consulted for a seeded sample of `truth_pass_sample_cap`
+candidates. A sampled pass is strictly weaker evidence than an uncapped
+truth pass; `compare` flags capped-vs-uncapped runs as a methodology change.
+A spot-check failure means reconstruction and engine truth diverge — rerun
+the failing workload uncapped at `small` scale to investigate.
+
+### Tier-profile variants
+
+The official baseline uses `balanced-60-30-10`. To exercise the profiles
+called out in #100 manually:
+
+```bash
+go run ./cmd/benchmark baseline -preset heavy-live \
+  -distribution hotspot-overlap -tier-profile high-hot-40-20-40 \
+  -output-dir .artifacts/benchmark/heavy-live-high-hot \
+  -channel manual \
+  -git-sha $(git rev-parse HEAD) \
+  -git-ref $(git rev-parse --abbrev-ref HEAD)
+
+go run ./cmd/benchmark baseline -preset heavy-live \
+  -distribution hotspot-overlap -tier-profile long-history-85-10-5 \
+  -output-dir .artifacts/benchmark/heavy-live-long-history \
+  -channel manual \
+  -git-sha $(git rev-parse HEAD) \
+  -git-ref $(git rev-parse --abbrev-ref HEAD)
+```
+
+The `-tier-profile` flag on `baseline` depends on the tier-profile override
+plumbing added alongside the `heavy-live` preset. Note the tier profile
+changes `bench.Config`, so variant runs get their own `BenchmarkID` and never
+pollute the balanced baseline trend (same principle as #104's concurrency
+identity).
 
 ## How To Compare Runs
 
@@ -139,6 +216,7 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 - use `small-live` to collect executable baseline evidence without the full heavy workload set
 - use `medium-live` to compare behavior across distributions and page-depth workloads
 - use `heavy-plan` only when you need planning coverage for the full workload matrix
+- use `heavy-live` for large-scale executable evidence (manual, hours)
 - treat assertion failures as correctness regressions even if latency improves
 - treat large `max` growth separately from percentile movement; it is often a sign of tier skew or unstable deep pagination
 - read `correctness_failures` and `infra_failures` separately in benchmark summaries; only the latter indicates an execution-environment problem
@@ -153,6 +231,7 @@ Treat any future change that turns `prefer_hot` into a real execution flag as a 
 - `small-live`: roughly 1 to 5 minutes depending on machine size and Docker startup overhead
 - `medium-live`: noticeably slower; use in controlled review environments rather than PR-time CI
 - `heavy-plan`: planning-only and suitable for manual or nightly review, not routine pre-merge execution
+- `heavy-live`: pending first calibrated capture (see the calibration ladder above); plan for multiple hours on an idle machine, manual capacity-aware runs only
 
 ## Current Limitations
 
