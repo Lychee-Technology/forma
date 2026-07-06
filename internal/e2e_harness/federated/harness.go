@@ -32,6 +32,9 @@ type FederatedTestHarness struct {
 	S3Prefix  string
 	CDCConfig cdc.CDCConfig
 	Registry  forma.SchemaRegistry
+	// DuckCfg is the DuckDB configuration the harness started DuckDB with,
+	// kept so engine construction reuses the truthful resource settings.
+	DuckCfg forma.DuckDBConfig
 
 	// Postgres connection info for DuckDB postgres_scan
 	PGHost     string
@@ -144,8 +147,32 @@ type ParquetMetadata struct {
 	SizeBytes  int64
 }
 
+// HarnessOption customizes federated test harness construction.
+type HarnessOption func(*harnessOptions)
+
+type harnessOptions struct {
+	duckThreads        int
+	duckMemoryLimitMB  int
+	duckMaxConnections int
+}
+
+// WithDuckDBResources overrides the DuckDB resource settings the harness
+// starts DuckDB with. Zero values keep the harness defaults (4 threads,
+// 4096MB memory limit, 4 connections).
+func WithDuckDBResources(threads, memoryLimitMB, maxConnections int) HarnessOption {
+	return func(o *harnessOptions) {
+		o.duckThreads = threads
+		o.duckMemoryLimitMB = memoryLimitMB
+		o.duckMaxConnections = maxConnections
+	}
+}
+
 // NewFederatedTestHarness creates a new federated test harness with all dependencies.
-func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error) {
+func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*FederatedTestHarness, error) {
+	options := harnessOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
 	logger, _ := zap.NewDevelopment()
 	base := &e2e_harness.TestHarness{}
 	externalCfg, err := loadExternalFederatedConfigFromEnv()
@@ -163,6 +190,7 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 	s3AccessKey := "minioadmin"
 	s3SecretKey := "minioadmin"
 
+	var duckCfg forma.DuckDBConfig
 	if externalCfg.Enabled {
 		if externalCfg.UseExternalPG {
 			if err := base.ConnectPostgres(ctx, externalCfg.PGDSN); err != nil {
@@ -175,7 +203,9 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 		}
 
 		base.S3Endpoint = externalCfg.S3Endpoint
-		if err := startDuckDB(base, externalCfg.S3Endpoint, externalCfg.S3AccessKey, externalCfg.S3SecretKey, externalCfg.S3Region); err != nil {
+		var err error
+		duckCfg, err = startDuckDB(base, externalCfg.S3Endpoint, externalCfg.S3AccessKey, externalCfg.S3SecretKey, externalCfg.S3Region, options)
+		if err != nil {
 			cleanupContainers(ctx, base)
 			return nil, fmt.Errorf("start duckdb: %w", err)
 		}
@@ -192,7 +222,9 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 			pgSSLMode = externalCfg.PGSSLMode
 		}
 	} else {
-		if err := startContainers(ctx, base); err != nil {
+		var err error
+		duckCfg, err = startContainers(ctx, base, options)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -220,6 +252,7 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 
 	h := &FederatedTestHarness{
 		TestHarness:   base,
+		DuckCfg:       duckCfg,
 		SchemaID:      1,
 		S3Bucket:      bucket,
 		S3Prefix:      prefix,
@@ -267,31 +300,38 @@ func NewFederatedTestHarness(ctx context.Context) (*FederatedTestHarness, error)
 	return h, nil
 }
 
-// startContainers starts Postgres, S3, and DuckDB containers.
-func startContainers(ctx context.Context, base *e2e_harness.TestHarness) error {
+// startContainers starts Postgres, S3, and DuckDB containers. It returns the
+// DuckDB configuration DuckDB was started with.
+func startContainers(ctx context.Context, base *e2e_harness.TestHarness, opts harnessOptions) (forma.DuckDBConfig, error) {
 	if _, err := base.StartPostgres(ctx); err != nil {
-		return fmt.Errorf("start postgres: %w", err)
+		return forma.DuckDBConfig{}, fmt.Errorf("start postgres: %w", err)
 	}
 
 	if _, err := base.StartS3(ctx); err != nil {
 		_ = base.StopPostgres(ctx)
-		return fmt.Errorf("start s3: %w", err)
+		return forma.DuckDBConfig{}, fmt.Errorf("start s3: %w", err)
 	}
 
-	if err := startDuckDB(base, base.S3Endpoint, "minioadmin", "minioadmin", "us-east-1"); err != nil {
+	duckCfg, err := startDuckDB(base, base.S3Endpoint, "minioadmin", "minioadmin", "us-east-1", opts)
+	if err != nil {
 		_ = base.StopS3(ctx)
 		_ = base.StopPostgres(ctx)
-		return fmt.Errorf("start duckdb: %w", err)
+		return forma.DuckDBConfig{}, fmt.Errorf("start duckdb: %w", err)
 	}
 
-	return nil
+	return duckCfg, nil
 }
 
-func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3SecretKey, s3Region string) error {
+// startDuckDB starts DuckDB with the harness defaults, applying any resource
+// overrides from opts, and returns the configuration it was started with.
+func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3SecretKey, s3Region string, opts harnessOptions) (forma.DuckDBConfig, error) {
 	duckCfg := forma.DuckDBConfig{
-		Enabled:        true,
-		DBPath:         ":memory:",
-		MemoryLimitMB:  512,
+		Enabled: true,
+		DBPath:  ":memory:",
+		// 4096 matches the production default; the old 512 never actually
+		// governed federated queries because the query template re-set the
+		// instance to 4GB on every execution before #104 removed that PRAGMA.
+		MemoryLimitMB:  4096,
 		EnableS3:       true,
 		EnableParquet:  true,
 		S3Endpoint:     s3Endpoint,
@@ -302,7 +342,16 @@ func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3Secre
 		QueryTimeout:   60 * time.Second,
 		MaxParallelism: 4,
 	}
-	return base.StartDuckDB(duckCfg)
+	if opts.duckThreads > 0 {
+		duckCfg.MaxParallelism = opts.duckThreads
+	}
+	if opts.duckMemoryLimitMB > 0 {
+		duckCfg.MemoryLimitMB = opts.duckMemoryLimitMB
+	}
+	if opts.duckMaxConnections > 0 {
+		duckCfg.MaxConnections = opts.duckMaxConnections
+	}
+	return duckCfg, base.StartDuckDB(duckCfg)
 }
 
 // createS3Client creates an AWS S3 client configured for MinIO.

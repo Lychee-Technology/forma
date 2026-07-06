@@ -47,6 +47,12 @@ type Config struct {
 	DeleteRatio   float64       `json:"delete_ratio,omitempty"`
 	TierProfile   string        `json:"tier_profile,omitempty"`
 	Workloads     []string      `json:"workloads"`
+	// DuckDBThreads / DuckDBMemoryLimitMB override the harness DuckDB
+	// resources for live runs (0 = harness default). omitempty keeps the
+	// BenchmarkID hash of existing artifacts stable (BuildArtifactMetadata
+	// hashes the whole Config).
+	DuckDBThreads       int `json:"duckdb_threads,omitempty"`
+	DuckDBMemoryLimitMB int `json:"duckdb_memory_limit_mb,omitempty"`
 }
 
 // DefaultConfig returns the benchmark scaffold defaults.
@@ -116,6 +122,12 @@ func (c Config) Validate() error {
 	}
 	if c.PageSize <= 0 {
 		return fmt.Errorf("page size must be greater than zero")
+	}
+	if c.DuckDBThreads < 0 {
+		return fmt.Errorf("duckdb threads must be greater than or equal to zero")
+	}
+	if c.DuckDBMemoryLimitMB < 0 {
+		return fmt.Errorf("duckdb memory limit must be greater than or equal to zero")
 	}
 	if c.TierProfile != "" {
 		if _, err := ResolveTierMixProfile(c.TierProfile); err != nil {

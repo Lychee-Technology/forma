@@ -147,6 +147,34 @@ go run ./cmd/benchmark baseline \
   -output-dir .artifacts/benchmark
 ```
 
+### Concurrency Evidence Sweep (#104)
+
+```bash
+make benchmark-concurrency
+```
+
+Runs the full small-live preset at `Concurrency=1,2,4,8` and aggregates the
+four runs into `.artifacts/benchmark/concurrency/concurrency-report.md`
+(overall and per-workload p50/p95/p99/QPS per level, plus the
+`concurrent-run-*` stability assertion pass rates from PR #94). Each level is
+a complete live run (~35 minutes on an idle machine, hours under load):
+operator-initiated only, never CI. Concurrent baselines write to `-c{N}`
+suffixed directories and form their own trend comparability group, so they
+never pollute the sequential (`C=1`) baseline window.
+
+Individual pieces compose too:
+
+```bash
+go run ./cmd/benchmark baseline -preset small-live -concurrency 4 \
+  -output-dir .artifacts/benchmark/concurrency
+go run ./cmd/benchmark concurrency-report \
+  -input-dir .artifacts/benchmark/concurrency -md-out report.md
+```
+
+DuckDB resources are connection-level configuration (the query template no
+longer hardcodes PRAGMAs); override per run with `-duckdb-threads` /
+`-duckdb-memory-mb` on either `baseline` or `run`.
+
 ## CI Guidance
 
 Use these rules in CI and automation for the current benchmark model.

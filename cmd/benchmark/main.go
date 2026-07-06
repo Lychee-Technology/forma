@@ -36,7 +36,8 @@ var (
 		if err != nil {
 			return nil, err
 		}
-		h, err := federated.NewFederatedTestHarness(ctx)
+		h, err := federated.NewFederatedTestHarness(ctx,
+			federated.WithDuckDBResources(cfg.DuckDBThreads, cfg.DuckDBMemoryLimitMB, 0))
 		if err != nil {
 			return nil, fmt.Errorf("create federated harness: %w", err)
 		}
@@ -77,6 +78,8 @@ func runBenchmarkMain(ctx context.Context, args []string, out, errOut io.Writer)
 		return runBenchmark(ctx, args[1:], out, errOut)
 	case "trend":
 		return runTrend(args[1:], out, errOut)
+	case "concurrency-report":
+		return runConcurrencyReport(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		printUsage(out)
@@ -93,6 +96,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  baseline   Capture a baseline artifact set for a preset")
 	fmt.Fprintln(out, "  run        Execute benchmark validation or live runtime")
 	fmt.Fprintln(out, "  trend      Analyze longitudinal benchmark trends and regressions")
+	fmt.Fprintln(out, "  concurrency-report  Aggregate per-concurrency summaries into one p50/p95/p99 matrix")
 }
 
 func runDescribe(out io.Writer) int {
@@ -137,6 +141,9 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	gitSHA := flags.String("git-sha", "", "Provenance git commit SHA")
 	gitRef := flags.String("git-ref", "", "Provenance git ref")
 	label := flags.String("label", "", "Provenance human-readable label")
+	concurrency := flags.Int("concurrency", 0, "Override preset concurrency (0 = preset value)")
+	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
+	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -144,6 +151,17 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	if err != nil {
 		fmt.Fprintf(errOut, "baseline setup failed: %v\n", err)
 		return 1
+	}
+	if *concurrency > 0 {
+		config.Concurrency = *concurrency
+	}
+	config.DuckDBThreads = *duckDBThreads
+	config.DuckDBMemoryLimitMB = *duckDBMemoryMB
+	// Concurrent baselines get their own artifact directory (-c{N}); C<=1
+	// keeps the preset directory so existing capture paths (and the
+	// make benchmark-regression contract) are untouched.
+	if config.Concurrency > 1 {
+		dirName = fmt.Sprintf("%s-c%d", dirName, config.Concurrency)
 	}
 	outputs := runOutputs{
 		baselineDir: filepath.Join(*outputDir, dirName),
@@ -202,6 +220,65 @@ func compareSummaryFiles(baselinePath, candidatePath string, out, errOut io.Writ
 	}
 	fmt.Fprintln(errOut, bench.FormatDiffSummary(diff))
 	return writeJSON(out, diff)
+}
+
+// runConcurrencyReport aggregates one benchmark-summary.json per concurrency
+// level into a single publishable markdown/JSON artifact (#104).
+func runConcurrencyReport(args []string, out, errOut io.Writer) int {
+	flags := flag.NewFlagSet("concurrency-report", flag.ContinueOnError)
+	flags.SetOutput(errOut)
+	inputs := flags.String("inputs", "", "Comma-separated benchmark-summary.json paths (one per concurrency level)")
+	inputDir := flags.String("input-dir", "", "Directory tree scanned for benchmark-summary.json files")
+	mdOut := flags.String("md-out", "", "Path for the markdown report (omit to print to stdout)")
+	jsonOut := flags.String("json-out", "", "Optional path for the JSON report")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+
+	var summaries []bench.SummaryReport
+	if *inputDir != "" {
+		collected, err := bench.CollectConcurrencySummaries(*inputDir)
+		if err != nil {
+			fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+			return 1
+		}
+		summaries = append(summaries, collected...)
+	}
+	for _, path := range strings.Split(*inputs, ",") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		summary, err := bench.ReadSummaryReport(path)
+		if err != nil {
+			fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+			return 1
+		}
+		summaries = append(summaries, summary)
+	}
+	if len(summaries) == 0 {
+		fmt.Fprintln(errOut, "concurrency-report requires -inputs or -input-dir")
+		return 1
+	}
+
+	report, err := bench.BuildConcurrencyReport(summaries)
+	if err != nil {
+		fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+		return 1
+	}
+	if err := bench.WriteConcurrencyReport(*jsonOut, *mdOut, report); err != nil {
+		fmt.Fprintf(errOut, "concurrency-report failed: %v\n", err)
+		return 1
+	}
+	if *mdOut == "" {
+		fmt.Fprint(out, bench.FormatConcurrencyMarkdown(report))
+	} else {
+		fmt.Fprintf(out, "concurrency report written to %s\n", *mdOut)
+	}
+	if !report.Comparable {
+		fmt.Fprintln(errOut, "warning: runs are not directly comparable; see report warnings")
+	}
+	return 0
 }
 
 func runTrend(args []string, out, errOut io.Writer) int {
@@ -277,6 +354,8 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 	tierProfile := flags.String("tier-profile", bench.DefaultTierMixProfile().Name, "Tier mix profile: balanced, high-hot, long-history, or explicit profile name")
 	seed := flags.Int64("seed", 42, "Deterministic benchmark seed")
 	tradeCount := flags.Int("trade-count", 0, "Override generated trade row count")
+	duckDBThreads := flags.Int("duckdb-threads", 0, "Override DuckDB threads for live runs (0 = harness default)")
+	duckDBMemoryMB := flags.Int("duckdb-memory-mb", 0, "Override DuckDB memory limit in MB for live runs (0 = harness default)")
 	customerCount := flags.Int("customer-count", 0, "Override generated customer row count")
 	securityCount := flags.Int("security-count", 0, "Override generated security row count")
 	overlapRatio := flags.Float64("overlap-ratio", 0, "Override overlap ratio")
@@ -307,6 +386,9 @@ func parseRunConfig(args []string, errOut io.Writer) (bench.Config, runOutputs, 
 		OverlapRatio:  *overlapRatio,
 		DeleteRatio:   *deleteRatio,
 		Workloads:     parseWorkloads(*workloads),
+
+		DuckDBThreads:       *duckDBThreads,
+		DuckDBMemoryLimitMB: *duckDBMemoryMB,
 	}.WithDefaults()
 	outputs := runOutputs{jsonOut: *jsonOut, mdOut: *mdOut, baselineDir: *baselineDir}
 	outputs.channel = *channel
@@ -345,6 +427,7 @@ func executeBenchmarkRun(ctx context.Context, cfg bench.Config, outputs runOutpu
 			Scale:        string(result.Config.Scale),
 			Distribution: string(result.Config.Distribution),
 			TierProfile:  result.Config.TierProfile,
+			Concurrency:  result.Config.Concurrency,
 		}
 	}
 	if outputs.jsonOut != "" {

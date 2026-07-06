@@ -78,6 +78,26 @@ benchmark-trend: create-build-dir
 	@echo "Running benchmark trend analysis..."
 	@$(GOENV) go run ./cmd/benchmark trend -history-dir .artifacts/benchmark
 
+# Concurrency evidence sweep (#104): full small-live at C=1/2/4/8 plus the
+# aggregated report. Each level is a complete live run (~35min+ on an idle
+# machine, hours under load) — operator-initiated only, never CI.
+benchmark-concurrency: create-build-dir
+	@echo "Running concurrency evidence sweep (C=1,2,4,8; several hours)..."
+	@mkdir -p .artifacts/benchmark/concurrency
+	@for c in 1 2 4 8; do \
+		$(GOENV) go run ./cmd/benchmark baseline -preset small-live \
+			-concurrency $$c \
+			-output-dir .artifacts/benchmark/concurrency \
+			-channel manual -label concurrency-sweep-c$$c \
+			-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
+			-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "") || exit 1; \
+	done
+	@$(GOENV) go run ./cmd/benchmark concurrency-report \
+		-input-dir .artifacts/benchmark/concurrency \
+		-md-out .artifacts/benchmark/concurrency/concurrency-report.md \
+		-json-out .artifacts/benchmark/concurrency/concurrency-report.json
+	@echo "Concurrency report written to .artifacts/benchmark/concurrency/concurrency-report.md"
+
 benchmark-heavy: create-build-dir
 	@echo "Running benchmark heavy planning set..."
 	@mkdir -p .artifacts/benchmark/heavy

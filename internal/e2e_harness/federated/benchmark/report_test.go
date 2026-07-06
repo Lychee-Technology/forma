@@ -266,6 +266,27 @@ func TestCompareSummaryReports(t *testing.T) {
 	}
 }
 
+func TestCompareWorkloadSummariesP99Delta(t *testing.T) {
+	baseline := SummaryReport{
+		Workloads: []WorkloadSummary{{Name: "q1", P99: 30 * time.Millisecond}},
+	}
+	candidate := SummaryReport{
+		Workloads: []WorkloadSummary{{Name: "q1", P99: 42 * time.Millisecond}},
+	}
+
+	diff := CompareSummaryReports(baseline, candidate)
+	if len(diff.Workloads) != 1 {
+		t.Fatalf("expected one workload diff, got %d", len(diff.Workloads))
+	}
+	if diff.Workloads[0].P99LatencyDelta != 12*time.Millisecond {
+		t.Fatalf("expected workload p99 delta of 12ms, got %s", diff.Workloads[0].P99LatencyDelta)
+	}
+	formatted := FormatDiffSummary(diff)
+	if !strings.Contains(formatted, "p99_latency_delta=") {
+		t.Fatalf("expected workload p99 delta in formatted diff: %s", formatted)
+	}
+}
+
 func TestWriteAndReadDiffReport(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "diff.json")
@@ -452,6 +473,91 @@ func TestReadTrendHistory(t *testing.T) {
 	}
 	if runs[2].Summary.Metadata.BenchmarkID != "bench-ccc" {
 		t.Fatalf("expected newest run last, got %s", runs[2].Summary.Metadata.BenchmarkID)
+	}
+}
+
+func TestProvenanceCarriesConcurrency(t *testing.T) {
+	baseTime := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	result := &RunResult{
+		Passed:      true,
+		StartedAt:   baseTime,
+		CompletedAt: baseTime.Add(10 * time.Second),
+		Config:      Config{Mode: ExecutionModeLive, Scale: ScaleSmall, Distribution: DistributionUniform, TierProfile: DefaultTierMixProfile().Name, Concurrency: 4},
+		Executions: []WorkloadRunResult{{
+			Name:     "q1",
+			Passed:   true,
+			Duration: 10 * time.Millisecond,
+		}},
+	}
+
+	summary := SummarizeRunResult(result)
+	if summary.Provenance == nil || summary.Provenance.Concurrency != 4 {
+		t.Fatalf("expected fallback provenance to carry concurrency 4, got %+v", summary.Provenance)
+	}
+
+	result.Provenance = &RunProvenance{Channel: "manual"}
+	summary = SummarizeRunResult(result)
+	if summary.Provenance == nil || summary.Provenance.Concurrency != 4 {
+		t.Fatalf("expected explicit provenance to be backfilled with concurrency 4, got %+v", summary.Provenance)
+	}
+}
+
+// TestBuildComparabilityIdentity_ConcurrencySegment: runs at concurrency > 1
+// must not share a trend baseline window with sequential runs, while C<=1
+// keeps the legacy identity so historical artifacts stay comparable.
+func TestBuildComparabilityIdentity_ConcurrencySegment(t *testing.T) {
+	mk := func(concurrency int) SummaryReport {
+		return SummaryReport{
+			Metadata: ArtifactMetadata{BenchmarkID: "bench"},
+			Provenance: &RunProvenance{
+				Mode:         string(ExecutionModeLive),
+				Scale:        string(ScaleSmall),
+				Distribution: string(DistributionUniform),
+				TierProfile:  DefaultTierMixProfile().Name,
+				Concurrency:  concurrency,
+			},
+			Workloads: []WorkloadSummary{{Name: "q1"}},
+		}
+	}
+
+	legacy := mk(0)
+	sequential := mk(1)
+	concurrent := mk(4)
+
+	if buildComparabilityIdentity(legacy) != buildComparabilityIdentity(sequential) {
+		t.Fatalf("expected C<=1 to keep the legacy comparability key")
+	}
+	if buildComparabilityIdentity(concurrent) == buildComparabilityIdentity(legacy) {
+		t.Fatalf("expected concurrent runs to form their own comparability group")
+	}
+	if !strings.HasSuffix(buildComparabilityIdentity(concurrent), "|c4") {
+		t.Fatalf("expected concurrency segment suffix, got %q", buildComparabilityIdentity(concurrent))
+	}
+}
+
+// TestReadTrendHistorySkipsNilProvenance: manual/legacy artifacts without
+// provenance must be skipped (trend needs timestamps), not panic.
+func TestReadTrendHistorySkipsNilProvenance(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "legacy")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := SummaryReport{Metadata: ArtifactMetadata{BenchmarkID: "legacy"}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "benchmark-summary.json"), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	runs, err := ReadTrendHistory(dir)
+	if err != nil {
+		t.Fatalf("read trend history: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected provenance-less summary to be skipped, got %d runs", len(runs))
 	}
 }
 

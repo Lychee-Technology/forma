@@ -24,6 +24,19 @@ func TestDuckDBBreakerConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestDuckDBResourceConfigDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultDuckDBConfig()
+
+	if cfg.MaxParallelism != 4 {
+		t.Errorf("Expected max parallelism to default to 4 (parity with the removed template PRAGMA threads=4), got %d", cfg.MaxParallelism)
+	}
+	if cfg.MemoryLimitMB != 4096 {
+		t.Errorf("Expected memory limit to default to 4096MB (parity with the removed template PRAGMA memory_limit='4GB'), got %d", cfg.MemoryLimitMB)
+	}
+}
+
 func TestDuckDBBreakerConfigValidation(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +70,20 @@ func TestDuckDBBreakerConfigValidation(t *testing.T) {
 				CircuitBreakerOpenDuration: -time.Second,
 			},
 			errorField: "duckdb.circuitBreakerOpenDuration",
+		},
+		{
+			name: "negative max parallelism",
+			duckDB: DuckDBConfig{
+				MaxParallelism: -1,
+			},
+			errorField: "duckdb.maxParallelism",
+		},
+		{
+			name: "negative memory limit",
+			duckDB: DuckDBConfig{
+				MemoryLimitMB: -1,
+			},
+			errorField: "duckdb.memoryLimitMB",
 		},
 	}
 

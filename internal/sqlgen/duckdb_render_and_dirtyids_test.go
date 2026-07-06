@@ -11,6 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestAdvancedTemplate_NoResourcePragmas locks the #104 contract: resource
+// pragmas (threads / memory_limit) are connection-level configuration
+// (DuckDBConfig via applyResourcePragmas), never per-query SQL — a template
+// pragma executes on every query and silently overrides the configured
+// connection-level values.
+func TestAdvancedTemplate_NoResourcePragmas(t *testing.T) {
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
+	}
+	dual := &DualClauses{DuckClause: "1=1"}
+
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, map[string]any{}, q, nil, dual)
+	require.NoError(t, err)
+	require.NotContains(t, sql, "PRAGMA")
+}
+
 // Test RenderS3ParquetPath templating.
 func TestRenderS3ParquetPath_Render(t *testing.T) {
 	got, err := RenderS3ParquetPath("s3://bucket/schema_{{.SchemaID}}/data.parquet", 42)
