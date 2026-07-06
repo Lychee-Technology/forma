@@ -1872,12 +1872,13 @@ var benchmarkTradeFilterColumns = map[string]string{
 }
 
 var benchmarkTradeFilterEAVAttrs = map[string]int16{
-	"exchange": 8,
+	"exchange":     8,
+	"orderChannel": 12,
 }
 
 func recordMatchesFilter(record *model.PersistentRecord, attribute, expected string) bool {
 	switch attribute {
-	case "symbol", "exchange", "region", "name":
+	case "symbol", "exchange", "region", "name", "orderChannel":
 		value, ok := benchmarkRecordTextValue(record, attribute)
 		return ok && value == expected
 	case "tradeType":
@@ -1889,7 +1890,9 @@ func recordMatchesFilter(record *model.PersistentRecord, attribute, expected str
 		}
 		return false
 	default:
-		return true
+		// Fail closed: an unmapped filter attribute means the oracle cannot
+		// verify the row, and silently passing would mask filter regressions.
+		return false
 	}
 }
 

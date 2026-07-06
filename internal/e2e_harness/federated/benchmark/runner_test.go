@@ -611,3 +611,28 @@ func TestRecordMatchesFilterHandlesStorageLayoutRecords(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordMatchesFilterFailsClosedForUnsupportedAttributes(t *testing.T) {
+	// PR #149 review: the filter oracle must not silently pass attributes it
+	// cannot resolve — that would mask filter regressions (#147 intent).
+	web := "web"
+	serviceShaped := &model.PersistentRecord{
+		SchemaID: SchemaIDTrade,
+		OtherAttributes: []model.EAVRecord{
+			{AttrID: 12, ValueText: &web},
+		},
+	}
+
+	if !recordMatchesFilter(serviceShaped, "orderChannel", "web") {
+		t.Fatal("service record should match orderChannel filter via EAV attr 12")
+	}
+	if recordMatchesFilter(serviceShaped, "orderChannel", "branch") {
+		t.Fatal("service record should reject wrong orderChannel value")
+	}
+	if recordMatchesFilter(serviceShaped, "brokerId", "BRK-0001") {
+		t.Fatal("unsupported filter attribute must fail closed")
+	}
+	if recordMatchesFilter(&model.PersistentRecord{SchemaID: SchemaIDTrade}, "orderChannel", "web") {
+		t.Fatal("record without the attribute must not match")
+	}
+}
