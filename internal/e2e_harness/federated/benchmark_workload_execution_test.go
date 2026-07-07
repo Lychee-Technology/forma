@@ -4,6 +4,7 @@ package federated_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,65 @@ import (
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
 	"github.com/stretchr/testify/require"
 )
+
+// knownFailingAssertions allowlists the EXACT (workload, assertion-name) pairs
+// that are known to fail for a pre-existing bug, each tagged with its tracking
+// issue. #150 fails the suite on any failed correctness assertion except these
+// specific pairs — so a NEW kind of failure in one of these same workloads (a
+// different assertion) still turns the suite red. This is an explicit,
+// issue-referenced allowlist, not a whole-workload skip. Remove entries as
+// their issues land.
+//
+//   - eav-low-selectivity-page: the truth-pass oracle's per-candidate harness
+//     query cannot filter the pure-EAV attribute orderChannel (absent from the
+//     hardcoded benchmarkQueryColumn / targetedHotFilterExpression / hot-pivot /
+//     parquet-projection maps), so it undercounts hot-tier candidates. Folded
+//     into the truth-pass oracle rework (#156).
+//   - mixed-hot-eav-page / tier-pushdown-mixed: the service path returns zero
+//     rows for the composite main+EAV filter (symbol AND exchange) though each
+//     condition works alone (#161).
+var knownFailingAssertions = map[string]map[string]string{
+	"eav-low-selectivity-page": {
+		"total-records-match-expected": "#156",
+		"page-row-ids-match-expected":  "#156",
+	},
+	"mixed-hot-eav-page": {
+		"total-records-match-expected": "#161",
+		"page-row-ids-match-expected":  "#161",
+	},
+	"tier-pushdown-mixed": {
+		"total-records-match-expected": "#161",
+		"page-row-ids-match-expected":  "#161",
+	},
+}
+
+// assertWorkloadOraclesGreen fails the test if any workload has a failed
+// correctness assertion that is not in the documented knownFailingAssertions
+// allowlist. Allowlisting is per (workload, assertion-name), so a new failure
+// mode in an already-known-failing workload still fails the suite. The failure
+// message names the workload and the specific failing assertion (#150).
+func assertWorkloadOraclesGreen(t *testing.T, result *bench.RunResult) {
+	t.Helper()
+	var failures []string
+	for _, execution := range result.Executions {
+		if execution.Passed {
+			continue
+		}
+		allowed := knownFailingAssertions[execution.Name]
+		for _, a := range execution.Assertions {
+			if a.Passed {
+				continue
+			}
+			detail := fmt.Sprintf("workload %q assertion %q: %s", execution.Name, a.Name, a.Message)
+			if issue, known := allowed[a.Name]; known {
+				t.Logf("KNOWN-FAILING (tracked in %s) — %s", issue, detail)
+				continue
+			}
+			failures = append(failures, detail)
+		}
+	}
+	require.Empty(t, failures, "benchmark oracle regressions detected:\n%s", strings.Join(failures, "\n"))
+}
 
 func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -60,23 +120,31 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	require.Len(t, result.Executions, 32)
 	require.Contains(t, result.Notes, "oracle_modes loaded_state=8 truth_pass=8")
 	require.Contains(t, result.Notes, "prefer_hot expresses workload intent and report provenance, not hard execution routing")
-	customerSeen := false
-	securitySeen := false
-	filteredSeen := false
-	lowSelectiveSeen := false
-	eavSeen := false
-	mixedFilterSeen := false
-	mixedTierSeen := false
-	hotOnlySeen := false
-	coldOnlySeen := false
-	expectedOracleAssertionsSeen := false
-	tradeTimeWindowAssertionSeen := false
-	repeatedRunStabilitySeen := false
-	pushdownHotSeen := false
-	pushdownEAVSeen := false
-	pushdownMixedSeen := false
-	pushdownColdOnlySeen := false
-	pushdownAssertionsSeen := false
+	requireWorkloadCoverage(t, scanWorkloadCoverage(t, result))
+
+	// #150: fail on any failed correctness assertion that is not an explicitly
+	// allowlisted (workload, assertion) pair tracked in a separate issue.
+	assertWorkloadOraclesGreen(t, result)
+}
+
+// workloadCoverage records which expected workloads and assertion families the
+// harness run exercised. It exists to split the pre-existing coverage scan out
+// of the test body so each function stays within the 100-line limit
+// (coding-standard.md §1).
+type workloadCoverage struct {
+	customer, security, filtered, lowSelective, eav, mixedFilter bool
+	mixedTier, hotOnly, coldOnly                                 bool
+	expectedOracleAssertions, tradeTimeWindow, repeatedStability bool
+	pushdownHot, pushdownEAV, pushdownMixed, pushdownColdOnly     bool
+	pushdownAssertions                                           bool
+}
+
+// scanWorkloadCoverage walks the executions, runs the per-workload structural
+// checks (infra-free execution, expected plan notes / per-tier metrics), and
+// records which workloads and assertion families were seen.
+func scanWorkloadCoverage(t *testing.T, result *bench.RunResult) workloadCoverage {
+	t.Helper()
+	var c workloadCoverage
 	for _, execution := range result.Executions {
 		require.NotEmpty(t, execution.Name)
 		require.GreaterOrEqual(t, execution.ResultCount, 0)
@@ -86,93 +154,81 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 		}
 		require.NotEmpty(t, execution.Assertions)
 		require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected live benchmark execution to avoid infrastructure failures")
-		if execution.Name == "hot-selective-page" {
-			filteredSeen = true
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected hot selective workload to execute without infra failure")
-		}
-		if execution.Name == "customer-region-page" {
-			customerSeen = true
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected customer workload to execute without infra failure")
-		}
-		if execution.Name == "security-symbol-page" {
-			securitySeen = true
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected security workload to execute without infra failure")
-		}
-		if execution.Name == "eav-selective-page" {
-			eavSeen = true
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected EAV selective workload to execute without infra failure")
-		}
-		if execution.Name == "hot-low-selectivity-page" {
-			lowSelectiveSeen = true
+		switch execution.Name {
+		case "hot-selective-page":
+			c.filtered = true
+		case "customer-region-page":
+			c.customer = true
+		case "security-symbol-page":
+			c.security = true
+		case "eav-selective-page":
+			c.eav = true
+		case "hot-low-selectivity-page":
+			c.lowSelective = true
 			require.Contains(t, execution.PlanNotes, "entity_manager_query_service")
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected low-selectivity workload to execute without infra failure")
-		}
-		if execution.Name == "mixed-hot-eav-page" {
-			mixedFilterSeen = true
+		case "mixed-hot-eav-page":
+			c.mixedFilter = true
 			require.Contains(t, execution.PlanNotes, "entity_manager_query_service")
-			require.NotEqual(t, bench.FailureKindInfra, execution.FailureKind, "expected mixed hot+EAV workload to execute without infra failure")
-		}
-		if execution.Name == "mixed-tier-window" {
-			mixedTierSeen = true
-		}
-		if execution.Name == "hot-only-window" {
-			hotOnlySeen = true
+		case "mixed-tier-window":
+			c.mixedTier = true
+		case "hot-only-window":
+			c.hotOnly = true
 			require.True(t, execution.PreferHot)
 			require.Contains(t, execution.PlanNotes, "prefer_hot=true (intent/provenance only; no hard routing override yet)")
 			require.Contains(t, execution.PlanNotes, "prefer_hot_execution=true (postgres-only override active for tier-mix workload)")
-		}
-		if execution.Name == "cold-only-window" {
-			coldOnlySeen = true
-		}
-		if execution.Name == "tier-pushdown-hot" {
-			pushdownHotSeen = true
+		case "cold-only-window":
+			c.coldOnly = true
+		case "tier-pushdown-hot":
+			c.pushdownHot = true
 			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-hot workload")
 			require.Contains(t, execution.PlanNotes, "entity_manager_query_service")
-		}
-		if execution.Name == "tier-pushdown-eav" {
-			pushdownEAVSeen = true
+		case "tier-pushdown-eav":
+			c.pushdownEAV = true
 			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-eav workload")
-		}
-		if execution.Name == "tier-pushdown-mixed" {
-			pushdownMixedSeen = true
+		case "tier-pushdown-mixed":
+			c.pushdownMixed = true
 			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-mixed workload")
-		}
-		if execution.Name == "tier-pushdown-cold-only" {
-			pushdownColdOnlySeen = true
+		case "tier-pushdown-cold-only":
+			c.pushdownColdOnly = true
 			require.NotNil(t, execution.PerTier, "expected per-tier metrics for pushdown-cold-only workload")
 		}
 		for _, assertion := range execution.Assertions {
-			if assertion.Name == "total-records-match-expected" || assertion.Name == "page-row-ids-match-expected" {
-				expectedOracleAssertionsSeen = true
-			}
-			if assertion.Name == "repeated-run-failure-kind-stable" || assertion.Name == "repeated-run-total-records-stable" || assertion.Name == "repeated-run-page-row-ids-stable" {
-				repeatedRunStabilitySeen = true
-			}
-			if (execution.Name == "mixed-tier-window" || execution.Name == "hot-only-window" || execution.Name == "cold-only-window") && assertion.Name == "tradeTime-window-match-request" {
-				tradeTimeWindowAssertionSeen = true
-			}
-			if assertion.Name == "pushdown-plan-sources-present" || assertion.Name == "pushdown-pg-rows-tracked" {
-				pushdownAssertionsSeen = true
+			switch {
+			case assertion.Name == "total-records-match-expected" || assertion.Name == "page-row-ids-match-expected":
+				c.expectedOracleAssertions = true
+			case assertion.Name == "repeated-run-failure-kind-stable" || assertion.Name == "repeated-run-total-records-stable" || assertion.Name == "repeated-run-page-row-ids-stable":
+				c.repeatedStability = true
+			case (execution.Name == "mixed-tier-window" || execution.Name == "hot-only-window" || execution.Name == "cold-only-window") && assertion.Name == "tradeTime-window-match-request":
+				c.tradeTimeWindow = true
+			case assertion.Name == "pushdown-plan-sources-present" || assertion.Name == "pushdown-pg-rows-tracked":
+				c.pushdownAssertions = true
 			}
 		}
 	}
-	require.True(t, customerSeen)
-	require.True(t, securitySeen)
-	require.True(t, filteredSeen)
-	require.True(t, lowSelectiveSeen)
-	require.True(t, eavSeen)
-	require.True(t, mixedFilterSeen)
-	require.True(t, mixedTierSeen)
-	require.True(t, hotOnlySeen)
-	require.True(t, coldOnlySeen)
-	require.True(t, expectedOracleAssertionsSeen, "expected result oracle assertions to be exercised")
-	require.True(t, repeatedRunStabilitySeen, "expected repeated-run stability assertions to be exercised")
-	require.True(t, tradeTimeWindowAssertionSeen, "expected mixed-tier window assertion to be exercised")
-	require.True(t, pushdownHotSeen, "expected tier-pushdown-hot workload to be executed")
-	require.True(t, pushdownEAVSeen, "expected tier-pushdown-eav workload to be executed")
-	require.True(t, pushdownMixedSeen, "expected tier-pushdown-mixed workload to be executed")
-	require.True(t, pushdownColdOnlySeen, "expected tier-pushdown-cold-only workload to be executed")
-	require.True(t, pushdownAssertionsSeen, "expected pushdown assertions to be exercised")
+	return c
+}
+
+// requireWorkloadCoverage asserts every expected workload and assertion family
+// was exercised by the run.
+func requireWorkloadCoverage(t *testing.T, c workloadCoverage) {
+	t.Helper()
+	require.True(t, c.customer)
+	require.True(t, c.security)
+	require.True(t, c.filtered)
+	require.True(t, c.lowSelective)
+	require.True(t, c.eav)
+	require.True(t, c.mixedFilter)
+	require.True(t, c.mixedTier)
+	require.True(t, c.hotOnly)
+	require.True(t, c.coldOnly)
+	require.True(t, c.expectedOracleAssertions, "expected result oracle assertions to be exercised")
+	require.True(t, c.repeatedStability, "expected repeated-run stability assertions to be exercised")
+	require.True(t, c.tradeTimeWindow, "expected mixed-tier window assertion to be exercised")
+	require.True(t, c.pushdownHot, "expected tier-pushdown-hot workload to be executed")
+	require.True(t, c.pushdownEAV, "expected tier-pushdown-eav workload to be executed")
+	require.True(t, c.pushdownMixed, "expected tier-pushdown-mixed workload to be executed")
+	require.True(t, c.pushdownColdOnly, "expected tier-pushdown-cold-only workload to be executed")
+	require.True(t, c.pushdownAssertions, "expected pushdown assertions to be exercised")
 }
 
 func TestBenchmarkTruthPassSampledSpotCheck_RunWithHarness(t *testing.T) {
