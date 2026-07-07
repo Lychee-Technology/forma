@@ -1377,6 +1377,25 @@ func collectVisibleRowIDs(ctx context.Context, h *federated.FederatedTestHarness
 	return visible, nil
 }
 
+// perCandidateVisible probes one candidate's visibility through the engine with
+// a RowID-filtered query. Capped (sampled) truth-pass mode uses this so its cost
+// stays bounded by the sample cap; the uncapped path uses collectVisibleRowIDs.
+func perCandidateVisible(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition, candidate GeneratedRecord) (bool, error) {
+	result, err := h.ExecuteFederatedQuery(ctx, &federated.QueryOptions{
+		Limit: 1,
+		Filter: &federated.Filter{
+			RowID:      candidate.RowID,
+			Conditions: workload.ResolvedFilterConditions(),
+		},
+		SortBy:   "tradeTime",
+		SortDesc: true,
+	})
+	if err != nil {
+		return false, fmt.Errorf("execute federated truth query for candidate %s: %w", candidate.RowID, err)
+	}
+	return result.TotalRecords > 0, nil
+}
+
 func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition, defaultPageSize int, loadedRecords []GeneratedRecord, genCfg GeneratorConfig, sampleCap int, seed int64) (expectedWorkloadResult, truthPassSampleStats, error) {
 	if h == nil {
 		return expectedWorkloadResult{}, truthPassSampleStats{}, fmt.Errorf("harness cannot be nil")
@@ -1393,18 +1412,27 @@ func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *feder
 	defer func() {
 		h.SchemaID = previousSchemaID
 	}()
-	// Pull the full visible row-id set once (paginated) instead of one
-	// RowID-filtered federated query per candidate. Membership is identical —
-	// a row is in this set iff a RowID-filtered query for it under the same
-	// conditions would return a row — but the query count drops from
-	// O(candidates) to O(hits / pageSize).
-	visible, err := collectVisibleRowIDs(ctx, h, workload)
-	if err != nil {
-		return expectedWorkloadResult{}, truthPassSampleStats{}, err
-	}
-	isVisible := func(_ context.Context, candidate GeneratedRecord) (bool, error) {
-		_, ok := visible[candidate.RowID]
-		return ok, nil
+	// Uncapped mode verifies every candidate, so replace O(candidates)
+	// per-candidate RowID probes with one batched visibility sweep: membership
+	// is identical (a row is in the swept set iff a RowID-filtered query for it
+	// under the same conditions would return a row). Capped (heavy-live) mode
+	// only spot-checks a bounded sample, so it keeps the per-candidate probe —
+	// sweeping the full hit set there would materialize O(hits) row ids and
+	// break the sample cap's cost/memory bound.
+	var isVisible func(context.Context, GeneratedRecord) (bool, error)
+	if truthPassCapped(len(candidates), sampleCap) {
+		isVisible = func(ctx context.Context, candidate GeneratedRecord) (bool, error) {
+			return perCandidateVisible(ctx, h, workload, candidate)
+		}
+	} else {
+		visible, err := collectVisibleRowIDs(ctx, h, workload)
+		if err != nil {
+			return expectedWorkloadResult{}, truthPassSampleStats{}, err
+		}
+		isVisible = func(_ context.Context, candidate GeneratedRecord) (bool, error) {
+			_, ok := visible[candidate.RowID]
+			return ok, nil
+		}
 	}
 	return buildTruthPassExpected(ctx, isVisible, workload, defaultPageSize, candidates, sampleCap, seed)
 }

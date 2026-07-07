@@ -47,30 +47,7 @@ func TestTruthPassBatchEqualsPerCandidate(t *testing.T) {
 
 	// Replicate the RunWithHarness load path so we hold the same loaded state
 	// the oracle sees.
-	generator, err := NewGenerator(runner.genConfig)
-	require.NoError(t, err)
-	dataset, err := generator.Generate()
-	require.NoError(t, err)
-	tiered, err := SplitIntoTiers(dataset, TierMixBalanced)
-	require.NoError(t, err)
-	h.Registry = runner.registry
-	require.NoError(t, LoadTieredDataset(ctx, h, tiered))
-	loadedRecords, _, err := buildLoadedStateSnapshot(ctx, h, tiered)
-	require.NoError(t, err)
-
-	perCandidateProbe := func(workload WorkloadDefinition, candidate GeneratedRecord) bool {
-		result, probeErr := h.ExecuteFederatedQuery(ctx, &federated.QueryOptions{
-			Limit: 1,
-			Filter: &federated.Filter{
-				RowID:      candidate.RowID,
-				Conditions: workload.ResolvedFilterConditions(),
-			},
-			SortBy:   "tradeTime",
-			SortDesc: true,
-		})
-		require.NoError(t, probeErr)
-		return result.TotalRecords > 0
-	}
+	loadedRecords := loadHarnessDataset(ctx, t, h, runner)
 
 	checked := 0
 	for _, workload := range runner.workloads {
@@ -93,11 +70,30 @@ func TestTruthPassBatchEqualsPerCandidate(t *testing.T) {
 
 		for _, candidate := range candidates {
 			_, inBatch := batch[candidate.RowID]
-			require.Equal(t, perCandidateProbe(workload, candidate), inBatch,
+			perCandidate, err := perCandidateVisible(ctx, h, workload, candidate)
+			require.NoError(t, err)
+			require.Equal(t, perCandidate, inBatch,
 				"workload %s candidate %s: batch membership must match the per-candidate probe", workload.Name, candidate.RowID)
 			checked++
 		}
 	}
 	require.Positive(t, checked, "expected at least one truth-pass candidate to be compared")
 	t.Logf("compared %d candidates across truth-pass workloads; batch == per-candidate", checked)
+}
+
+// loadHarnessDataset mirrors the RunWithHarness generate → split → load → snapshot
+// sequence and returns the loaded-state records the oracle reconstructs from.
+func loadHarnessDataset(ctx context.Context, t *testing.T, h *federated.FederatedTestHarness, runner *Runner) []GeneratedRecord {
+	t.Helper()
+	generator, err := NewGenerator(runner.genConfig)
+	require.NoError(t, err)
+	dataset, err := generator.Generate()
+	require.NoError(t, err)
+	tiered, err := SplitIntoTiers(dataset, TierMixBalanced)
+	require.NoError(t, err)
+	h.Registry = runner.registry
+	require.NoError(t, LoadTieredDataset(ctx, h, tiered))
+	loadedRecords, _, err := buildLoadedStateSnapshot(ctx, h, tiered)
+	require.NoError(t, err)
+	return loadedRecords
 }

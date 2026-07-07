@@ -167,8 +167,12 @@ Runs the full small-live preset at `Concurrency=1,2,4,8` and aggregates the
 four runs into `.artifacts/benchmark/concurrency/concurrency-report.md`
 (overall and per-workload p50/p95/p99/QPS per level, plus the
 `concurrent-run-*` stability assertion pass rates from PR #94). Each level is
-a complete live run (~35 minutes on an idle machine, hours under load):
-operator-initiated only, never CI. Concurrent baselines write to `-c{N}`
+a complete live run, operator-initiated only, never CI. Since #156 batched the
+uncapped truth-pass oracle into one paginated visibility sweep per workload
+(replacing ~24k per-candidate federated queries), per-level runtime is
+materially lower than the earlier truth-pass-dominated ~35-minute figure — the
+dominant cost is now tier loading plus measured-workload execution; re-measure
+on your host. Concurrent baselines write to `-c{N}`
 suffixed directories and form their own trend comparability group, so they
 never pollute the sequential (`C=1`) baseline window.
 
