@@ -22,18 +22,20 @@ import (
 // issue-referenced allowlist, not a whole-workload skip. Remove entries as
 // their issues land.
 //
-//   - eav-low-selectivity-page: the truth-pass oracle's per-candidate harness
-//     query cannot filter the pure-EAV attribute orderChannel (absent from the
-//     hardcoded benchmarkQueryColumn / targetedHotFilterExpression / hot-pivot /
-//     parquet-projection maps), so it undercounts hot-tier candidates. Folded
-//     into the truth-pass oracle rework (#156).
+//   - eav-low-selectivity-page: the truth-pass oracle's harness query cannot
+//     filter the pure-EAV attribute orderChannel (absent from the hardcoded
+//     benchmarkQueryColumn / targetedHotFilterExpression / hot-pivot /
+//     parquet-projection maps), so it undercounts hot-tier candidates. The #156
+//     batching proved (via TestTruthPassBatchEqualsPerCandidate) that this is a
+//     harness truth-query bug independent of the per-candidate/batch split, so
+//     it is tracked on its own (#163).
 //   - mixed-hot-eav-page / tier-pushdown-mixed: the service path returns zero
 //     rows for the composite main+EAV filter (symbol AND exchange) though each
 //     condition works alone (#161).
 var knownFailingAssertions = map[string]map[string]string{
 	"eav-low-selectivity-page": {
-		"total-records-match-expected": "#156",
-		"page-row-ids-match-expected":  "#156",
+		"total-records-match-expected": "#163",
+		"page-row-ids-match-expected":  "#163",
 	},
 	"mixed-hot-eav-page": {
 		"total-records-match-expected": "#161",
