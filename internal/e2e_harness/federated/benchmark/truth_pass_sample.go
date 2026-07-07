@@ -5,13 +5,13 @@ import (
 	"math/rand"
 )
 
-// truthPassSampleIndices picks the candidate indices to spot-check when the
+// selectTruthPassSampleIndices picks the candidate indices to spot-check when the
 // truth-pass sample cap applies. It returns nil when sampling is disabled
 // (cap <= 0) or unnecessary (total <= cap). The selection is deterministic
 // for a given (seed, workloadName, total, cap) so identical benchmark
 // configs verify identical candidates — a repeatability requirement for
 // heavy-live baselines (#100).
-func truthPassSampleIndices(seed int64, workloadName string, total, cap int) map[int]struct{} {
+func selectTruthPassSampleIndices(seed int64, workloadName string, total, cap int) map[int]struct{} {
 	if cap <= 0 || total <= cap {
 		return nil
 	}

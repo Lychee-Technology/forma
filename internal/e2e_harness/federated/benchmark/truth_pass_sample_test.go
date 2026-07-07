@@ -11,17 +11,17 @@ import (
 )
 
 func TestTruthPassSampleIndicesNotAppliedWhenCapCoversTotal(t *testing.T) {
-	if got := truthPassSampleIndices(42, "eav-selective-page", 100, 0); got != nil {
+	if got := selectTruthPassSampleIndices(42, "eav-selective-page", 100, 0); got != nil {
 		t.Fatalf("cap=0 must disable sampling, got %v", got)
 	}
-	if got := truthPassSampleIndices(42, "eav-selective-page", 100, 100); got != nil {
+	if got := selectTruthPassSampleIndices(42, "eav-selective-page", 100, 100); got != nil {
 		t.Fatalf("total<=cap must disable sampling, got %v", got)
 	}
 }
 
 func TestTruthPassSampleIndicesDeterministicAndBounded(t *testing.T) {
-	first := truthPassSampleIndices(42, "eav-selective-page", 1000, 25)
-	second := truthPassSampleIndices(42, "eav-selective-page", 1000, 25)
+	first := selectTruthPassSampleIndices(42, "eav-selective-page", 1000, 25)
+	second := selectTruthPassSampleIndices(42, "eav-selective-page", 1000, 25)
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("same seed/workload/total/cap must sample identically")
 	}
@@ -36,9 +36,9 @@ func TestTruthPassSampleIndicesDeterministicAndBounded(t *testing.T) {
 }
 
 func TestTruthPassSampleIndicesVaryBySeedAndWorkload(t *testing.T) {
-	base := truthPassSampleIndices(42, "eav-selective-page", 1000, 25)
-	otherSeed := truthPassSampleIndices(43, "eav-selective-page", 1000, 25)
-	otherWorkload := truthPassSampleIndices(42, "hot-selective-page", 1000, 25)
+	base := selectTruthPassSampleIndices(42, "eav-selective-page", 1000, 25)
+	otherSeed := selectTruthPassSampleIndices(43, "eav-selective-page", 1000, 25)
+	otherWorkload := selectTruthPassSampleIndices(42, "hot-selective-page", 1000, 25)
 	if reflect.DeepEqual(base, otherSeed) && reflect.DeepEqual(base, otherWorkload) {
 		t.Fatal("expected seed and workload name to influence the sample")
 	}

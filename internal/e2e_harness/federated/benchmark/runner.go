@@ -281,7 +281,7 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 				semantics := semanticsForWorkload(workload, r.genConfig)
 				run.Assertions = append(run.Assertions, validateBasicWorkloadAssertions(workload, run)...)
 				run.Assertions = append(run.Assertions, validateResultLevelAssertions(workload, run, result.records, semantics)...)
-				run.OracleMode = resolvedRunOracleMode(oracleModes, workload)
+				run.OracleMode = resolveRunOracleMode(oracleModes, workload)
 				if expected, ok := expectedByWorkload[workload.Name]; ok {
 					run.Assertions = append(run.Assertions, validateExpectedWorkloadOutcome(run, expected)...)
 				}
@@ -380,10 +380,10 @@ func (r *Runner) buildExpectedResults(ctx context.Context, h *federated.Federate
 	return results, oracleModes, append([]string{summary}, sampleNotes...), nil
 }
 
-// resolvedRunOracleMode returns the run-time oracle mode for a workload,
+// resolveRunOracleMode returns the run-time oracle mode for a workload,
 // preferring the (possibly sampled) mode recorded in oracleModes and falling
 // back to the workload's static resolved mode when the map has no entry.
-func resolvedRunOracleMode(oracleModes map[string]string, workload WorkloadDefinition) string {
+func resolveRunOracleMode(oracleModes map[string]string, workload WorkloadDefinition) string {
 	if mode, ok := oracleModes[workload.Name]; ok && mode != "" {
 		return mode
 	}
@@ -1351,7 +1351,7 @@ func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *feder
 	previousSchemaID := h.SchemaID
 	schemaID, err := workloadSchemaID(workload.TargetSchema)
 	if err != nil {
-		return expectedWorkloadResult{}, truthPassSampleStats{}, err
+		return expectedWorkloadResult{}, truthPassSampleStats{}, fmt.Errorf("resolve schema id for workload %s: %w", workload.Name, err)
 	}
 	h.SchemaID = schemaID
 	defer func() {
@@ -1368,7 +1368,7 @@ func buildExpectedWorkloadResultFromFederatedTruth(ctx context.Context, h *feder
 			SortDesc: true,
 		})
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("execute federated truth query for candidate %s: %w", candidate.RowID, err)
 		}
 		return result.TotalRecords > 0, nil
 	}
@@ -1387,7 +1387,7 @@ func buildTruthPassExpected(ctx context.Context, isVisible func(context.Context,
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
 	}
-	sampledIdx := truthPassSampleIndices(seed, workload.Name, len(candidates), sampleCap)
+	sampledIdx := selectTruthPassSampleIndices(seed, workload.Name, len(candidates), sampleCap)
 	if sampledIdx == nil {
 		matching := make([]GeneratedRecord, 0, len(candidates))
 		for _, candidate := range candidates {
