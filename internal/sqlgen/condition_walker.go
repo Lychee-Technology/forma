@@ -14,8 +14,6 @@ type leafEmitter interface {
 	EmitLeaf(kv *forma.KvCondition) (sql string, args []any, err error)
 }
 
-type LeafEmitter = leafEmitter
-
 // compositeGuard optionally intercepts a CompositeCondition before traversing
 // its children. pg-main uses this to veto an entire OR branch when any child
 // cannot be pushed to the main table.
@@ -23,13 +21,15 @@ type compositeGuard interface {
 	SkipComposite(c *forma.CompositeCondition) bool
 }
 
-type CompositeGuard = compositeGuard
-
 // typedLeafEmitter renders a typed predicate leaf into SQL and args. The
 // skip contract matches leafEmitter: ("", nil, nil) drops the leaf.
 type typedLeafEmitter interface {
 	EmitTypedLeaf(leaf *PredicateLeaf) (sql string, args []any, err error)
 }
+
+// TypedLeafEmitter is the exported alias external packages (the hybrid
+// condition builder) implement to consume typed leaves via WalkHybridCondition.
+type TypedLeafEmitter = typedLeafEmitter
 
 // typedGuard optionally intercepts a PredicateGroup before traversing its
 // children, mirroring compositeGuard on the typed tree.
@@ -93,8 +93,6 @@ var (
 	}
 )
 
-var HybridStyle = hybridStyle
-
 // legacyLeafAdapter feeds the original KvCondition of a typed leaf to a
 // legacy leafEmitter, so untyped consumers (hybrid builder) share the typed
 // traversal instead of a second walker.
@@ -112,8 +110,13 @@ func (a legacyGuardAdapter) SkipGroup(g *PredicateGroup) bool {
 	return a.guard.SkipComposite(g.Source)
 }
 
-func WalkCondition(cond forma.Condition, style compositeStyle, guard CompositeGuard, emit LeafEmitter) (string, []any, error) {
-	return walkCondition(cond, style, guard, emit)
+// WalkHybridCondition normalizes cond with the hybrid leaf target (parse-once)
+// and walks it with the hybrid composite style, emitting each leaf through the
+// caller's typed emitter. It is the entrypoint for the hybrid condition
+// builder: composite traversal and leaf parsing both live in the shared typed
+// walker, so the builder only formats already-resolved leaves.
+func WalkHybridCondition(cond forma.Condition, cache forma.SchemaAttributeCache, emit TypedLeafEmitter) (string, []any, error) {
+	return walkPredicate(normalizePredicates(cond, cache, targetHybrid), hybridStyle, nil, emit)
 }
 
 // walkCondition traverses a forma.Condition AST and emits SQL via the legacy

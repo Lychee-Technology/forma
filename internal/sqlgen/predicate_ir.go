@@ -88,9 +88,34 @@ type PredicateLeaf struct {
 	PgEav  PgEavLeafPayload
 	PgMain PgMainLeafPayload
 	Duck   DuckLeafPayload
+	Hybrid HybridLeafPayload
 }
 
 func (*PredicateLeaf) isPredicateNode() {}
+
+// HybridLeafPayload carries the parse-once results the hybrid condition
+// builder needs to emit either a main-table predicate or an EAV EXISTS
+// subquery. Routing (IsMain) follows the hybrid column-resolution contract:
+// raw entity_main columns and cache-bound columns emit against entity_main;
+// every other attribute falls to the EAV EXISTS form. Placeholder assignment,
+// identifier sanitization, table names, and the anchor alias remain the
+// emitter's responsibility (they are request/builder state), mirroring the
+// pg-main / pg-eav emitters.
+type HybridLeafPayload struct {
+	// Err is the main-branch resolution error (unsupported operator, unknown
+	// main table column, or value conversion), surfaced verbatim at emit time
+	// before any placeholder is consumed.
+	Err    error
+	IsMain bool
+
+	// Main-table branch (lenient parse + descriptor-validated metadata).
+	MainColumn string // physical column name, unsanitized
+	MainSQLOp  string
+	MainValue  any
+
+	// EAV branch — computed identically to PgEavLeafPayload (strict parse).
+	Eav PgEavLeafPayload
+}
 
 // PgEavLeafPayload is the EAV EXISTS emission payload (strict parse policy).
 type PgEavLeafPayload struct {
