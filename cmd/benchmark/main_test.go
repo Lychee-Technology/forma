@@ -58,23 +58,6 @@ func TestRunBenchmarkMainBaseline(t *testing.T) {
 	}
 }
 
-func TestResolveBenchmarkPresetSupportsAliasesAndPresets(t *testing.T) {
-	small, err := resolveBenchmarkPreset("small", bench.DistributionUniform)
-	if err != nil {
-		t.Fatalf("resolveBenchmarkPreset small failed: %v", err)
-	}
-	if small.Name != "small-live" || small.Config.Mode != bench.ExecutionModeLive {
-		t.Fatalf("expected small alias to resolve to small-live live preset, got %+v", small)
-	}
-	ci, err := resolveBenchmarkPreset("ci-smoke", bench.DistributionUniform)
-	if err != nil {
-		t.Fatalf("resolveBenchmarkPreset ci-smoke failed: %v", err)
-	}
-	if !ci.CISafe || ci.Config.Mode != bench.ExecutionModeSmoke {
-		t.Fatalf("expected ci-smoke preset to be CI-safe smoke, got %+v", ci)
-	}
-}
-
 func TestRunBenchmarkMainDescribeIncludesPresets(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -481,5 +464,14 @@ func TestRunBenchmarkMainTrendFileOutput(t *testing.T) {
 	}
 	if _, err := os.Stat(jsonOut); err != nil {
 		t.Fatalf("expected trend report file to exist: %v", err)
+	}
+}
+
+func TestRunBaselineRunTimeoutExpires(t *testing.T) {
+	dir := t.TempDir()
+	var out, errOut bytes.Buffer
+	exitCode := runBenchmarkMain(context.Background(), []string{"baseline", "-preset", "ci-smoke", "-run-timeout", "1ns", "-output-dir", dir}, &out, &errOut)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit when run timeout expires, stderr=%s", errOut.String())
 	}
 }

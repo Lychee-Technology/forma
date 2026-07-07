@@ -96,22 +96,32 @@ make benchmark-regression
 go test -v ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness -timeout=10m
 ```
 
-### Heavy Run
-
-Use for manual performance review or nightly jobs only.
+### Heavy Plan Run
 
 - preset: `heavy-plan`
-- workloads: full workload set including `deep-page-1000` and `deep-page-100000`
+- mode: plan (validation only — it does not generate data or execute queries)
 - scale: `large`
-- mode: `plan`
-- goal: compare deep-pagination planning shape and prepare for later real benchmark gating
-- expected runtime: several minutes for planning, significantly longer once large executable runs are wired into the CLI
+- expected runtime: minutes
+- command: `make benchmark-heavy`
 
-Command:
+### Heavy Live Run
 
-```bash
-make benchmark-heavy
-```
+- preset: `heavy-live`
+- mode: live, full workload matrix
+- scale: `large` (10M trades / 1M customers / 100k securities)
+- distribution: `hotspot-overlap`; tier profile: `balanced-60-30-10`
+- truth-pass oracles are spot-check sampled (`truth_pass_sample_cap=10000`),
+  per workload (a workload at or under the cap stays plain `truth-pass`);
+  a sampled pass asserts reconstruction ≡ engine truth on the sample only —
+  see the baseline runbook before comparing against uncapped baselines
+- resource bounds: DuckDB memory 8192MB (preset), `-duckdb-memory-mb` to
+  override; `-run-timeout` aborts a stuck run
+- expected runtime and peak RSS/disk: pending first calibrated capture (see
+  the calibration ladder in the baseline runbook); plan for multiple hours
+  on an idle machine
+- policy: manual, on-demand only. Never in CI, no scheduled job. Run on an
+  idle machine — loaded machines inflate truth-pass oracle cost by 5-10x
+- command: `make benchmark-heavy-live`
 
 ## Recommended Commands
 
@@ -183,7 +193,7 @@ Use these rules in CI and automation for the current benchmark model.
 - keep PR-time benchmark automation on the `ci-smoke` preset only
 - do not run `deep-page-100000` in PR-time CI
 - use scheduled jobs or manual review environments for `make benchmark-regression`
-- reserve `benchmark-heavy` for manual or nightly jobs
+- reserve `benchmark-heavy` and `benchmark-heavy-live` for manual capacity-aware runs
 - treat harness-backed execution tests as smoke coverage, not as stable performance thresholds
 
 The repository CI workflow now includes a dedicated `benchmark-smoke` job for the scaffolded benchmark command and the existing federated e2e smoke tests remain the executable coverage path.

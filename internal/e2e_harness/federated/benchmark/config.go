@@ -53,6 +53,13 @@ type Config struct {
 	// hashes the whole Config).
 	DuckDBThreads       int `json:"duckdb_threads,omitempty"`
 	DuckDBMemoryLimitMB int `json:"duckdb_memory_limit_mb,omitempty"`
+	// TruthPassSampleCap bounds truth-pass oracle construction: when > 0 and
+	// a workload's candidate set exceeds the cap, only a seeded deterministic
+	// sample of candidates is verified through the engine (spot check) and
+	// the expected result is taken from the full reconstructed candidate set.
+	// 0 = full truth pass (existing behavior). omitempty keeps the
+	// BenchmarkID hash of existing artifacts stable.
+	TruthPassSampleCap int `json:"truth_pass_sample_cap,omitempty"`
 }
 
 // DefaultConfig returns the benchmark scaffold defaults.
@@ -128,6 +135,9 @@ func (c Config) Validate() error {
 	}
 	if c.DuckDBMemoryLimitMB < 0 {
 		return fmt.Errorf("duckdb memory limit must be greater than or equal to zero")
+	}
+	if c.TruthPassSampleCap < 0 {
+		return fmt.Errorf("truth-pass sample cap must be greater than or equal to zero")
 	}
 	if c.TierProfile != "" {
 		if _, err := ResolveTierMixProfile(c.TierProfile); err != nil {

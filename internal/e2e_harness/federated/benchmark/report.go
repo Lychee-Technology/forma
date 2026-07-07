@@ -671,6 +671,9 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			workload.Distribution = runs[0].Distribution
 			workload.PageSize = def.PageSize
 		}
+		if mode, ok := result.OracleModes[name]; ok && mode != "" {
+			workload.OracleMode = mode
+		}
 		durations := make([]time.Duration, 0, len(runs))
 		var totalDuration time.Duration
 		var totalResultCount int
@@ -749,6 +752,9 @@ func summarizeOracleProvenance(result *RunResult) []OracleProvenance {
 	if len(result.Workloads) > 0 {
 		for _, workload := range result.Workloads {
 			mode := string(workload.ResolvedOracleMode())
+			if sampled, ok := result.OracleModes[workload.Name]; ok && sampled != "" {
+				mode = sampled
+			}
 			byMode[mode] = append(byMode[mode], workload.Name)
 		}
 	} else {
