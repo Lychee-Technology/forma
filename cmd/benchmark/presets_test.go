@@ -94,6 +94,25 @@ func TestResolveBenchmarkPresetHeavyLive(t *testing.T) {
 	}
 }
 
+// TestResolveBenchmarkPresetHeavyLiveDefaultsToPresetDistribution verifies
+// that omitting -distribution on the baseline subcommand no longer silently
+// overrides a preset's own distribution with DistributionUniform (#100 PR
+// #157 Fix A). Before the fix, runBaseline's -distribution flag defaulted to
+// "uniform", so resolveBenchmarkPreset("heavy-live", "uniform") always
+// replaced heavy-live's hotspot-overlap distribution.
+func TestResolveBenchmarkPresetHeavyLiveDefaultsToPresetDistribution(t *testing.T) {
+	preset, err := resolveBenchmarkPreset("heavy-live", "")
+	if err != nil {
+		t.Fatalf("resolveBenchmarkPreset heavy-live failed: %v", err)
+	}
+	if preset.Config.Distribution != bench.DistributionHotspot {
+		t.Fatalf("omitted -distribution must keep preset hotspot-overlap, got %q", preset.Config.Distribution)
+	}
+	if preset.BaselineDir != "heavy-live-hotspot-overlap" {
+		t.Fatalf("omitted -distribution must keep preset baseline dir, got %q", preset.BaselineDir)
+	}
+}
+
 func TestApplyDuckDBOverridesKeepsPresetValues(t *testing.T) {
 	cfg := bench.Config{DuckDBThreads: 4, DuckDBMemoryLimitMB: 8192}
 	got := applyDuckDBOverrides(cfg, 0, 0)

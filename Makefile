@@ -69,7 +69,9 @@ benchmark-smoke: create-build-dir
 benchmark-regression: create-build-dir
 	@echo "Running benchmark regression live subset..."
 	@mkdir -p .artifacts/benchmark/regression
-	@$(GOENV) go run ./cmd/benchmark baseline -preset small-live -output-dir .artifacts/benchmark/regression \
+	@$(GOENV) go run ./cmd/benchmark baseline -preset small-live \
+		-distribution uniform \
+		-output-dir .artifacts/benchmark/regression \
 		-channel manual \
 		-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
 		-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -86,6 +88,7 @@ benchmark-concurrency: create-build-dir
 	@mkdir -p .artifacts/benchmark/concurrency
 	@for c in 1 2 4 8; do \
 		$(GOENV) go run ./cmd/benchmark baseline -preset small-live \
+			-distribution uniform \
 			-concurrency $$c \
 			-output-dir .artifacts/benchmark/concurrency \
 			-channel manual -label concurrency-sweep-c$$c \
@@ -101,7 +104,9 @@ benchmark-concurrency: create-build-dir
 benchmark-heavy: create-build-dir
 	@echo "Running benchmark heavy planning set..."
 	@mkdir -p .artifacts/benchmark/heavy
-	@$(GOENV) go run ./cmd/benchmark baseline -preset heavy-plan -output-dir .artifacts/benchmark/heavy \
+	@$(GOENV) go run ./cmd/benchmark baseline -preset heavy-plan \
+		-distribution uniform \
+		-output-dir .artifacts/benchmark/heavy \
 		-channel manual \
 		-git-sha $$(git rev-parse HEAD 2>/dev/null || echo "") \
 		-git-ref $$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")

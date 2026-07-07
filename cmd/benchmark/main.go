@@ -131,7 +131,7 @@ func runBaseline(ctx context.Context, args []string, out, errOut io.Writer) int 
 	flags.SetOutput(errOut)
 	preset := flags.String("preset", "small", "Baseline preset: ci-smoke, small, small-live, medium, medium-live, heavy, heavy-live, or heavy-plan")
 	outputDir := flags.String("output-dir", ".artifacts/benchmark", "Directory to store baseline captures")
-	distribution := flags.String("distribution", string(bench.DistributionUniform), "Data distribution preset")
+	distribution := flags.String("distribution", "", "Data distribution preset (empty = use the preset's own distribution)")
 	compareTo := flags.String("compare-to", "", "Optional path to an existing benchmark-summary.json for diff output")
 	channel := flags.String("channel", "", "Provenance channel: ci, nightly, manual")
 	gitSHA := flags.String("git-sha", "", "Provenance git commit SHA")
