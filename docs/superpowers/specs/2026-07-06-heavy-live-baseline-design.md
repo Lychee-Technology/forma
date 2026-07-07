@@ -79,9 +79,14 @@ Naively truncating the candidate set would corrupt the expected result
     "reconstruction ≡ engine truth" on the sample. A legitimate divergence
     cannot be absorbed by any sampling rate; it requires human
     investigation, never silent acceptance.
-- Artifacts: oracle mode reported as `truth_pass_sampled`; oracle notes
-  record cap, total candidate count, and sampled count. The cap participates
-  in the config hash, so capped and uncapped runs never share a BenchmarkID.
+- Artifacts: the oracle **mode** is reported as `truth-pass-sampled`
+  (hyphenated, consistent with the sibling modes `truth-pass` and
+  `loaded-state`); the oracle **note token** is `truth_pass_sampled=N`
+  (underscored, consistent with the existing note style
+  `oracle_modes loaded_state=… truth_pass=…`). These are two distinct
+  identifiers on two different surfaces, not a mismatch. Oracle notes record
+  cap, total candidate count, and sampled count. The cap participates in the
+  config hash, so capped and uncapped runs never share a BenchmarkID.
 - CLI: `-truth-pass-sample-cap` flag on `baseline` and `run` overrides the
   preset value.
 
