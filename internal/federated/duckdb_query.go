@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,14 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/telemetry"
 )
+
+// ErrSchemaMetadataCacheRequired marks a federated query that cannot build a
+// correct entity_main projection because the schema's metadata cache is not
+// loaded. It is a configuration / data-contract error, not a transient
+// infrastructure failure, so the public Query path must not absorb it under
+// AllowPartialDegradedMode — degrading would silently return a Postgres-only
+// partial result and hide the missing-cache problem #151 makes loud.
+var ErrSchemaMetadataCacheRequired = errors.New("schema metadata cache required but not loaded")
 
 func isBenchmarkSchemaID(schemaID int16) bool { return sqlgen.IsBenchmarkSchemaID(schemaID) }
 
@@ -417,7 +426,7 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 		// emitted a fixed toy-schema projection (name/age/tag, columns absent
 		// from the descriptors) whose column set could not be scanned by
 		// duckDBScanBuffers — a hard error at best, misaligned rows at worst.
-		return false, fmt.Errorf("federated query for schema_id %d requires a schema metadata cache, but none is loaded", schemaID)
+		return false, fmt.Errorf("federated query for schema_id %d requires a schema metadata cache, but none is loaded: %w", schemaID, ErrSchemaMetadataCacheRequired)
 	}
 
 	// Production schema: compute projections from the attribute cache

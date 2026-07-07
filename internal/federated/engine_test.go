@@ -303,11 +303,40 @@ func TestInjectSchemaProjectionsNoCacheFailsFast(t *testing.T) {
 	require.Contains(t, err.Error(), "requires a schema metadata cache")
 	require.NotContains(t, params, "OuterSelect", "no projection must be injected on the fail-fast path")
 
+	require.ErrorIs(t, err, ErrSchemaMetadataCacheRequired)
+
 	// Benchmark schemas remain unaffected (they never consult the cache).
 	benchParams := map[string]any{}
 	_, benchErr := engine.injectSchemaProjections(benchParams, int16(100), nil)
 	require.NoError(t, benchErr)
 	require.Contains(t, benchParams, "OuterSelect")
+}
+
+// TestDBFederatedQueryEngine_MissingSchemaCacheNotDegradable pins the #151 PR
+// review finding: the missing-schema-cache error is a configuration error, not
+// a transient DuckDB failure, so the public Query path must surface it even
+// under AllowPartialDegradedMode instead of silently falling back to a
+// Postgres-only partial result.
+func TestDBFederatedQueryEngine_MissingSchemaCacheNotDegradable(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	// nil metadata cache → the DuckDB render path cannot build a projection.
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "host=x")
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		&model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+			PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
+		},
+		&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, ErrSchemaMetadataCacheRequired)
+	require.Equal(t, 0, pg.queryCalls, "missing-cache error must not degrade to a Postgres-only partial result")
 }
 
 // TestEngineCompiledPlanCache pins #142 phase 5 end to end: two same-shape
