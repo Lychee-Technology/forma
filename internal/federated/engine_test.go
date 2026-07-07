@@ -21,6 +21,23 @@ func initTestDescriptors() func() {
 	return func() { model.EntityMainColumnDescriptors = orig }
 }
 
+// testMetadataCacheSchema7 registers a minimal schema-7 attribute cache so the
+// DuckDB render path can build a real column projection. Post-#151 the
+// no-metadata-cache path fails fast instead of emitting a toy fallback
+// projection, so engine tests that drive the render path must supply a cache.
+func testMetadataCacheSchema7(t *testing.T) *schemameta.MetadataCache {
+	t.Helper()
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("test", 7, forma.SchemaAttributeCache{
+		"age": {
+			AttributeID:   6,
+			ValueType:     forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")},
+		},
+	}))
+	return mc
+}
+
 type fakePostgresFederatedSource struct {
 	queryCalls int
 	lastQuery  *model.PersistentRecordQuery
@@ -119,7 +136,7 @@ func TestDBFederatedQueryEngine_QueryHotOnlyDelegatesToPostgres(t *testing.T) {
 func TestDBFederatedQueryEngine_DuckDBFailureWithDegradedModeFallsBackToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "")
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
@@ -141,7 +158,7 @@ func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndDirtyFetcher(t
 	pg := &fakePostgresFederatedSource{}
 	dirty := &fakeDirtyIDFetcher{ids: []uuid.UUID{dirtyID}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: rowID}}
-	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "")
 	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
 		require.Equal(t, []uuid.UUID{dirtyID}, dirtyIDs)
 		return "SELECT fake", nil, nil
@@ -192,7 +209,7 @@ func TestDBFederatedQueryEngine_ExecutionPlanPopulated(t *testing.T) {
 	pg := &fakePostgresFederatedSource{}
 	dirty := &fakeDirtyIDFetcher{}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "")
 	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
 		return "SELECT fake", nil, nil
 	}
@@ -261,9 +278,36 @@ func TestSchemaProjectionCache(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 	planCtx := newDuckDBExecutionPlanContext(opts)
 	params := map[string]any{}
-	hitFlag := engine.injectSchemaProjections(params, 7, cache)
+	hitFlag, err := engine.injectSchemaProjections(params, 7, cache)
+	require.NoError(t, err)
 	planCtx.recordProjectionCache(hitFlag)
 	require.Contains(t, opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
+}
+
+// TestInjectSchemaProjectionsNoCacheFailsFast pins #151: a non-benchmark schema
+// with no metadata cache must fail fast rather than emit a stale toy-schema
+// projection that violates the positional-scan contract. The retired fallback
+// wrote name/age/tag columns that duckDBScanBuffers cannot scan.
+func TestInjectSchemaProjectionsNoCacheFailsFast(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, &fakeDuckDBExecutor{}, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		schemameta.NewMetadataCache(), "host=x")
+
+	params := map[string]any{}
+	hit, err := engine.injectSchemaProjections(params, 7, nil)
+	require.Error(t, err)
+	require.False(t, hit)
+	require.Contains(t, err.Error(), "requires a schema metadata cache")
+	require.NotContains(t, params, "OuterSelect", "no projection must be injected on the fail-fast path")
+
+	// Benchmark schemas remain unaffected (they never consult the cache).
+	benchParams := map[string]any{}
+	_, benchErr := engine.injectSchemaProjections(benchParams, int16(100), nil)
+	require.NoError(t, benchErr)
+	require.Contains(t, benchParams, "OuterSelect")
 }
 
 // TestEngineCompiledPlanCache pins #142 phase 5 end to end: two same-shape
