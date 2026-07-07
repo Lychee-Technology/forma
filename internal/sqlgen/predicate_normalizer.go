@@ -138,7 +138,7 @@ func normalizeHybridPayload(
 	if lenientSQLErr != nil {
 		return HybridLeafPayload{IsMain: true, Err: lenientSQLErr}
 	}
-	leafMeta, err := resolveHybridLeafMeta(kv, colName, meta, hasMeta)
+	leafMeta, err := resolveHybridLeafMeta(colName, meta, hasMeta)
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	}
@@ -160,7 +160,7 @@ func normalizeHybridPayload(
 // "unknown main table column" contract even for cache-bound attributes);
 // cache-bound attributes that omit value_type derive it from the descriptor
 // kind, and raw column references without metadata derive a minimal metadata.
-func resolveHybridLeafMeta(kv *forma.KvCondition, colName string, meta forma.AttributeMetadata, hasMeta bool) (forma.AttributeMetadata, error) {
+func resolveHybridLeafMeta(colName string, meta forma.AttributeMetadata, hasMeta bool) (forma.AttributeMetadata, error) {
 	desc := model.GetMainColumnDescriptor(colName)
 	if desc == nil {
 		return forma.AttributeMetadata{}, fmt.Errorf("unknown main table column: %s", colName)
