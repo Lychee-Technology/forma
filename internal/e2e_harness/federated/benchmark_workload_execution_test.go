@@ -4,6 +4,7 @@ package federated_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,54 @@ import (
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
 	"github.com/stretchr/testify/require"
 )
+
+// knownFailingWorkloads maps a workload name to the issue tracking its
+// pre-existing oracle/engine bug. #150 tightens the harness test to fail on any
+// workload whose correctness assertions fail; the entries below are excluded
+// here — not silently skipped — with explicit issue references so a regression
+// in ANY other workload turns the suite red immediately. Two distinct root
+// causes (#156, #161). Remove an entry once its issue lands.
+//
+//   - eav-low-selectivity-page: the truth-pass oracle's per-candidate harness
+//     query cannot filter the pure-EAV attribute orderChannel (absent from the
+//     hardcoded benchmarkQueryColumn / targetedHotFilterExpression / hot-pivot /
+//     parquet-projection maps), so it undercounts hot-tier candidates. Folded
+//     into the truth-pass oracle rework (#156).
+//   - mixed-hot-eav-page / tier-pushdown-mixed: the service path returns zero
+//     rows for the composite main+EAV filter (symbol AND exchange) though each
+//     condition works alone (#161).
+var knownFailingWorkloads = map[string]string{
+	"eav-low-selectivity-page": "#156",
+	"mixed-hot-eav-page":       "#161",
+	"tier-pushdown-mixed":      "#161",
+}
+
+// assertWorkloadOraclesGreen fails the test if any workload's correctness
+// assertions failed, excluding the documented knownFailingWorkloads. The
+// failure message names the workload and every failing assertion (#150).
+func assertWorkloadOraclesGreen(t *testing.T, result *bench.RunResult) {
+	t.Helper()
+	var failures []string
+	for _, execution := range result.Executions {
+		if execution.Passed {
+			continue
+		}
+		failingAssertions := make([]string, 0, len(execution.Assertions))
+		for _, a := range execution.Assertions {
+			if !a.Passed {
+				failingAssertions = append(failingAssertions, fmt.Sprintf("%s: %s", a.Name, a.Message))
+			}
+		}
+		detail := fmt.Sprintf("workload %q failed correctness assertions: %s",
+			execution.Name, strings.Join(failingAssertions, "; "))
+		if issue, known := knownFailingWorkloads[execution.Name]; known {
+			t.Logf("KNOWN-FAILING (tracked in %s) — %s", issue, detail)
+			continue
+		}
+		failures = append(failures, detail)
+	}
+	require.Empty(t, failures, "benchmark oracle regressions detected:\n%s", strings.Join(failures, "\n"))
+}
 
 func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -173,6 +222,10 @@ func TestBenchmarkWorkloadExecution_RunWithHarness(t *testing.T) {
 	require.True(t, pushdownMixedSeen, "expected tier-pushdown-mixed workload to be executed")
 	require.True(t, pushdownColdOnlySeen, "expected tier-pushdown-cold-only workload to be executed")
 	require.True(t, pushdownAssertionsSeen, "expected pushdown assertions to be exercised")
+
+	// #150: fail on any workload whose oracle/correctness assertions failed
+	// (excluding documented known-failing workloads tracked in separate issues).
+	assertWorkloadOraclesGreen(t, result)
 }
 
 func TestBenchmarkTruthPassSampledSpotCheck_RunWithHarness(t *testing.T) {
