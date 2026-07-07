@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"text/template"
 
@@ -126,7 +127,11 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
-		if opts != nil && opts.AllowPartialDegradedMode {
+		// A missing schema metadata cache is a configuration / data-contract
+		// error, not a transient DuckDB failure: degrading to Postgres-only
+		// would silently return a partial result and mask it (#151). Surface it
+		// even under AllowPartialDegradedMode.
+		if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(err, ErrSchemaMetadataCacheRequired) {
 			return e.queryPostgresOnly(ctx, tables, fq)
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", err)

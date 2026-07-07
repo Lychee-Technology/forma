@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,14 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/telemetry"
 )
+
+// ErrSchemaMetadataCacheRequired marks a federated query that cannot build a
+// correct entity_main projection because the schema's metadata cache is not
+// loaded. It is a configuration / data-contract error, not a transient
+// infrastructure failure, so the public Query path must not absorb it under
+// AllowPartialDegradedMode — degrading would silently return a Postgres-only
+// partial result and hide the missing-cache problem #151 makes loud.
+var ErrSchemaMetadataCacheRequired = errors.New("schema metadata cache required but not loaded")
 
 func isBenchmarkSchemaID(schemaID int16) bool { return sqlgen.IsBenchmarkSchemaID(schemaID) }
 
@@ -224,7 +233,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	// Compute schema-driven projections for the template
-	projectionCacheHit := e.injectSchemaProjections(sqlParams, q.SchemaID, cache)
+	projectionCacheHit, err := e.injectSchemaProjections(sqlParams, q.SchemaID, cache)
+	if err != nil {
+		return "", nil, 0, err
+	}
 	planCtx.recordProjectionCache(projectionCacheHit)
 
 	// Determine if the EAV pivot can be skipped entirely (all filter/sort
@@ -391,7 +403,7 @@ func (e *DBFederatedQueryEngine) schemaProjection(schemaID int16, cache forma.Sc
 	})
 }
 
-func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) (projectionCacheHit bool) {
+func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) (projectionCacheHit bool, err error) {
 	if isBenchmarkSchemaID(schemaID) {
 		// Benchmark schemas: use hardcoded benchmarks projections that match
 		// the benchmark parquet shape exactly (flat columns for column-bound
@@ -404,22 +416,23 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 		sqlParams["EAVPivotAttrs"] = proj.EAVPivotAttrs
 		sqlParams["HasEAVPivot"] = len(proj.EAVPivotAttrs) > 0
 		sqlParams["OuterSelect"] = sqlgen.BuildBenchmarkOuterSelect(schemaID)
-		return false
+		return false, nil
 	}
 	if len(cache) == 0 {
-		// No cache: fall back to defaults that match the fixed layout without EAV
-		sqlParams["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
-		sqlParams["PGSourceSelect"] = "m.ltbase_row_id::VARCHAR AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, ''::VARCHAR AS tag"
-		sqlParams["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
-		sqlParams["HasEAVPivot"] = false
-		sqlParams["OuterSelect"] = fallbackOuterSelect(schemaID)
-		return false
+		// No schema metadata cache: fail fast. The final SELECT must align
+		// positionally with model.EntityMainColumnDescriptors (the #147
+		// positional-scan contract), so a correct projection can only be
+		// derived from the schema's attribute cache. The retired fallback here
+		// emitted a fixed toy-schema projection (name/age/tag, columns absent
+		// from the descriptors) whose column set could not be scanned by
+		// duckDBScanBuffers — a hard error at best, misaligned rows at worst.
+		return false, fmt.Errorf("federated query for schema_id %d requires a schema metadata cache, but none is loaded: %w", schemaID, ErrSchemaMetadataCacheRequired)
 	}
 
 	// Production schema: compute projections from the attribute cache
-	sp, hit, err := e.schemaProjection(schemaID, cache)
-	if err != nil || sp == nil {
-		return hit
+	sp, hit, projErr := e.schemaProjection(schemaID, cache)
+	if projErr != nil || sp == nil {
+		return hit, nil
 	}
 	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
 	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
@@ -428,33 +441,7 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
 	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
 	sqlParams["OuterSelect"] = sp.OuterSelect
-	return hit
-}
-
-// fallbackOuterSelect returns the fixed outer SELECT for the no-cache fallback path.
-func fallbackOuterSelect(schemaID int16) string {
-	return fmt.Sprintf(`%d::SMALLINT AS ltbase_schema_id,
-			CAST(row_id AS UUID) AS ltbase_row_id,
-			created_at AS ltbase_created_at,
-			ver_ts AS ltbase_updated_at,
-			deleted_ts AS ltbase_deleted_at,
-			name AS text_01,
-			age AS integer_01,
-			tag AS text_02,
-			NULL::SMALLINT AS smallint_01,
-			NULL::INTEGER AS integer_02,
-			NULL::BIGINT AS bigint_01,
-			NULL::BIGINT AS bigint_02,
-			NULL::BIGINT AS bigint_03,
-			NULL::BIGINT AS bigint_04,
-			NULL::DOUBLE AS double_01,
-			NULL::DOUBLE AS double_02,
-			NULL::BOOLEAN AS boolean_01,
-			NULL::UUID AS uuid_01,
-			NULL::VARCHAR AS text_03,
-			NULL::VARCHAR AS text_04,
-			NULL::VARCHAR AS text_05,
-			'[]'::TEXT AS attributes_json`, schemaID)
+	return hit, nil
 }
 
 func duckDBPostgresScanLocation(name string) (string, string) {
