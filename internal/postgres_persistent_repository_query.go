@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
-	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
 
@@ -260,97 +258,62 @@ func (b *hybridConditionBuilder) initCache() {
 }
 
 func (b *hybridConditionBuilder) build(c forma.Condition) (string, []any, error) {
-	return sqlgen.WalkCondition(c, sqlgen.HybridStyle, nil, b)
+	return sqlgen.WalkHybridCondition(c, b.cache, b)
 }
 
-func (b *hybridConditionBuilder) EmitLeaf(cond *forma.KvCondition) (string, []any, error) {
-	colName := b.resolveColumnName(cond.Attr)
-	if colName != "" {
-		return b.buildMainTableCondition(cond, colName)
+// EmitTypedLeaf renders a parse-once hybrid leaf. Routing (main vs EAV) and
+// all parsing/value conversion were resolved by the normalizer; this method
+// only assigns placeholders and formats the shell with request/builder state
+// (table names, the anchor alias, the arg counter).
+func (b *hybridConditionBuilder) EmitTypedLeaf(leaf *sqlgen.PredicateLeaf) (string, []any, error) {
+	p := leaf.Hybrid
+	if p.IsMain {
+		return b.emitMainLeaf(p)
 	}
-	return b.buildEAVCondition(cond)
+	return b.emitEAVLeaf(p)
 }
 
-func (b *hybridConditionBuilder) resolveColumnName(attr string) string {
-	if model.IsMainTableColumn(attr) {
-		return attr
-	}
-	if b.cache != nil {
-		if meta, ok := b.cache[attr]; ok && meta.ColumnBinding != nil {
-			return string(meta.ColumnBinding.ColumnName)
-		}
-	}
-	return ""
-}
-
-func (b *hybridConditionBuilder) buildMainTableCondition(cond *forma.KvCondition, colName string) (string, []any, error) {
-	parsed := conditionexpr.ParseOperatorValueLenient(cond.Value)
-	sqlOpResult, err := conditionexpr.ToSQLOperator(parsed.Operator, parsed.Value)
-	if err != nil {
-		return "", nil, err
-	}
-
-	meta, err := b.resolveLeafMeta(cond, colName)
-	if err != nil {
-		return "", nil, err
-	}
-	parsedValue, err := sqlgen.ConvertPgMainValue(sqlOpResult.Value, cond.Attr, meta)
-	if err != nil {
-		return "", nil, err
+func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (string, []any, error) {
+	if p.Err != nil {
+		return "", nil, p.Err
 	}
 
 	b.argCounter++
 	placeholder := fmt.Sprintf("$%d", b.argCounter)
 
 	if b.useMainTableAsAnchor {
-		return fmt.Sprintf("m.%s %s %s", sanitizeIdentifier(colName), sqlOpResult.SQLOperator, placeholder), []any{parsedValue}, nil
+		return fmt.Sprintf("m.%s %s %s", sanitizeIdentifier(p.MainColumn), p.MainSQLOp, placeholder), []any{p.MainValue}, nil
 	}
 	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.%s %s %s)",
-		sanitizeIdentifier(b.mainTable), sanitizeIdentifier(colName), sqlOpResult.SQLOperator, placeholder), []any{parsedValue}, nil
+		sanitizeIdentifier(b.mainTable), sanitizeIdentifier(p.MainColumn), p.MainSQLOp, placeholder), []any{p.MainValue}, nil
 }
 
-// resolveLeafMeta returns the attribute metadata driving value conversion for
-// a main-table leaf. The physical column is always validated against the
-// entity_main descriptors (preserving the pre-#140 "unknown main table
-// column" contract even for cache-bound attributes); raw column references
-// without schema metadata derive a minimal metadata from the descriptor kind.
-func (b *hybridConditionBuilder) resolveLeafMeta(cond *forma.KvCondition, colName string) (forma.AttributeMetadata, error) {
-	desc := model.GetMainColumnDescriptor(colName)
-	if desc == nil {
-		return forma.AttributeMetadata{}, fmt.Errorf("unknown main table column: %s", colName)
-	}
-	if b.cache != nil {
-		if meta, ok := b.cache[cond.Attr]; ok {
-			// Bound attributes may omit value_type (e.g. audit columns); the
-			// pre-#140 implementation converted by physical column kind, so
-			// derive the missing type from the descriptor to keep that contract.
-			if meta.ValueType == "" {
-				meta.ValueType = model.ColumnKindToValueType(desc.Kind)
-			}
-			return meta, nil
-		}
-	}
-	return forma.AttributeMetadata{ValueType: model.ColumnKindToValueType(desc.Kind)}, nil
-}
-
-func (b *hybridConditionBuilder) buildEAVCondition(cond *forma.KvCondition) (string, []any, error) {
+// emitEAVLeaf formats the EAV EXISTS subquery directly against the anchor
+// alias (t.* or m.ltbase_*), replacing the retired e.*-then-string-replace
+// path. Placeholder numbering (attr_id then value) matches the pre-#154 EAV
+// emitter exactly.
+func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string, []any, error) {
 	if b.cache == nil {
 		return "", nil, fmt.Errorf("schema metadata cache not available for schema_id %d", b.schemaID)
 	}
-	gen := sqlgen.NewSQLGenerator()
-	pIdx := b.argCounter
-	clause, args, err := gen.ToSQLClauses(cond, b.eavTable, b.schemaID, b.cache, &pIdx)
-	if err != nil {
-		return "", nil, err
+	eav := p.Eav
+	if eav.Err != nil {
+		return "", nil, eav.Err
 	}
-	b.argCounter = pIdx
 
+	schemaAlias, rowAlias := "t.schema_id", "t.row_id"
 	if b.useMainTableAsAnchor {
-		clause = strings.ReplaceAll(clause, "e.row_id", "m.ltbase_row_id")
-		clause = strings.ReplaceAll(clause, "e.schema_id", "m.ltbase_schema_id")
-	} else {
-		clause = strings.ReplaceAll(clause, "e.row_id", "t.row_id")
-		clause = strings.ReplaceAll(clause, "e.schema_id", "t.schema_id")
+		schemaAlias, rowAlias = "m.ltbase_schema_id", "m.ltbase_row_id"
 	}
-	return clause, args, nil
+
+	b.argCounter++
+	attrPlaceholder := fmt.Sprintf("$%d", b.argCounter)
+	b.argCounter++
+	valuePlaceholder := fmt.Sprintf("$%d", b.argCounter)
+
+	clause := fmt.Sprintf(
+		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s AND x.%s %s %s)",
+		b.eavTable, schemaAlias, rowAlias, attrPlaceholder, eav.ValueColumn, eav.SQLOp, valuePlaceholder,
+	)
+	return clause, []any{eav.AttrID, eav.Value}, nil
 }
