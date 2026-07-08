@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	forma "github.com/lychee-technology/forma"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
@@ -112,7 +113,89 @@ func loadHotStateRecords(ctx context.Context, h *federated.FederatedTestHarness)
 	if err := rows.Err(); err != nil {
 		return nil, nil, fmt.Errorf("iterate hot state snapshot: %w", err)
 	}
+	// The fixed pivot above only reconstructs the handful of column-bound /
+	// hardcoded attributes. Pure-EAV attributes (e.g. orderChannel) would be
+	// lost, which silently drops hot candidates from truth-pass filters on those
+	// attributes (#163). Enrich each hot record with every remaining EAV
+	// attribute, driven by the schema attribute cache, so filters on any
+	// attribute reconstruct the correct candidate set.
+	if err := enrichHotRecordsWithEAVAttributes(ctx, h, registry, records); err != nil {
+		return nil, nil, err
+	}
 	return records, keys, nil
+}
+
+// enrichHotRecordsWithEAVAttributes adds every EAV attribute present in the hot
+// tier to each reconstructed record's Attributes, keyed by attribute name via
+// the schema cache. It only fills attributes the fixed pivot in
+// scanLoadedHotRecord did not already set, so the hardcoded column-bound
+// reconstruction (and its precedence) is preserved. Values mirror the
+// eav_data storage convention (value_text for text, value_numeric otherwise),
+// matching what the federated engine reads for the same rows.
+func enrichHotRecordsWithEAVAttributes(ctx context.Context, h *federated.FederatedTestHarness, registry forma.SchemaRegistry, records []GeneratedRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	// Build (schema_id, attr_id) -> attribute name from the schema caches.
+	attrNames := make(map[int16]map[int16]string)
+	for _, fixture := range DefaultSchemaFixtures() {
+		_, cache, err := registry.GetSchemaAttributeCacheByID(fixture.ID)
+		if err != nil {
+			return fmt.Errorf("load schema %d attribute cache: %w", fixture.ID, err)
+		}
+		byID := make(map[int16]string, len(cache))
+		for name, meta := range cache {
+			byID[meta.AttributeID] = name
+		}
+		attrNames[fixture.ID] = byID
+	}
+	byKey := make(map[string]*GeneratedRecord, len(records))
+	for i := range records {
+		byKey[schemaRowKey(records[i].SchemaID, records[i].RowID)] = &records[i]
+	}
+	rows, err := h.PGDB.QueryContext(ctx, `
+		SELECT ed.schema_id, ed.row_id, ed.attr_id,
+			MAX(ed.value_text) AS value_text,
+			MAX(ed.value_numeric) AS value_numeric
+		FROM eav_data ed
+		JOIN change_log cl ON cl.schema_id = ed.schema_id AND cl.row_id = ed.row_id
+		WHERE cl.flushed_at = 0
+		GROUP BY ed.schema_id, ed.row_id, ed.attr_id
+	`)
+	if err != nil {
+		return fmt.Errorf("load hot eav attributes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var schemaID, attrID int16
+		var rowID uuid.UUID
+		var valueText sql.NullString
+		var valueNumeric sql.NullFloat64
+		if err := rows.Scan(&schemaID, &rowID, &attrID, &valueText, &valueNumeric); err != nil {
+			return fmt.Errorf("scan hot eav attribute: %w", err)
+		}
+		record, ok := byKey[schemaRowKey(schemaID, rowID)]
+		if !ok {
+			continue
+		}
+		name, ok := attrNames[schemaID][attrID]
+		if !ok {
+			continue
+		}
+		if _, exists := record.Attributes[name]; exists {
+			continue
+		}
+		switch {
+		case valueText.Valid:
+			record.Attributes[name] = valueText.String
+		case valueNumeric.Valid:
+			record.Attributes[name] = valueNumeric.Float64
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hot eav attributes: %w", err)
+	}
+	return nil
 }
 
 func scanLoadedHotRecord(rows *sql.Rows) (GeneratedRecord, error) {
