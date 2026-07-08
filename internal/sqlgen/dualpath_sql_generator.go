@@ -21,7 +21,10 @@ type DualClauses struct {
 // - PgClause reuses existing SQLGenerator (EAV-based EXISTS expressions).
 // - PgMainClause contains predicates suitable for entity_main pushdown.
 // - DuckClause maps attributes to column names when available and emits a simple DuckDB-style clause.
-// Note: DuckDB placeholders are "?" and args are returned in order. Postgres uses $n placeholders.
+// Placeholder styles: PgClause (the EAV EXISTS clause, genuinely Postgres-bound)
+// uses "$n"; DuckClause and PgMainClause both use DuckDB positional "?", because
+// PgMainClause is only ever embedded in the DuckDB federated template (see
+// pgMainTypedEmitter and #161). Args are returned in order for all three.
 //
 // The condition tree is normalized into the typed predicate IR exactly once
 // (#143); the three emitters below consume that shared tree.
@@ -34,7 +37,9 @@ func ToDualClauses(
 ) (DualClauses, error) {
 	tree := normalizePredicates(condition, cache, targetsAll)
 
-	// Build pushdown-capable main table predicates first so placeholders ($n) align.
+	// Build pushdown-capable main table predicates first so paramIndex advances
+	// before the EAV clause, keeping the EAV EXISTS "$n" numbering stable. The
+	// main clause itself emits DuckDB positional "?" (see pgMainTypedEmitter).
 	pgMainClause, pgMainArgs, err := pgMainClauseFromTree(tree, paramIndex)
 	if err != nil {
 		return DualClauses{}, fmt.Errorf("pg main generation: %w", err)
@@ -94,9 +99,20 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 		return "", nil, nil
 	}
 
+	// PgMainClause is only ever embedded in the DuckDB federated query template
+	// (as PG_WHERE_CLAUSE for the pg_source CTE) — it is never sent to Postgres.
+	// It therefore must use DuckDB's positional "?" placeholder, not "$n":
+	// DuckDB cannot mix "?" (auto-numbered) with "$1" (numbered) in one statement,
+	// and the DuckClause (also embedded here) uses "?". Mixing the two mis-binds
+	// arguments — the "$1" aliases DuckDB positional param 1 and shifts every "?"
+	// after it — so a main-column AND EAV composite silently returned zero rows
+	// (#161). The advanced-template arg interleave (DuckArgs, PgMainArgs, DuckArgs)
+	// already matches the left-to-right "?" order once every placeholder is "?".
+	//
+	// paramIndex is still advanced so the sibling EAV EXISTS clause (PgClause),
+	// which shares this counter and does use "$n", keeps its numbering stable.
 	*e.paramIndex++
-	ph := fmt.Sprintf("$%d", *e.paramIndex)
-	sql := fmt.Sprintf("%s %s %s", p.Column, p.SQLOp, ph)
+	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
 	return sql, []any{p.Value}, nil
 }
 
@@ -108,7 +124,9 @@ func pgMainClauseFromTree(tree PredicateNode, paramIndex *int) (string, []any, e
 }
 
 // buildPgMainClause traverses the condition tree and emits a WHERE fragment targeting entity_main (m.*)
-// It returns the clause string (with $n placeholders) and args slice, advancing paramIndex as needed.
+// It returns the clause string (with DuckDB positional "?" placeholders, since the
+// main clause is DuckDB-embedded — see pgMainTypedEmitter) and args slice,
+// advancing paramIndex as needed to keep the sibling EAV "$n" numbering stable.
 func buildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
 	if cond == nil {
 		return "", nil, nil

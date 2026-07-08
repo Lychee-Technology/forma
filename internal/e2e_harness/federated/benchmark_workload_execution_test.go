@@ -29,21 +29,10 @@ import (
 //     batching proved (via TestTruthPassBatchEqualsPerCandidate) that this is a
 //     harness truth-query bug independent of the per-candidate/batch split, so
 //     it is tracked on its own (#163).
-//   - mixed-hot-eav-page / tier-pushdown-mixed: the service path returns zero
-//     rows for the composite main+EAV filter (symbol AND exchange) though each
-//     condition works alone (#161).
 var knownFailingAssertions = map[string]map[string]string{
 	"eav-low-selectivity-page": {
 		"total-records-match-expected": "#163",
 		"page-row-ids-match-expected":  "#163",
-	},
-	"mixed-hot-eav-page": {
-		"total-records-match-expected": "#161",
-		"page-row-ids-match-expected":  "#161",
-	},
-	"tier-pushdown-mixed": {
-		"total-records-match-expected": "#161",
-		"page-row-ids-match-expected":  "#161",
 	},
 }
 
@@ -137,7 +126,7 @@ type workloadCoverage struct {
 	customer, security, filtered, lowSelective, eav, mixedFilter bool
 	mixedTier, hotOnly, coldOnly                                 bool
 	expectedOracleAssertions, tradeTimeWindow, repeatedStability bool
-	pushdownHot, pushdownEAV, pushdownMixed, pushdownColdOnly     bool
+	pushdownHot, pushdownEAV, pushdownMixed, pushdownColdOnly    bool
 	pushdownAssertions                                           bool
 }
 
