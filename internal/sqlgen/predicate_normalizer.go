@@ -101,7 +101,7 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 		leaf.PgMain = normalizePgMainPayload(kv, meta, hasMeta, classifyOK, lenient, lenientSQL, lenientSQLErr)
 	}
 	if targets&targetDuck != 0 {
-		leaf.Duck = normalizeDuckPayload(kv, cache, meta, hasMeta, lenientSQL, lenientSQLErr)
+		leaf.Duck = normalizeDuckPayload(kv, meta, hasMeta, lenientSQL, lenientSQLErr)
 	}
 	if targets&targetHybrid != 0 {
 		leaf.Hybrid = normalizeHybridPayload(kv, meta, hasMeta, lenientSQL, lenientSQLErr)
@@ -347,7 +347,6 @@ func normalizePgMainPayload(
 // no-cast emission.
 func normalizeDuckPayload(
 	kv *forma.KvCondition,
-	cache forma.SchemaAttributeCache,
 	meta forma.AttributeMetadata,
 	hasMeta bool,
 	lenientSQL conditionexpr.SQLOperatorResult,
@@ -357,7 +356,7 @@ func normalizeDuckPayload(
 		return DuckLeafPayload{Err: lenientSQLErr}
 	}
 
-	column := resolveDuckDBColumn(kv.Attr, cache)
+	column := resolveDuckDBColumn(kv.Attr)
 
 	if lenientSQL.SQLOperator == "LIKE" {
 		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, TextLike: true, Param: lenientSQL.Value}

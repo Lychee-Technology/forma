@@ -64,8 +64,9 @@ func TestToDualClauses_SimpleKv_WithColumnBinding(t *testing.T) {
 	dc, err := ToDualClauses(cond, "eav_table", 1, cache, &paramIndex)
 	require.NoError(t, err)
 
-	// DuckDB side should use column binding name
-	require.Equal(t, "text_01 = ?", dc.DuckClause)
+	// DuckDB side references the attribute name (the DuckDB CTEs are aliased by
+	// attribute name), not the physical entity_main column (#167).
+	require.Equal(t, "username = ?", dc.DuckClause)
 	require.Equal(t, []any{"Alice"}, dc.DuckArgs)
 
 	// Postgres side still present
@@ -300,7 +301,7 @@ func TestBuildDuckClause_LikeOperators_WildcardRewrite_NoCast(t *testing.T) {
 	starts := &forma.KvCondition{Attr: "bio", Value: "starts_with:pre"}
 	clause, args, err := buildDuckClause(starts, cache)
 	require.NoError(t, err)
-	require.Contains(t, clause, "text_10")
+	require.Contains(t, clause, "bio")
 	require.Contains(t, clause, "LIKE")
 	require.NotContains(t, clause, "CAST(")
 	require.Len(t, args, 1)
@@ -310,7 +311,7 @@ func TestBuildDuckClause_LikeOperators_WildcardRewrite_NoCast(t *testing.T) {
 	contains := &forma.KvCondition{Attr: "bio", Value: "contains:mid"}
 	clause2, args2, err := buildDuckClause(contains, cache)
 	require.NoError(t, err)
-	require.Contains(t, clause2, "text_10")
+	require.Contains(t, clause2, "bio")
 	require.Contains(t, clause2, "LIKE")
 	require.NotContains(t, clause2, "CAST(")
 	require.Len(t, args2, 1)
