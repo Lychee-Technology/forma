@@ -146,10 +146,19 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 	return "m." + attr
 }
 
-// resolveDuckDBColumn returns the column name for DuckDB queries.
-func resolveDuckDBColumn(attr string, cache forma.SchemaAttributeCache) string {
-	if m, ok := cache[attr]; ok && m.ColumnBinding != nil {
-		return string(m.ColumnBinding.ColumnName)
-	}
+// resolveDuckDBColumn returns the column name the DuckClause must reference.
+//
+// The DuckClause (LOGICAL_WHERE_CLAUSE) is only ever applied against the DuckDB
+// federated CTEs (s3_source / unified / visible), and those project every
+// attribute by its ATTRIBUTE name — `COALESCE(hot_vals.age, m.integer_01) AS age`
+// for column-bound attrs, `hot_vals.tag AS tag` for pure-EAV attrs. So the clause
+// must use the attribute name, never the physical entity_main column
+// (`integer_01`), which is not a column of those CTEs. Emitting the physical name
+// referenced a nonexistent column on non-benchmark schemas — a binder error /
+// empty result in production, previously masked in the benchmark by
+// translateDuckClauseToBenchmark (#167). Contrast resolveMainTableColumn, which
+// correctly uses the physical `m.<col>` because PgMainClause references the real
+// entity_main table `m` joined in the pg_source CTE.
+func resolveDuckDBColumn(attr string) string {
 	return attr
 }

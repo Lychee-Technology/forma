@@ -256,12 +256,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Record Postgres pushdown fragment
 	planCtx.recordPushdownFragment(dc.PgMainClause)
 
-	// For benchmark schemas, the DuckDB logical WHERE clause must reference
-	// attribute names (the S3 parquet has flat attribute columns), not entity_main
-	// column names which ToDualClauses resolves from the schema cache.
-	if isBenchmarkSchemaID(q.SchemaID) {
-		dc.DuckClause = translateDuckClauseToBenchmark(dc.DuckClause, cache)
-	}
+	// The DuckDB logical WHERE clause already references attribute names, which
+	// match the attribute-aliased columns projected by both the benchmark and
+	// production DuckDB CTEs (see resolveDuckDBColumn). No per-schema column-name
+	// translation is needed (#167).
 
 	// Compiled-plan cache (#142): skeleton + template args are reused per
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
@@ -562,20 +560,6 @@ func (e *DBFederatedQueryEngine) finalizeDuckDBExecutionPlan(
 
 	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
-}
-
-// translateDuckClauseToBenchmark rewrites a DuckDB WHERE clause from entity_main
-// column references to benchmark attribute names used in S3 parquet flat columns.
-func translateDuckClauseToBenchmark(clause string, cache forma.SchemaAttributeCache) string {
-	result := clause
-	for attr, meta := range cache {
-		if meta.ColumnBinding == nil {
-			continue
-		}
-		colName := string(meta.ColumnBinding.ColumnName)
-		result = strings.ReplaceAll(result, colName, attr)
-	}
-	return result
 }
 
 // needsEAVJoin checks whether the federated query requires an EAV data JOIN.
