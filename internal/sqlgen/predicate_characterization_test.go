@@ -69,7 +69,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "text equals bound",
 			cond: charKv("username", "equals:Alice"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 = $1", PgMainArgs: []any{"Alice"},
+				PgMainClause: "m.text_01 = ?", PgMainArgs: []any{"Alice"},
 				PgClause: charEavClause("$2", "value_text", "=", "$3"), PgArgs: []any{int16(1), "Alice"},
 				DuckClause: "text_01 = ?", DuckArgs: []any{"Alice"},
 			},
@@ -79,7 +79,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "text bare value defaults to equals",
 			cond: charKv("username", "Alice"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 = $1", PgMainArgs: []any{"Alice"},
+				PgMainClause: "m.text_01 = ?", PgMainArgs: []any{"Alice"},
 				PgClause: charEavClause("$2", "value_text", "=", "$3"), PgArgs: []any{int16(1), "Alice"},
 				DuckClause: "text_01 = ?", DuckArgs: []any{"Alice"},
 			},
@@ -99,7 +99,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "starts_with wildcards suffix",
 			cond: charKv("username", "starts_with:Al"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 LIKE $1", PgMainArgs: []any{"Al%"},
+				PgMainClause: "m.text_01 LIKE ?", PgMainArgs: []any{"Al%"},
 				PgClause: charEavClause("$2", "value_text", "LIKE", "$3"), PgArgs: []any{int16(1), "Al%"},
 				DuckClause: "text_01 LIKE ?", DuckArgs: []any{"Al%"},
 			},
@@ -119,7 +119,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "integer gt: main int64, eav float64, duck float64",
 			cond: charKv("age", "gt:30"),
 			want: DualClauses{
-				PgMainClause: "m.integer_01 > $1", PgMainArgs: []any{int64(30)},
+				PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(30)},
 				PgClause: charEavClause("$2", "value_numeric", ">", "$3"), PgArgs: []any{int16(2), float64(30)},
 				DuckClause: "integer_01 > CAST(? AS INTEGER)", DuckArgs: []any{float64(30)},
 			},
@@ -139,7 +139,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "big integral: main keeps int64 beyond 2^53, eav/duck lose to float64",
 			cond: charKv("age", "equals:9007199254740993"),
 			want: DualClauses{
-				PgMainClause: "m.integer_01 = $1", PgMainArgs: []any{int64(9007199254740993)},
+				PgMainClause: "m.integer_01 = ?", PgMainArgs: []any{int64(9007199254740993)},
 				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(2), float64(9007199254740992)},
 				DuckClause: "integer_01 = CAST(? AS INTEGER)", DuckArgs: []any{float64(9007199254740992)},
 			},
@@ -149,7 +149,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "bool bool-int encoding: main int64(1), eav float64(1), duck true",
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
-				PgMainClause: "m.bool_01 = $1", PgMainArgs: []any{int64(1)},
+				PgMainClause: "m.bool_01 = ?", PgMainArgs: []any{int64(1)},
 				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(5), float64(1)},
 				DuckClause: "bool_01 = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
@@ -159,7 +159,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "bool bool-text encoding zero: main \"0\", eav float64(0), duck false",
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
-				PgMainClause: "m.text_02 = $1", PgMainArgs: []any{"0"},
+				PgMainClause: "m.text_02 = ?", PgMainArgs: []any{"0"},
 				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(6), float64(0)},
 				DuckClause: "text_02 = CAST(? AS BOOLEAN)", DuckArgs: []any{false},
 			},
@@ -179,7 +179,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "date unix-ms encoding: main/eav int64 ms, duck time.Time",
 			cond: charKv("born", "gte:1700000000000"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_01 >= $1", PgMainArgs: []any{int64(1700000000000)},
+				PgMainClause: "m.bigint_01 >= ?", PgMainArgs: []any{int64(1700000000000)},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(8), int64(1700000000000)},
 				DuckClause: "bigint_01 >= CAST(? AS TIMESTAMP)", DuckArgs: []any{time.UnixMilli(1700000000000).UTC()},
 			},
@@ -187,9 +187,9 @@ func TestToDualClauses_Characterization(t *testing.T) {
 		},
 		{
 			name: "datetime ISO8601 encoding: main/eav bind ISO string, duck time.Time",
-			cond: charKv("joined", "gte:" + iso),
+			cond: charKv("joined", "gte:"+iso),
 			want: DualClauses{
-				PgMainClause: "m.text_03 >= $1", PgMainArgs: []any{iso},
+				PgMainClause: "m.text_03 >= ?", PgMainArgs: []any{iso},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), iso},
 				DuckClause: "text_03 >= CAST(? AS TIMESTAMP)", DuckArgs: []any{isoTime},
 			},
@@ -197,7 +197,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 		},
 		{
 			name: "datetime unbound: eav unix-ms int64, duck time.Time",
-			cond: charKv("seen", "gte:" + iso),
+			cond: charKv("seen", "gte:"+iso),
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(10), int64(1704164645000)},
@@ -219,7 +219,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "AND(main leaf, vetoed OR): pg-main keeps only pushable branch",
 			cond: charAnd(charKv("username", "equals:Alice"), charOr(charKv("age", "gt:18"), charKv("tag", "equals:x"))),
 			want: DualClauses{
-				PgMainClause: "(m.text_01 = $1)", PgMainArgs: []any{"Alice"},
+				PgMainClause: "(m.text_01 = ?)", PgMainArgs: []any{"Alice"},
 				PgClause: "((" + charEavClause("$2", "value_text", "=", "$3") + ") AND (((" +
 					charEavClause("$4", "value_numeric", ">", "$5") + ") OR (" +
 					charEavClause("$6", "value_text", "=", "$7") + "))))",
@@ -233,7 +233,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "OR all pushable emits pg-main prefilter",
 			cond: charOr(charKv("username", "equals:A"), charKv("age", "gt:5")),
 			want: DualClauses{
-				PgMainClause: "((m.text_01 = $1) OR (m.integer_01 > $2))", PgMainArgs: []any{"A", int64(5)},
+				PgMainClause: "((m.text_01 = ?) OR (m.integer_01 > ?))", PgMainArgs: []any{"A", int64(5)},
 				PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") OR (" +
 					charEavClause("$5", "value_numeric", ">", "$6") + "))",
 				PgArgs:     []any{int16(1), "A", int16(2), float64(5)},
@@ -246,7 +246,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			name: "AND of two main predicates on same column",
 			cond: charAnd(charKv("age", "gt:10"), charKv("age", "lt:90")),
 			want: DualClauses{
-				PgMainClause: "((m.integer_01 > $1) AND (m.integer_01 < $2))", PgMainArgs: []any{int64(10), int64(90)},
+				PgMainClause: "((m.integer_01 > ?) AND (m.integer_01 < ?))", PgMainArgs: []any{int64(10), int64(90)},
 				PgClause: "((" + charEavClause("$3", "value_numeric", ">", "$4") + ") AND (" +
 					charEavClause("$5", "value_numeric", "<", "$6") + "))",
 				PgArgs:     []any{int16(2), float64(10), int16(2), float64(90)},
@@ -401,7 +401,7 @@ func TestStandaloneBuilders_Characterization(t *testing.T) {
 		idx := 0
 		clause, args, err := BuildPgMainClause(charAnd(charKv("username", "equals:Alice"), nil), cache, &idx)
 		require.NoError(t, err)
-		require.Equal(t, "(m.text_01 = $1)", clause)
+		require.Equal(t, "(m.text_01 = ?)", clause)
 		require.Equal(t, []any{"Alice"}, args)
 		require.Equal(t, 1, idx)
 	})

@@ -94,9 +94,20 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 		return "", nil, nil
 	}
 
+	// PgMainClause is only ever embedded in the DuckDB federated query template
+	// (as PG_WHERE_CLAUSE for the pg_source CTE) — it is never sent to Postgres.
+	// It therefore must use DuckDB's positional "?" placeholder, not "$n":
+	// DuckDB cannot mix "?" (auto-numbered) with "$1" (numbered) in one statement,
+	// and the DuckClause (also embedded here) uses "?". Mixing the two mis-binds
+	// arguments — the "$1" aliases DuckDB positional param 1 and shifts every "?"
+	// after it — so a main-column AND EAV composite silently returned zero rows
+	// (#161). The advanced-template arg interleave (DuckArgs, PgMainArgs, DuckArgs)
+	// already matches the left-to-right "?" order once every placeholder is "?".
+	//
+	// paramIndex is still advanced so the sibling EAV EXISTS clause (PgClause),
+	// which shares this counter and does use "$n", keeps its numbering stable.
 	*e.paramIndex++
-	ph := fmt.Sprintf("$%d", *e.paramIndex)
-	sql := fmt.Sprintf("%s %s %s", p.Column, p.SQLOp, ph)
+	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
 	return sql, []any{p.Value}, nil
 }
 

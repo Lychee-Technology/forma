@@ -106,13 +106,14 @@ func TestToDualClauses_NestedAndOr_GroupingAndOrdering(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, pgClause)
 
-	// Then: grouping operators are present and placeholder ordering is $1 then $2 then $3
+	// Then: grouping operators are present. PgMainClause is embedded in the DuckDB
+	// federated template, so it emits positional "?" placeholders, not "$n" (#161).
+	// Placeholder ordering is therefore carried by the args slice: the three leaves
+	// bind in left-to-right order A, B, C.
 	require.Contains(t, pgClause, "AND")
 	require.Contains(t, pgClause, "OR")
-	i1 := strings.Index(pgClause, "$1")
-	i2 := strings.Index(pgClause, "$2")
-	i3 := strings.Index(pgClause, "$3")
-	require.True(t, i1 >= 0 && i2 > i1 && i3 > i2, "placeholders should appear in order $1,$2,$3")
+	require.Equal(t, 3, strings.Count(pgClause, "?"), "expected three positional ? placeholders")
+	require.NotContains(t, pgClause, "$", "PgMainClause must not use $n placeholders in the DuckDB path")
 	require.Equal(t, []any{"A", "B", "C"}, pgArgs)
 
 	// And: DuckDB clause preserves grouping and argument ordering
