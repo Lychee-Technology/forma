@@ -271,6 +271,43 @@ func (e *Env) buildCDCConfig() cdc.CDCConfig {
 	return cfg
 }
 
+// RestartPostgres restarts the cluster's Postgres container and rebinds
+// every per-test handle that referenced the old server: the pgx pool, the
+// CDC config (the host-mapped port can change), the DuckDB client (so no
+// cached postgres attachment survives), and the lazily built EntityManager
+// and federated engine. Registry and Metadata are load-once snapshots and
+// need no rebuild. Only for tests owning a DedicatedCluster.
+func (e *Env) RestartPostgres(ctx context.Context) error {
+	if err := e.Cluster.RestartPostgres(ctx); err != nil {
+		return fmt.Errorf("restart cluster postgres: %w", err)
+	}
+	return e.reconnectAfterRestart(ctx)
+}
+
+// reconnectAfterRestart rebuilds the Env's server-bound handles against the
+// restarted Postgres.
+func (e *Env) reconnectAfterRestart(ctx context.Context) error {
+	if e.Pool != nil {
+		e.Pool.Close()
+	}
+	pool, err := pgxpool.New(ctx, e.PGDSN())
+	if err != nil {
+		return fmt.Errorf("reconnect test database after restart: %w", err)
+	}
+	e.Pool = pool
+
+	if e.Duck != nil {
+		_ = e.Duck.Close()
+	}
+	if err := e.startDuckDB(); err != nil {
+		return err
+	}
+	e.CDC = e.buildCDCConfig()
+	e.manager = nil
+	e.engine = nil
+	return nil
+}
+
 // PGDSN returns the DSN of this Env's dedicated database.
 func (e *Env) PGDSN() string {
 	c := e.Cluster
