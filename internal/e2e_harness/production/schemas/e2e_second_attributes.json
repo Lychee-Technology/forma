@@ -9,5 +9,13 @@
     "column_binding": {
       "col_name": "integer_01"
     }
+  },
+  "name": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "version": {
+    "attributeID": 4,
+    "valueType": "text"
   }
 }

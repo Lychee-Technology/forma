@@ -9,5 +9,9 @@
   "value": {
     "attributeID": 2,
     "valueType": "numeric"
+  },
+  "version": {
+    "attributeID": 3,
+    "valueType": "text"
   }
 }

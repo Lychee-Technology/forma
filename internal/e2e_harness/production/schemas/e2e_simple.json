@@ -9,6 +9,9 @@
     },
     "value": {
       "type": "number"
+    },
+    "version": {
+      "type": "string"
     }
   }
 }

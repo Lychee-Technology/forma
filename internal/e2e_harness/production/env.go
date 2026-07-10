@@ -49,6 +49,7 @@ type Env struct {
 	events   []*Event
 	eventSeq int
 	queryN   int
+	queries  []*QueryResult
 }
 
 // EnvOption customizes NewEnv.

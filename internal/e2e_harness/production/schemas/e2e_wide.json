@@ -38,6 +38,12 @@
     "seen": {
       "type": "string",
       "format": "date-time"
+    },
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
     }
   }
 }
