@@ -43,6 +43,12 @@ type Env struct {
 
 	logger *zap.Logger
 	opts   envOptions
+
+	manager  forma.EntityManager
+	engine   *fedengine.DBFederatedQueryEngine
+	events   []*Event
+	eventSeq int
+	queryN   int
 }
 
 // EnvOption customizes NewEnv.
