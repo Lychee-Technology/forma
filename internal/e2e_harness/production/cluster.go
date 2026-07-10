@@ -201,7 +201,7 @@ func (c *Cluster) RestartPostgres(ctx context.Context) error {
 		return fmt.Errorf("restart postgres: external infrastructure (%s) cannot be restarted", externalPGDSNVar)
 	}
 	if err := c.Base.RestartPostgres(ctx); err != nil {
-		return err
+		return fmt.Errorf("restart postgres container: %w", err)
 	}
 	c.PGHost, c.PGPort = pgHostPortFromDSN(c.Base.PGDSN)
 	return nil

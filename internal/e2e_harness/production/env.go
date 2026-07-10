@@ -300,7 +300,7 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 		_ = e.Duck.Close()
 	}
 	if err := e.startDuckDB(); err != nil {
-		return err
+		return fmt.Errorf("rebuild duckdb client after restart: %w", err)
 	}
 	e.CDC = e.buildCDCConfig()
 	e.manager = nil
