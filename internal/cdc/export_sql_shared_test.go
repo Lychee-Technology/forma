@@ -30,6 +30,18 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			AttributeID:   11,
 			ValueType:     forma.ValueTypeBool,
 		},
+		"joined": {
+			AttributeName: "joined",
+			AttributeID:   12,
+			ValueType:     forma.ValueTypeDate,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs},
+		},
+		"touched": {
+			AttributeName: "touched",
+			AttributeID:   13,
+			ValueType:     forma.ValueTypeDateTime,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs},
+		},
 	}
 
 	tests := []struct {
@@ -132,6 +144,11 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			if !strings.Contains(res.eQuery, "attr_id IN (11)") {
 				t.Fatalf("eav query missing attr_id filter: %s", res.eQuery)
 			}
+			// Bound unix_ms date/datetime must stay epoch-ms BIGINT in parquet:
+			// the federated reader casts date attrs with CAST(attr AS BIGINT) (#194).
+			require.Contains(t, res.sql, "TRY_CAST(m.bigint_02 AS BIGINT) AS joined")
+			require.Contains(t, res.sql, "TRY_CAST(m.bigint_03 AS BIGINT) AS touched")
+			require.NotContains(t, res.sql, "to_timestamp")
 		})
 	}
 }
@@ -283,6 +300,66 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 	require.Equal(t, []string{"MAX(CASE WHEN attr_id = 31 THEN TRY_CAST(value_numeric AS DOUBLE) END) AS annual_revenue"}, projection.eavAgg)
 	require.Equal(t, []string{"e.annual_revenue"}, projection.eavSelect)
 	require.Equal(t, []int16{31}, projection.eavAttrIDs)
+}
+
+func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigint(t *testing.T) {
+	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+		"joined": {
+			AttributeName: "joined",
+			AttributeID:   13,
+			ValueType:     forma.ValueTypeDate,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs},
+		},
+		"touched": {
+			AttributeName: "touched",
+			AttributeID:   14,
+			ValueType:     forma.ValueTypeDateTime,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs},
+		},
+	})
+
+	require.Equal(t, []string{
+		"TRY_CAST(m.bigint_02 AS BIGINT) AS joined",
+		"TRY_CAST(m.bigint_03 AS BIGINT) AS touched",
+	}, projection.mainProjections)
+}
+
+func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
+	unixMs := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}
+	unbound := &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}
+
+	tests := []struct {
+		name     string
+		meta     forma.AttributeMetadata
+		expected string
+	}{
+		{
+			name:     "date unix_ms stays epoch-ms bigint",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: unixMs},
+			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
+		},
+		{
+			name:     "datetime unix_ms stays epoch-ms bigint",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: unixMs},
+			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
+		},
+		{
+			name:     "date default encoding keeps native cast",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: unbound},
+			expected: "TRY_CAST(m.bigint_02 AS DATE)",
+		},
+		{
+			name:     "datetime default encoding keeps native cast",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: unbound},
+			expected: "TRY_CAST(m.bigint_02 AS TIMESTAMP)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, castMainValue("m.bigint_02", tt.meta))
+		})
+	}
 }
 
 func TestBuildEAVAggregationSQL_GroupsByRowIDWhenNoAggregatesExist(t *testing.T) {

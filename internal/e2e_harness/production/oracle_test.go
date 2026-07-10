@@ -11,13 +11,15 @@ import (
 
 func wideCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
-		"title":  {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
-		"count":  {AttributeID: 3, ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnInteger01}},
-		"score":  {AttributeID: 5, ValueType: forma.ValueTypeNumeric, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnDouble01}},
-		"note":   {AttributeID: 7, ValueType: forma.ValueTypeText},
-		"active": {AttributeID: 8, ValueType: forma.ValueTypeBool},
-		"born":   {AttributeID: 9, ValueType: forma.ValueTypeDate},
-		"seen":   {AttributeID: 10, ValueType: forma.ValueTypeDateTime},
+		"title":   {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
+		"count":   {AttributeID: 3, ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnInteger01}},
+		"score":   {AttributeID: 5, ValueType: forma.ValueTypeNumeric, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnDouble01}},
+		"note":    {AttributeID: 7, ValueType: forma.ValueTypeText},
+		"active":  {AttributeID: 8, ValueType: forma.ValueTypeBool},
+		"born":    {AttributeID: 9, ValueType: forma.ValueTypeDate},
+		"seen":    {AttributeID: 10, ValueType: forma.ValueTypeDateTime},
+		"joined":  {AttributeID: 11, ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}},
+		"touched": {AttributeID: 12, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs}},
 	}
 }
 

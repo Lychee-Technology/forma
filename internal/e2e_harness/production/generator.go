@@ -125,6 +125,8 @@ func FullTypeProfile() AttrProfile {
 		attrs["active"] = r.Intn(2) == 0
 		attrs["born"] = base.AddDate(0, 0, -r.Intn(20000)).Format("2006-01-02")
 		attrs["seen"] = base.Add(time.Duration(r.Intn(1_000_000)) * time.Second).Format(time.RFC3339)
+		attrs["joined"] = base.AddDate(0, 0, -r.Intn(20000)).Format("2006-01-02")
+		attrs["touched"] = base.Add(time.Duration(r.Intn(1_000_000)) * time.Second).Format(time.RFC3339)
 		return attrs
 	}
 }

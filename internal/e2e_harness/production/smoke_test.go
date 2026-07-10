@@ -196,6 +196,14 @@ func runSmokeQueries(ctx context.Context, t *testing.T, env *Env, wide SchemaRef
 		Limit:  8,
 		Offset: 8, // page 2
 	})
+	// Sort on the main-column-bound datetime attribute (#194). Sorting only
+	// references the projected column; date filter parameters are not yet
+	// supported on the federated DuckClause side.
+	env.AssertQueryMatches(ctx, Query{
+		Schema: wide,
+		Sorts:  []Sort{{Attr: "touched"}},
+		Limit:  10,
+	})
 	env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 100})
 }
 
