@@ -53,6 +53,9 @@ func TestBoundBigintAcceptsInt64Probe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hot query: %v", err)
 	}
+	if len(hot.Records) == 0 {
+		t.Fatal("hot query returned no records for the int64 probe row")
+	}
 	got, ok := hot.Records[0].Int64Items["bigint_01"]
 	if !ok || got != maxBoundBigint {
 		t.Fatalf("bound bigint stored %d (present=%t), want %d (2^62)", got, ok, maxBoundBigint)
@@ -66,6 +69,10 @@ const maxUUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 // Go model (transform.extractValueFromEAVRecord), so 2^53 is the largest
 // exactly-representable EAV integer. Bound bigints don't share this limit.
 const maxEAVInt = float64(1 << 53)
+
+// preEpochJoinedMS is 1900-01-01T00:00:00Z in epoch milliseconds — the
+// b-min row's pre-epoch bound date (negative epoch-ms must survive).
+const preEpochJoinedMS = int64(-2208988800000)
 
 // boundaryEvents builds the four boundary shapes: a NULL row (only the bound
 // title set), a zero/empty row (every column an explicit zero-value, not
@@ -213,8 +220,8 @@ func assertBoundaryRecords(t *testing.T, label string, res *QueryResult, evs ...
 			}
 			assertEAVNumeric(t, label+" b-min", rec, 15, -maxEAVInt)
 			// pre-epoch date: negative epoch-ms
-			if got := rec.Int64Items["bigint_02"]; got != -2208988800000 {
-				t.Errorf("%s b-min: joined = %d, want -2208988800000", label, got)
+			if got := rec.Int64Items["bigint_02"]; got != preEpochJoinedMS {
+				t.Errorf("%s b-min: joined = %d, want %d", label, got, preEpochJoinedMS)
 			}
 		}
 	}
