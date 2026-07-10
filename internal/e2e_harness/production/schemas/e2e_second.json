@@ -9,12 +9,6 @@
     },
     "code": {
       "type": "integer"
-    },
-    "name": {
-      "type": "string"
-    },
-    "version": {
-      "type": "string"
     }
   }
 }

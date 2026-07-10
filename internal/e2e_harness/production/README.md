@@ -87,10 +87,11 @@ Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 | `e2e_wide` | 21 | one attribute per scalar `forma.ValueType`, mixed main-column/EAV storage (#174) |
 | `e2e_second` | 22 | second schema for multi-schema isolation (#189) |
 
-All fixtures explicitly define `name` and `version` text attributes:
-`sqlgen.BuildSchemaProjection` injects synthetic ones into every schema and
-real CDC exports cannot satisfy the injected columns (see the follow-ups in
-PR for #173). `forma.ValueTypeList` is not covered yet.
+Fixtures define only the attributes their tests use: the synthetic
+`name`/`version` injection in `sqlgen.BuildSchemaProjection` was removed in
+#192, so schemas need no workaround attributes. (`e2e_simple` keeps a real,
+column-bound `name` attribute — proving a schema that legitimately defines
+one still works.) `forma.ValueTypeList` is not covered yet.
 
 Note: the DuckDB federated path requires at least one parquet file per
 schema (`read_parquet` errors on an empty glob) — matching production,

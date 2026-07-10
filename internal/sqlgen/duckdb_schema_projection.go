@@ -98,24 +98,6 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		attrIDs:          make(map[string]int),
 	}
 
-	// Work on a local copy: the caller's cache is a shared, read-only
-	// registry snapshot and must never be mutated here (#142 phase 3).
-	local := make(forma.SchemaAttributeCache, len(cache)+2)
-	for name, meta := range cache {
-		local[name] = meta
-	}
-	cache = local
-
-	// Collect column-bound attributes and EAV-only attributes
-	ensureAttr := func(name string, vt forma.ValueType) {
-		if _, exists := cache[name]; exists {
-			return
-		}
-		cache[name] = forma.AttributeMetadata{ValueType: vt}
-	}
-	ensureAttr("name", forma.ValueTypeText)
-	ensureAttr("version", forma.ValueTypeText)
-
 	attrs := make([]attrProjectionInfo, 0, len(cache))
 	for name, meta := range cache {
 		ai := attrProjectionInfo{name: name, meta: meta}
