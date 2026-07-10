@@ -89,7 +89,7 @@ func TestListAttributeRoundTrip(t *testing.T) {
 	}
 
 	t.Run("round-trip across tiers", func(t *testing.T) {
-		t.Skipf("list round-trip blocked by #TODO-174-LIST: transform.populateTypedValue " +
+		t.Skipf("list round-trip blocked by #204: transform.populateTypedValue " +
 			"rejects list attributes at write (internal/transform/transformer.go:372); even if " +
 			"accepted, the CDC EAV export drops array_indices and MAX-collapses multi-element rows " +
 			"(internal/cdc/export_sql_builder.go:79-88,135) and the federated reader hardcodes " +
@@ -100,7 +100,7 @@ func TestListAttributeRoundTrip(t *testing.T) {
 }
 
 // listRoundTripSpec is the acceptance spec for full list round-trip support.
-// It is only reached once #TODO-174-LIST is fixed and the skip above is
+// It is only reached once #204 is fixed and the skip above is
 // removed. It probes every hop and asserts the three list elements survive
 // intact: hot EAV rows, warm/cold parquet, and federated merge-on-read.
 func listRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
