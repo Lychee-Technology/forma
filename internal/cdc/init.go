@@ -49,6 +49,17 @@ type initRunContext struct {
 	pgConnStr            string
 }
 
+// normalizeInitOptions applies the same config defaults as Runner.RunOnce.
+// Without them a zero-value CDCConfig yields BatchSize=0, and the batch
+// query's LIMIT 0 would make RunInit report success after exporting nothing.
+func normalizeInitOptions(opts InitOptions) InitOptions {
+	opts.Config = opts.Config.WithDefaults()
+	if opts.Logger == nil {
+		opts.Logger = zap.NewNop()
+	}
+	return opts
+}
+
 type schemaInitState struct {
 	schemaID     int16
 	attrCache    forma.SchemaAttributeCache
@@ -138,9 +149,7 @@ func (c *initRunContext) close() {
 // S3 and (when a manifest template is configured) recorded in the schema
 // manifest. Extracted from cmd/tools/cdc_init.go (mechanical move, #173).
 func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
-	if opts.Logger == nil {
-		opts.Logger = zap.NewNop()
-	}
+	opts = normalizeInitOptions(opts)
 
 	runCtx, err := newInitRunContext(ctx, opts)
 	if err != nil {
@@ -215,6 +224,9 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 		}
 		schemaIDs = append(schemaIDs, sid)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schema ids: %w", err)
+	}
 	return schemaIDs, nil
 }
 
@@ -232,7 +244,9 @@ func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (in
 		return state.rowsExported, state.filesCreated, err
 	}
 
-	updateSchemaManifest(ctx, runCtx, state)
+	if err := updateSchemaManifest(ctx, runCtx, state); err != nil {
+		return state.rowsExported, state.filesCreated, err
+	}
 
 	runCtx.logger.Info("schema init completed",
 		zap.Int16("schema_id", schemaID),
@@ -372,25 +386,27 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 	return nil
 }
 
-func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) {
+// updateSchemaManifest records the exported base files in the schema
+// manifest. Failures propagate: base files absent from the manifest are
+// invisible to manifest consumers (e.g. compaction), and a silent miss here
+// would let RunInit report success for an unusable export.
+func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
-		return
+		return nil
 	}
 
 	manifestPath, err := runCtx.manifestResolver.Resolve(state.schemaID)
 	if err != nil {
-		runCtx.logger.Error("failed to resolve manifest path", zap.Int16("schema_id", state.schemaID), zap.Error(err))
-		return
+		return fmt.Errorf("resolve manifest path: %w", err)
 	}
 	if err := manifest.AppendFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, state.fileEntries); err != nil {
-		runCtx.logger.Error("failed to update manifest", zap.Int16("schema_id", state.schemaID), zap.Error(err))
-		// Don't fail - the export succeeded, manifest is non-critical.
-		return
+		return fmt.Errorf("update manifest: %w", err)
 	}
 	runCtx.logger.Info("manifest updated",
 		zap.Int16("schema_id", state.schemaID),
 		zap.String("manifest_path", manifestPath),
 		zap.Int("files_added", len(state.fileEntries)))
+	return nil
 }
 
 // getEntityMainCount returns the total number of non-deleted rows for a schema.
@@ -434,6 +450,9 @@ func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, sc
 			return nil, fmt.Errorf("scan row id: %w", err)
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate row ids: %w", err)
 	}
 	return ids, nil
 }
