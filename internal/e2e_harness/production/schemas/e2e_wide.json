@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E2E Wide",
+  "description": "Production E2E fixture with one attribute per scalar value type, mixing main-column bindings and EAV-only storage",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "rank": {
+      "type": "integer",
+      "minimum": -32768,
+      "maximum": 32767
+    },
+    "count": {
+      "type": "integer"
+    },
+    "amount": {
+      "type": "integer"
+    },
+    "score": {
+      "type": "number"
+    },
+    "ref": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "note": {
+      "type": "string"
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "born": {
+      "type": "string",
+      "format": "date"
+    },
+    "seen": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

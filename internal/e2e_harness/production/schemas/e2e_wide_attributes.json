@@ -1,0 +1,60 @@
+{
+  "title": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "rank": {
+    "attributeID": 2,
+    "valueType": "smallint",
+    "column_binding": {
+      "col_name": "smallint_01"
+    }
+  },
+  "count": {
+    "attributeID": 3,
+    "valueType": "integer",
+    "column_binding": {
+      "col_name": "integer_01"
+    }
+  },
+  "amount": {
+    "attributeID": 4,
+    "valueType": "bigint",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "score": {
+    "attributeID": 5,
+    "valueType": "numeric",
+    "column_binding": {
+      "col_name": "double_01"
+    }
+  },
+  "ref": {
+    "attributeID": 6,
+    "valueType": "uuid",
+    "column_binding": {
+      "col_name": "uuid_01"
+    }
+  },
+  "note": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "active": {
+    "attributeID": 8,
+    "valueType": "bool"
+  },
+  "born": {
+    "attributeID": 9,
+    "valueType": "date"
+  },
+  "seen": {
+    "attributeID": 10,
+    "valueType": "datetime"
+  }
+}

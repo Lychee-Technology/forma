@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E2E Second",
+  "description": "Second production E2E fixture for multi-schema isolation tests",
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string"
+    },
+    "code": {
+      "type": "integer"
+    }
+  }
+}
