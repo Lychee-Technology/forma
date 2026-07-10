@@ -242,6 +242,11 @@ func buildGenericExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptio
 	eQueryEsc := escapeLiteral(eQuery)
 
 	if spec.useChangeLog {
+		// LEFT JOIN to entity_main: production deletes remove the entity row
+		// and leave only the change_log tombstone, which MUST still be
+		// exported (deleted_at set, attribute columns NULL) or the flush
+		// marks the tombstone flushed while dropping it from parquet and the
+		// cold tier resurrects the deleted row (#173).
 		clQueryEsc := escapeLiteral(clQuery)
 		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
@@ -251,7 +256,7 @@ SELECT
   %s,
   e.attributes
 FROM postgres_query('pg_db', '%s') cl
-JOIN postgres_query('pg_db', '%s') m
+LEFT JOIN postgres_query('pg_db', '%s') m
   ON cl.row_id = m.ltbase_row_id
 LEFT JOIN (
   SELECT row_id, list(struct_pack(attr_id := attr_id, value_text := value_text)) AS attributes
@@ -285,6 +290,9 @@ func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOpt
 	eAggSQL := buildEAVAggregationSQL(eQueryEsc, eavAgg)
 
 	if spec.useChangeLog {
+		// LEFT JOIN to entity_main so change_log tombstones of hard-deleted
+		// rows are exported instead of silently dropped (see
+		// buildGenericExportSQL, #173).
 		clQueryEsc := escapeLiteral(clQuery)
 		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
@@ -293,7 +301,7 @@ COPY (
 SELECT
   %s
 FROM postgres_query('pg_db', '%s') cl
-JOIN postgres_query('pg_db', '%s') m
+LEFT JOIN postgres_query('pg_db', '%s') m
   ON cl.row_id = m.ltbase_row_id
 LEFT JOIN (
   %s

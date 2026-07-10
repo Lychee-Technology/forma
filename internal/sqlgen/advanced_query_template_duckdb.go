@@ -27,8 +27,17 @@ s3_source AS (
     1 AS source_tier_priority
   FROM read_parquet({{.S3_PATHS}})
   WHERE
-    ({{.LOGICAL_WHERE_CLAUSE}})
-    AND CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
+    CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
+    -- Predicate pushdown as a row_id semijoin: a row qualifies when ANY of
+    -- its parquet versions matches, and ALL of its versions then enter the
+    -- ranked dedup so the latest version wins before the final filter in
+    -- visible. Filtering versions directly here dropped newer non-matching
+    -- versions pre-dedup and resurrected stale base rows whose old values
+    -- still matched (#173).
+    AND row_id IN (
+      SELECT row_id FROM read_parquet({{.S3_PATHS}})
+      WHERE ({{.LOGICAL_WHERE_CLAUSE}})
+    )
 ),
 
 pg_source AS (

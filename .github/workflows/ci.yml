@@ -92,6 +92,9 @@ jobs:
       - name: Run E2E federated smoke tests
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -short -timeout=10m
 
+      - name: Run E2E production harness smoke
+        run: make test-e2e-production
+
   benchmark-smoke:
     name: Benchmark Smoke
     runs-on: ubuntu-latest

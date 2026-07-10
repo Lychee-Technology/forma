@@ -205,6 +205,12 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 				mainBoolExpr := mainColBoolExpr(colName, a.meta.ColumnBinding.Encoding)
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
 					a.name, mainBoolExpr, a.name)
+			} else if a.meta.ValueType == forma.ValueTypeUUID {
+				// hot_vals pivots uuid attributes out of value_text (VARCHAR);
+				// the UUID main column must be cast explicitly because DuckDB
+				// refuses to mix VARCHAR and UUID inside COALESCE.
+				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s",
+					a.name, colName, a.name)
 			} else {
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), m.%s) AS %s",
 					a.name, colName, a.name)

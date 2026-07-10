@@ -23,15 +23,26 @@ type ScriptSpec struct {
 	Profile AttrProfile // defaults per schema name (full-type for e2e_wide)
 }
 
-// GenerateScript builds a seed-deterministic event script. Update and
-// delete events reference created rows via Event.Target; ApplyEvents
-// resolves the row IDs the EntityManager assigns.
+// GenerateScript builds a seed-deterministic event script. Repeated calls
+// continue the Env's single seeded stream with globally increasing ordinals,
+// so values that encode the ordinal (titles, counts) stay unique across
+// batches while the whole sequence remains reproducible from the seed.
+// Update and delete events reference created rows via Event.Target;
+// ApplyEvents resolves the row IDs the EntityManager assigns.
 func (e *Env) GenerateScript(spec ScriptSpec) []*Event {
-	r := rand.New(rand.NewSource(e.Seed))
-	return generateScript(r, spec)
+	if e.rng == nil {
+		e.rng = rand.New(rand.NewSource(e.Seed))
+	}
+	events := generateScriptFrom(e.rng, spec, e.genOrdinal)
+	e.genOrdinal += spec.Creates + spec.Updates
+	return events
 }
 
 func generateScript(r *rand.Rand, spec ScriptSpec) []*Event {
+	return generateScriptFrom(r, spec, 0)
+}
+
+func generateScriptFrom(r *rand.Rand, spec ScriptSpec, baseOrdinal int) []*Event {
 	profile := spec.Profile
 	if profile == nil {
 		profile = defaultProfile(spec.Schema)
@@ -40,7 +51,7 @@ func generateScript(r *rand.Rand, spec ScriptSpec) []*Event {
 	events := make([]*Event, 0, spec.Creates+spec.Updates+spec.Deletes)
 	creates := make([]*Event, 0, spec.Creates)
 	for i := 0; i < spec.Creates; i++ {
-		ev := CreateEvent(spec.Schema, profile(r, i, false))
+		ev := CreateEvent(spec.Schema, profile(r, baseOrdinal+i, false))
 		creates = append(creates, ev)
 		events = append(events, ev)
 	}
@@ -66,7 +77,7 @@ func generateScript(r *rand.Rand, spec ScriptSpec) []*Event {
 			continue
 		}
 		target := creates[idx]
-		ev := UpdateEvent(spec.Schema, uuid.Nil, profile(r, spec.Creates+i, true))
+		ev := UpdateEvent(spec.Schema, uuid.Nil, profile(r, baseOrdinal+spec.Creates+i, true))
 		ev.Target = target
 		events = append(events, ev)
 	}
