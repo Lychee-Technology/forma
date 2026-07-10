@@ -49,22 +49,20 @@ func charEavClause(attrPh, valueColumn, sqlOp, valuePh string) string {
 	return charEXISTS + attrPh + " AND x." + valueColumn + " " + sqlOp + " " + valuePh + ")"
 }
 
-// TestToDualClauses_Characterization locks the exact clause bytes, argument
-// values (including Go types), and paramIndex advancement of the three
-// emitters for the full storage/encoding matrix. Any parse-once refactor
-// must keep every case byte- and type-identical.
-func TestToDualClauses_Characterization(t *testing.T) {
-	cache := characterizationCache()
+// charCase is one row of the characterization matrix: a condition and the exact
+// clause bytes, argument values (with Go types), and paramIndex advancement the
+// three emitters must reproduce.
+type charCase struct {
+	name string
+	cond forma.Condition
+	want DualClauses
+	span int // expected paramIndex advancement
+}
 
-	iso := "2024-01-02T03:04:05Z"
-	isoTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
-
-	cases := []struct {
-		name string
-		cond forma.Condition
-		want DualClauses
-		span int // expected paramIndex advancement
-	}{
+// charTextCases covers the text storage class: bound/unbound equals, the bare
+// value default, and the LIKE wildcard rewrites (starts_with / contains).
+func charTextCases() []charCase {
+	return []charCase{
 		{
 			name: "text equals bound",
 			cond: charKv("username", "equals:Alice"),
@@ -115,6 +113,14 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			},
 			span: 2,
 		},
+	}
+}
+
+// charNumericBoolCases covers the numeric and boolean storage classes, including
+// the >2^53 precision split between main (int64) and eav/duck (float64) and the
+// bool-int / bool-text / unbound-bool encodings.
+func charNumericBoolCases() []charCase {
+	return []charCase{
 		{
 			name: "integer gt: main int64, eav float64, duck float64",
 			cond: charKv("age", "gt:30"),
@@ -175,6 +181,15 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			},
 			span: 2,
 		},
+	}
+}
+
+// charTemporalUuidCases covers the date/datetime encodings (unix-ms, ISO8601,
+// unbound) and the uuid storage class.
+func charTemporalUuidCases() []charCase {
+	iso := "2024-01-02T03:04:05Z"
+	isoTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
+	return []charCase{
 		{
 			name: "date unix-ms encoding: main/eav int64 ms, duck time.Time",
 			cond: charKv("born", "gte:1700000000000"),
@@ -215,6 +230,14 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			},
 			span: 2,
 		},
+	}
+}
+
+// charCompositeCases covers nested AND/OR pushdown: pg-main keeping only the
+// pushable branch, an all-pushable OR prefilter, and an AND of two main
+// predicates on the same column.
+func charCompositeCases() []charCase {
+	return []charCase{
 		{
 			name: "AND(main leaf, vetoed OR): pg-main keeps only pushable branch",
 			cond: charAnd(charKv("username", "equals:Alice"), charOr(charKv("age", "gt:18"), charKv("tag", "equals:x"))),
@@ -256,6 +279,21 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			span: 6,
 		},
 	}
+}
+
+// TestToDualClauses_Characterization locks the exact clause bytes, argument
+// values (including Go types), and paramIndex advancement of the three
+// emitters for the full storage/encoding matrix. Any parse-once refactor
+// must keep every case byte- and type-identical. The matrix is assembled from
+// per-storage-class case builders to keep each function within size limits.
+func TestToDualClauses_Characterization(t *testing.T) {
+	cache := characterizationCache()
+
+	var cases []charCase
+	cases = append(cases, charTextCases()...)
+	cases = append(cases, charNumericBoolCases()...)
+	cases = append(cases, charTemporalUuidCases()...)
+	cases = append(cases, charCompositeCases()...)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
