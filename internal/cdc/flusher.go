@@ -390,9 +390,13 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	}
 
 	if e.manifestStore != nil {
+		// Rows are already marked flushed, so a re-run will not re-export
+		// them: a delta file missing from the manifest stays invisible to
+		// manifest consumers (e.g. compaction) forever. Propagate so the run
+		// reports failure; the final key in the error is the operator's
+		// pointer to the orphaned file for manual reconciliation (#197).
 		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, e.logger); err != nil {
-			e.logger.Sugar().Errorw("manifest update failed", "err", err)
-			// Don't return - the flush succeeded, manifest is non-critical.
+			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
 		}
 	}
 
