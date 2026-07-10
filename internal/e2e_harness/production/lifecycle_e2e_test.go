@@ -84,6 +84,79 @@ func TestEntityLifecycle(t *testing.T) {
 
 		assertLiveParquetRow(ctx, t, env, soleParquetKey(t, flush), update)
 	})
+
+	// Scenario 3: create → delete → query, before any flush. The deleted
+	// row's only surviving source is the cold base parquet (its change_log
+	// entry is truncated after init, modeling the production onboarding
+	// contract), so hiding it rests entirely on the dirty-set anti-join: the
+	// hard delete leaves no entity_main row for pg_source and the unflushed
+	// tombstone must evict the base version from s3_source.
+	t.Run("delete_before_flush", func(t *testing.T) {
+		t.Parallel()
+		env := NewEnv(t, cluster)
+		ctx := context.Background()
+
+		creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 1})
+		if err := env.ApplyEvents(ctx, creates...); err != nil {
+			t.Fatalf("apply create: %v", err)
+		}
+		row := creates[0]
+
+		initReport, err := env.RunInit(ctx, wide)
+		if err != nil {
+			t.Fatalf("run init: %v", err)
+		}
+		if initReport.RowsExported != 1 {
+			t.Fatalf("init exported %d rows, want 1", initReport.RowsExported)
+		}
+		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1 AND row_id = $2",
+			wide.ID, row.RowID)
+
+		// The base file must actually serve the row before the delete —
+		// otherwise the post-delete zero-row check could be a glob-mismatch
+		// false green.
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+
+		if err := env.ApplyEvents(ctx, DeleteEvent(wide, row.RowID)); err != nil {
+			t.Fatalf("apply delete: %v", err)
+		}
+
+		assertTombstoneChangeLog(ctx, t, env, wide, row)
+		// Hidden across every tier, pre-flush, and idempotently so.
+		env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	})
+}
+
+// assertTombstoneChangeLog asserts the hard delete's storage contract: the
+// entity_main and eav_data rows are gone and the single unflushed change_log
+// slot-0 entry carries the tombstone.
+func assertTombstoneChangeLog(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, ev *Event) {
+	t.Helper()
+	var mainRows, eavRows int64
+	if err := env.Pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM entity_main WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+		schema.ID, ev.RowID).Scan(&mainRows); err != nil {
+		t.Fatalf("count entity_main rows: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM eav_data WHERE schema_id = $1 AND row_id = $2",
+		schema.ID, ev.RowID).Scan(&eavRows); err != nil {
+		t.Fatalf("count eav_data rows: %v", err)
+	}
+	if mainRows != 0 || eavRows != 0 {
+		t.Errorf("hard delete left entity_main=%d eav_data=%d rows, want 0/0", mainRows, eavRows)
+	}
+	var deletedAt int64
+	if err := env.Pool.QueryRow(ctx,
+		"SELECT COALESCE(deleted_at, 0) FROM change_log WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0",
+		schema.ID, ev.RowID).Scan(&deletedAt); err != nil {
+		t.Fatalf("load slot-0 tombstone: %v", err)
+	}
+	if deletedAt <= 0 {
+		t.Errorf("slot-0 change_log entry deleted_at = %d, want > 0 (tombstone)", deletedAt)
+	}
 }
 
 // mustFlush runs a real CDC flush and fails the test unless it drained the
