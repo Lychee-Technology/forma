@@ -41,8 +41,9 @@ const (
 )
 
 // Cluster owns the container set shared by every test in one test binary:
-// Postgres (admin database used only for CREATE/DROP DATABASE) and MinIO
-// with one bucket per run. Per-test state lives in Env.
+// Postgres (admin database used only for CREATE/DROP DATABASE) and RustFS
+// (S3-compatible; the official MinIO docker image is archived) with one
+// bucket per run. Per-test state lives in Env.
 type Cluster struct {
 	Base   *e2e_harness.TestHarness
 	S3     *s3.Client
@@ -113,8 +114,8 @@ func StartCluster(ctx context.Context, opts ...ClusterOption) (*Cluster, error) 
 		RunID:       fmt.Sprintf("%s-%06x", time.Now().UTC().Format("20060102-150405"), uint64(options.seed)&0xffffff),
 		PGSSLMode:   "disable",
 		S3Region:    "us-east-1",
-		S3AccessKey: "minioadmin",
-		S3SecretKey: "minioadmin",
+		S3AccessKey: e2e_harness.RustFSAccessKey,
+		S3SecretKey: e2e_harness.RustFSSecretKey,
 	}
 
 	if err := c.startInfra(ctx); err != nil {
@@ -149,9 +150,9 @@ func (c *Cluster) startInfra(ctx context.Context) error {
 	if _, err := c.Base.StartPostgres(ctx); err != nil {
 		return fmt.Errorf("start postgres container: %w", err)
 	}
-	if _, err := c.Base.StartS3(ctx); err != nil {
+	if _, err := c.Base.StartRustFS(ctx); err != nil {
 		_ = c.Base.StopPostgres(ctx)
-		return fmt.Errorf("start minio container: %w", err)
+		return fmt.Errorf("start rustfs container: %w", err)
 	}
 	c.S3Endpoint = c.Base.S3Endpoint
 	c.PGUser = "postgres"

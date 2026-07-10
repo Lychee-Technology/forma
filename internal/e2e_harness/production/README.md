@@ -1,8 +1,9 @@
 # Production E2E Harness
 
 Reusable end-to-end test harness that exercises the **real production
-stack** (#173, epic #172): real containers (Postgres 16 + MinIO via
-testcontainers, in-process DuckDB), real writes through
+stack** (#173, epic #172): real containers (Postgres 16 + RustFS via
+testcontainers — the official MinIO docker image is archived — plus
+in-process DuckDB), real writes through
 `internal.NewEntityManager`, the real CDC flusher (`internal/cdc`), the real
 federated engine (`internal/federated`), real schema metadata from fixture
 JSON, and an S3-backed manifest. Every query result is checked against an
@@ -130,7 +131,7 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | `E2E_SEED` | pins the cluster base seed (per-test seeds derive from it + test name) |
 | `E2E_ARTIFACTS_DIR` | artifact root override |
 | `E2E_VERBOSE=1` | verbose harness logging |
-| `KEEP_E2E_ENV=1` | keep containers/DB/S3 alive and print connection info. **Also set `TESTCONTAINERS_RYUK_DISABLED=true`** or the testcontainers reaper still removes containers on exit |
+| `KEEP_E2E_ENV=1` | keep containers/DB/S3 alive and print connection info; the harness disables the testcontainers reaper itself (set `TESTCONTAINERS_RYUK_DISABLED` explicitly to override) |
 | `PRODUCTION_E2E_EXTERNAL_PG_DSN` / `..._S3_ENDPOINT` / `..._S3_BUCKET` / `..._S3_REGION` / `..._S3_ACCESS_KEY` / `..._S3_SECRET_KEY` | use external infrastructure instead of containers (the PG user must be able to CREATE DATABASE) |
 
 ## Consumer map (epic #172)

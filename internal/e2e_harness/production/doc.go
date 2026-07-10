@@ -1,8 +1,9 @@
 // Package production is the reusable E2E test harness that exercises the
 // REAL production stack end to end (#173, epic #172):
 //
-//   - real containers: Postgres 16 + MinIO via testcontainers (shared per
-//     test binary through SharedCluster), DuckDB in-process per test Env
+//   - real containers: Postgres 16 + RustFS (S3-compatible) via
+//     testcontainers (shared per test binary through SharedCluster), DuckDB
+//     in-process per test Env
 //   - real writes: events are applied through internal.NewEntityManager,
 //     which maintains entity_main, eav_data, and change_log exactly like
 //     production (no harness-simulated inserts)
