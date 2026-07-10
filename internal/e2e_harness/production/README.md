@@ -65,6 +65,16 @@ is unavailable). Each `NewEnv`:
 - registers cleanup: close DuckDB/pool, `DROP DATABASE ... WITH (FORCE)`,
   delete the S3 prefix. Tests may use `t.Parallel()`.
 
+**How this maps to #173's "isolated schema ID, tenant, bucket prefix"
+constraint:** forma's storage and query model has no first-class tenant —
+the DDL carries no tenant column and no API takes a tenant key; deploy-level
+tenancy is a database + S3 prefix pair. The per-test database therefore *is*
+the tenant boundary, and the fixture schema IDs (20-22), while numerically
+identical across tests, live in private databases and private S3 prefixes —
+no state, lock, or parquet file is reachable from another test. A test that
+needs schema IDs beyond the fixtures can register its own via
+`RegisterSchemas` + `WithSchemaDir`.
+
 Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 `WithDuckMemoryMB`, `WithBreaker` (#185), `WithRoutingStrategy`,
 `WithoutManifest`.
