@@ -28,6 +28,9 @@ var wideParquetTypes = map[string]string{
 }
 
 // wideVals is the parquet-physical expected row: pointers are nil for NULL.
+// The attribute pointers come from the event; the system-column fields
+// (changedAt/ltbaseCreatedAt/ltbaseUpdatedAt) are non-pointer and carry the
+// storage-truth timestamps that only the export producer can supply.
 type wideVals struct {
 	title, note, ref, token *string
 	rank, level             *int16
@@ -37,11 +40,21 @@ type wideVals struct {
 	born, seen              *int64
 	score, ratio            *float64
 	active                  *bool
+
+	// changedAt is the change_log timestamp the write read back into the event
+	// (Event.ChangedAt); the delta exporter emits it as changed_at
+	// (internal/cdc/duckdb_exporter.go:153). ltbaseCreatedAt / ltbaseUpdatedAt
+	// are the entity_main source-row stamps, loaded from Postgres.
+	changedAt       int64
+	ltbaseCreatedAt int64
+	ltbaseUpdatedAt int64
 }
 
-// buildWideTruth derives per-row expected parquet values straight from event
-// attributes — independent of every storage path (create-only scripts).
-func buildWideTruth(t *testing.T, events []*Event) map[uuid.UUID]*wideVals {
+// buildWideTruth derives per-row expected parquet values: attribute values and
+// changed_at come straight from the events (create-only scripts), and the
+// entity_main system timestamps are loaded from Postgres — the parquet copy
+// must equal that source row exactly.
+func buildWideTruth(ctx context.Context, t *testing.T, env *Env, schemaID int16, events []*Event) map[uuid.UUID]*wideVals {
 	t.Helper()
 	truth := make(map[uuid.UUID]*wideVals, len(events))
 	for _, ev := range events {
@@ -59,10 +72,47 @@ func buildWideTruth(t *testing.T, events []*Event) map[uuid.UUID]*wideVals {
 			active: extractBoolAttr(t, a, "active"),
 			born:   extractDateMSAttr(t, a, "born"), joined: extractDateMSAttr(t, a, "joined"),
 			seen: extractDatetimeMSAttr(t, a, "seen"), touched: extractDatetimeMSAttr(t, a, "touched"),
+			changedAt: ev.ChangedAt,
 		}
 		truth[ev.RowID] = v
 	}
+	loadSystemTimestamps(ctx, t, env, schemaID, truth)
 	return truth
+}
+
+// loadSystemTimestamps fills each truth row's ltbase_created_at /
+// ltbase_updated_at from the entity_main source row — the exporter's input, so
+// the parquet copy must equal it exactly. entity_main rows survive the
+// change_log DELETE and the flush unchanged, so reading them at truth-build
+// time yields the same values the export read.
+func loadSystemTimestamps(ctx context.Context, t *testing.T, env *Env, schemaID int16, truth map[uuid.UUID]*wideVals) {
+	t.Helper()
+	rows, err := env.Pool.Query(ctx,
+		`SELECT ltbase_row_id, ltbase_created_at, ltbase_updated_at
+		 FROM entity_main WHERE ltbase_schema_id = $1`, schemaID)
+	if err != nil {
+		t.Fatalf("load entity_main system timestamps: %v", err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var rowIDBytes [16]byte
+		var created, updated int64
+		if err := rows.Scan(&rowIDBytes, &created, &updated); err != nil {
+			t.Fatalf("scan entity_main timestamps: %v", err)
+		}
+		if v, ok := truth[uuid.UUID(rowIDBytes)]; ok {
+			v.ltbaseCreatedAt = created
+			v.ltbaseUpdatedAt = updated
+			seen++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("entity_main timestamp rows: %v", err)
+	}
+	if seen != len(truth) {
+		t.Fatalf("loaded %d/%d entity_main system timestamps for schema %d", seen, len(truth), schemaID)
+	}
 }
 
 func extractStrAttr(t *testing.T, a map[string]any, k string) *string {
@@ -215,16 +265,20 @@ func assertWideParquetSchema(ctx context.Context, t *testing.T, env *Env, key, t
 	}
 }
 
-// assertWideParquetValues reads every attribute column of one parquet file
-// and compares row-by-row against the event-derived truth. Returns the row
-// count so callers can assert per-tier coverage.
-func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, tier string, truth map[uuid.UUID]*wideVals) int {
+// assertWideParquetValues reads every attribute AND system column of one
+// parquet file and compares row-by-row against the storage truth. Returns the
+// row count so callers can assert per-tier coverage. tier drives the
+// producer-specific expectations for changed_at and deleted_at (base vs delta
+// exporters emit them differently — see checkSystemColumns).
+func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, tier string, schemaID int16, truth map[uuid.UUID]*wideVals) int {
 	t.Helper()
 	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
 	rows, err := env.Duck.DB.QueryContext(ctx, fmt.Sprintf(
 		`SELECT CAST(row_id AS VARCHAR), "title", "rank", "count", "amount", "score",
 		        CAST("ref" AS VARCHAR), "joined", "touched", "note", "active",
-		        "born", "seen", "level", "qty", "total", "ratio", "token"
+		        "born", "seen", "level", "qty", "total", "ratio", "token",
+		        "schema_id", "changed_at", "deleted_at",
+		        "ltbase_created_at", "ltbase_updated_at", "ltbase_deleted_at"
 		 FROM read_parquet('%s')`, path))
 	if err != nil {
 		t.Fatalf("%s parquet scan: %v", tier, err)
@@ -239,9 +293,12 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 		var amount, joined, touched, born, seen, total sql.NullInt64
 		var score, ratio sql.NullFloat64
 		var active sql.NullBool
+		var schemaCol sql.NullInt16
+		var changedAt, deletedAt, createdAt, updatedAt, ltbaseDeletedAt sql.NullInt64
 		if err := rows.Scan(&rowIDStr, &title, &rank, &count, &amount, &score,
 			&ref, &joined, &touched, &note, &active,
-			&born, &seen, &level, &qty, &total, &ratio, &token); err != nil {
+			&born, &seen, &level, &qty, &total, &ratio, &token,
+			&schemaCol, &changedAt, &deletedAt, &createdAt, &updatedAt, &ltbaseDeletedAt); err != nil {
 			t.Fatalf("%s parquet row scan: %v", tier, err)
 		}
 		rowID, err := uuid.Parse(rowIDStr)
@@ -269,12 +326,55 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 		checkF64(t, tier, rowID, "score", score, want.score)
 		checkF64(t, tier, rowID, "ratio", ratio, want.ratio)
 		checkBool(t, tier, rowID, "active", active, want.active)
+		checkSystemColumns(t, tier, rowID, schemaID, want, systemCols{
+			schema: schemaCol, changedAt: changedAt, deletedAt: deletedAt,
+			createdAt: createdAt, updatedAt: updatedAt, ltbaseDeletedAt: ltbaseDeletedAt,
+		})
 		n++
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("%s parquet rows: %v", tier, err)
 	}
 	return n
+}
+
+// systemCols is one parquet row's scanned system columns.
+type systemCols struct {
+	schema                                                     sql.NullInt16
+	changedAt, deletedAt, createdAt, updatedAt, ltbaseDeletedAt sql.NullInt64
+}
+
+// checkSystemColumns asserts the six CDC system columns against storage truth,
+// picking the producer-specific expectation per tier. Observed emissions
+// (2026-07): schema_id == fixture ID (both tiers); ltbase_created_at /
+// ltbase_updated_at == the entity_main source stamps (both tiers). changed_at:
+// BASE exporter emits m.ltbase_created_at AS changed_at
+// (internal/cdc/init_exporter.go:35); DELTA emits cl.changed_at
+// (internal/cdc/duckdb_exporter.go:153) == Event.ChangedAt. deleted_at: BASE
+// COALESCEs to 0 (init_exporter.go:36); DELTA emits raw cl.deleted_at, NULL for
+// a live create (duckdb_exporter.go:154). ltbase_deleted_at is the raw
+// entity_main main column, NULL for every non-deleted row on both tiers.
+func checkSystemColumns(t *testing.T, tier string, rowID uuid.UUID, schemaID int16, want *wideVals, got systemCols) {
+	t.Helper()
+	if !got.schema.Valid || got.schema.Int16 != schemaID {
+		t.Errorf("%s %s.schema_id = %v (valid=%t), want %d", tier, rowID, got.schema.Int16, got.schema.Valid, schemaID)
+	}
+	created := want.ltbaseCreatedAt
+	checkI64(t, tier, rowID, "ltbase_created_at", got.createdAt, &created)
+	updated := want.ltbaseUpdatedAt
+	checkI64(t, tier, rowID, "ltbase_updated_at", got.updatedAt, &updated)
+	// ltbase_deleted_at: raw main column, NULL for every non-deleted row.
+	checkI64(t, tier, rowID, "ltbase_deleted_at", got.ltbaseDeletedAt, nil)
+
+	wantChangedAt := want.changedAt      // delta: cl.changed_at
+	var wantDeletedAt *int64             // delta: raw cl.deleted_at, NULL for a create
+	if tier == "base" {
+		wantChangedAt = want.ltbaseCreatedAt // base: m.ltbase_created_at AS changed_at
+		zero := int64(0)                     // base: COALESCE(ltbase_deleted_at, 0)
+		wantDeletedAt = &zero
+	}
+	checkI64(t, tier, rowID, "changed_at", got.changedAt, &wantChangedAt)
+	checkI64(t, tier, rowID, "deleted_at", got.deletedAt, wantDeletedAt)
 }
 
 func checkStr(t *testing.T, tier string, rowID uuid.UUID, col string, got sql.NullString, want *string) {

@@ -272,7 +272,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 
 	// Physical layer: reuse Task 4's per-file value assertion (NULL columns
 	// included), then the NULL-vs-zero distinction per boundary row.
-	truth := buildWideTruth(t, append(batch, hotNull, hotMax))
+	truth := buildWideTruth(ctx, t, env, wide.ID, append(batch, hotNull, hotMax))
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
@@ -282,7 +282,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 		t.Fatal("no manifest for e2e_wide")
 	}
 	for _, f := range m.Files {
-		assertWideParquetValues(ctx, t, env, f.Path, f.Tier, truth)
+		assertWideParquetValues(ctx, t, env, f.Path, f.Tier, wide.ID, truth)
 	}
 
 	// Logical layer: federated merge equals oracle; exact typed spot checks.

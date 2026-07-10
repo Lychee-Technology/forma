@@ -47,7 +47,7 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	}
 
 	// Physical layer: schema + values of every parquet file.
-	truth := buildWideTruth(t, creates)
+	truth := buildWideTruth(ctx, t, env, wide.ID, creates)
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
@@ -59,7 +59,7 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	tierRows := map[string]int{}
 	for _, f := range m.Files {
 		assertWideParquetSchema(ctx, t, env, f.Path, f.Tier)
-		tierRows[f.Tier] += assertWideParquetValues(ctx, t, env, f.Path, f.Tier, truth)
+		tierRows[f.Tier] += assertWideParquetValues(ctx, t, env, f.Path, f.Tier, wide.ID, truth)
 	}
 	if tierRows["base"] != 12 {
 		t.Errorf("base parquet rows = %d, want 12", tierRows["base"])
