@@ -59,9 +59,9 @@ type charCase struct {
 	span int // expected paramIndex advancement
 }
 
-// charTextCases covers the text storage class: bound/unbound equals, the bare
+// buildCharTextCases covers the text storage class: bound/unbound equals, the bare
 // value default, and the LIKE wildcard rewrites (starts_with / contains).
-func charTextCases() []charCase {
+func buildCharTextCases() []charCase {
 	return []charCase{
 		{
 			name: "text equals bound",
@@ -116,10 +116,10 @@ func charTextCases() []charCase {
 	}
 }
 
-// charNumericBoolCases covers the numeric and boolean storage classes, including
+// buildCharNumericBoolCases covers the numeric and boolean storage classes, including
 // the >2^53 precision split between main (int64) and eav/duck (float64) and the
 // bool-int / bool-text / unbound-bool encodings.
-func charNumericBoolCases() []charCase {
+func buildCharNumericBoolCases() []charCase {
 	return []charCase{
 		{
 			name: "integer gt: main int64, eav float64, duck float64",
@@ -184,9 +184,9 @@ func charNumericBoolCases() []charCase {
 	}
 }
 
-// charTemporalUuidCases covers the date/datetime encodings (unix-ms, ISO8601,
+// buildCharTemporalUuidCases covers the date/datetime encodings (unix-ms, ISO8601,
 // unbound) and the uuid storage class.
-func charTemporalUuidCases() []charCase {
+func buildCharTemporalUuidCases() []charCase {
 	iso := "2024-01-02T03:04:05Z"
 	isoTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return []charCase{
@@ -233,10 +233,10 @@ func charTemporalUuidCases() []charCase {
 	}
 }
 
-// charCompositeCases covers nested AND/OR pushdown: pg-main keeping only the
+// buildCharCompositeCases covers nested AND/OR pushdown: pg-main keeping only the
 // pushable branch, an all-pushable OR prefilter, and an AND of two main
 // predicates on the same column.
-func charCompositeCases() []charCase {
+func buildCharCompositeCases() []charCase {
 	return []charCase{
 		{
 			name: "AND(main leaf, vetoed OR): pg-main keeps only pushable branch",
@@ -290,10 +290,10 @@ func TestToDualClauses_Characterization(t *testing.T) {
 	cache := characterizationCache()
 
 	var cases []charCase
-	cases = append(cases, charTextCases()...)
-	cases = append(cases, charNumericBoolCases()...)
-	cases = append(cases, charTemporalUuidCases()...)
-	cases = append(cases, charCompositeCases()...)
+	cases = append(cases, buildCharTextCases()...)
+	cases = append(cases, buildCharNumericBoolCases()...)
+	cases = append(cases, buildCharTemporalUuidCases()...)
+	cases = append(cases, buildCharCompositeCases()...)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
