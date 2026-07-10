@@ -119,11 +119,19 @@ func boundDateTruth(t *testing.T, events []*Event) map[uuid.UUID]boundDates {
 	t.Helper()
 	truth := make(map[uuid.UUID]boundDates, len(events))
 	for _, ev := range events {
-		joined, err := time.ParseInLocation("2006-01-02", ev.Attrs["joined"].(string), time.UTC)
+		joinedStr, ok := ev.Attrs["joined"].(string)
+		if !ok {
+			t.Fatalf("event %s has no string joined attr: %v", ev.RowID, ev.Attrs["joined"])
+		}
+		touchedStr, ok := ev.Attrs["touched"].(string)
+		if !ok {
+			t.Fatalf("event %s has no string touched attr: %v", ev.RowID, ev.Attrs["touched"])
+		}
+		joined, err := time.ParseInLocation("2006-01-02", joinedStr, time.UTC)
 		if err != nil {
 			t.Fatalf("parse joined attr of %s: %v", ev.RowID, err)
 		}
-		touched, err := time.Parse(time.RFC3339, ev.Attrs["touched"].(string))
+		touched, err := time.Parse(time.RFC3339, touchedStr)
 		if err != nil {
 			t.Fatalf("parse touched attr of %s: %v", ev.RowID, err)
 		}
