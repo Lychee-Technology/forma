@@ -269,7 +269,7 @@ func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions) *duckDBExe
 }
 
 // recordDirtyIDSource records the dirty ID source in the execution plan.
-func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, dirtyCount int) {
+func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, schemaID int16, dirtyCount int) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
@@ -278,6 +278,7 @@ func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, 
 		Tier:        model.DataTierHot,
 		Engine:      "postgres",
 		SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sqlutil.SanitizeIdentifier(changeLogTable)),
+		Params:      formatPlanParams([]any{schemaID}),
 		RowEstimate: int64(dirtyCount),
 		Reason:      "dirty id set fetched",
 	}
@@ -303,8 +304,9 @@ func (c *duckDBExecutionPlanContext) recordPushdownFragment(pgMainClause string)
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, pgDP)
 }
 
-// recordTranslation records the query translation in the execution plan.
-func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, translateMs int64, useMainAsAnchor bool) {
+// recordTranslation records the query translation in the execution plan,
+// including the bind parameters of the rendered DuckDB SQL.
+func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any, translateMs int64, useMainAsAnchor bool) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
@@ -313,6 +315,7 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, translateM
 		Tier:              model.DataTierCold,
 		Engine:            "duckdb",
 		SQL:               sqlStr,
+		Params:            formatPlanParams(args),
 		RowEstimate:       0,
 		PredicatePushdown: useMainAsAnchor,
 		ActualRows:        0,
@@ -321,6 +324,19 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, translateM
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dp)
 	c.opts.ExecutionPlan.Timings["translate"] = translateMs
+}
+
+// formatPlanParams renders bind parameters into their diagnostic string
+// forms. Only called on plan-capture paths, so the cost is opt-in.
+func formatPlanParams(args []any) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	params := make([]string, len(args))
+	for i, arg := range args {
+		params[i] = fmt.Sprintf("%v", arg)
+	}
+	return params
 }
 
 // recordQueryStart marks the start of query execution.

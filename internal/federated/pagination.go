@@ -74,9 +74,13 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	// Record Postgres source info if execution plan requested
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		dp := model.DataSourcePlan{
-			Tier:              model.DataTierHot,
-			Engine:            "postgres",
-			SQL:               "", // SQL not captured here
+			Tier:   model.DataTierHot,
+			Engine: "postgres",
+			// The full optimized SQL is rendered inside RunOptimizedQuery;
+			// the hybrid WHERE clause and its parameters are what the
+			// coordinator can capture here.
+			SQL:               clause,
+			Params:            formatPlanParams(args),
 			RowEstimate:       0,
 			PredicatePushdown: fq.UseMainAsAnchor,
 			ActualRows:        int64(len(pgRecs)),

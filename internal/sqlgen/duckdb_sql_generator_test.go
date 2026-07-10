@@ -299,7 +299,7 @@ func TestBuildSchemaProjection_BoolEAVOnly_PivotReturnsBoolExpr(t *testing.T) {
 
 // TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE verifies that a
 // bool_smallint column-bound attribute emits a type-safe COALESCE expression
-// "COALESCE(hot_vals.active, m.smallint_01 <> 0) AS active" in PGSourceSelect,
+// "COALESCE(ANY_VALUE(hot_vals.active), m.smallint_01 <> 0) AS active" in PGSourceSelect,
 // so that both sides of the COALESCE are BOOLEAN and there is no type mismatch.
 func TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
@@ -317,7 +317,7 @@ func TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE(t *testing.T) {
 
 	// PGSourceSelect must normalize the main col to BOOLEAN via <> 0
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(hot_vals.active, m.smallint_01 <> 0) AS active",
+		"COALESCE(ANY_VALUE(hot_vals.active), m.smallint_01 <> 0) AS active",
 		"bool_smallint column-bound COALESCE must normalize main col to boolean")
 
 	// EAV pivot must also produce a boolean expression for this attribute
@@ -327,7 +327,7 @@ func TestBuildSchemaProjection_BoolColumnBound_SmallintCOALESCE(t *testing.T) {
 }
 
 // TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE verifies that a
-// bool_text column-bound attribute emits "COALESCE(hot_vals.active, m.text_01 = '1')
+// bool_text column-bound attribute emits "COALESCE(ANY_VALUE(hot_vals.active), m.text_01 = '1')
 // AS active" in PGSourceSelect, normalising the text main column to BOOLEAN.
 func TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
@@ -345,7 +345,7 @@ func TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE(t *testing.T) {
 
 	// PGSourceSelect must normalize the text main col to BOOLEAN via = '1'
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(hot_vals.active, m.text_01 = '1') AS active",
+		"COALESCE(ANY_VALUE(hot_vals.active), m.text_01 = '1') AS active",
 		"bool_text column-bound COALESCE must normalize main col to boolean")
 }
 

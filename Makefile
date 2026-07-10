@@ -1,4 +1,4 @@
-.PHONY: test test-unit lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -42,6 +42,12 @@ test: test-unit
 test-unit:
 	@echo "Running unit tests..."
 	@$(GOENV) go test $(TEST_PKGS)
+
+# Production E2E harness (#173): real containers + real CDC + real federated
+# engine, checked against an independent oracle. Requires docker.
+test-e2e-production:
+	@echo "Running production E2E harness tests..."
+	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
 
 # Run linter (same as CI lint job)
 lint:

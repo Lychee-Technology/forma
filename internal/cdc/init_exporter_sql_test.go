@@ -33,8 +33,8 @@ func TestBuildBaseExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 	if !strings.Contains(sql, "PARQUET_VERSION V2") {
 		t.Fatalf("sql missing parquet v2 export option: %s", sql)
 	}
-	if !strings.Contains(sql, "time_slot") || !strings.Contains(sql, "attributes") {
-		t.Fatalf("sql missing projected columns (time_slot/attributes): %s", sql)
+	if !strings.Contains(sql, "changed_at") || !strings.Contains(sql, "attributes") {
+		t.Fatalf("sql missing projected columns (changed_at/attributes): %s", sql)
 	}
 }
 

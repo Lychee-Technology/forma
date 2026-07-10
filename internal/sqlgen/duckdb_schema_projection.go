@@ -188,6 +188,11 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 		"cl.deleted_at",
 	)
 
+	// hot_vals references are wrapped in ANY_VALUE(): pg_source groups by
+	// (row_id, timestamps, bound columns) and the hot_vals pivot joins 1:1
+	// per row, but DuckDB does not infer that functional dependency, so a
+	// bare hot_vals.<attr> is rejected as ungrouped. This mirrors the
+	// benchmark projection, which already aggregates the same way (#173).
 	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
 	for _, a := range attrs {
 		if a.isColumn {
@@ -198,16 +203,22 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 				// are the same type. hot_vals.<attr> is already BOOLEAN (from the
 				// EAV pivot fix); m.<col> must be normalized by encoding.
 				mainBoolExpr := mainColBoolExpr(colName, a.meta.ColumnBinding.Encoding)
-				expr = fmt.Sprintf("COALESCE(hot_vals.%s, %s) AS %s",
+				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
 					a.name, mainBoolExpr, a.name)
+			} else if a.meta.ValueType == forma.ValueTypeUUID {
+				// hot_vals pivots uuid attributes out of value_text (VARCHAR);
+				// the UUID main column must be cast explicitly because DuckDB
+				// refuses to mix VARCHAR and UUID inside COALESCE.
+				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s",
+					a.name, colName, a.name)
 			} else {
-				expr = fmt.Sprintf("COALESCE(hot_vals.%s, m.%s) AS %s",
+				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), m.%s) AS %s",
 					a.name, colName, a.name)
 			}
 			selectParts = append(selectParts, expr)
 			groupParts = append(groupParts, "m."+colName)
 		} else {
-			expr := fmt.Sprintf("hot_vals.%s AS %s", a.name, a.name)
+			expr := fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", a.name, a.name)
 			selectParts = append(selectParts, expr)
 		}
 	}
@@ -308,18 +319,36 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 			duckDBColumnType(desc.Kind), desc.Name))
 	}
 
-	// Build attributes_json for EAV-only attributes
+	// Build attributes_json for EAV-only attributes. The shape must match
+	// model.ParseAttributesJSON (the same contract the Postgres template's
+	// JSON_AGG(JSON_BUILD_OBJECT(...)) emits): a JSON array of objects with
+	// schema_id/row_id/attr_id/array_indices and the value in the storage
+	// column for the attribute's type (value_numeric for the numeric family
+	// including bool as 1/0 and dates as epoch millis; value_text otherwise).
+	// NULL (absent) attributes are filtered out, mirroring the PG INNER JOIN
+	// which only aggregates rows that exist in eav_data (#173).
 	for _, attr := range sortedAttrs {
 		if !eavOnlySelects[attr] {
 			continue
 		}
+		valueText, valueNumeric := "NULL", "NULL"
+		vt := sp.UnifiedColumnTypes[attr]
+		if eavValueColumn(vt) == "value_numeric" {
+			if vt == forma.ValueTypeBool {
+				valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", attr)
+			} else {
+				valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", attr)
+			}
+		} else {
+			valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", attr)
+		}
 		jsonParts = append(jsonParts, fmt.Sprintf(
-			"'%d', CAST(%s AS VARCHAR)",
-			sp.attrIDForName(attr), duckDBAttrCast(attr, sp.UnifiedColumnTypes[attr])))
+			"CASE WHEN %s IS NOT NULL THEN {'schema_id': %d, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': %d, 'array_indices': '', 'value_text': %s, 'value_numeric': %s} END",
+			attr, schemaID, sp.attrIDForName(attr), valueText, valueNumeric))
 	}
 
 	if len(jsonParts) > 0 {
-		j := "json_object(" + strings.Join(jsonParts, ", ") + ")"
+		j := "to_json(list_filter([" + strings.Join(jsonParts, ", ") + "], x -> x IS NOT NULL))"
 		parts = append(parts, j+"::TEXT AS attributes_json")
 	} else {
 		parts = append(parts, "'[]'::TEXT AS attributes_json")

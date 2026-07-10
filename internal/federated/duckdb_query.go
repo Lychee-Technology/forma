@@ -104,7 +104,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Record translation in plan
-	planCtx.recordTranslation(sqlStr, translateMs, q.UseMainAsAnchor)
+	planCtx.recordTranslation(sqlStr, args, translateMs, q.UseMainAsAnchor)
 
 	// Check circuit breaker before executing
 	if e.breaker != nil && e.breaker.IsOpen() {
@@ -169,7 +169,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	telemetry.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
-	planCtx.recordDirtyIDSource(tables.ChangeLog, len(dirtyIDs))
+	planCtx.recordDirtyIDSource(tables.ChangeLog, schemaID, len(dirtyIDs))
 
 	return dirtyIDs, nil
 }
@@ -244,10 +244,16 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Skip this optimization for benchmark schemas because their output schema
 	// includes ALL attributes (both column-bound and EAV-only) unlike production
 	// which outputs a fixed entity_main layout.
+	// The shortcut is additionally gated on the schema having no EAV-only
+	// attributes: BuildPGSelectNoEAV drops EAV attribute columns from
+	// pg_source while s3_source keeps the full projection, so for schemas
+	// with EAV-only attributes the shortcut rendered a UNION ALL with
+	// mismatched column counts (invalid SQL) and would silently drop hot
+	// rows' EAV values (#173).
 	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
-		sqlParams["HasEAVPivot"] = false
 		sp, _, _ := e.schemaProjection(q.SchemaID, cache)
-		if sp != nil {
+		if sp != nil && !sp.HasEAVAttrs {
+			sqlParams["HasEAVPivot"] = false
 			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
 			sqlParams["PGGroupBy"] = sp.BuildPGGroupByNoEAV()
 		}

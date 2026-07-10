@@ -1,0 +1,17 @@
+{
+  "name": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "value": {
+    "attributeID": 2,
+    "valueType": "numeric"
+  },
+  "version": {
+    "attributeID": 3,
+    "valueType": "text"
+  }
+}
