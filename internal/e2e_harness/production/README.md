@@ -137,6 +137,16 @@ where cdc-init bootstraps base files before federated reads. Use
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
 - `ExecSQL` is the escape hatch for failure-state injection (#179/#181),
   e.g. truncating `change_log` to model post-init onboarding.
+- `InjectRestore` (#175) re-materializes a hard-deleted row under its
+  original row_id at the storage layer — production has no restore API
+  (Update on a deleted row returns `ErrNotFound`, pinned live) — with the
+  restore timestamp forced past the tombstone's `changed_at` so the revival
+  wins LWW. Scoped to text/numeric attributes (e2e_simple shapes).
+- `Env.RestartPostgres` (#175) restarts the Postgres container in place
+  (docker stop/start, data preserved) and rebinds the pool, CDC config,
+  DuckDB client, and lazy engine/manager. Restart tests must own a
+  `DedicatedCluster` — restarting the shared cluster would break every
+  parallel Env — and are skipped on external infrastructure.
 
 ## Diagnostic artifacts
 
@@ -170,7 +180,7 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | Issue | Building block |
 |---|---|
 | #174 full-type coverage | `e2e_wide` + `FullTypeProfile` |
-| #175 lifecycle sequences | `Event` model + `ApplyEvents` |
+| #175 lifecycle sequences | `Event` model + `ApplyEvents` + `InjectRestore` + `RestartPostgres` (`lifecycle_e2e_test.go`, `restart_e2e_test.go`) |
 | #179 flush thresholds | `WithFlushThresholds` + `FlushReport` |
 | #180 dry-run semantics | `RunFlushDry` |
 | #181 failure injection | `ExecSQL` |
