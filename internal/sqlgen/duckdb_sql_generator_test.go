@@ -402,3 +402,33 @@ func TestBuildDuckClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGrouping
 	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DECIMAL(38,10))) OR (email LIKE ?))", clause)
 	require.Equal(t, []any{"active", "10", "ops%"}, args)
 }
+
+// TestBuildSchemaProjection_NoSyntheticNameVersion pins issue #192: the
+// projection must reference only attributes the schema actually defines.
+// Real CDC parquet exports contain no columns for undefined attributes, so
+// the legacy synthetic name/version injection made warm/cold federated
+// queries reference parquet columns that don't exist.
+func TestBuildSchemaProjection_NoSyntheticNameVersion(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"age": {AttributeID: 3, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: "integer_01"}},
+	}
+	sp, err := BuildSchemaProjection(7, cache)
+	require.NoError(t, err)
+
+	require.Equal(t,
+		[]string{"row_id", "created_at", "ver_ts", "deleted_ts", "age"},
+		sp.UnifiedColumnNames)
+	require.Equal(t,
+		"row_id, changed_at AS created_at, changed_at AS ver_ts, deleted_at AS deleted_ts, age",
+		sp.S3SourceSelect)
+	require.Empty(t, sp.EAVAttrs)
+	require.False(t, sp.HasEAVAttrs)
+	// Bound-attribute IDs still enter the pivot WHERE (pre-existing behavior,
+	// harmless: eav_data never holds rows for column-bound attributes). Do NOT
+	// change buildEAVPivot to make this empty — that's out of scope (#192).
+	require.Equal(t, "3", sp.EAVPivotAttrs)
+	require.NotContains(t, sp.PGSourceSelect, "name")
+	require.NotContains(t, sp.PGSourceSelect, "version")
+	require.NotContains(t, sp.OuterSelect, "'version'")
+}

@@ -397,7 +397,8 @@ func TestIsListType_False(t *testing.T) {
 }
 
 // TestBuildSchemaProjectionDoesNotMutateInput pins #142 phase 3: the shared
-// registry snapshot passed in must not gain the synthetic name/version attrs.
+// registry snapshot passed in must never be mutated (e.g. by re-introducing
+// something like the retired synthetic name/version injection, #192).
 func TestBuildSchemaProjectionDoesNotMutateInput(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"age": {AttributeID: 3, ValueType: forma.ValueTypeInteger},
