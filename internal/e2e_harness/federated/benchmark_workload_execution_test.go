@@ -22,19 +22,10 @@ import (
 // issue-referenced allowlist, not a whole-workload skip. Remove entries as
 // their issues land.
 //
-//   - eav-low-selectivity-page: the truth-pass oracle's harness query cannot
-//     filter the pure-EAV attribute orderChannel (absent from the hardcoded
-//     benchmarkQueryColumn / targetedHotFilterExpression / hot-pivot /
-//     parquet-projection maps), so it undercounts hot-tier candidates. The #156
-//     batching proved (via TestTruthPassBatchEqualsPerCandidate) that this is a
-//     harness truth-query bug independent of the per-candidate/batch split, so
-//     it is tracked on its own (#163).
-var knownFailingAssertions = map[string]map[string]string{
-	"eav-low-selectivity-page": {
-		"total-records-match-expected": "#163",
-		"page-row-ids-match-expected":  "#163",
-	},
-}
+// Currently empty: #163 (eav-low-selectivity-page pure-EAV orderChannel
+// undercount) is fixed, so no correctness assertion is expected to fail. Its
+// regression coverage lives in TestTruthPassOracleFiltersPureEAVAttribute.
+var knownFailingAssertions = map[string]map[string]string{}
 
 // assertWorkloadOraclesGreen fails the test if any workload has a failed
 // correctness assertion that is not in the documented knownFailingAssertions
