@@ -56,13 +56,5 @@
   "seen": {
     "attributeID": 10,
     "valueType": "datetime"
-  },
-  "name": {
-    "attributeID": 11,
-    "valueType": "text"
-  },
-  "version": {
-    "attributeID": 12,
-    "valueType": "text"
   }
 }
