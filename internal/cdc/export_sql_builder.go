@@ -82,7 +82,7 @@ func buildEAVQuery(eavData string, schemaID int16, eavFilter string, eavAttrIDs 
 		attrFilter = fmt.Sprintf(" AND attr_id IN (%s)", joinInt16(eavAttrIDs))
 	}
 	return fmt.Sprintf(
-		"SELECT schema_id, row_id, attr_id, value_text FROM %s WHERE schema_id = %d AND %s%s",
+		"SELECT schema_id, row_id, attr_id, value_text, value_numeric FROM %s WHERE schema_id = %d AND %s%s",
 		eavData, schemaID, eavFilter, attrFilter,
 	)
 }

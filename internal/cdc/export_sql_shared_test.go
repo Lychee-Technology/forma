@@ -57,7 +57,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			},
 			expectedMemoryLimit:   "2GB",
 			expectedModeTable:     `FROM "change_log_dev"`,
-			expectedTimeSlotExpr:  "cl.changed_at AS time_slot",
+			expectedTimeSlotExpr:  "cl.changed_at AS changed_at",
 			expectChangeLogInMode: true,
 		},
 		{
@@ -75,7 +75,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			},
 			expectedMemoryLimit:  "6GB",
 			expectedModeTable:    "",
-			expectedTimeSlotExpr: "m.ltbase_created_at AS time_slot",
+			expectedTimeSlotExpr: "m.ltbase_created_at AS changed_at",
 			expectActiveOnly:     true,
 		},
 	}
@@ -101,7 +101,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 				t.Fatalf("sql missing parquet v2 export option: %s", res.sql)
 			}
 			if !strings.Contains(res.sql, tt.expectedTimeSlotExpr) {
-				t.Fatalf("sql missing expected time_slot projection %q: %s", tt.expectedTimeSlotExpr, res.sql)
+				t.Fatalf("sql missing expected changed_at projection %q: %s", tt.expectedTimeSlotExpr, res.sql)
 			}
 			if tt.expectChangeLogInMode && !strings.Contains(res.modeSQL, tt.expectedModeTable) {
 				t.Fatalf("mode query missing expected table %q: %s", tt.expectedModeTable, res.modeSQL)
@@ -254,11 +254,10 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 	require.Contains(t, projection.mainProjections[0], "AS display_name")
 	require.Len(t, projection.eavAgg, 2)
 	require.Contains(t, projection.eavAgg[0], "attr_id = 21")
-	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_text AS INTEGER)")
+	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_numeric AS INTEGER)")
 	require.Contains(t, projection.eavAgg[0], "AS employee_count")
 	require.Contains(t, projection.eavAgg[1], "attr_id = 22")
-	require.Contains(t, projection.eavAgg[1], "lower(value_text) IN ('true','1','t','yes','y')")
-	require.Contains(t, projection.eavAgg[1], "ELSE NULL END")
+	require.Contains(t, projection.eavAgg[1], "(value_numeric <> 0)")
 	require.Contains(t, projection.eavAgg[1], "AS is_active")
 	require.Equal(t, []string{"e.employee_count", "e.is_active"}, projection.eavSelect)
 	require.Equal(t, []int16{21, 22}, projection.eavAttrIDs)
@@ -281,7 +280,7 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 
 	require.Contains(t, projection.mainColumns, string(forma.MainColumnText02))
 	require.Equal(t, []string{"CAST(m.text_02 AS VARCHAR) AS company_name"}, projection.mainProjections)
-	require.Equal(t, []string{"MAX(CASE WHEN attr_id = 31 THEN TRY_CAST(value_text AS DOUBLE) END) AS annual_revenue"}, projection.eavAgg)
+	require.Equal(t, []string{"MAX(CASE WHEN attr_id = 31 THEN TRY_CAST(value_numeric AS DOUBLE) END) AS annual_revenue"}, projection.eavAgg)
 	require.Equal(t, []string{"e.annual_revenue"}, projection.eavSelect)
 	require.Equal(t, []int16{31}, projection.eavAttrIDs)
 }
