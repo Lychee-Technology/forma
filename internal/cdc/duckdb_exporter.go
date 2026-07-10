@@ -383,6 +383,13 @@ func duckTypeForValue(v forma.ValueType) string {
 	}
 }
 
+// castMainValue projects a main-column-bound attribute into its parquet
+// column. The output type must match what the federated reader consumes:
+// its projection casts date/datetime attrs with CAST(attr AS BIGINT)
+// (sqlgen.duckDBAttrCast) and scans them as epoch-ms int64, mirroring the
+// write side (transform.storeInMainColumn), which stores unix_ms-encoded
+// dates as raw epoch millis in a bigint column. So unix_ms dates must stay
+// epoch-ms BIGINT here, matching castEAVValue's date handling (#194).
 func castMainValue(col string, meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:
@@ -396,12 +403,12 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 		}
 	case forma.ValueTypeDate:
 		if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingUnixMs {
-			return fmt.Sprintf("CAST(to_timestamp(CAST(%s AS DOUBLE)/1000) AS DATE)", col)
+			return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
 		}
 		return fmt.Sprintf("TRY_CAST(%s AS DATE)", col)
 	case forma.ValueTypeDateTime:
 		if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingUnixMs {
-			return fmt.Sprintf("to_timestamp(CAST(%s AS DOUBLE)/1000)", col)
+			return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
 		}
 		return fmt.Sprintf("TRY_CAST(%s AS TIMESTAMP)", col)
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:

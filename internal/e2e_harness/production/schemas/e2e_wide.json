@@ -38,6 +38,14 @@
     "seen": {
       "type": "string",
       "format": "date-time"
+    },
+    "joined": {
+      "type": "string",
+      "format": "date"
+    },
+    "touched": {
+      "type": "string",
+      "format": "date-time"
     }
   }
 }

@@ -56,5 +56,21 @@
   "seen": {
     "attributeID": 10,
     "valueType": "datetime"
+  },
+  "joined": {
+    "attributeID": 11,
+    "valueType": "date",
+    "column_binding": {
+      "col_name": "bigint_02",
+      "encoding": "unix_ms"
+    }
+  },
+  "touched": {
+    "attributeID": 12,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_03",
+      "encoding": "unix_ms"
+    }
   }
 }
