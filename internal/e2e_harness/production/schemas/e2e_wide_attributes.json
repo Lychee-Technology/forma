@@ -72,5 +72,10 @@
       "col_name": "bigint_03",
       "encoding": "unix_ms"
     }
-  }
+  },
+  "level": { "attributeID": 13, "valueType": "smallint" },
+  "qty": { "attributeID": 14, "valueType": "integer" },
+  "total": { "attributeID": 15, "valueType": "bigint" },
+  "ratio": { "attributeID": 16, "valueType": "numeric" },
+  "token": { "attributeID": 17, "valueType": "uuid" }
 }
