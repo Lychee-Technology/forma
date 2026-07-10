@@ -63,9 +63,13 @@ type ExecutionPlan struct {
 }
 
 type DataSourcePlan struct {
-	Tier              DataTier
-	Engine            string
-	SQL               string
+	Tier   DataTier
+	Engine string
+	SQL    string
+	// Params holds the string forms of the bind parameters for SQL, in
+	// order. Populated only when FederatedQueryOptions.IncludeExecutionPlan
+	// is set, so diagnostic artifacts can replay the exact query (#173).
+	Params            []string
 	RowEstimate       int64
 	PredicatePushdown bool
 	ActualRows        int64

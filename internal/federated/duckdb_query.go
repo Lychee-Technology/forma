@@ -104,7 +104,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Record translation in plan
-	planCtx.recordTranslation(sqlStr, translateMs, q.UseMainAsAnchor)
+	planCtx.recordTranslation(sqlStr, args, translateMs, q.UseMainAsAnchor)
 
 	// Check circuit breaker before executing
 	if e.breaker != nil && e.breaker.IsOpen() {
@@ -169,7 +169,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	telemetry.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
-	planCtx.recordDirtyIDSource(tables.ChangeLog, len(dirtyIDs))
+	planCtx.recordDirtyIDSource(tables.ChangeLog, schemaID, len(dirtyIDs))
 
 	return dirtyIDs, nil
 }
