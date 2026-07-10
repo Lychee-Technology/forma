@@ -47,7 +47,7 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	}
 
 	// Physical layer: schema + values of every parquet file.
-	truth := wideTruth(t, creates)
+	truth := buildWideTruth(t, creates)
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)

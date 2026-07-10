@@ -39,33 +39,33 @@ type wideVals struct {
 	active                  *bool
 }
 
-// wideTruth derives per-row expected parquet values straight from event
+// buildWideTruth derives per-row expected parquet values straight from event
 // attributes — independent of every storage path (create-only scripts).
-func wideTruth(t *testing.T, events []*Event) map[uuid.UUID]*wideVals {
+func buildWideTruth(t *testing.T, events []*Event) map[uuid.UUID]*wideVals {
 	t.Helper()
 	truth := make(map[uuid.UUID]*wideVals, len(events))
 	for _, ev := range events {
 		if ev.Kind != EventCreate {
-			t.Fatalf("wideTruth only supports create-only scripts, got %s", ev.Kind)
+			t.Fatalf("buildWideTruth only supports create-only scripts, got %s", ev.Kind)
 		}
 		a := ev.Attrs
 		v := &wideVals{
-			title: strAttr(t, a, "title"), note: strAttr(t, a, "note"),
-			ref: uuidAttr(t, a, "ref"), token: uuidAttr(t, a, "token"),
-			rank: int16Attr(t, a, "rank"), level: int16Attr(t, a, "level"),
-			count: int32Attr(t, a, "count"), qty: int32Attr(t, a, "qty"),
-			amount: int64Attr(t, a, "amount"), total: int64Attr(t, a, "total"),
-			score: f64Attr(t, a, "score"), ratio: f64Attr(t, a, "ratio"),
-			active: boolAttr(t, a, "active"),
-			born:   dateMSAttr(t, a, "born"), joined: dateMSAttr(t, a, "joined"),
-			seen: datetimeMSAttr(t, a, "seen"), touched: datetimeMSAttr(t, a, "touched"),
+			title: extractStrAttr(t, a, "title"), note: extractStrAttr(t, a, "note"),
+			ref: extractUUIDAttr(t, a, "ref"), token: extractUUIDAttr(t, a, "token"),
+			rank: extractInt16Attr(t, a, "rank"), level: extractInt16Attr(t, a, "level"),
+			count: extractInt32Attr(t, a, "count"), qty: extractInt32Attr(t, a, "qty"),
+			amount: extractInt64Attr(t, a, "amount"), total: extractInt64Attr(t, a, "total"),
+			score: extractF64Attr(t, a, "score"), ratio: extractF64Attr(t, a, "ratio"),
+			active: extractBoolAttr(t, a, "active"),
+			born:   extractDateMSAttr(t, a, "born"), joined: extractDateMSAttr(t, a, "joined"),
+			seen: extractDatetimeMSAttr(t, a, "seen"), touched: extractDatetimeMSAttr(t, a, "touched"),
 		}
 		truth[ev.RowID] = v
 	}
 	return truth
 }
 
-func strAttr(t *testing.T, a map[string]any, k string) *string {
+func extractStrAttr(t *testing.T, a map[string]any, k string) *string {
 	if raw, ok := a[k]; ok {
 		s, isStr := raw.(string)
 		if !isStr {
@@ -76,8 +76,8 @@ func strAttr(t *testing.T, a map[string]any, k string) *string {
 	return nil
 }
 
-func uuidAttr(t *testing.T, a map[string]any, k string) *string {
-	s := strAttr(t, a, k)
+func extractUUIDAttr(t *testing.T, a map[string]any, k string) *string {
+	s := extractStrAttr(t, a, k)
 	if s == nil {
 		return nil
 	}
@@ -89,7 +89,7 @@ func uuidAttr(t *testing.T, a map[string]any, k string) *string {
 	return &canon
 }
 
-func f64Attr(t *testing.T, a map[string]any, k string) *float64 {
+func extractF64Attr(t *testing.T, a map[string]any, k string) *float64 {
 	raw, ok := a[k]
 	if !ok {
 		return nil
@@ -106,8 +106,8 @@ func f64Attr(t *testing.T, a map[string]any, k string) *float64 {
 	}
 }
 
-func int16Attr(t *testing.T, a map[string]any, k string) *int16 {
-	f := f64Attr(t, a, k)
+func extractInt16Attr(t *testing.T, a map[string]any, k string) *int16 {
+	f := extractF64Attr(t, a, k)
 	if f == nil {
 		return nil
 	}
@@ -115,8 +115,8 @@ func int16Attr(t *testing.T, a map[string]any, k string) *int16 {
 	return &v
 }
 
-func int32Attr(t *testing.T, a map[string]any, k string) *int32 {
-	f := f64Attr(t, a, k)
+func extractInt32Attr(t *testing.T, a map[string]any, k string) *int32 {
+	f := extractF64Attr(t, a, k)
 	if f == nil {
 		return nil
 	}
@@ -124,8 +124,8 @@ func int32Attr(t *testing.T, a map[string]any, k string) *int32 {
 	return &v
 }
 
-// int64Attr keeps exact int64s exact: int64 passes through, float64 converts.
-func int64Attr(t *testing.T, a map[string]any, k string) *int64 {
+// extractInt64Attr keeps exact int64s exact: int64 passes through, float64 converts.
+func extractInt64Attr(t *testing.T, a map[string]any, k string) *int64 {
 	raw, ok := a[k]
 	if !ok {
 		return nil
@@ -142,7 +142,7 @@ func int64Attr(t *testing.T, a map[string]any, k string) *int64 {
 	}
 }
 
-func boolAttr(t *testing.T, a map[string]any, k string) *bool {
+func extractBoolAttr(t *testing.T, a map[string]any, k string) *bool {
 	raw, ok := a[k]
 	if !ok {
 		return nil
@@ -154,8 +154,8 @@ func boolAttr(t *testing.T, a map[string]any, k string) *bool {
 	return &b
 }
 
-func dateMSAttr(t *testing.T, a map[string]any, k string) *int64 {
-	s := strAttr(t, a, k)
+func extractDateMSAttr(t *testing.T, a map[string]any, k string) *int64 {
+	s := extractStrAttr(t, a, k)
 	if s == nil {
 		return nil
 	}
@@ -167,8 +167,8 @@ func dateMSAttr(t *testing.T, a map[string]any, k string) *int64 {
 	return &ms
 }
 
-func datetimeMSAttr(t *testing.T, a map[string]any, k string) *int64 {
-	s := strAttr(t, a, k)
+func extractDatetimeMSAttr(t *testing.T, a map[string]any, k string) *int64 {
+	s := extractStrAttr(t, a, k)
 	if s == nil {
 		return nil
 	}

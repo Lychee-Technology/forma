@@ -74,11 +74,11 @@ const maxEAVInt = float64(1 << 53)
 // b-min row's pre-epoch bound date (negative epoch-ms must survive).
 const preEpochJoinedMS = int64(-2208988800000)
 
-// boundaryEvents builds the four boundary shapes: a NULL row (only the bound
+// buildBoundaryEvents builds the four boundary shapes: a NULL row (only the bound
 // title set), a zero/empty row (every column an explicit zero-value, not
 // NULL), a max row (upper bounds of every type + unicode text), and a min row
 // (lower bounds + pre-epoch dates that must survive as negative epoch-ms).
-func boundaryEvents(wide SchemaRef) (nullRow, zeroRow, maxRow, minRow *Event) {
+func buildBoundaryEvents(wide SchemaRef) (nullRow, zeroRow, maxRow, minRow *Event) {
 	nullRow = CreateEvent(wide, map[string]any{"title": "b-null"})
 	zeroRow = CreateEvent(wide, map[string]any{
 		"title": "", "note": "", "ref": zeroUUID, "token": zeroUUID,
@@ -125,7 +125,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1]
 
-	nullRow, zeroRow, maxRow, minRow := boundaryEvents(wide)
+	nullRow, zeroRow, maxRow, minRow := buildBoundaryEvents(wide)
 	batch := []*Event{nullRow, zeroRow, maxRow, minRow}
 	if err := env.ApplyEvents(ctx, batch...); err != nil {
 		t.Fatalf("apply boundary creates: %v", err)
@@ -147,14 +147,14 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	}
 
 	// Hot tier: fresh copies of the null and max shapes stay unflushed.
-	hotNull, _, hotMax, _ := boundaryEvents(wide)
+	hotNull, _, hotMax, _ := buildBoundaryEvents(wide)
 	if err := env.ApplyEvents(ctx, hotNull, hotMax); err != nil {
 		t.Fatalf("apply hot boundary creates: %v", err)
 	}
 
 	// Physical layer: reuse Task 4's per-file value assertion (NULL columns
 	// included), then the NULL-vs-zero distinction per boundary row.
-	truth := wideTruth(t, append(batch, hotNull, hotMax))
+	truth := buildWideTruth(t, append(batch, hotNull, hotMax))
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)

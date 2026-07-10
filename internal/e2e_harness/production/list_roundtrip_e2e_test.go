@@ -95,15 +95,15 @@ func TestListAttributeRoundTrip(t *testing.T) {
 			"(internal/cdc/export_sql_builder.go:79-88,135) and the federated reader hardcodes " +
 			"array_indices='' (internal/sqlgen/duckdb_schema_projection.go:328). This subtest is the " +
 			"executable acceptance spec for that issue; un-skip and it must pass end to end.")
-		listRoundTripSpec(ctx, t, cluster)
+		runListRoundTripSpec(ctx, t, cluster)
 	})
 }
 
-// listRoundTripSpec is the acceptance spec for full list round-trip support.
+// runListRoundTripSpec is the acceptance spec for full list round-trip support.
 // It is only reached once #204 is fixed and the skip above is
 // removed. It probes every hop and asserts the three list elements survive
 // intact: hot EAV rows, warm/cold parquet, and federated merge-on-read.
-func listRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
+func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	t.Helper()
 	env := NewEnv(t, cluster, WithSchemaDir(writeListSchemaDir(t)))
 	wide := DefaultSchemaFixtures()[1]
