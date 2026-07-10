@@ -5,10 +5,12 @@ package production
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -194,6 +196,68 @@ func TestEntityLifecycle(t *testing.T) {
 			t.Errorf("retry flush created objects %v, want none", flush3.NewObjects)
 		}
 		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	})
+
+	// Scenario 5: create → flush → delete → flush → restore → flush → query.
+	// Production has no restore API — Update on the hard-deleted row must
+	// return ErrNotFound — so the revival is injected at the storage layer
+	// (InjectRestore). The restored version must then beat the already
+	// flushed parquet tombstone in LWW: one visible row with the original
+	// attributes and no zombie tombstone hiding it.
+	t.Run("restore_after_delete", func(t *testing.T) {
+		t.Parallel()
+		env := NewEnv(t, cluster)
+		ctx := context.Background()
+		simple := DefaultSchemaFixtures()[0] // e2e_simple
+
+		creates := env.GenerateScript(ScriptSpec{Schema: simple, Creates: 1})
+		if err := env.ApplyEvents(ctx, creates...); err != nil {
+			t.Fatalf("apply create: %v", err)
+		}
+		row := creates[0]
+		mustFlush(ctx, t, env)
+
+		del := DeleteEvent(simple, row.RowID)
+		if err := env.ApplyEvents(ctx, del); err != nil {
+			t.Fatalf("apply delete: %v", err)
+		}
+		mustFlush(ctx, t, env) // tombstone now lives in a delta parquet
+		env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 10})
+
+		// Contract pin: the production API cannot revive a hard-deleted row.
+		_, err := env.EntityManager().Update(ctx, &forma.EntityOperation{
+			EntityIdentifier: forma.EntityIdentifier{SchemaName: simple.Name, RowID: row.RowID},
+			Type:             forma.OperationUpdate,
+			Updates:          map[string]any{"name": "resurrect-attempt"},
+		})
+		if !errors.Is(err, forma.ErrNotFound) {
+			t.Fatalf("update of deleted row returned %v, want ErrNotFound", err)
+		}
+
+		restored := env.InjectRestore(ctx, row, del)
+		flush3 := mustFlush(ctx, t, env)
+
+		// Visible again everywhere — the restored delta version must win LWW
+		// over the flushed tombstone — and idempotently so.
+		env.AssertQueryMatches(ctx, Query{Schema: simple, PreferHot: true, Limit: 10})
+		env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 10})
+		env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 10})
+
+		// Physical check: the restore flush exported exactly one live version.
+		key := soleParquetKey(t, flush3)
+		path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+		var n int
+		var deletedAt, changedAt sql.NullInt64
+		if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT COUNT(*), MAX(deleted_at), MAX(changed_at)
+			 FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
+			row.RowID.String()).Scan(&n, &deletedAt, &changedAt); err != nil {
+			t.Fatalf("scan restore delta %s: %v", key, err)
+		}
+		if n != 1 || deletedAt.Valid || !changedAt.Valid || changedAt.Int64 != restored.ChangedAt {
+			t.Errorf("restore delta: versions=%d deleted_at=(%d,%t) changed_at=(%d,%t), want 1 live version at %d",
+				n, deletedAt.Int64, deletedAt.Valid, changedAt.Int64, changedAt.Valid, restored.ChangedAt)
+		}
 	})
 }
 
