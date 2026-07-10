@@ -55,6 +55,9 @@ is unavailable). Each `NewEnv`:
 
 - creates its own PostgreSQL **database** with the standard production
   table names (`entity_main`, `eav_data`, `change_log`, `schema_registry`).
+  The harness DDL (`ddl.go`) mirrors `cmd/tools/init_db.go` (#174):
+  `value_numeric NUMERIC`, per-tier `bigint`/`double` columns, and a nullable
+  `change_log.deleted_at`.
   CDC advisory locks are keyed `(schemaID, schemaID)` *per database OID*
   and `RunOnce` scans the whole `change_log`, so a private database gives
   natural isolation and free multi-schema support (#189);
@@ -91,7 +94,24 @@ Fixtures define only the attributes their tests use: the synthetic
 `name`/`version` injection in `sqlgen.BuildSchemaProjection` was removed in
 #192, so schemas need no workaround attributes. (`e2e_simple` keeps a real,
 column-bound `name` attribute — proving a schema that legitimately defines
-one still works.) `forma.ValueTypeList` is not covered yet.
+one still works.)
+
+**Type coverage (#174).** `e2e_wide` now carries one attribute per scalar
+`forma.ValueType` — 17 in all, split across column-bound and EAV storage — and
+the full-type round-trip (`full_type_roundtrip_e2e_test.go`) drives every one
+through hot/warm/cold with exact-value assertions; the pinned 24-column physical
+parquet schema is checked bidirectionally by `assertWideParquetSchema` (a
+missing *or* unexpected column fails the test). NULL, empty-string, zero, and
+boundary values (`boundary_roundtrip_e2e_test.go`) round-trip exactly, with two
+documented ceilings: the faithful **bound `bigint`** range is ±2^62 — int64 is
+marshalled through float64 on both write and the federated read, so larger
+magnitudes lose precision and a stored `MaxInt64` crashes the read (tracked in
+#205) — and **EAV integers** are exact to ±2^53 by the float64 value model (by
+design). `forma.ValueTypeList` does **not** round-trip: the write path rejects
+`list` outright at `transform.populateTypedValue`, so the fixture defines a
+`tags` list attribute that `list_roundtrip_e2e_test.go` uses to pin the
+rejection contract live, with the end-to-end acceptance path written as a
+skipped subtest — blocked by #204.
 
 Note: the DuckDB federated path requires at least one parquet file per
 schema (`read_parquet` errors on an empty glob) — matching production,

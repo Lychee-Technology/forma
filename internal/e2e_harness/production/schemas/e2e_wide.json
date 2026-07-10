@@ -46,6 +46,11 @@
     "touched": {
       "type": "string",
       "format": "date-time"
-    }
+    },
+    "level": { "type": "integer", "minimum": -32768, "maximum": 32767 },
+    "qty": { "type": "integer" },
+    "total": { "type": "integer" },
+    "ratio": { "type": "number" },
+    "token": { "type": "string", "format": "uuid" }
   }
 }
