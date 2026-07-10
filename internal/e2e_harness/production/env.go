@@ -50,6 +50,7 @@ type Env struct {
 	eventSeq int
 	queryN   int
 	queries  []*QueryResult
+	lastDiff *Diff
 }
 
 // EnvOption customizes NewEnv.
@@ -151,6 +152,7 @@ func NewEnv(t *testing.T, c *Cluster, opts ...EnvOption) *Env {
 	}
 
 	t.Cleanup(func() { e.teardown(context.Background()) })
+	e.registerArtifactDump()
 	t.Logf("production env %s: db=%s prefix=s3://%s/%s seed=%d", e.RunID, e.DBName, c.Bucket, e.S3Prefix, e.Seed)
 	return e
 }
