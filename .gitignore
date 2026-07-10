@@ -69,3 +69,6 @@ __pycache__/
 /sample
 /server
 /tools
+
+/docs/__ref__
+.artifacts/
