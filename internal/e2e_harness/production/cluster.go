@@ -20,9 +20,15 @@ import (
 // Environment variables understood by the production harness.
 const (
 	// KeepEnvVar keeps containers, databases, and S3 state alive after the
-	// test for manual inspection. Combine with TESTCONTAINERS_RYUK_DISABLED=true
-	// or the testcontainers reaper will still terminate containers on exit.
+	// test for manual inspection. The harness disables the testcontainers
+	// reaper (ryuk) itself when this is set — see enforceContainerRetention —
+	// so no extra environment variables are required.
 	KeepEnvVar = "KEEP_E2E_ENV"
+
+	// ryukDisabledVar is testcontainers-go's own switch for the ryuk reaper,
+	// which would otherwise terminate containers on process exit regardless
+	// of KEEP_E2E_ENV.
+	ryukDisabledVar = "TESTCONTAINERS_RYUK_DISABLED"
 	// SeedVar pins the cluster base seed for deterministic fixture replay.
 	SeedVar = "E2E_SEED"
 
@@ -77,6 +83,21 @@ func KeepEnv() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// enforceContainerRetention makes KEEP_E2E_ENV self-sufficient: it disables
+// the testcontainers ryuk reaper, which would otherwise remove the containers
+// on process exit even though Shutdown/teardown were skipped. It must run
+// before the first container is created (testcontainers reads its config
+// once per process).
+func enforceContainerRetention() {
+	if !KeepEnv() || os.Getenv(ryukDisabledVar) != "" {
+		return
+	}
+	if err := os.Setenv(ryukDisabledVar, "true"); err == nil {
+		fmt.Printf("%s=1: disabling testcontainers reaper (%s=true) so containers survive the run\n",
+			KeepEnvVar, ryukDisabledVar)
+	}
+}
+
 // StartCluster starts (or, with PRODUCTION_E2E_EXTERNAL_*, connects to) the
 // shared infrastructure and creates the run bucket.
 func StartCluster(ctx context.Context, opts ...ClusterOption) (*Cluster, error) {
@@ -84,6 +105,7 @@ func StartCluster(ctx context.Context, opts ...ClusterOption) (*Cluster, error) 
 	for _, opt := range opts {
 		opt(&options)
 	}
+	enforceContainerRetention()
 
 	c := &Cluster{
 		Base:        &e2e_harness.TestHarness{},
@@ -176,8 +198,7 @@ func (c *Cluster) Shutdown(ctx context.Context) error {
 	}
 	if KeepEnv() {
 		fmt.Printf("KEEP_E2E_ENV=1: leaving cluster running\n"+
-			"  postgres: %s\n  s3:       %s (bucket %s, key %s / %s)\n"+
-			"  note: set TESTCONTAINERS_RYUK_DISABLED=true or the reaper will still remove containers\n",
+			"  postgres: %s\n  s3:       %s (bucket %s, key %s / %s)\n",
 			c.Base.PGDSN, c.S3Endpoint, c.Bucket, c.S3AccessKey, c.S3SecretKey)
 		return nil
 	}

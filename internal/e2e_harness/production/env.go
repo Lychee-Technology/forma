@@ -45,15 +45,16 @@ type Env struct {
 	logger *zap.Logger
 	opts   envOptions
 
-	manager    forma.EntityManager
-	engine     *fedengine.DBFederatedQueryEngine
-	events     []*Event
-	eventSeq   int
-	queryN     int
-	queries    []*QueryResult
-	lastDiff   *Diff
-	rng        *rand.Rand
-	genOrdinal int
+	manager      forma.EntityManager
+	engine       *fedengine.DBFederatedQueryEngine
+	events       []*Event
+	eventSeq     int
+	queryN       int
+	queries      []*QueryResult
+	lastDiff     *Diff
+	rng          *rand.Rand
+	genOrdinal   int
+	provisionErr error
 }
 
 // EnvOption customizes NewEnv.
@@ -149,13 +150,17 @@ func NewEnv(t *testing.T, c *Cluster, opts ...EnvOption) *Env {
 	e.DBName = fmt.Sprintf("e2e_%d", seq)
 	e.S3Prefix = fmt.Sprintf("e2e/%s/env%d", c.RunID, seq)
 
-	if err := e.provision(ctx); err != nil {
-		e.teardown(ctx)
-		t.Fatalf("provision production env: %v", err)
-	}
-
+	// Cleanups are registered BEFORE provisioning so a provisioning failure
+	// still produces run-specific diagnostic artifacts (the dump steps
+	// tolerate unprovisioned resources). t.Cleanup runs even after Fatalf.
 	t.Cleanup(func() { e.teardown(context.Background()) })
 	e.registerArtifactDump()
+
+	if err := e.provision(ctx); err != nil {
+		e.provisionErr = err
+		t.Fatalf("provision production env: %v (diagnostics under %s)", err, e.ArtifactsDir())
+	}
+
 	t.Logf("production env %s: db=%s prefix=s3://%s/%s seed=%d", e.RunID, e.DBName, c.Bucket, e.S3Prefix, e.Seed)
 	return e
 }
@@ -272,6 +277,16 @@ func (e *Env) PGDSN() string {
 	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		c.PGUser, c.PGPassword, c.PGHost, c.PGPort, e.DBName, c.PGSSLMode)
 }
+
+// redactedPGDSN is the DSN with the password masked; on-disk artifacts must
+// not expose externally supplied credentials (PRODUCTION_E2E_EXTERNAL_*).
+func (e *Env) redactedPGDSN() string {
+	c := e.Cluster
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		c.PGUser, redactedPassword, c.PGHost, c.PGPort, e.DBName, c.PGSSLMode)
+}
+
+const redactedPassword = "REDACTED"
 
 // teardown releases per-test resources: DuckDB, the connection pool, the
 // database (WITH FORCE, after pools are closed), and the S3 prefix. Under

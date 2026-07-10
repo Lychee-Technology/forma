@@ -5,6 +5,7 @@ package production
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,19 @@ func TestDumpArtifacts(t *testing.T) {
 		assertJSONArtifact(t, filepath.Join(dir, name))
 	}
 
+	// run.json must never carry the database password (external infra can
+	// supply real credentials via PRODUCTION_E2E_EXTERNAL_PG_DSN).
+	runInfo, err := os.ReadFile(filepath.Join(dir, "run.json"))
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
+	}
+	if cluster.PGPassword != "" && strings.Contains(string(runInfo), cluster.PGPassword) {
+		t.Error("run.json contains the postgres password")
+	}
+	if !strings.Contains(string(runInfo), redactedPassword) {
+		t.Error("run.json pg_dsn is not redacted")
+	}
+
 	parquetFiles, err := filepath.Glob(filepath.Join(dir, "parquet", "*.json"))
 	if err != nil || len(parquetFiles) == 0 {
 		t.Fatalf("no parquet artifacts found (err=%v)", err)
@@ -99,6 +113,49 @@ func TestDumpArtifacts(t *testing.T) {
 	}
 	if !foundDuck {
 		t.Error("query_1.json has no duckdb source with rendered SQL")
+	}
+}
+
+// TestDumpArtifacts_UnprovisionedEnv covers the provisioning-failure path:
+// even when the per-test database and DuckDB never came up, the dump must
+// produce the uniform artifact set (with unavailable markers) instead of
+// nothing.
+func TestDumpArtifacts_UnprovisionedEnv(t *testing.T) {
+	cluster := SharedCluster(t)
+	tmp := t.TempDir()
+	t.Setenv("E2E_ARTIFACTS_DIR", tmp)
+
+	e := &Env{
+		T:            t,
+		Cluster:      cluster,
+		RunID:        cluster.RunID + "/unprovisioned",
+		DBName:       "e2e_never_created",
+		S3Prefix:     "e2e/" + cluster.RunID + "/unprovisioned",
+		provisionErr: fmt.Errorf("create database e2e_never_created: simulated failure"),
+	}
+
+	dir, err := e.DumpArtifacts(context.Background())
+	if err != nil {
+		t.Fatalf("dump artifacts for unprovisioned env: %v (dir %s)", err, dir)
+	}
+
+	for _, name := range []string{"run.json", "events.json", "change_log.json", "s3_listing.json", "diff.json"} {
+		assertJSONArtifact(t, filepath.Join(dir, name))
+	}
+
+	runInfo, err := os.ReadFile(filepath.Join(dir, "run.json"))
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
+	}
+	if !strings.Contains(string(runInfo), "simulated failure") {
+		t.Error("run.json does not record the provisioning error")
+	}
+	changeLog, err := os.ReadFile(filepath.Join(dir, "change_log.json"))
+	if err != nil {
+		t.Fatalf("read change_log.json: %v", err)
+	}
+	if !strings.Contains(string(changeLog), "unavailable") {
+		t.Error("change_log.json missing the unavailable marker for an unprovisioned database")
 	}
 }
 

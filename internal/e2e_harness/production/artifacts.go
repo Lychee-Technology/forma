@@ -48,7 +48,9 @@ func repoRoot() string {
 // directly.
 func (e *Env) DumpArtifacts(ctx context.Context) (string, error) {
 	dir := e.ArtifactsDir()
-	if err := os.MkdirAll(filepath.Join(dir, "parquet"), 0o755); err != nil {
+	// Artifacts can reference external infrastructure details; keep them
+	// readable by the invoking user only.
+	if err := os.MkdirAll(filepath.Join(dir, "parquet"), 0o700); err != nil {
 		return "", fmt.Errorf("create artifacts dir: %w", err)
 	}
 
@@ -99,10 +101,16 @@ func writeJSONArtifact(dir, name string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", name, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
 	return nil
+}
+
+// unavailableArtifact is written in place of an artifact whose source
+// resource was never provisioned, keeping the artifact set uniform.
+func unavailableArtifact(reason string) map[string]any {
+	return map[string]any{"unavailable": reason}
 }
 
 func (e *Env) dumpRunInfo(ctx context.Context, dir string) error {
@@ -112,13 +120,16 @@ func (e *Env) dumpRunInfo(ctx context.Context, dir string) error {
 		"cluster_seed": e.Cluster.Seed,
 		"test":         e.T.Name(),
 		"database":     e.DBName,
-		"pg_dsn":       e.PGDSN(),
+		"pg_dsn":       e.redactedPGDSN(),
 		"s3_bucket":    e.Cluster.Bucket,
 		"s3_prefix":    e.S3Prefix,
 		"s3_endpoint":  e.Cluster.S3Endpoint,
 		"parquet_glob": e.ParquetGlob(),
 		"git_sha":      gitSHA(ctx),
 		"dumped_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+	if e.provisionErr != nil {
+		info["provision_error"] = e.provisionErr.Error()
 	}
 	return writeJSONArtifact(dir, "run.json", info)
 }
@@ -136,6 +147,9 @@ func (e *Env) dumpEvents(_ context.Context, dir string) error {
 }
 
 func (e *Env) dumpChangeLog(ctx context.Context, dir string) error {
+	if e.Pool == nil {
+		return writeJSONArtifact(dir, "change_log.json", unavailableArtifact("database was not provisioned"))
+	}
 	rows, err := e.Pool.Query(ctx,
 		`SELECT schema_id, row_id, changed_at, COALESCE(deleted_at, 0), flushed_at
 		 FROM change_log ORDER BY schema_id, row_id, flushed_at`)
@@ -231,6 +245,9 @@ func (e *Env) dumpManifests(ctx context.Context, dir string) error {
 // dumpParquet writes DESCRIBE output and up to maxSampleRows sampled rows
 // for every parquet object under the prefix (capped).
 func (e *Env) dumpParquet(ctx context.Context, dir string) error {
+	if e.Duck == nil {
+		return nil // DuckDB was not provisioned; nothing to describe with.
+	}
 	keys, err := e.listS3Keys(ctx)
 	if err != nil {
 		return err
@@ -357,9 +374,16 @@ func (e *Env) dumpQueries(_ context.Context, dir string) error {
 	return nil
 }
 
+// dumpDiff always writes diff.json so the artifact contract is uniform:
+// failures that never reached a query assertion (init/flush/provisioning)
+// still produce a structured document instead of a missing file.
 func (e *Env) dumpDiff(_ context.Context, dir string) error {
 	if e.lastDiff == nil {
-		return nil
+		return writeJSONArtifact(dir, "diff.json", map[string]any{
+			"status":           "no_query_mismatch_recorded",
+			"note":             "the failure happened outside AssertQueryMatches (e.g. provisioning, init, or flush); see run.json and the test log",
+			"queries_executed": len(e.queries),
+		})
 	}
 	return writeJSONArtifact(dir, "diff.json", e.lastDiff)
 }
