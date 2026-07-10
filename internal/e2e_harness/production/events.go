@@ -31,6 +31,11 @@ type Event struct {
 	Seq       int   `json:"seq"`
 	ChangedAt int64 `json:"changed_at"`
 	DeletedAt int64 `json:"deleted_at"`
+
+	// Target links generated update/delete events to the create event whose
+	// row they mutate; ApplyEvents resolves RowID from it after the
+	// EntityManager assigns one. Not serialized.
+	Target *Event `json:"-"`
 }
 
 // CreateEvent builds a create event; the row ID is assigned by the
@@ -58,6 +63,9 @@ func (e *Env) ApplyEvents(ctx context.Context, events ...*Event) error {
 	for _, ev := range events {
 		e.eventSeq++
 		ev.Seq = e.eventSeq
+		if ev.RowID == (uuid.UUID{}) && ev.Target != nil {
+			ev.RowID = ev.Target.RowID
+		}
 
 		if err := applyEvent(ctx, manager, ev); err != nil {
 			return fmt.Errorf("apply event seq=%d kind=%s schema=%s: %w", ev.Seq, ev.Kind, ev.Schema.Name, err)
