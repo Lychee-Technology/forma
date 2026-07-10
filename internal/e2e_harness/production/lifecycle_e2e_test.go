@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // TestEntityLifecycle proves the entity lifecycle is correct across CDC
@@ -127,6 +129,116 @@ func TestEntityLifecycle(t *testing.T) {
 		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 	})
+
+	// Scenario 4 — the delete-resurrection core: create → flush (live
+	// versions now in base AND delta parquet) → delete → flush. The tombstone
+	// must be exported to the delta (deleted_at set, every attribute and
+	// entity_main column NULL — the hard-deleted row no longer joins), and
+	// once the dirty set is drained the row must stay invisible on parquet
+	// LWW alone: the tombstone's later changed_at beats both live versions.
+	t.Run("delete_resurrection", func(t *testing.T) {
+		t.Parallel()
+		env := NewEnv(t, cluster)
+		ctx := context.Background()
+
+		creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 1})
+		if err := env.ApplyEvents(ctx, creates...); err != nil {
+			t.Fatalf("apply create: %v", err)
+		}
+		row := creates[0]
+
+		// Live versions in the cold base (RunInit) and, because the create's
+		// change_log entry is still unflushed, in a warm delta too — two
+		// independent resurrection sources for the tombstone to beat.
+		if _, err := env.RunInit(ctx, wide); err != nil {
+			t.Fatalf("run init: %v", err)
+		}
+		mustFlush(ctx, t, env)
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+
+		del := DeleteEvent(wide, row.RowID)
+		if err := env.ApplyEvents(ctx, del); err != nil {
+			t.Fatalf("apply delete: %v", err)
+		}
+		// Pre-flush window: hidden by the dirty-set anti-join.
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+
+		flush2 := mustFlush(ctx, t, env)
+		assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush2), del)
+
+		// Post-flush: the dirty set is empty (mustFlush), so invisibility now
+		// rests purely on parquet LWW — and no tier-preference hint may
+		// resurrect the cold or warm live version.
+		env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
+		for _, tiers := range [][]model.DataTier{
+			nil,
+			{model.DataTierCold},
+			{model.DataTierWarm, model.DataTierCold},
+		} {
+			result := env.AssertQueryMatches(ctx, Query{Schema: wide, PreferredTiers: tiers, Limit: 10})
+			if result != nil && !result.Plan.Routing.UseDuckDB {
+				t.Errorf("tiers %v did not route to duckdb: %+v", tiers, result.Plan.Routing)
+			}
+		}
+
+		// Idempotency: a retried flush moves nothing and exports nothing, and
+		// the row stays deleted.
+		flush3, err := env.RunFlush(ctx)
+		if err != nil {
+			t.Fatalf("retry flush: %v", err)
+		}
+		if flush3.UnflushedBefore != 0 || flush3.UnflushedAfter != 0 {
+			t.Errorf("retry flush saw unflushed %d -> %d, want 0 -> 0", flush3.UnflushedBefore, flush3.UnflushedAfter)
+		}
+		if len(flush3.NewObjects) != 0 {
+			t.Errorf("retry flush created objects %v, want none", flush3.NewObjects)
+		}
+		env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	})
+}
+
+// allWideAttrsNullSQL is the tombstone NULL-ness predicate over every
+// e2e_wide attribute column (17 scalar attributes, both bound and EAV).
+const allWideAttrsNullSQL = `"title" IS NULL AND "rank" IS NULL AND "count" IS NULL AND "amount" IS NULL ` +
+	`AND "score" IS NULL AND "ref" IS NULL AND "joined" IS NULL AND "touched" IS NULL AND "note" IS NULL ` +
+	`AND "active" IS NULL AND "born" IS NULL AND "seen" IS NULL AND "level" IS NULL AND "qty" IS NULL ` +
+	`AND "total" IS NULL AND "ratio" IS NULL AND "token" IS NULL`
+
+// assertTombstoneParquet asserts one delta parquet file holds exactly one
+// version of the deleted row, shaped as a tombstone: changed_at/deleted_at
+// carry the delete's change_log entry, and every attribute column plus the
+// entity_main system columns are NULL — the delta export LEFT JOINs
+// entity_main precisely so a hard delete still reaches parquet
+// (internal/cdc/duckdb_exporter.go).
+func assertTombstoneParquet(ctx context.Context, t *testing.T, env *Env, key string, del *Event) {
+	t.Helper()
+	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	var n int
+	var attrsNull, ltbaseNull sql.NullBool
+	var changedAt, deletedAt sql.NullInt64
+	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT COUNT(*), BOOL_AND(%s),
+		        BOOL_AND(ltbase_created_at IS NULL AND ltbase_updated_at IS NULL AND ltbase_deleted_at IS NULL),
+		        MAX(changed_at), MAX(deleted_at)
+		 FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`,
+		allWideAttrsNullSQL, path), del.RowID.String()).Scan(&n, &attrsNull, &ltbaseNull, &changedAt, &deletedAt); err != nil {
+		t.Fatalf("scan tombstone parquet %s: %v", key, err)
+	}
+	if n != 1 {
+		t.Fatalf("delta parquet holds %d versions of deleted row %s, want exactly 1 tombstone", n, del.RowID)
+	}
+	if !attrsNull.Valid || !attrsNull.Bool {
+		t.Errorf("tombstone %s carries non-NULL attribute columns", del.RowID)
+	}
+	if !ltbaseNull.Valid || !ltbaseNull.Bool {
+		t.Errorf("tombstone %s carries non-NULL entity_main system columns", del.RowID)
+	}
+	if !changedAt.Valid || changedAt.Int64 != del.ChangedAt {
+		t.Errorf("tombstone %s.changed_at = %d (valid=%t), want %d", del.RowID, changedAt.Int64, changedAt.Valid, del.ChangedAt)
+	}
+	if !deletedAt.Valid || deletedAt.Int64 != del.DeletedAt || del.DeletedAt <= 0 {
+		t.Errorf("tombstone %s.deleted_at = %d (valid=%t), want %d > 0", del.RowID, deletedAt.Int64, deletedAt.Valid, del.DeletedAt)
+	}
 }
 
 // assertTombstoneChangeLog asserts the hard delete's storage contract: the
