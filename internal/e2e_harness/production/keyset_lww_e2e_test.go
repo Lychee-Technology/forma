@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	forma "github.com/lychee-technology/forma"
@@ -26,6 +27,7 @@ func TestKeysetLWW(t *testing.T) {
 	}{
 		{"attribute_cursor_resurrection", testKeysetAttributeCursorResurrection},
 		{"created_at_cursor_resurrection", testKeysetCreatedAtCursorResurrection},
+		{"cursor_with_mixed_filters", testKeysetCursorWithMixedFilters},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -144,5 +146,93 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 	if len(page.Records) != 1 || page.Records[0].RowID != b.RowID {
 		t.Fatalf("created_at keyset page = %v, want exactly [%s]: a stale pre-dedup version leaked through the cursor",
 			pageRowIDs(page), b.RowID)
+	}
+}
+
+// testKeysetCursorWithMixedFilters drives a mixed MAIN+EAV composite filter
+// (DuckArgs + PgMainArgs) together with a keyset cursor through the real
+// engine: one statement, one placeholder style, args bound in appearance
+// order (#161/#212). Phase 2 supersedes a row so the cursor must also drop
+// its live version without resurrecting the old one.
+func testKeysetCursorWithMixedFilters(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	rows := make([]*Event, 0, 5)
+	for i := 0; i < 5; i++ {
+		rows = append(rows, CreateEvent(wide, map[string]any{
+			"title": fmt.Sprintf("grp-%02d", i),  // MAIN text_01 → PgMain pushdown
+			"note":  fmt.Sprintf("keep-%02d", i), // EAV text → DuckDB clause
+			"count": float64(100 * (i + 1)),      // 100..500
+		}))
+	}
+	if err := env.ApplyEvents(ctx, rows...); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	mustFlush(ctx, t, env) // single generation, all rows clean
+
+	filters := []Filter{
+		{Attr: "title", Op: "starts_with", Value: "grp-"},
+		{Attr: "note", Op: "contains", Value: "keep"},
+	}
+
+	// Positive control (oracle-checked): the composite matches all five rows.
+	res := env.AssertQueryMatches(ctx, Query{Schema: wide, Filters: filters, Limit: 10})
+	if res != nil && len(res.Records) != 5 {
+		t.Fatalf("filter control returned %d rows, want 5", len(res.Records))
+	}
+
+	keysetQuery := Query{
+		Schema:  wide,
+		Filters: filters,
+		Sorts:   []Sort{{Attr: "count"}},
+		Keyset: &model.KeysetCursor{
+			Columns: []model.KeysetColumn{{Attribute: "count", Direction: forma.SortOrderAsc}},
+			Values:  []any{float64(250)},
+			Mode:    model.KeysetCursorModeAfter,
+		},
+		Limit: 10,
+	}
+
+	assertKeysetPage(ctx, t, env, keysetQuery, rows[2], rows[3], rows[4]) // 300, 400, 500
+
+	// Supersede 300 → 50: the winner now sorts before the cursor and must
+	// vanish; its 300 version must not resurrect.
+	upd := UpdateEvent(wide, rows[2].RowID, map[string]any{"count": float64(50)})
+	if err := env.ApplyEvents(ctx, upd); err != nil {
+		t.Fatalf("apply update: %v", err)
+	}
+	assertStrictlyNewer(t, []*Event{rows[2]}, []*Event{upd})
+	mustFlush(ctx, t, env)
+
+	// Winner still matches the filters (flush snapshots the full row).
+	res = env.AssertQueryMatches(ctx, Query{Schema: wide, Filters: filters, Limit: 10})
+	if res != nil && len(res.Records) != 5 {
+		t.Fatalf("post-update filter control returned %d rows, want 5", len(res.Records))
+	}
+
+	assertKeysetPage(ctx, t, env, keysetQuery, rows[3], rows[4]) // 400, 500
+}
+
+// assertKeysetPage runs a keyset query (no oracle support for cursors) and
+// requires the page to equal exactly the given events, in order.
+func assertKeysetPage(ctx context.Context, t *testing.T, env *Env, q Query, want ...*Event) {
+	t.Helper()
+	page, err := env.Query(ctx, q)
+	if err != nil {
+		t.Fatalf("keyset query: %v", err)
+	}
+	ok := len(page.Records) == len(want)
+	if ok {
+		for i := range want {
+			if page.Records[i].RowID != want[i].RowID {
+				ok = false
+				break
+			}
+		}
+	}
+	if !ok {
+		wantIDs := make([]string, 0, len(want))
+		for _, w := range want {
+			wantIDs = append(wantIDs, w.RowID.String())
+		}
+		t.Fatalf("keyset page = %v, want exactly %v", pageRowIDs(page), wantIDs)
 	}
 }
