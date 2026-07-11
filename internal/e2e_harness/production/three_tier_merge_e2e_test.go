@@ -24,6 +24,7 @@ func TestThreeTierMerge(t *testing.T) {
 	}{
 		{"union", testThreeTierUnion},
 		{"triple_overlap_hot_wins", testTripleOverlapHotWins},
+		{"dirty_hot_shadows_cold", testDirtyHotShadowsCold},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -155,5 +156,55 @@ func testTripleOverlapHotWins(ctx context.Context, t *testing.T, env *Env, wide 
 		Schema: wide,
 		Sorts:  []Sort{{Attr: "count", Desc: true}},
 		Limit:  10,
+	})
+}
+
+// testDirtyHotShadowsCold is #177 scenario 6 and the anti-join success
+// criterion: a row lives in cold base parquet AND has an unflushed hot
+// version. The hot version must shadow the cold one — including under a
+// filter that only the stale cold version matches (the anti-join, not the
+// filter, is what evicts it).
+func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
+	if err := env.ApplyEvents(ctx, creates...); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	if _, err := env.RunInit(ctx, wide); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+
+	// Load-bearing positive: base serves all 5 rows before anything is dirty
+	// (guards every zero-row probe below against a broken read path).
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+
+	oldTitle := creates[0].Attrs["title"].(string)
+	update := UpdateEvent(wide, creates[0].RowID, map[string]any{
+		"title": "shadow-00",
+		"count": float64(500000),
+	})
+	if err := env.ApplyEvents(ctx, update); err != nil {
+		t.Fatalf("apply shadow update: %v", err)
+	}
+
+	// 5 rows total: 4 pure base + 1 hot-shadowed; attribute diff proves the
+	// shadowed row carries v2 values.
+	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	if result != nil && len(result.Records) != 5 {
+		t.Fatalf("dirty-shadow result has %d rows, want 5", len(result.Records))
+	}
+	// The hot version is reachable by its new value...
+	env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "title", Value: "shadow-00"}},
+		Limit:   10,
+	})
+	// ...and the cold version is unreachable even by its old value: the row_id
+	// is in the dirty set, so the anti-join must discard the base row before
+	// the filter could match it (oracle expects zero rows).
+	env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "title", Value: oldTitle}},
+		Limit:   10,
 	})
 }
