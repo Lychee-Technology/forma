@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -106,6 +107,36 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 	}
 	report.Manifest = manifests[schema.ID]
 	return report, nil
+}
+
+// RunCompaction executes the real compactor (compaction.Compactor.RunOnce)
+// against the Env's manifest for one schema and returns its typed result.
+// Note the current compactor is manifest-level only: promotion retags delta
+// entries as base once the delta tier reaches TargetBaseSizeMB (≥1 MB, out of
+// reach at lifecycle-test scale), and the dirty-ratio rewrite is not
+// implemented — it reports RewritePending and leaves the manifest untouched
+// (internal/compaction/compactor.go). The federated read path never consults
+// the manifest, so parquet contents and query results are unaffected either
+// way today.
+func (e *Env) RunCompaction(ctx context.Context, schema SchemaRef) (compaction.CompactionResult, error) {
+	if e.CDC.ManifestTemplate == "" {
+		return compaction.CompactionResult{}, fmt.Errorf("compaction requires a manifest (Env built WithoutManifest)")
+	}
+	provider := compaction.NewS3ManifestProvider(cdc.ManifestConfig{
+		Bucket:       e.Cluster.Bucket,
+		Prefix:       e.CDC.ManifestPrefix,
+		PathTemplate: e.CDC.ManifestTemplate,
+	}, e.Cluster.S3)
+	compactor := &compaction.Compactor{
+		Logger:   e.logger,
+		Config:   cdc.CompactionConfig{SchemaID: schema.ID},
+		Provider: provider,
+	}
+	result, err := compactor.RunOnce(ctx)
+	if err != nil {
+		return result, fmt.Errorf("compaction run once (schema %d): %w", schema.ID, err)
+	}
+	return result, nil
 }
 
 // countUnflushed counts change_log rows with flushed_at = 0 across all

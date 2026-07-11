@@ -142,6 +142,11 @@ where cdc-init bootstraps base files before federated reads. Use
   (Update on a deleted row returns `ErrNotFound`, pinned live) — with the
   restore timestamp forced past the tombstone's `changed_at` so the revival
   wins LWW. Scoped to text/numeric attributes (e2e_simple shapes).
+- `RunCompaction` wraps the real compactor (`compaction.Compactor.RunOnce`)
+  over the Env's manifest. Today's compactor is manifest-level only: the
+  dirty-ratio rewrite is unimplemented (reports `RewritePending`, manifest
+  untouched) and promotion needs ≥1 MB of delta — the lifecycle suite pins
+  that contract as a tripwire for #188.
 - `Env.RestartPostgres` (#175) restarts the Postgres container in place
   (docker stop/start, data preserved) and rebinds the pool, CDC config,
   DuckDB client, and lazy engine/manager. Restart tests must own a

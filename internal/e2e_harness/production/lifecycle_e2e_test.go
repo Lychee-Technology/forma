@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	forma "github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -205,6 +207,8 @@ func testDeleteResurrection(ctx context.Context, t *testing.T, env *Env, wide Sc
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 
+	assertCompactionPreservesDeletion(ctx, t, env, wide, flush2.Manifests[wide.ID])
+
 	// Row reuse after delete, real-API side: a fresh create through the
 	// EntityManager must become the only visible row — the flushed tombstone
 	// must not bleed onto new rows. (Same-row_id revival is storage-injected
@@ -263,6 +267,41 @@ func testRestoreAfterDelete(ctx context.Context, t *testing.T, env *Env, simple 
 
 	// Physical check: the restore flush exported exactly one live version.
 	assertSoleLiveVersion(ctx, t, env, soleParquetKey(t, flush3), restored)
+}
+
+// assertCompactionPreservesDeletion runs the real compactor on the schema's
+// manifest and pins today's compaction contract on a tombstone-bearing
+// dataset (#175 "invisible after compaction"): the dirty ratio — delta rows
+// over base rows, here 2/1 — exceeds the rewrite threshold, but the rewrite
+// is not implemented, so the compactor must report RewritePending and leave
+// the manifest untouched, and the deletion must stay invisible. Promotion
+// needs a TargetBaseSizeMB-sized delta tier (≥1 MB, out of reach here), and
+// the federated read path never consults the manifest — so a genuine
+// before/after equivalence test only becomes possible when #188 implements
+// the rewrite. This assertion is #188's tripwire: implementing the rewrite
+// flips the outcome and forces that issue to replace it with real coverage.
+func assertCompactionPreservesDeletion(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, before *manifest.Manifest) {
+	t.Helper()
+	if before == nil {
+		t.Fatal("no manifest recorded before compaction")
+	}
+	result, err := env.RunCompaction(ctx, wide)
+	if err != nil {
+		t.Fatalf("run compaction: %v", err)
+	}
+	if result.Outcome != compaction.RewritePending {
+		t.Errorf("compaction outcome = %s (dirty ratio %.2f), want %s — the rewrite landed (#188); replace this tripwire with before/after equivalence coverage",
+			result.Outcome, result.DirtyRatio, compaction.RewritePending)
+	}
+	after, err := env.loadManifests(ctx)
+	if err != nil {
+		t.Fatalf("reload manifests: %v", err)
+	}
+	m := after[wide.ID]
+	if m == nil || m.Version != before.Version || countTier(m, "delta") != countTier(before, "delta") {
+		t.Errorf("compaction mutated the manifest (version %d -> %v), want untouched on RewritePending", before.Version, m)
+	}
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 }
 
 // allWideAttrsNullSQL is the tombstone NULL-ness predicate over every

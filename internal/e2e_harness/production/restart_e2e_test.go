@@ -45,9 +45,9 @@ func TestPostgresRestartRoundtrip(t *testing.T) {
 // matters — entity rows, change_log tombstones, flushed_at markers — lives
 // in the persistence layer, never in process memory. Restart points cover
 // each lifecycle stage: after the live flush, after an unflushed update,
-// after the unflushed delete, after the tombstone flush (plus flush-retry
-// no-op), and after an injected restore. Serial on a dedicated cluster
-// (restarting the shared one would break parallel Envs).
+// after the update flush, after the unflushed delete, after the tombstone
+// flush (plus flush-retry no-op), and after an injected restore. Serial on a
+// dedicated cluster (restarting the shared one would break parallel Envs).
 func TestEntityLifecycleCrossRestart(t *testing.T) {
 	ctx := context.Background()
 	cluster := DedicatedCluster(t)
@@ -61,9 +61,7 @@ func TestEntityLifecycleCrossRestart(t *testing.T) {
 	mustFlush(ctx, t, env)
 
 	// Restart point 1: a flushed live row survives.
-	if err := env.RestartPostgres(ctx); err != nil {
-		t.Fatalf("restart after live flush: %v", err)
-	}
+	restartPG(ctx, t, env, "after live flush")
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 	if result != nil && !result.Plan.Routing.UseDuckDB {
 		t.Errorf("post-restart query did not route to duckdb: %+v", result.Plan.Routing)
@@ -78,22 +76,23 @@ func TestEntityLifecycleCrossRestart(t *testing.T) {
 	if err := env.ApplyEvents(ctx, update); err != nil {
 		t.Fatalf("apply update: %v", err)
 	}
-	if err := env.RestartPostgres(ctx); err != nil {
-		t.Fatalf("restart after unflushed update: %v", err)
-	}
+	restartPG(ctx, t, env, "after unflushed update")
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+
+	// Restart point 3: with the update flushed there are two live parquet
+	// versions of the row; LWW must still resolve to the updated value.
 	mustFlush(ctx, t, env)
+	restartPG(ctx, t, env, "after update flush")
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 
 	del := DeleteEvent(wide, creates[0].RowID)
 	if err := env.ApplyEvents(ctx, del); err != nil {
 		t.Fatalf("apply delete: %v", err)
 	}
 
-	// Restart point 3: the unflushed tombstone survives in change_log and
+	// Restart point 4: the unflushed tombstone survives in change_log and
 	// keeps masking the flushed live versions.
-	if err := env.RestartPostgres(ctx); err != nil {
-		t.Fatalf("restart after unflushed delete: %v", err)
-	}
+	restartPG(ctx, t, env, "after unflushed delete")
 	assertTombstoneChangeLog(ctx, t, env, wide, del)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
@@ -101,11 +100,9 @@ func TestEntityLifecycleCrossRestart(t *testing.T) {
 	flush2 := mustFlush(ctx, t, env)
 	assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush2), del)
 
-	// Restart point 4: with the tombstone flushed, the deletion stays
+	// Restart point 5: with the tombstone flushed, the deletion stays
 	// invisible and a retried flush is still a no-op.
-	if err := env.RestartPostgres(ctx); err != nil {
-		t.Fatalf("restart after tombstone flush: %v", err)
-	}
+	restartPG(ctx, t, env, "after tombstone flush")
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 	retry, err := env.RunFlush(ctx)
 	if err != nil {
@@ -117,9 +114,16 @@ func TestEntityLifecycleCrossRestart(t *testing.T) {
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 
-	// Restart point 5: a restored row (scenario 5's injected revival, on the
-	// simple fixture) stays visible across a restart, with its single live
-	// delta version readable through the rebuilt DuckDB client.
+	// Restart point 6: an injected restore stays visible across a restart.
+	testRestoreAcrossRestart(ctx, t, env)
+}
+
+// testRestoreAcrossRestart drives scenario 5's injected revival on the
+// simple fixture and restarts after the restore flush: the restored row must
+// stay visible, with its single live delta version readable through the
+// rebuilt DuckDB client.
+func testRestoreAcrossRestart(ctx context.Context, t *testing.T, env *Env) {
+	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
 	screates := env.GenerateScript(ScriptSpec{Schema: simple, Creates: 1})
 	if err := env.ApplyEvents(ctx, screates...); err != nil {
@@ -133,10 +137,17 @@ func TestEntityLifecycleCrossRestart(t *testing.T) {
 	mustFlush(ctx, t, env)
 	restored := env.InjectRestore(ctx, screates[0], sdel)
 	restoreFlush := mustFlush(ctx, t, env)
-	if err := env.RestartPostgres(ctx); err != nil {
-		t.Fatalf("restart after restore flush: %v", err)
-	}
+	restartPG(ctx, t, env, "after restore flush")
 	env.AssertQueryMatches(ctx, Query{Schema: simple, PreferHot: true, Limit: 10})
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 10})
 	assertSoleLiveVersion(ctx, t, env, soleParquetKey(t, restoreFlush), restored)
+}
+
+// restartPG restarts the Env's Postgres and fails the test on error; stage
+// names the lifecycle point for the failure message.
+func restartPG(ctx context.Context, t *testing.T, env *Env, stage string) {
+	t.Helper()
+	if err := env.RestartPostgres(ctx); err != nil {
+		t.Fatalf("restart postgres %s: %v", stage, err)
+	}
 }
