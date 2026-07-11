@@ -9,7 +9,15 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string, paramOffset int) (string, []interface{}) {
+// generateKeysetWhereClause builds the composite keyset cursor predicate for
+// the DuckDB dialect. It emits positional "?" placeholders — never "$n" —
+// because the federated statement binds strictly by appearance order and
+// DuckDB treats "$n" as an absolute parameter index, shifting every "?"
+// after it (#161); the clause renders last in the visible CTE (#212) and
+// its args are appended last. Prefix columns repeat across disjuncts, so
+// each value is appended once per occurrence: an n-column cursor yields
+// n(n+1)/2 args.
+func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}) {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "1=1", nil
 	}
@@ -19,6 +27,12 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string, pa
 			return col
 		}
 		return tableAlias + col
+	}
+	valueAt := func(i int) interface{} {
+		if i < len(cursor.Values) {
+			return cursor.Values[i]
+		}
+		return nil
 	}
 
 	var clauses []string
@@ -30,19 +44,13 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string, pa
 
 		var parts []string
 		for j := 0; j < i; j++ {
-			parts = append(parts, fmt.Sprintf("%s = $%d", colRef(cursor.Columns[j].Attribute), paramOffset+j+1))
+			parts = append(parts, fmt.Sprintf("%s = ?", colRef(cursor.Columns[j].Attribute)))
+			args = append(args, valueAt(j))
 		}
-		parts = append(parts, fmt.Sprintf("%s %s $%d", colRef(col.Attribute), op, paramOffset+i+1))
+		parts = append(parts, fmt.Sprintf("%s %s ?", colRef(col.Attribute), op))
+		args = append(args, valueAt(i))
 
 		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
-	}
-
-	for i := range cursor.Columns {
-		if i < len(cursor.Values) {
-			args = append(args, cursor.Values[i])
-		} else {
-			args = append(args, nil)
-		}
 	}
 
 	if len(clauses) == 1 {

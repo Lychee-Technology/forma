@@ -59,9 +59,7 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	m["LOGICAL_WHERE_CLAUSE"] = dual.DuckClause
 	m["PG_WHERE_CLAUSE"] = defaultIfEmpty(dual.PgMainClause, "1=1")
 
-	// whereArgs length at inject time: DuckArgs + PgMainArgs + DuckArgs.
-	keysetOffset := 2*len(dual.DuckArgs) + len(dual.PgMainArgs)
-	injectDuckDBTemplateParams(m, q, dual, keysetOffset)
+	injectDuckDBTemplateParams(m, q, dual)
 	// Compile-time keyset arg values are discarded; Bind re-derives them from
 	// the request cursor.
 	delete(m, "KEYSET_ARGS")
@@ -95,7 +93,7 @@ func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualCl
 	args = append(args, dual.PgMainArgs...)
 	args = append(args, dual.DuckArgs...)
 	if q != nil && q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
-		_, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "", 0)
+		_, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
 		args = append(args, keysetArgs...)
 	}
 	args = append(args, c.TplArgs...)
