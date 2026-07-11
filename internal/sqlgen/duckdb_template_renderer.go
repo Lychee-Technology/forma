@@ -81,7 +81,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 				whereArgs = append(whereArgs, dual.DuckArgs...)
 			}
 		}
-		injectDuckDBTemplateParams(m, q, dual, len(whereArgs))
+		injectDuckDBTemplateParams(m, q, dual)
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
 			whereArgs = append(whereArgs, dual.PgMainArgs...)
 		}
@@ -113,7 +113,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 			whereArgs = append(whereArgs, whereArgs...)
 		}
 	}
-	injectDuckDBTemplateParams(m, q, nil, len(whereArgs))
+	injectDuckDBTemplateParams(m, q, nil)
 	whereArgs = appendKeysetArgs(m, whereArgs)
 
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
@@ -127,7 +127,7 @@ func defaultIfEmpty(s, fallback string) string {
 	return s
 }
 
-func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses, keysetParamOffset int) {
+func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) {
 	if q == nil {
 		return
 	}
@@ -200,10 +200,11 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	}
 
 	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.
-	// keysetParamOffset is the number of args already accumulated in whereArgs so
-	// the generated $n placeholders correctly reference the appended keyset values.
+	// The clause uses positional "?" placeholders; its args are appended after
+	// all condition args by appendKeysetArgs, matching the clause's position at
+	// the end of the visible CTE.
 	if q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
-		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "", keysetParamOffset)
+		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
 		params["HAS_KEYSET"] = true
 		params["KEYSET_WHERE_CLAUSE"] = keysetClause
 		params["KEYSET_ARGS"] = keysetArgs

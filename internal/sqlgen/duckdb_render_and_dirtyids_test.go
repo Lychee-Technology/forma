@@ -58,15 +58,17 @@ func TestAppendDirtyExclusion(t *testing.T) {
 	require.Equal(t, u1.String(), args[0])
 }
 
-// TestInjectDuckDBTemplateParams_KeysetParamOffset verifies that when a non-zero
-// keysetParamOffset is passed, the keyset WHERE clause uses $offset+1, $offset+2, …
-// placeholders so they align with keyset values appended after existing whereArgs.
-func TestInjectDuckDBTemplateParams_KeysetParamOffset_NonZero(t *testing.T) {
+// TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders pins the #212
+// placeholder contract: the keyset clause uses positional "?" only (never
+// "$n" — see the #161 regression test for why mixing mis-binds), and prefix
+// columns that repeat across disjuncts contribute one arg per occurrence.
+func TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders(t *testing.T) {
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderAsc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderDesc},
 		},
-		Values: []interface{}{int64(999)},
+		Values: []interface{}{int64(999), "11111111-1111-1111-1111-111111111111"},
 		Mode:   model.KeysetCursorModeAfter,
 	}
 	q := &model.FederatedAttributeQuery{
@@ -74,24 +76,24 @@ func TestInjectDuckDBTemplateParams_KeysetParamOffset_NonZero(t *testing.T) {
 		KeysetCursor:   cursor,
 	}
 	params := map[string]any{}
+	injectDuckDBTemplateParams(params, q, nil)
 
-	// Simulate 3 args already accumulated in whereArgs before keyset args are appended.
-	injectDuckDBTemplateParams(params, q, nil, 3)
-
-	// Keyset clause should start at $4 (offset=3 means first keyset param is $4).
-	keysetClause, ok := params["KEYSET_WHERE_CLAUSE"].(string)
+	clause, ok := params["KEYSET_WHERE_CLAUSE"].(string)
 	require.True(t, ok, "KEYSET_WHERE_CLAUSE should be a string")
-	require.Contains(t, keysetClause, "$4",
-		"keyset placeholder must start at paramOffset+1 = $4")
-	require.NotContains(t, keysetClause, "$1",
-		"keyset placeholder must not collide with prior arg positions")
+	require.Equal(t, "(created_at < ?) OR (created_at = ? AND row_id < ?)", clause)
+	require.NotContains(t, clause, "$")
+
+	args, ok := params["KEYSET_ARGS"].([]interface{})
+	require.True(t, ok, "KEYSET_ARGS should be a slice")
+	require.Equal(t, []interface{}{
+		int64(999), int64(999), "11111111-1111-1111-1111-111111111111",
+	}, args, "prefix values repeat once per placeholder occurrence")
 }
 
-// TestBuildDuckDBQuery_KeysetArgPositionIsCorrect verifies that when a dual-clause
-// query with 2 DuckDB filter args is combined with a keyset cursor, the keyset
-// placeholder in the rendered SQL starts at the correct position and the keyset
-// value appears at the matching position in the returned args slice.
-func TestBuildDuckDBQuery_KeysetArgPositionIsCorrect(t *testing.T) {
+// TestBuildDuckDBQuery_KeysetArgsBindLast pins the end-to-end interleave for
+// a keyset query: [DuckArgs, PgMainArgs, DuckArgs, keysetArgs], one "?" per
+// arg in appearance order, no "$n" anywhere (#212).
+func TestBuildDuckDBQuery_KeysetArgsBindLast(t *testing.T) {
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
 		Values:  []interface{}{int64(1000)},
@@ -101,22 +103,18 @@ func TestBuildDuckDBQuery_KeysetArgPositionIsCorrect(t *testing.T) {
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
 		KeysetCursor:   cursor,
 	}
-	// Two DuckDB filter args; no PG-main args.
 	dual := &DualClauses{
 		DuckClause: "age > ? AND name = ?",
 		DuckArgs:   []any{int64(25), "Alice"},
 	}
-	params := map[string]any{}
 
-	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
+	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, map[string]any{}, q, nil, dual)
 	require.NoError(t, err)
 
-	// For the advanced dual path args are:
-	//   [DuckArgs(2), PgMainArgs(0), DuckArgs(2), keysetArgs(1)]
-	// So keyset is at position 4 (0-indexed) → $5.
-	require.GreaterOrEqual(t, len(args), 5, "args must include keyset value at position 4")
-	require.Equal(t, int64(1000), args[4], "keyset value must be at args[4]")
-	require.True(t,
-		strings.Contains(sql, "$5"),
-		"rendered SQL must reference keyset value as $5, got SQL:\n%s", sql)
+	// [DuckArgs(2), PgMainArgs(0), DuckArgs(2), keyset(1)]
+	require.Len(t, args, 5)
+	require.Equal(t, int64(1000), args[4], "keyset value must be the last arg")
+	require.NotContains(t, sql, "$", "keyset queries must not reintroduce $n placeholders")
+	require.Equal(t, 5, strings.Count(sql, "?"),
+		"placeholder count must equal arg count for positional binding")
 }
