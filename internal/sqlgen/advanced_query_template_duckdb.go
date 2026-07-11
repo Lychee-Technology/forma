@@ -80,9 +80,6 @@ ranked AS (
       ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
     ) AS rn
   FROM unified
-  WHERE
-    {{if .HAS_KEYSET}}({{.KEYSET_WHERE_CLAUSE}}) AND{{end}}
-    1=1
 ),
 
 visible AS (
@@ -91,6 +88,13 @@ visible AS (
   WHERE rn = 1
     AND (deleted_ts IS NULL OR deleted_ts = 0)
     AND ({{.LOGICAL_WHERE_CLAUSE}})
+    -- Keyset cursor evaluates post-dedup: a WHERE in ranked would filter row
+    -- versions before ROW_NUMBER, letting a superseded version win rn = 1
+    -- and resurrect for cursors over any version-varying column — business
+    -- attributes and created_at alike (#212), the keyset twin of #173. It
+    -- renders after the logical clause so positional placeholder order keeps
+    -- matching arg order (keyset args are appended last).
+    {{if .HAS_KEYSET}}AND ({{.KEYSET_WHERE_CLAUSE}}){{end}}
 )
 
 SELECT
