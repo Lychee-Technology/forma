@@ -5,6 +5,7 @@ package production
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -84,6 +85,70 @@ func TestInitDeleteHandoff(t *testing.T) {
 	for _, ev := range creates[0:13] {
 		if !got[ev.RowID] {
 			t.Errorf("surviving row %s is missing from the federated result", ev.RowID)
+		}
+	}
+}
+
+// TestInitSoftDeletedRowExcluded (#176 scenario 3, review round 1): a row
+// already soft-deleted in entity_main when cdc-init runs must be excluded
+// by init's `ltbase_deleted_at IS NULL` filter. The production API
+// hard-deletes, so the soft-deleted storage state is injected: the row is
+// deleted through the API first (real change_log tombstone, oracle in
+// sync), then its main row re-materialized with ltbase_deleted_at set via
+// the SQL escape hatch — a legal storage state the API cannot produce.
+func TestInitSoftDeletedRowExcluded(t *testing.T) {
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	ctx := context.Background()
+	wide := DefaultSchemaFixtures()[1]
+
+	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 6})
+	if err := env.ApplyEvents(ctx, creates...); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	soft := creates[5]
+	if err := env.ApplyEvents(ctx, DeleteEvent(wide, soft.RowID)); err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+	env.ExecSQL(ctx, `INSERT INTO entity_main
+		(ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, ltbase_deleted_at)
+		VALUES ($1, $2, $3, $3, $3)`, wide.ID, soft.RowID, time.Now().UnixMilli())
+
+	report, err := env.RunInit(ctx, wide)
+	if err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	if report.RowsExported != 5 {
+		t.Fatalf("init exported %d rows, want 5 (soft-deleted row must be excluded)", report.RowsExported)
+	}
+	assertBaseRows(ctx, t, env, report.Manifest, 5)
+
+	assertSoftDeletedInvisible(ctx, t, env, wide, soft.RowID)
+
+	flush, err := env.RunFlush(ctx)
+	if err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if flush.UnflushedAfter != 0 {
+		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
+	}
+	assertSoftDeletedInvisible(ctx, t, env, wide, soft.RowID)
+}
+
+// assertSoftDeletedInvisible checks the 5 surviving rows are all present
+// (positive guard) and the soft-deleted row is not.
+func assertSoftDeletedInvisible(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, softID uuid.UUID) {
+	t.Helper()
+	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
+	if result == nil {
+		return
+	}
+	if len(result.Records) != 5 {
+		t.Fatalf("federated result has %d rows, want 5", len(result.Records))
+	}
+	for _, rec := range result.Records {
+		if rec.RowID == softID {
+			t.Fatalf("soft-deleted row %s is visible in the federated result", softID)
 		}
 	}
 }
