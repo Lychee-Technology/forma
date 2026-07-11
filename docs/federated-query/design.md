@@ -155,7 +155,7 @@ dirty_ids AS (
 
 -- =========================================================================  
 -- CTE 2: S3 Source (Cold & Warm)  
--- Reads historical data with partition pruning and anti-join.  
+-- Reads historical data with the dirty-set anti-join and semijoin pushdown.  
 -- =========================================================================  
 s3_source AS (  
     SELECT   
@@ -166,13 +166,21 @@ s3_source AS (
         -- Logical Columns (Native in Parquet)  
         name,   
         age,   
-        tag  
+        tag,  
+        1 AS source_tier_priority  
     FROM read_parquet($S3_PATHS)  
     WHERE   
-        -- 1. S3 Partition Pruning (via Min/Max stats)  
-        (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
-        -- 2. Anti-Join: Exclude if a newer version exists in PG  
-        AND row_id NOT IN (SELECT row_id FROM dirty_ids)  
+        -- 1. Anti-Join: Exclude if a newer version exists in PG  
+        row_id NOT IN (SELECT row_id FROM dirty_ids)  
+        -- 2. Predicate pushdown as a row_id SEMIJOIN: a row qualifies when  
+        --    ANY of its parquet versions matches; ALL of its versions then  
+        --    enter dedup so the latest wins BEFORE the real filter below.  
+        --    Filtering versions directly here drops newer non-matching  
+        --    versions pre-dedup and resurrects stale rows (#173/#178).  
+        AND row_id IN (  
+            SELECT row_id FROM read_parquet($S3_PATHS)  
+            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
+        )  
 ),
 
 -- =========================================================================  
@@ -192,7 +200,8 @@ pg_source AS (
           
         -- [EAV Pivot] Aggregation for dynamic attributes  
         -- Note: EAV filtering is done in the WHERE clause below, not pushed to EAV scan  
-        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag
+        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,  
+        3 AS source_tier_priority
 
     FROM postgres_scan($PG_CONN, 'change_log', 'flushed_at = 0') cl  
       
@@ -218,24 +227,29 @@ unified AS (
     SELECT * FROM s3_source  
     UNION ALL  
     SELECT * FROM pg_source  
+),
+
+-- =========================================================================  
+-- CTE 5: Ranked (Last-Write-Wins Deduplication)  
+-- =========================================================================  
+ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY row_id
+            ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
+        ) AS rn
+    FROM unified
 )
 
--- =========================================================================  
--- Final Selection  
--- Deduplication -> Sorting -> Pagination  
--- =========================================================================  
-SELECT   
-    row_id, name, age, tag, created_at  
-FROM unified  
-WHERE   
-    -- Final Logical Filter check (Ensures PG EAV data matches criteria)  
-    (age > 18 AND name LIKE 'John%' AND tag = 'developer')
-
--- Deduplication (Last-Write-Wins)  
-QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
-
--- Exclude Soft Deletes  
-AND (deleted_ts IS NULL OR deleted_ts = 0)
+SELECT
+    row_id, name, age, tag, created_at
+FROM ranked
+WHERE rn = 1
+    -- Exclude Soft Deletes (the tombstone must WIN dedup first, then be dropped)
+    AND (deleted_ts IS NULL OR deleted_ts = 0)
+    -- Final logical filter, applied to the LWW WINNER only (#173/#178):
+    -- a newer non-matching version must never expose an older matching one.
+    AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
 
 -- Sorting & Pagination  
 ORDER BY created_at DESC  

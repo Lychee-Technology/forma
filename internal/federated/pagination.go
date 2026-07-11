@@ -165,8 +165,12 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	}
 
 	// Fetch from DuckDB (cold and warm via S3, hot via postgres_scan).
-	// The template applies the keyset WHERE in the unified CTE, so both
-	// Postgres and S3 data are filtered by the cursor before LWW dedup.
+	// The template applies the keyset WHERE in the ranked CTE, BEFORE the
+	// ROW_NUMBER dedup picks rn = 1 — so the cursor filters row versions,
+	// not LWW winners. For cursors over mutable attribute columns this can
+	// resurrect a superseded version (found by #178's keyset probe; tracked
+	// by a follow-up issue). Cursors over version-invariant system columns
+	// (row_id, created_at) are unaffected.
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		opts.ExecutionPlan.Routing = model.RoutingDecision{
 			Tiers:     []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
@@ -181,8 +185,8 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
 	}
 
-	// With keyset, the DuckDB template handles LWW dedup via QUALIFY,
-	// so we apply limit directly to the returned records.
+	// With keyset, the DuckDB template handles LWW dedup in the ranked
+	// CTE (rn = 1), so we apply limit directly to the returned records.
 	var page []*model.PersistentRecord
 	if limit > 0 && limit < len(duckRecs) {
 		page = duckRecs[:limit]
