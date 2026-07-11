@@ -54,9 +54,9 @@ func matrixV2Updates(wide SchemaRef, creates []*Event) []*Event {
 // generations must yield zero rows — the winner is resolved first, then the
 // whole conjunction applies to it.
 //
-// Date-operator probes (born/joined) are deliberately absent: federated
-// date predicates binder-error until #200 lands. The v1/v2 data already
-// flips both date attributes so the probes can be added then.
+// Date-operator probes over both storage classes (born in the EAV table,
+// joined bound to a MAIN unix_ms column) are covered since #200 fixed
+// federated date-predicate binding.
 func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := matrixV1Creates(wide)
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
@@ -80,6 +80,15 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 	})
 	if res != nil && len(res.Records) != 5 {
 		t.Fatalf("EAV text positive control returned %d rows, want 5", len(res.Records))
+	}
+	// Date positive control (#200): all five v1 rows carry born=2000-01-01.
+	res = env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "born", Op: "lt", Value: "2010-01-01T00:00:00Z"}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) != 5 {
+		t.Fatalf("EAV date positive control returned %d rows, want 5", len(res.Records))
 	}
 
 	v2 := matrixV2Updates(wide, creates)
@@ -109,7 +118,8 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 		{"main_numeric_lt", Filter{Attr: "score", Op: "lt", Value: "2"}},
 		{"eav_numeric_lt", Filter{Attr: "ratio", Op: "lt", Value: "3"}},
 		{"eav_bool_equals", Filter{Attr: "active", Value: "1"}},
-		// Date probes deferred to #200 — see the function comment.
+		{"eav_date_lt", Filter{Attr: "born", Op: "lt", Value: "2010-01-01T00:00:00Z"}},
+		{"main_date_lt", Filter{Attr: "joined", Op: "lt", Value: "2020-01-01T00:00:00Z"}},
 	}
 	for _, p := range probes {
 		assertZeroRows(ctx, t, env, p.name, Query{
