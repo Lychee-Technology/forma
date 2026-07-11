@@ -169,10 +169,17 @@ s3_source AS (
         tag  
     FROM read_parquet($S3_PATHS)  
     WHERE   
-        -- 1. S3 Partition Pruning (via Min/Max stats)  
-        (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
-        -- 2. Anti-Join: Exclude if a newer version exists in PG  
-        AND row_id NOT IN (SELECT row_id FROM dirty_ids)  
+        -- 1. Anti-Join: Exclude if a newer version exists in PG  
+        row_id NOT IN (SELECT row_id FROM dirty_ids)  
+        -- 2. Predicate pushdown as a row_id SEMIJOIN: a row qualifies when  
+        --    ANY of its parquet versions matches; ALL of its versions then  
+        --    enter dedup so the latest wins BEFORE the real filter below.  
+        --    Filtering versions directly here drops newer non-matching  
+        --    versions pre-dedup and resurrects stale rows (#173/#178).  
+        AND row_id IN (  
+            SELECT row_id FROM read_parquet($S3_PATHS)  
+            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
+        )  
 ),
 
 -- =========================================================================  
@@ -224,18 +231,24 @@ unified AS (
 -- Final Selection  
 -- Deduplication -> Sorting -> Pagination  
 -- =========================================================================  
-SELECT   
-    row_id, name, age, tag, created_at  
-FROM unified  
-WHERE   
-    -- Final Logical Filter check (Ensures PG EAV data matches criteria)  
-    (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY row_id
+            ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
+        ) AS rn
+    FROM unified
+)
 
--- Deduplication (Last-Write-Wins)  
-QUALIFY ROW_NUMBER() OVER (PARTITION BY row_id ORDER BY ver_ts DESC) = 1
-
--- Exclude Soft Deletes  
-AND (deleted_ts IS NULL OR deleted_ts = 0)
+SELECT
+    row_id, name, age, tag, created_at
+FROM ranked
+WHERE rn = 1
+    -- Exclude Soft Deletes (the tombstone must WIN dedup first, then be dropped)
+    AND (deleted_ts IS NULL OR deleted_ts = 0)
+    -- Final logical filter, applied to the LWW WINNER only (#173/#178):
+    -- a newer non-matching version must never expose an older matching one.
+    AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
 
 -- Sorting & Pagination  
 ORDER BY created_at DESC  
