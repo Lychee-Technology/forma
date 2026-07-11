@@ -176,3 +176,31 @@ func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, ent
 	}
 	return nil
 }
+
+// ReplaceTierFiles replaces every manifest entry of the given tier with the
+// provided entries, preserving entries of other tiers in their original
+// order. cdc-init is a full re-export of a schema's live rows, so after a
+// run the base tier's canonical inventory IS that run's output: stale
+// entries from earlier runs (different batch ranges) and historical
+// duplicates must not survive (#176). Compaction-promoted base entries are
+// replaced too — after a full re-export their live content is subsumed by
+// the new base files; their S3 objects remain for glob-based readers, and
+// object-level reconciliation is #203. Uses optimistic locking via etag.
+func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16, tier string, entries []FileEntry) error {
+	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	kept := make([]FileEntry, 0, len(m.Files)+len(entries))
+	target := strings.ToLower(tier)
+	for _, f := range m.Files {
+		if strings.ToLower(f.Tier) != target {
+			kept = append(kept, f)
+		}
+	}
+	m.Files = append(kept, entries...)
+	if _, err := Save(ctx, st, path, m, etag); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	return nil
+}

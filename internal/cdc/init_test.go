@@ -109,3 +109,61 @@ func TestUpdateSchemaManifest_NoStoreOrDryRunIsNoop(t *testing.T) {
 		t.Fatalf("updateSchemaManifest dry-run = %v, want nil", err)
 	}
 }
+
+// memManifestStore is an in-memory manifest.Store: Load reports not-found
+// until the first Save, then returns the saved payload.
+type memManifestStore struct {
+	data map[string][]byte
+}
+
+func (s *memManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
+	b, ok := s.data[path]
+	if !ok {
+		return nil, "", errors.New("NoSuchKey: not found")
+	}
+	return b, "", nil
+}
+
+func (s *memManifestStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[path] = data
+	return "", nil
+}
+
+// A cdc-init rerun is a full re-export: recording it must reconcile the
+// base tier to exactly the new run's entries — no duplicates, no stale
+// ranges — while leaving delta entries alone (#176).
+func TestUpdateSchemaManifest_RerunReconcilesBaseTier(t *testing.T) {
+	st := &memManifestStore{}
+	seed := &manifest.Manifest{SchemaID: 1, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: "prefix/1/d.parquet", RowCount: 5},
+		{Tier: "base", Path: "prefix/1/a_b.parquet", RowCount: 1},
+		{Tier: "base", Path: "prefix/1/a_b.parquet", RowCount: 1}, // historical duplicate
+		{Tier: "base", Path: "prefix/1/stale_range.parquet", RowCount: 9},
+	}}
+	if _, err := manifest.Save(context.Background(), st, "manifest/1.json", seed, ""); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	runCtx := &initRunContext{
+		manifestStore:    st,
+		manifestResolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		logger:           zap.NewNop(),
+	}
+
+	if err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1)); err != nil {
+		t.Fatalf("rerun update: %v", err)
+	}
+
+	m, _, err := manifest.Load(context.Background(), st, "manifest/1.json")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Files) != 2 {
+		t.Fatalf("manifest has %d entries after rerun, want 2 (delta + one reconciled base): %+v", len(m.Files), m.Files)
+	}
+	if m.Files[0].Path != "prefix/1/d.parquet" || m.Files[1].Path != "prefix/1/a_b.parquet" {
+		t.Fatalf("entries = %s,%s want delta preserved then reconciled base", m.Files[0].Path, m.Files[1].Path)
+	}
+}

@@ -3,6 +3,8 @@ package manifest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -184,4 +186,87 @@ func TestLoad_IntegrationWithStore(t *testing.T) {
 	require.Empty(t, etag)
 	require.Equal(t, int16(42), loaded.SchemaID)
 	require.Len(t, loaded.Files, 1)
+}
+
+// memStore is an in-memory Store for exercising load-modify-save flows.
+type memStore struct {
+	data map[string][]byte
+	gen  int
+}
+
+func (s *memStore) Load(_ context.Context, path string) ([]byte, string, error) {
+	b, ok := s.data[path]
+	if !ok {
+		return nil, "", errors.New("NoSuchKey: not found")
+	}
+	return b, fmt.Sprintf("e%d", s.gen), nil
+}
+
+func (s *memStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[path] = data
+	s.gen++
+	return fmt.Sprintf("e%d", s.gen), nil
+}
+
+func TestReplaceTierFiles_ReplacesTierPreservesOthers(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+	path := "manifest/1.json"
+
+	// Seed: two delta entries around a base tier that carries a historical
+	// duplicate and a stale range — exactly what the old append/upsert
+	// semantics could accumulate.
+	seed := &Manifest{SchemaID: 1, Files: []FileEntry{
+		{Tier: "delta", Path: "p/1/d1.parquet", RowCount: 4},
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10},
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10}, // historical duplicate
+		{Tier: "delta", Path: "p/1/d2.parquet", RowCount: 2},
+		{Tier: "base", Path: "p/1/c_d.parquet", RowCount: 7}, // stale range
+	}}
+	if _, err := Save(ctx, st, path, seed, ""); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	if err := ReplaceTierFiles(ctx, st, path, 1, "base", []FileEntry{
+		{Tier: "base", Path: "p/1/a_e.parquet", RowCount: 12},
+		{Tier: "base", Path: "p/1/f_g.parquet", RowCount: 3},
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	m, _, err := Load(ctx, st, path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	wantPaths := []string{"p/1/d1.parquet", "p/1/d2.parquet", "p/1/a_e.parquet", "p/1/f_g.parquet"}
+	if len(m.Files) != len(wantPaths) {
+		t.Fatalf("manifest has %d files, want %d: %+v", len(m.Files), len(wantPaths), m.Files)
+	}
+	for i, want := range wantPaths {
+		if m.Files[i].Path != want {
+			t.Fatalf("entry %d = %s, want %s (delta order preserved, base replaced)", i, m.Files[i].Path, want)
+		}
+	}
+}
+
+func TestReplaceTierFiles_CreatesFreshManifest(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+	path := "manifest/1.json"
+
+	if err := ReplaceTierFiles(ctx, st, path, 1, "base", []FileEntry{
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10},
+	}); err != nil {
+		t.Fatalf("replace on empty store: %v", err)
+	}
+	m, _, err := Load(ctx, st, path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(m.Files) != 1 || m.Files[0].Path != "p/1/a_b.parquet" || m.Version != 1 {
+		t.Fatalf("fresh manifest = %+v (version %d), want single a_b.parquet at version 1", m.Files, m.Version)
+	}
 }
