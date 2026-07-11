@@ -109,3 +109,51 @@ func TestUpdateSchemaManifest_NoStoreOrDryRunIsNoop(t *testing.T) {
 		t.Fatalf("updateSchemaManifest dry-run = %v, want nil", err)
 	}
 }
+
+// memManifestStore is an in-memory manifest.Store: Load reports not-found
+// until the first Save, then returns the saved payload.
+type memManifestStore struct {
+	data map[string][]byte
+}
+
+func (s *memManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
+	b, ok := s.data[path]
+	if !ok {
+		return nil, "", errors.New("NoSuchKey: not found")
+	}
+	return b, "", nil
+}
+
+func (s *memManifestStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[path] = data
+	return "", nil
+}
+
+// A cdc-init rerun rebuilds the same file entries; recording them twice must
+// not duplicate manifest entries (#176 scenario 4).
+func TestUpdateSchemaManifest_RerunDoesNotDuplicateEntries(t *testing.T) {
+	st := &memManifestStore{}
+	runCtx := &initRunContext{
+		manifestStore:    st,
+		manifestResolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		logger:           zap.NewNop(),
+	}
+
+	if err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1)); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	if err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1)); err != nil {
+		t.Fatalf("rerun update: %v", err)
+	}
+
+	m, _, err := manifest.Load(context.Background(), st, "manifest/1.json")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("manifest has %d entries after rerun, want 1", len(m.Files))
+	}
+}

@@ -3,6 +3,8 @@ package manifest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -184,4 +186,83 @@ func TestLoad_IntegrationWithStore(t *testing.T) {
 	require.Empty(t, etag)
 	require.Equal(t, int16(42), loaded.SchemaID)
 	require.Len(t, loaded.Files, 1)
+}
+
+// memStore is an in-memory Store for exercising load-modify-save flows.
+type memStore struct {
+	data map[string][]byte
+	gen  int
+}
+
+func (s *memStore) Load(_ context.Context, path string) ([]byte, string, error) {
+	b, ok := s.data[path]
+	if !ok {
+		return nil, "", errors.New("NoSuchKey: not found")
+	}
+	return b, fmt.Sprintf("e%d", s.gen), nil
+}
+
+func (s *memStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[path] = data
+	s.gen++
+	return fmt.Sprintf("e%d", s.gen), nil
+}
+
+func TestUpsertFiles_ReplacesByPathAndAppendsNew(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+	path := "manifest/1.json"
+
+	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10},
+		{Tier: "base", Path: "p/1/c_d.parquet", RowCount: 7},
+	}); err != nil {
+		t.Fatalf("initial upsert: %v", err)
+	}
+	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 12}, // rerun: replaced in place
+		{Tier: "base", Path: "p/1/e_f.parquet", RowCount: 3},  // new range: appended
+	}); err != nil {
+		t.Fatalf("rerun upsert: %v", err)
+	}
+
+	m, _, err := Load(ctx, st, path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(m.Files) != 3 {
+		t.Fatalf("manifest has %d files, want 3 (no duplicates)", len(m.Files))
+	}
+	if m.Files[0].Path != "p/1/a_b.parquet" || m.Files[0].RowCount != 12 {
+		t.Fatalf("entry 0 = %+v, want a_b.parquet replaced in place with RowCount 12", m.Files[0])
+	}
+	if m.Files[1].Path != "p/1/c_d.parquet" || m.Files[2].Path != "p/1/e_f.parquet" {
+		t.Fatalf("entries 1,2 = %s,%s want c_d.parquet,e_f.parquet", m.Files[1].Path, m.Files[2].Path)
+	}
+	if m.Version != 2 {
+		t.Fatalf("manifest version = %d, want 2 (one bump per save)", m.Version)
+	}
+}
+
+func TestUpsertFiles_DedupesWithinOneCall(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+	path := "manifest/1.json"
+
+	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 1},
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 2},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	m, _, err := Load(ctx, st, path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(m.Files) != 1 || m.Files[0].RowCount != 2 {
+		t.Fatalf("manifest = %+v, want single a_b.parquet entry with RowCount 2", m.Files)
+	}
 }

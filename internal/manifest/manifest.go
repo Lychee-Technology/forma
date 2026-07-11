@@ -176,3 +176,34 @@ func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, ent
 	}
 	return nil
 }
+
+// UpsertFiles adds entries to the manifest, replacing any existing entry
+// with the same Path in place instead of appending a duplicate. Init reruns
+// re-export the same row ranges to the same deterministic keys, so append
+// semantics would double every base entry on each rerun (#176). Uses
+// optimistic locking via etag to handle concurrent updates.
+func UpsertFiles(ctx context.Context, st Store, path string, schemaID int16, entries []FileEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	index := make(map[string]int, len(m.Files))
+	for i, f := range m.Files {
+		index[f.Path] = i
+	}
+	for _, entry := range entries {
+		if i, ok := index[entry.Path]; ok {
+			m.Files[i] = entry
+			continue
+		}
+		index[entry.Path] = len(m.Files)
+		m.Files = append(m.Files, entry)
+	}
+	if _, err := Save(ctx, st, path, m, etag); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	return nil
+}
