@@ -37,7 +37,7 @@ func TestInitBaseOnlyParity(t *testing.T) {
 	if report.RowsExported != 20 || report.FilesCreated != 3 {
 		t.Fatalf("init exported %d rows in %d files, want 20 rows in 3 files", report.RowsExported, report.FilesCreated)
 	}
-	if got := parquetKeys(report.NewObjects); len(got) != 3 {
+	if got := filterParquetKeys(report.NewObjects); len(got) != 3 {
 		t.Fatalf("init created parquet objects %v, want exactly 3", got)
 	}
 	if entries := manifest.FilterByTier(report.Manifest, "base"); len(entries) != 3 {
@@ -65,9 +65,9 @@ func TestInitBaseOnlyParity(t *testing.T) {
 	})
 }
 
-// parquetKeys filters an object-key diff down to parquet files: the first
-// manifest write also shows up in NewObjects.
-func parquetKeys(keys []string) []string {
+// filterParquetKeys filters an object-key diff down to parquet files: the
+// first manifest write also shows up in NewObjects.
+func filterParquetKeys(keys []string) []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if strings.HasSuffix(k, ".parquet") && !strings.Contains(k, "/_tmp/") {

@@ -31,7 +31,7 @@ func TestInitRerunIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first init: %v", err)
 	}
-	firstPaths := basePaths(first.Manifest)
+	firstPaths := buildBasePaths(first.Manifest)
 	if len(firstPaths) != 3 {
 		t.Fatalf("first init produced %d base entries, want 3", len(firstPaths))
 	}
@@ -70,7 +70,7 @@ func TestInitRerunIdempotency(t *testing.T) {
 	}
 }
 
-func basePaths(m *manifest.Manifest) map[string]bool {
+func buildBasePaths(m *manifest.Manifest) map[string]bool {
 	paths := make(map[string]bool)
 	for _, f := range manifest.FilterByTier(m, "base") {
 		paths[f.Path] = true
