@@ -5,8 +5,18 @@ package production
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 )
+
+// raceCounters tracks mutator progress. Written only by the mutator
+// goroutine; the main goroutine reads them atomically to prove mutations
+// overlapped RunInit (snapshot before the call vs after it returns).
+type raceCounters struct {
+	created atomic.Int64
+	updated atomic.Int64
+	deleted atomic.Int64
+}
 
 // TestInitUnderConcurrentMutation (#176 scenario 5): cdc-init pages with
 // OFFSET over live data (internal/cdc/init.go selectEntityMainBatch — no
@@ -14,6 +24,9 @@ import (
 // tier. The system-level contract asserted here: whatever the base tier
 // captured, unflushed change_log entries shadow it (hot) and the follow-up
 // flush lands the rest in delta, so the final federated state is exact.
+// The started barrier plus counter snapshots around RunInit prove at least
+// one create and one update genuinely overlapped the init pagination
+// (review round 1: without them the scheduler could serialize the test).
 func TestInitUnderConcurrentMutation(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -28,52 +41,26 @@ func TestInitUnderConcurrentMutation(t *testing.T) {
 	}
 
 	stop := make(chan struct{})
-	type mutations struct {
-		created int
-		deleted int
-		err     error
+	started := make(chan struct{})
+	counters := &raceCounters{}
+	errCh := make(chan error, 1)
+	go runInitRaceMutator(ctx, env, wide, seed, stop, started, counters, errCh)
+
+	// Barrier: the mutator has completed one full round before init starts.
+	select {
+	case <-started:
+	case err := <-errCh:
+		t.Fatalf("mutator failed before init started: %v", err)
 	}
-	done := make(chan mutations, 1)
-	go func() {
-		var m mutations
-		defer func() { done <- m }()
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			var batch []*Event
-			// One new create per round (created rows are hot until the
-			// post-init flush) — capped so the query limit below stays safe.
-			if m.created < 200 {
-				news := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 1})
-				batch = append(batch, news...)
-				m.created++
-			}
-			// Rolling updates over seed[0:40] (disjoint from delete range).
-			batch = append(batch, UpdateEvent(wide, seed[i%40].RowID, map[string]any{
-				"title": fmt.Sprintf("race-%03d", i),
-				"count": float64(400000 + i),
-			}))
-			// Ten deletes from seed[40:50]: shifts OFFSET pages leftward,
-			// the classic skip trigger.
-			if m.deleted < 10 {
-				batch = append(batch, DeleteEvent(wide, seed[40+m.deleted].RowID))
-				m.deleted++
-			}
-			if err := env.ApplyEvents(ctx, batch...); err != nil {
-				m.err = fmt.Errorf("mutator round %d: %w", i, err)
-				return
-			}
-		}
-	}()
+	createdBefore := counters.created.Load()
+	updatedBefore := counters.updated.Load()
 
 	report, initErr := env.RunInit(ctx, wide)
+	createdDuring := counters.created.Load() - createdBefore
+	updatedDuring := counters.updated.Load() - updatedBefore
 	close(stop)
-	m := <-done
-	if m.err != nil {
-		t.Fatalf("concurrent mutator failed: %v", m.err)
+	if err := <-errCh; err != nil {
+		t.Fatalf("concurrent mutator failed: %v", err)
 	}
 	if initErr != nil {
 		t.Fatalf("run init under concurrent mutation: %v", initErr)
@@ -81,18 +68,19 @@ func TestInitUnderConcurrentMutation(t *testing.T) {
 	if report.RowsExported == 0 {
 		t.Fatal("init exported no rows")
 	}
-	t.Logf("init exported %d rows in %d files; mutator created %d, deleted %d",
-		report.RowsExported, report.FilesCreated, m.created, m.deleted)
-
-	// The small BatchSize above only served to widen the init OFFSET race
-	// window; it also caps rows-per-flush, so restore the harness default
-	// (env.go) before the handoff flush so a single RunOnce drains the whole
-	// hot tier in one snapshot, exactly as the sibling handoff tests do. The
-	// mutator has already stopped (m received above), so this is race-free.
-	env.CDC.BatchSize = 10000
+	if createdDuring == 0 || updatedDuring == 0 {
+		t.Fatalf("no mutation overlapped init (creates=%d updates=%d during); the race window did not open", createdDuring, updatedDuring)
+	}
+	created, deleted := counters.created.Load(), counters.deleted.Load()
+	t.Logf("init exported %d rows in %d files; mutator created %d (%d during init), updated %d during init, deleted %d",
+		report.RowsExported, report.FilesCreated, created, createdDuring, updatedDuring, deleted)
 
 	// Handoff: flush everything the mutator produced (plus any rows init's
 	// pagination missed — their change_log entries are still unflushed).
+	// One flush pass drains at most BatchSize rows (no drain loop in the
+	// flusher), so restore the default first; race-free because the mutator
+	// has been joined via errCh above.
+	env.CDC.BatchSize = 10000
 	flush, err := env.RunFlush(ctx)
 	if err != nil {
 		t.Fatalf("post-init flush: %v", err)
@@ -102,7 +90,7 @@ func TestInitUnderConcurrentMutation(t *testing.T) {
 	}
 
 	// Exact end state: 60 seed + created - deleted, every value the latest.
-	expected := 60 + m.created - m.deleted
+	expected := 60 + int(created) - int(deleted)
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: expected + 50})
 	if result != nil && len(result.Records) != expected {
 		t.Fatalf("federated result has %d rows, want %d (no skips, no duplicates)", len(result.Records), expected)
@@ -112,4 +100,53 @@ func TestInitUnderConcurrentMutation(t *testing.T) {
 		Filters: []Filter{{Attr: "count", Op: "gte", Value: "400000"}},
 		Limit:   expected + 50,
 	})
+}
+
+// runInitRaceMutator applies a continuous create/update/delete stream until
+// stop closes. It is the SOLE ApplyEvents/GenerateScript caller while it
+// runs (Env event bookkeeping is unsynchronized). started closes after the
+// first fully applied round; the final error (or nil) is sent on errCh.
+// Update targets (seed[0:40]) and delete targets (seed[40:50]) are disjoint
+// — Update on a deleted row returns ErrNotFound by pinned contract (#175).
+func runInitRaceMutator(ctx context.Context, env *Env, wide SchemaRef, seed []*Event, stop, started chan struct{}, c *raceCounters, errCh chan<- error) {
+	startedClosed := false
+	for i := 0; ; i++ {
+		select {
+		case <-stop:
+			errCh <- nil
+			return
+		default:
+		}
+		var batch []*Event
+		// New creates are capped so the query limit stays safe.
+		addCreate := c.created.Load() < 200
+		if addCreate {
+			batch = append(batch, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 1})...)
+		}
+		batch = append(batch, UpdateEvent(wide, seed[i%40].RowID, map[string]any{
+			"title": fmt.Sprintf("race-%03d", i),
+			"count": float64(400000 + i),
+		}))
+		// Ten deletes from seed[40:50]: shifts OFFSET pages leftward, the
+		// classic skip trigger.
+		addDelete := c.deleted.Load() < 10
+		if addDelete {
+			batch = append(batch, DeleteEvent(wide, seed[40+int(c.deleted.Load())].RowID))
+		}
+		if err := env.ApplyEvents(ctx, batch...); err != nil {
+			errCh <- fmt.Errorf("mutator round %d: %w", i, err)
+			return
+		}
+		if addCreate {
+			c.created.Add(1)
+		}
+		c.updated.Add(1)
+		if addDelete {
+			c.deleted.Add(1)
+		}
+		if !startedClosed {
+			close(started)
+			startedClosed = true
+		}
+	}
 }
