@@ -389,9 +389,11 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 // updateSchemaManifest records the exported base files in the schema
 // manifest. Failures propagate: base files absent from the manifest are
 // invisible to manifest consumers (e.g. compaction), and a silent miss here
-// would let RunInit report success for an unusable export. Entries are
-// upserted by path so an init rerun (same deterministic base keys) replaces
-// its previous entries instead of duplicating them (#176).
+// would let RunInit report success for an unusable export. Init is a full
+// re-export, so the base tier is replaced wholesale with this run's files:
+// reruns neither duplicate entries nor leave stale ranges behind (#176).
+// Obsolete S3 objects are not deleted here — glob-based readers stay exact
+// via LWW/tombstones, and object reconciliation is #203.
 func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
 		return nil
@@ -401,7 +403,7 @@ func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *sc
 	if err != nil {
 		return fmt.Errorf("resolve manifest path: %w", err)
 	}
-	if err := manifest.UpsertFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, state.fileEntries); err != nil {
+	if err := manifest.ReplaceTierFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, "base", state.fileEntries); err != nil {
 		return fmt.Errorf("update manifest: %w", err)
 	}
 	runCtx.logger.Info("manifest updated",

@@ -133,8 +133,10 @@ where cdc-init bootstraps base files before federated reads. Use
   marking and manifest updates (#180).
 - `RunInit` wraps `cdc.RunInit` (base file export + manifest base entries).
   Base keys are deterministic (`<prefix>/<id>/<minRowID>_<maxRowID>.parquet`),
-  and init upserts manifest entries by path, so a no-change rerun overwrites
-  objects and leaves the manifest unchanged (#176). Init never touches
+  and init replaces the manifest's base tier with each run's output, so
+  reruns neither duplicate entries nor leave stale ranges — obsolete S3
+  objects remain (glob+LWW keeps queries exact; reconciliation is #203)
+  (#176). Init never touches
   `change_log`: backfilled rows stay hot until the operator clears the log
   (onboarding contract, see `TestInitBaseOnlyParity`) or the next flush
   re-exports them into delta (`TestInitFlushOverlapWithoutLogCleanup`).

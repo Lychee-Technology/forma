@@ -177,31 +177,28 @@ func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, ent
 	return nil
 }
 
-// UpsertFiles adds entries to the manifest, replacing any existing entry
-// with the same Path in place instead of appending a duplicate. Init reruns
-// re-export the same row ranges to the same deterministic keys, so append
-// semantics would double every base entry on each rerun (#176). Uses
-// optimistic locking via etag to handle concurrent updates.
-func UpsertFiles(ctx context.Context, st Store, path string, schemaID int16, entries []FileEntry) error {
-	if len(entries) == 0 {
-		return nil
-	}
+// ReplaceTierFiles replaces every manifest entry of the given tier with the
+// provided entries, preserving entries of other tiers in their original
+// order. cdc-init is a full re-export of a schema's live rows, so after a
+// run the base tier's canonical inventory IS that run's output: stale
+// entries from earlier runs (different batch ranges) and historical
+// duplicates must not survive (#176). Compaction-promoted base entries are
+// replaced too — after a full re-export their live content is subsumed by
+// the new base files; their S3 objects remain for glob-based readers, and
+// object-level reconciliation is #203. Uses optimistic locking via etag.
+func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16, tier string, entries []FileEntry) error {
 	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
-	index := make(map[string]int, len(m.Files))
-	for i, f := range m.Files {
-		index[f.Path] = i
-	}
-	for _, entry := range entries {
-		if i, ok := index[entry.Path]; ok {
-			m.Files[i] = entry
-			continue
+	kept := make([]FileEntry, 0, len(m.Files)+len(entries))
+	target := strings.ToLower(tier)
+	for _, f := range m.Files {
+		if strings.ToLower(f.Tier) != target {
+			kept = append(kept, f)
 		}
-		index[entry.Path] = len(m.Files)
-		m.Files = append(m.Files, entry)
 	}
+	m.Files = append(kept, entries...)
 	if _, err := Save(ctx, st, path, m, etag); err != nil {
 		return fmt.Errorf("save manifest: %w", err)
 	}

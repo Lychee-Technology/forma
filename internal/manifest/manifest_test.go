@@ -211,58 +211,62 @@ func (s *memStore) Save(_ context.Context, path string, data []byte, _ string) (
 	return fmt.Sprintf("e%d", s.gen), nil
 }
 
-func TestUpsertFiles_ReplacesByPathAndAppendsNew(t *testing.T) {
+func TestReplaceTierFiles_ReplacesTierPreservesOthers(t *testing.T) {
 	ctx := context.Background()
 	st := &memStore{}
 	path := "manifest/1.json"
 
-	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
+	// Seed: two delta entries around a base tier that carries a historical
+	// duplicate and a stale range — exactly what the old append/upsert
+	// semantics could accumulate.
+	seed := &Manifest{SchemaID: 1, Files: []FileEntry{
+		{Tier: "delta", Path: "p/1/d1.parquet", RowCount: 4},
 		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10},
-		{Tier: "base", Path: "p/1/c_d.parquet", RowCount: 7},
-	}); err != nil {
-		t.Fatalf("initial upsert: %v", err)
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10}, // historical duplicate
+		{Tier: "delta", Path: "p/1/d2.parquet", RowCount: 2},
+		{Tier: "base", Path: "p/1/c_d.parquet", RowCount: 7}, // stale range
+	}}
+	if _, err := Save(ctx, st, path, seed, ""); err != nil {
+		t.Fatalf("seed save: %v", err)
 	}
-	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
-		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 12}, // rerun: replaced in place
-		{Tier: "base", Path: "p/1/e_f.parquet", RowCount: 3},  // new range: appended
+
+	if err := ReplaceTierFiles(ctx, st, path, 1, "base", []FileEntry{
+		{Tier: "base", Path: "p/1/a_e.parquet", RowCount: 12},
+		{Tier: "base", Path: "p/1/f_g.parquet", RowCount: 3},
 	}); err != nil {
-		t.Fatalf("rerun upsert: %v", err)
+		t.Fatalf("replace: %v", err)
 	}
 
 	m, _, err := Load(ctx, st, path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(m.Files) != 3 {
-		t.Fatalf("manifest has %d files, want 3 (no duplicates)", len(m.Files))
+	wantPaths := []string{"p/1/d1.parquet", "p/1/d2.parquet", "p/1/a_e.parquet", "p/1/f_g.parquet"}
+	if len(m.Files) != len(wantPaths) {
+		t.Fatalf("manifest has %d files, want %d: %+v", len(m.Files), len(wantPaths), m.Files)
 	}
-	if m.Files[0].Path != "p/1/a_b.parquet" || m.Files[0].RowCount != 12 {
-		t.Fatalf("entry 0 = %+v, want a_b.parquet replaced in place with RowCount 12", m.Files[0])
-	}
-	if m.Files[1].Path != "p/1/c_d.parquet" || m.Files[2].Path != "p/1/e_f.parquet" {
-		t.Fatalf("entries 1,2 = %s,%s want c_d.parquet,e_f.parquet", m.Files[1].Path, m.Files[2].Path)
-	}
-	if m.Version != 2 {
-		t.Fatalf("manifest version = %d, want 2 (one bump per save)", m.Version)
+	for i, want := range wantPaths {
+		if m.Files[i].Path != want {
+			t.Fatalf("entry %d = %s, want %s (delta order preserved, base replaced)", i, m.Files[i].Path, want)
+		}
 	}
 }
 
-func TestUpsertFiles_DedupesWithinOneCall(t *testing.T) {
+func TestReplaceTierFiles_CreatesFreshManifest(t *testing.T) {
 	ctx := context.Background()
 	st := &memStore{}
 	path := "manifest/1.json"
 
-	if err := UpsertFiles(ctx, st, path, 1, []FileEntry{
-		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 1},
-		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 2},
+	if err := ReplaceTierFiles(ctx, st, path, 1, "base", []FileEntry{
+		{Tier: "base", Path: "p/1/a_b.parquet", RowCount: 10},
 	}); err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Fatalf("replace on empty store: %v", err)
 	}
 	m, _, err := Load(ctx, st, path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(m.Files) != 1 || m.Files[0].RowCount != 2 {
-		t.Fatalf("manifest = %+v, want single a_b.parquet entry with RowCount 2", m.Files)
+	if len(m.Files) != 1 || m.Files[0].Path != "p/1/a_b.parquet" || m.Version != 1 {
+		t.Fatalf("fresh manifest = %+v (version %d), want single a_b.parquet at version 1", m.Files, m.Version)
 	}
 }
