@@ -340,9 +340,9 @@ func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnly
 		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	default:
 		if tradeTimeOnlyProjection {
-			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
+			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 		}
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP))) as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
+		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
 	}
 }
 
@@ -696,7 +696,7 @@ func buildTradeTimeFilterClause(opts *QueryOptions) string {
 }
 
 func parquetTradeTimeFilterExpression() string {
-	return "COALESCE(TRY_CAST(tradeTime AS BIGINT), epoch_ms(TRY_CAST(tradeTime AS TIMESTAMP)))"
+	return "tradeTime"
 }
 
 func buildHotTradeTimeFilterClauseTargeted(opts *QueryOptions) string {

@@ -609,7 +609,7 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 			{name: "quantity", colName: "bigint_01", eavJSON: false, attrID: 3, s3Expr: "quantity"},
 			{name: "region", colName: "text_02", eavJSON: false, attrID: 7, s3Expr: "region"},
 			{name: "symbol", colName: "text_01", eavJSON: false, attrID: 1, s3Expr: "symbol"},
-			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "COALESCE(try_cast(tradeTime AS BIGINT), epoch_ms(try_cast(tradeTime AS TIMESTAMP))) as tradeTime"},
+			{name: "tradeTime", colName: "bigint_02", eavJSON: false, attrID: 5, s3Expr: "tradeTime"},
 			{name: "tradeType", colName: "smallint_01", eavJSON: false, attrID: 2, s3Expr: "tradeType"},
 		}
 	}
