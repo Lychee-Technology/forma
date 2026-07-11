@@ -13,6 +13,13 @@ import (
 // delta-only mirrors a fully drained flush, and hot-only mirrors the
 // pre-flush window (PreferHot, because the DuckDB path needs at least one
 // parquet object to exist).
+//
+// Tier isolation is physical, not glob-scoped: the production read path
+// takes a single S3ParquetPathTemplate per schema (base <min>_<max>.parquet
+// and delta <uuid>.parquet share one flat directory, and the reader is
+// manifest-blind), so a "base-glob-only" query is not a production input.
+// The isolation each subtest asserts is that the OTHER tiers are physically
+// empty — the production-faithful reading of #177 scenarios 1-2.
 func TestThreeTierIsolation(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide: full scalar type coverage (#177 scenario 8)
