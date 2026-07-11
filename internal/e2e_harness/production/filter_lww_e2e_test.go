@@ -28,6 +28,7 @@ func TestFilterLWW(t *testing.T) {
 		{"stale_filter_base_vs_delta", testStaleFilterBaseVsDelta},
 		{"tombstone_suppresses_stale_filter", testTombstoneSuppressesStaleFilter},
 		{"hot_shadow_stale_filter", testHotShadowStaleFilter},
+		{"stale_filter_operator_matrix", testStaleFilterOperatorMatrix},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
