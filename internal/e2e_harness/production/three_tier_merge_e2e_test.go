@@ -213,15 +213,22 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 }
 
 // testChangedAtBeatsTierLayout supersedes the ConflictingCreatedAndUpdatedAt
-// stub: delta holds v1 (older changed_at), base holds v2 (newer changed_at)
-// — the inverse of the usual tier freshness — and no hot rows exist. LWW
-// must pick v2 purely on changed_at.
+// stub. The init export contract makes created_at and updated_at orderings
+// genuinely conflict across tiers: cdc-init stamps base rows with
+// ltbase_created_at as the version timestamp (internal/cdc/init_exporter.go),
+// so the base copy written LAST carries the OLDEST ver_ts while the freshest
+// version lives in a delta written earlier. LWW must pick the strictly newest
+// changed_at (the update time) — not created_at, tier tags, or file write
+// order. The equal-ver_ts tie between CONFLICTING parquet versions (base
+// state newer than the last flush) is undefined by the ranking and
+// deliberately not exercised here; the init ver_ts contract is a follow-up
+// from the PR #209 review.
 func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
 	}
-	mustFlush(ctx, t, env) // delta = v1
+	mustFlush(ctx, t, env) // delta #1 = v1 @ create-time ver_ts
 
 	v2 := make([]*Event, 0, len(creates))
 	for i, c := range creates {
@@ -233,8 +240,21 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	if err := env.ApplyEvents(ctx, v2...); err != nil {
 		t.Fatalf("apply v2 updates: %v", err)
 	}
+	// The LWW discriminator below is v2's changed_at: assert it is strictly
+	// later than the create's at millisecond resolution, so the test fails
+	// fast instead of degrading into an undefined equal-ver_ts tie.
+	for i := range creates {
+		if v2[i].ChangedAt <= creates[i].ChangedAt {
+			t.Fatalf("row %d: v2 changed_at %d not strictly after create changed_at %d",
+				i, v2[i].ChangedAt, creates[i].ChangedAt)
+		}
+	}
+	flush2 := mustFlush(ctx, t, env) // delta #2 = v2 @ update-time ver_ts
+	if got := countTier(flush2.Manifests[wide.ID], "delta"); got != 2 {
+		t.Fatalf("manifest holds %d delta files, want 2 (v1 and v2 generations)", got)
+	}
 
-	report, err := env.RunInit(ctx, wide) // base = v2 (current entity_main state)
+	report, err := env.RunInit(ctx, wide) // base = v2 attrs @ create-time ver_ts
 	if err != nil {
 		t.Fatalf("run init: %v", err)
 	}
@@ -243,19 +263,20 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID) // no hot rows
 
-	// Physical precondition: BOTH tiers hold all 5 rows, so dedup genuinely
-	// has to choose between conflicting versions.
+	// Physical precondition: three copies of every row — v1 and v2 in the two
+	// deltas plus the base duplicate of v2 — so dedup genuinely has to choose.
 	assertBaseRows(ctx, t, env, report.Manifest, 5)
 	var deltaRows int64
 	for _, f := range manifest.FilterByTier(report.Manifest, "delta") {
 		deltaRows += parquetRowCount(ctx, t, env, f.Path)
 	}
-	if deltaRows != 5 {
-		t.Fatalf("delta tier holds %d physical rows, want 5", deltaRows)
+	if deltaRows != 10 {
+		t.Fatalf("delta tier holds %d physical rows, want 10 (v1 + v2 generations)", deltaRows)
 	}
 
-	// Oracle expects 5 rows carrying v2 values; a tier-priority dedup would
-	// surface v1 titles/counts and fail the attribute diff.
+	// Oracle expects 5 rows carrying v2 values. A ranking keyed on created_at
+	// sees all three copies tie and can surface v1; only changed_at picks the
+	// delta-#2 version deterministically — any v1 leak fails the diff.
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 	if result != nil && len(result.Records) != 5 {
 		t.Fatalf("changed_at-conflict result has %d rows, want 5", len(result.Records))
