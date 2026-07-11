@@ -90,6 +90,15 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 	if res != nil && len(res.Records) != 5 {
 		t.Fatalf("EAV date positive control returned %d rows, want 5", len(res.Records))
 	}
+	// MAIN date positive control (#200): all five v1 rows carry joined=2010-06-15.
+	res = env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "joined", Op: "lt", Value: "2020-01-01T00:00:00Z"}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) != 5 {
+		t.Fatalf("MAIN date positive control returned %d rows, want 5", len(res.Records))
+	}
 
 	v2 := matrixV2Updates(wide, creates)
 	if err := env.ApplyEvents(ctx, v2...); err != nil {
