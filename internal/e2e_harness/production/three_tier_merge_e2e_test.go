@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestThreeTierMerge (#177 scenarios 4-6): merge-on-read correctness when
@@ -25,6 +27,7 @@ func TestThreeTierMerge(t *testing.T) {
 		{"union", testThreeTierUnion},
 		{"triple_overlap_hot_wins", testTripleOverlapHotWins},
 		{"dirty_hot_shadows_cold", testDirtyHotShadowsCold},
+		{"changed_at_beats_tier_layout", testChangedAtBeatsTierLayout},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -205,6 +208,68 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 	env.AssertQueryMatches(ctx, Query{
 		Schema:  wide,
 		Filters: []Filter{{Attr: "title", Value: oldTitle}},
+		Limit:   10,
+	})
+}
+
+// testChangedAtBeatsTierLayout supersedes the ConflictingCreatedAndUpdatedAt
+// stub: delta holds v1 (older changed_at), base holds v2 (newer changed_at)
+// — the inverse of the usual tier freshness — and no hot rows exist. LWW
+// must pick v2 purely on changed_at.
+func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
+	if err := env.ApplyEvents(ctx, creates...); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	mustFlush(ctx, t, env) // delta = v1
+
+	v2 := make([]*Event, 0, len(creates))
+	for i, c := range creates {
+		v2 = append(v2, UpdateEvent(wide, c.RowID, map[string]any{
+			"title": fmt.Sprintf("newer-%02d", i),
+			"count": float64(400000 + i),
+		}))
+	}
+	if err := env.ApplyEvents(ctx, v2...); err != nil {
+		t.Fatalf("apply v2 updates: %v", err)
+	}
+
+	report, err := env.RunInit(ctx, wide) // base = v2 (current entity_main state)
+	if err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	if report.RowsExported != 5 {
+		t.Fatalf("init exported %d rows, want 5", report.RowsExported)
+	}
+	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID) // no hot rows
+
+	// Physical precondition: BOTH tiers hold all 5 rows, so dedup genuinely
+	// has to choose between conflicting versions.
+	assertBaseRows(ctx, t, env, report.Manifest, 5)
+	var deltaRows int64
+	for _, f := range manifest.FilterByTier(report.Manifest, "delta") {
+		deltaRows += parquetRowCount(ctx, t, env, f.Path)
+	}
+	if deltaRows != 5 {
+		t.Fatalf("delta tier holds %d physical rows, want 5", deltaRows)
+	}
+
+	// Oracle expects 5 rows carrying v2 values; a tier-priority dedup would
+	// surface v1 titles/counts and fail the attribute diff.
+	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	if result != nil && len(result.Records) != 5 {
+		t.Fatalf("changed_at-conflict result has %d rows, want 5", len(result.Records))
+	}
+	env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "title", Value: "newer-03"}},
+		Limit:   10,
+	})
+	// Positive range probe over v2 counts: all 5 rows qualify only if the v2
+	// versions won. (Stale-value filter matrices on clean rows are #178.)
+	env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "count", Op: "gte", Value: "400000"}},
 		Limit:   10,
 	})
 }
