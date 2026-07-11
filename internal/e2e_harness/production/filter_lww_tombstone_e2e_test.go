@@ -79,3 +79,76 @@ func testTombstoneSuppressesStaleFilter(ctx context.Context, t *testing.T, env *
 		t.Fatalf("post-delete total is %d rows, want 2", len(res.Records))
 	}
 }
+
+// testHotShadowStaleFilter is issue #178 scenario 3: the newer version is a
+// dirty (unflushed) hot row. The anti-join must evict the warm delta v1
+// before the filter could match it, and the non-matching hot version must
+// not reintroduce the row. Complements testDirtyHotShadowsCold (dirty over
+// base, single equality probe) with a warm-delta layout, range/prefix
+// operators, and a hot-tombstone arm.
+func testHotShadowStaleFilter(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := make([]*Event, 0, 5)
+	for i := 0; i < 5; i++ {
+		creates = append(creates, CreateEvent(wide, map[string]any{
+			"title": fmt.Sprintf("open-%02d", i),
+			"count": float64(100000 + i),
+		}))
+	}
+	if err := env.ApplyEvents(ctx, creates...); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	mustFlush(ctx, t, env) // delta = v1 for all five rows (warm tier)
+
+	// Load-bearing positive: warm delta serves v1 by its value.
+	res := env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "title", Value: "open-00"}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) != 1 {
+		t.Fatalf("warm positive control returned %d rows, want 1", len(res.Records))
+	}
+
+	upd := UpdateEvent(wide, creates[0].RowID, map[string]any{
+		"title": "closed-00",
+		"count": float64(200000),
+	})
+	if err := env.ApplyEvents(ctx, upd); err != nil {
+		t.Fatalf("apply shadow update: %v", err)
+	}
+	assertStrictlyNewer(t, creates[:1], []*Event{upd})
+
+	// The dirty hot v2 does not match; the warm v1 must not resurface.
+	assertZeroRows(ctx, t, env, "hot_shadow_equals", Query{
+		Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
+	// Prefix over all v1 titles: only the four unshadowed rows qualify.
+	res = env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "title", Op: "starts_with", Value: "open-"}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) != 4 {
+		t.Fatalf("prefix probe returned %d rows, want 4", len(res.Records))
+	}
+	// The hot v2 is reachable by its own value through the dirty path.
+	res = env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "count", Op: "gte", Value: "200000"}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) != 1 {
+		t.Fatalf("hot-reachability probe returned %d rows, want 1", len(res.Records))
+	}
+
+	// Hot-tombstone shadow over a warm v1.
+	del := DeleteEvent(wide, creates[1].RowID)
+	if err := env.ApplyEvents(ctx, del); err != nil {
+		t.Fatalf("apply shadow delete: %v", err)
+	}
+	assertZeroRows(ctx, t, env, "hot_tombstone_shadow_equals", Query{
+		Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-01"}}, Limit: 10})
+	res = env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
+	if res != nil && len(res.Records) != 4 {
+		t.Fatalf("post-shadow total is %d rows, want 4", len(res.Records))
+	}
+}
