@@ -155,7 +155,7 @@ dirty_ids AS (
 
 -- =========================================================================  
 -- CTE 2: S3 Source (Cold & Warm)  
--- Reads historical data with partition pruning and anti-join.  
+-- Reads historical data with the dirty-set anti-join and semijoin pushdown.  
 -- =========================================================================  
 s3_source AS (  
     SELECT   
@@ -166,7 +166,8 @@ s3_source AS (
         -- Logical Columns (Native in Parquet)  
         name,   
         age,   
-        tag  
+        tag,  
+        1 AS source_tier_priority  
     FROM read_parquet($S3_PATHS)  
     WHERE   
         -- 1. Anti-Join: Exclude if a newer version exists in PG  
@@ -199,7 +200,8 @@ pg_source AS (
           
         -- [EAV Pivot] Aggregation for dynamic attributes  
         -- Note: EAV filtering is done in the WHERE clause below, not pushed to EAV scan  
-        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag
+        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,  
+        3 AS source_tier_priority
 
     FROM postgres_scan($PG_CONN, 'change_log', 'flushed_at = 0') cl  
       
@@ -225,11 +227,10 @@ unified AS (
     SELECT * FROM s3_source  
     UNION ALL  
     SELECT * FROM pg_source  
-)
+),
 
 -- =========================================================================  
--- Final Selection  
--- Deduplication -> Sorting -> Pagination  
+-- CTE 5: Ranked (Last-Write-Wins Deduplication)  
 -- =========================================================================  
 ranked AS (
     SELECT *,
