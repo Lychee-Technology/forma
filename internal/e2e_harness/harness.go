@@ -83,6 +83,41 @@ func (h *TestHarness) ConnectPostgres(ctx context.Context, dsn string) error {
 	}
 }
 
+// RestartPostgres stops and restarts the Postgres container in place
+// (docker stop/start — the writable layer and therefore all data survive,
+// unlike StopPostgres, which terminates and destroys the container). The
+// host-mapped port is not guaranteed stable across restarts, so the DSN is
+// re-derived before reconnecting.
+func (h *TestHarness) RestartPostgres(ctx context.Context) error {
+	if h.PGContainer == nil {
+		return fmt.Errorf("restart postgres: no container (external infrastructure or already terminated)")
+	}
+	if h.PGDB != nil {
+		h.PGDB.Close()
+		h.PGDB = nil
+	}
+	stopTimeout := 30 * time.Second
+	if err := h.PGContainer.Stop(ctx, &stopTimeout); err != nil {
+		return fmt.Errorf("stop postgres container: %w", err)
+	}
+	if err := h.PGContainer.Start(ctx); err != nil {
+		return fmt.Errorf("start postgres container: %w", err)
+	}
+	host, err := h.PGContainer.Host(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve postgres host after restart: %w", err)
+	}
+	mapped, err := h.PGContainer.MappedPort(ctx, "5432")
+	if err != nil {
+		return fmt.Errorf("resolve postgres port after restart: %w", err)
+	}
+	dsn := fmt.Sprintf("postgres://postgres:password@%s:%s/postgres?sslmode=disable", host, mapped.Port())
+	if err := h.ConnectPostgres(ctx, dsn); err != nil {
+		return fmt.Errorf("reconnect postgres after restart: %w", err)
+	}
+	return nil
+}
+
 // StopPostgres stops the Postgres container and closes DB handle.
 func (h *TestHarness) StopPostgres(ctx context.Context) error {
 	if h.PGDB != nil {

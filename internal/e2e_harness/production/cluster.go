@@ -191,6 +191,22 @@ func (c *Cluster) connectExternal(ctx context.Context, pgDSN, s3Endpoint string)
 	return nil
 }
 
+// RestartPostgres restarts the cluster's Postgres container in place (state
+// preserving stop/start) and re-derives the connection coordinates — the
+// host-mapped port can change across restarts. External infrastructure
+// cannot be restarted. Only tests owning a dedicated cluster may call this:
+// restarting the SharedCluster would break every parallel Env.
+func (c *Cluster) RestartPostgres(ctx context.Context) error {
+	if c.external {
+		return fmt.Errorf("restart postgres: external infrastructure (%s) cannot be restarted", externalPGDSNVar)
+	}
+	if err := c.Base.RestartPostgres(ctx); err != nil {
+		return fmt.Errorf("restart postgres container: %w", err)
+	}
+	c.PGHost, c.PGPort = pgHostPortFromDSN(c.Base.PGDSN)
+	return nil
+}
+
 // Shutdown stops the shared containers. Under KEEP_E2E_ENV=1 it prints
 // connection info instead and leaves everything running.
 func (c *Cluster) Shutdown(ctx context.Context) error {
@@ -240,6 +256,28 @@ func SharedCluster(t *testing.T) *Cluster {
 		t.Skipf("production e2e cluster unavailable (docker required): %v", sharedErr)
 	}
 	return sharedCluster
+}
+
+// DedicatedCluster starts a private, non-shared cluster for tests that
+// mutate cluster-wide state (e.g. RestartPostgres) and registers its
+// shutdown. Skips the test when docker is unavailable (matching
+// SharedCluster) or when the PRODUCTION_E2E_EXTERNAL_* escape hatch is set —
+// external infrastructure cannot be restarted.
+func DedicatedCluster(t *testing.T) *Cluster {
+	t.Helper()
+	if os.Getenv(externalPGDSNVar) != "" {
+		t.Skipf("dedicated cluster unavailable: external infrastructure (%s) cannot be restarted", externalPGDSNVar)
+	}
+	cluster, err := StartCluster(context.Background())
+	if err != nil {
+		t.Skipf("production e2e cluster unavailable (docker required): %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cluster.Shutdown(context.Background()); err != nil {
+			t.Logf("shutdown dedicated cluster: %v", err)
+		}
+	})
+	return cluster
 }
 
 // ShutdownSharedCluster releases the SharedCluster infrastructure; call it
