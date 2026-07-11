@@ -171,7 +171,8 @@ func assertTierHits(ctx context.Context, t *testing.T, env *Env, wide SchemaRef,
 }
 
 // runSmokeQueries is the oracle-checked query battery: unfiltered,
-// equality, range, sorted, page 2, and PreferHot.
+// equality, range, sorted, page 2, date filters (main-column-bound and
+// EAV-only) across all three tiers, and PreferHot.
 func runSmokeQueries(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, creates []*Event) {
 	t.Helper()
 
@@ -196,13 +197,39 @@ func runSmokeQueries(ctx context.Context, t *testing.T, env *Env, wide SchemaRef
 		Limit:  8,
 		Offset: 8, // page 2
 	})
-	// Sort on the main-column-bound datetime attribute (#194). Sorting only
-	// references the projected column; date filter parameters are not yet
-	// supported on the federated DuckClause side.
+	// Sort on the main-column-bound datetime attribute (#194).
 	env.AssertQueryMatches(ctx, Query{
 		Schema: wide,
 		Sorts:  []Sort{{Attr: "touched"}},
 		Limit:  10,
+	})
+	// Date predicates (#200): the DuckClause binds epoch-ms BIGINT params.
+	// Values must be RFC3339 or epoch-ms — the engine's date parser rejects
+	// bare "2006-01-02" literals (the oracle alone accepts them).
+	// Range on the main-column-bound (unix_ms, bigint_02) date attribute.
+	res := env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "joined", Op: "gte", Value: "1999-01-01T00:00:00Z"}},
+		Limit:   100,
+	})
+	if res != nil && len(res.Records) == 0 {
+		t.Error("joined date-range filter matched zero rows; want a non-empty subset")
+	}
+	// Equality + range on the EAV-only date attribute. creates[3] is a live
+	// cold-tier row the smoke flow never mutates, so its born value must hit.
+	bornEq := creates[3].Attrs["born"].(string) + "T00:00:00Z"
+	res = env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "born", Value: bornEq}},
+		Limit:   10,
+	})
+	if res != nil && len(res.Records) == 0 {
+		t.Error("born equality filter matched zero rows; creates[3] is live in the cold tier")
+	}
+	env.AssertQueryMatches(ctx, Query{
+		Schema:  wide,
+		Filters: []Filter{{Attr: "born", Op: "lt", Value: "2005-06-15T00:00:00Z"}},
+		Limit:   100,
 	})
 	env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 100})
 }
