@@ -132,6 +132,12 @@ where cdc-init bootstraps base files before federated reads. Use
   mainline dry-run still writes parquet objects — it skips `flushed_at`
   marking and manifest updates (#180).
 - `RunInit` wraps `cdc.RunInit` (base file export + manifest base entries).
+  Base keys are deterministic (`<prefix>/<id>/<minRowID>_<maxRowID>.parquet`),
+  and init upserts manifest entries by path, so a no-change rerun overwrites
+  objects and leaves the manifest unchanged (#176). Init never touches
+  `change_log`: backfilled rows stay hot until the operator clears the log
+  (onboarding contract, see `TestInitBaseOnlyParity`) or the next flush
+  re-exports them into delta (`TestInitFlushOverlapWithoutLogCleanup`).
 - `Query`/`AssertQueryMatches` translate one spec for both engine and
   oracle. Filters use the public `"op:value"` condition forms (bool values
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
@@ -185,6 +191,7 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | Issue | Building block |
 |---|---|
 | #174 full-type coverage | `e2e_wide` + `FullTypeProfile` |
+| #176 init handoff | `RunInit` + `RunFlush` (`init_handoff_e2e_test.go`, `init_delete_e2e_test.go`, `init_rerun_e2e_test.go`, `init_concurrent_e2e_test.go`) |
 | #175 lifecycle sequences | `Event` model + `ApplyEvents` + `InjectRestore` + `RestartPostgres` (`lifecycle_e2e_test.go`, `restart_e2e_test.go`) |
 | #179 flush thresholds | `WithFlushThresholds` + `FlushReport` |
 | #180 dry-run semantics | `RunFlushDry` |
