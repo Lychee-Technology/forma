@@ -30,8 +30,12 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 		// and scientific use-cases without default truncation.
 		return "DECIMAL(38,10)"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		// Use TIMESTAMP for temporal types (configurable in future)
-		return "TIMESTAMP"
+		// Date/datetime attribute columns in the federated CTEs are epoch-ms
+		// BIGINT on all three sides — EAV pivot TRY_CAST(value_numeric AS
+		// BIGINT) (#173), main-column unix_ms export (#194), and the reader
+		// projection CAST(attr AS BIGINT) — so predicates must compare
+		// BIGINT, never TIMESTAMP (#200).
+		return "BIGINT"
 	case forma.ValueTypeBool:
 		return "BOOLEAN"
 	case forma.ValueTypeList:
@@ -65,7 +69,7 @@ func CastExpression(columnOrExpr string, v forma.ValueType) string {
 // ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for the given value type.
 // Examples:
 //   - uuid.UUID -> string
-//   - time.Time -> time.Time (TIMESTAMP)
+//   - time.Time -> int64 epoch-ms (BIGINT)
 //   - numeric types -> float64
 func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	if value == nil {
@@ -88,18 +92,20 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 			return nil, fmt.Errorf("cannot convert %T to UUID param", value)
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		// Expect a time.Time for TIMESTAMP mapping; accept epoch strings/numbers handled elsewhere if needed.
+		// Bind epoch-ms int64 to match the BIGINT storage convention (#200).
 		switch t := value.(type) {
 		case time.Time:
-			return t.UTC(), nil
+			return t.UTC().UnixMilli(), nil
 		case *time.Time:
 			timeValue, isNil := numutil.OptionalPointerValue(t)
 			if isNil {
 				return nil, nil
 			}
-			return timeValue.UTC(), nil
+			return timeValue.UTC().UnixMilli(), nil
+		case int64:
+			return t, nil
 		default:
-			return nil, fmt.Errorf("cannot convert %T to TIMESTAMP param", value)
+			return nil, fmt.Errorf("cannot convert %T to epoch-ms BIGINT param", value)
 		}
 	case forma.ValueTypeBool:
 		switch b := value.(type) {

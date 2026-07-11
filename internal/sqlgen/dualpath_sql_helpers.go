@@ -126,10 +126,11 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		return nil, fmt.Errorf("invalid numeric literal for %s: %s", attr, valStr)
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		// Epoch-ms int64: date columns in the federated CTEs are BIGINT (#200).
 		if t, e := time.Parse(time.RFC3339Nano, valStr); e == nil {
-			return t.UTC(), nil
+			return t.UTC().UnixMilli(), nil
 		} else if i, e := strconv.ParseInt(valStr, 10, 64); e == nil {
-			return time.UnixMilli(i).UTC(), nil
+			return i, nil
 		}
 		return nil, fmt.Errorf("invalid date literal for %s: %s", attr, valStr)
 

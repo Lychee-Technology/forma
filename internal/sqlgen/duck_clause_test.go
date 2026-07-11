@@ -20,20 +20,21 @@ func TestBuildDuckClause_NoMetadata_InferTypeAndCast(t *testing.T) {
 	clause, args, err := buildDuckClause(cond, cache)
 	require.NoError(t, err)
 
-	// Expect a CAST(? AS TIMESTAMP) because the value should be inferred as a datetime
-	require.Contains(t, clause, "CAST(? AS TIMESTAMP)")
+	// Expect CAST(? AS BIGINT): the value is inferred as a datetime, and
+	// federated date columns are epoch-ms BIGINT (#200).
+	require.Contains(t, clause, "CAST(? AS BIGINT)")
 	// Column name should be the attribute name when no metadata is present
 	require.Contains(t, clause, "unknown_ts")
 
 	require.Len(t, args, 1)
 
-	// The argument should be a time.Time equal to the parsed RFC3339 value (in UTC)
+	// The argument should be the epoch-ms of the parsed RFC3339 value.
 	parsedWant, err := time.Parse(time.RFC3339Nano, "2020-01-02T03:04:05Z")
 	require.NoError(t, err)
 
-	gotTime, ok := args[0].(time.Time)
-	require.True(t, ok, "expected DuckDB arg to be time.Time")
-	require.True(t, gotTime.Equal(parsedWant.UTC()), "expected parsed time to match")
+	gotMs, ok := args[0].(int64)
+	require.True(t, ok, "expected DuckDB arg to be epoch-ms int64")
+	require.Equal(t, parsedWant.UTC().UnixMilli(), gotMs)
 }
 
 // Given a LIKE-style operator such as starts_with or contains,

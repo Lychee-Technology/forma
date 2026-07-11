@@ -52,12 +52,12 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 		{
 			name:     "ValueTypeDate",
 			vt:       forma.ValueTypeDate,
-			expected: "TIMESTAMP",
+			expected: "BIGINT",
 		},
 		{
 			name:     "ValueTypeDateTime",
 			vt:       forma.ValueTypeDateTime,
-			expected: "TIMESTAMP",
+			expected: "BIGINT",
 		},
 		{
 			name:     "ValueTypeBool",
@@ -105,10 +105,10 @@ func TestCastExpression_SimpleColumn(t *testing.T) {
 			expected: "CAST(is_active AS BOOLEAN)",
 		},
 		{
-			name:     "CastColumnToTimestamp",
+			name:     "CastColumnToEpochMsBigint",
 			column:   "created_at",
 			vt:       forma.ValueTypeDateTime,
-			expected: "CAST(created_at AS TIMESTAMP)",
+			expected: "CAST(created_at AS BIGINT)",
 		},
 		{
 			name:     "CastColumnToVarchar",
@@ -183,14 +183,20 @@ func TestToDuckDBParam_DateTime_FromTime(t *testing.T) {
 	now := time.Now()
 	result, err := ToDuckDBParam(now, forma.ValueTypeDateTime)
 	require.NoError(t, err)
-	require.Equal(t, now.UTC(), result)
+	require.Equal(t, now.UTC().UnixMilli(), result)
 }
 
 func TestToDuckDBParam_DateTime_FromPointerTime(t *testing.T) {
 	now := time.Now()
 	result, err := ToDuckDBParam(&now, forma.ValueTypeDateTime)
 	require.NoError(t, err)
-	require.Equal(t, now.UTC(), result)
+	require.Equal(t, now.UTC().UnixMilli(), result)
+}
+
+func TestToDuckDBParam_DateTime_FromEpochMsInt64(t *testing.T) {
+	result, err := ToDuckDBParam(int64(1700000000000), forma.ValueTypeDateTime)
+	require.NoError(t, err)
+	require.Equal(t, int64(1700000000000), result)
 }
 
 func TestToDuckDBParam_DateTime_FromNilPointer(t *testing.T) {
@@ -211,7 +217,7 @@ func TestToDuckDBParam_Date_FromTime(t *testing.T) {
 	now := time.Now()
 	result, err := ToDuckDBParam(now, forma.ValueTypeDate)
 	require.NoError(t, err)
-	require.Equal(t, now.UTC(), result)
+	require.Equal(t, now.UTC().UnixMilli(), result)
 }
 
 func TestToDuckDBParam_Bool_FromBool(t *testing.T) {
@@ -381,9 +387,9 @@ func TestMapValueTypeToListDuckDBType_BoolElement(t *testing.T) {
 	require.Equal(t, "LIST(BOOLEAN)", result)
 }
 
-func TestMapValueTypeToListDuckDBType_TimestampElement(t *testing.T) {
+func TestMapValueTypeToListDuckDBType_DateTimeElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeDateTime)
-	require.Equal(t, "LIST(TIMESTAMP)", result)
+	require.Equal(t, "LIST(BIGINT)", result)
 }
 
 func TestIsListType_True(t *testing.T) {
