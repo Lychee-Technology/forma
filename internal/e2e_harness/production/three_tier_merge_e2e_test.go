@@ -221,8 +221,8 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 // changed_at (the update time) — not created_at, tier tags, or file write
 // order. The equal-ver_ts tie between CONFLICTING parquet versions (base
 // state newer than the last flush) is undefined by the ranking and
-// deliberately not exercised here; the init ver_ts contract is a follow-up
-// from the PR #209 review.
+// deliberately not exercised here; the init ver_ts contract is tracked by
+// #210.
 func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
