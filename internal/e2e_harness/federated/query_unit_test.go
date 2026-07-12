@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildFinalFederatedCount(t *testing.T) {
-	query := buildFinalFederatedCount("SELECT row_id, changed_at FROM combined_source")
+	query := buildFinalFederatedCount("SELECT row_id, changed_at FROM combined_source", nil)
 	if !strings.Contains(query, "SELECT COUNT(*)") {
 		t.Fatalf("expected count query, got: %s", query)
 	}
@@ -400,5 +400,21 @@ func TestShouldSkipFederatedSelect(t *testing.T) {
 				t.Fatalf("shouldSkipFederatedSelect(%d, %d) = %t, want %t", tt.totalRecords, tt.offset, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildFinalFederatedSelectAppliesFilterPostDedup(t *testing.T) {
+	opts := &QueryOptions{Limit: 10, Filter: &Filter{Conditions: map[string]any{"region": "NA"}}, TradeTimeStart: 1000}
+	query := buildFinalFederatedSelect("SELECT 1", opts, true)
+	if !strings.Contains(query, "WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) AND region = 'NA' AND tradeTime >= 1000") {
+		t.Fatalf("expected attribute and window predicates after rn = 1 (#213): %s", query)
+	}
+}
+
+func TestBuildFinalFederatedCountAppliesFilterPostDedup(t *testing.T) {
+	opts := &QueryOptions{Filter: &Filter{Conditions: map[string]any{"region": "NA"}}, TradeTimeEnd: 2000}
+	query := buildFinalFederatedCount("SELECT 1", opts)
+	if !strings.Contains(query, "WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) AND region = 'NA' AND tradeTime <= 2000") {
+		t.Fatalf("expected count to share the post-dedup predicates (#213): %s", query)
 	}
 }

@@ -284,7 +284,7 @@ func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath
 
 func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
 	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, usesBenchmarkProjectionForCount(opts), false)
-	return buildFinalFederatedCount(combinedQuery)
+	return buildFinalFederatedCount(combinedQuery, opts)
 }
 
 func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) string {
@@ -406,33 +406,46 @@ func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, sche
 
 func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
 	cte := buildFederatedDeduplicatedCTE(combinedQuery)
+	// The attribute/time-window predicates evaluate the rn = 1 winner only;
+	// per-tier they exist solely as a row_id semijoin so every version of a
+	// qualifying row enters the dedup. Inlining them per tier dropped newer
+	// non-matching versions pre-dedup and resurrected stale rows whose old
+	// values still matched — the harness twin of production #173 (#213).
+	// Non-empty predicates imply benchmarkProjection (they force the wide
+	// projection via requiresBenchmarkProjectedFilters), so the referenced
+	// columns are always present; rendering them in both branches turns any
+	// future break of that invariant into a loud binder error.
+	attributeFilter := buildAttributeFilterClause(opts)
+	timeWindowFilter := buildTradeTimeFilterClause(opts)
 	if benchmarkProjection {
 		return fmt.Sprintf(`
 		%s
 		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
 		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) %s %s
 		ORDER BY %s
 		LIMIT %d OFFSET %d
-	`, cte, buildOrderByClause(opts), opts.Limit, opts.Offset)
+	`, cte, attributeFilter, timeWindowFilter, buildOrderByClause(opts), opts.Limit, opts.Offset)
 	}
 	return fmt.Sprintf(`
 		%s
 		SELECT row_id, schema_id, changed_at, deleted_at, name, version
 		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) %s %s
 		ORDER BY row_id
 		LIMIT %d OFFSET %d
-	`, cte, opts.Limit, opts.Offset)
+	`, cte, attributeFilter, timeWindowFilter, opts.Limit, opts.Offset)
 }
 
-func buildFinalFederatedCount(combinedQuery string) string {
+func buildFinalFederatedCount(combinedQuery string, opts *QueryOptions) string {
+	// Count shares the post-dedup predicates with the select path so
+	// TotalRecords and Records can never disagree under filters (#213).
 	return fmt.Sprintf(`
 		%s
 		SELECT COUNT(*)
 		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
-	`, buildFederatedDeduplicatedCTE(combinedQuery))
+		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) %s %s
+	`, buildFederatedDeduplicatedCTE(combinedQuery), buildAttributeFilterClause(opts), buildTradeTimeFilterClause(opts))
 }
 
 func buildFederatedDeduplicatedCTE(combinedQuery string) string {
