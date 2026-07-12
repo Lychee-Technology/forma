@@ -77,3 +77,82 @@ func assertRetryConverges(ctx context.Context, t *testing.T, env *Env, schema Sc
 	assertManifestDeltaPaths(t, retry.Manifests, schema, finals)
 	env.AssertQueryMatches(ctx, Query{Schema: schema, Limit: 100})
 }
+
+// TestFlushFaultCopyObject breaks step 3 (S3 CopyObject tmp->final). The
+// export succeeded, so the tmp object exists, but no final object, no
+// flushed_at update, and no manifest entry may appear. The failed attempt's
+// tmp object is orphaned forever by design (retry uses fresh UUIDs and
+// CopyTmpToFinal only deletes its own tmp key); correctness holds because
+// the production glob's `*` does not cross `/` and skips _tmp/
+// (production/query.go:52-56) — adjudicating #179's "no orphan temp files"
+// criterion to "orphan temp files never affect correctness".
+func TestFlushFaultCopyObject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	simple := DefaultSchemaFixtures()[0]
+	seedRows(ctx, t, env, simple, 3)
+
+	faulty := &FaultInjectingS3{Inner: env.Cluster.S3, Fault: S3Fault{Op: S3OpCopy}}
+	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
+	if err == nil {
+		t.Fatal("flush with failing CopyObject must fail")
+	}
+	if faulty.Injected() == 0 {
+		t.Fatal("fault never fired")
+	}
+	finals, tmps := splitKeys(report.NewObjects)
+	if len(finals) != 0 {
+		t.Errorf("no final object may exist after CopyObject failure, got %v", finals)
+	}
+	if len(tmps) != 1 {
+		t.Errorf("expected exactly the orphaned tmp object, got %v", tmps)
+	}
+	if report.UnflushedAfter != 3 {
+		t.Errorf("rows must stay dirty, unflushed = %d, want 3", report.UnflushedAfter)
+	}
+	assertManifestDeltaPaths(t, report.Manifests, simple, nil)
+
+	// Clean retry converges; the orphaned tmp object stays behind but is
+	// invisible to both the manifest and the federated glob.
+	assertRetryConverges(ctx, t, env, simple, 3)
+}
+
+// TestFlushFaultTempCleanup breaks step 4 (DeleteObject of the tmp object).
+// CopyTmpToFinal swallows delete failures by design (helpers.go:165-167), so
+// the flush must SUCCEED: rows flushed, manifest updated, query correct —
+// with an orphaned tmp object left behind that must not affect anything.
+func TestFlushFaultTempCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	simple := DefaultSchemaFixtures()[0]
+	seedRows(ctx, t, env, simple, 3)
+
+	faulty := &FaultInjectingS3{Inner: env.Cluster.S3, Fault: S3Fault{Op: S3OpDelete, KeyContains: "/_tmp/"}}
+	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
+	if err != nil {
+		t.Fatalf("tmp cleanup failure must be swallowed, got %v", err)
+	}
+	if faulty.Injected() == 0 {
+		t.Fatal("fault never fired")
+	}
+	finals, tmps := splitKeys(report.NewObjects)
+	if len(finals) != 1 || len(tmps) != 1 {
+		t.Errorf("want 1 final + 1 orphaned tmp, got finals %v tmps %v", finals, tmps)
+	}
+	if report.UnflushedAfter != 0 {
+		t.Errorf("flush must complete, unflushed = %d, want 0", report.UnflushedAfter)
+	}
+	assertManifestDeltaPaths(t, report.Manifests, simple, finals)
+	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
+
+	// A second flush is a no-op: nothing dirty, no new objects.
+	noop, err := env.RunFlushWith(ctx, FlushOverrides{})
+	if err != nil {
+		t.Fatalf("no-op flush: %v", err)
+	}
+	if noop.UnflushedBefore != 0 || len(noop.NewObjects) != 0 {
+		t.Errorf("no-op flush moved state: unflushed %d, new %v", noop.UnflushedBefore, noop.NewObjects)
+	}
+}
