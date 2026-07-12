@@ -105,6 +105,20 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 // RunInit exports base parquet files for one schema via the extracted
 // cdc.RunInit driver and reports what changed.
 func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error) {
+	return e.RunInitWith(ctx, schema, InitOverrides{})
+}
+
+// InitOverrides customizes a single init pass (#180). Zero-value fields fall
+// back to the defaults RunInit uses.
+type InitOverrides struct {
+	DryRun bool
+}
+
+// RunInitWith executes one real init pass with per-run overrides. In dry-run
+// mode the mainline still counts the batches it skips, so the report's
+// RowsExported/FilesCreated carry the planned work — callers use them as the
+// positive control that the dry run had something to skip.
+func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverrides) (*InitReport, error) {
 	keysBefore, err := e.listS3Keys(ctx)
 	if err != nil {
 		return nil, err
@@ -115,12 +129,13 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 		S3Client:             e.Cluster.S3,
 		SchemaRegistryTable:  e.Tables.SchemaRegistry,
 		SchemaIDFilter:       int(schema.ID),
+		DryRun:               ov.DryRun,
 		AutoEstimateRowBytes: true,
 		Logger:               e.logger,
 		SchemaRegistry:       e.Registry,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cdc init schema %d: %w", schema.ID, err)
+		return nil, fmt.Errorf("cdc init schema %d (dry=%t): %w", schema.ID, ov.DryRun, err)
 	}
 
 	keysAfter, err := e.listS3Keys(ctx)
