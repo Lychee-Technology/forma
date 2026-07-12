@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// matrixV1Creates builds the five v1 rows whose every filterable attribute
-// the v2 updates flip.
-func matrixV1Creates(wide SchemaRef) []*Event {
+// buildMatrixV1Creates builds the five v1 rows whose every filterable
+// attribute the v2 updates flip.
+func buildMatrixV1Creates(wide SchemaRef) []*Event {
 	creates := make([]*Event, 0, 5)
 	for i := 0; i < 5; i++ {
 		creates = append(creates, CreateEvent(wide, map[string]any{
@@ -28,8 +28,8 @@ func matrixV1Creates(wide SchemaRef) []*Event {
 	return creates
 }
 
-// matrixV2Updates flips every filterable attribute of the v1 rows.
-func matrixV2Updates(wide SchemaRef, creates []*Event) []*Event {
+// buildMatrixV2Updates flips every filterable attribute of the v1 rows.
+func buildMatrixV2Updates(wide SchemaRef, creates []*Event) []*Event {
 	v2 := make([]*Event, 0, len(creates))
 	for i, c := range creates {
 		v2 = append(v2, UpdateEvent(wide, c.RowID, map[string]any{
@@ -65,10 +65,8 @@ func assertMatrixV1PositiveControls(ctx context.Context, t *testing.T, env *Env,
 		{"MAIN date", Filter{Attr: "joined", Op: "lt", Value: "2020-01-01T00:00:00Z"}, 5},
 	}
 	for _, c := range controls {
-		res := env.AssertQueryMatches(ctx, Query{Schema: wide, Filters: []Filter{c.filter}, Limit: 10})
-		if res != nil && len(res.Records) != c.want {
-			t.Fatalf("%s positive control returned %d rows, want %d", c.name, len(res.Records), c.want)
-		}
+		assertRowCount(ctx, t, env, c.name+" positive control",
+			Query{Schema: wide, Filters: []Filter{c.filter}, Limit: 10}, c.want)
 	}
 }
 
@@ -83,19 +81,15 @@ func assertMatrixV1PositiveControls(ctx context.Context, t *testing.T, env *Env,
 // joined bound to a MAIN unix_ms column) are covered since #200 fixed
 // federated date-predicate binding.
 func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
-	creates := matrixV1Creates(wide)
-	if err := env.ApplyEvents(ctx, creates...); err != nil {
-		t.Fatalf("apply creates: %v", err)
-	}
+	creates := buildMatrixV1Creates(wide)
+	mustApplyEvents(ctx, t, env, "apply creates", creates...)
 	mustFlush(ctx, t, env) // delta #1 = v1
 
 	// Load-bearing positives across storage classes.
 	assertMatrixV1PositiveControls(ctx, t, env, wide)
 
-	v2 := matrixV2Updates(wide, creates)
-	if err := env.ApplyEvents(ctx, v2...); err != nil {
-		t.Fatalf("apply v2 updates: %v", err)
-	}
+	v2 := buildMatrixV2Updates(wide, creates)
+	mustApplyEvents(ctx, t, env, "apply v2 updates", v2...)
 	assertStrictlyNewer(t, creates, v2)
 	mustFlush(ctx, t, env) // delta #2 = v2; rows clean
 
@@ -138,15 +132,12 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 		Limit: 10,
 	})
 	// Same conjunction anchored fully on the winner: exactly one row.
-	res := env.AssertQueryMatches(ctx, Query{
+	assertRowCount(ctx, t, env, "winner AND probe", Query{
 		Schema: wide,
 		Filters: []Filter{
 			{Attr: "title", Value: "beta-02"},
 			{Attr: "active", Value: "0"},
 		},
 		Limit: 10,
-	})
-	if res != nil && len(res.Records) != 1 {
-		t.Fatalf("winner AND probe returned %d rows, want 1", len(res.Records))
-	}
+	}, 1)
 }
