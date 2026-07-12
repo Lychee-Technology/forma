@@ -121,7 +121,7 @@ type InitOverrides struct {
 func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverrides) (*InitReport, error) {
 	keysBefore, err := e.listS3Keys(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capture pre-init s3 listing: %w", err)
 	}
 
 	summary, err := cdc.RunInit(ctx, cdc.InitOptions{
@@ -140,7 +140,7 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 
 	keysAfter, err := e.listS3Keys(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capture post-init s3 listing: %w", err)
 	}
 	report := &InitReport{
 		RowsExported: summary.TotalRowsExported,
@@ -149,7 +149,7 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	}
 	manifests, err := e.loadManifests(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load manifests after init: %w", err)
 	}
 	report.Manifest = manifests[schema.ID]
 	return report, nil
