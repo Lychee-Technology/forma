@@ -363,7 +363,7 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		// and no manifest update (#180). Log the work a real run would do.
 		e.logger.Sugar().Infow("dry-run: skipping flush batch",
 			"schema_id", e.schemaID, "batch_kind", batchKind,
-			"batch_size", len(batchIDs), "final_key", finalKey)
+			"batch_size", len(batchIDs), "would_create_key", finalKey)
 		return nil
 	}
 

@@ -78,6 +78,9 @@ func TestProductionSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run flush: %v", err)
 	}
+	if dry.UnflushedBefore == 0 {
+		t.Fatal("positive control: no pending work before dry-run")
+	}
 	if dry.UnflushedBefore != dry.UnflushedAfter {
 		t.Fatalf("dry-run changed unflushed count: %d -> %d", dry.UnflushedBefore, dry.UnflushedAfter)
 	}
