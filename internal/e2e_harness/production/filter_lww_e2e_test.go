@@ -4,7 +4,6 @@ package production
 
 import (
 	"context"
-	"fmt"
 	"testing"
 )
 
@@ -38,67 +37,25 @@ func TestFilterLWW(t *testing.T) {
 	}
 }
 
-// assertStrictlyNewer fails fast when any new version's changed_at is not
-// strictly after its predecessor's at millisecond resolution — otherwise an
-// LWW probe degrades into the undefined equal-ver_ts tie tracked by #210.
-func assertStrictlyNewer(t *testing.T, olds, news []*Event) {
-	t.Helper()
-	for i := range olds {
-		if news[i].ChangedAt <= olds[i].ChangedAt {
-			t.Fatalf("row %d: newer changed_at %d not strictly after older %d",
-				i, news[i].ChangedAt, olds[i].ChangedAt)
-		}
-	}
-}
-
-// assertZeroRows runs an oracle-checked query that must return no rows: the
-// predicate matches only a superseded version, so any row in the result is a
-// filter-before-LWW resurrection.
-func assertZeroRows(ctx context.Context, t *testing.T, env *Env, name string, q Query) {
-	t.Helper()
-	if res := env.AssertQueryMatches(ctx, q); res != nil && len(res.Records) != 0 {
-		t.Errorf("%s: stale probe returned %d rows, want 0", name, len(res.Records))
-	}
-}
-
 // testStaleFilterDeltaGenerations is issue #178 scenario 1 in the
 // delta-generation layout: v1 (matching) in delta #1, v2 (non-matching) in
 // delta #2, no hot rows. The semijoin admits every row_id via its v1 match;
 // LWW must pick v2 and the visible filter must then reject it.
 func testStaleFilterDeltaGenerations(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
-	creates := make([]*Event, 0, 5)
-	for i := 0; i < 5; i++ {
-		creates = append(creates, CreateEvent(wide, map[string]any{
-			"title": fmt.Sprintf("open-%02d", i),
-			"count": float64(100000 + i),
-		}))
-	}
-	if err := env.ApplyEvents(ctx, creates...); err != nil {
-		t.Fatalf("apply creates: %v", err)
-	}
+	creates := buildOpenCreates(wide, 5)
+	mustApplyEvents(ctx, t, env, "apply creates", creates...)
 	mustFlush(ctx, t, env) // delta #1 = v1 @ create-time ver_ts
 
 	// Load-bearing positive: v1 is served from delta #1 by its own value
 	// (guards every zero-row probe below against a broken read path).
-	res := env.AssertQueryMatches(ctx, Query{
+	assertRowCount(ctx, t, env, "v1 positive control", Query{
 		Schema:  wide,
 		Filters: []Filter{{Attr: "title", Value: "open-03"}},
 		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 1 {
-		t.Fatalf("v1 positive control returned %d rows, want 1", len(res.Records))
-	}
+	}, 1)
 
-	v2 := make([]*Event, 0, len(creates))
-	for i, c := range creates {
-		v2 = append(v2, UpdateEvent(wide, c.RowID, map[string]any{
-			"title": fmt.Sprintf("closed-%02d", i),
-			"count": float64(200000 + i),
-		}))
-	}
-	if err := env.ApplyEvents(ctx, v2...); err != nil {
-		t.Fatalf("apply v2 updates: %v", err)
-	}
+	v2 := buildClosedUpdates(wide, creates)
+	mustApplyEvents(ctx, t, env, "apply v2 updates", v2...)
 	assertStrictlyNewer(t, creates, v2)
 	flush2 := mustFlush(ctx, t, env) // delta #2 = v2 @ update-time ver_ts
 	if got := countTier(flush2.Manifests[wide.ID], "delta"); got != 2 {
@@ -126,16 +83,8 @@ func testStaleFilterDeltaGenerations(ctx context.Context, t *testing.T, env *Env
 // (non-matching) in a delta flushed afterwards. Deterministic under #210:
 // base ver_ts = create time < delta ver_ts = update time.
 func testStaleFilterBaseVsDelta(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
-	creates := make([]*Event, 0, 5)
-	for i := 0; i < 5; i++ {
-		creates = append(creates, CreateEvent(wide, map[string]any{
-			"title": fmt.Sprintf("open-%02d", i),
-			"count": float64(100000 + i),
-		}))
-	}
-	if err := env.ApplyEvents(ctx, creates...); err != nil {
-		t.Fatalf("apply creates: %v", err)
-	}
+	creates := buildOpenCreates(wide, 5)
+	mustApplyEvents(ctx, t, env, "apply creates", creates...)
 	report, err := env.RunInit(ctx, wide) // base = v1 @ create-time ver_ts
 	if err != nil {
 		t.Fatalf("run init: %v", err)
@@ -146,25 +95,14 @@ func testStaleFilterBaseVsDelta(ctx context.Context, t *testing.T, env *Env, wid
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
 
 	// Load-bearing positive: base serves v1 by its own value.
-	res := env.AssertQueryMatches(ctx, Query{
+	assertRowCount(ctx, t, env, "v1 positive control", Query{
 		Schema:  wide,
 		Filters: []Filter{{Attr: "title", Value: "open-02"}},
 		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 1 {
-		t.Fatalf("v1 positive control returned %d rows, want 1", len(res.Records))
-	}
+	}, 1)
 
-	v2 := make([]*Event, 0, len(creates))
-	for i, c := range creates {
-		v2 = append(v2, UpdateEvent(wide, c.RowID, map[string]any{
-			"title": fmt.Sprintf("closed-%02d", i),
-			"count": float64(200000 + i),
-		}))
-	}
-	if err := env.ApplyEvents(ctx, v2...); err != nil {
-		t.Fatalf("apply v2 updates: %v", err)
-	}
+	v2 := buildClosedUpdates(wide, creates)
+	mustApplyEvents(ctx, t, env, "apply v2 updates", v2...)
 	assertStrictlyNewer(t, creates, v2)
 	mustFlush(ctx, t, env) // delta = v2 @ update-time ver_ts; rows now clean
 
