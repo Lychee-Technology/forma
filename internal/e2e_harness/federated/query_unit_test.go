@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildFinalFederatedCount(t *testing.T) {
-	query := buildFinalFederatedCount("SELECT row_id, changed_at FROM combined_source")
+	query := buildFinalFederatedCount("SELECT row_id, changed_at FROM combined_source", nil)
 	if !strings.Contains(query, "SELECT COUNT(*)") {
 		t.Fatalf("expected count query, got: %s", query)
 	}
@@ -60,18 +60,18 @@ func TestBuildFederatedCombinedQueryUsesHotFilterExpressions(t *testing.T) {
 }
 
 func TestBuildParquetTierQuerySupportsSchemaSpecificProjection(t *testing.T) {
-	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND region = 'NA'", "", true, false)
+	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['customer-path']) WHERE 1 = 1 AND region = 'NA')", true, false)
 	if !strings.Contains(customerQuery, "region") {
 		t.Fatalf("expected customer projection without trade time conversion: %s", customerQuery)
 	}
-	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND symbol = 'SYM00001'", "", true, false)
+	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['security-path']) WHERE 1 = 1 AND symbol = 'SYM00001')", true, false)
 	if !strings.Contains(securityQuery, "symbol") {
 		t.Fatalf("expected security projection with symbol only: %s", securityQuery)
 	}
 }
 
 func TestBuildParquetTierQueryKeepsDeletedRowsForDeduplication(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", "", true, false)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", true, false)
 	if strings.Contains(query, "deleted_at = 0") {
 		t.Fatalf("expected parquet tier query to defer deleted filtering until after dedup: %s", query)
 	}
@@ -140,10 +140,11 @@ func TestProjectionSelectionHelpers(t *testing.T) {
 	}
 }
 
-func TestBuildParquetTierQueryAppliesProjectedTradeTimeFilter(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "AND tradeTime <= 2000", true, false)
-	if !strings.Contains(query, "AND tradeTime <= 2000") {
-		t.Fatalf("expected projected trade time filter in parquet query: %s", query)
+func TestBuildParquetTierQueryAppliesPushdownSemijoin(t *testing.T) {
+	semijoin := "AND row_id IN (SELECT row_id FROM read_parquet(['trade-path']) WHERE 1 = 1 AND tradeTime <= 2000)"
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", semijoin, true, false)
+	if !strings.Contains(query, semijoin) {
+		t.Fatalf("expected pushdown semijoin in parquet query: %s", query)
 	}
 }
 
@@ -164,7 +165,7 @@ func TestBuildPostgresOnlyQueriesSupportBenchmarkFilters(t *testing.T) {
 }
 
 func TestBuildParquetTierQueryTradeTimeOnlyProjection(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", "", true, true)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", true, true)
 	for _, expected := range []string{"'' as name", "'' as symbol", "'' as exchange", "'' as region", "0 as tradeType, tradeTime,"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected tradeTime-only parquet projection to include %q: %s", expected, query)
@@ -400,5 +401,57 @@ func TestShouldSkipFederatedSelect(t *testing.T) {
 				t.Fatalf("shouldSkipFederatedSelect(%d, %d) = %t, want %t", tt.totalRecords, tt.offset, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildFinalFederatedSelectAppliesFilterPostDedup(t *testing.T) {
+	opts := &QueryOptions{Limit: 10, Filter: &Filter{Conditions: map[string]any{"region": "NA"}}, TradeTimeStart: 1000}
+	query := buildFinalFederatedSelect("SELECT 1", opts, true)
+	if !strings.Contains(query, "WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) AND region = 'NA' AND tradeTime >= 1000") {
+		t.Fatalf("expected attribute and window predicates after rn = 1 (#213): %s", query)
+	}
+}
+
+func TestBuildFinalFederatedCountAppliesFilterPostDedup(t *testing.T) {
+	opts := &QueryOptions{Filter: &Filter{Conditions: map[string]any{"region": "NA"}}, TradeTimeEnd: 2000}
+	query := buildFinalFederatedCount("SELECT 1", opts)
+	if !strings.Contains(query, "WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) AND region = 'NA' AND tradeTime <= 2000") {
+		t.Fatalf("expected count to share the post-dedup predicates (#213): %s", query)
+	}
+}
+
+func TestBuildParquetPushdownSemijoin(t *testing.T) {
+	filtered := &QueryOptions{Filter: &Filter{Conditions: map[string]any{"region": "NA"}}, TradeTimeStart: 1000}
+	if got := buildParquetPushdownSemijoin("base-path", "delta-path", true, true, nil); got != "" {
+		t.Fatalf("no predicates must render no semijoin, got: %s", got)
+	}
+	if got := buildParquetPushdownSemijoin("base-path", "delta-path", false, false, filtered); got != "" {
+		t.Fatalf("no parquet tiers must render no semijoin, got: %s", got)
+	}
+	both := buildParquetPushdownSemijoin("base-path", "delta-path", true, true, filtered)
+	if !strings.Contains(both, "AND row_id IN (SELECT row_id FROM read_parquet(['base-path', 'delta-path']) WHERE 1 = 1 AND region = 'NA' AND tradeTime >= 1000)") {
+		t.Fatalf("expected cross-tier semijoin over both parquet paths (#213): %s", both)
+	}
+	deltaOnly := buildParquetPushdownSemijoin("base-path", "delta-path", false, true, filtered)
+	if !strings.Contains(deltaOnly, "read_parquet(['delta-path'])") || strings.Contains(deltaOnly, "base-path") {
+		t.Fatalf("expected semijoin over existing tiers only: %s", deltaOnly)
+	}
+}
+
+func TestBuildFederatedCombinedQueryUsesSemijoinPushdownForParquetTiers(t *testing.T) {
+	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDCustomer, PGHost: "localhost", PGPort: "5432"}
+	opts := &QueryOptions{Filter: &Filter{Conditions: map[string]any{"region": "NA"}}}
+	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, opts, true, false)
+	semijoin := "AND row_id IN (SELECT row_id FROM read_parquet(['base-path', 'delta-path']) WHERE 1 = 1 AND region = 'NA')"
+	if got := strings.Count(query, semijoin); got != 2 {
+		t.Fatalf("expected the cross-tier semijoin in both parquet tier queries, found %d: %s", got, query)
+	}
+	// The raw predicate must not survive anywhere outside the semijoin
+	// subqueries: pre-dedup inline filtering is exactly the #213 bug.
+	if got := strings.Count(query, "AND region = 'NA'"); got != 2 {
+		t.Fatalf("expected the parquet predicate only inside the 2 semijoins, found %d: %s", got, query)
+	}
+	if !strings.Contains(query, "COALESCE(hot_vals.region, em.text_02) = 'NA'") {
+		t.Fatalf("hot tier pre-filter must stay (safe via dirty anti-join): %s", query)
 	}
 }

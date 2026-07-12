@@ -275,77 +275,6 @@ func isFederatedTierFileError(err error) bool {
 	return strings.Contains(err.Error(), "No files found") || strings.Contains(err.Error(), "does not exist")
 }
 
-// buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
-func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
-	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, benchmarkProjection, usesTradeTimeOnlyBenchmarkProjectionForSelect(opts))
-	return buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
-}
-
-func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, usesBenchmarkProjectionForCount(opts), false)
-	return buildFinalFederatedCount(combinedQuery)
-}
-
-func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) string {
-	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
-	rowIDFilter := buildRowIDFilter(opts)
-	hotRowIDFilter := buildHotRowIDFilter(opts)
-	attributeFilter := buildAttributeFilterClause(opts)
-	timeWindowFilter := buildTradeTimeFilterClause(opts)
-	hotAttributeFilter := buildHotAttributeFilterClauseTargeted(opts)
-	hotTimeWindowFilter := buildHotTradeTimeFilterClauseTargeted(opts)
-	pgConnStr := h.buildPGConnString()
-
-	// Build tier queries dynamically
-	var tierQueries []string
-
-	if hasBase {
-		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
-		tierQueries = append(tierQueries, baseQuery)
-	}
-
-	if hasDelta {
-		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
-		tierQueries = append(tierQueries, deltaQuery)
-	}
-
-	// Always include hot buffer (Postgres)
-	hotQuery := h.buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
-	tierQueries = append(tierQueries, hotQuery)
-
-	// Combine all tier queries with UNION ALL
-	combinedQuery := strings.Join(tierQueries, "\n\t\t\tUNION ALL\n")
-	return combinedQuery
-}
-
-func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
-	if benchmarkProjection {
-		projection := benchmarkParquetProjection(schemaID, tier, path, tradeTimeOnlyProjection)
-		return fmt.Sprintf(`
-			%s
-			WHERE 1 = 1 %s %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter)
-	}
-	return fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
-			FROM read_parquet('%s')
-			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, timeWindowFilter)
-}
-
-func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnlyProjection bool) string {
-	switch schemaID {
-	case benchmarkSchemaIDCustomer:
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, '' as symbol, '' as exchange, region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
-	case benchmarkSchemaIDSecurity:
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
-	default:
-		if tradeTimeOnlyProjection {
-			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
-		}
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, path)
-	}
-}
-
 func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
 		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {
@@ -402,56 +331,6 @@ func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, sche
 		WHERE cl.flushed_at = 0 
 			AND cl.schema_id = %d
 			%s`, pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
-}
-
-func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchmarkProjection bool) string {
-	cte := buildFederatedDeduplicatedCTE(combinedQuery)
-	if benchmarkProjection {
-		return fmt.Sprintf(`
-		%s
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
-		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
-		ORDER BY %s
-		LIMIT %d OFFSET %d
-	`, cte, buildOrderByClause(opts), opts.Limit, opts.Offset)
-	}
-	return fmt.Sprintf(`
-		%s
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version
-		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
-		ORDER BY row_id
-		LIMIT %d OFFSET %d
-	`, cte, opts.Limit, opts.Offset)
-}
-
-func buildFinalFederatedCount(combinedQuery string) string {
-	return fmt.Sprintf(`
-		%s
-		SELECT COUNT(*)
-		FROM deduplicated
-		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL)
-	`, buildFederatedDeduplicatedCTE(combinedQuery))
-}
-
-func buildFederatedDeduplicatedCTE(combinedQuery string) string {
-	return fmt.Sprintf(`
-		WITH combined AS (
-			%s
-		),
-		deduplicated AS (
-			SELECT *, ROW_NUMBER() OVER (
-				PARTITION BY row_id
-				ORDER BY changed_at DESC,
-					CASE tier WHEN 'hot' THEN 3 WHEN 'delta' THEN 2 WHEN 'base' THEN 1 ELSE 0 END DESC,
-					version DESC,
-					deleted_at DESC,
-					row_id ASC
-			) as rn
-			FROM combined
-		)
-	`, combinedQuery)
 }
 
 func usesBenchmarkProjectionForSelect(opts *QueryOptions) bool {
