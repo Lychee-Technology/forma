@@ -877,3 +877,53 @@ func TestUpdateManifest_AppendError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "append to manifest")
 }
+
+// Dry-run must be decided before the first side effect: no DuckDB export
+// (which itself writes a _tmp S3 object via httpfs), no tmp->final copy, no
+// mark-flushed, and no manifest access (#180).
+func TestExecuteBatch_DryRunPerformsNoSideEffects(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	store := newInMemoryManifestStore()
+	exportCalled := false
+	executor := &flushBatchExecutor{
+		db:               db,
+		duck:             &DuckExporter{Logger: zap.NewNop()},
+		s3Client:         &copyFailingS3Client{}, // any S3 call during dry-run fails the batch
+		cfg:              CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:        "change_log",
+		schemaID:         7,
+		snapshot:         snapshot,
+		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		dryRun:           true,
+		logger:           zap.NewNop(),
+		manifestStore:    store,
+		manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+			exportCalled = true
+			return nil
+		},
+	}
+
+	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	require.NoError(t, err)
+	require.False(t, exportCalled, "dry-run must not run the DuckDB export")
+
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.Zero(t, flushedAt, "dry-run must not mark rows flushed")
+	require.Zero(t, store.saved, "dry-run must not save the manifest")
+}

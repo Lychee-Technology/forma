@@ -34,9 +34,9 @@ func (e *Env) RunFlush(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, false)
 }
 
-// RunFlushDry runs the flusher in dry-run mode (for #180). Note the mainline
-// dry-run still exports parquet objects; it skips marking rows flushed and
-// updating the manifest — assert on UnflushedAfter and Manifests.
+// RunFlushDry runs the flusher in dry-run mode (#180): a dry run mutates
+// nothing — no S3 objects (tmp or final), no flushed_at changes, and no
+// manifest updates. TestDryRunImmutability pins all three surfaces.
 func (e *Env) RunFlushDry(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, true)
 }

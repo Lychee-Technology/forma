@@ -357,6 +357,16 @@ type flushBatchExecutor struct {
 }
 
 func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
+	if e.dryRun {
+		// Decided before the first side effect: no DuckDB export (which
+		// writes a _tmp S3 object), no tmp->final copy, no mark-flushed,
+		// and no manifest update (#180). Log the work a real run would do.
+		e.logger.Sugar().Infow("dry-run: skipping flush batch",
+			"schema_id", e.schemaID, "batch_kind", batchKind,
+			"batch_size", len(batchIDs), "final_key", finalKey)
+		return nil
+	}
+
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 	exportSnapshot := e.exportSnapshot
 	if exportSnapshot == nil {
@@ -371,11 +381,6 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 
 	if err := CopyTmpToFinal(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {
 		return fmt.Errorf("copy tmp to final (%s): %w", batchKind, err)
-	}
-
-	if e.dryRun {
-		e.logger.Sugar().Infow("dry-run: skipping mark flushed and manifest update", "schema_id", e.schemaID)
-		return nil
 	}
 
 	flushedAt := time.Now().UnixMilli()
