@@ -131,6 +131,14 @@ where cdc-init bootstraps base files before federated reads. Use
   unflushed counts, new S3 objects, and parsed manifests. Note the
   mainline dry-run still writes parquet objects — it skips `flushed_at`
   marking and manifest updates (#180).
+- `RunFlushWith(FlushOverrides{S3, Config, DryRun})` runs one flush pass
+  with per-run overrides and reports observable state *even when the run
+  fails* (report is non-nil unless the pre-run capture fails), so
+  failure-boundary tests can assert partial side effects alongside the
+  error. Pair it with `FaultInjectingS3` — a decorator over the real S3
+  client that fails calls matching an `S3Fault{Op, KeyContains,
+  SkipMatches}` — to break exactly one step of the flush pipeline and pin
+  the failure matrix (#179).
 - `RunInit` wraps `cdc.RunInit` (base file export + manifest base entries).
   Base keys are deterministic (`<prefix>/<id>/<minRowID>_<maxRowID>.parquet`),
   and init replaces the manifest's base tier with each run's output, so
@@ -195,7 +203,7 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #174 full-type coverage | `e2e_wide` + `FullTypeProfile` |
 | #176 init handoff | `RunInit` + `RunFlush` (`init_handoff_e2e_test.go`, `init_delete_e2e_test.go`, `init_rerun_e2e_test.go`, `init_concurrent_e2e_test.go`) |
 | #175 lifecycle sequences | `Event` model + `ApplyEvents` + `InjectRestore` + `RestartPostgres` (`lifecycle_e2e_test.go`, `restart_e2e_test.go`) |
-| #179 flush thresholds | `WithFlushThresholds` + `FlushReport` |
+| #179 flush failure matrix | `FaultInjectingS3` + `RunFlushWith` + `ExecSQL` |
 | #180 dry-run semantics | `RunFlushDry` |
 | #181 failure injection | `ExecSQL` |
 | #185 circuit breaker | `WithBreaker` |
