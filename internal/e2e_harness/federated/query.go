@@ -291,8 +291,12 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
 	hotRowIDFilter := buildHotRowIDFilter(opts)
-	attributeFilter := buildAttributeFilterClause(opts)
-	timeWindowFilter := buildTradeTimeFilterClause(opts)
+	parquetPushdown := buildParquetPushdownSemijoin(basePath, deltaPath, hasBase, hasDelta, opts)
+	// The hot tier keeps its pre-dedup predicates: every hot row_id is in the
+	// dirty set (both derive from change_log.flushed_at = 0), so its S3
+	// versions never enter the dedup and a filtered-out hot row cannot be
+	// replaced by a stale parquet version — mirroring production pg_source
+	// (#173). The parquet tiers get only the row_id semijoin (#213).
 	hotAttributeFilter := buildHotAttributeFilterClauseTargeted(opts)
 	hotTimeWindowFilter := buildHotTradeTimeFilterClauseTargeted(opts)
 	pgConnStr := h.buildPGConnString()
@@ -301,12 +305,12 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	var tierQueries []string
 
 	if hasBase {
-		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
-		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
@@ -319,17 +323,49 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	return combinedQuery
 }
 
-func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, pushdownSemijoin string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
 		projection := benchmarkParquetProjection(schemaID, tier, path, tradeTimeOnlyProjection)
 		return fmt.Sprintf(`
 			%s
-			WHERE 1 = 1 %s %s %s %s`, projection, dirtyExclusion, rowIDFilter, attributeFilter, timeWindowFilter)
+			WHERE 1 = 1 %s %s %s`, projection, dirtyExclusion, rowIDFilter, pushdownSemijoin)
 	}
 	return fmt.Sprintf(`
 			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
 			FROM read_parquet('%s')
-			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, timeWindowFilter)
+			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, pushdownSemijoin)
+}
+
+// buildParquetPushdownSemijoin renders the attribute/time-window pushdown for
+// the parquet tiers as a row_id semijoin over EVERY parquet tier that exists:
+// a row qualifies when ANY of its S3 versions matches, all of its versions
+// then enter the ranked dedup, and the post-dedup predicate in the final
+// select judges the winner. The subquery must span base and delta together —
+// a per-tier semijoin would drop a newer non-matching delta version while the
+// stale matching base version survives, recreating the #213 resurrection
+// (and multi-version files make the same bug possible within one tier).
+// Mirrors the production s3_source semijoin from #173.
+func buildParquetPushdownSemijoin(basePath, deltaPath string, hasBase, hasDelta bool, opts *QueryOptions) string {
+	attributeFilter := buildAttributeFilterClause(opts)
+	timeWindowFilter := buildTradeTimeFilterClause(opts)
+	if attributeFilter == "" && timeWindowFilter == "" {
+		return ""
+	}
+	var paths []string
+	if hasBase {
+		paths = append(paths, fmt.Sprintf("'%s'", basePath))
+	}
+	if hasDelta {
+		paths = append(paths, fmt.Sprintf("'%s'", deltaPath))
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	// Join the (possibly one-sided) clauses so an absent filter leaves no
+	// trailing whitespace before the closing paren.
+	predicates := strings.TrimSpace(attributeFilter + " " + timeWindowFilter)
+	return fmt.Sprintf("AND row_id IN (SELECT row_id FROM read_parquet([%s]) WHERE 1 = 1 %s)",
+		strings.Join(paths, ", "), predicates)
 }
 
 func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnlyProjection bool) string {
