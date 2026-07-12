@@ -47,6 +47,31 @@ func matrixV2Updates(wide SchemaRef, creates []*Event) []*Event {
 	return v2
 }
 
+// assertMatrixV1PositiveControls guards the zero-row matrix probes against
+// false greens: at the v1-only stage, every probed storage class must return
+// rows through the same predicate paths the matrix later expects to be empty.
+func assertMatrixV1PositiveControls(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	t.Helper()
+	controls := []struct {
+		name   string
+		filter Filter
+		want   int
+	}{
+		{"MAIN text", Filter{Attr: "title", Value: "alpha-02"}, 1},
+		{"EAV text", Filter{Attr: "note", Op: "contains", Value: "old-"}, 5},
+		// Date controls (#200): all five v1 rows carry born=2000-01-01 and
+		// joined=2010-06-15.
+		{"EAV date", Filter{Attr: "born", Op: "lt", Value: "2010-01-01T00:00:00Z"}, 5},
+		{"MAIN date", Filter{Attr: "joined", Op: "lt", Value: "2020-01-01T00:00:00Z"}, 5},
+	}
+	for _, c := range controls {
+		res := env.AssertQueryMatches(ctx, Query{Schema: wide, Filters: []Filter{c.filter}, Limit: 10})
+		if res != nil && len(res.Records) != c.want {
+			t.Fatalf("%s positive control returned %d rows, want %d", c.name, len(res.Records), c.want)
+		}
+	}
+}
+
 // testStaleFilterOperatorMatrix is issue #178 scenario 4: text, numeric,
 // and bool operators over both MAIN-bound and EAV attributes, where every
 // predicate matches only the superseded v1 generation. Also pins the
@@ -65,40 +90,7 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 	mustFlush(ctx, t, env) // delta #1 = v1
 
 	// Load-bearing positives across storage classes.
-	res := env.AssertQueryMatches(ctx, Query{
-		Schema:  wide,
-		Filters: []Filter{{Attr: "title", Value: "alpha-02"}},
-		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 1 {
-		t.Fatalf("MAIN text positive control returned %d rows, want 1", len(res.Records))
-	}
-	res = env.AssertQueryMatches(ctx, Query{
-		Schema:  wide,
-		Filters: []Filter{{Attr: "note", Op: "contains", Value: "old-"}},
-		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 5 {
-		t.Fatalf("EAV text positive control returned %d rows, want 5", len(res.Records))
-	}
-	// Date positive control (#200): all five v1 rows carry born=2000-01-01.
-	res = env.AssertQueryMatches(ctx, Query{
-		Schema:  wide,
-		Filters: []Filter{{Attr: "born", Op: "lt", Value: "2010-01-01T00:00:00Z"}},
-		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 5 {
-		t.Fatalf("EAV date positive control returned %d rows, want 5", len(res.Records))
-	}
-	// MAIN date positive control (#200): all five v1 rows carry joined=2010-06-15.
-	res = env.AssertQueryMatches(ctx, Query{
-		Schema:  wide,
-		Filters: []Filter{{Attr: "joined", Op: "lt", Value: "2020-01-01T00:00:00Z"}},
-		Limit:   10,
-	})
-	if res != nil && len(res.Records) != 5 {
-		t.Fatalf("MAIN date positive control returned %d rows, want 5", len(res.Records))
-	}
+	assertMatrixV1PositiveControls(ctx, t, env, wide)
 
 	v2 := matrixV2Updates(wide, creates)
 	if err := env.ApplyEvents(ctx, v2...); err != nil {
@@ -146,7 +138,7 @@ func testStaleFilterOperatorMatrix(ctx context.Context, t *testing.T, env *Env, 
 		Limit: 10,
 	})
 	// Same conjunction anchored fully on the winner: exactly one row.
-	res = env.AssertQueryMatches(ctx, Query{
+	res := env.AssertQueryMatches(ctx, Query{
 		Schema: wide,
 		Filters: []Filter{
 			{Attr: "title", Value: "beta-02"},

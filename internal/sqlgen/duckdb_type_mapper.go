@@ -130,57 +130,7 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		}
 		return numeric, nil
 	case forma.ValueTypeBigInt, forma.ValueTypeNumeric:
-		// Preserve exact precision by converting to string — DuckDB accepts
-		// string representations for DECIMAL and HUGEINT column bindings.
-		if s, ok := value.(string); ok {
-			return s, nil
-		}
-		switch v := value.(type) {
-		case *float64:
-			if v == nil {
-				return nil, nil
-			}
-			return decimalString(*v), nil
-		case *float32:
-			if v == nil {
-				return nil, nil
-			}
-			return decimalString(float64(*v)), nil
-		case *int:
-			if v == nil {
-				return nil, nil
-			}
-			return fmt.Sprintf("%d", *v), nil
-		case *int16:
-			if v == nil {
-				return nil, nil
-			}
-			return fmt.Sprintf("%d", *v), nil
-		case *int32:
-			if v == nil {
-				return nil, nil
-			}
-			return fmt.Sprintf("%d", *v), nil
-		case *int64:
-			if v == nil {
-				return nil, nil
-			}
-			return fmt.Sprintf("%d", *v), nil
-		case float64:
-			return decimalString(v), nil
-		case float32:
-			return decimalString(float64(v)), nil
-		case int64:
-			return fmt.Sprintf("%d", v), nil
-		case int:
-			return fmt.Sprintf("%d", v), nil
-		case int32:
-			return fmt.Sprintf("%d", v), nil
-		case int16:
-			return fmt.Sprintf("%d", v), nil
-		default:
-			return nil, fmt.Errorf("cannot convert %T to bigint/numeric param", value)
-		}
+		return toDuckDBDecimalParam(value)
 	case forma.ValueTypeText:
 		switch s := value.(type) {
 		case string:
@@ -197,6 +147,61 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	default:
 		// Fallback: return as-is
 		return value, nil
+	}
+}
+
+// toDuckDBDecimalParam converts a bigint/numeric value to its exact-precision
+// string form — DuckDB accepts string representations for DECIMAL and HUGEINT
+// column bindings.
+func toDuckDBDecimalParam(value any) (any, error) {
+	if s, ok := value.(string); ok {
+		return s, nil
+	}
+	switch v := value.(type) {
+	case *float64:
+		if v == nil {
+			return nil, nil
+		}
+		return decimalString(*v), nil
+	case *float32:
+		if v == nil {
+			return nil, nil
+		}
+		return decimalString(float64(*v)), nil
+	case *int:
+		if v == nil {
+			return nil, nil
+		}
+		return fmt.Sprintf("%d", *v), nil
+	case *int16:
+		if v == nil {
+			return nil, nil
+		}
+		return fmt.Sprintf("%d", *v), nil
+	case *int32:
+		if v == nil {
+			return nil, nil
+		}
+		return fmt.Sprintf("%d", *v), nil
+	case *int64:
+		if v == nil {
+			return nil, nil
+		}
+		return fmt.Sprintf("%d", *v), nil
+	case float64:
+		return decimalString(v), nil
+	case float32:
+		return decimalString(float64(v)), nil
+	case int64:
+		return fmt.Sprintf("%d", v), nil
+	case int:
+		return fmt.Sprintf("%d", v), nil
+	case int32:
+		return fmt.Sprintf("%d", v), nil
+	case int16:
+		return fmt.Sprintf("%d", v), nil
+	default:
+		return nil, fmt.Errorf("cannot convert %T to bigint/numeric param", value)
 	}
 }
 
