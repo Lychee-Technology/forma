@@ -28,7 +28,7 @@
 //
 //	#174 full-type coverage        -> schemas/e2e_wide fixture, GenerateScript
 //	#175 lifecycle sequences       -> Event model + ApplyEvents
-//	#179 flush thresholds          -> WithFlushThresholds, RunFlush report
+//	#179 flush failure matrix      -> FaultInjectingS3, RunFlushWith, ExecSQL
 //	#180 dry-run semantics         -> RunFlushDry
 //	#181 failure-state injection   -> Env.ExecSQL escape hatch
 //	#185 circuit breaker           -> WithBreaker
