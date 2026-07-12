@@ -91,7 +91,7 @@ The translator must traverse the filter tree and generate two distinct SQL fragm
 
 **A. PostgreSQL Pushdown Fragment ($PG_WHERE_CLAUSE)**
 
-* **Target:** postgres_scan string argument.  
+* **Target:** pg_source `WHERE` clause (DuckDB's postgres scanner pushes it down into the scan).  
 * **Scope:** Only attributes mapping to entity_main.  
 * **Syntax:** Physical Column Names.  
 * **Sanitization:** Strict literal escaping to prevent SQL injection.  
@@ -130,6 +130,8 @@ These controls are part of the request payload; they are not conveyed via HTTP h
 
 This SQL template represents the core logic of the Federated Query Engine.
 
+It is a simplified sketch of the runtime template (`internal/sqlgen/advanced_query_template_duckdb.go`) and is kept executable: `internal/federated/design_doc_sql_test.go` extracts this block, runs it on DuckDB, and pins its scan shapes, source aliases, and LWW/filter semantics — update that test when editing this section.
+
 ```SQL
 
 -- 1. Configuration  
@@ -149,8 +151,9 @@ WITH
 -- =========================================================================  
 dirty_ids AS (  
     SELECT row_id   
-    FROM postgres_scan($PG_CONN, 'change_log', 'flushed_at = 0')  
+    FROM postgres_scan($PG_CONN, 'public', 'change_log')  
     WHERE schema_id = $SCHEMA_ID  
+        AND flushed_at = 0  
 ),
 
 -- =========================================================================  
@@ -160,9 +163,9 @@ dirty_ids AS (
 s3_source AS (  
     SELECT   
         row_id,   
-        ltbase_created_at AS created_at,  
-        ltbase_updated_at AS ver_ts,  
-        ltbase_deleted_at AS deleted_ts,  
+        changed_at AS created_at,  
+        changed_at AS ver_ts,  
+        deleted_at AS deleted_ts,  
         -- Logical Columns (Native in Parquet)  
         name,   
         age,   
@@ -203,20 +206,21 @@ pg_source AS (
         MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,  
         3 AS source_tier_priority
 
-    FROM postgres_scan($PG_CONN, 'change_log', 'flushed_at = 0') cl  
+    FROM postgres_scan($PG_CONN, 'public', 'change_log') cl  
       
-    -- [Optimization] PUSHDOWN: Filter entity_main INSIDE the scan string  
-    JOIN postgres_scan($PG_CONN,   
-        'SELECT * FROM entity_main_dev   
-         WHERE ltbase_schema_id = ' || $SCHEMA_ID || '   
-         AND (' || $PG_WHERE_CLAUSE || ')'   
-    ) m   
+    -- [Optimization] PUSHDOWN: $PG_WHERE_CLAUSE is a plain predicate in the  
+    -- WHERE clause below; DuckDB's postgres scanner pushes it down to  
+    -- PostgreSQL so entity_main is filtered by PG indexes, not in DuckDB.  
+    JOIN postgres_scan($PG_CONN, 'public', 'entity_main_dev') m   
       ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id  
         
-    LEFT JOIN postgres_scan($PG_CONN, 'eav_data_dev') e   
+    LEFT JOIN postgres_scan($PG_CONN, 'public', 'eav_data_dev') e   
       ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id  
       
     WHERE cl.schema_id = $SCHEMA_ID  
+        AND cl.flushed_at = 0  
+        AND m.ltbase_schema_id = $SCHEMA_ID  
+        AND ($PG_WHERE_CLAUSE)  
     GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01  
 ),
 
@@ -260,7 +264,7 @@ LIMIT $PAGE_SIZE OFFSET $OFFSET;
 
 ### **6.1 Predicate Pushdown (Critical)**
 
-* **Mechanism:** Injecting SQL strings into postgres_scan's second argument.  
+* **Mechanism:** `$PG_WHERE_CLAUSE` is rendered as a plain predicate in the pg_source `WHERE` clause; DuckDB's postgres scanner pushes supported predicates down into the PostgreSQL scan.  
 * **Rationale:** entity_main may contain millions of rows. Pulling all rows to DuckDB for filtering is unacceptable. Pushdown leverages PostgreSQL indexes.  
 * **Limitation:** Only applicable to entity_main columns. EAV columns and complex functions must be filtered in DuckDB memory after the join.
 
