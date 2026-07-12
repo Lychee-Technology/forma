@@ -16,10 +16,14 @@ import (
 type S3Op string
 
 const (
-	S3OpCopy   S3Op = "CopyObject"
+	// S3OpCopy matches CopyObject (flush step 3: tmp -> final promotion).
+	S3OpCopy S3Op = "CopyObject"
+	// S3OpDelete matches DeleteObject (flush step 4: tmp cleanup).
 	S3OpDelete S3Op = "DeleteObject"
-	S3OpGet    S3Op = "GetObject"
-	S3OpPut    S3Op = "PutObject"
+	// S3OpGet matches GetObject (flush step 6: manifest load).
+	S3OpGet S3Op = "GetObject"
+	// S3OpPut matches PutObject (flush step 7: manifest save).
+	S3OpPut S3Op = "PutObject"
 )
 
 // S3Fault selects which calls fail. A call matches when its operation equals
@@ -70,31 +74,51 @@ func (f *FaultInjectingS3) intercept(op S3Op, key string) error {
 }
 
 func (f *FaultInjectingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	if err := f.intercept(S3OpCopy, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := f.intercept(S3OpCopy, key); err != nil {
 		return nil, err
 	}
-	return f.Inner.CopyObject(ctx, in, optFns...)
+	out, err := f.Inner.CopyObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 CopyObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (f *FaultInjectingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	if err := f.intercept(S3OpDelete, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := f.intercept(S3OpDelete, key); err != nil {
 		return nil, err
 	}
-	return f.Inner.DeleteObject(ctx, in, optFns...)
+	out, err := f.Inner.DeleteObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 DeleteObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (f *FaultInjectingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	if err := f.intercept(S3OpGet, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := f.intercept(S3OpGet, key); err != nil {
 		return nil, err
 	}
-	return f.Inner.GetObject(ctx, in, optFns...)
+	out, err := f.Inner.GetObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 GetObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (f *FaultInjectingS3) PutObject(ctx context.Context, in *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	if err := f.intercept(S3OpPut, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := f.intercept(S3OpPut, key); err != nil {
 		return nil, err
 	}
-	return f.Inner.PutObject(ctx, in, optFns...)
+	out, err := f.Inner.PutObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 PutObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 var _ cdc.S3FullClient = (*FaultInjectingS3)(nil)

@@ -80,12 +80,12 @@ func assertRetryConverges(ctx context.Context, t *testing.T, env *Env, schema Sc
 
 // TestFlushFaultCopyObject breaks step 3 (S3 CopyObject tmp->final). The
 // export succeeded, so the tmp object exists, but no final object, no
-// flushed_at update, and no manifest entry may appear. The failed attempt's
-// tmp object is orphaned forever by design (retry uses fresh UUIDs and
-// CopyTmpToFinal only deletes its own tmp key); correctness holds because
-// the production glob's `*` does not cross `/` and skips _tmp/
-// (production/query.go:52-56) — adjudicating #179's "no orphan temp files"
-// criterion to "orphan temp files never affect correctness".
+// flushed_at update, and no manifest entry may appear. Today the failed
+// attempt's tmp object is orphaned permanently (retry uses fresh UUIDs and
+// CopyTmpToFinal only deletes its own tmp key) — cleanup is tracked in #226;
+// until it lands this test pins the current behavior. Correctness holds
+// regardless: the production glob's `*` does not cross `/` and skips _tmp/
+// (production/query.go:52-56), and orphans never enter the manifest.
 func TestFlushFaultCopyObject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -113,8 +113,9 @@ func TestFlushFaultCopyObject(t *testing.T) {
 	}
 	assertManifestDeltaPaths(t, report.Manifests, simple, nil)
 
-	// Clean retry converges; the orphaned tmp object stays behind but is
-	// invisible to both the manifest and the federated glob.
+	// Clean retry converges; the orphaned tmp object stays behind (until
+	// #226 adds cleanup) but is invisible to both the manifest and the
+	// federated glob.
 	assertRetryConverges(ctx, t, env, simple, 3)
 }
 
@@ -122,6 +123,7 @@ func TestFlushFaultCopyObject(t *testing.T) {
 // CopyTmpToFinal swallows delete failures by design (helpers.go:165-167), so
 // the flush must SUCCEED: rows flushed, manifest updated, query correct —
 // with an orphaned tmp object left behind that must not affect anything.
+// Removing such orphans is #226's scope; this test pins today's behavior.
 func TestFlushFaultTempCleanup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

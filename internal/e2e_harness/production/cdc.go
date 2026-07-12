@@ -52,7 +52,7 @@ type FlushOverrides struct {
 func (e *Env) runFlush(ctx context.Context, dryRun bool) (*FlushReport, error) {
 	report, err := e.RunFlushWith(ctx, FlushOverrides{DryRun: dryRun})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run flush (dry=%t): %w", dryRun, err)
 	}
 	return report, nil
 }
@@ -64,11 +64,11 @@ func (e *Env) runFlush(ctx context.Context, dryRun bool) (*FlushReport, error) {
 func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport, error) {
 	before, err := e.countUnflushed(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capture pre-flush change_log state: %w", err)
 	}
 	keysBefore, err := e.listS3Keys(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capture pre-flush s3 listing: %w", err)
 	}
 
 	cfg := e.CDC

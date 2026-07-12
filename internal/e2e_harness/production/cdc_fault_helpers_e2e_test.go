@@ -119,3 +119,79 @@ func assertNoRowExportedTwice(ctx context.Context, t *testing.T, env *Env, schem
 		t.Fatalf("iterate duplicate rows: %v", err)
 	}
 }
+
+// fetchChangeLogRowIDs partitions the schema's change_log rows into flushed
+// (flushed_at != 0) and dirty (flushed_at = 0) row-id sets, so scenarios can
+// assert exactly WHICH rows carry a flushed_at marker, not just how many.
+func fetchChangeLogRowIDs(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (flushed, dirty map[string]bool) {
+	t.Helper()
+	rows, err := env.Pool.Query(ctx,
+		"SELECT row_id::text, flushed_at FROM change_log WHERE schema_id = $1", schema.ID)
+	if err != nil {
+		t.Fatalf("query change_log rows for schema %d: %v", schema.ID, err)
+	}
+	defer rows.Close()
+	flushed, dirty = map[string]bool{}, map[string]bool{}
+	for rows.Next() {
+		var rowID string
+		var flushedAt int64
+		if err := rows.Scan(&rowID, &flushedAt); err != nil {
+			t.Fatalf("scan change_log row: %v", err)
+		}
+		if flushedAt != 0 {
+			flushed[rowID] = true
+		} else {
+			dirty[rowID] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate change_log rows: %v", err)
+	}
+	return flushed, dirty
+}
+
+// fetchParquetRowIDs reads the distinct row-id set contained in the given
+// parquet object keys.
+func fetchParquetRowIDs(ctx context.Context, t *testing.T, env *Env, keys []string) map[string]bool {
+	t.Helper()
+	ids := map[string]bool{}
+	if len(keys) == 0 {
+		return ids
+	}
+	paths := make([]string, len(keys))
+	for i, k := range keys {
+		paths[i] = fmt.Sprintf("'s3://%s/%s'", env.Cluster.Bucket, k)
+	}
+	rows, err := env.Duck.DB.QueryContext(ctx, fmt.Sprintf(
+		"SELECT DISTINCT CAST(row_id AS VARCHAR) FROM read_parquet([%s])", strings.Join(paths, ", ")))
+	if err != nil {
+		t.Fatalf("read parquet row_ids from %v: %v", keys, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var rowID string
+		if err := rows.Scan(&rowID); err != nil {
+			t.Fatalf("scan parquet row_id: %v", err)
+		}
+		ids[rowID] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate parquet row_ids: %v", err)
+	}
+	return ids
+}
+
+// assertSameRowIDs asserts two row-id sets are identical.
+func assertSameRowIDs(t *testing.T, label string, got, want map[string]bool) {
+	t.Helper()
+	for id := range want {
+		if !got[id] {
+			t.Errorf("%s: row %s missing", label, id)
+		}
+	}
+	for id := range got {
+		if !want[id] {
+			t.Errorf("%s: unexpected row %s", label, id)
+		}
+	}
+}

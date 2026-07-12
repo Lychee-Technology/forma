@@ -41,6 +41,13 @@ func TestFlushFaultMultiBatchMiddleChunk(t *testing.T) {
 		t.Errorf("chunks 2-3 must stay dirty, unflushed = %d, want 6", report.UnflushedAfter)
 	}
 	assertManifestDeltaPaths(t, report.Manifests, simple, finals)
+	// Row-level flushed_at consistency: the flushed set must be exactly the
+	// rows inside the chunk-1 parquet file, everything else stays dirty.
+	flushedAfterFault, dirtyAfterFault := fetchChangeLogRowIDs(ctx, t, env, simple)
+	if len(flushedAfterFault) != 3 || len(dirtyAfterFault) != 6 {
+		t.Errorf("flushed/dirty row split after fault = %d/%d, want 3/6", len(flushedAfterFault), len(dirtyAfterFault))
+	}
+	assertSameRowIDs(t, "chunk-1 parquet vs flushed_at markers", fetchParquetRowIDs(ctx, t, env, finals), flushedAfterFault)
 
 	// Clean retry with the same chunking config re-exports ONLY the 6
 	// remaining rows (2 more chunks).
@@ -56,6 +63,14 @@ func TestFlushFaultMultiBatchMiddleChunk(t *testing.T) {
 		t.Errorf("retry must add exactly 2 chunk objects, got %v", retryFinals)
 	}
 	assertManifestDeltaPaths(t, retry.Manifests, simple, append(append([]string(nil), finals...), retryFinals...))
+	// "Only remaining dirty rows are re-exported": the retry files must
+	// contain exactly the rows that were dirty after the fault, and every
+	// row must now carry a flushed_at marker.
+	assertSameRowIDs(t, "retry parquet vs previously-dirty rows", fetchParquetRowIDs(ctx, t, env, retryFinals), dirtyAfterFault)
+	flushedAfterRetry, dirtyAfterRetry := fetchChangeLogRowIDs(ctx, t, env, simple)
+	if len(flushedAfterRetry) != 9 || len(dirtyAfterRetry) != 0 {
+		t.Errorf("flushed/dirty row split after retry = %d/%d, want 9/0", len(flushedAfterRetry), len(dirtyAfterRetry))
+	}
 	// Create-only fixture: any row_id in two parquet files means a completed
 	// chunk was re-exported — the exact regression this scenario guards.
 	assertNoRowExportedTwice(ctx, t, env, simple)
