@@ -3,7 +3,6 @@ package sqlgen
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -351,12 +350,12 @@ func TestBuildSchemaProjection_BoolColumnBound_TextCOALESCE(t *testing.T) {
 
 // ============================================================================
 // Exact-output tests restored from the retired legacy generator (issue #127
-// review): the datetime cases port with a DateTime cache entry so the
-// CAST(? AS TIMESTAMP) expectation is preserved; the nested case ports with
-// no cache (dual walker's literal type inference).
+// review): the datetime cases port with a DateTime cache entry and now pin the
+// CAST(? AS BIGINT) epoch-ms contract (#200); the nested case ports with no
+// cache (dual walker's literal type inference).
 // ============================================================================
 
-func TestBuildDuckClause_GivenBareRFC3339Literal_WhenClauseBuilt_ThenItDefaultsToEqualsTimestamp(t *testing.T) {
+func TestBuildDuckClause_GivenBareRFC3339Literal_WhenClauseBuilt_ThenItDefaultsToEqualsEpochMs(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"created_at": forma.AttributeMetadata{AttributeID: 7, ValueType: forma.ValueTypeDateTime},
 	}
@@ -364,12 +363,12 @@ func TestBuildDuckClause_GivenBareRFC3339Literal_WhenClauseBuilt_ThenItDefaultsT
 
 	clause, args, err := buildDuckClause(cond, cache)
 	require.NoError(t, err)
-	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Equal(t, "created_at = CAST(? AS BIGINT)", clause)
 	require.Len(t, args, 1)
-	require.Equal(t, time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), args[0])
+	require.Equal(t, int64(1577934245000), args[0])
 }
 
-func TestBuildDuckClause_GivenEpochMillisLiteral_WhenClauseBuilt_ThenItUsesTimestampCast(t *testing.T) {
+func TestBuildDuckClause_GivenEpochMillisLiteral_WhenClauseBuilt_ThenItUsesBigintCast(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"created_at": forma.AttributeMetadata{AttributeID: 7, ValueType: forma.ValueTypeDateTime},
 	}
@@ -377,9 +376,9 @@ func TestBuildDuckClause_GivenEpochMillisLiteral_WhenClauseBuilt_ThenItUsesTimes
 
 	clause, args, err := buildDuckClause(cond, cache)
 	require.NoError(t, err)
-	require.Equal(t, "created_at = CAST(? AS TIMESTAMP)", clause)
+	require.Equal(t, "created_at = CAST(? AS BIGINT)", clause)
 	require.Len(t, args, 1)
-	require.Equal(t, time.UnixMilli(1700000000000).UTC(), args[0])
+	require.Equal(t, int64(1700000000000), args[0])
 }
 
 func TestBuildDuckClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGroupingAndArgumentOrderArePreserved(t *testing.T) {

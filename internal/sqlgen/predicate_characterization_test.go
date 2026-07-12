@@ -2,7 +2,6 @@ package sqlgen
 
 import (
 	"testing"
-	"time"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -188,35 +187,34 @@ func buildCharNumericBoolCases() []charCase {
 // unbound) and the uuid storage class.
 func buildCharTemporalUuidCases() []charCase {
 	iso := "2024-01-02T03:04:05Z"
-	isoTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return []charCase{
 		{
-			name: "date unix-ms encoding: main/eav int64 ms, duck time.Time",
+			name: "date unix-ms encoding: main/eav int64 ms, duck epoch-ms int64",
 			cond: charKv("born", "gte:1700000000000"),
 			want: DualClauses{
 				PgMainClause: "m.bigint_01 >= ?", PgMainArgs: []any{int64(1700000000000)},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(8), int64(1700000000000)},
-				DuckClause: "born >= CAST(? AS TIMESTAMP)", DuckArgs: []any{time.UnixMilli(1700000000000).UTC()},
+				DuckClause: "born >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1700000000000)},
 			},
 			span: 3,
 		},
 		{
-			name: "datetime ISO8601 encoding: main/eav bind ISO string, duck time.Time",
+			name: "datetime ISO8601 encoding: main/eav bind ISO string, duck epoch-ms int64",
 			cond: charKv("joined", "gte:"+iso),
 			want: DualClauses{
 				PgMainClause: "m.text_03 >= ?", PgMainArgs: []any{iso},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), iso},
-				DuckClause: "joined >= CAST(? AS TIMESTAMP)", DuckArgs: []any{isoTime},
+				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
 			span: 3,
 		},
 		{
-			name: "datetime unbound: eav unix-ms int64, duck time.Time",
+			name: "datetime unbound: eav unix-ms int64, duck epoch-ms int64",
 			cond: charKv("seen", "gte:"+iso),
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(10), int64(1704164645000)},
-				DuckClause: "seen >= CAST(? AS TIMESTAMP)", DuckArgs: []any{isoTime},
+				DuckClause: "seen >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
 			span: 2,
 		},
@@ -395,7 +393,6 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 // inherit the EAV path's strict parse or its error surface.
 func TestStandaloneBuilders_Characterization(t *testing.T) {
 	cache := characterizationCache()
-	isoTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
 
 	t.Run("duck lenient keeps malformed pair as equals(raw)", func(t *testing.T) {
 		clause, args, err := BuildDuckClause(charKv("tag", "equals:"), cache)
@@ -421,8 +418,8 @@ func TestStandaloneBuilders_Characterization(t *testing.T) {
 			{"numeric literal", "equals:42", "ghost = CAST(? AS DECIMAL(38,10))", []any{"42"}},
 			{"bool literal", "equals:true", "ghost = CAST(? AS BOOLEAN)", []any{true}},
 			{"uuid literal", "equals:0b210f52-1f4d-4f47-9799-1e2f2c0efc07", "ghost = CAST(? AS VARCHAR)", []any{"0b210f52-1f4d-4f47-9799-1e2f2c0efc07"}},
-			{"iso literal", "gte:2024-01-02T03:04:05Z", "ghost >= CAST(? AS TIMESTAMP)", []any{isoTime}},
-			{"bare iso literal", "2024-01-02T03:04:05Z", "ghost = CAST(? AS TIMESTAMP)", []any{isoTime}},
+			{"iso literal", "gte:2024-01-02T03:04:05Z", "ghost >= CAST(? AS BIGINT)", []any{int64(1704164645000)}},
+			{"bare iso literal", "2024-01-02T03:04:05Z", "ghost = CAST(? AS BIGINT)", []any{int64(1704164645000)}},
 			{"text literal", "equals:hello", "ghost = ?", []any{"hello"}},
 		}
 		for _, tc := range cases {
