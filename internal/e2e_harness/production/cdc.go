@@ -2,6 +2,7 @@ package production
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -40,7 +41,27 @@ func (e *Env) RunFlushDry(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, true)
 }
 
+// FlushOverrides customizes a single flush pass for failure-injection tests
+// (#179). Zero-value fields fall back to the Env defaults RunFlush uses.
+type FlushOverrides struct {
+	S3     cdc.S3FullClient // nil: e.Cluster.S3
+	Config *cdc.CDCConfig   // nil: e.CDC
+	DryRun bool
+}
+
 func (e *Env) runFlush(ctx context.Context, dryRun bool) (*FlushReport, error) {
+	report, err := e.RunFlushWith(ctx, FlushOverrides{DryRun: dryRun})
+	if err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// RunFlushWith executes one real CDC flush pass with per-run overrides.
+// Unlike RunFlush it reports observable state even when the run fails: the
+// report is always non-nil unless the pre-run state capture itself fails, so
+// failure-boundary tests can assert partial side effects alongside the error.
+func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport, error) {
 	before, err := e.countUnflushed(ctx)
 	if err != nil {
 		return nil, err
@@ -50,25 +71,35 @@ func (e *Env) runFlush(ctx context.Context, dryRun bool) (*FlushReport, error) {
 		return nil, err
 	}
 
-	runner := cdc.NewRunner(e.logger)
-	defer func() { _ = runner.Close() }()
-	if err := runner.RunOnce(ctx, e.CDC, e.Cluster.S3, dryRun, e.Registry); err != nil {
-		return nil, fmt.Errorf("cdc run once (dry=%t): %w", dryRun, err)
+	cfg := e.CDC
+	if ov.Config != nil {
+		cfg = *ov.Config
+	}
+	var s3Client cdc.S3FullClient = e.Cluster.S3
+	if ov.S3 != nil {
+		s3Client = ov.S3
 	}
 
-	report := &FlushReport{DryRun: dryRun, UnflushedBefore: before}
+	runner := cdc.NewRunner(e.logger)
+	defer func() { _ = runner.Close() }()
+	runErr := runner.RunOnce(ctx, cfg, s3Client, ov.DryRun, e.Registry)
+	if runErr != nil {
+		runErr = fmt.Errorf("cdc run once (dry=%t): %w", ov.DryRun, runErr)
+	}
+
+	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before}
 	if report.UnflushedAfter, err = e.countUnflushed(ctx); err != nil {
-		return nil, err
+		return report, errors.Join(runErr, err)
 	}
 	keysAfter, err := e.listS3Keys(ctx)
 	if err != nil {
-		return nil, err
+		return report, errors.Join(runErr, err)
 	}
 	report.NewObjects = diffKeys(keysBefore, keysAfter)
 	if report.Manifests, err = e.loadManifests(ctx); err != nil {
-		return nil, err
+		return report, errors.Join(runErr, err)
 	}
-	return report, nil
+	return report, runErr
 }
 
 // RunInit exports base parquet files for one schema via the extracted
