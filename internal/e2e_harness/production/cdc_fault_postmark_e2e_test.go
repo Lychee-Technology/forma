@@ -58,3 +58,64 @@ func TestFlushFaultMarkFlushed(t *testing.T) {
 	// surface as extra result rows here.
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
 }
+
+// TestFlushFaultManifestLoad breaks step 6 (manifest GetObject) and
+// TestFlushFaultManifestSave breaks step 7 (manifest PutObject). Both land
+// after mark-flushed, pinning the corrected #197 contract: the run fails
+// with the final key embedded in the error, the retry is a strict no-op
+// (rows are flushed; no re-export, no manifest self-repair — a blind
+// AppendFile retry would duplicate entries), the delta file stays outside
+// the manifest (reconciliation is #203's scope), and federated reads are
+// unaffected because the read path never consults the manifest.
+func TestFlushFaultManifestLoad(t *testing.T) {
+	t.Parallel()
+	testFlushFaultManifest(t, S3OpGet)
+}
+
+func TestFlushFaultManifestSave(t *testing.T) {
+	t.Parallel()
+	testFlushFaultManifest(t, S3OpPut)
+}
+
+func testFlushFaultManifest(t *testing.T, op S3Op) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	simple := DefaultSchemaFixtures()[0]
+	seedRows(ctx, t, env, simple, 3)
+
+	faulty := &FaultInjectingS3{Inner: env.Cluster.S3, Fault: S3Fault{Op: op, KeyContains: "manifest/"}}
+	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
+	if err == nil {
+		t.Fatalf("flush with failing manifest %s must fail", op)
+	}
+	if faulty.Injected() == 0 {
+		t.Fatal("fault never fired")
+	}
+	finals, _ := splitKeys(report.NewObjects)
+	if len(finals) != 1 {
+		t.Fatalf("the final object must exist when the manifest step fails, got %v", finals)
+	}
+	// #197 contract: the error names the orphaned final key for the operator.
+	if !strings.Contains(err.Error(), "manifest update") || !strings.Contains(err.Error(), finals[0]) {
+		t.Errorf("error must point at the orphaned final key %q, got: %v", finals[0], err)
+	}
+	// Rows are already marked flushed — the partial commit this matrix exists
+	// to pin.
+	if report.UnflushedAfter != 0 {
+		t.Errorf("rows must be marked flushed before the manifest step, unflushed = %d", report.UnflushedAfter)
+	}
+	assertManifestDeltaPaths(t, report.Manifests, simple, nil)
+
+	// Retry is a strict no-op and does NOT self-repair the manifest.
+	retry, err := env.RunFlushWith(ctx, FlushOverrides{})
+	if err != nil {
+		t.Fatalf("clean retry flush: %v", err)
+	}
+	if retry.UnflushedBefore != 0 || len(retry.NewObjects) != 0 {
+		t.Errorf("retry must be a no-op: unflushed %d, new objects %v", retry.UnflushedBefore, retry.NewObjects)
+	}
+	assertManifestDeltaPaths(t, retry.Manifests, simple, nil)
+
+	// Reads never consult the manifest; the flushed data stays fully visible.
+	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
+}
