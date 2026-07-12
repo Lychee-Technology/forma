@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlgen/sqlgentest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,34 +57,6 @@ func extractDesignDocSection5SQL(t *testing.T) string {
 	return m[1]
 }
 
-// findPostgresScanCalls returns the raw argument text of every postgres_scan
-// invocation in sqlText, matching parentheses so multi-line and nested forms
-// are captured whole.
-func findPostgresScanCalls(sqlText string) []string {
-	const marker = "postgres_scan("
-	var calls []string
-	for i := 0; ; {
-		idx := strings.Index(sqlText[i:], marker)
-		if idx < 0 {
-			break
-		}
-		start := i + idx + len(marker)
-		depth := 1
-		j := start
-		for ; j < len(sqlText) && depth > 0; j++ {
-			switch sqlText[j] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-		}
-		calls = append(calls, strings.TrimSpace(sqlText[start:j-1]))
-		i = j
-	}
-	return calls
-}
-
 // threeArgScanRe is the only valid documented postgres_scan shape: the
 // $PG_CONN placeholder plus two single-quoted identifiers (schema, table).
 // A predicate or a dynamic SELECT in any argument does not match.
@@ -94,7 +69,7 @@ var threeArgScanRe = regexp.MustCompile(
 func TestDesignDocSQL_PostgresScanIsThreeArg(t *testing.T) {
 	sqlText := extractDesignDocSection5SQL(t)
 
-	calls := findPostgresScanCalls(sqlText)
+	calls := sqlgentest.FindPostgresScanCalls(sqlText)
 	require.NotEmpty(t, calls, "§5 must document postgres_scan usage")
 
 	for _, args := range calls {
@@ -104,25 +79,66 @@ func TestDesignDocSQL_PostgresScanIsThreeArg(t *testing.T) {
 	}
 }
 
+// extractDocS3ProjectionItems returns the individual SELECT items of the §5
+// s3_source CTE, with SQL comments stripped. The doc's source_tier_priority
+// literal is kept: the runtime template appends it outside SchemaProjection,
+// so the caller decides how to treat it.
+func extractDocS3ProjectionItems(t *testing.T, sqlText string) []string {
+	t.Helper()
+
+	block := regexp.MustCompile(`(?s)s3_source AS \(\s*SELECT\b(.*?)FROM read_parquet`).
+		FindStringSubmatch(sqlText)
+	require.NotNil(t, block, "§5 must contain an s3_source CTE selecting from read_parquet")
+
+	var cleaned []string
+	for _, line := range strings.Split(block[1], "\n") {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		cleaned = append(cleaned, line)
+	}
+
+	var items []string
+	for _, item := range strings.Split(strings.Join(cleaned, "\n"), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 // TestDesignDocSQL_S3ProjectionAliasesMatchRuntime pins the §5 S3 source
-// projection to the runtime parquet schema from buildS3Projection
-// (duckdb_schema_projection.go): one physical changed_at column feeds both
-// created_at and ver_ts, and deleted_at feeds deleted_ts.
+// projection to the runtime projection itself: it derives the expected
+// SELECT items from sqlgen.BuildSchemaProjection for the schema the doc
+// example uses (name/age main-bound, tag pure-EAV), so a change to
+// buildS3Projection fails this guard instead of leaving §5 silently stale.
 func TestDesignDocSQL_S3ProjectionAliasesMatchRuntime(t *testing.T) {
 	sqlText := extractDesignDocSection5SQL(t)
 
-	for _, alias := range []string{
-		"changed_at AS created_at",
-		"changed_at AS ver_ts",
-		"deleted_at AS deleted_ts",
-	} {
-		require.Contains(t, sqlText, alias,
-			"§5 S3 projection must use the runtime parquet column aliases")
+	items := extractDocS3ProjectionItems(t, sqlText)
+	require.Contains(t, items, "1 AS source_tier_priority",
+		"§5 s3_source must emit source_tier_priority: the ranked ORDER BY consumes it (#211)")
+
+	docProjection := make([]string, 0, len(items)-1)
+	for _, item := range items {
+		if item != "1 AS source_tier_priority" {
+			docProjection = append(docProjection, item)
+		}
 	}
-	for _, phantom := range []string{"ltbase_updated_at", "ltbase_deleted_at"} {
-		require.NotContains(t, sqlText, phantom,
-			"parquet files have no %s column; §5 must not project it", phantom)
+
+	cache := forma.SchemaAttributeCache{
+		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
+		"age": {AttributeID: 2, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
+		"tag": {AttributeID: 205, ValueType: forma.ValueTypeText},
 	}
+	sp, err := sqlgen.BuildSchemaProjection(1, cache)
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, strings.Split(sp.S3SourceSelect, ", "), docProjection,
+		"§5 s3_source projection must match the runtime SchemaProjection.S3SourceSelect "+
+			"for the documented name/age/tag schema (attribute order aside)")
 }
 
 // rewriteDocSQLForLocalExecution turns the §5 sketch into a self-contained
@@ -134,7 +150,7 @@ func TestDesignDocSQL_S3ProjectionAliasesMatchRuntime(t *testing.T) {
 func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) string {
 	t.Helper()
 
-	for _, args := range findPostgresScanCalls(sqlText) {
+	for _, args := range sqlgentest.FindPostgresScanCalls(sqlText) {
 		m := threeArgScanRe.FindStringSubmatch(args)
 		require.NotNil(t, m,
 			"cannot map postgres_scan(%s) to a local relation: not the 3-arg runtime form", args)
@@ -224,14 +240,18 @@ func TestDesignDocSQL_ExecutesWithLWWFilterSemantics(t *testing.T) {
 
 	db, err := sql.Open("duckdb", "")
 	require.NoError(t, err)
-	defer db.Close()
+	t.Cleanup(func() {
+		require.NoError(t, db.Close(), "failed to close in-memory DuckDB")
+	})
 
 	seedDesignDocScenario(t, db, parquetPath)
 
 	query := rewriteDocSQLForLocalExecution(t, docSQL, parquetPath)
 	rows, err := db.Query(query)
 	require.NoError(t, err, "the documented §5 SQL must execute as written (query=%s)", query)
-	defer rows.Close()
+	defer func() {
+		require.NoError(t, rows.Close(), "failed to close §5 query result rows")
+	}()
 
 	type resultRow struct {
 		rowID, name, tag string
