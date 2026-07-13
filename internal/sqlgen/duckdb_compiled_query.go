@@ -21,6 +21,12 @@ type DuckDBCompiledQuery struct {
 	Skeleton string
 	TplArgs  []any
 	HasDirty bool
+	// HasHot records the tier form the skeleton was rendered with (#184):
+	// hot-excluded skeletons have no pg_source CTE, so Bind must drop the
+	// PgMainArgs occurrence to keep binds aligned with placeholders. The
+	// shape hash splits on hasHot membership, so a cache hit never crosses
+	// tier forms.
+	HasHot bool
 }
 
 // CompileDuckDBQuery renders the advanced-template skeleton once for a query
@@ -58,6 +64,8 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	m["HasPgMainClause"] = dual.PgMainClause != ""
 	m["LOGICAL_WHERE_CLAUSE"] = dual.DuckClause
 	m["PG_WHERE_CLAUSE"] = defaultIfEmpty(dual.PgMainClause, "1=1")
+	hasHot := FederatedQueryHasHot(q)
+	m["HasHot"] = hasHot
 
 	injectDuckDBTemplateParams(m, q, dual)
 	// Compile-time keyset arg values are discarded; Bind re-derives them from
@@ -75,7 +83,7 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	if err != nil {
 		return nil, err
 	}
-	return &DuckDBCompiledQuery{Skeleton: sql, TplArgs: tplArgs, HasDirty: hasDirty}, nil
+	return &DuckDBCompiledQuery{Skeleton: sql, TplArgs: tplArgs, HasDirty: hasDirty, HasHot: hasHot}, nil
 }
 
 // Bind produces the executable SQL and full argument list for a request whose
@@ -90,7 +98,9 @@ func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualCl
 
 	args := make([]any, 0, 2*len(dual.DuckArgs)+len(dual.PgMainArgs)+len(c.TplArgs)+4)
 	args = append(args, dual.DuckArgs...)
-	args = append(args, dual.PgMainArgs...)
+	if c.HasHot {
+		args = append(args, dual.PgMainArgs...)
+	}
 	args = append(args, dual.DuckArgs...)
 	if q != nil && q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
 		_, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
