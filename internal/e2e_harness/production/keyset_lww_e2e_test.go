@@ -11,6 +11,14 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
+// keysetZeroRowID is the canonical zero UUID, used as the row_id arg for a
+// keyset cursor pinned to a synthetic boundary value: the row_id disjunct only
+// fires on an exact tie with the preceding key, which a synthetic boundary
+// (a value no seeded row carries) never hits, so the arm is inert. Every cursor
+// must still END on row_id — the engine now rejects cursors lacking that
+// trailing tiebreak (validateKeysetTiebreak, #183).
+const keysetZeroRowID = "00000000-0000-0000-0000-000000000000"
+
 // TestKeysetLWW (#212): the keyset cursor must be applied AFTER last-write-
 // wins deduplication. Pre-fix, the DuckDB template injected the cursor into
 // the ranked CTE — before ROW_NUMBER picked rn = 1 — so a superseded version
@@ -79,9 +87,12 @@ func testKeysetAttributeCursorResurrection(ctx context.Context, t *testing.T, en
 		Schema: wide,
 		Sorts:  []Sort{{Attr: "count"}},
 		Keyset: &model.KeysetCursor{
-			Columns: []model.KeysetColumn{{Attribute: "count", Direction: forma.SortOrderAsc}},
-			Values:  []any{float64(500)},
-			Mode:    model.KeysetCursorModeAfter,
+			Columns: []model.KeysetColumn{
+				{Attribute: "count", Direction: forma.SortOrderAsc},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required trailing tiebreak (#183)
+			},
+			Values: []any{float64(500), keysetZeroRowID}, // 500 matches no row ⇒ row_id arm inert
+			Mode:   model.KeysetCursorModeAfter,
 		},
 		Limit: 10,
 	})
@@ -134,9 +145,15 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 	page, err := env.Query(ctx, Query{
 		Schema: wide,
 		Keyset: &model.KeysetCursor{
-			Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
-			Values:  []any{c.ChangedAt},
-			Mode:    model.KeysetCursorModeAfter,
+			Columns: []model.KeysetColumn{
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required trailing tiebreak (#183)
+			},
+			// Record-derived boundary at C: the row_id arm (created_at = t3 AND
+			// row_id > c.RowID) excludes C itself while B(t2) qualifies via the
+			// leading created_at < t3 disjunct.
+			Values: []any{c.ChangedAt, c.RowID.String()},
+			Mode:   model.KeysetCursorModeAfter,
 		},
 		Limit: 10,
 	})
@@ -184,9 +201,12 @@ func testKeysetCursorWithMixedFilters(ctx context.Context, t *testing.T, env *En
 		Filters: filters,
 		Sorts:   []Sort{{Attr: "count"}},
 		Keyset: &model.KeysetCursor{
-			Columns: []model.KeysetColumn{{Attribute: "count", Direction: forma.SortOrderAsc}},
-			Values:  []any{float64(250)},
-			Mode:    model.KeysetCursorModeAfter,
+			Columns: []model.KeysetColumn{
+				{Attribute: "count", Direction: forma.SortOrderAsc},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required trailing tiebreak (#183)
+			},
+			Values: []any{float64(250), keysetZeroRowID}, // 250 matches no row ⇒ row_id arm inert
+			Mode:   model.KeysetCursorModeAfter,
 		},
 		Limit: 10,
 	}
