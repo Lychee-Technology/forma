@@ -338,8 +338,11 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		Reason:            "duckdb template rendered",
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dp)
+	// The note states the physical truth first: the single flat glob cannot
+	// separate warm from cold (#177), so one scan always covers both — the
+	// requested subset is context, not the access boundary.
 	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
-		fmt.Sprintf("parquet(read_parquet) serves tiers: %s", joinTiers(served)))
+		fmt.Sprintf("parquet(read_parquet) physically serves warm+cold (single flat glob); requested parquet tiers: %s", joinTiers(served)))
 	if useMainAsAnchor {
 		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
 			"UseMainAsAnchor hint honored")

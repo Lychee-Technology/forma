@@ -156,6 +156,12 @@ func assertTierMatrixHasHot(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if !planHasReason(result.Plan, "pushdown fragment") {
 		t.Errorf("%s: hot requested but no pushdown-fragment source recorded", name)
 	}
+	if !planHasReason(result.Plan, "dirty id set fetched") {
+		t.Errorf("%s: hot requested: dirty source must keep the data-source reason", name)
+	}
+	if !planNotesContain(result.Plan, "physically serves warm+cold") {
+		t.Errorf("%s: plan must state the physical parquet coverage, notes: %v", name, result.Plan.Notes)
+	}
 }
 
 // assertTierMatrixS3Only: combinations excluding hot must prune pg_source
@@ -190,6 +196,30 @@ func assertTierMatrixS3Only(ctx context.Context, t *testing.T, env *Env, wide Sc
 	}
 	if planHasReason(result.Plan, "pushdown fragment") {
 		t.Errorf("%s: hot excluded but a pushdown-fragment source was recorded", name)
+	}
+	if !planHasReason(result.Plan, "consistency barrier (dirty-id anti-join)") {
+		t.Errorf("%s: hot excluded: dirty source must be labeled a consistency barrier", name)
+	}
+	requested := make([]string, 0, len(tiers))
+	representative := "cold"
+	for _, tier := range []model.DataTier{model.DataTierWarm, model.DataTierCold} {
+		for _, p := range tiers {
+			if p == tier {
+				requested = append(requested, string(tier))
+			}
+		}
+	}
+	if requested[0] == "warm" {
+		representative = "warm"
+	}
+	if !planNotesContain(result.Plan, "requested parquet tiers: "+strings.Join(requested, ",")) {
+		t.Errorf("%s: plan note must echo the requested parquet subset, notes: %v", name, result.Plan.Notes)
+	}
+	if !planNotesContain(result.Plan, "physically serves warm+cold") {
+		t.Errorf("%s: plan must state the physical parquet coverage, notes: %v", name, result.Plan.Notes)
+	}
+	if tier := duckdbSourceTier(result.Plan); tier != representative {
+		t.Errorf("%s: duckdb source tier = %q, want representative %q", name, tier, representative)
 	}
 
 	// Adversary invisibility: R's v1 title exists only in base parquet, but
@@ -416,6 +446,21 @@ func duckdbPlanSQL(plan *model.ExecutionPlan) string {
 		}
 	}
 	return sqlText
+}
+
+// duckdbSourceTier returns the Tier label of the last duckdb source, or ""
+// when none is recorded.
+func duckdbSourceTier(plan *model.ExecutionPlan) string {
+	if plan == nil {
+		return ""
+	}
+	tier := ""
+	for _, src := range plan.Sources {
+		if src.Engine == "duckdb" {
+			tier = string(src.Tier)
+		}
+	}
+	return tier
 }
 
 func planHasEngine(plan *model.ExecutionPlan, engine string) bool {
