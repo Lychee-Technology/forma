@@ -144,6 +144,13 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	if len(records) == 0 && fq.Offset > 0 {
 		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
 		if cerr != nil {
+			// The recount is a DuckDB query like the page fetch above, so it
+			// degrades under the same policy (and the same metadata-cache
+			// exception): a transient failure here must not fail a request
+			// the degraded mode contract promises to serve Postgres-only.
+			if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(cerr, ErrSchemaMetadataCacheRequired) {
+				return e.queryPostgresOnly(ctx, tables, fq)
+			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
 		}
 		totalRecords = countTotal

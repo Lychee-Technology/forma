@@ -224,7 +224,7 @@ func (e *DBFederatedQueryEngine) computeFederatedCount(
 
 	_, total, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, &strippedQuery, 1, 0, nil, &model.FederatedQueryOptions{MaxRows: 1})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("federated count query (schema %d): %w", fq.SchemaID, err)
 	}
 	return total, nil
 }

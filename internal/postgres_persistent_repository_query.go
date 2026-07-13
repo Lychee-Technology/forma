@@ -179,7 +179,7 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 		return nil
 	})
 	if appendErr != nil {
-		return nil, 0, appendErr
+		return nil, 0, fmt.Errorf("stream optimized query (schema %d): %w", schemaID, appendErr)
 	}
 
 	// The template carries COUNT(*) OVER() on the data rows, so a page at or
@@ -210,7 +210,11 @@ func (r *DBPersistentRecordRepository) countOptimizedQuery(
 	attributeOrders []model.AttributeOrder,
 	useMainTableAsAnchor bool,
 ) (int64, error) {
-	return r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, 1, 0, attributeOrders, useMainTableAsAnchor, nil)
+	total, err := r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, 1, 0, attributeOrders, useMainTableAsAnchor, nil)
+	if err != nil {
+		return 0, fmt.Errorf("optimized count query (schema %d): %w", schemaID, err)
+	}
+	return total, nil
 }
 
 // RunOptimizedQuery exposes the optimized single-query path (prebuilt WHERE
