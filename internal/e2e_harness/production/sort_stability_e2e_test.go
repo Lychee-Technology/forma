@@ -5,8 +5,10 @@ package production
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 
+	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -31,6 +33,7 @@ func TestSortStability(t *testing.T) {
 		{"repeat_n_stable_order", testRepeatNStableOrder},
 		{"hot_oltp_page_union", testHotOLTPPageUnion},
 		{"multi_key_mixed_directions", testMultiKeyMixedDirections},
+		{"multi_key_public_api_desc", testMultiKeyPublicAPIDesc},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -274,7 +277,9 @@ func testHotOLTPPageUnion(ctx context.Context, t *testing.T, env *Env, wide Sche
 // QueryRequest — entity_query_service.go:79-104 threads a single shared
 // SortOrder across all keys. This scenario drives the internal AttributeOrders
 // contract the federated engine actually implements, where each key carries its
-// own direction, so the coverage is deliberately below the public API.
+// own direction, so it remains the pin for the per-key-direction contract. The
+// publicly expressible slice — a uniform-direction multi-key sort — is covered
+// by testMultiKeyPublicAPIDesc through the real EntityManager.Query surface.
 func testMultiKeyMixedDirections(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "mixed-rank creates", creates...)
@@ -293,4 +298,62 @@ func testMultiKeyMixedDirections(ctx context.Context, t *testing.T, env *Env, wi
 		t.Fatalf("multi-key sort returned %d rows, want 12", len(res.Records))
 	}
 	assertRankThenCountDesc(t, res.Records)
+}
+
+// testMultiKeyPublicAPIDesc covers the publicly expressible half of #183's
+// (status, created_at DESC) ask: a two-key sort through the real
+// forma.EntityManager.Query surface. The public QueryRequest threads a single
+// shared SortOrder across all SortBy keys (entity_query_service.go:79-104), so
+// mixed per-key directions are unreachable — but a uniform-DESC multi-key sort
+// is. Here (rank DESC, count DESC) stands in for the categorical-primary +
+// distinct-secondary shape: rank repeats (six 1s, six 2s) so the count key is
+// load-bearing, and count is unique so the pair is a total order. The rows are
+// cold-only and the request opts into the federated path, so a correct ordered
+// result can only come back through DuckDB.
+//
+// Note: e2e_wide has no "status"/"created_at" public attributes, so the
+// scenario uses rank+count — both main-bound schema attributes — as the
+// faithful categorical+distinct analog of #183's key pair.
+func testMultiKeyPublicAPIDesc(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := buildMixedRankRows(wide)
+	mustApplyEvents(ctx, t, env, "public-api multi-key creates", creates...)
+	mustFlush(ctx, t, env)
+	env.ExecSQL(ctx, "DELETE FROM change_log") // cold/warm-only ⇒ federated DuckDB path
+
+	// Oracle: uniform DESC over (rank, count), row_id irrelevant (count unique).
+	want := make([]*Event, len(creates))
+	copy(want, creates)
+	sort.SliceStable(want, func(i, j int) bool {
+		ri, rj := want[i].Attrs["rank"].(float64), want[j].Attrs["rank"].(float64)
+		if ri != rj {
+			return ri > rj // rank DESC
+		}
+		return want[i].Attrs["count"].(float64) > want[j].Attrs["count"].(float64) // count DESC
+	})
+
+	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName:   wide.Name,
+		Page:         1,
+		ItemsPerPage: 20,
+		SortBy:       []string{"rank", "count"},
+		SortOrder:    forma.SortOrderDesc,
+		Federated: &forma.FederatedQueryRequest{
+			Enabled:               true,
+			PreferredTiers:        []string{"hot", "warm", "cold"},
+			S3ParquetPathTemplate: env.ParquetGlob(),
+			IncludeExecutionPlan:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("public-api federated query: %v", err)
+	}
+	if len(res.Data) != len(want) {
+		t.Fatalf("public-api multi-key sort returned %d rows, want %d", len(res.Data), len(want))
+	}
+	for i := range want {
+		if res.Data[i].RowID != want[i].RowID {
+			t.Fatalf("public-api row %d = %s, want %s: (rank DESC, count DESC) order drift through EntityManager.Query",
+				i, res.Data[i].RowID, want[i].RowID)
+		}
+	}
 }
