@@ -25,6 +25,8 @@ Base URL: `http://localhost:8080` (configurable via `PORT` env var).
 | `sort_order` | string | `asc` | Sort direction (`asc` or `desc`) |
 | `attrs` | string | — | Comma-separated attribute names for projection |
 
+**NULL placement in sorted results:** records whose sort attribute is NULL always appear at the end of the result set (NULLS LAST), for both `asc` and `desc`, and regardless of whether the query is served by the Postgres OLTP path or the DuckDB federated path (adopted in #183; before that change, DESC sorts on the OLTP path followed the PostgreSQL default of NULLS FIRST).
+
 ## Advanced Query DSL
 
 Reference: [Advanced Query documentation](./advanced_query.md)
