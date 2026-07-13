@@ -179,10 +179,42 @@ func (r *DBPersistentRecordRepository) runOptimizedQuery(
 		return nil
 	})
 	if appendErr != nil {
-		return nil, 0, appendErr
+		return nil, 0, fmt.Errorf("stream optimized query (schema %d): %w", schemaID, appendErr)
+	}
+
+	// The template carries COUNT(*) OVER() on the data rows, so a page at or
+	// beyond the last match returns zero rows and the count is unreadable —
+	// totalRecords would misreport 0 while matches exist (#181). Recount with
+	// offset 0 (cannot recurse); at offset 0 an empty result is a genuine 0.
+	if len(records) == 0 && offset > 0 {
+		total, countErr := r.countOptimizedQuery(ctx, tables, schemaID, clause, args, attributeOrders, useMainTableAsAnchor)
+		if countErr != nil {
+			return nil, 0, fmt.Errorf("compute empty-page total: %w", countErr)
+		}
+		totalRecords = total
 	}
 
 	return records, totalRecords, nil
+}
+
+// countOptimizedQuery reads the matching total through the same optimized
+// query at limit 1, offset 0: any match then carries the window count back on
+// the returned row. Identical clause/args/orders reuse the cached plan —
+// limit and offset are bind parameters, not part of the rendered SQL.
+func (r *DBPersistentRecordRepository) countOptimizedQuery(
+	ctx context.Context,
+	tables model.StorageTables,
+	schemaID int16,
+	clause string,
+	args []any,
+	attributeOrders []model.AttributeOrder,
+	useMainTableAsAnchor bool,
+) (int64, error) {
+	total, err := r.StreamOptimizedQuery(ctx, tables, schemaID, clause, args, 1, 0, attributeOrders, useMainTableAsAnchor, nil)
+	if err != nil {
+		return 0, fmt.Errorf("optimized count query (schema %d): %w", schemaID, err)
+	}
+	return total, nil
 }
 
 // RunOptimizedQuery exposes the optimized single-query path (prebuilt WHERE
