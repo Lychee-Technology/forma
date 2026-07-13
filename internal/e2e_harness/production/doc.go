@@ -31,6 +31,7 @@
 //	#179 flush failure matrix      -> FaultInjectingS3, RunFlushWith, ExecSQL
 //	#180 dry-run semantics         -> RunFlushDry, RunInitWith(InitOverrides{DryRun})
 //	#181 failure-state injection   -> Env.ExecSQL escape hatch
+//	#182 mid-flush concurrency     -> PausingS3, RunFlushWith(FlushOverrides{S3})
 //	#185 circuit breaker           -> WithBreaker
 //	#189 multi-schema isolation    -> schemas/e2e_simple + e2e_second, per-test DB
 //

@@ -42,6 +42,12 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		return nil
 	}
 
+	if e.cfg.BeforeExportHook != nil {
+		if err := e.cfg.BeforeExportHook(ctx, e.schemaID, batchIDs, e.snapshot); err != nil {
+			return fmt.Errorf("before-export hook (%s): %w", batchKind, err)
+		}
+	}
+
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 	exportSnapshot := e.exportSnapshot
 	if exportSnapshot == nil {
