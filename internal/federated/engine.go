@@ -106,6 +106,15 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
+	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
+	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
+	// lacking the trailing row_id tiebreak here, before it can silently skip a
+	// boundary tie group (#183).
+	if fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
+		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
+			return nil, err
+		}
+	}
 	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
 		return e.queryPostgresOnly(ctx, tables, fq)
 	}

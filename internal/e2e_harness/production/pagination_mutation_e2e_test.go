@@ -5,6 +5,7 @@ package production
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	forma "github.com/lychee-technology/forma"
@@ -12,14 +13,16 @@ import (
 )
 
 // TestPaginationUnderInsert (#183, epic #172 Phase 3) contrasts the two
-// pagination strategies under a concurrent front-insert. OFFSET windows
-// re-base on every request, so a row inserted before the current position
-// duplicates a boundary row and shifts the tail — deterministic only thanks
-// to Task 1's total order, but never a no-dup/no-skip guarantee. Keyset
-// cursors carry that guarantee: a row inserted into already-visited territory
-// is neither duplicated nor able to displace an unread row. The third
-// scenario pins the one place the keyset guarantee lapses — a cursor whose
-// last column is not row_id silently skips a tie group.
+// pagination strategies under a concurrent insert. OFFSET windows re-base on
+// every request, so a row inserted before the current position duplicates a
+// boundary row and shifts the tail — deterministic only thanks to Task 1's
+// total order, but never a no-dup/no-skip guarantee. Keyset cursors carry that
+// guarantee: with an ascending scan a row inserted at the tail surfaces on a
+// future page exactly once (keyset_insert_into_future_page); with a descending
+// scan the same row sorts into already-visited territory and cannot be re-served
+// without snapshot isolation (keyset_insert_front_desc_unreachable). The last
+// scenario pins the enforced tiebreak contract: a cursor whose final column is
+// not row_id is now REJECTED rather than allowed to silently skip a tie group.
 func TestPaginationUnderInsert(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -29,8 +32,9 @@ func TestPaginationUnderInsert(t *testing.T) {
 		run  func(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 	}{
 		{"offset_insert_characterization", testOffsetInsertCharacterization},
-		{"keyset_insert_no_dup_no_skip", testKeysetInsertNoDupNoSkip},
-		{"keyset_tie_omission_probe", testKeysetTieOmissionProbe},
+		{"keyset_insert_into_future_page", testKeysetInsertIntoFuturePage},
+		{"keyset_insert_front_desc_unreachable", testKeysetInsertNoDupNoSkip},
+		{"keyset_incomplete_cursor_rejected", testKeysetIncompleteCursorRejected},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -160,14 +164,20 @@ func testOffsetInsertCharacterization(ctx context.Context, t *testing.T, env *En
 	}
 }
 
-// testKeysetInsertNoDupNoSkip pins the no-dup/no-skip guarantee the issue asks
-// for: keyset pagination over [created_at DESC, row_id DESC] survives a
-// front-insert cleanly. After page 1 a new row with the newest created_at is
-// inserted; it sorts into already-visited front territory, so the cursor
-// (positioned after page 1's last record) excludes it and pages 2-3 return the
-// remaining originals. Every original appears exactly once; the new row appears
-// zero times — "current or future page" is vacuously satisfied and it is never
-// duplicated. A duplicate or omission here would be a keyset engine bug.
+// testKeysetInsertNoDupNoSkip (scenario keyset_insert_front_desc_unreachable) is
+// the DESC half of the #183 liveness contract, and the deliberate spec tension:
+// keyset pagination over [created_at DESC, row_id DESC] survives a front-insert
+// cleanly, but the inserted row is UNREACHABLE. After page 1 a new row with the
+// newest created_at is inserted; under DESC it sorts to the front — into
+// already-visited territory the cursor (positioned after page 1's last record)
+// can never re-serve. So every original appears exactly once and the new row
+// appears zero times: no dup, no skip of a pre-existing row, but "row appears in
+// a current or future page" is NOT satisfiable without snapshot isolation. The
+// zero-count assertion is kept as the characterization of that gap. The liveness
+// half of #183 — an inserted row that DOES surface on a later page — is pinned
+// by testKeysetInsertIntoFuturePage, where an ascending scan sends the newest
+// row into an unvisited window. A duplicate or a skipped original here would be
+// a keyset engine bug.
 func testKeysetInsertNoDupNoSkip(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	const n = 30
 	creates := make([]*Event, 0, n)
@@ -223,55 +233,132 @@ func testKeysetInsertNoDupNoSkip(ctx context.Context, t *testing.T, env *Env, wi
 	assertRowCount(ctx, t, env, "post-insert full requery", Query{Schema: wide, Limit: 40}, 31)
 }
 
-// testKeysetTieOmissionProbe pins the lossy edge of keyset pagination: a cursor
-// whose last column is NOT row_id silently skips a tie group. Five rows are
-// collapsed onto one created_at (cold, identical timestamps); after reading the
-// first keyset page over [created_at DESC], the continuation predicate is
-// created_at < T — but every remaining tied row also has created_at = T, so all
-// three unread rows are excluded and the next page is empty. This is PINNED as
-// the current behavior, not asserted as correct: the keyset contract requires
-// callers to end cursors with row_id (internal/federated/keyset.go:98-113
-// documents the row comparison but nothing enforces the tiebreak). Tracked by
-// follow-up #NNN.
-func testKeysetTieOmissionProbe(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+// testKeysetInsertIntoFuturePage is the liveness half of #183: an ascending
+// keyset scan over [created_at ASC, row_id ASC] paginates 30 pre-seeded rows;
+// after page 1 a new row with the NEWEST created_at is inserted. Under ASC it
+// sorts past every already-served window, into unvisited tail territory, so it
+// MUST surface on a later page — exactly once, alongside all 30 originals,
+// with no duplicate anywhere. This is the guarantee the front-insert DESC
+// scenario cannot demonstrate (there the row sorts into visited territory).
+func testKeysetInsertIntoFuturePage(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	const n = 30
+	creates := make([]*Event, 0, n)
+	for i := 0; i < n; i++ {
+		creates = append(creates, CreateEvent(wide, map[string]any{
+			"title": fmt.Sprintf("fut-%02d", i),
+			"count": float64(2000 + i),
+		}))
+	}
+	mustApplyEvents(ctx, t, env, "future-page creates", creates...)
+	mustFlush(ctx, t, env) // originals cold; the tail insert below stays hot
+
+	cols := []model.KeysetColumn{
+		{Attribute: "created_at", Direction: forma.SortOrderAsc},
+		{Attribute: "row_id", Direction: forma.SortOrderAsc},
+	}
+	// Open first page: a boundary below every real row (created_at 0, zero
+	// row_id) so the ascending "after" predicate admits the whole set.
+	cursor := &model.KeysetCursor{
+		Columns: cols,
+		Values:  []any{int64(0), keysetZeroRowID},
+		Mode:    model.KeysetCursorModeAfter,
+	}
+
+	seen := make(map[string]int, n+1)
+	var newID string
+	// 30 originals + 1 insert over pages of 10 ⇒ the inserted tail row lands on
+	// page 4; cap iterations well above that and stop on the first empty page.
+	for p := 0; p < 8; p++ {
+		page := mustQuery(ctx, t, env, Query{Schema: wide, Keyset: cursor, Limit: 10})
+		if len(page.Records) == 0 {
+			break
+		}
+		for _, id := range pageRowIDs(page) {
+			seen[id]++
+		}
+		if p == 0 {
+			// Newest created_at ⇒ sorts to the tail, into an unvisited window.
+			newEv := CreateEvent(wide, map[string]any{"title": "fut-inserted", "count": float64(9999)})
+			mustApplyEvents(ctx, t, env, "tail-insert new row", newEv)
+			newID = newEv.RowID.String()
+		}
+		cursor = nextKeysetCursor(cols, page.Records[len(page.Records)-1])
+	}
+
+	for _, c := range creates {
+		if id := c.RowID.String(); seen[id] != 1 {
+			t.Fatalf("original row %s appeared %d times across keyset pages, want exactly 1 (ascending keyset dup/skip — engine bug)", id, seen[id])
+		}
+	}
+	if seen[newID] != 1 {
+		t.Fatalf("tail-inserted row %s appeared %d times, want exactly 1 (ascending insert must surface on a future page)", newID, seen[newID])
+	}
+
+	// Positive control: the full set is exactly the 30 originals plus the insert.
+	assertRowCount(ctx, t, env, "post-insert full requery", Query{Schema: wide, Limit: 40}, n+1)
+}
+
+// testKeysetIncompleteCursorRejected pins the enforced tiebreak contract (#183):
+// a cursor whose final column is NOT row_id would silently skip every row tied
+// at the page boundary, so the engine now REJECTS it rather than serving a lossy
+// page. Pre-fix this was pinned as a lossy empty continuation page; enforcement
+// supersedes that follow-up. The rejection is structural (independent of the
+// data), so the positive control drives the identical query with a trailing
+// row_id appended and requires it to succeed — proving only the missing tiebreak
+// is refused, not the underlying read.
+func testKeysetIncompleteCursorRejected(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	const n = 5
 	events := make([]*Event, 0, n)
 	for i := 0; i < n; i++ {
 		events = append(events, CreateEvent(wide, map[string]any{
-			"title": fmt.Sprintf("tie-%02d", i),
+			"title": fmt.Sprintf("rej-%02d", i),
 			"count": float64(10 + i),
 		}))
 	}
-	mustApplyEvents(ctx, t, env, "tie-omission creates", events...)
-
-	// Collapse all five unflushed slots onto one created_at so the cursor tie
-	// group is exact; mirror into the events for the oracle (folds by ChangedAt).
-	tied := events[0].ChangedAt
-	env.ExecSQL(ctx, "UPDATE change_log SET changed_at = $1 WHERE schema_id = $2 AND flushed_at = 0", tied, wide.ID)
-	for _, ev := range events {
-		ev.ChangedAt = tied
-	}
-
+	mustApplyEvents(ctx, t, env, "incomplete-cursor creates", events...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only; all five share created_at = tied
+	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only
 
-	// Positive control: the read path returns all five tied rows, so a later
-	// empty page cannot be a false green from a broken read path.
-	assertRowCount(ctx, t, env, "tie control", Query{Schema: wide, Limit: 10}, n)
+	// Positive control: the read path returns all five rows.
+	assertRowCount(ctx, t, env, "reject control", Query{Schema: wide, Limit: 10}, n)
 
-	cols := []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}}
-	page1 := mustQuery(ctx, t, env, Query{
+	// A created_at-only cursor lacks the trailing row_id tiebreak ⇒ rejected.
+	_, err := env.Query(ctx, Query{
 		Schema: wide,
-		Keyset: &model.KeysetCursor{Columns: cols, Values: []any{paginationFarFutureMs}, Mode: model.KeysetCursorModeAfter},
-		Limit:  2,
+		Keyset: &model.KeysetCursor{
+			Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
+			Values:  []any{paginationFarFutureMs},
+			Mode:    model.KeysetCursorModeAfter,
+		},
+		Limit: 2,
 	})
-	if len(page1.Records) != 2 {
-		t.Fatalf("tie page 1 returned %d rows, want 2", len(page1.Records))
+	if err == nil {
+		t.Fatal("expected the created_at-only keyset cursor to be rejected, got nil error")
+	}
+	// Substring match (the validator returns a plain wrapped error, not a
+	// sentinel): the message must name the offending column and the tiebreak.
+	msg := err.Error()
+	if !strings.Contains(msg, "created_at") || !strings.Contains(msg, "row_id") {
+		t.Fatalf("rejection error must name the offending column and the row_id tiebreak, got: %v", err)
 	}
 
-	// Continue from page 1's last created_at WITHOUT a row_id tiebreak: the next
-	// predicate is created_at < T, which excludes all three remaining tied rows.
-	// PIN exactly that lossy behavior as an empty page (follow-up #NNN).
-	probe := Query{Schema: wide, Keyset: nextKeysetCursor(cols, page1.Records[len(page1.Records)-1]), Limit: 2}
-	assertKeysetPage(ctx, t, env, probe) // no want events ⇒ the omission is the empty page
+	// Positive control: the same scan WITH a trailing row_id is accepted.
+	page, err := env.Query(ctx, Query{
+		Schema: wide,
+		Keyset: &model.KeysetCursor{
+			Columns: []model.KeysetColumn{
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			},
+			Values: []any{paginationFarFutureMs, paginationMaxRowID},
+			Mode:   model.KeysetCursorModeAfter,
+		},
+		Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("cursor with trailing row_id must be accepted, got: %v", err)
+	}
+	if len(page.Records) != 2 {
+		t.Fatalf("accepted cursor page returned %d rows, want 2", len(page.Records))
+	}
 }
