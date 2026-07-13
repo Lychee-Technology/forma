@@ -137,6 +137,18 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		return nil, fmt.Errorf("duckdb federated query: %w", err)
 	}
 
+	// The template carries COUNT(*) OVER() on the data rows, so a page at or
+	// beyond the last match returns zero rows and the count is unreadable —
+	// totalRecords would misreport 0 while matches exist (#181). Recount with
+	// offset 0 (cannot recurse); at offset 0 an empty result is a genuine 0.
+	if len(records) == 0 && fq.Offset > 0 {
+		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
+		if cerr != nil {
+			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
+		}
+		totalRecords = countTotal
+	}
+
 	limit := fq.Limit
 	if limit <= 0 {
 		limit = model.DefaultPageSize
