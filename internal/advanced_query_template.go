@@ -85,7 +85,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
             ORDER BY
                 {{- if gt (len .SortKeys) 0 }}
                 {{- range $i, $k := .SortKeys }}
-                k{{$i}} {{ if $k.Desc }}DESC{{ else }}ASC{{ end }}{{ if lt (add $i 1) (len $.SortKeys) }},{{ end }}
+                k{{$i}} {{ if $k.Desc }}DESC NULLS LAST{{ else }}ASC{{ end }}{{ if lt (add $i 1) (len $.SortKeys) }},{{ end }}
                 {{- end }}
                 {{- if gt (len .SortKeys) 0 }},{{ end }}
                 {{- end }}
@@ -136,7 +136,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
         ORDER BY
             {{- if gt (len .SortKeys) 0 }}
             {{- range $i, $k := .SortKeys }}
-            m.k{{$i}} {{ if $k.Desc }}DESC{{ else }}ASC{{ end }}{{ if lt (add $i 1) (len $.SortKeys) }},{{ end }}
+            m.k{{$i}} {{ if $k.Desc }}DESC NULLS LAST{{ else }}ASC{{ end }}{{ if lt (add $i 1) (len $.SortKeys) }},{{ end }}
             {{- end }}
             {{- if gt (len .SortKeys) 0 }},{{ end }}
             {{- end }}
