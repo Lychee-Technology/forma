@@ -139,8 +139,15 @@ Data Plane提供基于Schema的CRUD查询API。
 
 ## 查询指定Schema的记录 （分页）
 
+### 排序与 NULL 值位置
 
+排序键的 NULL 值位置是一个稳定契约（#183 采纳，PR #239 落地）：
 
+* **NULL 值始终排在结果末尾（NULLS LAST）**，无论排序方向是 `asc` 还是 `desc`。
+* 该契约与查询路由无关：Postgres OLTP 路径与 DuckDB 联邦路径行为一致。查询走哪条路径是系统内部决策，调用方不可观测，因此 NULL 位置不允许随路由变化。
+* 实现上，PG 优化模板对 DESC 排序键显式追加 `NULLS LAST`（`internal/advanced_query_template.go`），覆盖 PostgreSQL 在 DESC 下默认 NULLS FIRST 的行为；DuckDB 路径本身默认 NULLS LAST。
+
+兼容性注意：在此契约落地之前，仅走 OLTP 路径的 DESC 排序遵循 PostgreSQL 默认行为（NULL 排最前）。依赖旧行为的调用方在升级后会看到 NULL 记录移动到结果末尾。该契约由 e2e 套件 `TestSortNulls` 在两条路径、两个方向上钉住。
 
 ## 更新指定RowID的属性值
 
