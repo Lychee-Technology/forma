@@ -147,7 +147,6 @@ func testEqualVertsDivergentProbe(ctx context.Context, t *testing.T, env *Env, w
 	if winners["fresh-v2"] != 20 {
 		t.Fatalf("equal-ver_ts base/delta tie: fresh-v2 (base) won %d/20 runs, want 20 — the deterministic deleted_ts 0 < NULL tiebreak regressed (revisit against #210)", winners["fresh-v2"])
 	}
-	_ = bystander
 }
 
 // testEqualVertsTombstoneWins pins the deterministic side of the tie: on an
@@ -176,6 +175,21 @@ func testEqualVertsTombstoneWins(ctx context.Context, t *testing.T, env *Env, wi
 		"UPDATE change_log SET changed_at = $1, deleted_at = $2 WHERE schema_id = $3 AND row_id = $4 AND flushed_at = 0",
 		victimT, victimT, wide.ID, victim.RowID)
 	del.ChangedAt, del.DeletedAt = victimT, victimT // mirror for the oracle (Seq breaks the tie)
+
+	// Guard: prove the restamp hit the unflushed tombstone slot. Without this,
+	// a silent no-op (e.g. after a flush-semantics change) would leave the
+	// tombstone at its real, later ver_ts — the victim would still be hidden by
+	// strict recency and the equal-ver_ts deleted_ts tie this scenario exists
+	// to pin would never be exercised.
+	var restamped int
+	if err := env.Pool.QueryRow(ctx,
+		"SELECT count(*) FROM change_log WHERE row_id = $1 AND schema_id = $2 AND flushed_at = 0 AND changed_at = $3 AND deleted_at = $3",
+		victim.RowID, wide.ID, victimT).Scan(&restamped); err != nil {
+		t.Fatalf("restamp verification query: %v", err)
+	}
+	if restamped != 1 {
+		t.Fatalf("tombstone restamp matched %d rows, want 1 — the equal-ver_ts construction did not take", restamped)
+	}
 
 	mustFlush(ctx, t, env)                     // tombstone parquet @ ver_ts T1, deleted_ts T1
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
