@@ -70,14 +70,14 @@ func (p *PausingS3) intercept(ctx context.Context, op S3Op, key string) error {
 	case <-p.resume:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("paused s3 %s %q: %w", op, key, ctx.Err())
+		return ctx.Err()
 	}
 }
 
 func (p *PausingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	if err := p.intercept(ctx, S3OpCopy, key); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pause CopyObject %q: %w", key, err)
 	}
 	out, err := p.Inner.CopyObject(ctx, in, optFns...)
 	if err != nil {
@@ -89,7 +89,7 @@ func (p *PausingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optF
 func (p *PausingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	if err := p.intercept(ctx, S3OpDelete, key); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pause DeleteObject %q: %w", key, err)
 	}
 	out, err := p.Inner.DeleteObject(ctx, in, optFns...)
 	if err != nil {
@@ -101,7 +101,7 @@ func (p *PausingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, 
 func (p *PausingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	if err := p.intercept(ctx, S3OpGet, key); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pause GetObject %q: %w", key, err)
 	}
 	out, err := p.Inner.GetObject(ctx, in, optFns...)
 	if err != nil {
@@ -113,7 +113,7 @@ func (p *PausingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns
 func (p *PausingS3) PutObject(ctx context.Context, in *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	if err := p.intercept(ctx, S3OpPut, key); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pause PutObject %q: %w", key, err)
 	}
 	out, err := p.Inner.PutObject(ctx, in, optFns...)
 	if err != nil {

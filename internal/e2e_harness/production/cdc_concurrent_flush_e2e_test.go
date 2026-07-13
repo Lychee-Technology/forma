@@ -4,29 +4,40 @@ package production
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // TestConcurrentFlushSnapshot pins issue #182: rows mutated concurrently with
 // a CDC flush must stay dirty and queries must always see the latest version.
 //
-// Mechanism: PausingS3 holds the flush open at CopyObject — after dirty-ID
-// selection, snapshot capture, and the DuckDB export, before
-// MarkFlushedIDsAtSnapshot — so each scenario mutates inside the real race
-// window. The changed_at <= snapshot guard (internal/cdc/helpers.go) must
-// then skip the mutated row while its untouched siblings flush; the unit
-// twin of that guard is TestMarkFlushedIDsAtSnapshot_SkipsUpdatedRows.
-// Because the pause sits after the export, the delta parquet still carries
-// the pre-mutation value — the visibility probes assert the dirty hot
-// version shadows it (anti-join), and after the retry flush drains the row,
-// LWW on ver_ts keeps suppressing it. The earlier select->export window
-// needs no e2e: the export CTE applies the same changed_at <= snapshot
-// filter (internal/cdc/duckdb_exporter.go), so a row mutated there never
-// enters the parquet at all.
+// The pipeline has two mutation windows, and both are exercised:
+//
+//   - selection->export ("before export", issue scenario 1's literal pause
+//     point): UpdateBeforeExport drives the mutation through
+//     cdc.CDCConfig.BeforeExportHook. The export CTE's changed_at <= snapshot
+//     filter (internal/cdc/duckdb_exporter.go) must keep the mutated row out
+//     of the parquet entirely, and the identical mark-flushed guard
+//     (internal/cdc/helpers.go) must keep it dirty.
+//   - export->mark-flushed (the harder window: the parquet already carries
+//     the stale value and only the mark-flushed guard saves the row):
+//     the *AfterSnapshot scenarios hold the flush open with PausingS3 at
+//     CopyObject. The visibility probes assert the dirty hot version shadows
+//     the exported stale copy (anti-join), and after the retry flush drains
+//     the row, LWW on ver_ts keeps suppressing it.
+//
+// The unit twin of the mark-flushed guard is
+// TestMarkFlushedIDsAtSnapshot_SkipsUpdatedRows.
 func TestConcurrentFlushSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	t.Run("UpdateBeforeExport", func(t *testing.T) {
+		t.Parallel()
+		testUpdateBeforeExport(ctx, t)
+	})
 	t.Run("UpdateAfterSnapshot", func(t *testing.T) {
 		t.Parallel()
 		testUpdateAfterSnapshot(ctx, t)
@@ -84,7 +95,10 @@ func runPausedFlush(ctx context.Context, t *testing.T, env *Env, mutate func()) 
 	mutate()
 	pauser.Resume()
 	out := <-done
-	return out.report, out.err
+	if out.err != nil {
+		return out.report, fmt.Errorf("flush under CopyObject pause: %w", out.err)
+	}
+	return out.report, nil
 }
 
 // runCleanRetry re-runs the flush without any pause and asserts it drains
@@ -142,6 +156,107 @@ func assertFederatedRowCount(ctx context.Context, t *testing.T, env *Env, name s
 	}
 }
 
+// assertUpdateRetryConverges runs the clean retry after a deferred concurrent
+// update and asserts the issue's convergence criterion: the victim drains as
+// exactly one v2 record (payload and ver_ts, not just ID membership) into one
+// new delta, the manifest tracks both deltas, and the oracle-checked probes
+// see exactly one visible version with v1 unreachable.
+func assertUpdateRetryConverges(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, update *Event, priorFinals []string) {
+	t.Helper()
+	retry := runCleanRetry(ctx, t, env)
+	retryFinals, _ := splitKeys(retry.NewObjects)
+	if len(retryFinals) != 1 {
+		t.Fatalf("retry must promote exactly one more final delta, got %v", retryFinals)
+	}
+	assertLiveParquetRow(ctx, t, env, retryFinals[0], update)
+	assertManifestDeltaPaths(t, retry.Manifests, wide, append(append([]string(nil), priorFinals...), retryFinals...))
+	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 4)
+	assertRowCount(ctx, t, env, "converged hot value",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "hot-00"}}, Limit: 10}, 1)
+	assertZeroRows(ctx, t, env, "converged stale value",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
+}
+
+// testUpdateBeforeExport is issue #182 scenario 1 at its literal pause point,
+// plus scenario 4 asserted against the actual snapshot value: the mutation
+// lands after dirty-ID selection and before the DuckDB export, driven through
+// cdc.CDCConfig.BeforeExportHook riding the FlushOverrides{Config} injection.
+// Both halves of the dual guard must hold: the export CTE's
+// changed_at <= snapshot filter keeps the row out of the parquet entirely,
+// and the identical mark-flushed guard keeps it dirty.
+func testUpdateBeforeExport(ctx context.Context, t *testing.T) {
+	env := NewEnv(t, SharedCluster(t))
+	wide := DefaultSchemaFixtures()[1] // e2e_wide
+
+	creates := buildOpenCreates(wide, 4)
+	mustApplyEvents(ctx, t, env, "seed creates", creates...)
+	victim := creates[0]
+	assertRowCount(ctx, t, env, "pre-flush rows", Query{Schema: wide, Limit: 10, PreferHot: true}, 4)
+	assertRowCount(ctx, t, env, "pre-flush victim by v1",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10, PreferHot: true}, 1)
+
+	// RunFlushWith is synchronous, so the hook runs inline on this goroutine,
+	// deterministically inside the selection->export window; it reports
+	// failures through the flush error rather than t.*.
+	var update *Event
+	var hookSnapshot int64
+	var hookBatch int
+	cfg := env.CDC
+	cfg.BeforeExportHook = func(hctx context.Context, _ int16, ids []uuid.UUID, snapshot int64) error {
+		hookSnapshot = snapshot
+		hookBatch = len(ids)
+		update = UpdateEvent(wide, victim.RowID, map[string]any{
+			"title": "hot-00",
+			"count": float64(900000),
+		})
+		return env.ApplyEvents(hctx, update)
+	}
+	report, err := env.RunFlushWith(ctx, FlushOverrides{Config: &cfg})
+	if err != nil {
+		t.Fatalf("flush with before-export mutation: %v", err)
+	}
+
+	// Positive control: the hook fired on the full selected batch, and the
+	// mutation's changed_at sits strictly past the very snapshot the guards
+	// compare against (issue scenario 4, asserted directly).
+	if hookBatch != 4 {
+		t.Fatalf("before-export hook saw %d batch ids, want 4", hookBatch)
+	}
+	if victim.ChangedAt > hookSnapshot {
+		t.Fatalf("victim v1 changed_at %d must be <= snapshot %d", victim.ChangedAt, hookSnapshot)
+	}
+	if update.ChangedAt <= hookSnapshot {
+		t.Fatalf("concurrent update changed_at %d must be > snapshot %d", update.ChangedAt, hookSnapshot)
+	}
+
+	// Both guard halves: the mutated row stays dirty and never entered the
+	// parquet — the delta holds exactly the three flushed siblings.
+	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, wide)
+	if len(flushed) != 3 || len(dirty) != 1 || !dirty[victim.RowID.String()] {
+		t.Fatalf("guard must keep exactly the mutated row dirty: flushed=%v dirty=%v", flushed, dirty)
+	}
+	if report.UnflushedBefore != 4 || report.UnflushedAfter != 1 {
+		t.Errorf("unflushed before/after = %d/%d, want 4/1", report.UnflushedBefore, report.UnflushedAfter)
+	}
+	finals, _ := splitKeys(report.NewObjects)
+	if len(finals) != 1 {
+		t.Fatalf("flush must promote exactly one final delta, got %v", finals)
+	}
+	assertSameRowIDs(t, "pre-export parquet vs flushed siblings",
+		fetchParquetRowIDs(ctx, t, env, finals), flushed)
+	assertManifestDeltaPaths(t, report.Manifests, wide, finals)
+
+	// Visibility: no cold copy of the victim exists; the dirty hot row serves
+	// v2 and v1 is gone everywhere.
+	assertFederatedRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 4)
+	assertRowCount(ctx, t, env, "hot value reachable",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "hot-00"}}, Limit: 10}, 1)
+	assertZeroRows(ctx, t, env, "v1 value unreachable",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
+
+	assertUpdateRetryConverges(ctx, t, env, wide, update, finals)
+}
+
 // testUpdateAfterSnapshot is issue #182 scenarios 1 and 4: a row updated
 // between snapshot capture and mark-flushed keeps flushed_at = 0, the
 // federated read serves the hot (new) value, and the exported stale value is
@@ -161,8 +276,9 @@ func testUpdateAfterSnapshot(ctx context.Context, t *testing.T) {
 	assertRowCount(ctx, t, env, "pre-flush victim by v1",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10, PreferHot: true}, 1)
 
+	var update *Event
 	report, err := runPausedFlush(ctx, t, env, func() {
-		update := UpdateEvent(wide, victim.RowID, map[string]any{
+		update = UpdateEvent(wide, victim.RowID, map[string]any{
 			"title": "hot-00",
 			"count": float64(900000),
 		})
@@ -172,18 +288,19 @@ func testUpdateAfterSnapshot(ctx context.Context, t *testing.T) {
 		assertStrictlyNewer(t, []*Event{victim}, []*Event{update})
 	})
 	if err != nil {
-		t.Fatalf("paused flush: %v", err)
+		t.Fatal(err)
 	}
 
 	finals := assertPausedFlushSplit(ctx, t, env, wide, report, 3, victim.RowID.String())
-	// The exported parquet physically contains all 4 selected rows — the
-	// victim with its stale v1 value.
+	// The exported parquet physically contains all 4 selected rows, and the
+	// victim's record is exactly one stale v1 version (payload and ver_ts).
 	wantExported := map[string]bool{}
 	for _, c := range creates {
 		wantExported[c.RowID.String()] = true
 	}
 	assertSameRowIDs(t, "paused-flush parquet vs selected batch",
 		fetchParquetRowIDs(ctx, t, env, finals), wantExported)
+	assertLiveParquetRow(ctx, t, env, finals[0], victim)
 
 	// Visibility: the dirty hot version shadows the exported copy. The oracle
 	// expects the victim to carry v2; the stale v1 must be unreachable even by
@@ -196,19 +313,7 @@ func testUpdateAfterSnapshot(ctx context.Context, t *testing.T) {
 
 	// Retry convergence: the victim drains into a second delta; the two cold
 	// copies now resolve by LWW on ver_ts — still exactly one visible version.
-	retry := runCleanRetry(ctx, t, env)
-	retryFinals, _ := splitKeys(retry.NewObjects)
-	if len(retryFinals) != 1 {
-		t.Fatalf("retry must promote exactly one more final delta, got %v", retryFinals)
-	}
-	assertSameRowIDs(t, "retry parquet vs victim",
-		fetchParquetRowIDs(ctx, t, env, retryFinals), map[string]bool{victim.RowID.String(): true})
-	assertManifestDeltaPaths(t, retry.Manifests, wide, append(finals, retryFinals...))
-	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 4)
-	assertRowCount(ctx, t, env, "converged hot value",
-		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "hot-00"}}, Limit: 10}, 1)
-	assertZeroRows(ctx, t, env, "converged stale value",
-		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
+	assertUpdateRetryConverges(ctx, t, env, wide, update, finals)
 }
 
 // testDeleteAfterSnapshot is issue #182 scenarios 2 and 4: a row soft-deleted
@@ -229,16 +334,20 @@ func testDeleteAfterSnapshot(ctx context.Context, t *testing.T) {
 	assertRowCount(ctx, t, env, "pre-flush victim by v1",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10, PreferHot: true}, 1)
 
+	var del *Event
 	report, err := runPausedFlush(ctx, t, env, func() {
-		del := DeleteEvent(wide, victim.RowID)
+		del = DeleteEvent(wide, victim.RowID)
 		mustApplyEvents(ctx, t, env, "delete during pause", del)
 		assertStrictlyNewer(t, []*Event{victim}, []*Event{del})
 	})
 	if err != nil {
-		t.Fatalf("paused flush: %v", err)
+		t.Fatal(err)
 	}
 
-	assertPausedFlushSplit(ctx, t, env, wide, report, 3, victim.RowID.String())
+	finals := assertPausedFlushSplit(ctx, t, env, wide, report, 3, victim.RowID.String())
+	// The paused flush exported the victim as exactly one LIVE v1 record —
+	// the delete landed after the export, so no tombstone is cold yet.
+	assertLiveParquetRow(ctx, t, env, finals[0], victim)
 
 	// Deletion visible now: 3 rows; the exported live copy must not resurrect
 	// the victim (dirty tombstone anti-joins it out before the filter).
@@ -248,9 +357,15 @@ func testDeleteAfterSnapshot(ctx context.Context, t *testing.T) {
 	assertZeroRows(ctx, t, env, "deleted row unreachable by exported value",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
 
-	// Retry flushes the tombstone; LWW + deleted_ts must keep both cold copies
-	// of the victim invisible.
-	runCleanRetry(ctx, t, env)
+	// Retry flushes the tombstone as exactly one all-NULL record carrying the
+	// delete's timestamps; LWW + deleted_ts must keep both cold copies of the
+	// victim invisible.
+	retry := runCleanRetry(ctx, t, env)
+	retryFinals, _ := splitKeys(retry.NewObjects)
+	if len(retryFinals) != 1 {
+		t.Fatalf("retry must promote exactly one more final delta, got %v", retryFinals)
+	}
+	assertTombstoneParquet(ctx, t, env, retryFinals[0], del)
 	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 3)
 	assertZeroRows(ctx, t, env, "deleted row stays unreachable",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
@@ -277,7 +392,7 @@ func testInsertAfterSnapshot(ctx context.Context, t *testing.T) {
 		mustApplyEvents(ctx, t, env, "insert during pause", inserted)
 	})
 	if err != nil {
-		t.Fatalf("paused flush: %v", err)
+		t.Fatal(err)
 	}
 
 	// All 4 selected rows flush; only the concurrent insert stays dirty, and
