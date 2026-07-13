@@ -129,6 +129,17 @@ func testHotOnlyDeepOffset(ctx context.Context, t *testing.T, env *Env, wide Sch
 		Query{Schema: wide, PreferHot: true, Sorts: sorts, Limit: 10, Offset: 25}, 25)
 	assertEmptyPageTotal(ctx, t, env, "hot offset>total",
 		Query{Schema: wide, PreferHot: true, Sorts: sorts, Limit: 10, Offset: 35}, 25)
+
+	// Scenario 4 on the OLTP route: the recount must carry a real filter
+	// clause through the hot path too, not just the DuckDB one — count < 80
+	// keeps ordinals 0..7 = 8 of the 25 rows visible.
+	filters := []Filter{{Attr: "count", Op: "lt", Value: "80"}}
+	assertShallowPage(ctx, t, env, "hot filtered control",
+		Query{Schema: wide, PreferHot: true, Filters: filters, Sorts: sorts, Limit: 5}, 5, 8)
+	assertEmptyPageTotal(ctx, t, env, "hot filtered offset==total",
+		Query{Schema: wide, PreferHot: true, Filters: filters, Sorts: sorts, Limit: 5, Offset: 8}, 8)
+	assertEmptyPageTotal(ctx, t, env, "hot filtered offset>total",
+		Query{Schema: wide, PreferHot: true, Filters: filters, Sorts: sorts, Limit: 5, Offset: 20}, 8)
 }
 
 // testMultiTierDeepOffset is issue scenario 3: rows spread across base
