@@ -255,8 +255,12 @@ WHERE rn = 1
     -- a newer non-matching version must never expose an older matching one.
     AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
 
--- Sorting & Pagination  
-ORDER BY created_at DESC  
+-- Sorting & Pagination
+-- A trailing row_id ASC tiebreak gives equal-key rows a total order, so
+-- LIMIT/OFFSET page windows stay stable across requests (#183). This mirrors
+-- buildNonKeysetOrderBy, the PG optimized template's trailing m.ltbase_row_id,
+-- and the production-harness oracle.
+ORDER BY created_at DESC, row_id ASC
 LIMIT $PAGE_SIZE OFFSET $OFFSET;
 ```
 

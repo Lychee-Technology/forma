@@ -233,10 +233,13 @@ func formatDuckDBPathList(paths []string) string {
 // buildNonKeysetOrderBy constructs an ORDER BY fragment from a query's AttributeOrders.
 // Main-table attributes are sorted by their bound ColumnName; EAV attributes are sorted
 // by their logical AttrName, which the unified CTE exposes as a named column via the
-// EAV pivot. When no resolvable columns remain the default "created_at DESC" is returned.
+// EAV pivot. A trailing "row_id ASC" tiebreak is always appended so equal-key rows have
+// a total order — mirroring the PG optimized template's trailing m.ltbase_row_id —
+// keeping LIMIT/OFFSET windows stable across requests (#183).
 func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
+	const stableTiebreak = "row_id ASC"
 	if q == nil || len(q.AttributeOrders) == 0 {
-		return "created_at DESC"
+		return "created_at DESC, " + stableTiebreak
 	}
 	var parts []string
 	for _, ao := range q.AttributeOrders {
@@ -254,9 +257,9 @@ func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
 		// If neither ColumnName nor AttrName is set the attribute is unresolvable; skip it.
 	}
 	if len(parts) == 0 {
-		return "created_at DESC"
+		return "created_at DESC, " + stableTiebreak
 	}
-	return strings.Join(parts, ", ")
+	return strings.Join(parts, ", ") + ", " + stableTiebreak
 }
 
 // appendKeysetArgs extracts KEYSET_ARGS from the params map and appends them
