@@ -71,17 +71,24 @@ func TestProductionSmoke(t *testing.T) {
 		t.Fatalf("apply warm mutations: %v", err)
 	}
 
-	// Dry-run immutability: parquet may be written, but flushed_at and the
-	// manifest must not change.
+	// Dry-run immutability (#180): nothing may change — no S3 objects,
+	// no flushed_at updates, no manifest entries. TestDryRunImmutability
+	// carries the full three-surface proof; this is the smoke-level guard.
 	dry, err := env.RunFlushDry(ctx)
 	if err != nil {
 		t.Fatalf("dry-run flush: %v", err)
+	}
+	if dry.UnflushedBefore == 0 {
+		t.Fatal("positive control: no pending work before dry-run")
 	}
 	if dry.UnflushedBefore != dry.UnflushedAfter {
 		t.Fatalf("dry-run changed unflushed count: %d -> %d", dry.UnflushedBefore, dry.UnflushedAfter)
 	}
 	if m := dry.Manifests[wide.ID]; m != nil && countTier(m, "delta") > 0 {
 		t.Fatal("dry-run added delta entries to the manifest")
+	}
+	if len(dry.NewObjects) != 0 {
+		t.Fatalf("dry-run created S3 objects: %v", dry.NewObjects)
 	}
 
 	flush, err := env.RunFlush(ctx)
