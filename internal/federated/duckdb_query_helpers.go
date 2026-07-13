@@ -3,6 +3,7 @@ package federated
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -268,19 +269,27 @@ func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions) *duckDBExe
 	return ctx
 }
 
-// recordDirtyIDSource records the dirty ID source in the execution plan.
-func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, schemaID int16, dirtyCount int) {
+// recordDirtyIDSource records the dirty ID source in the execution plan. The
+// change_log scan runs in every DuckDB tier form; when hot is excluded from
+// PreferredTiers its role shifts from hot data source to pure consistency
+// barrier (#184), and the reason says so — the plan reflects the actual
+// access, not the requested tiers.
+func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, schemaID int16, dirtyCount int, hasHot bool) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
 
+	reason := "dirty id set fetched"
+	if !hasHot {
+		reason = "consistency barrier (dirty-id anti-join)"
+	}
 	dpDirty := model.DataSourcePlan{
 		Tier:        model.DataTierHot,
 		Engine:      "postgres",
 		SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sqlutil.SanitizeIdentifier(changeLogTable)),
 		Params:      formatPlanParams([]any{schemaID}),
 		RowEstimate: int64(dirtyCount),
-		Reason:      "dirty id set fetched",
+		Reason:      reason,
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dpDirty)
 }
@@ -305,14 +314,20 @@ func (c *duckDBExecutionPlanContext) recordPushdownFragment(pgMainClause string)
 }
 
 // recordTranslation records the query translation in the execution plan,
-// including the bind parameters of the rendered DuckDB SQL.
-func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any, translateMs int64, useMainAsAnchor bool) {
+// including the bind parameters of the rendered DuckDB SQL. DataSourcePlan
+// carries a single Tier, but the one read_parquet scan physically serves the
+// whole warm∪cold equivalence class (one flat glob, #177/#184), so the entry
+// uses a representative parquet tier and a note enumerates the members —
+// emitting one source per tier would misrepresent the physical scan count.
+func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any, translateMs int64, q *model.FederatedAttributeQuery) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
 
+	served := parquetTiersServed(q)
+	useMainAsAnchor := q != nil && q.UseMainAsAnchor
 	dp := model.DataSourcePlan{
-		Tier:              model.DataTierCold,
+		Tier:              served[0],
 		Engine:            "duckdb",
 		SQL:               sqlStr,
 		Params:            formatPlanParams(args),
@@ -323,7 +338,44 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		Reason:            "duckdb template rendered",
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dp)
+	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
+		fmt.Sprintf("parquet(read_parquet) serves tiers: %s", joinTiers(served)))
+	if useMainAsAnchor {
+		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
+			"UseMainAsAnchor hint honored")
+	}
 	c.opts.ExecutionPlan.Timings["translate"] = translateMs
+}
+
+// parquetTiersServed returns the requested parquet tiers in warm, cold order;
+// empty PreferredTiers defaults to both. The DuckDB path is only reached when
+// at least one parquet tier participates (the engine gate intercepts hot-only
+// requests), but a defensive cold fallback keeps the plan well-formed.
+func parquetTiersServed(q *model.FederatedAttributeQuery) []model.DataTier {
+	if q == nil || len(q.PreferredTiers) == 0 {
+		return []model.DataTier{model.DataTierWarm, model.DataTierCold}
+	}
+	served := make([]model.DataTier, 0, 2)
+	for _, tier := range []model.DataTier{model.DataTierWarm, model.DataTierCold} {
+		for _, preferred := range q.PreferredTiers {
+			if preferred == tier {
+				served = append(served, tier)
+				break
+			}
+		}
+	}
+	if len(served) == 0 {
+		served = []model.DataTier{model.DataTierCold}
+	}
+	return served
+}
+
+func joinTiers(tiers []model.DataTier) string {
+	parts := make([]string, 0, len(tiers))
+	for _, tier := range tiers {
+		parts = append(parts, string(tier))
+	}
+	return strings.Join(parts, ",")
 }
 
 // formatPlanParams renders bind parameters into their diagnostic string

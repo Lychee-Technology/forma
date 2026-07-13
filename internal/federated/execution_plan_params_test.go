@@ -13,7 +13,8 @@ func TestRecordTranslation_CapturesParams(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 	planCtx := newDuckDBExecutionPlanContext(opts)
 
-	planCtx.recordTranslation("SELECT 1 WHERE a = ? AND b = ?", []any{"x", int64(42)}, 3, true)
+	planCtx.recordTranslation("SELECT 1 WHERE a = ? AND b = ?", []any{"x", int64(42)}, 3,
+		&model.FederatedAttributeQuery{UseMainAsAnchor: true})
 
 	sources := opts.ExecutionPlan.Sources
 	if len(sources) != 1 {
@@ -37,7 +38,7 @@ func TestRecordTranslation_NoCaptureWhenDisabled(t *testing.T) {
 	opts := &model.FederatedQueryOptions{}
 	planCtx := newDuckDBExecutionPlanContext(opts)
 
-	planCtx.recordTranslation("SELECT 1", []any{"x"}, 1, false)
+	planCtx.recordTranslation("SELECT 1", []any{"x"}, 1, nil)
 
 	if opts.ExecutionPlan != nil {
 		t.Fatalf("execution plan recorded despite capture disabled: %+v", opts.ExecutionPlan)

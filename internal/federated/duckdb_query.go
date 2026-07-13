@@ -92,7 +92,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Fetch dirty IDs and record in execution plan
-	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q.SchemaID, planCtx)
+	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
 	if err != nil {
 		return 0, err
 	}
@@ -104,7 +104,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Record translation in plan
-	planCtx.recordTranslation(sqlStr, args, translateMs, q.UseMainAsAnchor)
+	planCtx.recordTranslation(sqlStr, args, translateMs, q)
 
 	// Check circuit breaker before executing
 	if e.breaker != nil && e.breaker.IsOpen() {
@@ -150,7 +150,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	ctx context.Context,
 	tables model.StorageTables,
-	schemaID int16,
+	q *model.FederatedAttributeQuery,
 	planCtx *duckDBExecutionPlanContext,
 ) ([]uuid.UUID, error) {
 	if tables.ChangeLog == "" {
@@ -160,7 +160,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 		return nil, fmt.Errorf("dirty id fetcher not available")
 	}
 
-	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, schemaID)
+	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch dirty ids: %w", err)
 	}
@@ -169,7 +169,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	telemetry.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
-	planCtx.recordDirtyIDSource(tables.ChangeLog, schemaID, len(dirtyIDs))
+	planCtx.recordDirtyIDSource(tables.ChangeLog, q.SchemaID, len(dirtyIDs), sqlgen.FederatedQueryHasHot(q))
 
 	return dirtyIDs, nil
 }
@@ -259,8 +259,11 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 		}
 	}
 
-	// Record Postgres pushdown fragment
-	planCtx.recordPushdownFragment(dc.PgMainClause)
+	// Record Postgres pushdown fragment — only when the tier form renders
+	// pg_source; a hot-excluded query has no hot data scan to push into (#184).
+	if sqlgen.FederatedQueryHasHot(q) {
+		planCtx.recordPushdownFragment(dc.PgMainClause)
+	}
 
 	// The DuckDB logical WHERE clause already references attribute names, which
 	// match the attribute-aliased columns projected by both the benchmark and
