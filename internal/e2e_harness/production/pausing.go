@@ -3,7 +3,6 @@ package production
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,7 +12,7 @@ import (
 )
 
 // PausingS3 wraps the cluster's real S3 client and blocks the first call
-// matching Op/KeyContains until Resume is called, holding a real CDC flush
+// matching Op until Resume is called, holding a real CDC flush
 // open mid-pipeline so a test can mutate rows inside the race window (#182).
 // Pausing on S3OpCopy suspends the flush after dirty-ID selection, snapshot
 // capture, and the DuckDB export, but before MarkFlushedIDsAtSnapshot — the
@@ -23,9 +22,8 @@ import (
 // The paused call also unblocks when its context is cancelled, so a timed-out
 // flush returns instead of leaking a goroutine.
 type PausingS3 struct {
-	Inner       cdc.S3FullClient
-	Op          S3Op
-	KeyContains string
+	Inner cdc.S3FullClient
+	Op    S3Op
 
 	reached    chan struct{}
 	resume     chan struct{}
@@ -60,9 +58,6 @@ func (p *PausingS3) intercept(ctx context.Context, op S3Op, key string) error {
 	if op != p.Op {
 		return nil
 	}
-	if p.KeyContains != "" && !strings.Contains(key, p.KeyContains) {
-		return nil
-	}
 	first := false
 	p.pauseOnce.Do(func() {
 		first = true
@@ -80,31 +75,51 @@ func (p *PausingS3) intercept(ctx context.Context, op S3Op, key string) error {
 }
 
 func (p *PausingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	if err := p.intercept(ctx, S3OpCopy, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := p.intercept(ctx, S3OpCopy, key); err != nil {
 		return nil, err
 	}
-	return p.Inner.CopyObject(ctx, in, optFns...)
+	out, err := p.Inner.CopyObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 CopyObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (p *PausingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	if err := p.intercept(ctx, S3OpDelete, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := p.intercept(ctx, S3OpDelete, key); err != nil {
 		return nil, err
 	}
-	return p.Inner.DeleteObject(ctx, in, optFns...)
+	out, err := p.Inner.DeleteObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 DeleteObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (p *PausingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	if err := p.intercept(ctx, S3OpGet, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := p.intercept(ctx, S3OpGet, key); err != nil {
 		return nil, err
 	}
-	return p.Inner.GetObject(ctx, in, optFns...)
+	out, err := p.Inner.GetObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 GetObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 func (p *PausingS3) PutObject(ctx context.Context, in *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	if err := p.intercept(ctx, S3OpPut, aws.ToString(in.Key)); err != nil {
+	key := aws.ToString(in.Key)
+	if err := p.intercept(ctx, S3OpPut, key); err != nil {
 		return nil, err
 	}
-	return p.Inner.PutObject(ctx, in, optFns...)
+	out, err := p.Inner.PutObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 PutObject %q: %w", key, err)
+	}
+	return out, nil
 }
 
 var _ cdc.S3FullClient = (*PausingS3)(nil)

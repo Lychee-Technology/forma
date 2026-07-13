@@ -124,6 +124,24 @@ func assertPausedFlushSplit(ctx context.Context, t *testing.T, env *Env, wide Sc
 	return finals
 }
 
+// assertFederatedRowCount is assertRowCount plus a routing check: the flushed
+// sibling rows are only served by the parquet side (the hot scan reads
+// flushed_at = 0 rows), so the count is meaningful evidence that the cold
+// delta was consulted only if the query actually routed to DuckDB.
+func assertFederatedRowCount(ctx context.Context, t *testing.T, env *Env, name string, q Query, want int) {
+	t.Helper()
+	res := env.AssertQueryMatches(ctx, q)
+	if res == nil {
+		return
+	}
+	if len(res.Records) != want {
+		t.Fatalf("%s returned %d rows, want %d", name, len(res.Records), want)
+	}
+	if !res.Plan.Routing.UseDuckDB {
+		t.Errorf("%s did not route to duckdb: %+v", name, res.Plan.Routing)
+	}
+}
+
 // testUpdateAfterSnapshot is issue #182 scenarios 1 and 4: a row updated
 // between snapshot capture and mark-flushed keeps flushed_at = 0, the
 // federated read serves the hot (new) value, and the exported stale value is
@@ -170,7 +188,7 @@ func testUpdateAfterSnapshot(ctx context.Context, t *testing.T) {
 	// Visibility: the dirty hot version shadows the exported copy. The oracle
 	// expects the victim to carry v2; the stale v1 must be unreachable even by
 	// direct filter (anti-join evicts it before the filter runs).
-	assertRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 4)
+	assertFederatedRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 4)
 	assertRowCount(ctx, t, env, "hot value reachable",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "hot-00"}}, Limit: 10}, 1)
 	assertZeroRows(ctx, t, env, "exported stale value unreachable",
@@ -186,7 +204,7 @@ func testUpdateAfterSnapshot(ctx context.Context, t *testing.T) {
 	assertSameRowIDs(t, "retry parquet vs victim",
 		fetchParquetRowIDs(ctx, t, env, retryFinals), map[string]bool{victim.RowID.String(): true})
 	assertManifestDeltaPaths(t, retry.Manifests, wide, append(finals, retryFinals...))
-	assertRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 4)
+	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 4)
 	assertRowCount(ctx, t, env, "converged hot value",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "hot-00"}}, Limit: 10}, 1)
 	assertZeroRows(ctx, t, env, "converged stale value",
@@ -206,6 +224,10 @@ func testDeleteAfterSnapshot(ctx context.Context, t *testing.T) {
 	mustApplyEvents(ctx, t, env, "seed creates", creates...)
 	victim := creates[0]
 	assertRowCount(ctx, t, env, "pre-flush rows", Query{Schema: wide, Limit: 10, PreferHot: true}, 4)
+	// Same-filter positive control for the zero-row probes below: the victim
+	// is reachable by this value until the concurrent delete lands.
+	assertRowCount(ctx, t, env, "pre-flush victim by v1",
+		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10, PreferHot: true}, 1)
 
 	report, err := runPausedFlush(ctx, t, env, func() {
 		del := DeleteEvent(wide, victim.RowID)
@@ -220,7 +242,7 @@ func testDeleteAfterSnapshot(ctx context.Context, t *testing.T) {
 
 	// Deletion visible now: 3 rows; the exported live copy must not resurrect
 	// the victim (dirty tombstone anti-joins it out before the filter).
-	assertRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 3)
+	assertFederatedRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 3)
 	assertRowCount(ctx, t, env, "survivor reachable",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-01"}}, Limit: 10}, 1)
 	assertZeroRows(ctx, t, env, "deleted row unreachable by exported value",
@@ -229,7 +251,7 @@ func testDeleteAfterSnapshot(ctx context.Context, t *testing.T) {
 	// Retry flushes the tombstone; LWW + deleted_ts must keep both cold copies
 	// of the victim invisible.
 	runCleanRetry(ctx, t, env)
-	assertRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 3)
+	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 3)
 	assertZeroRows(ctx, t, env, "deleted row stays unreachable",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "open-00"}}, Limit: 10})
 }
@@ -276,12 +298,12 @@ func testInsertAfterSnapshot(ctx context.Context, t *testing.T) {
 	assertManifestDeltaPaths(t, report.Manifests, wide, finals)
 
 	// The new row is visible through the hot tier right away.
-	assertRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 5)
+	assertFederatedRowCount(ctx, t, env, "post-flush rows", Query{Schema: wide, Limit: 10}, 5)
 	assertRowCount(ctx, t, env, "inserted row reachable",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "new-99"}}, Limit: 10}, 1)
 
 	runCleanRetry(ctx, t, env)
-	assertRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 5)
+	assertFederatedRowCount(ctx, t, env, "converged rows", Query{Schema: wide, Limit: 10}, 5)
 	assertRowCount(ctx, t, env, "converged inserted row",
 		Query{Schema: wide, Filters: []Filter{{Attr: "title", Value: "new-99"}}, Limit: 10}, 1)
 }
