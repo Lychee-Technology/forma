@@ -93,6 +93,27 @@ func TestShapeHashKeysetColumnsParticipate(t *testing.T) {
 	require.NotEqual(t, mustHash(t, a), mustHash(t, c), "keyset vs offset pagination must differ")
 }
 
+// TestShapeHashDistinguishesTierHotMembership pins the #184 cache-shape rule:
+// the compiled skeleton differs only on whether hot participates (pg_source
+// present or pruned), so hasHot membership must split the hash while
+// warm-vs-cold must not — parquet glob differences live in the scope hash.
+func TestShapeHashDistinguishesTierHotMembership(t *testing.T) {
+	withTiers := func(tiers ...model.DataTier) *model.FederatedAttributeQuery {
+		q := baseQuery("gt:10")
+		q.PreferredTiers = tiers
+		return q
+	}
+
+	require.NotEqual(t, mustHash(t, baseQuery("gt:10")), mustHash(t, withTiers(model.DataTierWarm, model.DataTierCold)),
+		"hot-excluded shapes render a different skeleton and must not share a cache entry")
+	require.Equal(t, mustHash(t, withTiers(model.DataTierWarm)), mustHash(t, withTiers(model.DataTierCold)),
+		"warm and cold share the single flat parquet glob; the skeleton is identical")
+	require.Equal(t, mustHash(t, withTiers(model.DataTierHot, model.DataTierWarm)), mustHash(t, withTiers(model.DataTierHot, model.DataTierCold)),
+		"hasHot shapes are one skeleton regardless of which parquet tier joins")
+	require.Equal(t, mustHash(t, baseQuery("gt:10")), mustHash(t, withTiers(model.DataTierHot, model.DataTierWarm, model.DataTierCold)),
+		"empty tiers default to all three and must share the full-form skeleton")
+}
+
 func TestShapeHashAnchorParticipates(t *testing.T) {
 	a := baseQuery("gt:10")
 	b := baseQuery("gt:10")
