@@ -1,6 +1,11 @@
 package cdc
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // CDCConfig controls change_log flushing and export behavior.
 // S3 client is injected separately via RunOnce parameter to allow callers to
@@ -52,6 +57,13 @@ type CDCConfig struct {
 	// Manifest (optional - when set, flush updates manifest after export)
 	ManifestPrefix   string // root prefix for manifests in S3
 	ManifestTemplate string // path template, e.g. "manifest/{{.SchemaID}}.json"
+
+	// BeforeExportHook, when non-nil, runs per batch after dirty-ID selection
+	// (the snapshot is already captured) and before the DuckDB export. Test
+	// seam for driving mutations inside the selection->export race window
+	// (#182); always nil in production. A hook error aborts the batch before
+	// any side effect.
+	BeforeExportHook func(ctx context.Context, schemaID int16, batchIDs []uuid.UUID, snapshot int64) error
 }
 
 // CompactionConfig controls Base/Delta maintenance.
