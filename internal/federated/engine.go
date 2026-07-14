@@ -147,6 +147,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		// would silently return a partial result and mask it (#151). Surface it
 		// even under AllowPartialDegradedMode.
 		if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(err, ErrSchemaMetadataCacheRequired) {
+			recordDegradedFallbackPlan(opts, tables, err)
 			return e.queryPostgresOnly(ctx, tables, fq)
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", err)
@@ -164,6 +165,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			// exception): a transient failure here must not fail a request
 			// the degraded mode contract promises to serve Postgres-only.
 			if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(cerr, ErrSchemaMetadataCacheRequired) {
+				recordDegradedFallbackPlan(opts, tables, cerr)
 				return e.queryPostgresOnly(ctx, tables, fq)
 			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
@@ -216,6 +218,34 @@ func recordHotOnlyGatePlan(opts *model.FederatedQueryOptions, tables model.Stora
 		Engine: "postgres",
 		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
 		Reason: "hot-only gate (OLTP main)",
+	})
+}
+
+// recordDegradedFallbackPlan rewrites the execution plan when a DuckDB-side
+// failure degrades the query to Postgres-only (#185): without it the plan
+// keeps the pre-failure routing decision (UseDuckDB=true) and never mentions
+// the fallback, so "the plan reflects actual access" would not hold for the
+// degraded-mode contract. Tiers states physical coverage — postgres serves
+// the hot storage regardless of the tiers the request asked for (#184).
+func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.StorageTables, cause error) {
+	if opts == nil || !opts.IncludeExecutionPlan {
+		return
+	}
+	if opts.ExecutionPlan == nil {
+		opts.ExecutionPlan = &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	}
+	opts.ExecutionPlan.Routing = model.RoutingDecision{
+		Tiers:     []model.DataTier{model.DataTierHot},
+		UseDuckDB: false,
+		Reason:    "degraded fallback (AllowPartialDegradedMode)",
+	}
+	opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes,
+		fmt.Sprintf("degraded fallback to postgres-only: %v", cause))
+	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, model.DataSourcePlan{
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
+		Reason: "degraded fallback (postgres-only)",
 	})
 }
 

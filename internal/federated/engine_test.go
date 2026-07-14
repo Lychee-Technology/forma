@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"text/template"
 
@@ -432,4 +433,57 @@ func TestEngineCompiledPlanCache(t *testing.T) {
 	_, _, err = newEngine(duckC).ExecuteDuckDBFederatedQuery(context.Background(), tables, qC, qC.Limit, 0, nil, optsC)
 	require.NoError(t, err)
 	require.Contains(t, optsC.ExecutionPlan.Notes, "plan_cache=miss")
+}
+
+// requirePlanHasNoteContaining asserts one plan note contains substr.
+func requirePlanHasNoteContaining(t *testing.T, plan *model.ExecutionPlan, substr string) {
+	t.Helper()
+	require.NotNil(t, plan)
+	for _, n := range plan.Notes {
+		if strings.Contains(n, substr) {
+			return
+		}
+	}
+	t.Fatalf("no plan note contains %q; notes: %v", substr, plan.Notes)
+}
+
+// requirePlanHasPostgresSource asserts the plan records a postgres source
+// whose reason contains reasonSubstr.
+func requirePlanHasPostgresSource(t *testing.T, plan *model.ExecutionPlan, reasonSubstr string) {
+	t.Helper()
+	require.NotNil(t, plan)
+	for _, s := range plan.Sources {
+		if s.Engine == "postgres" && strings.Contains(s.Reason, reasonSubstr) {
+			return
+		}
+	}
+	t.Fatalf("no postgres source with reason containing %q; sources: %+v", reasonSubstr, plan.Sources)
+}
+
+// TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan pins the
+// #185 scenario-6 contract: when AllowPartialDegradedMode absorbs a DuckDB
+// failure, the returned execution plan must reflect the postgres-only
+// fallback instead of keeping the stale pre-failure routing decision.
+func TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
+	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "")
+
+	opts := &model.FederatedQueryOptions{
+		AllowPartialDegradedMode: true,
+		IncludeExecutionPlan:     true,
+	}
+	_, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
+	}, opts)
+
+	require.NoError(t, err)
+	require.NotNil(t, opts.ExecutionPlan)
+	require.False(t, opts.ExecutionPlan.Routing.UseDuckDB,
+		"plan must not claim DuckDB after degraded fallback: %+v", opts.ExecutionPlan.Routing)
+	require.Equal(t, []model.DataTier{model.DataTierHot}, opts.ExecutionPlan.Routing.Tiers)
+	require.Contains(t, opts.ExecutionPlan.Routing.Reason, "degraded fallback")
+	requirePlanHasNoteContaining(t, opts.ExecutionPlan, "forced duck failure")
+	requirePlanHasPostgresSource(t, opts.ExecutionPlan, "degraded fallback")
 }
