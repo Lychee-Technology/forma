@@ -20,6 +20,10 @@ func (s *stubS3) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...f
 	return &s3.DeleteObjectOutput{}, nil
 }
 
+func (s *stubS3) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	return &s3.HeadObjectOutput{}, nil
+}
+
 func (s *stubS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	return &s3.GetObjectOutput{}, nil
 }

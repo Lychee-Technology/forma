@@ -258,6 +258,7 @@ func TestUpdateManifest_NilStore(t *testing.T) {
 		"delta",
 		[]uuid.UUID{rowID},
 		1700000000000,
+		0,
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -286,6 +287,7 @@ func TestUpdateManifest_AppendsEntryWithRowBounds(t *testing.T) {
 		"delta",
 		rowIDs,
 		createdAt,
+		4096,
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -310,6 +312,7 @@ func TestUpdateManifest_AppendsEntryWithRowBounds(t *testing.T) {
 	require.Equal(t, createdAt, entry.CreatedMax)
 	require.Equal(t, expectedMin.String(), entry.RowIDMin)
 	require.Equal(t, expectedMax.String(), entry.RowIDMax)
+	require.Equal(t, int64(4096), entry.SizeBytes)
 }
 
 func TestUpdateManifest_ResolverError(t *testing.T) {
@@ -322,6 +325,7 @@ func TestUpdateManifest_ResolverError(t *testing.T) {
 		"delta",
 		nil,
 		1700000000000,
+		0,
 		zap.NewNop(),
 	)
 	require.Error(t, err)
@@ -341,6 +345,7 @@ func TestUpdateManifest_AppendError(t *testing.T) {
 		"delta",
 		nil,
 		1700000000000,
+		0,
 		zap.NewNop(),
 	)
 	require.Error(t, err)

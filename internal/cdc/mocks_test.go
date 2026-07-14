@@ -5,9 +5,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
 )
+
+// mockObjectSizeBytes is the ContentLength every mock HeadObject reports, so
+// tests can assert SizeBytes propagation into manifest entries.
+const mockObjectSizeBytes int64 = 42
 
 type errorSchemaRegistry struct{ err error }
 
@@ -49,6 +54,10 @@ func (c *objectOnlyS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectI
 	return &s3.DeleteObjectOutput{}, nil
 }
 
+func (c *objectOnlyS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
+}
+
 type copyFailingS3Client struct{}
 
 func (c *copyFailingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
@@ -57,6 +66,10 @@ func (c *copyFailingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInpu
 
 func (c *copyFailingS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	return &s3.DeleteObjectOutput{}, nil
+}
+
+func (c *copyFailingS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
 }
 
 type fullS3ClientMock struct {

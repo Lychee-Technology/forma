@@ -24,6 +24,8 @@ const (
 	S3OpGet S3Op = "GetObject"
 	// S3OpPut matches PutObject (flush step 7: manifest save).
 	S3OpPut S3Op = "PutObject"
+	// S3OpHead matches HeadObject (post-copy size stat for manifest SizeBytes).
+	S3OpHead S3Op = "HeadObject"
 )
 
 // S3Fault selects which calls fail. A call matches when its operation equals
@@ -105,6 +107,18 @@ func (f *FaultInjectingS3) GetObject(ctx context.Context, in *s3.GetObjectInput,
 	out, err := f.Inner.GetObject(ctx, in, optFns...)
 	if err != nil {
 		return nil, fmt.Errorf("s3 GetObject %q: %w", key, err)
+	}
+	return out, nil
+}
+
+func (f *FaultInjectingS3) HeadObject(ctx context.Context, in *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	key := aws.ToString(in.Key)
+	if err := f.intercept(S3OpHead, key); err != nil {
+		return nil, err
+	}
+	out, err := f.Inner.HeadObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 HeadObject %q: %w", key, err)
 	}
 	return out, nil
 }

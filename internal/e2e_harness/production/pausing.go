@@ -3,6 +3,7 @@ package production
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,6 +25,11 @@ import (
 type PausingS3 struct {
 	Inner cdc.S3FullClient
 	Op    S3Op
+	// KeyContains narrows the match to keys containing this substring (empty
+	// matches any key). Needed when the paused pipeline issues several calls
+	// of the same op — e.g. the compaction rewrite copies its new base parquet
+	// before the manifest PutObject a test wants to hold open (#188).
+	KeyContains string
 
 	reached    chan struct{}
 	resume     chan struct{}
@@ -34,11 +40,18 @@ type PausingS3 struct {
 // NewPausingS3 returns a decorator that pauses the first call matching op on
 // any key.
 func NewPausingS3(inner cdc.S3FullClient, op S3Op) *PausingS3 {
+	return NewPausingS3OnKey(inner, op, "")
+}
+
+// NewPausingS3OnKey returns a decorator that pauses the first call matching op
+// whose key contains keyContains.
+func NewPausingS3OnKey(inner cdc.S3FullClient, op S3Op, keyContains string) *PausingS3 {
 	return &PausingS3{
-		Inner:   inner,
-		Op:      op,
-		reached: make(chan struct{}),
-		resume:  make(chan struct{}),
+		Inner:       inner,
+		Op:          op,
+		KeyContains: keyContains,
+		reached:     make(chan struct{}),
+		resume:      make(chan struct{}),
 	}
 }
 
@@ -56,6 +69,9 @@ func (p *PausingS3) Resume() {
 
 func (p *PausingS3) intercept(ctx context.Context, op S3Op, key string) error {
 	if op != p.Op {
+		return nil
+	}
+	if p.KeyContains != "" && !strings.Contains(key, p.KeyContains) {
 		return nil
 	}
 	first := false
@@ -106,6 +122,18 @@ func (p *PausingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns
 	out, err := p.Inner.GetObject(ctx, in, optFns...)
 	if err != nil {
 		return nil, fmt.Errorf("s3 GetObject %q: %w", key, err)
+	}
+	return out, nil
+}
+
+func (p *PausingS3) HeadObject(ctx context.Context, in *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	key := aws.ToString(in.Key)
+	if err := p.intercept(ctx, S3OpHead, key); err != nil {
+		return nil, fmt.Errorf("pause HeadObject %q: %w", key, err)
+	}
+	out, err := p.Inner.HeadObject(ctx, in, optFns...)
+	if err != nil {
+		return nil, fmt.Errorf("s3 HeadObject %q: %w", key, err)
 	}
 	return out, nil
 }

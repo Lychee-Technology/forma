@@ -31,10 +31,11 @@ var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, cred
 	return auth.GenerateDbConnectAuthToken(ctx, endpoint, region, cp)
 }
 
-// S3ObjectClient is a minimal interface for copy + delete used by the CDC flusher.
+// S3ObjectClient is a minimal interface for copy + delete + stat used by the CDC flusher.
 type S3ObjectClient interface {
 	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 // S3FullClient extends S3ObjectClient with GetObject and PutObject for manifest operations.
