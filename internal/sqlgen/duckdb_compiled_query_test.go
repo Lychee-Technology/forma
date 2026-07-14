@@ -63,6 +63,11 @@ func TestCompiledQueryParity(t *testing.T) {
 		Values:  []any{int64(1700000000000), "11111111-1111-1111-1111-111111111111"},
 	}
 
+	coldOnlyQ := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed},
+		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
+	}
+
 	cases := map[string]struct {
 		q     *model.FederatedAttributeQuery
 		dirty []uuid.UUID
@@ -71,12 +76,45 @@ func TestCompiledQueryParity(t *testing.T) {
 		"with dirty ids":   {&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}, dirty},
 		"with keyset":      {keysetQ, nil},
 		"keyset and dirty": {keysetQ, dirty},
+		"cold only":        {coldOnlyQ, dirty},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			requireCompiledParity(t, tc.q, parityDual(t, tc.q.Condition, cache), tc.dirty)
 		})
 	}
+}
+
+// TestCompiledQueryColdOnlyParityOmitsPgSource pins the #184 tier form on the
+// compiled path: a hot-excluded shape must compile to a skeleton without the
+// pg_source CTE, and Bind must drop the PgMainArgs occurrence so the bind
+// list stays aligned with the surviving placeholders.
+func TestCompiledQueryColdOnlyParityOmitsPgSource(t *testing.T) {
+	cache := dualPlanTestCache()
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			SchemaID: 7,
+			Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "age", Value: "gt:10"},
+				&forma.KvCondition{Attr: "tag", Value: "equals:x"},
+			}},
+		},
+		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
+	}
+	dual := parityDual(t, q.Condition, cache)
+	require.NotEmpty(t, dual.PgMainArgs,
+		"precondition: the shape must carry pushdown args for the drop to be observable")
+
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, &dual, false)
+	require.NoError(t, err)
+	require.NotNil(t, compiled)
+
+	gotSQL, gotArgs := compiled.Bind(q, dual, nil)
+	require.NotContains(t, gotSQL, "pg_source",
+		"hot excluded: the compiled skeleton must omit the pg_source CTE")
+	wantArgs := append(append([]any{}, dual.DuckArgs...), dual.DuckArgs...)
+	require.Equal(t, wantArgs, gotArgs,
+		"hot excluded: binds are the two DuckArgs occurrences only")
 }
 
 // TestCompiledQueryReuseAcrossRequests pins the cache semantics: one compile,

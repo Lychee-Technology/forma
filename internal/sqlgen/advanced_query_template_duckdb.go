@@ -10,6 +10,12 @@ import "text/template"
 // Resource pragmas (threads / memory_limit) are deliberately absent: they are
 // connection-level configuration (DuckDBConfig via applyResourcePragmas), and a
 // per-query PRAGMA would override the configured values on every execution.
+// HasHot selects the tier form (#184): hot-excluded PreferredTiers drop the
+// pg_source data CTE and its UNION ALL branch, while dirty_ids always renders
+// — it is the consistency barrier, not a hot data source, so unflushed rows
+// stay consistently invisible instead of resurfacing as stale parquet
+// versions. Callers must always set HasHot (a missing map key renders as
+// false and would silently prune pg_source).
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
@@ -39,7 +45,7 @@ s3_source AS (
       WHERE ({{.LOGICAL_WHERE_CLAUSE}})
     )
 ),
-
+{{if .HasHot}}
 pg_source AS (
   SELECT
     {{.PGSourceSelect}},
@@ -66,11 +72,11 @@ pg_source AS (
     AND ({{.PG_WHERE_CLAUSE}})
   GROUP BY {{.PGGroupBy}}
 ),
-
+{{end}}
 unified AS (
-  SELECT * FROM s3_source
+  SELECT * FROM s3_source{{if .HasHot}}
   UNION ALL
-  SELECT * FROM pg_source
+  SELECT * FROM pg_source{{end}}
 ),
 
 ranked AS (

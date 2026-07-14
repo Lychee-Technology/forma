@@ -177,6 +177,35 @@ func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndDirtyFetcher(t
 	require.Equal(t, rowID, page.Records[0].RowID)
 }
 
+// TestDBFederatedQueryEngine_EmptyTiersUseAllThree pins the #184 default
+// contract at the engine boundary: empty PreferredTiers is the all-tier form
+// and must flow into EvaluateRoutingPolicy (default decision carries all
+// three tiers) rather than short-circuiting to Postgres-only — direct engine
+// callers must not silently lose warm/cold.
+func TestDBFederatedQueryEngine_EmptyTiersUseAllThree(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	pg := &fakePostgresFederatedSource{}
+	dirty := &fakeDirtyIDFetcher{}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "")
+	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
+		return "SELECT fake", nil, nil
+	}
+
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+	}, opts)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, duck.calls, "empty tiers must reach the DuckDB federated path, not the hot-only gate")
+	require.Equal(t, 0, pg.queryCalls)
+	require.True(t, page.ExecutionPlan.Routing.UseDuckDB)
+	require.Equal(t, []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}, page.ExecutionPlan.Routing.Tiers)
+}
+
 func TestDBFederatedQueryEngine_DisabledRoutingDelegatesToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
 	duck := &fakeDuckDBExecutor{}

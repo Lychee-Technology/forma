@@ -36,6 +36,13 @@ type Query struct {
 	PreferHot      bool                `json:"prefer_hot,omitempty"`
 	PreferredTiers []model.DataTier    `json:"preferred_tiers,omitempty"`
 	Keyset         *model.KeysetCursor `json:"keyset,omitempty"`
+
+	// UseMainAsAnchor forwards the public anchor hint (#184 preference
+	// contract: the hint must surface in the execution plan).
+	UseMainAsAnchor bool `json:"use_main_as_anchor,omitempty"`
+	// S3ParquetPathTemplate overrides the Env's default production glob when
+	// non-empty, so tests can prove DuckDB reads the caller-specified path.
+	S3ParquetPathTemplate string `json:"s3_parquet_path_template,omitempty"`
 }
 
 // QueryResult carries the engine-side outcome plus everything diagnostics
@@ -105,6 +112,10 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 	if len(tiers) == 0 {
 		tiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
 	}
+	glob := q.S3ParquetPathTemplate
+	if glob == "" {
+		glob = e.ParquetGlob()
+	}
 
 	fq := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{
@@ -114,10 +125,11 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 			Limit:           q.Limit,
 			Offset:          q.Offset,
 		},
-		PreferredTiers: tiers,
-		PreferHot:      q.PreferHot,
-		KeysetCursor:   q.Keyset,
-		DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: e.ParquetGlob()},
+		PreferredTiers:  tiers,
+		PreferHot:       q.PreferHot,
+		UseMainAsAnchor: q.UseMainAsAnchor,
+		KeysetCursor:    q.Keyset,
+		DuckDBHints:     &model.DuckDBRenderHints{S3ParquetPathTemplate: glob},
 	}
 	return fq, nil
 }

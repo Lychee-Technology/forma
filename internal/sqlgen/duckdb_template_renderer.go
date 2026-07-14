@@ -74,7 +74,12 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		if isAdvancedTemplate {
 			m["LOGICAL_WHERE_CLAUSE"] = dual.DuckClause
 			m["PG_WHERE_CLAUSE"] = defaultIfEmpty(dual.PgMainClause, "1=1")
-			if len(dual.PgMainArgs) > 0 {
+			m["HasHot"] = FederatedQueryHasHot(q)
+			// The advanced-template bind interleave is [DuckArgs, PgMainArgs,
+			// DuckArgs] (s3 semijoin, pg_source WHERE, visible). When the tier
+			// form prunes pg_source, its args must be dropped with it or every
+			// later placeholder mis-binds.
+			if FederatedQueryHasHot(q) && len(dual.PgMainArgs) > 0 {
 				whereArgs = append(whereArgs, dual.PgMainArgs...)
 			}
 			if len(dual.DuckArgs) > 0 {
@@ -109,6 +114,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 	anchor["Condition"] = whereClause
 	if isAdvancedTemplate {
 		m["LOGICAL_WHERE_CLAUSE"] = whereClause
+		m["HasHot"] = FederatedQueryHasHot(q)
 		if len(whereArgs) > 0 {
 			whereArgs = append(whereArgs, whereArgs...)
 		}
@@ -125,6 +131,27 @@ func defaultIfEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// FederatedQueryHasHot reports whether the hot tier participates in the
+// advanced-template render (#184). Empty PreferredTiers means the default
+// all-tier form (the HTTP layer and harness both normalize to all three, and
+// legacy nil-query renders must keep the historical full shape); a non-empty
+// list participates only when it names hot. Routing has already intercepted
+// the hot-only cases (engine gate), so a false here always coexists with a
+// parquet source. internal/queryplan mirrors this hasHot membership in the
+// shape hash — the two must stay in lockstep or the plan cache serves the
+// wrong skeleton.
+func FederatedQueryHasHot(q *model.FederatedAttributeQuery) bool {
+	if q == nil || len(q.PreferredTiers) == 0 {
+		return true
+	}
+	for _, tier := range q.PreferredTiers {
+		if tier == model.DataTierHot {
+			return true
+		}
+	}
+	return false
 }
 
 func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) {

@@ -115,7 +115,13 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			return nil, err
 		}
 	}
-	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
+	// Only explicit hot-only requests short-circuit to Postgres. Empty
+	// PreferredTiers means the default all-tier form (the same contract the
+	// service layer and the template's HasHot derivation use) and flows into
+	// EvaluateRoutingPolicy, whose default decision already carries all three
+	// tiers — a direct engine caller must not silently lose warm/cold (#184).
+	if fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
+		recordHotOnlyGatePlan(opts, tables)
 		return e.queryPostgresOnly(ctx, tables, fq)
 	}
 
@@ -186,6 +192,31 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		CurrentPage:   currentPage,
 		ExecutionPlan: execPlan,
 	}, nil
+}
+
+// recordHotOnlyGatePlan fills the execution plan for requests the hot-only
+// gate intercepts before EvaluateRoutingPolicy runs (#184): without it a
+// PreferHot/[hot] plan carries neither a routing decision nor the postgres
+// source actually served, and "the plan reflects actual access" would not
+// hold for the hot-only contract.
+func recordHotOnlyGatePlan(opts *model.FederatedQueryOptions, tables model.StorageTables) {
+	if opts == nil || !opts.IncludeExecutionPlan {
+		return
+	}
+	if opts.ExecutionPlan == nil {
+		opts.ExecutionPlan = &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	}
+	opts.ExecutionPlan.Routing = model.RoutingDecision{
+		Tiers:     []model.DataTier{model.DataTierHot},
+		UseDuckDB: false,
+		Reason:    "hot-only gate",
+	}
+	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, model.DataSourcePlan{
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
+		Reason: "hot-only gate (OLTP main)",
+	})
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {
