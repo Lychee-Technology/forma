@@ -78,3 +78,9 @@ Two distinct error classes (`docs/error-handling.md`):
 - **Read-path consistency** errors (metadata drift, storage column mismatch) are plain errors → operator-visible failures, not 4xx.
 
 Error messages must name the logical value type, the offending column/attribute, and the expected state.
+
+## Pull Request Rules
+
+* 请不要自动合并PR
+* When review a PR, add findings / spec / standards / assessment / observations / verification / summary as comments to the PR
+* After PR merged, clean up local branches, worktrees and fast forward main branches, then update and close related issues
