@@ -26,6 +26,13 @@ import (
 //     flush is no contention for B).
 //  3. Resume runner1; A completes. Both schemas converge to exactly one
 //     final delta each, disjoint per-schema manifests, and oracle parity.
+//
+// The skip-while-locked proof depends on the runners using separate Postgres
+// sessions: pg_try_advisory_lock is reentrant within a session, and each
+// RunFlushWith builds its own Runner whose RunOnce opens its own sql.DB
+// (internal/cdc/flusher.go setupPostgresConnection). If the harness ever
+// shared one pool across runners, runner2 could re-acquire A's lock on the
+// holding connection and this test would stop proving exclusion.
 func TestConcurrentFlushDifferentSchemas(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
