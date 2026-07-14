@@ -30,7 +30,7 @@ type SchemaRef struct {
 //   - e2e_simple: two attributes (one column-bound text, one EAV numeric)
 //   - e2e_wide:   one attribute per scalar forma.ValueType, mixing
 //     main-column bindings and EAV-only storage (for #174)
-//   - e2e_second: a second schema for multi-schema isolation (for #189)
+//   - e2e_second: a second schema for multi-schema isolation (for #186)
 func DefaultSchemaFixtures() []SchemaRef {
 	return []SchemaRef{
 		{ID: SchemaIDSimple, Name: "e2e_simple"},

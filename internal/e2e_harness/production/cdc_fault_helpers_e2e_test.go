@@ -195,3 +195,68 @@ func assertSameRowIDs(t *testing.T, label string, got, want map[string]bool) {
 		}
 	}
 }
+
+// schemaKeyPrefix returns the Env-scoped S3 key prefix of one schema's
+// parquet partition (e.g. "e2e/<run>/env3/22/"). Matching on the full prefix
+// rather than a bare "/22/" substring keeps the filter unambiguous no matter
+// what the run ID or env sequence look like.
+func schemaKeyPrefix(env *Env, schema SchemaRef) string {
+	return fmt.Sprintf("%s/%d/", env.S3Prefix, schema.ID)
+}
+
+// finalsForSchema filters keys down to one schema's final parquet objects
+// (multi-schema passes legitimately mix partitions in one report, so the
+// global splitKeys alone cannot attribute objects to a schema).
+func finalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
+	finals, _ := splitKeys(keys)
+	var got []string
+	for _, k := range finals {
+		if strings.HasPrefix(k, schemaKeyPrefix(env, schema)) {
+			got = append(got, k)
+		}
+	}
+	return got
+}
+
+// assertSchemaUntouchedByFault is the per-schema face of assertUntouched for
+// multi-schema passes (#186): the faulted schema promoted no final parquet,
+// every one of its rows stays dirty, and its manifest tracks nothing — while
+// sibling schemas may legitimately create objects in the same report. A
+// surviving /_tmp/ orphan under the schema is tolerated (cleanup is #226).
+func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, report *FlushReport, schema SchemaRef, wantDirty int) {
+	t.Helper()
+	if finals := finalsForSchema(env, report.NewObjects, schema); len(finals) != 0 {
+		t.Errorf("schema %d must promote no final parquet after its fault, got %v", schema.ID, finals)
+	}
+	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, schema)
+	if len(flushed) != 0 || len(dirty) != wantDirty {
+		t.Errorf("schema %d rows must all stay dirty: flushed=%v dirty=%v, want %d dirty",
+			schema.ID, flushed, dirty, wantDirty)
+	}
+	assertManifestDeltaPaths(t, report.Manifests, schema, nil)
+}
+
+// assertSchemaFullyFlushed asserts one schema committed completely inside a
+// multi-schema pass: all wantRows rows carry a flushed_at marker, exactly one
+// new final delta under the schema's partition holds exactly those rows, the
+// manifest tracks exactly that final, and no row was exported twice. newKeys
+// is the object set to attribute (a report diff or a fresh listing — under
+// concurrency a paused runner's report diff absorbs its sibling's writes, so
+// concurrent scenarios pass a fresh listS3Keys instead). Returns the finals.
+func assertSchemaFullyFlushed(ctx context.Context, t *testing.T, env *Env, newKeys []string, manifests map[int16]*manifest.Manifest, schema SchemaRef, wantRows int) []string {
+	t.Helper()
+	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, schema)
+	if len(flushed) != wantRows || len(dirty) != 0 {
+		t.Fatalf("schema %d must be fully flushed: flushed=%v dirty=%v, want %d flushed",
+			schema.ID, flushed, dirty, wantRows)
+	}
+	finals := finalsForSchema(env, newKeys, schema)
+	if len(finals) != 1 {
+		t.Fatalf("schema %d must promote exactly one final delta, got %v", schema.ID, finals)
+	}
+	assertSameRowIDs(t, fmt.Sprintf("schema %d parquet vs flushed set", schema.ID),
+		fetchParquetRowIDs(ctx, t, env, finals), flushed)
+	assertManifestDeltaPaths(t, manifests, schema, finals)
+	assertNoRowExportedTwice(ctx, t, env, schema)
+	return finals
+}

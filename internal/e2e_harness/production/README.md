@@ -60,7 +60,7 @@ is unavailable). Each `NewEnv`:
   `change_log.deleted_at`.
   CDC advisory locks are keyed `(schemaID, schemaID)` *per database OID*
   and `RunOnce` scans the whole `change_log`, so a private database gives
-  natural isolation and free multi-schema support (#189);
+  natural isolation and free multi-schema support (#186);
 - gets its own S3 prefix `e2e/<runID>/env<N>` and in-memory DuckDB client
   (1 GB default memory limit, `WithDuckMemoryMB` to override);
 - registers the fixture schemas (IDs 20-22; registration rejects the
@@ -88,7 +88,7 @@ Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 |---|---|---|
 | `e2e_simple` | 20 | minimal: bound text + EAV numeric |
 | `e2e_wide` | 21 | one attribute per scalar `forma.ValueType`, mixed main-column/EAV storage (#174) |
-| `e2e_second` | 22 | second schema for multi-schema isolation (#189) |
+| `e2e_second` | 22 | second schema for multi-schema isolation (#186) |
 
 Fixtures define only the attributes their tests use: the synthetic
 `name`/`version` injection in `sqlgen.BuildSchemaProjection` was removed in
@@ -228,4 +228,4 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #180 dry-run semantics | `RunFlushDry` |
 | #181 failure injection | `ExecSQL` |
 | #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB`, `WithDuckMaxConnections` |
-| #189 multi-schema | `e2e_simple`/`e2e_second` + per-test DB |
+| #186 multi-schema isolation | `e2e_simple`/`e2e_second` + `FaultInjectingS3`/`PausingS3` (`multi_schema_isolation_e2e_test.go`, `concurrent_flush_multi_schema_e2e_test.go`) |
