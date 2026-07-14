@@ -207,6 +207,21 @@ func (c *Cluster) RestartPostgres(ctx context.Context) error {
 	return nil
 }
 
+// HaltS3 stops the cluster's S3 container in place so the endpoint becomes
+// really unreachable (#185 degraded-mode scenarios). External infrastructure
+// cannot be halted. Only tests owning a DedicatedCluster may call this:
+// halting the SharedCluster's S3 would break every parallel Env. The halted
+// container is terminated by the dedicated cluster's normal Shutdown.
+func (c *Cluster) HaltS3(ctx context.Context) error {
+	if c.external {
+		return fmt.Errorf("halt s3: external infrastructure (%s) cannot be halted", externalS3EndpointVar)
+	}
+	if err := c.Base.HaltS3(ctx); err != nil {
+		return fmt.Errorf("halt cluster s3: %w", err)
+	}
+	return nil
+}
+
 // Shutdown stops the shared containers. Under KEEP_E2E_ENV=1 it prints
 // connection info instead and leaves everything running.
 func (c *Cluster) Shutdown(ctx context.Context) error {

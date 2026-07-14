@@ -37,6 +37,12 @@ type Query struct {
 	PreferredTiers []model.DataTier    `json:"preferred_tiers,omitempty"`
 	Keyset         *model.KeysetCursor `json:"keyset,omitempty"`
 
+	// AllowPartialDegradedMode forwards the public degraded-mode flag (#185):
+	// on a DuckDB-side failure the engine falls back to postgres-only instead
+	// of failing the query. Non-degradable errors (missing schema metadata)
+	// still surface.
+	AllowPartialDegradedMode bool `json:"allow_partial_degraded_mode,omitempty"`
+
 	// UseMainAsAnchor forwards the public anchor hint (#184 preference
 	// contract: the hint must surface in the execution plan).
 	UseMainAsAnchor bool `json:"use_main_as_anchor,omitempty"`
@@ -73,8 +79,9 @@ func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 	}
 
 	opts := &model.FederatedQueryOptions{
-		IncludeExecutionPlan: true,
-		ExecutionPlan:        &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+		AllowPartialDegradedMode: q.AllowPartialDegradedMode,
+		IncludeExecutionPlan:     true,
+		ExecutionPlan:            &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
 	}
 
 	page, err := e.Engine().Query(ctx, e.Tables, fq, opts)
