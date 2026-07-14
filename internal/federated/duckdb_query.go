@@ -93,7 +93,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// gates the read-error classification below.
 	parquetPaths, pathsFromSource, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("resolve parquet paths: %w", err)
 	}
 
 	// Fetch dirty IDs and record in execution plan
@@ -126,7 +126,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
 		}
-		return 0, fmt.Errorf("execute duckdb query: %w: %w", e.classifyDuckDBReadError(ctx, q, pathsFromSource), err)
+		return 0, fmt.Errorf("execute duckdb query: %w: %w", e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource), err)
 	}
 	defer rows.Close()
 
@@ -142,7 +142,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		// surface here instead of at Query. Handler errors are not read
 		// failures and pass through unclassified.
 		if errors.Is(err, ErrFederatedReadFailed) {
-			if classified := e.classifyDuckDBReadError(ctx, q, pathsFromSource); classified != ErrFederatedReadFailed {
+			if classified := e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource); classified != ErrFederatedReadFailed {
 				return 0, fmt.Errorf("%w: %w", classified, err)
 			}
 		}
@@ -176,7 +176,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 
 	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch dirty ids: %w", err)
+		return nil, fmt.Errorf("fetch dirty ids: %w: %w", ErrPostgresReadFailed, err)
 	}
 
 	// Emit metric for dirty set size

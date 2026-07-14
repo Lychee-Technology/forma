@@ -24,6 +24,14 @@ var ErrDuckDBUnavailable = errors.New("duckdb unavailable")
 // Transient/object-scoped — degradable under AllowPartialDegradedMode.
 var ErrFederatedReadFailed = errors.New("federated read failed")
 
+// ErrPostgresReadFailed marks the Postgres side of a federated read failing:
+// the dirty-ID consistency fetch or a Postgres-source page read. A Postgres
+// outage is not degradable in practice — the degraded fallback is itself
+// Postgres-only — so this classification is what #187 scenario 9 asserts on
+// all its probes; degradability is still decided at the engine seam, not
+// here.
+var ErrPostgresReadFailed = errors.New("postgres read failed")
+
 // ErrParquetSetInconsistent marks a federated read whose manifest lists
 // parquet objects that do not exist in storage. This is a read-path
 // consistency error (docs/error-handling.md): the cold tier has lost data,

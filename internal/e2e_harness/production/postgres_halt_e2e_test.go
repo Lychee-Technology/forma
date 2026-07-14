@@ -4,9 +4,11 @@ package production
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -36,21 +38,32 @@ func TestPostgresHalt_ParquetTiersError(t *testing.T) {
 		t.Fatalf("halt postgres container: %v", err)
 	}
 
+	// Every probe must produce the classified Postgres-side failure (#187
+	// success criterion: classified, actionable errors — asserted via
+	// errors.Is, never network-error text).
+	assertPostgresReadFailed := func(label string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: expected error with Postgres halted, got success", label)
+		}
+		if !errors.Is(err, fedengine.ErrPostgresReadFailed) {
+			t.Fatalf("%s: must classify as ErrPostgresReadFailed, got: %v", label, err)
+		}
+	}
+
 	// Degraded OFF: bounded failure (the dirty-ID fetch hits Postgres first
 	// and fails fast; the timeout guards against a hanging retry loop).
 	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := env.Query(failCtx, Query{Schema: wide, Limit: 20}); err == nil {
-		t.Fatal("degraded mode off: expected error with Postgres halted, got success")
-	}
+	_, err := env.Query(failCtx, Query{Schema: wide, Limit: 20})
+	assertPostgresReadFailed("degraded mode off", err)
 
 	// Degraded ON must ALSO fail: the fallback is Postgres-only, so a
 	// Postgres outage is not degradable — parquet-only tiers cannot answer.
 	degradedCtx, cancelDegraded := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDegraded()
-	if _, err := env.Query(degradedCtx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true}); err == nil {
-		t.Fatal("degraded mode on: a Postgres outage must not be absorbed — the fallback needs Postgres too")
-	}
+	_, err = env.Query(degradedCtx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
+	assertPostgresReadFailed("degraded mode on", err)
 
 	// Explicit warm+cold preference changes nothing: the dirty-set
 	// consistency barrier still needs Postgres (#184 keeps the anti-join for
@@ -58,9 +71,8 @@ func TestPostgresHalt_ParquetTiersError(t *testing.T) {
 	tiersCtx, cancelTiers := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelTiers()
 	warmCold := []model.DataTier{model.DataTierWarm, model.DataTierCold}
-	if _, err := env.Query(tiersCtx, Query{Schema: wide, Limit: 20, PreferredTiers: warmCold}); err == nil {
-		t.Fatal("parquet-only tiers: expected error with Postgres halted, got success")
-	}
+	_, err = env.Query(tiersCtx, Query{Schema: wide, Limit: 20, PreferredTiers: warmCold})
+	assertPostgresReadFailed("parquet-only tiers", err)
 
 	// Resume and prove full recovery: oracle-complete federated read plus a
 	// fresh write/read roundtrip through the rebuilt handles.

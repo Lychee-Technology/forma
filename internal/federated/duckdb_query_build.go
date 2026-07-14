@@ -240,21 +240,25 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	return sqlStr, args, true
 }
 
-func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) []string {
+func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, error) {
 	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
-		return nil
+		return nil, nil
 	}
 	rendered, err := sqlgen.RenderS3ParquetPath(q.DuckDBHints.S3ParquetPathTemplate, q.SchemaID)
 	if err != nil {
-		return nil
+		// A caller-supplied template that cannot render is invalid input, not
+		// an absent hint: swallowing it would silently serve the query from a
+		// different path set (the manifest source, or none) than the caller
+		// explicitly requested (#249 review).
+		return nil, fmt.Errorf("render s3 parquet path template %q: %w: %w",
+			q.DuckDBHints.S3ParquetPathTemplate, forma.ErrInvalidInput, err)
 	}
 	parts := strings.Split(rendered, ",")
 	paths := make([]string, 0, len(parts))
 	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
 			paths = append(paths, trimmed)
 		}
 	}
-	return paths
+	return paths, nil
 }

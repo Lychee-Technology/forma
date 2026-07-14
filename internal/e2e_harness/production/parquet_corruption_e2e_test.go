@@ -121,6 +121,56 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 	assertDegradedFallbackPlan(t, degraded)
 }
 
+// TestParquetCorruption_WrongTypeFile covers the type half of #187 scenario
+// 5 ("different column names/types"): a manifest-listed parquet whose column
+// NAMES all match the real export but whose row_id/changed_at carry
+// incompatible types (VARCHAR non-UUID / VARCHAR non-epoch). read_parquet
+// over the mixed set fails to unify the schemas (no union_by_name), and a
+// lone read would fail the row_id UUID cast — either way a classified read
+// failure, not a silent success.
+func TestParquetCorruption_WrongTypeFile(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	wide := DefaultSchemaFixtures()[1]
+
+	seedTwoTiers(ctx, t, env, wide)
+	keys := schemaParquetKeys(ctx, t, env, wide)
+	if len(keys) != 1 {
+		t.Fatalf("expected exactly one parquet after seedTwoTiers, got %v", keys)
+	}
+	healthy := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	if healthy != nil && !healthy.Plan.Routing.UseDuckDB {
+		t.Fatalf("precondition: healthy query did not route to duckdb: %+v", healthy.Plan.Routing)
+	}
+
+	// Same column names as the real export, poisoned types for the two
+	// columns every projection touches.
+	wrongTypeKey := schemaKeyPrefix(env, wide) + "wrong_type_zzz.parquet"
+	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
+		"SELECT 'not-a-uuid' AS row_id, 'not-an-epoch' AS changed_at, * EXCLUDE (row_id, changed_at) FROM read_parquet('s3://%s/%s') LIMIT 1",
+		env.Cluster.Bucket, keys[0]), wrongTypeKey)
+	if err := env.RegisterParquetInManifest(ctx, wide, wrongTypeKey, "delta"); err != nil {
+		t.Fatalf("register wrong-type parquet: %v", err)
+	}
+
+	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := env.Query(failCtx, Query{Schema: wide, Limit: 20})
+	if err == nil {
+		t.Fatal("degraded mode off: wrong-type parquet in the scan set silently succeeded (#187 scenario 5)")
+	}
+	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("wrong-type parquet must classify as ErrFederatedReadFailed, got: %v", err)
+	}
+	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+		t.Errorf("object exists in storage; must not classify as manifest inconsistency: %v", err)
+	}
+
+	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
+	assertDegradedFallbackPlan(t, degraded)
+}
+
 // TestParquetCorruption_EmptyParquetFile covers #187 scenario 6: a valid
 // 0-row parquet with the correct schema. The production exporter refuses
 // 0-row exports (duckdb_exporter.go fails fast on empty batches), so the

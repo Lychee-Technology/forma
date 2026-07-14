@@ -145,22 +145,8 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
-		// A missing schema metadata cache is a configuration / data-contract
-		// error, not a transient DuckDB failure: degrading to Postgres-only
-		// would silently return a partial result and mask it (#151). Surface it
-		// even under AllowPartialDegradedMode. Manifest inconsistency (#187) is
-		// equally non-degradable: the classification exists to make cold-tier
-		// loss loud, and a Postgres-only fallback would return exactly the
-		// silent-loss answer it prevents.
-		if opts != nil && opts.AllowPartialDegradedMode &&
-			!errors.Is(err, ErrSchemaMetadataCacheRequired) && !errors.Is(err, ErrParquetSetInconsistent) {
-			recordDegradedFallbackPlan(opts, tables, err)
-			page, perr := e.queryPostgresOnly(ctx, tables, fq)
-			if perr != nil {
-				return nil, perr
-			}
-			attachExecutionPlan(page, opts)
-			return page, nil
+		if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(err) {
+			return e.degradeToPostgresOnly(ctx, tables, fq, opts, err)
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", err)
 	}
@@ -173,19 +159,11 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
 		if cerr != nil {
 			// The recount is a DuckDB query like the page fetch above, so it
-			// degrades under the same policy (and the same metadata-cache and
-			// manifest-inconsistency exceptions): a transient failure here must
-			// not fail a request the degraded mode contract promises to serve
-			// Postgres-only.
-			if opts != nil && opts.AllowPartialDegradedMode &&
-				!errors.Is(cerr, ErrSchemaMetadataCacheRequired) && !errors.Is(cerr, ErrParquetSetInconsistent) {
-				recordDegradedFallbackPlan(opts, tables, cerr)
-				page, perr := e.queryPostgresOnly(ctx, tables, fq)
-				if perr != nil {
-					return nil, perr
-				}
-				attachExecutionPlan(page, opts)
-				return page, nil
+			// degrades under the same policy and the same exceptions: a
+			// transient failure here must not fail a request the degraded
+			// mode contract promises to serve Postgres-only.
+			if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(cerr) {
+				return e.degradeToPostgresOnly(ctx, tables, fq, opts, cerr)
 			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
 		}
@@ -278,8 +256,36 @@ func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.Federated
 	page.ExecutionPlan = opts.ExecutionPlan
 }
 
+// degradeToPostgresOnly serves the Postgres-only fallback for a degradable
+// DuckDB-path failure: it records the fallback decision and its cause on the
+// execution plan (#185 — the plan must reach callers that only see the page)
+// and stitches the plan onto the returned page.
+func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, cause error) (*model.PersistentRecordPage, error) {
+	recordDegradedFallbackPlan(opts, tables, cause)
+	page, perr := e.queryPostgresOnly(ctx, tables, fq)
+	if perr != nil {
+		return nil, fmt.Errorf("degraded postgres-only fallback: %w", perr)
+	}
+	attachExecutionPlan(page, opts)
+	return page, nil
+}
+
+// degradableFederatedError reports whether a DuckDB-path failure may be
+// absorbed by the Postgres-only fallback under AllowPartialDegradedMode.
+// Three classes must surface instead: a missing schema metadata cache is a
+// configuration/data-contract error whose masking #151 made loud; manifest
+// inconsistency (#187) exists to make cold-tier loss loud, and a fallback
+// would return exactly the silent-loss answer it prevents; and invalid
+// caller input (e.g. an unrenderable path template) is the caller's error to
+// see, not infrastructure to degrade around.
+func degradableFederatedError(err error) bool {
+	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
+		!errors.Is(err, ErrParquetSetInconsistent) &&
+		!errors.Is(err, forma.ErrInvalidInput)
+}
+
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {
-	return e.pgSource.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
+	page, err := e.pgSource.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:          tables,
 		SchemaID:        fq.SchemaID,
 		Condition:       fq.Condition,
@@ -287,6 +293,10 @@ func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables m
 		Limit:           fq.Limit,
 		Offset:          fq.Offset,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("query postgres source: %w: %w", ErrPostgresReadFailed, err)
+	}
+	return page, nil
 }
 
 func (e *DBFederatedQueryEngine) getDuckDBQueryBuilder() func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error) {

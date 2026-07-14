@@ -23,6 +23,7 @@ type fakeParquetSource struct {
 	missingErr   error
 	pathsCalls   int
 	missingCalls int
+	lastScanned  []string
 }
 
 func (f *fakeParquetSource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
@@ -30,8 +31,9 @@ func (f *fakeParquetSource) Paths(ctx context.Context, schemaID int16) ([]string
 	return f.paths, f.pathsErr
 }
 
-func (f *fakeParquetSource) MissingKeys(ctx context.Context, schemaID int16) ([]string, error) {
+func (f *fakeParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
 	f.missingCalls++
+	f.lastScanned = scanned
 	return f.missing, f.missingErr
 }
 
@@ -111,6 +113,55 @@ func TestParquetSource_MissingKeysClassifyInconsistent(t *testing.T) {
 	require.Equal(t, []string{"1/gone.parquet"}, typed.MissingKeys)
 	require.Equal(t, int16(7), typed.SchemaID)
 	require.Equal(t, 0, pg.queryCalls, "manifest inconsistency must not degrade to a Postgres-only partial result")
+	require.Equal(t, src.paths, src.lastScanned,
+		"classification must probe the exact scanned set, not a re-resolved manifest snapshot")
+}
+
+// TestParquetSource_InvalidHintTemplateErrs pins the #249 review P1: an
+// explicit template that cannot render is invalid input — it must fail the
+// query (non-degradable) instead of silently falling through to manifest
+// paths, which would serve the caller a different dataset than requested.
+func TestParquetSource_InvalidHintTemplateErrs(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+
+	q := coldTierQuery()
+	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/{{.Broken"}
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		q, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Equal(t, 0, src.pathsCalls, "a broken hint must not fall through to the parquet source")
+	require.Equal(t, 0, duck.calls, "a broken hint must fail before execution")
+	require.Equal(t, 0, pg.queryCalls, "invalid input must not be absorbed by degraded mode")
+}
+
+// TestSentinel_DirtyFetchFailureIsPostgresReadFailed pins the #249 review P1
+// for scenario 9: the Postgres side of a federated read (here the dirty-ID
+// consistency fetch) classifies as ErrPostgresReadFailed.
+func TestSentinel_DirtyFetchFailureIsPostgresReadFailed(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	dirty := &fakeDirtyIDFetcher{err: fmt.Errorf("connection refused")}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x")
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), nil)
+
+	require.ErrorIs(t, err, ErrPostgresReadFailed)
+	require.NotErrorIs(t, err, ErrFederatedReadFailed)
+	require.Equal(t, 0, duck.calls, "dirty fetch fails before DuckDB executes")
 }
 
 // TestParquetSource_NoMissingKeysStaysDegradableReadFailure pins the other

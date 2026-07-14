@@ -3,6 +3,7 @@ package manifest
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // QuerySource resolves a schema's parquet object set for federated reads
@@ -46,11 +47,14 @@ func (s *QuerySource) load(ctx context.Context, schemaID int16) (*Manifest, erro
 }
 
 // Paths returns the schema's manifest-listed parquet objects as s3:// URIs,
-// or the Fallback glob when the schema has no manifest entries yet.
+// or the Fallback glob when the schema has no manifest entries yet. The
+// manifest format accepts both bucket-relative keys (what the CDC writers
+// produce) and absolute s3:// URIs — absolute entries pass through
+// unchanged instead of being double-prefixed (#249 review).
 func (s *QuerySource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
 	m, err := s.load(ctx, schemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve manifest paths: %w", err)
 	}
 	if len(m.Files) == 0 {
 		if s.Fallback != nil {
@@ -62,29 +66,39 @@ func (s *QuerySource) Paths(ctx context.Context, schemaID int16) ([]string, erro
 	}
 	uris := make([]string, 0, len(m.Files))
 	for _, f := range m.Files {
+		if strings.HasPrefix(f.Path, "s3://") {
+			uris = append(uris, f.Path)
+			continue
+		}
 		uris = append(uris, fmt.Sprintf("s3://%s/%s", s.Bucket, f.Path))
 	}
 	return uris, nil
 }
 
-// MissingKeys returns the manifest-listed keys that no longer exist in
-// storage. Called on the read-error path only.
-func (s *QuerySource) MissingKeys(ctx context.Context, schemaID int16) ([]string, error) {
+// MissingIn probes the given scanned URIs and returns the bucket-relative
+// keys absent from storage. It deliberately probes the exact set the failed
+// scan used rather than reloading the manifest: a concurrent
+// flush/compaction could otherwise swap in a newer snapshot that hides the
+// lost key or lists an unrelated one. Glob entries and URIs outside this
+// source's bucket are skipped — their absence cannot be proven with the
+// configured probe, and an unprovable key must not fabricate inconsistency.
+func (s *QuerySource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
 	if s.Exists == nil {
 		return nil, nil
 	}
-	m, err := s.load(ctx, schemaID)
-	if err != nil {
-		return nil, err
-	}
+	prefix := "s3://" + s.Bucket + "/"
 	var missing []string
-	for _, f := range m.Files {
-		ok, err := s.Exists(ctx, f.Path)
+	for _, uri := range scanned {
+		if strings.ContainsAny(uri, "*?[") || !strings.HasPrefix(uri, prefix) {
+			continue
+		}
+		key := strings.TrimPrefix(uri, prefix)
+		ok, err := s.Exists(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("probe parquet object %s: %w", f.Path, err)
+			return nil, fmt.Errorf("probe parquet object %s: %w", key, err)
 		}
 		if !ok {
-			missing = append(missing, f.Path)
+			missing = append(missing, key)
 		}
 	}
 	return missing, nil
