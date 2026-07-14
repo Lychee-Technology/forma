@@ -85,6 +85,15 @@ type fakeDuckDBExecutor struct {
 }
 
 func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	if strings.HasPrefix(sql, "DESCRIBE ") {
+		// The pre-read schema validator (#189) probes each concrete parquet
+		// path before the main scan; answer with the invariant-satisfying
+		// system columns so engine-seam tests keep exercising the main query
+		// without the probe consuming the canned rows or lastSQL.
+		return &fakeDescribeRows{cols: [][2]string{
+			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
+		}}, nil
+	}
 	f.calls++
 	f.lastSQL = sql
 	f.lastArgs = args
@@ -93,6 +102,39 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 	}
 	return f.rows, nil
 }
+
+// fakeDescribeRows iterates canned (column_name, column_type) pairs in the
+// 6-column DESCRIBE shape the schema validator scans.
+type fakeDescribeRows struct {
+	cols [][2]string
+	idx  int
+	err  error
+}
+
+func (r *fakeDescribeRows) Next() bool {
+	if r.idx >= len(r.cols) {
+		return false
+	}
+	r.idx++
+	return true
+}
+
+func (r *fakeDescribeRows) Scan(dest ...any) error {
+	name, ok := dest[0].(*string)
+	if !ok {
+		return fmt.Errorf("describe scan dest[0] is %T, want *string", dest[0])
+	}
+	typ, ok := dest[1].(*string)
+	if !ok {
+		return fmt.Errorf("describe scan dest[1] is %T, want *string", dest[1])
+	}
+	*name = r.cols[r.idx-1][0]
+	*typ = r.cols[r.idx-1][1]
+	return nil
+}
+
+func (r *fakeDescribeRows) Err() error   { return r.err }
+func (r *fakeDescribeRows) Close() error { return nil }
 
 type singleDuckDBRow struct {
 	rowID   uuid.UUID

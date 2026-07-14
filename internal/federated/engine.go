@@ -67,6 +67,11 @@ type DBFederatedQueryEngine struct {
 	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
 	// the legacy hint-only path resolution. See WithParquetSource.
 	parquetSource ParquetSource
+	// schemaValidator enforces the parquet system-column invariant before
+	// each scan (#189): union_by_name tolerates attribute-column evolution,
+	// so schema corruption must be caught by probing instead of by the
+	// binder. See parquet_schema_validation.go.
+	schemaValidator *parquetSchemaValidator
 }
 
 // EngineOption customizes optional engine collaborators.
@@ -82,15 +87,16 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 // nil breaker disables circuit breaking.
 func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string, opts ...EngineOption) *DBFederatedQueryEngine {
 	e := &DBFederatedQueryEngine{
-		pgSource:       pgSource,
-		dirtyIDFetcher: dirtyIDFetcher,
-		duck:           duck,
-		breaker:        breaker,
-		cfg:            cfg,
-		metadataCache:  metadataCache,
-		pgConnString:   pgConnString,
-		duckTemplate:   sqlgen.AdvancedQueryTemplateDuckDB,
-		projections:    sqlgen.NewProjectionCache(),
+		pgSource:        pgSource,
+		dirtyIDFetcher:  dirtyIDFetcher,
+		duck:            duck,
+		breaker:         breaker,
+		cfg:             cfg,
+		metadataCache:   metadataCache,
+		pgConnString:    pgConnString,
+		duckTemplate:    sqlgen.AdvancedQueryTemplateDuckDB,
+		projections:     sqlgen.NewProjectionCache(),
+		schemaValidator: newParquetSchemaValidator(),
 	}
 	for _, opt := range opts {
 		opt(e)

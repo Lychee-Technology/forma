@@ -80,9 +80,13 @@ func runParquetFaultScenario(t *testing.T, mutate func([]byte) []byte) {
 
 // TestParquetCorruption_WrongSchemaFile covers #187 scenario 5: the manifest
 // lists a parquet whose columns match nothing the schema projection selects.
-// The projection names columns explicitly (row_id, changed_at, deleted_at,
-// attributes), so DuckDB rejects the file with a binder error at execution —
-// classified as a read failure (the object exists), degradable as usual.
+// Since #189 the scan runs union_by_name (schema evolution tolerance), which
+// would NULL-fill the missing system columns and silently drop the file's
+// rows via the dirty anti-join — so the loud failure now comes from the
+// pre-read system-column invariant validator
+// (internal/federated/parquet_schema_validation.go): missing row_id/
+// changed_at/deleted_at fails before the scan — classified as a read failure
+// (the object exists), degradable as usual, same contract as before.
 // Fabricating and manifest-registering the file is deliberate: the
 // production exporter cannot produce one, and unlisted rogue objects are
 // invisible to manifest-driven reads (#203's reconciliation scope).
@@ -124,9 +128,10 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 // TestParquetCorruption_WrongTypeFile covers the type half of #187 scenario
 // 5 ("different column names/types"): a manifest-listed parquet whose column
 // NAMES all match the real export but whose row_id/changed_at carry
-// incompatible types (VARCHAR non-UUID / VARCHAR non-epoch). read_parquet
-// over the mixed set fails to unify the schemas (no union_by_name), and a
-// lone read would fail the row_id UUID cast — either way a classified read
+// incompatible types (VARCHAR non-UUID / VARCHAR non-epoch). Since #189 the
+// pre-read invariant validator rejects the mistyped system columns before
+// the union_by_name scan could widen them (row_id UUID∪VARCHAR would unify
+// to VARCHAR and only fail later at the UUID cast) — still a classified read
 // failure, not a silent success.
 func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 	ctx := context.Background()

@@ -72,9 +72,11 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 // TestManifestConsistency_OneGoodOneBadFile covers #187 scenario 7: one
 // valid and one corrupt parquet in the same scan set.
 //
-// Degraded OFF is a characterization: read_parquet over the path set is
-// all-or-nothing (no ignore_errors/union_by_name anywhere in the read path),
-// so one corrupt file fails the whole scan and the good file's rows are NOT
+// Degraded OFF is a characterization: the scan is all-or-nothing over the
+// path set (no ignore_errors; #189's union_by_name only unifies readable
+// schemas — it does not skip unreadable objects, and the byte-corrupt file's
+// unreadable footer is inconclusive to the pre-read validator), so one
+// corrupt file fails the whole scan and the good file's rows are NOT
 // surfaced from parquet. The corrupt object still exists in storage, so the
 // classification stays ErrFederatedReadFailed, not manifest inconsistency.
 //

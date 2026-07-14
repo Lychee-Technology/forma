@@ -96,6 +96,18 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("resolve parquet paths: %w", err)
 	}
 
+	// Pre-read schema-invariant validation (#189): the scan's union_by_name
+	// tolerates attribute-column drift across parquet generations, which
+	// would let a wrong-schema object's rows silently vanish (NULL row_id
+	// drops out of the dirty anti-join) instead of failing loudly (#187).
+	// Schema violations fail here, classified and degradable; unreadable
+	// footers are inconclusive and stay with the execution-path classifier.
+	// No recordQueryFailure: the query never started, and its timing fields
+	// would read from an unset start time.
+	if err := e.schemaValidator.Validate(ctx, e.duck, parquetPaths); err != nil {
+		return 0, err
+	}
+
 	// Fetch dirty IDs and record in execution plan
 	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
 	if err != nil {

@@ -31,7 +31,14 @@ s3_source AS (
   SELECT
     {{.S3SourceSelect}},
     1 AS source_tier_priority
-  FROM read_parquet({{.S3_PATHS}})
+  -- union_by_name resolves the schema UNION across parquet generations
+  -- (#189): a file written before an attribute existed contributes NULL for
+  -- it, and same-named columns with different physical types widen to the
+  -- common supertype instead of being coerced to the first file's schema
+  -- (which silently corrupted values on integer→double evolution). The
+  -- corruption loudness this relaxes is restored by the pre-read
+  -- system-column invariant validator (parquet_schema_validation.go).
+  FROM read_parquet({{.S3_PATHS}}, union_by_name=true)
   WHERE
     CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
     -- Predicate pushdown as a row_id semijoin: a row qualifies when ANY of
@@ -41,7 +48,7 @@ s3_source AS (
     -- versions pre-dedup and resurrected stale base rows whose old values
     -- still matched (#173).
     AND row_id IN (
-      SELECT row_id FROM read_parquet({{.S3_PATHS}})
+      SELECT row_id FROM read_parquet({{.S3_PATHS}}, union_by_name=true)
       WHERE ({{.LOGICAL_WHERE_CLAUSE}})
     )
 ),
