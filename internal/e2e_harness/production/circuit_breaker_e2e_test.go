@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -116,10 +117,12 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	runOne := func() error {
 		fq, err := env.buildFederatedQuery(Query{Schema: wide, Limit: 20})
 		if err != nil {
-			return err
+			return fmt.Errorf("build federated query: %w", err)
 		}
-		_, err = eng.Query(ctx, env.Tables, fq, &model.FederatedQueryOptions{})
-		return err
+		if _, err := eng.Query(ctx, env.Tables, fq, &model.FederatedQueryOptions{}); err != nil {
+			return fmt.Errorf("engine query: %w", err)
+		}
+		return nil
 	}
 
 	if err := env.Duck.Close(); err != nil {

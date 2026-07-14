@@ -327,7 +327,9 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 // open-to-closed transition against a healthy DuckDB.
 func (e *Env) ReopenDuckDB() error {
 	if e.Duck != nil {
-		_ = e.Duck.Close()
+		if err := e.Duck.Close(); err != nil {
+			e.T.Logf("reopen duckdb: close old client: %v", err)
+		}
 	}
 	if err := e.startDuckDB(); err != nil {
 		return fmt.Errorf("reopen duckdb client: %w", err)

@@ -27,6 +27,35 @@ func seedTwoTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 	}
 }
 
+// seedAllTiers writes base (RunInit), delta (flush) and hot (unflushed) rows
+// for schema so a federated query has to merge all three tiers. Mirrors the
+// three-tier union recipe (three_tier_merge_e2e_test.go testThreeTierUnion):
+// after RunInit exports the base parquet the change_log entries for that batch
+// must be cleared, otherwise those already-based rows stay flushed_at=0 and are
+// mistaken for dirty/unflushed hot rows.
+func seedAllTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+	t.Helper()
+	base := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 5})
+	if err := env.ApplyEvents(ctx, base...); err != nil {
+		t.Fatalf("apply base events: %v", err)
+	}
+	if _, err := env.RunInit(ctx, schema); err != nil {
+		t.Fatalf("run init (base export): %v", err)
+	}
+	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+
+	delta := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 4})
+	if err := env.ApplyEvents(ctx, delta...); err != nil {
+		t.Fatalf("apply delta events: %v", err)
+	}
+	mustFlush(ctx, t, env)
+
+	hot := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 3})
+	if err := env.ApplyEvents(ctx, hot...); err != nil {
+		t.Fatalf("apply hot events: %v", err)
+	}
+}
+
 // assertDegradedFallbackPlan asserts the execution plan reflects the
 // postgres-only degraded fallback (#185 scenario 6; contract pinned by
 // TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan).
@@ -59,7 +88,7 @@ func TestDegradedMode_S3Unavailable(t *testing.T) {
 	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
-	seedTwoTiers(ctx, t, env, wide)
+	seedAllTiers(ctx, t, env, wide)
 
 	// Precondition: with S3 healthy the query routes through DuckDB, so the
 	// halt below is what forces the fallback (not the routing policy).
@@ -86,8 +115,23 @@ func TestDegradedMode_S3Unavailable(t *testing.T) {
 	// Scenarios 1+6 (degraded ON): postgres-only fallback returns complete
 	// oracle-checked results (totals, row sets, attribute values) plus a
 	// fallback-marked plan. No panic is implicit in reaching the assertions.
-	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
+	const degradedLimit = 20
+	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: degradedLimit, AllowPartialDegradedMode: true})
 	assertDegradedFallbackPlan(t, degraded)
+
+	// The degraded page must still carry correct pagination metadata computed
+	// from the (oracle-checked) total: total pages = ceil(Total/limit) and, at
+	// offset 0, current page = 1.
+	if degraded != nil {
+		wantPages := int((degraded.Total + degradedLimit - 1) / degradedLimit)
+		if degraded.TotalPages != wantPages {
+			t.Errorf("degraded page TotalPages = %d, want %d (ceil(%d/%d))",
+				degraded.TotalPages, wantPages, degraded.Total, degradedLimit)
+		}
+		if degraded.CurrentPage != 1 {
+			t.Errorf("degraded page CurrentPage = %d, want 1 (offset 0)", degraded.CurrentPage)
+		}
+	}
 }
 
 // TestDegradedMode_DuckDBUnavailable is #185 degraded scenario 3: the
@@ -153,7 +197,9 @@ func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 	// Registered after NewEnv's cleanups, so it runs first (LIFO) and the
 	// artifact dump still sees an intact change_log on failure.
 	t.Cleanup(func() {
-		_, _ = env.Pool.Exec(context.Background(), "ALTER TABLE change_log_broken RENAME TO change_log")
+		if _, err := env.Pool.Exec(context.Background(), "ALTER TABLE change_log_broken RENAME TO change_log"); err != nil {
+			t.Logf("restore change_log: %v", err)
+		}
 	})
 
 	_, err := env.Query(ctx, Query{Schema: wide, Limit: 20})
