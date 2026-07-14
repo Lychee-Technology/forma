@@ -29,9 +29,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	dirtyIDs []uuid.UUID,
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
+	parquetPaths []string,
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
-	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset)
+	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths)
 
 	startTranslate := time.Now()
 
@@ -89,7 +90,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Compiled-plan cache (#142): skeleton + template args are reused per
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
 	// request. Test hooks and non-advanced templates bypass the cache.
-	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, sqlParams, &dc, cache, planCtx); ok {
+	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, sqlParams, &dc, cache, planCtx); ok {
 		translateMs := time.Since(startTranslate).Milliseconds()
 		telemetry.EmitLatency(ctx, "translation", translateMs)
 		return sqlStr, args, translateMs, nil
@@ -106,13 +107,14 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 }
 
 // buildDuckDBTemplateBaseParams assembles the static template parameter map:
-// scan locations, projections defaults, pagination, and the parquet path list
-// from the query's render hints.
+// scan locations, projections defaults, pagination, and the resolved parquet
+// path list (render hints or manifest source, resolved once by the caller).
 func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
+	parquetPaths []string,
 ) map[string]any {
 	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
 	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
@@ -142,8 +144,8 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	if connStr := e.pgConnString; connStr != "" {
 		sqlParams["DuckDBPGConnString"] = connStr
 	}
-	if paths := duckDBParquetPathsForQuery(q); len(paths) > 0 {
-		sqlParams["DuckDBS3Paths"] = paths
+	if len(parquetPaths) > 0 {
+		sqlParams["DuckDBS3Paths"] = parquetPaths
 	}
 	return sqlParams
 }
@@ -166,6 +168,7 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	dirtyIDs []uuid.UUID,
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
+	parquetPaths []string,
 	sqlParams map[string]any,
 	dc *sqlgen.DualClauses,
 	cache forma.SchemaAttributeCache,
@@ -192,7 +195,10 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		strconv.Itoa(limit), strconv.Itoa(offset),
 		strconv.FormatBool(len(dirtyIDs) > 0),
 	}
-	scopeParts = append(scopeParts, duckDBParquetPathsForQuery(q)...)
+	// The resolved path set (hint or manifest) renders into the skeleton as a
+	// SQL literal, so it must scope the cache key: a changed file set (new
+	// delta flushed, base replaced) recompiles instead of reusing stale paths.
+	scopeParts = append(scopeParts, parquetPaths...)
 	for _, o := range attributeOrders {
 		scopeParts = append(scopeParts, strconv.Itoa(int(o.AttrID)), o.AttrName, o.ColumnName,
 			string(o.StorageLocation), string(o.SortOrder))

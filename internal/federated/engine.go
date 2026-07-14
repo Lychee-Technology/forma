@@ -64,6 +64,9 @@ type DBFederatedQueryEngine struct {
 	// production reuse lifecycle (#142 review finding 1). Nil disables plan
 	// caching.
 	planCache *queryplan.Cache
+	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
+	// the legacy hint-only path resolution. See WithParquetSource.
+	parquetSource ParquetSource
 }
 
 // EngineOption customizes optional engine collaborators.
@@ -145,8 +148,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		// A missing schema metadata cache is a configuration / data-contract
 		// error, not a transient DuckDB failure: degrading to Postgres-only
 		// would silently return a partial result and mask it (#151). Surface it
-		// even under AllowPartialDegradedMode.
-		if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(err, ErrSchemaMetadataCacheRequired) {
+		// even under AllowPartialDegradedMode. Manifest inconsistency (#187) is
+		// equally non-degradable: the classification exists to make cold-tier
+		// loss loud, and a Postgres-only fallback would return exactly the
+		// silent-loss answer it prevents.
+		if opts != nil && opts.AllowPartialDegradedMode &&
+			!errors.Is(err, ErrSchemaMetadataCacheRequired) && !errors.Is(err, ErrParquetSetInconsistent) {
 			recordDegradedFallbackPlan(opts, tables, err)
 			page, perr := e.queryPostgresOnly(ctx, tables, fq)
 			if perr != nil {
@@ -166,10 +173,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
 		if cerr != nil {
 			// The recount is a DuckDB query like the page fetch above, so it
-			// degrades under the same policy (and the same metadata-cache
-			// exception): a transient failure here must not fail a request
-			// the degraded mode contract promises to serve Postgres-only.
-			if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(cerr, ErrSchemaMetadataCacheRequired) {
+			// degrades under the same policy (and the same metadata-cache and
+			// manifest-inconsistency exceptions): a transient failure here must
+			// not fail a request the degraded mode contract promises to serve
+			// Postgres-only.
+			if opts != nil && opts.AllowPartialDegradedMode &&
+				!errors.Is(cerr, ErrSchemaMetadataCacheRequired) && !errors.Is(cerr, ErrParquetSetInconsistent) {
 				recordDegradedFallbackPlan(opts, tables, cerr)
 				page, perr := e.queryPostgresOnly(ctx, tables, fq)
 				if perr != nil {

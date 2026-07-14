@@ -123,8 +123,13 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 	if len(tiers) == 0 {
 		tiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
 	}
+	// An explicit render hint wins over the manifest-driven source (#184 pins
+	// that an explicit S3ParquetPathTemplate directs read_parquet at the
+	// specified location), so the default hint is only supplied when the Env
+	// has no manifest wiring — otherwise the engine's ParquetSource resolves
+	// the authoritative object list (#187).
 	glob := q.S3ParquetPathTemplate
-	if glob == "" {
+	if glob == "" && e.CDC.ManifestTemplate == "" {
 		glob = e.ParquetGlob()
 	}
 
@@ -140,7 +145,9 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 		PreferHot:       q.PreferHot,
 		UseMainAsAnchor: q.UseMainAsAnchor,
 		KeysetCursor:    q.Keyset,
-		DuckDBHints:     &model.DuckDBRenderHints{S3ParquetPathTemplate: glob},
+	}
+	if glob != "" {
+		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: glob}
 	}
 	return fq, nil
 }

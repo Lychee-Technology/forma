@@ -1,9 +1,17 @@
 package production
 
 import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
@@ -26,6 +34,10 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		e.breaker = fedengine.NewCircuitBreaker(e.opts.breakerFailures, e.opts.breakerCooldown, e.opts.breakerCooldown)
 	}
 
+	var opts []fedengine.EngineOption
+	if src := e.parquetSource(); src != nil {
+		opts = append(opts, fedengine.WithParquetSource(src))
+	}
 	e.engine = fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewPostgresDirtyIDFetcher(e.Pool),
@@ -34,8 +46,45 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		e.DuckCfg,
 		e.Metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(e.Pool),
+		opts...,
 	)
 	return e.engine
+}
+
+// parquetSource builds the manifest-driven parquet path resolver matching
+// the Env's CDC manifest wiring (#187): reads scan exactly the listed
+// objects, missing listed keys classify as ErrParquetSetInconsistent, and
+// never-flushed schemas fall back to the legacy glob. Nil when the Env
+// opted out of manifests (WithoutManifest) — those Envs keep glob reads.
+// The closures read Cluster fields at call time, so an S3 client rebuilt by
+// RestartS3 is picked up without re-wiring.
+func (e *Env) parquetSource() fedengine.ParquetSource {
+	if e.CDC.ManifestTemplate == "" {
+		return nil
+	}
+	c := e.Cluster
+	return &manifest.QuerySource{
+		Store:    &manifest.S3Store{Client: c.S3, Bucket: c.Bucket},
+		Resolver: manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate},
+		Bucket:   c.Bucket,
+		Exists: func(ctx context.Context, key string) (bool, error) {
+			_, err := c.S3.HeadObject(ctx, &s3.HeadObjectInput{
+				Bucket: aws.String(c.Bucket),
+				Key:    aws.String(key),
+			})
+			if err != nil {
+				var notFound *types.NotFound
+				if errors.As(err, &notFound) {
+					return false, nil
+				}
+				return false, err
+			}
+			return true, nil
+		},
+		Fallback: func(schemaID int16) string {
+			return fmt.Sprintf("s3://%s/%s/%d/*.parquet", c.Bucket, e.S3Prefix, schemaID)
+		},
+	}
 }
 
 // EntityManager returns the Env's real production EntityManager, assembling

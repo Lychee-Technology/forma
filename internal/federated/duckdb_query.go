@@ -88,6 +88,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
 
+	// Resolve the parquet path set once (#187): explicit render hints win,
+	// otherwise the manifest-driven source authors the list. Provenance
+	// gates the read-error classification below.
+	parquetPaths, pathsFromSource, err := e.resolveParquetPaths(ctx, q)
+	if err != nil {
+		return 0, err
+	}
+
 	// Fetch dirty IDs and record in execution plan
 	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
 	if err != nil {
@@ -95,7 +103,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, planCtx)
 	if err != nil {
 		return 0, err
 	}
@@ -118,7 +126,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
 		}
-		return 0, fmt.Errorf("execute duckdb query: %w: %w", ErrFederatedReadFailed, err)
+		return 0, fmt.Errorf("execute duckdb query: %w: %w", e.classifyDuckDBReadError(ctx, q, pathsFromSource), err)
 	}
 	defer rows.Close()
 
@@ -128,6 +136,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		// Record failure in circuit breaker
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
+		}
+		// A mid-stream read failure classifies like an execute failure:
+		// DuckDB opens listed objects lazily, so a missing object can
+		// surface here instead of at Query. Handler errors are not read
+		// failures and pass through unclassified.
+		if errors.Is(err, ErrFederatedReadFailed) {
+			if classified := e.classifyDuckDBReadError(ctx, q, pathsFromSource); classified != ErrFederatedReadFailed {
+				return 0, fmt.Errorf("%w: %w", classified, err)
+			}
 		}
 		return 0, err
 	}
