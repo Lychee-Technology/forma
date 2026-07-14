@@ -45,6 +45,12 @@ type Env struct {
 	logger *zap.Logger
 	opts   envOptions
 
+	// duckS3Access/duckS3Secret override the S3 credentials of the DuckDB
+	// httpfs session only (ReopenDuckDBWithS3Creds); empty means the cluster
+	// credentials. The Go S3 client and CDC config are never affected.
+	duckS3Access string
+	duckS3Secret string
+
 	manager      forma.EntityManager
 	engine       *fedengine.DBFederatedQueryEngine
 	breaker      *fedengine.CircuitBreaker
@@ -225,6 +231,13 @@ func (e *Env) provision(ctx context.Context) error {
 
 func (e *Env) startDuckDB() error {
 	c := e.Cluster
+	access, secret := c.S3AccessKey, c.S3SecretKey
+	if e.duckS3Access != "" {
+		access = e.duckS3Access
+	}
+	if e.duckS3Secret != "" {
+		secret = e.duckS3Secret
+	}
 	e.DuckCfg = forma.DuckDBConfig{
 		Enabled:        true,
 		DBPath:         ":memory:",
@@ -232,8 +245,8 @@ func (e *Env) startDuckDB() error {
 		EnableS3:       true,
 		EnableParquet:  true,
 		S3Endpoint:     c.S3Endpoint,
-		S3AccessKey:    c.S3AccessKey,
-		S3SecretKey:    c.S3SecretKey,
+		S3AccessKey:    access,
+		S3SecretKey:    secret,
 		S3Region:       c.S3Region,
 		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: 2,
@@ -281,62 +294,6 @@ func (e *Env) buildCDCConfig() cdc.CDCConfig {
 		cfg.ManifestTemplate = "manifest/{{.SchemaID}}.json"
 	}
 	return cfg
-}
-
-// RestartPostgres restarts the cluster's Postgres container and rebinds
-// every per-test handle that referenced the old server: the pgx pool, the
-// CDC config (the host-mapped port can change), the DuckDB client (so no
-// cached postgres attachment survives), and the lazily built EntityManager
-// and federated engine. Registry and Metadata are load-once snapshots and
-// need no rebuild. Only for tests owning a DedicatedCluster.
-func (e *Env) RestartPostgres(ctx context.Context) error {
-	if err := e.Cluster.RestartPostgres(ctx); err != nil {
-		return fmt.Errorf("restart cluster postgres: %w", err)
-	}
-	return e.reconnectAfterRestart(ctx)
-}
-
-// reconnectAfterRestart rebuilds the Env's server-bound handles against the
-// restarted Postgres.
-func (e *Env) reconnectAfterRestart(ctx context.Context) error {
-	if e.Pool != nil {
-		e.Pool.Close()
-	}
-	pool, err := pgxpool.New(ctx, e.PGDSN())
-	if err != nil {
-		return fmt.Errorf("reconnect test database after restart: %w", err)
-	}
-	e.Pool = pool
-
-	if e.Duck != nil {
-		_ = e.Duck.Close()
-	}
-	if err := e.startDuckDB(); err != nil {
-		return fmt.Errorf("rebuild duckdb client after restart: %w", err)
-	}
-	e.CDC = e.buildCDCConfig()
-	e.manager = nil
-	e.engine = nil
-	return nil
-}
-
-// ReopenDuckDB replaces the Env's (possibly closed) DuckDB client with a
-// fresh one and drops the lazily built engine and manager so the next use
-// rebinds them. The cached circuit breaker deliberately survives: breaker
-// state must span client rebuilds so #185 recovery scenarios can observe the
-// open-to-closed transition against a healthy DuckDB.
-func (e *Env) ReopenDuckDB() error {
-	if e.Duck != nil {
-		if err := e.Duck.Close(); err != nil {
-			e.T.Logf("reopen duckdb: close old client: %v", err)
-		}
-	}
-	if err := e.startDuckDB(); err != nil {
-		return fmt.Errorf("reopen duckdb client: %w", err)
-	}
-	e.engine = nil
-	e.manager = nil
-	return nil
 }
 
 // PGDSN returns the DSN of this Env's dedicated database.

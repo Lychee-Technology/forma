@@ -85,7 +85,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	if e == nil || e.duck == nil {
 		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb client not available")
+		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
+	}
+
+	// Resolve the parquet path set once (#187): explicit render hints win,
+	// otherwise the manifest-driven source authors the list. Provenance
+	// gates the read-error classification below.
+	parquetPaths, pathsFromSource, err := e.resolveParquetPaths(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("resolve parquet paths: %w", err)
 	}
 
 	// Fetch dirty IDs and record in execution plan
@@ -95,7 +103,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, planCtx)
 	if err != nil {
 		return 0, err
 	}
@@ -106,7 +114,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// Check circuit breaker before executing
 	if e.breaker != nil && e.breaker.IsOpen() {
 		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected")
+		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
 	// Execute query
@@ -118,7 +126,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
 		}
-		return 0, fmt.Errorf("execute duckdb query: %w", err)
+		return 0, fmt.Errorf("execute duckdb query: %w: %w", e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource), err)
 	}
 	defer rows.Close()
 
@@ -128,6 +136,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		// Record failure in circuit breaker
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
+		}
+		// A mid-stream read failure classifies like an execute failure:
+		// DuckDB opens listed objects lazily, so a missing object can
+		// surface here instead of at Query. Handler errors are not read
+		// failures and pass through unclassified.
+		if errors.Is(err, ErrFederatedReadFailed) {
+			if classified := e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource); classified != ErrFederatedReadFailed {
+				return 0, fmt.Errorf("%w: %w", classified, err)
+			}
 		}
 		return 0, err
 	}
@@ -159,7 +176,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 
 	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
 	if err != nil {
-		return nil, fmt.Errorf("fetch dirty ids: %w", err)
+		return nil, fmt.Errorf("fetch dirty ids: %w: %w", ErrPostgresReadFailed, err)
 	}
 
 	// Emit metric for dirty set size
@@ -262,7 +279,7 @@ func (e *DBFederatedQueryEngine) streamDuckDBRows(
 		scanArgs, attrsJSON, totalRec, _, _ := buffers.buildScanArgs()
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, 0, fmt.Errorf("scan duckdb row: %w", err)
+			return 0, 0, fmt.Errorf("scan duckdb row: %w: %w", ErrFederatedReadFailed, err)
 		}
 
 		// Build record from buffers
@@ -294,7 +311,7 @@ func (e *DBFederatedQueryEngine) streamDuckDBRows(
 	}
 
 	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("iterate duckdb rows: %w", err)
+		return 0, 0, fmt.Errorf("iterate duckdb rows: %w: %w", ErrFederatedReadFailed, err)
 	}
 
 	return totalRecords, rowCount, nil
