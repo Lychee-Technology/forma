@@ -63,10 +63,10 @@ func writeSimpleSchemaDir(t *testing.T, propsJSON, attrsJSON string) string {
 	return dst
 }
 
-// evolutionProfile seeds the evolving e2e_simple generations: name/value
+// buildEvolutionProfile seeds the evolving e2e_simple generations: name/value
 // always, plus any extra per-ordinal attributes. Extra values encode the
 // ordinal so filters select exact rows and sorts are deterministic.
-func evolutionProfile(extra func(ordinal int) map[string]any) AttrProfile {
+func buildEvolutionProfile(extra func(ordinal int) map[string]any) AttrProfile {
 	return func(r *rand.Rand, ordinal int, partial bool) map[string]any {
 		attrs := map[string]any{
 			"name":  fmt.Sprintf("row-%05d-%04d", ordinal, r.Intn(10000)),
@@ -77,6 +77,21 @@ func evolutionProfile(extra func(ordinal int) map[string]any) AttrProfile {
 		}
 		for k, v := range extra(ordinal) {
 			attrs[k] = v
+		}
+		return attrs
+	}
+}
+
+// buildLabeledExtras composes the shared label attribute with per-scenario
+// extras — the core generation carries label so the added/removed scenarios
+// match the issue's stated 3→4 / 4→3 attribute cardinalities.
+func buildLabeledExtras(more func(ordinal int) map[string]any) func(ordinal int) map[string]any {
+	return func(ordinal int) map[string]any {
+		attrs := map[string]any{"label": fmt.Sprintf("lb-%04d", ordinal)}
+		if more != nil {
+			for k, v := range more(ordinal) {
+				attrs[k] = v
+			}
 		}
 		return attrs
 	}
@@ -95,7 +110,7 @@ func seedEvolutionTiers(ctx context.Context, t *testing.T, env *Env, schema Sche
 		t.Fatalf("evolve schema to v2: %v", err)
 	}
 	seedGeneration(ctx, t, env, schema, 4, v2Profile)
-	deltaKey = soleParquetOf(t, "flush", mustFlush(ctx, t, env).NewObjects)
+	deltaKey = requireSoleParquet(t, "flush", mustFlush(ctx, t, env).NewObjects)
 	seedGeneration(ctx, t, env, schema, 3, v2Profile)
 	return baseKey, deltaKey, baseEvents
 }
@@ -121,11 +136,11 @@ func runInitBase(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) 
 		t.Fatalf("run init (base export): %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
-	return soleParquetOf(t, "init", init.NewObjects)
+	return requireSoleParquet(t, "init", init.NewObjects)
 }
 
-// soleParquetOf returns the single .parquet key in keys, failing otherwise.
-func soleParquetOf(t *testing.T, step string, keys []string) string {
+// requireSoleParquet returns the single .parquet key in keys, failing otherwise.
+func requireSoleParquet(t *testing.T, step string, keys []string) string {
 	t.Helper()
 	var parquet []string
 	for _, k := range keys {

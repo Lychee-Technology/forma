@@ -207,3 +207,52 @@ func TestParquetCorruption_EmptyParquetFile(t *testing.T) {
 		t.Errorf("query with an empty parquet in the scan set must keep the DuckDB route: %+v", result.Plan.Routing)
 	}
 }
+
+// TestParquetCorruption_WrongSchemaFile_GlobHint pins the #189-review P1
+// bypass: an explicit S3ParquetPathTemplate hint wins over the manifest
+// source (#184) and renders as a GLOB, so the pre-read validator must
+// enumerate the glob's matches and validate each — an unexpanded glob would
+// read the rogue file with union_by_name and its rows would vanish silently
+// (NULL row_id drops out of the dirty anti-join), never surfacing an error.
+func TestParquetCorruption_WrongSchemaFile_GlobHint(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	wide := DefaultSchemaFixtures()[1]
+
+	seedTwoTiers(ctx, t, env, wide)
+
+	// Positive control: the glob-hinted read is healthy and routes to DuckDB.
+	healthy := env.AssertQueryMatches(ctx, Query{
+		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
+	})
+	if healthy != nil && !healthy.Plan.Routing.UseDuckDB {
+		t.Fatalf("precondition: glob-hinted query did not route to duckdb: %+v", healthy.Plan.Routing)
+	}
+
+	// The rogue file is NOT manifest-registered: only the hinted glob can
+	// reach it, which is exactly the bypass under test.
+	wrongKey := schemaKeyPrefix(env, wide) + "wrong_schema_glob_zzz.parquet"
+	writeParquetViaDuck(ctx, t, env, "SELECT 1 AS wrong_col, 'x' AS other_col", wrongKey)
+
+	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := env.Query(failCtx, Query{
+		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
+	})
+	if err == nil {
+		t.Fatal("wrong-schema parquet under a hinted glob silently succeeded (#189 review P1)")
+	}
+	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("glob-hinted wrong-schema parquet must classify as ErrFederatedReadFailed, got: %v", err)
+	}
+	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+		t.Errorf("object exists in storage; must not classify as manifest inconsistency: %v", err)
+	}
+
+	degraded := env.AssertQueryMatches(ctx, Query{
+		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
+		AllowPartialDegradedMode: true,
+	})
+	assertDegradedFallbackPlan(t, degraded)
+}

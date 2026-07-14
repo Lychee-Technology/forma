@@ -15,26 +15,34 @@ import (
 // differently-shaped parquet files for one schema and the read must resolve
 // the union.
 
-const twoAttrProps = `{
+// The core generation carries 3 attributes (name, value, label) and the
+// score generations carry 4, matching the issue's stated cardinalities:
+// added column = 3→4, removed column = 4→3.
+
+const coreProps = `{
     "name": { "type": "string" },
-    "value": { "type": "number" }
+    "value": { "type": "number" },
+    "label": { "type": "string" }
   }`
 
-const twoAttrAttrs = `{
+const coreAttrs = `{
   "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
-  "value": { "attributeID": 2, "valueType": "numeric" }
+  "value": { "attributeID": 2, "valueType": "numeric" },
+  "label": { "attributeID": 5, "valueType": "text" }
 }
 `
 
 const scoreIntProps = `{
     "name": { "type": "string" },
     "value": { "type": "number" },
+    "label": { "type": "string" },
     "score": { "type": "integer" }
   }`
 
 const scoreIntAttrs = `{
   "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
   "value": { "attributeID": 2, "valueType": "numeric" },
+  "label": { "attributeID": 5, "valueType": "text" },
   "score": { "attributeID": 3, "valueType": "integer" }
 }
 `
@@ -42,13 +50,30 @@ const scoreIntAttrs = `{
 const scoreNumericProps = `{
     "name": { "type": "string" },
     "value": { "type": "number" },
+    "label": { "type": "string" },
     "score": { "type": "number" }
   }`
 
 const scoreNumericAttrs = `{
   "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
   "value": { "attributeID": 2, "valueType": "numeric" },
+  "label": { "attributeID": 5, "valueType": "text" },
   "score": { "attributeID": 3, "valueType": "numeric" }
+}
+`
+
+const pointsIntProps = `{
+    "name": { "type": "string" },
+    "value": { "type": "number" },
+    "label": { "type": "string" },
+    "points": { "type": "integer" }
+  }`
+
+const pointsIntAttrs = `{
+  "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
+  "value": { "attributeID": 2, "valueType": "numeric" },
+  "label": { "attributeID": 5, "valueType": "text" },
+  "points": { "attributeID": 3, "valueType": "integer" }
 }
 `
 
@@ -114,7 +139,7 @@ func TestSchemaEvolutionEAVToBoundPromotion(t *testing.T) {
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
-	profile := evolutionProfile(func(ordinal int) map[string]any {
+	profile := buildEvolutionProfile(func(ordinal int) map[string]any {
 		return map[string]any{"status": fmt.Sprintf("st-%04d", ordinal)}
 	})
 
@@ -185,30 +210,31 @@ func TestSchemaEvolutionEAVToBoundPromotion(t *testing.T) {
 	}
 }
 
-// TestSchemaEvolutionAddedColumn covers #189 scenario 1: v2 adds `score`
-// (integer, EAV), so the v1 base parquet physically lacks a column the
-// current projection names. Contract: the federated read resolves the union
-// — all 12 rows return, v1-generation rows carry score NULL (excluded by
-// score filters, sorted NULLS LAST).
+// TestSchemaEvolutionAddedColumn covers #189 scenario 1 (v1=3 attributes →
+// v2=4): v2 adds `score` (integer, EAV), so the v1 base parquet physically
+// lacks a column the current projection names. Contract: the federated read
+// resolves the union — all 12 rows return, v1-generation rows carry score
+// NULL (excluded by score filters, sorted NULLS LAST).
 func TestSchemaEvolutionAddedColumn(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	v1 := writeSimpleSchemaDir(t, twoAttrProps, twoAttrAttrs)
+	v1 := writeSimpleSchemaDir(t, coreProps, coreAttrs)
 	v2 := writeSimpleSchemaDir(t, scoreIntProps, scoreIntAttrs)
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
 	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
-		evolutionProfile(nil),
-		evolutionProfile(func(ordinal int) map[string]any {
+		buildEvolutionProfile(buildLabeledExtras(nil)),
+		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal * 10)}
-		}))
+		})))
 
 	baseCols := describeParquetCols(ctx, t, env, baseKey)
-	requireParquetCols(t, "base (v1)", baseCols, map[string]string{"name": "VARCHAR", "value": "DOUBLE"})
+	requireParquetCols(t, "base (v1)", baseCols,
+		map[string]string{"name": "VARCHAR", "value": "DOUBLE", "label": "VARCHAR"})
 	forbidParquetCols(t, "base (v1)", baseCols, "score")
 	requireParquetCols(t, "delta (v2)", describeParquetCols(ctx, t, env, deltaKey),
-		map[string]string{"score": "INTEGER"})
+		map[string]string{"score": "INTEGER", "label": "VARCHAR"})
 
 	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20})
 	assertUsesDuckDB(t, full)
@@ -235,28 +261,29 @@ func TestSchemaEvolutionAddedColumn(t *testing.T) {
 	})
 }
 
-// TestSchemaEvolutionRemovedColumn covers #189 scenario 2: v2 drops `score`,
-// so the v1 base parquet physically carries a column the current projection
-// no longer references. Both halves are characterization (green on current
-// main): the lone-base read succeeds because the explicit projection ignores
-// extra columns, and the mixed base+delta read succeeds because DuckDB's
-// projection pushdown never requests the dropped column from any file — the
-// generations only diverge on a column nobody reads.
+// TestSchemaEvolutionRemovedColumn covers #189 scenario 2 (v1=4 attributes →
+// v2=3): v2 drops `score`, so the v1 base parquet physically carries a
+// column the current projection no longer references. Both halves are
+// characterization (green on current main): the lone-base read succeeds
+// because the explicit projection ignores extra columns, and the mixed
+// base+delta read succeeds because DuckDB's projection pushdown never
+// requests the dropped column from any file — the generations only diverge
+// on a column nobody reads.
 func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
 	v1 := writeSimpleSchemaDir(t, scoreIntProps, scoreIntAttrs)
-	v2 := writeSimpleSchemaDir(t, twoAttrProps, twoAttrAttrs)
+	v2 := writeSimpleSchemaDir(t, coreProps, coreAttrs)
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
-	scoreProfile := evolutionProfile(func(ordinal int) map[string]any {
+	scoreProfile := buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 		return map[string]any{"score": float64(ordinal * 10)}
-	})
+	}))
 	seedGeneration(ctx, t, env, simple, 5, scoreProfile)
 	baseKey := runInitBase(ctx, t, env, simple)
 	requireParquetCols(t, "base (v1)", describeParquetCols(ctx, t, env, baseKey),
-		map[string]string{"score": "INTEGER"})
+		map[string]string{"score": "INTEGER", "label": "VARCHAR"})
 
 	if err := env.EvolveSchema(ctx, v2); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
@@ -270,9 +297,9 @@ func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 		t.Fatalf("lone-base scan under v2 projection total = %d, want 5", lone.Total)
 	}
 
-	plain := evolutionProfile(nil)
+	plain := buildEvolutionProfile(buildLabeledExtras(nil))
 	seedGeneration(ctx, t, env, simple, 4, plain)
-	deltaKey := soleParquetOf(t, "flush", mustFlush(ctx, t, env).NewObjects)
+	deltaKey := requireSoleParquet(t, "flush", mustFlush(ctx, t, env).NewObjects)
 	seedGeneration(ctx, t, env, simple, 3, plain)
 	forbidParquetCols(t, "delta (v2)", describeParquetCols(ctx, t, env, deltaKey), "score")
 
@@ -320,12 +347,12 @@ func TestSchemaEvolutionChangedType(t *testing.T) {
 	simple := DefaultSchemaFixtures()[0]
 
 	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
-		evolutionProfile(func(ordinal int) map[string]any {
+		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal * 10)}
-		}),
-		evolutionProfile(func(ordinal int) map[string]any {
+		})),
+		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal*10) + 0.5}
-		}))
+		})))
 
 	requireParquetCols(t, "base (v1 integer)", describeParquetCols(ctx, t, env, baseKey),
 		map[string]string{"score": "INTEGER"})
@@ -370,10 +397,10 @@ func TestSchemaEvolutionMixedGenerations(t *testing.T) {
 	simple := DefaultSchemaFixtures()[0]
 
 	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
-		evolutionProfile(func(ordinal int) map[string]any {
+		buildEvolutionProfile(func(ordinal int) map[string]any {
 			return map[string]any{"old_col": fmt.Sprintf("old-%04d", ordinal)}
 		}),
-		evolutionProfile(func(ordinal int) map[string]any {
+		buildEvolutionProfile(func(ordinal int) map[string]any {
 			return map[string]any{"new_col": float64(ordinal * 10)}
 		}))
 
@@ -401,6 +428,64 @@ func TestSchemaEvolutionMixedGenerations(t *testing.T) {
 	env.AssertQueryMatches(ctx, Query{
 		Schema: simple,
 		Sorts:  []Sort{{Attr: "new_col"}},
+		Limit:  20,
+	})
+}
+
+// TestSchemaEvolutionRenamedColumn pins the rename contract the #189 task
+// line requires ("renamed columns"): a logical rename (same attributeID,
+// same valueType, new name `score`→`points`) behaves as remove+add over
+// parquet generations. Parquet columns are physical-NAME-keyed and
+// union_by_name unifies by name only, so the old generation's values stay
+// under the old column — which the v2 projection never selects — and old
+// rows read NULL under the new name. Values do NOT migrate.
+//
+// Tier asymmetry, documented not pinned: hot-tier EAV storage is
+// attr_id-keyed, so a v1-written row still HOT at evolution time would
+// surface its old value under the new name from pg_source. This recipe keeps
+// every v1 row parquet-resident, the generation boundary the issue is about.
+func TestSchemaEvolutionRenamedColumn(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	v1 := writeSimpleSchemaDir(t, scoreIntProps, scoreIntAttrs)
+	v2 := writeSimpleSchemaDir(t, pointsIntProps, pointsIntAttrs)
+	env := NewEnv(t, cluster, WithSchemaDir(v1))
+	simple := DefaultSchemaFixtures()[0]
+
+	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
+		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
+			return map[string]any{"score": float64(ordinal * 10)}
+		})),
+		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
+			return map[string]any{"points": float64(ordinal * 10)}
+		})))
+
+	baseCols := describeParquetCols(ctx, t, env, baseKey)
+	requireParquetCols(t, "base (v1)", baseCols, map[string]string{"score": "INTEGER"})
+	forbidParquetCols(t, "base (v1)", baseCols, "points")
+	deltaCols := describeParquetCols(ctx, t, env, deltaKey)
+	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{"points": "INTEGER"})
+	forbidParquetCols(t, "delta (v2)", deltaCols, "score")
+
+	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20})
+	assertUsesDuckDB(t, full)
+	if full != nil && full.Total != 12 {
+		t.Fatalf("full scan total = %d, want 12 (5 v1 base + 4 delta + 3 hot)", full.Total)
+	}
+
+	// Remove+add semantics: v1 rows are NULL under the new name even though
+	// their attributeID matches — a points filter excludes all of them.
+	filtered := env.AssertQueryMatches(ctx, Query{
+		Schema:  simple,
+		Filters: []Filter{{Attr: "points", Op: "gte", Value: "0"}},
+		Limit:   20,
+	})
+	if filtered != nil && filtered.Total != 7 {
+		t.Fatalf("points >= 0 total = %d, want 7 (renamed values must NOT migrate to old rows)", filtered.Total)
+	}
+	env.AssertQueryMatches(ctx, Query{
+		Schema: simple,
+		Sorts:  []Sort{{Attr: "points"}},
 		Limit:  20,
 	})
 }

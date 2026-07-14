@@ -88,6 +88,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
 
+	// Reject-before-DuckDB (#185): an open breaker must short-circuit before
+	// ANY DuckDB or S3 work — including the #189 pre-read schema probes and
+	// path resolution, which reach storage.
+	if e.breaker != nil && e.breaker.IsOpen() {
+		planCtx.recordClientUnavailable()
+		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
+	}
+
 	// Resolve the parquet path set once (#187): explicit render hints win,
 	// otherwise the manifest-driven source authors the list. Provenance
 	// gates the read-error classification below.
@@ -105,7 +113,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// No recordQueryFailure: the query never started, and its timing fields
 	// would read from an unset start time.
 	if err := e.schemaValidator.Validate(ctx, e.duck, parquetPaths); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
 	}
 
 	// Fetch dirty IDs and record in execution plan
@@ -122,12 +130,6 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	// Record translation in plan
 	planCtx.recordTranslation(sqlStr, args, translateMs, q)
-
-	// Check circuit breaker before executing
-	if e.breaker != nil && e.breaker.IsOpen() {
-		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
-	}
 
 	// Execute query
 	planCtx.recordQueryStart()

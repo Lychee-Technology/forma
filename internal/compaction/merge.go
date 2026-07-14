@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 )
 
 // MergeStats carries what the rewrite orchestration needs to build the new
@@ -40,6 +42,17 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 		return MergeStats{}, fmt.Errorf("duck merger has no database")
 	}
 
+	// The merge runs union_by_name (#189), which would NULL-pad the system
+	// columns of a malformed source: every such row then folds into the
+	// single NULL row_id partition and all but one are silently discarded —
+	// and the compactor deletes the merged sources afterwards, making the
+	// loss permanent. Enforce the export invariant per source BEFORE any
+	// write. An unreadable footer is inconclusive and passes through: the
+	// merge itself must read every file and will fail loudly on it.
+	if err := validateMergeSourceSchemas(ctx, d.DB, sourceURIs); err != nil {
+		return MergeStats{}, fmt.Errorf("pre-merge parquet schema validation: %w", err)
+	}
+
 	mergeSQL, err := buildMergeSQL(sourceURIs, tmpURI, d.CopyOptions)
 	if err != nil {
 		return MergeStats{}, fmt.Errorf("build merge sql: %w", err)
@@ -70,3 +83,48 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 }
 
 var _ Merger = (*DuckMerger)(nil)
+
+// validateMergeSourceSchemas checks every merge source against the
+// parquetcheck system-column invariant. Compaction sources are
+// manifest-listed and URI-validated by buildMergeSQL's quoting rules, but a
+// rogue registration (the #187 fabrication class) must abort the merge
+// before it can misfold rows.
+func validateMergeSourceSchemas(ctx context.Context, db *sql.DB, sourceURIs []string) error {
+	for _, uri := range sourceURIs {
+		if err := validateMergeURI(uri); err != nil {
+			return fmt.Errorf("validate merge source: %w", err)
+		}
+		cols, err := describeParquetColumns(ctx, db, uri)
+		if err != nil {
+			continue // inconclusive: the merge read will fail loudly on it
+		}
+		if err := parquetcheck.Check(uri, cols); err != nil {
+			return fmt.Errorf("merge source rejected: %w", err)
+		}
+	}
+	return nil
+}
+
+// describeParquetColumns reads one parquet object's footer schema via the
+// merger's DuckDB session and returns column name → DuckDB type.
+func describeParquetColumns(ctx context.Context, db *sql.DB, uri string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", uri))
+	if err != nil {
+		return nil, fmt.Errorf("describe parquet %s: %w", uri, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	cols := map[string]string{}
+	for rows.Next() {
+		var name, typ string
+		var null, key, def, extra sql.NullString
+		if err := rows.Scan(&name, &typ, &null, &key, &def, &extra); err != nil {
+			return nil, fmt.Errorf("scan describe row for %s: %w", uri, err)
+		}
+		cols[name] = typ
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate describe rows for %s: %w", uri, err)
+	}
+	return cols, nil
+}
