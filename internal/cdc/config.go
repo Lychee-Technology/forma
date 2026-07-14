@@ -71,8 +71,12 @@ type CompactionConfig struct {
 	SchemaID         int16         // optional filter; 0 means all
 	ManifestPath     string        // s3 path or fs path to manifest JSON for the schema
 	TargetBaseSizeMB int           // default 256
-	MaxDeltaSizeMB   int           // default 50
-	DirtyRatioPct    int           // default 5 (rewrite when updated rows/base rows > 5%)
+	// TargetBaseSizeBytes is the byte-precise promotion threshold. Zero
+	// derives it from TargetBaseSizeMB; the compactor compares delta-tier
+	// bytes against it directly, so sub-MB tiers are not truncated to 0 MB.
+	TargetBaseSizeBytes int64
+	MaxDeltaSizeMB      int // default 50
+	DirtyRatioPct       int // default 5 (rewrite when updated rows/base rows > 5%)
 	RunInterval      time.Duration // scheduler interval when used in a loop
 	TempPrefix       string        // temp path prefix for rewrites
 	MaxParallelFiles int           // optional parallelism for rewrites
@@ -164,6 +168,9 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 func (c CompactionConfig) WithDefaults() CompactionConfig {
 	if c.TargetBaseSizeMB <= 0 {
 		c.TargetBaseSizeMB = DefaultTargetBaseSizeMB
+	}
+	if c.TargetBaseSizeBytes <= 0 {
+		c.TargetBaseSizeBytes = int64(c.TargetBaseSizeMB) << 20
 	}
 	if c.MaxDeltaSizeMB <= 0 {
 		c.MaxDeltaSizeMB = DefaultMaxDeltaSizeMB

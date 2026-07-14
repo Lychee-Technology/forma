@@ -171,7 +171,10 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	dirtyRatio := c.computeDirtyRatio(baseFiles, deltaFiles)
 	telemetry.EmitCompactionDirtyRatio(ctx, schemaID, dirtyRatio)
 
-	needsPromotion := deltaTotalMB >= int64(cfg.TargetBaseSizeMB)
+	// Compare bytes, not truncated MB: sub-MB delta tiers must still be able
+	// to promote once the byte-precise threshold is lowered (WithDefaults
+	// derives TargetBaseSizeBytes from TargetBaseSizeMB when unset).
+	needsPromotion := deltaTotalBytes >= cfg.TargetBaseSizeBytes
 	needsRewrite := len(baseFiles) > 0 && dirtyRatio > float64(cfg.DirtyRatioPct)/100.0
 
 	if !needsPromotion && !needsRewrite {
