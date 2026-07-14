@@ -77,7 +77,12 @@ func (s *ExpectedState) applyEvent(ev *Event) error {
 		for name, value := range ev.Attrs {
 			meta, ok := s.Cache[name]
 			if !ok {
-				return fmt.Errorf("event seq=%d references unknown attribute %q", ev.Seq, name)
+				// The attribute is absent from the CURRENT schema generation:
+				// evolution removed it (#189), so no projection can surface it
+				// — fold it to absent rather than erroring. Typos cannot reach
+				// here: the write path rejects unknown attributes when the
+				// event is applied, under the cache of its own generation.
+				continue
 			}
 			normalized, err := normalizeValue(value, meta.ValueType)
 			if err != nil {

@@ -82,6 +82,24 @@ func evolutionProfile(extra func(ordinal int) map[string]any) AttrProfile {
 	}
 }
 
+// seedEvolutionTiers drives the canonical #189 recipe: 5 base rows under the
+// CURRENT (v1) schema exported via RunInit, evolve to v2SchemaDir, 4 delta
+// rows flushed under v2, 3 hot rows left unflushed under v2. Ordinals are
+// contiguous per Env: base takes 0-4, delta 5-8, hot 9-11. Returns the two
+// parquet keys plus the base-generation events (for LWW probes).
+func seedEvolutionTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, v2SchemaDir string, v1Profile, v2Profile AttrProfile) (baseKey, deltaKey string, baseEvents []*Event) {
+	t.Helper()
+	baseEvents = seedGeneration(ctx, t, env, schema, 5, v1Profile)
+	baseKey = runInitBase(ctx, t, env, schema)
+	if err := env.EvolveSchema(ctx, v2SchemaDir); err != nil {
+		t.Fatalf("evolve schema to v2: %v", err)
+	}
+	seedGeneration(ctx, t, env, schema, 4, v2Profile)
+	deltaKey = soleParquetOf(t, "flush", mustFlush(ctx, t, env).NewObjects)
+	seedGeneration(ctx, t, env, schema, 3, v2Profile)
+	return baseKey, deltaKey, baseEvents
+}
+
 // seedGeneration applies `creates` create events under the Env's CURRENT
 // schema generation and returns them.
 func seedGeneration(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, creates int, profile AttrProfile) []*Event {
