@@ -85,7 +85,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	if e == nil || e.duck == nil {
 		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb client not available")
+		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
 
 	// Fetch dirty IDs and record in execution plan
@@ -106,7 +106,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// Check circuit breaker before executing
 	if e.breaker != nil && e.breaker.IsOpen() {
 		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected")
+		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
 	// Execute query
@@ -118,7 +118,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
 		}
-		return 0, fmt.Errorf("execute duckdb query: %w", err)
+		return 0, fmt.Errorf("execute duckdb query: %w: %w", ErrFederatedReadFailed, err)
 	}
 	defer rows.Close()
 
@@ -262,7 +262,7 @@ func (e *DBFederatedQueryEngine) streamDuckDBRows(
 		scanArgs, attrsJSON, totalRec, _, _ := buffers.buildScanArgs()
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, 0, fmt.Errorf("scan duckdb row: %w", err)
+			return 0, 0, fmt.Errorf("scan duckdb row: %w: %w", ErrFederatedReadFailed, err)
 		}
 
 		// Build record from buffers
@@ -294,7 +294,7 @@ func (e *DBFederatedQueryEngine) streamDuckDBRows(
 	}
 
 	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("iterate duckdb rows: %w", err)
+		return 0, 0, fmt.Errorf("iterate duckdb rows: %w: %w", ErrFederatedReadFailed, err)
 	}
 
 	return totalRecords, rowCount, nil
