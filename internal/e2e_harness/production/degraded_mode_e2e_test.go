@@ -151,7 +151,7 @@ func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 		t.Fatalf("rename change_log: %v", err)
 	}
 	// Registered after NewEnv's cleanups, so it runs first (LIFO) and the
-	// artifact dump still sees a intact change_log on failure.
+	// artifact dump still sees an intact change_log on failure.
 	t.Cleanup(func() {
 		_, _ = env.Pool.Exec(context.Background(), "ALTER TABLE change_log_broken RENAME TO change_log")
 	})

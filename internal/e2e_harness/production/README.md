@@ -187,7 +187,8 @@ where cdc-init bootstraps base files before federated reads. Use
   statements on a single pooled connection (`duckdb_conn.go`), so over
   `:memory:` a second connection opened under load lacks S3 config and 404s.
   Set `Query.AllowPartialDegradedMode` to forward the public degraded-mode
-  flag so a tier outage returns a partial result instead of erroring.
+  flag so a tier outage falls back to a postgres-only result (complete in
+  today's PG-retains-all model) instead of erroring.
 
 ## Diagnostic artifacts
 
