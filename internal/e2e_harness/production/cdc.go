@@ -157,26 +157,55 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 
 // RunCompaction executes the real compactor (compaction.Compactor.RunOnce)
 // against the Env's manifest for one schema and returns its typed result.
-// Note the current compactor is manifest-level only: promotion retags delta
-// entries as base once the delta tier reaches TargetBaseSizeMB (≥1 MB, out of
-// reach at lifecycle-test scale), and the dirty-ratio rewrite is not
-// implemented — it reports RewritePending and leaves the manifest untouched
-// (internal/compaction/compactor.go). The federated read path never consults
-// the manifest, so parquet contents and query results are unaffected either
-// way today.
+// Reads are manifest-driven (engine.go wires manifest.QuerySource), so a
+// compaction pass that mutates the manifest is directly query-observable.
 func (e *Env) RunCompaction(ctx context.Context, schema SchemaRef) (compaction.CompactionResult, error) {
+	return e.RunCompactionWith(ctx, schema, CompactionOverrides{})
+}
+
+// CompactionOverrides customizes a single compaction pass (#188). Zero-value
+// fields fall back to the defaults RunCompaction uses.
+type CompactionOverrides struct {
+	// S3 replaces the cluster client for both manifest I/O and object
+	// copy/delete work (decorate for ETag-conflict scenarios).
+	S3 cdc.S3FullClient
+	// TargetBaseSizeBytes lowers the byte-precise promotion threshold so
+	// KB-scale delta tiers can promote (0: default 256 MB).
+	TargetBaseSizeBytes int64
+	// DirtyRatioPct tunes the rewrite trigger (0: default 5).
+	DirtyRatioPct int
+}
+
+// RunCompactionWith executes one real compaction pass with per-run overrides,
+// wiring the full compactor: manifest provider, S3 object client, and data
+// prefix, over the chosen S3 client.
+func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov CompactionOverrides) (compaction.CompactionResult, error) {
 	if e.CDC.ManifestTemplate == "" {
 		return compaction.CompactionResult{}, fmt.Errorf("compaction requires a manifest (Env built WithoutManifest)")
+	}
+	var s3Client cdc.S3FullClient = e.Cluster.S3
+	if ov.S3 != nil {
+		s3Client = ov.S3
 	}
 	provider := compaction.NewS3ManifestProvider(cdc.ManifestConfig{
 		Bucket:       e.Cluster.Bucket,
 		Prefix:       e.CDC.ManifestPrefix,
 		PathTemplate: e.CDC.ManifestTemplate,
-	}, e.Cluster.S3)
+	}, s3Client)
 	compactor := &compaction.Compactor{
-		Logger:   e.logger,
-		Config:   cdc.CompactionConfig{SchemaID: schema.ID},
-		Provider: provider,
+		Logger: e.logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:            schema.ID,
+			TargetBaseSizeBytes: ov.TargetBaseSizeBytes,
+			DirtyRatioPct:       ov.DirtyRatioPct,
+		},
+		Provider:   provider,
+		Bucket:     e.Cluster.Bucket,
+		DataPrefix: e.S3Prefix,
+		Resolver: manifest.PathResolver{
+			Prefix:       e.CDC.ManifestPrefix,
+			PathTemplate: e.CDC.ManifestTemplate,
+		},
 	}
 	result, err := compactor.RunOnce(ctx)
 	if err != nil {

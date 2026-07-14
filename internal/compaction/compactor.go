@@ -28,7 +28,12 @@ type CompactionOutcome string
 const (
 	Noop             CompactionOutcome = "noop"
 	PromotionApplied CompactionOutcome = "promotion_applied"
-	RewritePending   CompactionOutcome = "rewrite_pending"
+	// RewritePending is reported when the dirty ratio calls for a rewrite but
+	// no Merger is wired, so the pass leaves everything untouched.
+	RewritePending CompactionOutcome = "rewrite_pending"
+	// RewriteApplied is reported when the dirty-ratio rewrite merged the full
+	// base+delta set into a new base file and committed the manifest swap.
+	RewriteApplied CompactionOutcome = "rewrite_applied"
 )
 
 // CompactionResult carries the outcome and metadata from a compaction pass.
@@ -39,6 +44,12 @@ type CompactionResult struct {
 	DirtyRatio float64
 	BaseMB     int64
 	DeltaMB    int64
+
+	// Rewrite metadata, populated only when Outcome is RewriteApplied.
+	FilesMerged int    // source files folded into the new base
+	RowsIn      int64  // rows read across all source files
+	RowsOut     int64  // surviving LWW winners written to the new base
+	NewBaseKey  string // S3 key of the merged base parquet
 }
 
 // FileProvider fetches manifest and lists actual files (optionally cross-check).
