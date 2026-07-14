@@ -2,12 +2,14 @@ package compaction
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -49,10 +51,11 @@ func (f *fakeObjectS3) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ..
 	return &s3.HeadObjectOutput{ContentLength: aws.Int64(f.size)}, nil
 }
 
-// conflictOnceProvider fails the first SaveManifest like a stale conditional
-// put (newEtag=="" with a prior etag maps to ErrConcurrentModification), then
-// delegates. LoadManifest returns a FRESH manifest copy per call, mirroring
-// the real provider: the retry must recompute from a clean load.
+// conflictOnceProvider fails the first SaveManifest with a CONFIRMED 412
+// (smithy PreconditionFailed — the only shape saveManifestChecked classifies
+// as ErrConcurrentModification), then delegates. LoadManifest returns a
+// FRESH manifest copy per call, mirroring the real provider: the retry must
+// recompute from a clean load.
 type conflictOnceProvider struct {
 	inner    *mockProvider
 	failures int
@@ -79,9 +82,14 @@ func (p *conflictOnceProvider) SaveManifest(ctx context.Context, schemaID int16,
 
 var errRewriteTestConflict = &conflictErr{}
 
+// conflictErr implements smithy.APIError with code PreconditionFailed — the
+// confirmed-412 shape rustfs/S3 return for a stale If-Match.
 type conflictErr struct{}
 
-func (*conflictErr) Error() string { return "precondition failed (test)" }
+func (*conflictErr) Error() string                 { return "api error PreconditionFailed (test)" }
+func (*conflictErr) ErrorCode() string             { return "PreconditionFailed" }
+func (*conflictErr) ErrorMessage() string          { return "precondition failed (test)" }
+func (*conflictErr) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }
 
 // nonTmpDeletes filters out CopyTmpToFinal's own _tmp cleanup, leaving only
 // the deletions the rewrite orchestration decided on.
@@ -195,6 +203,95 @@ func TestCompactor_Rewrite_ConflictRetryRecomputesFromFreshManifest(t *testing.T
 	require.Equal(t, []string{firstStaged, "p/1/aaa_bbb.parquet", "p/1/ddd.parquet"}, nonTmpDeletes(s3c.deletes))
 	require.Equal(t, s3c.copies[1], result.NewBaseKey)
 	require.NotContains(t, s3c.deletes, result.NewBaseKey)
+}
+
+// ambiguousSaveProvider fails SaveManifest with a plain transport-shaped
+// error (NOT a 412). Optionally it COMMITS the save to the inner provider
+// first, modeling a conditional put that landed before the response was
+// lost.
+type ambiguousSaveProvider struct {
+	inner       *mockProvider
+	commitFirst bool
+	saves       int
+}
+
+func (p *ambiguousSaveProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
+	m, etag, err := p.inner.LoadManifest(ctx, schemaID)
+	if err != nil || m == nil {
+		return m, etag, err
+	}
+	cp := *m
+	cp.Files = append([]manifest.FileEntry(nil), m.Files...)
+	return &cp, etag, nil
+}
+
+func (p *ambiguousSaveProvider) SaveManifest(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error) {
+	p.saves++
+	if p.commitFirst {
+		if _, err := p.inner.SaveManifest(ctx, schemaID, m, etag); err != nil {
+			return "", err
+		}
+	}
+	return "", errors.New("dial tcp: i/o timeout (test)")
+}
+
+// TestCompactor_Rewrite_AmbiguousSaveRetainsStagedBase pins the durability
+// contract from the PR #253 review: a save failure that is NOT a confirmed
+// 412 may have committed, so the staged base must never be deleted, the
+// error must not be classified as a retryable CAS conflict, and it must
+// carry the retained key as the operator's pointer.
+func TestCompactor_Rewrite_AmbiguousSaveRetainsStagedBase(t *testing.T) {
+	provider := &ambiguousSaveProvider{inner: &mockProvider{manifest: rewriteEligibleManifest(), etag: "etag-1"}}
+	merger := &fakeMerger{stats: MergeStats{RowsIn: 1, RowsOut: 1}}
+	s3c := &fakeObjectS3{}
+
+	c := newRewireableCompactor(provider, merger, s3c)
+	_, err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrConcurrentModification)
+	require.Equal(t, 1, provider.saves, "ambiguous outcome must not be retried")
+
+	require.Len(t, s3c.copies, 1)
+	staged := s3c.copies[0]
+	require.NotContains(t, nonTmpDeletes(s3c.deletes), staged, "possibly-committed base must be retained")
+	require.ErrorContains(t, err, staged)
+	require.ErrorContains(t, err, "ambiguous")
+}
+
+// TestCompactor_Rewrite_CommittedSaveWithLostResponse is the review's
+// requested regression: the conditional put COMMITS but the response is
+// lost. The staged base is now manifest-listed; deleting it would break the
+// committed manifest. The next pass must read the committed state as
+// healthy (Noop — no deltas remain) with the new base still listed.
+func TestCompactor_Rewrite_CommittedSaveWithLostResponse(t *testing.T) {
+	inner := &mockProvider{manifest: rewriteEligibleManifest(), etag: "etag-1"}
+	provider := &ambiguousSaveProvider{inner: inner, commitFirst: true}
+	merger := &fakeMerger{stats: MergeStats{RowsIn: 1100, RowsOut: 950, RowIDMin: "aaa", RowIDMax: "zzz"}}
+	s3c := &fakeObjectS3{size: 1}
+
+	c := newRewireableCompactor(provider, merger, s3c)
+	_, err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrConcurrentModification)
+
+	require.Len(t, s3c.copies, 1)
+	committedKey := s3c.copies[0]
+	require.NotContains(t, nonTmpDeletes(s3c.deletes), committedKey, "must never delete the listed finalKey")
+
+	// The commit landed: the manifest lists exactly the new base (+ the
+	// foreign-tier entry) and points at a live object.
+	var listed []string
+	for _, f := range inner.manifest.Files {
+		listed = append(listed, f.Path)
+	}
+	require.Contains(t, listed, committedKey)
+
+	// Self-heal: the next pass sees no deltas and reports Noop.
+	second := newRewireableCompactor(provider, merger, s3c)
+	result, err := second.RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, Noop, result.Outcome)
+	require.NotContains(t, nonTmpDeletes(s3c.deletes), committedKey)
 }
 
 func TestCompactor_Rewrite_ExhaustedConflictsSurfaceRetryableError(t *testing.T) {

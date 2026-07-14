@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -87,6 +88,22 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 		}
 		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_secret_access_key='%s';", s3Secret)); err != nil {
 			logger.Sugar().Warnw("duckdb set s3_secret_access_key failed", "err", err)
+		}
+	}
+	// Temporary credentials (STS/assumed roles) are a key+secret+token
+	// triple; without the token httpfs signs requests the store rejects even
+	// though the SDK client on the same credentials works.
+	s3Token := cfg.S3SessionToken
+	if s3Token == "" {
+		s3Token = os.Getenv("AWS_SESSION_TOKEN")
+	}
+	if s3Token != "" {
+		if err := validateS3Credential("s3_session_token", s3Token); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_session_token='%s';", s3Token)); err != nil {
+			logger.Sugar().Warnw("duckdb set s3_session_token failed", "err", err)
 		}
 	}
 	if cfg.S3Region != "" {

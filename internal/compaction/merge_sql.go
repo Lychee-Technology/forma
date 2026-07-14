@@ -51,7 +51,7 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
 	quoted := make([]string, 0, len(sourceURIs))
 	for _, uri := range sourceURIs {
 		if err := validateMergeURI(uri); err != nil {
-			return "", err
+			return "", fmt.Errorf("merge source: %w", err)
 		}
 		quoted = append(quoted, "'"+uri+"'")
 	}
@@ -81,7 +81,7 @@ func buildMergeRowsInSQL(sourceURIs []string) (string, error) {
 	quoted := make([]string, 0, len(sourceURIs))
 	for _, uri := range sourceURIs {
 		if err := validateMergeURI(uri); err != nil {
-			return "", err
+			return "", fmt.Errorf("rows-in source: %w", err)
 		}
 		quoted = append(quoted, "'"+uri+"'")
 	}
@@ -95,7 +95,7 @@ func buildMergeRowsInSQL(sourceURIs []string) (string, error) {
 // (internal/manifest/query_source.go), resurrecting undeleted leftovers.
 func buildMergeStatsSQL(tmpURI string) (string, error) {
 	if err := validateMergeURI(tmpURI); err != nil {
-		return "", err
+		return "", fmt.Errorf("stats target: %w", err)
 	}
 	return fmt.Sprintf(
 		`SELECT COUNT(*),

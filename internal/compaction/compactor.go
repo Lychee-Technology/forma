@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/smithy-go"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -146,6 +149,20 @@ func isRetryable(err error) bool {
 	return false
 }
 
+// isPreconditionFailed reports whether err is a CONFIRMED HTTP 412
+// conditional-put rejection from the object store — the only save failure
+// that proves the write did not commit. Transport errors, timeouts and
+// other API failures are deliberately excluded: after those the put may
+// have landed, and callers must treat the outcome as ambiguous.
+func isPreconditionFailed(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
+		return true
+	}
+	var respErr *awshttp.ResponseError
+	return errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusPreconditionFailed
+}
+
 func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) (CompactionResult, error) {
 	m, etag, err := c.Provider.LoadManifest(ctx, schemaID)
 	if err != nil {
@@ -242,7 +259,7 @@ func (c *Compactor) applyPromotion(ctx context.Context, schemaID int16, m *manif
 
 	newEtag, err := c.saveManifestChecked(ctx, schemaID, m, etag)
 	if err != nil {
-		return CompactionResult{}, err
+		return CompactionResult{}, fmt.Errorf("promotion manifest save for schema %d: %w", schemaID, err)
 	}
 	c.Logger.Info("compaction completed",
 		zap.Int16("schema_id", schemaID),
@@ -256,18 +273,22 @@ func (c *Compactor) applyPromotion(ctx context.Context, schemaID int16, m *manif
 
 // saveManifestChecked commits the manifest under optimistic concurrency and
 // enforces the FileProvider contract: the provider must advance Version and
-// UpdatedAtMs in-place on success. An ETag mismatch surfaces as the
-// retryable ErrConcurrentModification.
+// UpdatedAtMs in-place on success. Only a CONFIRMED conditional-put
+// rejection (HTTP 412, or a provider pre-classified sentinel) maps to the
+// retryable ErrConcurrentModification — any other failure is ambiguous (the
+// put may have committed before the response was lost) and must surface
+// as-is so callers never treat a possibly-committed write as a clean CAS
+// loss.
 func (c *Compactor) saveManifestChecked(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error) {
 	prevVersion := m.Version
 	prevUpdatedAtMs := m.UpdatedAtMs
 
 	newEtag, err := c.Provider.SaveManifest(ctx, schemaID, m, etag)
 	if err != nil {
-		if newEtag == "" && etag != "" {
-			return "", fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
+		if errors.Is(err, ErrConcurrentModification) || isPreconditionFailed(err) {
+			return "", fmt.Errorf("%w: conditional save of schema %d manifest rejected (stale etag %q): %w", ErrConcurrentModification, schemaID, etag, err)
 		}
-		return "", fmt.Errorf("save manifest: %w", err)
+		return "", fmt.Errorf("save manifest for schema %d: %w", schemaID, err)
 	}
 
 	if m.Version <= prevVersion || m.UpdatedAtMs <= prevUpdatedAtMs {

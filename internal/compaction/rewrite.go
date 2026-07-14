@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -84,10 +85,21 @@ func (c *Compactor) runRewrite(
 	})
 
 	if _, err := c.saveManifestChecked(ctx, schemaID, m, etag); err != nil {
-		// The staged base was never listed; drop it so a conflict retry (which
-		// re-merges from the fresh manifest) does not accumulate orphans.
-		c.deleteObjects(ctx, schemaID, []string{finalKey})
-		return CompactionResult{}, err
+		if errors.Is(err, ErrConcurrentModification) {
+			// Confirmed 412: the conditional put was rejected, so the staged
+			// base is provably unlisted; drop it so the conflict retry (which
+			// re-merges from a fresh manifest) does not accumulate orphans.
+			c.deleteObjects(ctx, schemaID, []string{finalKey})
+			return CompactionResult{}, fmt.Errorf("rewrite manifest swap for schema %d: %w", schemaID, err)
+		}
+		// Ambiguous outcome: the put may have committed before the response
+		// was lost, in which case the manifest already lists the staged base
+		// — deleting it would break a committed manifest. Retain it and
+		// surface the key as the operator's pointer (#197 pattern). Either
+		// way the next pass self-heals: a committed swap reads as Noop with a
+		// healthy manifest; an uncommitted one re-merges, leaving the staged
+		// object as an unlisted orphan for #203.
+		return CompactionResult{}, fmt.Errorf("rewrite manifest swap for schema %d had an ambiguous outcome; staged base retained at %s: %w", schemaID, finalKey, err)
 	}
 
 	sourceKeys := make([]string, 0, len(sources))

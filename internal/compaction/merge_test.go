@@ -75,8 +75,8 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 		{rowD, 150, "0", "d-base"},
 	})
 	writeParquetFixture(t, db, deltaPath, []mergeFixtureRow{
-		{rowA, 200, "NULL", "a-v2"},  // newer live version wins
-		{rowB, 300, "300", "NULL"},   // tombstone: row B must vanish
+		{rowA, 200, "NULL", "a-v2"},    // newer live version wins
+		{rowB, 300, "300", "NULL"},     // tombstone: row B must vanish
 		{rowD, 150, "NULL", "d-delta"}, // equal-ver_ts tie: base copy must win
 	})
 
@@ -110,8 +110,8 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 	require.NoError(t, rows.Err())
 
 	require.Equal(t, map[string]mergedRow{
-		rowA: {changedAt: 200, deletedAt: 0, title: "a-v2"},  // winner verbatim, NULL normalized to 0
-		rowC: {changedAt: 100, deletedAt: 0, title: "c-v1"},  // untouched base row
+		rowA: {changedAt: 200, deletedAt: 0, title: "a-v2"},   // winner verbatim, NULL normalized to 0
+		rowC: {changedAt: 100, deletedAt: 0, title: "c-v1"},   // untouched base row
 		rowD: {changedAt: 150, deletedAt: 0, title: "d-base"}, // tie: base-wins preserved
 	}, got)
 }
