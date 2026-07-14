@@ -89,8 +89,21 @@ func (h *TestHarness) ConnectPostgres(ctx context.Context, dsn string) error {
 // host-mapped port is not guaranteed stable across restarts, so the DSN is
 // re-derived before reconnecting.
 func (h *TestHarness) RestartPostgres(ctx context.Context) error {
+	if err := h.HaltPostgres(ctx); err != nil {
+		return err
+	}
+	return h.ResumePostgres(ctx)
+}
+
+// HaltPostgres stops the Postgres container in place (docker stop — the
+// container and its data survive) and closes the harness DB handle, leaving
+// the server really unreachable: queries through per-test pools and DuckDB's
+// postgres attachment fail with genuine network errors, the only fault
+// vector that exercises production connection-failure handling (#187).
+// Resume with ResumePostgres.
+func (h *TestHarness) HaltPostgres(ctx context.Context) error {
 	if h.PGContainer == nil {
-		return fmt.Errorf("restart postgres: no container (external infrastructure or already terminated)")
+		return fmt.Errorf("halt postgres: no container (external infrastructure or already terminated)")
 	}
 	if h.PGDB != nil {
 		h.PGDB.Close()
@@ -99,6 +112,16 @@ func (h *TestHarness) RestartPostgres(ctx context.Context) error {
 	stopTimeout := 30 * time.Second
 	if err := h.PGContainer.Stop(ctx, &stopTimeout); err != nil {
 		return fmt.Errorf("stop postgres container: %w", err)
+	}
+	return nil
+}
+
+// ResumePostgres starts a previously halted Postgres container and
+// reconnects. The host-mapped port is not guaranteed stable across restarts,
+// so the DSN is re-derived before reconnecting.
+func (h *TestHarness) ResumePostgres(ctx context.Context) error {
+	if h.PGContainer == nil {
+		return fmt.Errorf("resume postgres: no container (external infrastructure or already terminated)")
 	}
 	if err := h.PGContainer.Start(ctx); err != nil {
 		return fmt.Errorf("start postgres container: %w", err)
@@ -131,6 +154,28 @@ func (h *TestHarness) HaltS3(ctx context.Context) error {
 	if err := h.S3Container.Stop(ctx, &stopTimeout); err != nil {
 		return fmt.Errorf("stop s3 container: %w", err)
 	}
+	return nil
+}
+
+// RestartS3 starts the S3 container again after HaltS3 (docker start — the
+// container and its data survive a halt) and re-derives the endpoint: the
+// host-mapped port is not guaranteed stable across restarts.
+func (h *TestHarness) RestartS3(ctx context.Context) error {
+	if h.S3Container == nil {
+		return fmt.Errorf("restart s3: no container (external infrastructure or already terminated)")
+	}
+	if err := h.S3Container.Start(ctx); err != nil {
+		return fmt.Errorf("start s3 container: %w", err)
+	}
+	host, err := h.S3Container.Host(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve s3 host after restart: %w", err)
+	}
+	mapped, err := h.S3Container.MappedPort(ctx, "9000")
+	if err != nil {
+		return fmt.Errorf("resolve s3 port after restart: %w", err)
+	}
+	h.S3Endpoint = fmt.Sprintf("http://%s:%s", host, mapped.Port())
 	return nil
 }
 

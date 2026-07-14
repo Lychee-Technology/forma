@@ -222,6 +222,56 @@ func (c *Cluster) HaltS3(ctx context.Context) error {
 	return nil
 }
 
+// RestartS3 starts the halted S3 container again (pairs with HaltS3; the
+// container and its data survive a halt) and rebinds the cluster's S3
+// client: the host-mapped port can change across restarts, so the old client
+// would target a dead endpoint. External infrastructure cannot be restarted.
+// Only tests owning a DedicatedCluster may call this.
+func (c *Cluster) RestartS3(ctx context.Context) error {
+	if c.external {
+		return fmt.Errorf("restart s3: external infrastructure (%s) cannot be restarted", externalS3EndpointVar)
+	}
+	if err := c.Base.RestartS3(ctx); err != nil {
+		return fmt.Errorf("restart cluster s3: %w", err)
+	}
+	c.S3Endpoint = c.Base.S3Endpoint
+	client, err := e2e_harness.NewS3Client(ctx, c.S3Endpoint, c.S3Region, c.S3AccessKey, c.S3SecretKey)
+	if err != nil {
+		return fmt.Errorf("rebuild s3 client after restart: %w", err)
+	}
+	c.S3 = client
+	return nil
+}
+
+// HaltPostgres stops the cluster's Postgres container in place so the server
+// becomes really unreachable mid-outage (#187 scenario 9) — unlike
+// RestartPostgres, which stops and starts atomically. External
+// infrastructure cannot be halted. Only tests owning a DedicatedCluster may
+// call this. Resume with ResumePostgres.
+func (c *Cluster) HaltPostgres(ctx context.Context) error {
+	if c.external {
+		return fmt.Errorf("halt postgres: external infrastructure (%s) cannot be halted", externalPGDSNVar)
+	}
+	if err := c.Base.HaltPostgres(ctx); err != nil {
+		return fmt.Errorf("halt cluster postgres: %w", err)
+	}
+	return nil
+}
+
+// ResumePostgres starts the halted Postgres container again (pairs with
+// HaltPostgres) and re-derives the connection coordinates — the host-mapped
+// port can change across restarts.
+func (c *Cluster) ResumePostgres(ctx context.Context) error {
+	if c.external {
+		return fmt.Errorf("resume postgres: external infrastructure (%s) cannot be resumed", externalPGDSNVar)
+	}
+	if err := c.Base.ResumePostgres(ctx); err != nil {
+		return fmt.Errorf("resume cluster postgres: %w", err)
+	}
+	c.PGHost, c.PGPort = pgHostPortFromDSN(c.Base.PGDSN)
+	return nil
+}
+
 // Shutdown stops the shared containers. Under KEEP_E2E_ENV=1 it prints
 // connection info instead and leaves everything running.
 func (c *Cluster) Shutdown(ctx context.Context) error {

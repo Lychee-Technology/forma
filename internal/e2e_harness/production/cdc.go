@@ -185,6 +185,26 @@ func (e *Env) RunCompaction(ctx context.Context, schema SchemaRef) (compaction.C
 	return result, nil
 }
 
+// RegisterParquetInManifest appends one parquet object to the schema's
+// manifest so manifest-driven reads can see a file the production exporter
+// would never write (e.g. a fabricated wrong-schema or 0-row parquet, #187).
+// The entry carries only tier and path — the read path consumes nothing else.
+func (e *Env) RegisterParquetInManifest(ctx context.Context, schema SchemaRef, key, tier string) error {
+	if e.CDC.ManifestTemplate == "" {
+		return fmt.Errorf("register parquet in manifest: Env built WithoutManifest")
+	}
+	store := &manifest.S3Store{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}
+	resolver := manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate}
+	path, err := resolver.Resolve(schema.ID)
+	if err != nil {
+		return fmt.Errorf("resolve manifest path for schema %d: %w", schema.ID, err)
+	}
+	if err := manifest.AppendFile(ctx, store, path, schema.ID, manifest.FileEntry{Tier: tier, Path: key}); err != nil {
+		return fmt.Errorf("append parquet %s to schema %d manifest: %w", key, schema.ID, err)
+	}
+	return nil
+}
+
 // countUnflushed counts change_log rows with flushed_at = 0 across all
 // schemas in the per-test database.
 func (e *Env) countUnflushed(ctx context.Context) (int64, error) {

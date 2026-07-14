@@ -45,6 +45,12 @@ type Env struct {
 	logger *zap.Logger
 	opts   envOptions
 
+	// duckS3Access/duckS3Secret override the S3 credentials of the DuckDB
+	// httpfs session only (ReopenDuckDBWithS3Creds); empty means the cluster
+	// credentials. The Go S3 client and CDC config are never affected.
+	duckS3Access string
+	duckS3Secret string
+
 	manager      forma.EntityManager
 	engine       *fedengine.DBFederatedQueryEngine
 	breaker      *fedengine.CircuitBreaker
@@ -225,6 +231,13 @@ func (e *Env) provision(ctx context.Context) error {
 
 func (e *Env) startDuckDB() error {
 	c := e.Cluster
+	access, secret := c.S3AccessKey, c.S3SecretKey
+	if e.duckS3Access != "" {
+		access = e.duckS3Access
+	}
+	if e.duckS3Secret != "" {
+		secret = e.duckS3Secret
+	}
 	e.DuckCfg = forma.DuckDBConfig{
 		Enabled:        true,
 		DBPath:         ":memory:",
@@ -232,8 +245,8 @@ func (e *Env) startDuckDB() error {
 		EnableS3:       true,
 		EnableParquet:  true,
 		S3Endpoint:     c.S3Endpoint,
-		S3AccessKey:    c.S3AccessKey,
-		S3SecretKey:    c.S3SecretKey,
+		S3AccessKey:    access,
+		S3SecretKey:    secret,
 		S3Region:       c.S3Region,
 		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: 2,
@@ -337,6 +350,68 @@ func (e *Env) ReopenDuckDB() error {
 	e.engine = nil
 	e.manager = nil
 	return nil
+}
+
+// ReopenDuckDBWithS3Creds replaces the DuckDB client with one whose httpfs
+// session authenticates against S3 with the given credentials, leaving the
+// Go S3 client and CDC config untouched. Wrong credentials make DuckDB's S3
+// reads fail with a genuine signature-mismatch rejection from the object
+// store — the closest fault to an object-permission error that can reach
+// DuckDB reads on the single-credential test store (#187 scenario 3), since
+// httpfs bypasses the Go S3 client and its decorators entirely. Restore by
+// passing the cluster credentials.
+func (e *Env) ReopenDuckDBWithS3Creds(access, secret string) error {
+	e.duckS3Access, e.duckS3Secret = access, secret
+	if err := e.ReopenDuckDB(); err != nil {
+		return fmt.Errorf("reopen duckdb with s3 creds: %w", err)
+	}
+	return nil
+}
+
+// RestartS3 restarts the halted S3 container (pairs with Cluster.HaltS3) and
+// rebinds every per-test handle that referenced the old endpoint: the
+// cluster S3 client (rebuilt by Cluster.RestartS3 — the host-mapped port can
+// change), the DuckDB client (the httpfs session carries the endpoint), the
+// CDC config, and the lazily built engine and manager. The circuit breaker
+// deliberately survives, mirroring ReopenDuckDB, so recovery scenarios can
+// observe breaker state across the restoration. Only for tests owning a
+// DedicatedCluster.
+func (e *Env) RestartS3(ctx context.Context) error {
+	if err := e.Cluster.RestartS3(ctx); err != nil {
+		return fmt.Errorf("restart cluster s3: %w", err)
+	}
+	if e.Duck != nil {
+		_ = e.Duck.Close()
+	}
+	if err := e.startDuckDB(); err != nil {
+		return fmt.Errorf("rebuild duckdb client after s3 restart: %w", err)
+	}
+	e.CDC = e.buildCDCConfig()
+	e.engine = nil
+	e.manager = nil
+	return nil
+}
+
+// HaltPostgres stops the Postgres container in place, deliberately leaving
+// the Env's pool and DuckDB postgres attachment pointing at the dead server:
+// queries must fail with genuine network errors (#187 scenario 9), not with
+// a harness closed-pool artifact. Resume with ResumePostgres. Only for tests
+// owning a DedicatedCluster.
+func (e *Env) HaltPostgres(ctx context.Context) error {
+	if err := e.Cluster.HaltPostgres(ctx); err != nil {
+		return fmt.Errorf("halt cluster postgres: %w", err)
+	}
+	return nil
+}
+
+// ResumePostgres restarts the halted Postgres container (pairs with
+// HaltPostgres) and rebuilds the Env's server-bound handles, exactly like
+// RestartPostgres does after its atomic stop/start.
+func (e *Env) ResumePostgres(ctx context.Context) error {
+	if err := e.Cluster.ResumePostgres(ctx); err != nil {
+		return fmt.Errorf("resume cluster postgres: %w", err)
+	}
+	return e.reconnectAfterRestart(ctx)
 }
 
 // PGDSN returns the DSN of this Env's dedicated database.
