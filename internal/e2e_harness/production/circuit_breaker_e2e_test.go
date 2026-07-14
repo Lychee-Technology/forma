@@ -5,8 +5,11 @@ package production
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 const breakerRejection = "circuit breaker open"
@@ -81,4 +84,100 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 		t.Fatalf("reopen duckdb after single failure: %v", err)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+}
+
+// TestCircuitBreaker_ConcurrentTransitions is #185 breaker scenario 4:
+// goroutines hammer the engine while the breaker trips, and again after it
+// recovers. During the outage every outcome must be one of the two legal
+// failures — a real DuckDB error or a breaker rejection, never a success or
+// a panic — and after recovery every concurrent query must succeed. Engine
+// calls go through eng.Query directly: Env.Query records results without a
+// lock and is not safe for concurrent use.
+//
+// DuckDB MaxConnections is pinned to 1: NewDuckDBClient applies the
+// session-scoped S3 SET statements to a single pooled connection, so a
+// second :memory: connection opened under concurrency lacks S3 config and
+// 404s — a harness/client gap unrelated to breaker behavior (production
+// defaults to MaxConnections=1 and is unaffected; follow-up issue drafted).
+func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
+	const threshold = 3
+	const cooldown = 3 * time.Second
+	const workers = 8
+	const queriesPerWorker = 5
+
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t), WithBreaker(threshold, cooldown), WithDuckMaxConnections(1))
+	wide := DefaultSchemaFixtures()[1]
+
+	seedTwoTiers(ctx, t, env, wide)
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+
+	eng := env.Engine() // lazily built once, before any concurrency
+	runOne := func() error {
+		fq, err := env.buildFederatedQuery(Query{Schema: wide, Limit: 20})
+		if err != nil {
+			return err
+		}
+		_, err = eng.Query(ctx, env.Tables, fq, &model.FederatedQueryOptions{})
+		return err
+	}
+
+	if err := env.Duck.Close(); err != nil {
+		t.Fatalf("close duckdb client: %v", err)
+	}
+
+	errCh := make(chan error, workers*queriesPerWorker)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < queriesPerWorker; i++ {
+				errCh <- runOne()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	var real, rejected int
+	for err := range errCh {
+		switch {
+		case err == nil:
+			t.Error("query succeeded while duckdb was closed")
+		case strings.Contains(err.Error(), breakerRejection):
+			rejected++
+		default:
+			real++
+		}
+	}
+	if rejected == 0 {
+		t.Errorf("no breaker rejections across %d concurrent queries (real failures: %d)", workers*queriesPerWorker, real)
+	}
+	t.Logf("open phase: %d real failures, %d breaker rejections", real, rejected)
+
+	// Recovery under concurrency: healthy client + expired openDuration must
+	// let every worker through. Engine is rebuilt single-threaded first.
+	if err := env.ReopenDuckDB(); err != nil {
+		t.Fatalf("reopen duckdb: %v", err)
+	}
+	eng = env.Engine()
+	time.Sleep(cooldown + time.Second)
+
+	errs2 := make(chan error, workers)
+	var wg2 sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg2.Add(1)
+		go func() {
+			defer wg2.Done()
+			errs2 <- runOne()
+		}()
+	}
+	wg2.Wait()
+	close(errs2)
+	for err := range errs2 {
+		if err != nil {
+			t.Errorf("post-recovery concurrent query failed: %v", err)
+		}
+	}
 }
