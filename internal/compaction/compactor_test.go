@@ -333,7 +333,10 @@ func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testin
 	require.Equal(t, int64(1), gotValue)
 }
 
-func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *testing.T) {
+// A rewrite-eligible pass on a compactor WITHOUT merge wiring (nil Merger —
+// e.g. a manifest-only invocation) must keep the pre-#188 stub contract:
+// RewritePending, manifest untouched, pending telemetry.
+func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T) {
 	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
 
 	events := make([]telemetryEvent, 0, 2)

@@ -1,0 +1,160 @@
+package compaction
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/telemetry"
+	"go.uber.org/zap"
+)
+
+// canRewrite reports whether the compactor has everything the physical
+// rewrite needs. When it does not, a rewrite-eligible pass degrades to
+// RewritePending exactly as the pre-#188 stub did.
+func (c *Compactor) canRewrite() bool {
+	return c.Merger != nil && c.S3 != nil && c.Bucket != "" && c.DataPrefix != ""
+}
+
+// runRewrite executes the dirty-ratio rewrite (#188): merge the schema's
+// COMPLETE base+delta parquet set into one new base file, swap the manifest
+// under the loaded ETag, then best-effort delete the merged sources.
+//
+// Ordering is what makes this safe under manifest-driven reads
+// (manifest ⊆ live objects, internal/manifest/query_source.go):
+//  1. merge to a _tmp key (never listed),
+//  2. copy to a UUID-named final base key (never reused, so no listed object
+//     is ever overwritten),
+//  3. commit the manifest swap — the only atomic step; a conditional-put
+//     conflict surfaces as ErrConcurrentModification and the retry recomputes
+//     everything from a fresh manifest,
+//  4. only after the commit, delete the now-unlisted sources. Deletion is
+//     best-effort: a failure leaves unlisted orphans for #203's
+//     reconciliation, never a broken read set. In-flight queries that
+//     resolved the pre-swap object list can race step 4 and fail loudly on a
+//     missing key; the residual window is one query duration (noted on #188).
+//
+// A crash before step 3 leaves the manifest untouched (staged objects become
+// #203 orphans); a crash after it leaves only unlisted sources behind.
+func (c *Compactor) runRewrite(
+	ctx context.Context,
+	schemaID int16,
+	m *manifest.Manifest,
+	etag string,
+	sources []manifest.FileEntry,
+	analysis CompactionResult,
+) (CompactionResult, error) {
+	sourceURIs := make([]string, 0, len(sources))
+	sourcePaths := make(map[string]bool, len(sources))
+	for _, f := range sources {
+		sourceURIs = append(sourceURIs, c.objectURI(f.Path))
+		sourcePaths[f.Path] = true
+	}
+
+	tmpKey := cdc.BuildBaseTempPath(c.DataPrefix, schemaID, uuid.Must(uuid.NewV7()).String())
+	finalKey := cdc.BuildMergedBasePath(c.DataPrefix, schemaID, uuid.Must(uuid.NewV7()).String())
+
+	stats, err := c.Merger.MergeToTmp(ctx, sourceURIs, c.objectURI(tmpKey))
+	if err != nil {
+		return CompactionResult{}, fmt.Errorf("rewrite merge for schema %d: %w", schemaID, err)
+	}
+	if err := cdc.CopyTmpToFinal(ctx, c.S3, c.Bucket, tmpKey, finalKey, c.Logger); err != nil {
+		return CompactionResult{}, fmt.Errorf("promote merged base for schema %d: %w", schemaID, err)
+	}
+
+	sizeBytes, err := cdc.HeadObjectSize(ctx, c.S3, c.Bucket, finalKey)
+	if err != nil {
+		// Best-effort: SizeBytes only feeds the promotion heuristic.
+		c.Logger.Warn("failed to stat merged base; manifest SizeBytes stays 0",
+			zap.Int16("schema_id", schemaID), zap.String("final_key", finalKey), zap.Error(err))
+	}
+
+	spliceManifest(m, sourcePaths, manifest.FileEntry{
+		Tier:       "base",
+		Path:       finalKey,
+		RowIDMin:   stats.RowIDMin,
+		RowIDMax:   stats.RowIDMax,
+		RowCount:   stats.RowsOut,
+		CreatedMin: stats.CreatedMin,
+		CreatedMax: stats.CreatedMax,
+		SizeBytes:  sizeBytes,
+	})
+
+	if _, err := c.saveManifestChecked(ctx, schemaID, m, etag); err != nil {
+		// The staged base was never listed; drop it so a conflict retry (which
+		// re-merges from the fresh manifest) does not accumulate orphans.
+		c.deleteObjects(ctx, schemaID, []string{finalKey})
+		return CompactionResult{}, err
+	}
+
+	sourceKeys := make([]string, 0, len(sources))
+	for _, f := range sources {
+		sourceKeys = append(sourceKeys, f.Path)
+	}
+	c.deleteObjects(ctx, schemaID, sourceKeys)
+
+	telemetry.EmitCompactionRewriteApplied(ctx, schemaID)
+	c.Logger.Info("compaction rewrite completed",
+		zap.Int16("schema_id", schemaID),
+		zap.Int64("version", m.Version),
+		zap.Int("files_merged", len(sources)),
+		zap.Int64("rows_in", stats.RowsIn),
+		zap.Int64("rows_out", stats.RowsOut),
+		zap.String("new_base_key", finalKey))
+
+	result := analysis
+	result.Outcome = RewriteApplied
+	result.Version = m.Version
+	result.FilesMerged = len(sources)
+	result.RowsIn = stats.RowsIn
+	result.RowsOut = stats.RowsOut
+	result.NewBaseKey = finalKey
+	return result, nil
+}
+
+// spliceManifest removes exactly the merged entries by path and appends the
+// new base entry. Surgical splice, not a wholesale tier replace: entries the
+// rewrite did not merge (whatever their tier) must survive, keeping the
+// "only remove what you merged" invariant explicit.
+func spliceManifest(m *manifest.Manifest, mergedPaths map[string]bool, newBase manifest.FileEntry) {
+	kept := make([]manifest.FileEntry, 0, len(m.Files)-len(mergedPaths)+1)
+	for _, f := range m.Files {
+		if !mergedPaths[f.Path] {
+			kept = append(kept, f)
+		}
+	}
+	m.Files = append(kept, newBase)
+}
+
+// objectURI renders a manifest path as an s3:// URI against the compactor's
+// bucket; absolute URIs pass through (mirrors manifest.QuerySource.Paths).
+func (c *Compactor) objectURI(path string) string {
+	if strings.HasPrefix(path, "s3://") {
+		return path
+	}
+	return fmt.Sprintf("s3://%s/%s", c.Bucket, strings.TrimPrefix(path, "/"))
+}
+
+// deleteObjects best-effort deletes bucket-relative keys. Failures (and
+// absolute foreign-bucket paths) are logged and left to #203 reconciliation.
+func (c *Compactor) deleteObjects(ctx context.Context, schemaID int16, paths []string) {
+	for _, path := range paths {
+		key := path
+		if strings.HasPrefix(path, "s3://") {
+			trimmed := strings.TrimPrefix(path, "s3://"+c.Bucket+"/")
+			if trimmed == path {
+				c.Logger.Warn("skipping deletion of object outside compactor bucket",
+					zap.Int16("schema_id", schemaID), zap.String("path", path))
+				continue
+			}
+			key = trimmed
+		}
+		if err := cdc.DeleteObjectKey(ctx, c.S3, c.Bucket, key); err != nil {
+			c.Logger.Warn("failed to delete merged source object; leaving orphan for reconciliation (#203)",
+				zap.Int16("schema_id", schemaID), zap.String("key", key), zap.Error(err))
+		}
+	}
+}

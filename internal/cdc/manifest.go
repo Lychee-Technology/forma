@@ -48,3 +48,13 @@ func BuildBaseTempPath(prefix string, schemaID int16, fileUUID string) string {
 	trimmed := strings.TrimSuffix(prefix, "/")
 	return fmt.Sprintf("%s/%d/_tmp/%s.parquet", trimmed, schemaID, fileUUID)
 }
+
+// BuildMergedBasePath returns the path of a compaction-rewritten base file.
+// Merged bases are UUID-named, never {min}_{max}: repeated rewrites over the
+// same row range would otherwise reuse a key and overwrite an object still
+// listed in the manifest under concurrent readers (#188). The row-ID range
+// lives in the manifest FileEntry instead.
+func BuildMergedBasePath(prefix string, schemaID int16, fileUUID string) string {
+	trimmed := strings.TrimSuffix(prefix, "/")
+	return fmt.Sprintf("%s/%d/base-%s.parquet", trimmed, schemaID, fileUUID)
+}

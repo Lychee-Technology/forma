@@ -168,6 +168,17 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 	return nil
 }
 
+// DeleteObjectKey deletes one S3 object.
+func DeleteObjectKey(ctx context.Context, client S3ObjectClient, bucket, key string) error {
+	if client == nil {
+		return fmt.Errorf("s3 client is nil")
+	}
+	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); err != nil {
+		return fmt.Errorf("delete object %s: %w", key, err)
+	}
+	return nil
+}
+
 // HeadObjectSize returns the byte size of an S3 object. Callers use it to
 // populate manifest FileEntry.SizeBytes after a tmp->final copy; the size
 // feeds compaction's promotion heuristic only, so callers should treat a

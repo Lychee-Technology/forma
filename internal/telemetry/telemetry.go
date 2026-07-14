@@ -78,3 +78,10 @@ func EmitCompactionRewritePending(ctx context.Context, schemaID int16) {
 	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
 	currentEmitter()(ctx, "compaction_rewrite_pending_total", labels, int64(1))
 }
+
+// EmitCompactionRewriteApplied records a committed dirty-ratio rewrite (#188).
+// name: "compaction_rewrite_applied_total" with label {"schema_id": "<id>"}
+func EmitCompactionRewriteApplied(ctx context.Context, schemaID int16) {
+	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
+	currentEmitter()(ctx, "compaction_rewrite_applied_total", labels, int64(1))
+}

@@ -65,17 +65,15 @@ type FileProvider interface {
 	SaveManifest(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error)
 }
 
-type S3Copier interface {
-	CopyObject(ctx context.Context, srcKey, dstKey string) error
-	DeleteObject(ctx context.Context, key string) error
-}
-
-// Compactor performs Base/Delta maintenance per schema.
+// Compactor performs Base/Delta maintenance per schema. The dirty-ratio
+// rewrite (#188) additionally needs Merger, S3, Bucket and DataPrefix; when
+// any is missing a rewrite-eligible pass reports RewritePending instead.
 type Compactor struct {
 	Logger     *zap.Logger
 	Config     cdc.CompactionConfig
 	Provider   FileProvider
-	Copier     S3Copier
+	Merger     Merger
+	S3         cdc.S3ObjectClient
 	Bucket     string
 	DataPrefix string // root prefix for parquet files
 	Resolver   manifest.PathResolver
@@ -188,62 +186,88 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	needsPromotion := deltaTotalBytes >= cfg.TargetBaseSizeBytes
 	needsRewrite := len(baseFiles) > 0 && dirtyRatio > float64(cfg.DirtyRatioPct)/100.0
 
+	analysis := CompactionResult{Outcome: Noop, SchemaID: schemaID, DirtyRatio: dirtyRatio, BaseMB: baseTotalMB, DeltaMB: deltaTotalMB}
+
 	if !needsPromotion && !needsRewrite {
 		c.Logger.Debug("compaction not needed",
 			zap.Int16("schema_id", schemaID),
 			zap.Int64("base_mb", baseTotalMB),
 			zap.Int64("delta_mb", deltaTotalMB))
-		return CompactionResult{Outcome: Noop, SchemaID: schemaID, DirtyRatio: dirtyRatio, BaseMB: baseTotalMB, DeltaMB: deltaTotalMB}, nil
+		return analysis, nil
 	}
 
-	applied := false
+	// Promotion takes precedence within one pass; a still-dirty schema is
+	// rewritten on a later pass.
 	if needsPromotion {
-		c.Logger.Info("promoting deltas to base tier",
-			zap.Int16("schema_id", schemaID),
-			zap.Int64("delta_mb", deltaTotalMB))
-
-		for i := range m.Files {
-			if strings.EqualFold(m.Files[i].Tier, "delta") {
-				m.Files[i].Tier = "base"
-				applied = true
-			}
-		}
+		return c.applyPromotion(ctx, schemaID, m, etag, analysis)
 	}
 
-	if needsRewrite && !applied {
+	if !c.canRewrite() {
 		telemetry.EmitCompactionRewritePending(ctx, schemaID)
-		c.Logger.Warn("rewrite needed but not implemented; skipping manifest update",
+		c.Logger.Warn("rewrite needed but the compactor has no merge wiring; skipping manifest update",
 			zap.Int16("schema_id", schemaID),
 			zap.Float64("dirty_ratio", dirtyRatio),
 			zap.Int("dirty_ratio_pct", cfg.DirtyRatioPct),
 			zap.Int64("base_mb", baseTotalMB),
 			zap.Int64("delta_mb", deltaTotalMB))
-		return CompactionResult{
-			Outcome:    RewritePending,
-			SchemaID:   schemaID,
-			DirtyRatio: dirtyRatio,
-			BaseMB:     baseTotalMB,
-			DeltaMB:    deltaTotalMB,
-		}, nil
+		analysis.Outcome = RewritePending
+		return analysis, nil
 	}
 
+	sources := make([]manifest.FileEntry, 0, len(baseFiles)+len(deltaFiles))
+	sources = append(sources, baseFiles...)
+	sources = append(sources, deltaFiles...)
+	return c.runRewrite(ctx, schemaID, m, etag, sources, analysis)
+}
+
+// applyPromotion relabels every delta entry as base (manifest-only; the S3
+// keys are untouched) and commits under the loaded ETag.
+func (c *Compactor) applyPromotion(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string, analysis CompactionResult) (CompactionResult, error) {
+	c.Logger.Info("promoting deltas to base tier",
+		zap.Int16("schema_id", schemaID),
+		zap.Int64("delta_mb", analysis.DeltaMB))
+
+	applied := false
+	for i := range m.Files {
+		if strings.EqualFold(m.Files[i].Tier, "delta") {
+			m.Files[i].Tier = "base"
+			applied = true
+		}
+	}
 	if !applied {
-		c.Logger.Warn("compaction decision resulted in no manifest changes; skipping manifest update",
-			zap.Int16("schema_id", schemaID),
-			zap.Bool("needs_promotion", needsPromotion),
-			zap.Bool("needs_rewrite", needsRewrite))
-		return CompactionResult{Outcome: Noop, SchemaID: schemaID, DirtyRatio: dirtyRatio, BaseMB: baseTotalMB, DeltaMB: deltaTotalMB}, nil
+		c.Logger.Warn("promotion found no delta entries; skipping manifest update",
+			zap.Int16("schema_id", schemaID))
+		return analysis, nil
 	}
 
+	newEtag, err := c.saveManifestChecked(ctx, schemaID, m, etag)
+	if err != nil {
+		return CompactionResult{}, err
+	}
+	c.Logger.Info("compaction completed",
+		zap.Int16("schema_id", schemaID),
+		zap.Int64("version", m.Version),
+		zap.String("etag", newEtag))
+
+	analysis.Outcome = PromotionApplied
+	analysis.Version = m.Version
+	return analysis, nil
+}
+
+// saveManifestChecked commits the manifest under optimistic concurrency and
+// enforces the FileProvider contract: the provider must advance Version and
+// UpdatedAtMs in-place on success. An ETag mismatch surfaces as the
+// retryable ErrConcurrentModification.
+func (c *Compactor) saveManifestChecked(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error) {
 	prevVersion := m.Version
 	prevUpdatedAtMs := m.UpdatedAtMs
 
 	newEtag, err := c.Provider.SaveManifest(ctx, schemaID, m, etag)
 	if err != nil {
 		if newEtag == "" && etag != "" {
-			return CompactionResult{}, fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
+			return "", fmt.Errorf("%w: etag mismatch", ErrConcurrentModification)
 		}
-		return CompactionResult{}, fmt.Errorf("save manifest: %w", err)
+		return "", fmt.Errorf("save manifest: %w", err)
 	}
 
 	if m.Version <= prevVersion || m.UpdatedAtMs <= prevUpdatedAtMs {
@@ -255,7 +279,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			zap.Int64("prev_updated_at_ms", prevUpdatedAtMs),
 			zap.Int64("new_updated_at_ms", m.UpdatedAtMs),
 			zap.String("etag", newEtag))
-		return CompactionResult{}, fmt.Errorf("%w: provider must mutate manifest in-place; prev(version=%d, updated_at_ms=%d), new(version=%d, updated_at_ms=%d)",
+		return "", fmt.Errorf("%w: provider must mutate manifest in-place; prev(version=%d, updated_at_ms=%d), new(version=%d, updated_at_ms=%d)",
 			ErrManifestMetadataContractViolation,
 			prevVersion,
 			prevUpdatedAtMs,
@@ -263,20 +287,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 			m.UpdatedAtMs,
 		)
 	}
-
-	c.Logger.Info("compaction completed",
-		zap.Int16("schema_id", schemaID),
-		zap.Int64("version", m.Version),
-		zap.String("etag", newEtag))
-
-	return CompactionResult{
-		Outcome:    PromotionApplied,
-		SchemaID:   schemaID,
-		Version:    m.Version,
-		DirtyRatio: dirtyRatio,
-		BaseMB:     baseTotalMB,
-		DeltaMB:    deltaTotalMB,
-	}, nil
+	return newEtag, nil
 }
 
 // computeDirtyRatio estimates the ratio of updated/deleted rows to total base rows.

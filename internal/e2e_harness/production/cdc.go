@@ -177,8 +177,11 @@ type CompactionOverrides struct {
 }
 
 // RunCompactionWith executes one real compaction pass with per-run overrides,
-// wiring the full compactor: manifest provider, S3 object client, and data
-// prefix, over the chosen S3 client.
+// wiring the full compactor: manifest provider, merge engine and S3 object
+// client over the chosen S3 client. The merge engine is built the way the
+// production tool builds it — a cdc.NewDuckExporter DuckDB with the Env's S3
+// httpfs config — so the rewrite's parquet traffic takes the production path
+// (and, like the flush export, bypasses any injected S3 decorator).
 func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov CompactionOverrides) (compaction.CompactionResult, error) {
 	if e.CDC.ManifestTemplate == "" {
 		return compaction.CompactionResult{}, fmt.Errorf("compaction requires a manifest (Env built WithoutManifest)")
@@ -192,6 +195,13 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 		Prefix:       e.CDC.ManifestPrefix,
 		PathTemplate: e.CDC.ManifestTemplate,
 	}, s3Client)
+
+	exporter, err := cdc.NewDuckExporter(ctx, e.CDC, e.CDC.S3AccessKeyID, e.CDC.S3SecretAccessKey, e.logger)
+	if err != nil {
+		return compaction.CompactionResult{}, fmt.Errorf("open merge duckdb: %w", err)
+	}
+	defer func() { _ = exporter.DB.Close() }()
+
 	compactor := &compaction.Compactor{
 		Logger: e.logger,
 		Config: cdc.CompactionConfig{
@@ -200,6 +210,8 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 			DirtyRatioPct:       ov.DirtyRatioPct,
 		},
 		Provider:   provider,
+		Merger:     &compaction.DuckMerger{DB: exporter.DB},
+		S3:         s3Client,
 		Bucket:     e.Cluster.Bucket,
 		DataPrefix: e.S3Prefix,
 		Resolver: manifest.PathResolver{
