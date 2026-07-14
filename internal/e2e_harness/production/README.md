@@ -79,8 +79,8 @@ needs schema IDs beyond the fixtures can register its own via
 `RegisterSchemas` + `WithSchemaDir`.
 
 Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
-`WithDuckMemoryMB`, `WithBreaker` (#185), `WithRoutingStrategy`,
-`WithoutManifest`.
+`WithDuckMemoryMB`, `WithBreaker` (#185), `WithDuckMaxConnections` (#185),
+`WithRoutingStrategy`, `WithoutManifest`.
 
 ## Fixture schemas (`schemas/`)
 
@@ -168,6 +168,26 @@ where cdc-init bootstraps base files before federated reads. Use
   DuckDB client, and lazy engine/manager. Restart tests must own a
   `DedicatedCluster` — restarting the shared cluster would break every
   parallel Env — and are skipped on external infrastructure.
+- `Cluster.HaltS3` (#185) stops the S3 container in place (docker stop) so
+  the endpoint becomes genuinely unreachable — the honest way to fault the
+  DuckDB httpfs read path, which cannot be broken at the Go-client layer.
+  Like `RestartPostgres` it mutates cluster-wide state, so only tests owning
+  a `DedicatedCluster` may call it (halting the shared cluster's S3 would
+  break every parallel Env); external infrastructure cannot be halted. The
+  halted container is reaped by the dedicated cluster's normal shutdown.
+- `Env.ReopenDuckDB` (#185) replaces the Env's (possibly closed) DuckDB
+  client with a fresh one and drops the lazy engine/manager so the next use
+  rebinds them. The cached circuit breaker **deliberately survives** the
+  rebuild — breaker state must span client rebuilds so recovery scenarios can
+  observe the open-to-closed transition against a healthy DuckDB.
+- `WithBreaker(maxFailures, cooldown)` (#185) enables the federated engine's
+  circuit breaker; `WithDuckMaxConnections(n)` overrides the per-test DuckDB
+  pool size (default 2). Pin it to `1` for tests that issue **concurrent**
+  DuckDB queries: `NewDuckDBClient` applies the session-scoped S3 `SET`
+  statements on a single pooled connection (`duckdb_conn.go`), so over
+  `:memory:` a second connection opened under load lacks S3 config and 404s.
+  Set `Query.AllowPartialDegradedMode` to forward the public degraded-mode
+  flag so a tier outage returns a partial result instead of erroring.
 
 ## Diagnostic artifacts
 
@@ -206,5 +226,5 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #179 flush failure matrix | `FaultInjectingS3` + `RunFlushWith` + `ExecSQL` |
 | #180 dry-run semantics | `RunFlushDry` |
 | #181 failure injection | `ExecSQL` |
-| #185 circuit breaker | `WithBreaker` |
+| #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB`, `WithDuckMaxConnections` |
 | #189 multi-schema | `e2e_simple`/`e2e_second` + per-test DB |

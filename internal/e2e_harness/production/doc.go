@@ -32,7 +32,7 @@
 //	#180 dry-run semantics         -> RunFlushDry, RunInitWith(InitOverrides{DryRun})
 //	#181 failure-state injection   -> Env.ExecSQL escape hatch
 //	#182 mid-flush concurrency     -> PausingS3, RunFlushWith(FlushOverrides{S3})
-//	#185 circuit breaker           -> WithBreaker
+//	#185 degraded/breaker          -> WithBreaker, WithDuckMaxConnections, HaltS3, ReopenDuckDB, Query.AllowPartialDegradedMode
 //	#189 multi-schema isolation    -> schemas/e2e_simple + e2e_second, per-test DB
 //
 // Environment variables: KEEP_E2E_ENV, E2E_SEED, E2E_ARTIFACTS_DIR,
