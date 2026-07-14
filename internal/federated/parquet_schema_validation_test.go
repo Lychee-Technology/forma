@@ -227,6 +227,30 @@ func TestParquetSchemaValidator_ViolationSurfacesThroughEngineQuery(t *testing.T
 	require.Equal(t, 0, duck.inner.calls, "the main scan must not run over a schema-violating object")
 }
 
+func TestBenchmarkSchemaIDsSkipSchemaValidation(t *testing.T) {
+	// Benchmark schemas (100-102) carry the legacy CSV-sniffed harness shape
+	// (row_id VARCHAR) that the production invariant would reject; they are
+	// exempt from pre-read validation, mirroring the projection special-case.
+	restore := initTestDescriptors()
+	defer restore()
+
+	src := &fakeParquetSource{paths: []string{"s3://b/100/a.parquet"}}
+	duck := &describeOverridingExecutor{
+		inner: &fakeDuckDBExecutor{rows: &singleDuckDBRow{}},
+		cols:  [][2]string{{"row_id", "VARCHAR"}}, // would violate the invariant
+	}
+	engine := newParquetSourceTestEngine(t, duck, src)
+
+	q := coldTierQuery()
+	q.SchemaID = 100
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		q, nil)
+
+	require.NoError(t, err, "benchmark schema reads must not be schema-validated")
+	require.Equal(t, 1, duck.inner.calls, "the main scan must run")
+}
+
 func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 	// #185 reject-before-DuckDB extends to the #189 pre-read probes: an open
 	// breaker must short-circuit before path resolution and any DESCRIBE

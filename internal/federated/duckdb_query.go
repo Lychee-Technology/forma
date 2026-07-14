@@ -111,9 +111,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// Schema violations fail here, classified and degradable; unreadable
 	// footers are inconclusive and stay with the execution-path classifier.
 	// No recordQueryFailure: the query never started, and its timing fields
-	// would read from an unset start time.
-	if err := e.schemaValidator.Validate(ctx, e.duck, parquetPaths); err != nil {
-		return 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
+	// would read from an unset start time. Benchmark schemas (100-102) are
+	// exempt: their parquet is the legacy CSV-sniffed harness shape (row_id
+	// VARCHAR, cast by the hardcoded benchmark projections) — the
+	// parquetcheck invariant codifies the PRODUCTION exporters, which never
+	// write those IDs (ValidateFixtureSchemaID reserves the range).
+	if !isBenchmarkSchemaID(q.SchemaID) {
+		if err := e.schemaValidator.Validate(ctx, e.duck, parquetPaths); err != nil {
+			return 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
+		}
 	}
 
 	// Fetch dirty IDs and record in execution plan
