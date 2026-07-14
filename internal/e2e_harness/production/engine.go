@@ -19,16 +19,18 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	}
 
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
-	var breaker *fedengine.CircuitBreaker
-	if e.opts.breakerFailures > 0 {
-		breaker = fedengine.NewCircuitBreaker(e.opts.breakerFailures, e.opts.breakerCooldown, e.opts.breakerCooldown)
+	if e.breaker == nil && e.opts.breakerFailures > 0 {
+		// Built once per Env, not per engine assembly: breaker state must
+		// survive ReopenDuckDB/RestartPostgres handle rebuilds so #185
+		// recovery scenarios can observe the open-to-closed transition.
+		e.breaker = fedengine.NewCircuitBreaker(e.opts.breakerFailures, e.opts.breakerCooldown, e.opts.breakerCooldown)
 	}
 
 	e.engine = fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewPostgresDirtyIDFetcher(e.Pool),
 		fedengine.NewDuckDBClientQueryExecutor(e.Duck),
-		breaker,
+		e.breaker,
 		e.DuckCfg,
 		e.Metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(e.Pool),

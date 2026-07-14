@@ -47,6 +47,7 @@ type Env struct {
 
 	manager      forma.EntityManager
 	engine       *fedengine.DBFederatedQueryEngine
+	breaker      *fedengine.CircuitBreaker
 	events       []*Event
 	eventSeq     int
 	queryN       int
@@ -305,6 +306,23 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 	e.CDC = e.buildCDCConfig()
 	e.manager = nil
 	e.engine = nil
+	return nil
+}
+
+// ReopenDuckDB replaces the Env's (possibly closed) DuckDB client with a
+// fresh one and drops the lazily built engine and manager so the next use
+// rebinds them. The cached circuit breaker deliberately survives: breaker
+// state must span client rebuilds so #185 recovery scenarios can observe the
+// open-to-closed transition against a healthy DuckDB.
+func (e *Env) ReopenDuckDB() error {
+	if e.Duck != nil {
+		_ = e.Duck.Close()
+	}
+	if err := e.startDuckDB(); err != nil {
+		return fmt.Errorf("reopen duckdb client: %w", err)
+	}
+	e.engine = nil
+	e.manager = nil
 	return nil
 }
 
