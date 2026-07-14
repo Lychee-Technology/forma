@@ -68,3 +68,47 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 		t.Fatalf("degraded-mode error must keep the inconsistency classification, got: %v", err)
 	}
 }
+
+// TestManifestConsistency_OneGoodOneBadFile covers #187 scenario 7: one
+// valid and one corrupt parquet in the same scan set.
+//
+// Degraded OFF is a characterization: read_parquet over the path set is
+// all-or-nothing (no ignore_errors/union_by_name anywhere in the read path),
+// so one corrupt file fails the whole scan and the good file's rows are NOT
+// surfaced from parquet. The corrupt object still exists in storage, so the
+// classification stays ErrFederatedReadFailed, not manifest inconsistency.
+//
+// Degraded ON is the contract: the good data is recovered — via the
+// oracle-complete Postgres-only fallback, never via a partial parquet read
+// (a mid-stream failure discards every accumulated row by design).
+func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	wide := DefaultSchemaFixtures()[1]
+
+	keys := seedMultiParquet(ctx, t, env, wide)
+
+	healthy := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	if healthy != nil && !healthy.Plan.Routing.UseDuckDB {
+		t.Fatalf("precondition: healthy query did not route to duckdb: %+v", healthy.Plan.Routing)
+	}
+
+	overwriteObjectBytes(ctx, t, env, keys[1], corruptMidFile)
+
+	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := env.Query(failCtx, Query{Schema: wide, Limit: 20})
+	if err == nil {
+		t.Fatal("degraded mode off: one corrupt file in the scan set silently succeeded (#187 scenario 7)")
+	}
+	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("corrupt-file scan must classify as ErrFederatedReadFailed, got: %v", err)
+	}
+	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+		t.Errorf("corrupt object exists in storage; must not classify as manifest inconsistency: %v", err)
+	}
+
+	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
+	assertDegradedFallbackPlan(t, degraded)
+}
