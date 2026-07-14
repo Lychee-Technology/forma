@@ -168,6 +168,35 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 	return nil
 }
 
+// DeleteObjectKey deletes one S3 object.
+func DeleteObjectKey(ctx context.Context, client S3ObjectClient, bucket, key string) error {
+	if client == nil {
+		return fmt.Errorf("s3 client is nil")
+	}
+	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); err != nil {
+		return fmt.Errorf("delete object %s: %w", key, err)
+	}
+	return nil
+}
+
+// HeadObjectSize returns the byte size of an S3 object. Callers use it to
+// populate manifest FileEntry.SizeBytes after a tmp->final copy; the size
+// feeds compaction's promotion heuristic only, so callers should treat a
+// failure as best-effort (log and keep 0) rather than failing the pipeline.
+func HeadObjectSize(ctx context.Context, client S3ObjectClient, bucket, key string) (int64, error) {
+	if client == nil {
+		return 0, fmt.Errorf("s3 client is nil")
+	}
+	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &bucket, Key: &key})
+	if err != nil {
+		return 0, fmt.Errorf("head object %s: %w", key, err)
+	}
+	if out.ContentLength == nil {
+		return 0, nil
+	}
+	return *out.ContentLength, nil
+}
+
 // sanitizeIdentifier performs a minimal whitelist for table names.
 func sanitizeIdentifier(name string) string {
 	return sqlutil.SanitizeIdentifier(name)

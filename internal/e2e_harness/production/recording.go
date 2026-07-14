@@ -53,6 +53,11 @@ func (r *RecordingS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optF
 	return r.Inner.GetObject(ctx, in, optFns...)
 }
 
+func (r *RecordingS3) HeadObject(ctx context.Context, in *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	r.record(S3OpHead)
+	return r.Inner.HeadObject(ctx, in, optFns...)
+}
+
 func (r *RecordingS3) PutObject(ctx context.Context, in *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	r.record(S3OpPut)
 	return r.Inner.PutObject(ctx, in, optFns...)

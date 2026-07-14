@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -28,8 +27,9 @@ func NewManifestProvider(cfg cdc.ManifestConfig, store manifest.Store) *Manifest
 	}
 }
 
-// NewS3ManifestProvider creates a ManifestProvider backed by S3.
-func NewS3ManifestProvider(cfg cdc.ManifestConfig, s3Client *s3.Client) *ManifestProvider {
+// NewS3ManifestProvider creates a ManifestProvider backed by S3. It accepts
+// any manifest.S3Client (Get/Put) so tests can decorate the real client.
+func NewS3ManifestProvider(cfg cdc.ManifestConfig, s3Client manifest.S3Client) *ManifestProvider {
 	store := &manifest.S3Store{
 		Client: s3Client,
 		Bucket: cfg.Bucket,

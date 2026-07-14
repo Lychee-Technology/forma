@@ -53,6 +53,7 @@ type CDCConfig struct {
 	S3UsePath         bool   // path style addressing
 	S3AccessKeyID     string // AWS access key ID; overrides environment variable AWS_ACCESS_KEY_ID
 	S3SecretAccessKey string // AWS secret access key; overrides environment variable AWS_SECRET_ACCESS_KEY
+	S3SessionToken    string // AWS session token for temporary credentials (STS/roles); overrides environment variable AWS_SESSION_TOKEN
 
 	// Manifest (optional - when set, flush updates manifest after export)
 	ManifestPrefix   string // root prefix for manifests in S3
@@ -68,14 +69,18 @@ type CDCConfig struct {
 
 // CompactionConfig controls Base/Delta maintenance.
 type CompactionConfig struct {
-	SchemaID         int16         // optional filter; 0 means all
-	ManifestPath     string        // s3 path or fs path to manifest JSON for the schema
-	TargetBaseSizeMB int           // default 256
-	MaxDeltaSizeMB   int           // default 50
-	DirtyRatioPct    int           // default 5 (rewrite when updated rows/base rows > 5%)
-	RunInterval      time.Duration // scheduler interval when used in a loop
-	TempPrefix       string        // temp path prefix for rewrites
-	MaxParallelFiles int           // optional parallelism for rewrites
+	SchemaID         int16  // optional filter; 0 means all
+	ManifestPath     string // s3 path or fs path to manifest JSON for the schema
+	TargetBaseSizeMB int    // default 256
+	// TargetBaseSizeBytes is the byte-precise promotion threshold. Zero
+	// derives it from TargetBaseSizeMB; the compactor compares delta-tier
+	// bytes against it directly, so sub-MB tiers are not truncated to 0 MB.
+	TargetBaseSizeBytes int64
+	MaxDeltaSizeMB      int           // default 50
+	DirtyRatioPct       int           // default 5 (rewrite when updated rows/base rows > 5%)
+	RunInterval         time.Duration // scheduler interval when used in a loop
+	TempPrefix          string        // temp path prefix for rewrites
+	MaxParallelFiles    int           // optional parallelism for rewrites
 
 	// Backoff parameters for S3/manifest operations
 	MaxRetries  int           // default 5
@@ -164,6 +169,9 @@ func (c CDCConfig) WithDefaults() CDCConfig {
 func (c CompactionConfig) WithDefaults() CompactionConfig {
 	if c.TargetBaseSizeMB <= 0 {
 		c.TargetBaseSizeMB = DefaultTargetBaseSizeMB
+	}
+	if c.TargetBaseSizeBytes <= 0 {
+		c.TargetBaseSizeBytes = int64(c.TargetBaseSizeMB) << 20
 	}
 	if c.MaxDeltaSizeMB <= 0 {
 		c.MaxDeltaSizeMB = DefaultMaxDeltaSizeMB

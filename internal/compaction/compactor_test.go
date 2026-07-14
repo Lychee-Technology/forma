@@ -187,6 +187,45 @@ func TestCompactor_RunOnce_PromotesDeltasCaseInsensitiveTier(t *testing.T) {
 	require.Equal(t, int64(2), provider.manifest.Version)
 }
 
+func TestCompactor_RunOnce_PromotesSubMBDeltasWithByteThreshold(t *testing.T) {
+	logger := zap.NewNop()
+	// A KB-scale delta tier truncates to 0 MB, so the MB threshold can never
+	// fire on it; the byte-precise TargetBaseSizeBytes must (#188).
+	m := &manifest.Manifest{
+		SchemaID:    1,
+		Version:     1,
+		UpdatedAtMs: time.Now().UnixMilli(),
+		Files: []manifest.FileEntry{
+			{Tier: "delta", Path: "delta1.parquet", SizeBytes: 4 * 1024, RowCount: 10},
+		},
+	}
+	provider := &mockProvider{manifest: m, etag: "etag-1"}
+
+	c := &Compactor{
+		Logger: logger,
+		Config: cdc.CompactionConfig{
+			SchemaID:            1,
+			TargetBaseSizeBytes: 1024,
+		},
+		Provider: provider,
+	}
+
+	result, err := c.RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, PromotionApplied, result.Outcome)
+	require.Equal(t, "base", provider.manifest.Files[0].Tier)
+	require.Equal(t, int64(2), provider.manifest.Version)
+}
+
+func TestCompactionConfig_WithDefaults_DerivesTargetBaseSizeBytes(t *testing.T) {
+	derived := cdc.CompactionConfig{TargetBaseSizeMB: 2}.WithDefaults()
+	require.Equal(t, int64(2)<<20, derived.TargetBaseSizeBytes)
+
+	explicit := cdc.CompactionConfig{TargetBaseSizeBytes: 512}.WithDefaults()
+	require.Equal(t, int64(512), explicit.TargetBaseSizeBytes)
+	require.Equal(t, cdc.DefaultTargetBaseSizeMB, explicit.TargetBaseSizeMB)
+}
+
 func TestCompactor_RunOnce_SaveManifestMissingVersionAdvance(t *testing.T) {
 	logger := zap.NewNop()
 	m := &manifest.Manifest{
@@ -294,7 +333,10 @@ func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testin
 	require.Equal(t, int64(1), gotValue)
 }
 
-func TestCompactor_RunOnce_NeedsRewriteWithoutPromotion_SkipsManifestUpdate(t *testing.T) {
+// A rewrite-eligible pass on a compactor WITHOUT merge wiring (nil Merger —
+// e.g. a manifest-only invocation) must keep the pre-#188 stub contract:
+// RewritePending, manifest untouched, pending telemetry.
+func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T) {
 	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
 
 	events := make([]telemetryEvent, 0, 2)

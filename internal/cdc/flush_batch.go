@@ -64,6 +64,13 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		return fmt.Errorf("copy tmp to final (%s): %w", batchKind, err)
 	}
 
+	sizeBytes, err := HeadObjectSize(ctx, e.s3Client, e.cfg.S3Bucket, finalKey)
+	if err != nil {
+		// Best-effort: SizeBytes only feeds compaction's promotion heuristic.
+		e.logger.Sugar().Warnw("failed to stat final delta object; manifest SizeBytes stays 0",
+			"schema_id", e.schemaID, "final_key", finalKey, "err", err)
+	}
+
 	flushedAt := time.Now().UnixMilli()
 	updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
 	if err != nil {
@@ -81,7 +88,7 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		// manifest consumers (e.g. compaction) forever. Propagate so the run
 		// reports failure; the final key in the error is the operator's
 		// pointer to the orphaned file for manual reconciliation (#197).
-		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, e.logger); err != nil {
+		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, sizeBytes, e.logger); err != nil {
 			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
 		}
 	}
@@ -140,6 +147,7 @@ func updateManifest(
 	tier string,
 	rowIDs []uuid.UUID,
 	createdAt int64,
+	sizeBytes int64,
 	logger *zap.Logger,
 ) error {
 	if store == nil {
@@ -158,6 +166,7 @@ func updateManifest(
 		RowCount:   int64(len(rowIDs)),
 		CreatedMin: createdAt,
 		CreatedMax: createdAt,
+		SizeBytes:  sizeBytes,
 	}
 
 	// Set row ID bounds if available

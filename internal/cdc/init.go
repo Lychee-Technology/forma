@@ -337,7 +337,7 @@ func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowI
 	}
 }
 
-func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64) {
+func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64, sizeBytes int64) {
 	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
 		Tier:       "base",
 		Path:       batch.finalKey,
@@ -346,6 +346,7 @@ func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, cr
 		RowCount:   int64(len(batch.rowIDs)),
 		CreatedMin: createdAt,
 		CreatedMax: createdAt,
+		SizeBytes:  sizeBytes,
 	})
 	state.rowsExported += int64(len(batch.rowIDs))
 	state.filesCreated++
@@ -376,7 +377,16 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 		return fmt.Errorf("copy tmp->final: %w", err)
 	}
 
-	recordSchemaBatchResult(state, batch, time.Now().UnixMilli())
+	sizeBytes, err := HeadObjectSize(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, batch.finalKey)
+	if err != nil {
+		// Best-effort: SizeBytes only feeds compaction's promotion heuristic.
+		runCtx.logger.Warn("failed to stat final base object; manifest SizeBytes stays 0",
+			zap.Int16("schema_id", state.schemaID),
+			zap.String("final_key", batch.finalKey),
+			zap.Error(err))
+	}
+
+	recordSchemaBatchResult(state, batch, time.Now().UnixMilli(), sizeBytes)
 
 	runCtx.logger.Info("batch completed",
 		zap.Int16("schema_id", state.schemaID),
