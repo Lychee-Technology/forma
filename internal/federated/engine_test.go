@@ -473,7 +473,7 @@ func TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan(t *testing.
 		AllowPartialDegradedMode: true,
 		IncludeExecutionPlan:     true,
 	}
-	_, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
 		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
 	}, opts)
@@ -486,4 +486,8 @@ func TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan(t *testing.
 	require.Contains(t, opts.ExecutionPlan.Routing.Reason, "degraded fallback")
 	requirePlanHasNoteContaining(t, opts.ExecutionPlan, "forced duck failure")
 	requirePlanHasPostgresSource(t, opts.ExecutionPlan, "degraded fallback")
+	// The plan must also ride on the returned page, not just opts: a caller
+	// that only sees the page must still observe the degraded fallback (#185).
+	require.NotNil(t, page.ExecutionPlan)
+	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
 }

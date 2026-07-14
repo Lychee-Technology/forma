@@ -112,7 +112,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// boundary tie group (#183).
 	if fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
 		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("validate keyset cursor: %w", err)
 		}
 	}
 	// Only explicit hot-only requests short-circuit to Postgres. Empty
@@ -148,7 +148,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		// even under AllowPartialDegradedMode.
 		if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(err, ErrSchemaMetadataCacheRequired) {
 			recordDegradedFallbackPlan(opts, tables, err)
-			return e.queryPostgresOnly(ctx, tables, fq)
+			page, perr := e.queryPostgresOnly(ctx, tables, fq)
+			if perr != nil {
+				return nil, perr
+			}
+			attachExecutionPlan(page, opts)
+			return page, nil
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", err)
 	}
@@ -166,7 +171,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			// the degraded mode contract promises to serve Postgres-only.
 			if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(cerr, ErrSchemaMetadataCacheRequired) {
 				recordDegradedFallbackPlan(opts, tables, cerr)
-				return e.queryPostgresOnly(ctx, tables, fq)
+				page, perr := e.queryPostgresOnly(ctx, tables, fq)
+				if perr != nil {
+					return nil, perr
+				}
+				attachExecutionPlan(page, opts)
+				return page, nil
 			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
 		}
@@ -247,6 +257,16 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
 		Reason: "degraded fallback (postgres-only)",
 	})
+}
+
+// attachExecutionPlan stitches the recorded plan onto the returned page so
+// engine callers that only see the page (not the options) still observe the
+// degraded fallback (#185 review finding).
+func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.FederatedQueryOptions) {
+	if page == nil || opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
+		return
+	}
+	page.ExecutionPlan = opts.ExecutionPlan
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {

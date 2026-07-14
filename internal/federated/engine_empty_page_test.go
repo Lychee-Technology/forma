@@ -224,4 +224,7 @@ func TestDBFederatedQueryEngine_RecountDegradedFallbackRecordsExecutionPlan(t *t
 		"plan must not claim DuckDB after recount degraded fallback: %+v", opts.ExecutionPlan.Routing)
 	require.Contains(t, opts.ExecutionPlan.Routing.Reason, "degraded fallback")
 	requirePlanHasNoteContaining(t, opts.ExecutionPlan, "forced recount failure")
+	// The plan must ride on the returned page, not just opts (#185).
+	require.NotNil(t, page.ExecutionPlan)
+	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
 }
