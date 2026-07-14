@@ -47,6 +47,7 @@ type Env struct {
 
 	manager      forma.EntityManager
 	engine       *fedengine.DBFederatedQueryEngine
+	breaker      *fedengine.CircuitBreaker
 	events       []*Event
 	eventSeq     int
 	queryN       int
@@ -66,6 +67,7 @@ type envOptions struct {
 	minRecords      int
 	maxAgeMs        int64
 	duckMemoryMB    int
+	duckMaxConns    int
 	breakerFailures int
 	breakerCooldown time.Duration
 	routing         forma.RoutingStrategy
@@ -99,6 +101,16 @@ func WithDuckMemoryMB(mb int) EnvOption {
 	return func(o *envOptions) { o.duckMemoryMB = mb }
 }
 
+// WithDuckMaxConnections overrides the per-test DuckDB connection pool size
+// (default 2). NewDuckDBClient applies the session-scoped S3 SET statements
+// on a single pooled connection (duckdb_conn.go), so with :memory: a second
+// pooled connection opened under load lacks S3 config and fails S3 reads
+// with HTTP 404 / empty region. Tests that issue concurrent DuckDB queries
+// should pin this to 1 until that gap is fixed.
+func WithDuckMaxConnections(n int) EnvOption {
+	return func(o *envOptions) { o.duckMaxConns = n }
+}
+
 // WithBreaker enables a circuit breaker on the federated engine (for #185).
 func WithBreaker(maxFailures int, cooldown time.Duration) EnvOption {
 	return func(o *envOptions) {
@@ -126,7 +138,7 @@ func NewEnv(t *testing.T, c *Cluster, opts ...EnvOption) *Env {
 	t.Helper()
 	ctx := context.Background()
 
-	options := envOptions{minRecords: 1, maxAgeMs: 3600000, duckMemoryMB: 1024}
+	options := envOptions{minRecords: 1, maxAgeMs: 3600000, duckMemoryMB: 1024, duckMaxConns: 2}
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -223,7 +235,7 @@ func (e *Env) startDuckDB() error {
 		S3AccessKey:    c.S3AccessKey,
 		S3SecretKey:    c.S3SecretKey,
 		S3Region:       c.S3Region,
-		MaxConnections: 2,
+		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: 2,
 		QueryTimeout:   60 * time.Second,
 	}
@@ -305,6 +317,25 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 	e.CDC = e.buildCDCConfig()
 	e.manager = nil
 	e.engine = nil
+	return nil
+}
+
+// ReopenDuckDB replaces the Env's (possibly closed) DuckDB client with a
+// fresh one and drops the lazily built engine and manager so the next use
+// rebinds them. The cached circuit breaker deliberately survives: breaker
+// state must span client rebuilds so #185 recovery scenarios can observe the
+// open-to-closed transition against a healthy DuckDB.
+func (e *Env) ReopenDuckDB() error {
+	if e.Duck != nil {
+		if err := e.Duck.Close(); err != nil {
+			e.T.Logf("reopen duckdb: close old client: %v", err)
+		}
+	}
+	if err := e.startDuckDB(); err != nil {
+		return fmt.Errorf("reopen duckdb client: %w", err)
+	}
+	e.engine = nil
+	e.manager = nil
 	return nil
 }
 

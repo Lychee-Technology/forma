@@ -37,6 +37,12 @@ type Query struct {
 	PreferredTiers []model.DataTier    `json:"preferred_tiers,omitempty"`
 	Keyset         *model.KeysetCursor `json:"keyset,omitempty"`
 
+	// AllowPartialDegradedMode forwards the public degraded-mode flag (#185):
+	// on a DuckDB-side failure the engine falls back to postgres-only instead
+	// of failing the query. Non-degradable errors (missing schema metadata)
+	// still surface.
+	AllowPartialDegradedMode bool `json:"allow_partial_degraded_mode,omitempty"`
+
 	// UseMainAsAnchor forwards the public anchor hint (#184 preference
 	// contract: the hint must surface in the execution plan).
 	UseMainAsAnchor bool `json:"use_main_as_anchor,omitempty"`
@@ -49,11 +55,13 @@ type Query struct {
 // need: the translated federated query and the full execution plan
 // (SQL, parameters, routing, timings).
 type QueryResult struct {
-	Spec    Query
-	Records []*model.PersistentRecord
-	Total   int64
-	Plan    *model.ExecutionPlan
-	FQ      *model.FederatedAttributeQuery
+	Spec        Query
+	Records     []*model.PersistentRecord
+	Total       int64
+	TotalPages  int
+	CurrentPage int
+	Plan        *model.ExecutionPlan
+	FQ          *model.FederatedAttributeQuery
 }
 
 // ParquetGlob returns the production-layout parquet path template: one flat
@@ -69,12 +77,13 @@ func (e *Env) ParquetGlob() string {
 func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 	fq, err := e.buildFederatedQuery(q)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build federated query (schema=%s): %w", q.Schema.Name, err)
 	}
 
 	opts := &model.FederatedQueryOptions{
-		IncludeExecutionPlan: true,
-		ExecutionPlan:        &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+		AllowPartialDegradedMode: q.AllowPartialDegradedMode,
+		IncludeExecutionPlan:     true,
+		ExecutionPlan:            &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
 	}
 
 	page, err := e.Engine().Query(ctx, e.Tables, fq, opts)
@@ -83,11 +92,13 @@ func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 	}
 
 	result := &QueryResult{
-		Spec:    q,
-		Records: page.Records,
-		Total:   page.TotalRecords,
-		Plan:    opts.ExecutionPlan,
-		FQ:      fq,
+		Spec:        q,
+		Records:     page.Records,
+		Total:       page.TotalRecords,
+		TotalPages:  page.TotalPages,
+		CurrentPage: page.CurrentPage,
+		Plan:        opts.ExecutionPlan,
+		FQ:          fq,
 	}
 	e.queryN++
 	e.queries = append(e.queries, result)

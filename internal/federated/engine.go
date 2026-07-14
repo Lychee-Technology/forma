@@ -112,7 +112,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// boundary tie group (#183).
 	if fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
 		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("validate keyset cursor: %w", err)
 		}
 	}
 	// Only explicit hot-only requests short-circuit to Postgres. Empty
@@ -147,7 +147,13 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		// would silently return a partial result and mask it (#151). Surface it
 		// even under AllowPartialDegradedMode.
 		if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(err, ErrSchemaMetadataCacheRequired) {
-			return e.queryPostgresOnly(ctx, tables, fq)
+			recordDegradedFallbackPlan(opts, tables, err)
+			page, perr := e.queryPostgresOnly(ctx, tables, fq)
+			if perr != nil {
+				return nil, perr
+			}
+			attachExecutionPlan(page, opts)
+			return page, nil
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", err)
 	}
@@ -164,7 +170,13 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			// exception): a transient failure here must not fail a request
 			// the degraded mode contract promises to serve Postgres-only.
 			if opts != nil && opts.AllowPartialDegradedMode && !errors.Is(cerr, ErrSchemaMetadataCacheRequired) {
-				return e.queryPostgresOnly(ctx, tables, fq)
+				recordDegradedFallbackPlan(opts, tables, cerr)
+				page, perr := e.queryPostgresOnly(ctx, tables, fq)
+				if perr != nil {
+					return nil, perr
+				}
+				attachExecutionPlan(page, opts)
+				return page, nil
 			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
 		}
@@ -217,6 +229,44 @@ func recordHotOnlyGatePlan(opts *model.FederatedQueryOptions, tables model.Stora
 		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
 		Reason: "hot-only gate (OLTP main)",
 	})
+}
+
+// recordDegradedFallbackPlan rewrites the execution plan when a DuckDB-side
+// failure degrades the query to Postgres-only (#185): without it the plan
+// keeps the pre-failure routing decision (UseDuckDB=true) and never mentions
+// the fallback, so "the plan reflects actual access" would not hold for the
+// degraded-mode contract. Tiers states physical coverage — postgres serves
+// the hot storage regardless of the tiers the request asked for (#184).
+func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.StorageTables, cause error) {
+	if opts == nil || !opts.IncludeExecutionPlan {
+		return
+	}
+	if opts.ExecutionPlan == nil {
+		opts.ExecutionPlan = &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	}
+	opts.ExecutionPlan.Routing = model.RoutingDecision{
+		Tiers:     []model.DataTier{model.DataTierHot},
+		UseDuckDB: false,
+		Reason:    "degraded fallback (AllowPartialDegradedMode)",
+	}
+	opts.ExecutionPlan.Notes = append(opts.ExecutionPlan.Notes,
+		fmt.Sprintf("degraded fallback to postgres-only: %v", cause))
+	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, model.DataSourcePlan{
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
+		Reason: "degraded fallback (postgres-only)",
+	})
+}
+
+// attachExecutionPlan stitches the recorded plan onto the returned page so
+// engine callers that only see the page (not the options) still observe the
+// degraded fallback (#185 review finding).
+func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.FederatedQueryOptions) {
+	if page == nil || opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
+		return
+	}
+	page.ExecutionPlan = opts.ExecutionPlan
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {

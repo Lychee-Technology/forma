@@ -118,6 +118,22 @@ func (h *TestHarness) RestartPostgres(ctx context.Context) error {
 	return nil
 }
 
+// HaltS3 stops the S3 container in place (docker stop — the container and
+// its data survive, unlike StopS3, which terminates it). The endpoint
+// becomes really unreachable for both the Go S3 client and DuckDB httpfs,
+// which is the only fault vector that reaches DuckDB reads: client-level
+// decorators cannot, because httpfs bypasses the Go S3 client entirely.
+func (h *TestHarness) HaltS3(ctx context.Context) error {
+	if h.S3Container == nil {
+		return fmt.Errorf("halt s3: no container (external infrastructure or already terminated)")
+	}
+	stopTimeout := 30 * time.Second
+	if err := h.S3Container.Stop(ctx, &stopTimeout); err != nil {
+		return fmt.Errorf("stop s3 container: %w", err)
+	}
+	return nil
+}
+
 // StopPostgres stops the Postgres container and closes DB handle.
 func (h *TestHarness) StopPostgres(ctx context.Context) error {
 	if h.PGDB != nil {
