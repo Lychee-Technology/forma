@@ -146,7 +146,7 @@ func MinimalProfile() AttrProfile {
 	}
 }
 
-// SecondProfile fits the e2e_second fixture (for #189).
+// SecondProfile fits the e2e_second fixture (for #186).
 func SecondProfile() AttrProfile {
 	return func(r *rand.Rand, ordinal int, partial bool) map[string]any {
 		return map[string]any{
