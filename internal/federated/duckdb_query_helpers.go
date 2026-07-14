@@ -327,14 +327,15 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 	served := parquetTiersServed(q)
 	useMainAsAnchor := q != nil && q.UseMainAsAnchor
 	dp := model.DataSourcePlan{
-		Tier:              served[0],
-		Engine:            "duckdb",
-		SQL:               sqlStr,
-		Params:            formatPlanParams(args),
-		RowEstimate:       0,
-		PredicatePushdown: useMainAsAnchor,
-		ActualRows:        0,
-		DurationMs:        0,
+		Tier:   served[0],
+		Engine: "duckdb",
+		SQL:    sqlStr,
+		Params: formatPlanParams(args),
+		// The anchor hint is a no-op in the advanced template, so it must not
+		// masquerade as actual pushdown here (#184); real pushdown facts live
+		// on the pushdown-fragment source. The hint itself is recorded as a
+		// request in the Notes below.
+		PredicatePushdown: false,
 		Reason:            "duckdb template rendered",
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dp)
@@ -345,7 +346,7 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		fmt.Sprintf("parquet(read_parquet) physically serves warm+cold (single flat glob); requested parquet tiers: %s", joinTiers(served)))
 	if useMainAsAnchor {
 		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
-			"UseMainAsAnchor hint honored")
+			"UseMainAsAnchor hint requested (advanced template does not apply it)")
 	}
 	c.opts.ExecutionPlan.Timings["translate"] = translateMs
 }

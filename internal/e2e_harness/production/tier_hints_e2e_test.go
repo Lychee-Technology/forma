@@ -311,11 +311,25 @@ func TestTierHintRoutingAndAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anchored query: %v", err)
 	}
-	if !duckdbSourcePushdown(anchored.Plan) {
-		t.Errorf("UseMainAsAnchor: duckdb source must carry PredicatePushdown=true")
+	if !planNotesContain(anchored.Plan, "UseMainAsAnchor hint requested") {
+		t.Errorf("UseMainAsAnchor: plan notes must record the hint as requested, got %v", anchored.Plan.Notes)
 	}
-	if !planNotesContain(anchored.Plan, "UseMainAsAnchor") {
-		t.Errorf("UseMainAsAnchor: plan notes must record the hint, got %v", anchored.Plan.Notes)
+
+	// Direct engine callers with empty PreferredTiers get the default
+	// all-tier form (#184): no harness normalization in the way here.
+	directPlan := &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
+	page, err := env.Engine().Query(ctx, env.Tables, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: wide.ID, Limit: 100},
+		DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: env.ParquetGlob()},
+	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: directPlan})
+	if err != nil {
+		t.Fatalf("direct engine query with empty tiers: %v", err)
+	}
+	if len(page.Records) != 5 {
+		t.Errorf("direct empty-tiers query returned %d rows, want 5 (all tiers)", len(page.Records))
+	}
+	if !directPlan.Routing.UseDuckDB {
+		t.Errorf("direct empty-tiers query must route to DuckDB, got %+v", directPlan.Routing)
 	}
 }
 
@@ -357,156 +371,4 @@ func TestTierHintCustomParquetGlob(t *testing.T) {
 	if !strings.Contains(sqlText, envB.S3Prefix) {
 		t.Errorf("cross-glob SQL must read the overridden glob (prefix %s):\n%s", envB.S3Prefix, sqlText)
 	}
-}
-
-// seedColdOnly creates n rows and moves them wholesale to base parquet
-// (cdc-init + onboarding change_log cleanup), returning their row IDs.
-func seedColdOnly(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, n int) []uuid.UUID {
-	t.Helper()
-	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: n})
-	if err := env.ApplyEvents(ctx, creates...); err != nil {
-		t.Fatalf("apply creates: %v", err)
-	}
-	if _, err := env.RunInit(ctx, wide); err != nil {
-		t.Fatalf("run init: %v", err)
-	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
-	ids := make([]uuid.UUID, 0, n)
-	for _, ev := range creates {
-		ids = append(ids, ev.RowID)
-	}
-	return ids
-}
-
-// assertTitleFilterCount runs a title-equals filter under the given tiers and
-// requires an exact match count.
-func assertTitleFilterCount(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, tiers []model.DataTier, name, title string, want int) {
-	t.Helper()
-	result, err := env.Query(ctx, Query{
-		Schema:         wide,
-		PreferredTiers: tiers,
-		Filters:        []Filter{{Attr: "title", Value: title}},
-		Limit:          10,
-	})
-	if err != nil {
-		t.Fatalf("%s: query: %v", name, err)
-	}
-	if len(result.Records) != want {
-		t.Errorf("%s: title=%q returned %d rows, want %d", name, title, len(result.Records), want)
-	}
-}
-
-// assertRowIDSet requires the records to be exactly the union of the given
-// row-id groups.
-func assertRowIDSet(t *testing.T, name string, records []*model.PersistentRecord, groups ...[]uuid.UUID) {
-	t.Helper()
-	want := make(map[uuid.UUID]bool)
-	for _, g := range groups {
-		for _, id := range g {
-			want[id] = true
-		}
-	}
-	got := make(map[uuid.UUID]bool, len(records))
-	for _, rec := range records {
-		got[rec.RowID] = true
-	}
-	for id := range want {
-		if !got[id] {
-			t.Errorf("%s: missing row %s", name, id)
-		}
-	}
-	for id := range got {
-		if !want[id] {
-			t.Errorf("%s: unexpected row %s", name, id)
-		}
-	}
-}
-
-func tierComboName(tiers []model.DataTier) string {
-	if len(tiers) == 0 {
-		return "default-all"
-	}
-	parts := make([]string, 0, len(tiers))
-	for _, tier := range tiers {
-		parts = append(parts, string(tier))
-	}
-	return strings.Join(parts, "+")
-}
-
-// duckdbPlanSQL returns the rendered SQL of the last duckdb source in the
-// plan, or "" when the plan recorded no duckdb source.
-func duckdbPlanSQL(plan *model.ExecutionPlan) string {
-	if plan == nil {
-		return ""
-	}
-	sqlText := ""
-	for _, src := range plan.Sources {
-		if src.Engine == "duckdb" && src.SQL != "" {
-			sqlText = src.SQL
-		}
-	}
-	return sqlText
-}
-
-// duckdbSourceTier returns the Tier label of the last duckdb source, or ""
-// when none is recorded.
-func duckdbSourceTier(plan *model.ExecutionPlan) string {
-	if plan == nil {
-		return ""
-	}
-	tier := ""
-	for _, src := range plan.Sources {
-		if src.Engine == "duckdb" {
-			tier = string(src.Tier)
-		}
-	}
-	return tier
-}
-
-func planHasEngine(plan *model.ExecutionPlan, engine string) bool {
-	if plan == nil {
-		return false
-	}
-	for _, src := range plan.Sources {
-		if src.Engine == engine {
-			return true
-		}
-	}
-	return false
-}
-
-func planHasReason(plan *model.ExecutionPlan, reason string) bool {
-	if plan == nil {
-		return false
-	}
-	for _, src := range plan.Sources {
-		if src.Reason == reason {
-			return true
-		}
-	}
-	return false
-}
-
-func duckdbSourcePushdown(plan *model.ExecutionPlan) bool {
-	if plan == nil {
-		return false
-	}
-	for _, src := range plan.Sources {
-		if src.Engine == "duckdb" && src.PredicatePushdown {
-			return true
-		}
-	}
-	return false
-}
-
-func planNotesContain(plan *model.ExecutionPlan, substr string) bool {
-	if plan == nil {
-		return false
-	}
-	for _, note := range plan.Notes {
-		if strings.Contains(note, substr) {
-			return true
-		}
-	}
-	return false
 }

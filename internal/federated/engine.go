@@ -115,7 +115,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			return nil, err
 		}
 	}
-	if len(fq.PreferredTiers) == 0 || fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
+	// Only explicit hot-only requests short-circuit to Postgres. Empty
+	// PreferredTiers means the default all-tier form (the same contract the
+	// service layer and the template's HasHot derivation use) and flows into
+	// EvaluateRoutingPolicy, whose default decision already carries all three
+	// tiers — a direct engine caller must not silently lose warm/cold (#184).
+	if fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
 		recordHotOnlyGatePlan(opts, tables)
 		return e.queryPostgresOnly(ctx, tables, fq)
 	}
