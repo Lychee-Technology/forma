@@ -111,7 +111,11 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
       AWS_REGION: 'us-east-1',
     };
 
-    const res = await runTool(config.toolsPath, args, { env, timeoutMs: config.toolTimeoutMs });
+    const res = await runTool(config.toolsPath, args, {
+      env,
+      timeoutMs: config.toolTimeoutMs,
+      redactValues: [config.s3.secretKey, config.s3.accessKey],
+    });
 
     result.exitCode = res.exitCode;
     result.duration_ms = res.durationMs;

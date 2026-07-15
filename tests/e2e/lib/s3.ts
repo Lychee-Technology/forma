@@ -139,6 +139,11 @@ export async function validateCDCOutput(opts: {
   if (opts.requireParquet && result.parquetCount === 0) {
     result.errors.push(`no parquet objects found under ${opts.dataPrefix || '(bucket root)'}`);
   }
+  // Parquet without a manifest is a broken flush/init: the read path is
+  // manifest-driven, so unmanifested objects are invisible. Require one.
+  if (result.parquetCount > 0 && result.manifestCount === 0) {
+    result.errors.push('parquet objects exist but no manifest was written');
+  }
   if (result.missingFiles.length > 0) {
     result.errors.push(`${result.missingFiles.length} manifest-referenced file(s) missing from S3`);
   }

@@ -143,7 +143,11 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
       PGPASSWORD: config.pg.password,
     };
 
-    const res = await runTool(config.toolsPath, args, { env, timeoutMs: config.toolTimeoutMs });
+    const res = await runTool(config.toolsPath, args, {
+      env,
+      timeoutMs: config.toolTimeoutMs,
+      redactValues: [config.pg.password, config.s3.secretKey, config.s3.accessKey],
+    });
 
     report.execution = {
       exitCode: res.exitCode,

@@ -41,6 +41,22 @@ export interface ToolResult {
   durationMs: number;
 }
 
+/**
+ * Replace every occurrence of each secret value with '***'. Command-line
+ * redaction only covers the logged argv; a tool that echoes a credential to
+ * stdout/stderr would still surface it in reports/console, so captured output
+ * is scrubbed too. Empty/short values are ignored to avoid masking noise.
+ */
+export function redactSecrets(text: string, secrets: string[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret && secret.length >= 4) {
+      out = out.split(secret).join('***');
+    }
+  }
+  return out;
+}
+
 async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   const reader = stream.getReader();
@@ -64,7 +80,7 @@ async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {
 export async function runTool(
   toolPath: string,
   args: string[],
-  opts: { env?: Record<string, string | undefined>; timeoutMs: number },
+  opts: { env?: Record<string, string | undefined>; timeoutMs: number; redactValues?: string[] },
 ): Promise<ToolResult> {
   const start = Date.now();
   const proc = Bun.spawn([toolPath, ...args], {
@@ -80,12 +96,19 @@ export async function runTool(
   }, opts.timeoutMs);
 
   try {
-    const [stdout, stderr, exitCode] = await Promise.all([
+    const [stdoutRaw, stderrRaw, exitCode] = await Promise.all([
       drain(proc.stdout as ReadableStream<Uint8Array>),
       drain(proc.stderr as ReadableStream<Uint8Array>),
       proc.exited,
     ]);
-    return { exitCode, stdout, stderr, timedOut, durationMs: Date.now() - start };
+    const secrets = opts.redactValues ?? [];
+    return {
+      exitCode,
+      stdout: redactSecrets(stdoutRaw, secrets),
+      stderr: redactSecrets(stderrRaw, secrets),
+      timedOut,
+      durationMs: Date.now() - start,
+    };
   } finally {
     clearTimeout(timer);
   }

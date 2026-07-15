@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { redactArgs } from './proc';
+import { redactArgs, redactSecrets } from './proc';
 
 describe('redactArgs', () => {
   test('redacts the value after --pg-password (space form)', () => {
@@ -19,5 +19,17 @@ describe('redactArgs', () => {
   test('leaves non-secret args untouched', () => {
     const out = redactArgs(['--s3-endpoint', 'http://localhost:9000', '--batch-size', '500']);
     expect(out).toBe('--s3-endpoint http://localhost:9000 --batch-size 500');
+  });
+});
+
+describe('redactSecrets', () => {
+  test('masks every occurrence of each secret value', () => {
+    const out = redactSecrets('connecting password=hunter2 ... retry password=hunter2', ['hunter2', 'miniokey']);
+    expect(out).not.toContain('hunter2');
+    expect(out).toBe('connecting password=*** ... retry password=***');
+  });
+
+  test('ignores empty/short values to avoid masking noise', () => {
+    expect(redactSecrets('abc def', ['', 'x'])).toBe('abc def');
   });
 });
