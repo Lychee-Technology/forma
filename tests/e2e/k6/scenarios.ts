@@ -16,11 +16,18 @@ import http from 'k6/http';
 import { check, sleep, group } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-// Custom metrics
+// Custom metrics.
+// Route split is derived from the response's execution_plan (only the
+// advanced_query path reports one), never from a client-side guess:
+//   - forma_federated_query_duration: queries the engine routed to DuckDB
+//   - forma_pg_routed_query_duration:  queries the engine served Postgres-only
 const queryDuration = new Trend('forma_query_duration', true);
 const queryErrors = new Counter('forma_query_errors');
 const querySuccess = new Rate('forma_query_success');
 const fedQueryDuration = new Trend('forma_federated_query_duration', true);
+const pgRoutedQueryDuration = new Trend('forma_pg_routed_query_duration', true);
+const routeDuckDB = new Counter('forma_route_duckdb');
+const routePostgres = new Counter('forma_route_postgres');
 
 // Configuration from environment
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
@@ -69,8 +76,10 @@ export const options = {
     },
   },
   thresholds: {
-    // Primary SLA: p95 < 200ms for federated queries
+    // Primary SLA: p95 < 200ms for DuckDB-routed federated queries
     'forma_federated_query_duration': ['p(95)<200'],
+    // Postgres-routed advanced queries should stay on the OLTP budget
+    'forma_pg_routed_query_duration': ['p(95)<100'],
     // General query p95 < 100ms
     'forma_query_duration': ['p(95)<100'],
     // Success rate > 99%
@@ -175,9 +184,9 @@ function testSortedQuery(schema: string): void {
   const res = http.get(url, { headers: getHeaders() });
   const duration = Date.now() - start;
   
+  // Sorted list is an OLTP GET (no execution plan); it is not a federated route.
   queryDuration.add(duration);
-  fedQueryDuration.add(duration);
-  
+
   const success = check(res, {
     'sorted query status 200': (r) => r.status === 200,
     'sorted query has data': (r) => {
@@ -198,65 +207,66 @@ function testSortedQuery(schema: string): void {
   }
 }
 
-// Test: Advanced query with conditions (federated path)
-function testAdvancedQuery(schema: string): void {
-  // Build a simple condition based on schema
-  let condition: Record<string, unknown>;
-  
+// Build a leaf condition for a schema using the Forma DSL: KvCondition is
+// { a: <attr>, v: <op:value> }; a bare value defaults to the equals operator.
+function conditionFor(schema: string): Record<string, unknown> {
   switch (schema) {
     case 'lead':
-      condition = {
-        field: 'status',
-        operator: 'eq',
-        value: randomElement(['open', 'won', 'lost']),
-      };
-      break;
+      return { a: 'status', v: randomElement(['open', 'won', 'lost']) };
     case 'visit':
-      condition = {
-        field: 'status',
-        operator: 'eq',
-        value: randomElement(['scheduled', 'visited', 'no_show']),
-      };
-      break;
+      return { a: 'status', v: randomElement(['scheduled', 'visited', 'no_show']) };
     case 'log':
-      condition = {
-        field: 'type',
-        operator: 'eq',
-        value: randomElement(['audio/mp3', 'text/plain', 'image/jpeg']),
-      };
-      break;
+      return { a: 'type', v: randomElement(['audio/mp3', 'text/plain', 'image/jpeg']) };
     default:
-      condition = {};
+      // Empty AND composite renders to "1=1" (match all).
+      return { l: 'and', c: [] };
   }
-  
+}
+
+// Test: Advanced query with conditions on the federated path.
+function testAdvancedQuery(schema: string): void {
   const payload = {
     schema_name: schema,
-    condition,
+    condition: conditionFor(schema),
     page: randomInt(1, 5),
     items_per_page: randomElement([20, 50, 100]),
+    // Route through the federated engine and ask it to report the route it took.
+    federated: { enabled: true, include_execution_plan: true },
   };
-  
+
   const url = `${BASE_URL}/api/v1/advanced_query`;
   const start = Date.now();
-  
+
   const res = http.post(url, JSON.stringify(payload), { headers: getHeaders() });
   const duration = Date.now() - start;
-  
+
   queryDuration.add(duration);
-  fedQueryDuration.add(duration);
-  
+
+  let usedDuckDB: boolean | null = null;
   const success = check(res, {
     'advanced query status 200': (r) => r.status === 200,
     'advanced query has results': (r) => {
       try {
         const body = JSON.parse(r.body as string);
+        if (body.execution_plan && body.execution_plan.routing) {
+          usedDuckDB = body.execution_plan.routing.used_duckdb === true;
+        }
         return body.data !== undefined;
       } catch {
         return false;
       }
     },
   });
-  
+
+  // Classify by the route the engine actually reported, not by which function ran.
+  if (usedDuckDB === true) {
+    fedQueryDuration.add(duration);
+    routeDuckDB.add(1);
+  } else if (usedDuckDB === false) {
+    pgRoutedQueryDuration.add(duration);
+    routePostgres.add(1);
+  }
+
   if (success) {
     querySuccess.add(1);
   } else {
@@ -276,9 +286,9 @@ function testCrossSchemaSearch(): void {
   const res = http.get(url, { headers: getHeaders() });
   const duration = Date.now() - start;
   
+  // Cross-schema search is its own endpoint (no execution plan); not a federated route.
   queryDuration.add(duration);
-  fedQueryDuration.add(duration);
-  
+
   const success = check(res, {
     'search status 200': (r) => r.status === 200,
   });
@@ -387,15 +397,31 @@ export function setup(): Record<string, unknown> {
   console.log(`VUs: ${scenario.vus}`);
   console.log(`Duration: ${scenario.duration}`);
   
-  // Verify API is reachable
+  // Verify the API is reachable AND that data has been seeded — an empty DB
+  // makes every check vacuously true, so fail fast and tell the operator to
+  // seed first (run-k6.sh seeds before invoking k6).
   const healthRes = http.get(`${BASE_URL}/api/v1/lead?page=1&items_per_page=1`, {
     headers: getHeaders(),
   });
-  
+
   if (healthRes.status !== 200) {
-    console.error(`API health check failed: ${healthRes.status}`);
+    throw new Error(`API health check failed: ${healthRes.status} — is the server up at ${BASE_URL}?`);
   }
-  
+
+  let totalRecords = 0;
+  try {
+    totalRecords = JSON.parse(healthRes.body as string).total_records ?? 0;
+  } catch {
+    throw new Error('API health check returned an unparseable body');
+  }
+  if (totalRecords <= 0) {
+    throw new Error(
+      "No 'lead' records found — the database is empty. Run 'bun run gen-data' before the load test " +
+        '(run-k6.sh does this automatically).',
+    );
+  }
+  console.log(`Health check OK: ${totalRecords} lead record(s) present`);
+
   return {
     startTime: Date.now(),
     scenario: scenarioName,
