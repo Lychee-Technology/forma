@@ -19,7 +19,7 @@ func TestBuildMergeSQL_PinsLWWShape(t *testing.T) {
 	require.Contains(t, sql, "ORDER BY changed_at DESC, deleted_at DESC NULLS LAST, row_id ASC")
 	require.Contains(t, sql, "WHERE _rn = 1 AND (deleted_at IS NULL OR deleted_at = 0)")
 	require.Contains(t, sql, "SELECT * EXCLUDE (_rn) REPLACE (COALESCE(deleted_at, 0) AS deleted_at)")
-	require.Contains(t, sql, "read_parquet(['s3://b/p/1/a.parquet', 's3://b/p/1/b.parquet'])")
+	require.Contains(t, sql, "read_parquet(['s3://b/p/1/a.parquet', 's3://b/p/1/b.parquet'], union_by_name=true)")
 	require.Contains(t, sql, "TO 's3://b/p/1/_tmp/t.parquet'")
 	// COPY options default to the CDC exporters' parquet shape.
 	require.Contains(t, sql, "FORMAT PARQUET, PARQUET_VERSION V2, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 3")
@@ -60,7 +60,7 @@ func TestBuildMergeStatsSQL_CoalescesZeroRowMerge(t *testing.T) {
 func TestBuildMergeRowsInSQL(t *testing.T) {
 	sql, err := buildMergeRowsInSQL([]string{"s3://b/a.parquet", "s3://b/b.parquet"})
 	require.NoError(t, err)
-	require.Equal(t, "SELECT COUNT(*) FROM read_parquet(['s3://b/a.parquet', 's3://b/b.parquet'])", sql)
+	require.Equal(t, "SELECT COUNT(*) FROM read_parquet(['s3://b/a.parquet', 's3://b/b.parquet'], union_by_name=true)", sql)
 
 	_, err = buildMergeRowsInSQL(nil)
 	require.Error(t, err)

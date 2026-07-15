@@ -171,7 +171,12 @@ s3_source AS (
         age,   
         tag,  
         1 AS source_tier_priority  
-    FROM read_parquet($S3_PATHS)  
+    -- union_by_name resolves the schema UNION across parquet generations  
+    -- (#189): files written before an attribute existed contribute NULL,  
+    -- and same-named columns widen to the common supertype. Corruption  
+    -- loudness is preserved by the pre-read system-column invariant  
+    -- validator (internal/federated/parquet_schema_validation.go).  
+    FROM read_parquet($S3_PATHS, union_by_name=true)  
     WHERE   
         -- 1. Anti-Join: Exclude if a newer version exists in PG  
         row_id NOT IN (SELECT row_id FROM dirty_ids)  
@@ -181,7 +186,7 @@ s3_source AS (
         --    Filtering versions directly here drops newer non-matching  
         --    versions pre-dedup and resurrects stale rows (#173/#178).  
         AND row_id IN (  
-            SELECT row_id FROM read_parquet($S3_PATHS)  
+            SELECT row_id FROM read_parquet($S3_PATHS, union_by_name=true)  
             WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
         )  
 ),

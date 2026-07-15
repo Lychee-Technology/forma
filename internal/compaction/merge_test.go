@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -146,4 +147,38 @@ func TestDuckMerger_RequiresDB(t *testing.T) {
 	var m *DuckMerger
 	_, err := m.MergeToTmp(context.Background(), []string{"a"}, "b")
 	require.ErrorContains(t, err, "no database")
+}
+
+// TestDuckMerger_RejectsWrongSchemaSource pins the #189-review P1: the merge
+// scan runs union_by_name, which NULL-pads a malformed source's system
+// columns — every such row folds into the single NULL row_id partition and
+// all but one are silently discarded, and runRewrite deletes the merged
+// sources afterwards, making the loss permanent. The pre-merge invariant
+// check must abort before any write instead.
+func TestDuckMerger_RejectsWrongSchemaSource(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "good.parquet")
+	badPath := filepath.Join(dir, "bad.parquet")
+	tmpPath := filepath.Join(dir, "merged.parquet")
+
+	writeParquetFixture(t, db, goodPath, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}})
+	_, err = db.Exec(fmt.Sprintf("COPY (SELECT 1 AS wrong_col, 'x' AS other_col) TO '%s' (FORMAT PARQUET)", badPath))
+	require.NoError(t, err)
+
+	merger := &DuckMerger{DB: db}
+	_, err = merger.MergeToTmp(context.Background(), []string{goodPath, badPath}, tmpPath)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "row_id")
+	require.ErrorContains(t, err, badPath)
+
+	_, statErr := os.Stat(tmpPath)
+	require.True(t, os.IsNotExist(statErr), "rejected merge must not stage a tmp object")
+
+	// Positive control: the good source alone merges cleanly.
+	_, err = merger.MergeToTmp(context.Background(), []string{goodPath}, tmpPath)
+	require.NoError(t, err)
 }

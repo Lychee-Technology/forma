@@ -66,7 +66,7 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
       PARTITION BY row_id
       ORDER BY %s
     ) AS _rn
-    FROM read_parquet([%s])
+    FROM read_parquet([%s], union_by_name=true)
   )
   WHERE _rn = 1 AND (deleted_at IS NULL OR deleted_at = 0)
 ) TO '%s' (%s)`, mergeLWWOrderBy, strings.Join(quoted, ", "), tmpURI, copyOptions), nil
@@ -85,7 +85,7 @@ func buildMergeRowsInSQL(sourceURIs []string) (string, error) {
 		}
 		quoted = append(quoted, "'"+uri+"'")
 	}
-	return fmt.Sprintf("SELECT COUNT(*) FROM read_parquet([%s])", strings.Join(quoted, ", ")), nil
+	return fmt.Sprintf("SELECT COUNT(*) FROM read_parquet([%s], union_by_name=true)", strings.Join(quoted, ", ")), nil
 }
 
 // buildMergeStatsSQL computes the merged file's manifest metadata. COALESCEs
