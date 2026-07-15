@@ -76,31 +76,9 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	sortOrder := req.SortOrder
-	if sortOrder == "" {
-		sortOrder = forma.SortOrderAsc
-	}
-
-	attributeOrders := make([]model.AttributeOrder, 0, len(req.SortBy))
-	for _, sortAttr := range req.SortBy {
-		meta, ok := schemaCache[sortAttr]
-		if !ok {
-			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", sortAttr, req.SchemaName)
-		}
-		order := model.AttributeOrder{
-			AttrID:    meta.AttributeID,
-			ValueType: meta.ValueType,
-			SortOrder: sortOrder,
-			AttrName:  sortAttr,
-		}
-		// Check if attribute has column_binding to main table.
-		if meta.ColumnBinding != nil {
-			order.StorageLocation = forma.AttributeStorageLocationMain
-			order.ColumnName = string(meta.ColumnBinding.ColumnName)
-		} else {
-			order.StorageLocation = forma.AttributeStorageLocationEAV
-		}
-		attributeOrders = append(attributeOrders, order)
+	attributeOrders, err := buildAttributeOrders(req, schemaCache)
+	if err != nil {
+		return nil, err
 	}
 
 	query := &model.PersistentRecordQuery{
@@ -153,6 +131,38 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}, nil
 }
 
+// buildAttributeOrders resolves the request's SortBy attributes against the
+// schema cache into typed AttributeOrders, tagging each with its storage
+// location (main column vs EAV). It errors on an unknown sort attribute.
+func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) ([]model.AttributeOrder, error) {
+	sortOrder := req.SortOrder
+	if sortOrder == "" {
+		sortOrder = forma.SortOrderAsc
+	}
+
+	orders := make([]model.AttributeOrder, 0, len(req.SortBy))
+	for _, sortAttr := range req.SortBy {
+		meta, ok := schemaCache[sortAttr]
+		if !ok {
+			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", sortAttr, req.SchemaName)
+		}
+		order := model.AttributeOrder{
+			AttrID:    meta.AttributeID,
+			ValueType: meta.ValueType,
+			SortOrder: sortOrder,
+			AttrName:  sortAttr,
+		}
+		if meta.ColumnBinding != nil {
+			order.StorageLocation = forma.AttributeStorageLocationMain
+			order.ColumnName = string(meta.ColumnBinding.ColumnName)
+		} else {
+			order.StorageLocation = forma.AttributeStorageLocationEAV
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
+}
+
 // toExecutionPlan converts the engine's internal execution plan into the
 // public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
 // when no plan was recorded (non-federated requests, or federated requests that
@@ -162,6 +172,11 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 		return nil
 	}
 
+	// SECURITY: do not project src.SQL / src.Params or plan.Notes / merge.Notes.
+	// The DuckDB source SQL embeds the postgres_scan connection string (with the
+	// DB password) and notes can echo raw engine errors — surfacing them on the
+	// HTTP response would leak credentials to any advanced_query caller. Only
+	// safe routing/tier metadata crosses into the public projection.
 	out := &forma.ExecutionPlan{
 		Routing: forma.ExecutionRouting{
 			UsedDuckDB: plan.Routing.UseDuckDB,
@@ -169,7 +184,6 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 			Reason:     plan.Routing.Reason,
 		},
 		Timings: plan.Timings,
-		Notes:   plan.Notes,
 	}
 
 	if len(plan.Sources) > 0 {
@@ -178,8 +192,6 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 			out.Sources = append(out.Sources, forma.ExecutionSource{
 				Tier:              string(src.Tier),
 				Engine:            src.Engine,
-				SQL:               src.SQL,
-				Params:            src.Params,
 				RowEstimate:       src.RowEstimate,
 				ActualRows:        src.ActualRows,
 				PredicatePushdown: src.PredicatePushdown,
@@ -195,7 +207,6 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 			PreferHot:  plan.Merge.PreferHot,
 			DedupKeys:  plan.Merge.DedupKeys,
 			DurationMs: plan.Merge.DurationMs,
-			Notes:      plan.Merge.Notes,
 		}
 	}
 

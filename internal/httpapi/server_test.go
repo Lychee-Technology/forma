@@ -126,6 +126,9 @@ func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
 		Data: []*forma.DataRecord{},
 		ExecutionPlan: &forma.ExecutionPlan{
 			Routing: forma.ExecutionRouting{UsedDuckDB: true, Tiers: []string{"hot", "warm", "cold"}, Reason: "hybrid"},
+			Sources: []forma.ExecutionSource{
+				{Tier: "cold", Engine: "duckdb", ActualRows: 5, PredicatePushdown: true},
+			},
 		},
 	}
 	mgr := &mockEntityManager{advancedResult: result}
@@ -155,11 +158,17 @@ func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
 		t.Fatalf("federated flags not parsed: %+v", mgr.advancedReq.Federated)
 	}
 
-	// Response side: execution_plan is present on the wire with the real route.
+	// Response side: execution_plan carries routing AND sources on the wire (#243).
 	body := rec.Body.String()
-	for _, want := range []string{`"execution_plan"`, `"used_duckdb":true`, `"reason":"hybrid"`} {
+	for _, want := range []string{`"execution_plan"`, `"used_duckdb":true`, `"reason":"hybrid"`, `"sources"`, `"tier":"cold"`} {
 		if !bytes.Contains(rec.Body.Bytes(), []byte(want)) {
 			t.Fatalf("response body missing %q; body: %s", want, body)
+		}
+	}
+	// Security: the raw SQL / bind params must never reach the wire (P0).
+	for _, forbidden := range []string{`"sql"`, `postgres_scan`, `"params"`, `password=`} {
+		if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("response body must not contain %q; body: %s", forbidden, body)
 		}
 	}
 }

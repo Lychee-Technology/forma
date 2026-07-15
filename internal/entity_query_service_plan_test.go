@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -17,8 +18,8 @@ func TestToExecutionPlan_NilReturnsNil(t *testing.T) {
 
 // TestToExecutionPlan_MapsRoutingAndSources pins the model->public projection
 // used to surface the route on the HTTP response (#243): routing decision,
-// per-tier sources, merge, timings and notes must all carry across so a caller
-// can distinguish a DuckDB read from a hot-path read.
+// per-tier sources, merge and timings carry across so a caller can distinguish
+// a DuckDB read from a hot-path read.
 func TestToExecutionPlan_MapsRoutingAndSources(t *testing.T) {
 	in := &model.ExecutionPlan{
 		Routing: model.RoutingDecision{
@@ -27,11 +28,10 @@ func TestToExecutionPlan_MapsRoutingAndSources(t *testing.T) {
 			Reason:    "hybrid",
 		},
 		Sources: []model.DataSourcePlan{
-			{Tier: model.DataTierCold, Engine: "duckdb", SQL: "SELECT 1", Params: []string{"7"}, ActualRows: 42, PredicatePushdown: true},
+			{Tier: model.DataTierCold, Engine: "duckdb", ActualRows: 42, PredicatePushdown: true},
 		},
 		Merge:   model.MergePlan{Strategy: model.MergeStrategyLastWriteWins, PreferHot: true, DedupKeys: []string{"row_id"}},
 		Timings: map[string]int64{"plan_cache_hit": 1},
-		Notes:   []string{"EvaluateRoutingPolicy"},
 	}
 
 	out := toExecutionPlan(in)
@@ -51,7 +51,32 @@ func TestToExecutionPlan_MapsRoutingAndSources(t *testing.T) {
 	require.True(t, out.Merge.PreferHot)
 
 	require.Equal(t, int64(1), out.Timings["plan_cache_hit"])
-	require.Contains(t, out.Notes, "EvaluateRoutingPolicy")
+}
+
+// TestToExecutionPlan_DoesNotLeakCredentials is the regression guard for the
+// P0: the internal DuckDB source SQL embeds the postgres_scan connection string
+// (with the DB password) and notes can echo raw errors. The public projection
+// must never carry them, so a marshaled response cannot expose the password.
+func TestToExecutionPlan_DoesNotLeakCredentials(t *testing.T) {
+	const secret = "SuperSecretPassword123"
+	in := &model.ExecutionPlan{
+		Routing: model.RoutingDecision{UseDuckDB: true, Tiers: []model.DataTier{model.DataTierCold}},
+		Sources: []model.DataSourcePlan{{
+			Tier:   model.DataTierCold,
+			Engine: "duckdb",
+			SQL:    "SELECT * FROM postgres_scan('host=db port=5432 user=forma password=" + secret + " dbname=forma', ...)",
+			Params: []string{secret, "other"},
+		}},
+		Notes: []string{"degraded fallback to postgres-only: dial error host=db password=" + secret},
+	}
+
+	out := toExecutionPlan(in)
+	require.NotNil(t, out)
+
+	blob, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.NotContains(t, string(blob), secret, "execution plan projection must not leak credentials")
+	require.NotContains(t, string(blob), "postgres_scan", "raw SQL must not be projected")
 }
 
 // TestToExecutionPlan_EmptyMergeOmitted pins that an empty merge plan does not

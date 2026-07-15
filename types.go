@@ -278,15 +278,20 @@ type QueryResult struct {
 }
 
 // ExecutionPlan is the JSON-serializable projection of the engine's internal
-// execution plan surfaced on QueryResult. It carries only what an external
-// caller needs to understand and replay the route; it deliberately imports
-// nothing so it can live in the public API surface.
+// execution plan surfaced on QueryResult. It carries only safe routing/tier
+// metadata an external caller needs to understand the route.
+//
+// SECURITY: the internal plan's SQL, bind params, and free-text notes are
+// deliberately NOT projected here. The rendered DuckDB SQL embeds the
+// postgres_scan(...) connection string — including the database password — and
+// notes can echo raw engine errors, so exposing them on the HTTP API would leak
+// credentials to any caller of advanced_query. Only enum/numeric/static-string
+// fields are surfaced. It also imports nothing so it can live in the public API.
 type ExecutionPlan struct {
 	Routing ExecutionRouting  `json:"routing"`
 	Sources []ExecutionSource `json:"sources,omitempty"`
 	Merge   *ExecutionMerge   `json:"merge,omitempty"`
 	Timings map[string]int64  `json:"timings,omitempty"`
-	Notes   []string          `json:"notes,omitempty"`
 }
 
 // ExecutionRouting reports the routing decision the engine committed to.
@@ -297,16 +302,15 @@ type ExecutionRouting struct {
 }
 
 // ExecutionSource describes one physical data source (tier) the plan read from.
+// It intentionally omits the raw SQL and bind params (see ExecutionPlan).
 type ExecutionSource struct {
-	Tier              string   `json:"tier"`
-	Engine            string   `json:"engine,omitempty"`
-	SQL               string   `json:"sql,omitempty"`
-	Params            []string `json:"params,omitempty"`
-	RowEstimate       int64    `json:"row_estimate,omitempty"`
-	ActualRows        int64    `json:"actual_rows,omitempty"`
-	PredicatePushdown bool     `json:"predicate_pushdown,omitempty"`
-	DurationMs        int64    `json:"duration_ms,omitempty"`
-	Reason            string   `json:"reason,omitempty"`
+	Tier              string `json:"tier"`
+	Engine            string `json:"engine,omitempty"`
+	RowEstimate       int64  `json:"row_estimate,omitempty"`
+	ActualRows        int64  `json:"actual_rows,omitempty"`
+	PredicatePushdown bool   `json:"predicate_pushdown,omitempty"`
+	DurationMs        int64  `json:"duration_ms,omitempty"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 // ExecutionMerge describes the tier-merge strategy the plan applied.
@@ -315,7 +319,6 @@ type ExecutionMerge struct {
 	PreferHot  bool     `json:"prefer_hot,omitempty"`
 	DedupKeys  []string `json:"dedup_keys,omitempty"`
 	DurationMs int64    `json:"duration_ms,omitempty"`
-	Notes      []string `json:"notes,omitempty"`
 }
 
 // CursorQueryResult represents cursor-based pagination results.

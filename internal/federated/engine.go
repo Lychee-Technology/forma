@@ -279,7 +279,7 @@ func recordRoutedPostgresSource(opts *model.FederatedQueryOptions, tables model.
 func (e *DBFederatedQueryEngine) queryPostgresOnlyWithPlan(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	page, err := e.queryPostgresOnly(ctx, tables, fq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("postgres-only query: %w", err)
 	}
 	attachExecutionPlan(page, opts)
 	return page, nil
