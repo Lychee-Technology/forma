@@ -246,6 +246,7 @@ type schemaFlushContext struct {
 	dryRun           bool
 	logger           *zap.Logger
 	schemaRegistry   forma.SchemaRegistry
+	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
 	acquireLock      func(context.Context, *sql.DB, int16) (bool, error)
@@ -259,6 +260,17 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 	if len(schemaIDs) == 0 {
 		return nil
 	}
+
+	caches := make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
+	for _, sid := range schemaIDs {
+		schemaID := int16(sid)
+		cache, err := resolveRequiredAttrCache(c.schemaRegistry, schemaID)
+		if err != nil {
+			return fmt.Errorf("cdc flush pre-flight: %w", err)
+		}
+		caches[schemaID] = cache
+	}
+	c.attrCaches = caches
 
 	processSchema := c.processSchemaFn
 	if processSchema == nil {
@@ -360,14 +372,8 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.cfg.PGDB, sslMode)
 	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuckLoggable)
 
-	var attrCache forma.SchemaAttributeCache
-	if c.schemaRegistry != nil {
-		if _, cache, err := c.schemaRegistry.GetSchemaAttributeCacheByID(schemaID); err != nil {
-			c.logger.Sugar().Warnw("schema registry lookup failed, using generic projection", "schema_id", schemaID, "err", err)
-		} else {
-			attrCache = cache
-		}
-	}
+	// Cache was resolved and validated by the processSchemas pre-flight (#193).
+	attrCache := c.attrCaches[schemaID]
 
 	executor := &flushBatchExecutor{
 		db:               c.db,

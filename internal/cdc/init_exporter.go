@@ -27,7 +27,6 @@ func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, cfg CDCConfig, p
 func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "8GB",
-		defaultMainColumns: defaultBaseMainColumns,
 		activeOnly:         true,
 		useChangeLog:       false,
 		schemaIDSelect:     "m.ltbase_schema_id AS schema_id",

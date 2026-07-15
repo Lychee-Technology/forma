@@ -23,7 +23,6 @@ type DuckExporter struct {
 
 type exportModeSpec struct {
 	defaultMemoryLimit string
-	defaultMainColumns func() []string
 	activeOnly         bool
 	useChangeLog       bool
 	schemaIDSelect     string
@@ -162,7 +161,6 @@ func escapeLiteral(s string) string {
 func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, string, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "4GB",
-		defaultMainColumns: defaultDeltaMainColumns,
 		activeOnly:         false,
 		useChangeLog:       true,
 		schemaIDSelect:     "cl.schema_id",
@@ -224,12 +222,13 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 	copyOptions := buildParquetCopyOptions(opts)
 
 	if len(attrCache) == 0 {
-		mainColumns := spec.defaultMainColumns()
-		plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, mainColumns, mFilter, spec.activeOnly)
-		plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, nil)
-		mainSelectCols := append(spec.baseSelectColumns(), prefixColumns("m.", mainColumns[5:])...)
-		plan.sql = buildGenericExportSQL(spec, opts, copyOptions, pgEsc, s3Esc, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, mainSelectCols)
-		return plan, nil
+		// A resolvable attribute cache is mandatory: without it we cannot derive
+		// the numeric-family typing (bool as 1/0, dates as epoch ms) the
+		// federated reader expects, and the reader itself fails fast for no-cache
+		// schemas (ErrSchemaMetadataCacheRequired). Pre-flight validation in the
+		// flush/init loops should already have aborted; this is defense in depth
+		// for any caller that bypasses it (#193).
+		return exportSQLPlan{}, fmt.Errorf("build export SQL for schema %d: attribute metadata cache is required but empty: %w", schemaID, ErrSchemaAttrCacheUnavailable)
 	}
 
 	projection := buildSchemaDrivenProjection(attrCache)
@@ -254,53 +253,6 @@ func (spec exportModeSpec) baseSelectColumns() []string {
 	}
 }
 
-func buildGenericExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols []string) string {
-	mQueryEsc := escapeLiteral(mQuery)
-	eQueryEsc := escapeLiteral(eQuery)
-
-	if spec.useChangeLog {
-		// LEFT JOIN to entity_main: production deletes remove the entity row
-		// and leave only the change_log tombstone, which MUST still be
-		// exported (deleted_at set, attribute columns NULL) or the flush
-		// marks the tombstone flushed while dropping it from parquet and the
-		// cold tier resurrects the deleted row (#173).
-		clQueryEsc := escapeLiteral(clQuery)
-		return fmt.Sprintf(`PRAGMA memory_limit='%s';
-ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
-
-COPY (
-SELECT
-  %s,
-  e.attributes
-FROM postgres_query('pg_db', '%s') cl
-LEFT JOIN postgres_query('pg_db', '%s') m
-  ON cl.row_id = m.ltbase_row_id
-LEFT JOIN (
-  SELECT row_id, list(struct_pack(attr_id := attr_id, value_text := value_text)) AS attributes
-  FROM postgres_query('pg_db', '%s')
-  GROUP BY row_id
-) e ON cl.row_id = e.row_id
-) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eQueryEsc, s3Esc, copyOptions)
-	}
-
-	return fmt.Sprintf(`PRAGMA memory_limit='%s';
-ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
-
-COPY (
-SELECT
-  %s,
-  e.attributes
-FROM postgres_query('pg_db', '%s') m
-LEFT JOIN (
-  SELECT row_id, list(struct_pack(attr_id := attr_id, value_text := value_text)) AS attributes
-  FROM postgres_query('pg_db', '%s')
-  GROUP BY row_id
-) e ON m.ltbase_row_id = e.row_id
-) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eQueryEsc, s3Esc, copyOptions)
-}
-
 func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols, eavAgg []string) string {
 	mQueryEsc := escapeLiteral(mQuery)
 	eQueryEsc := escapeLiteral(eQuery)
@@ -308,8 +260,7 @@ func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOpt
 
 	if spec.useChangeLog {
 		// LEFT JOIN to entity_main so change_log tombstones of hard-deleted
-		// rows are exported instead of silently dropped (see
-		// buildGenericExportSQL, #173).
+		// rows are exported instead of silently dropped (#173).
 		clQueryEsc := escapeLiteral(clQuery)
 		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
@@ -347,14 +298,6 @@ func quoteUUIDList(ids []uuid.UUID) string {
 		parts = append(parts, fmt.Sprintf("UUID '%s'", id.String()))
 	}
 	return strings.Join(parts, ", ")
-}
-
-func prefixColumns(prefix string, cols []string) []string {
-	res := make([]string, 0, len(cols))
-	for _, c := range cols {
-		res = append(res, prefix+c)
-	}
-	return res
 }
 
 func sortedAttrKeys(cache forma.SchemaAttributeCache) []string {
