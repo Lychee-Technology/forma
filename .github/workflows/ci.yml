@@ -178,10 +178,11 @@ jobs:
           # hit a federated-projection binder bug (tracked separately).
           bun run federated-check -- --schema log --require-duckdb
 
-      - name: k6 smoke (require a DuckDB route)
+      # OLTP-path load smoke. The DuckDB route is proven above by
+      # federated-check --require-duckdb; the k6 latency SLA deliberately does
+      # not include the seconds-slow federated reads.
+      - name: k6 smoke (OLTP load)
         working-directory: tests/e2e
-        env:
-          REQUIRE_DUCKDB: "1"
         run: SKIP_SEED=1 bun run k6-smoke
 
       - name: Upload k6 report
