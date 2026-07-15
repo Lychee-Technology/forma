@@ -219,7 +219,8 @@ func TestGetUnflushedSchemaIDs_CanceledContext(t *testing.T) {
 func TestProcessSchemas_ContinuesAcrossFailuresAndJoinsErrors(t *testing.T) {
 	processed := make([]int16, 0, 3)
 	flushCtx := &schemaFlushContext{
-		logger: zap.NewNop(),
+		logger:         zap.NewNop(),
+		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
 		processSchemaFn: func(_ context.Context, schemaID int16) error {
 			processed = append(processed, schemaID)
 			if schemaID == 2 {
@@ -411,41 +412,38 @@ func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
 	require.Equal(t, 1, releaseCalls)
 }
 
-func TestExecuteFlush_FallsBackToGenericProjectionWhenSchemaLookupFails(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close())
-	})
-
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
-	require.NoError(t, err)
-	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
-	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, time.Now().UnixMilli())
-	require.NoError(t, err)
-
-	called := false
+func TestProcessSchemas_AbortsWhenSchemaCacheUnavailable(t *testing.T) {
+	processed := false
 	flushCtx := &schemaFlushContext{
-		db:             db,
-		cfg:            CDCConfig{BatchSize: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
-		tableName:      "change_log",
-		pgPassword:     "secret",
 		logger:         zap.NewNop(),
 		schemaRegistry: errorSchemaRegistry{err: errors.New("schema unavailable")},
-		executeSingle: func(executor *flushBatchExecutor, batchIDs []uuid.UUID) error {
-			called = true
-			require.Len(t, batchIDs, 1)
-			require.Nil(t, executor.attrCache)
-			require.Equal(t, int16(7), executor.schemaID)
+		processSchemaFn: func(context.Context, int16) error {
+			processed = true
 			return nil
-		},
-		executeInChunks: func(*flushBatchExecutor, []uuid.UUID, int) error {
-			return errors.New("unexpected chunk execution")
 		},
 	}
 
-	err = flushCtx.executeFlush(ctx, 7)
+	err := flushCtx.processSchemas(context.Background(), []int64{7})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
+	require.Contains(t, err.Error(), "7")
+	require.False(t, processed, "no schema must be flushed when pre-flight aborts")
+}
+
+func TestProcessSchemas_ResolvesCachesBeforeProcessing(t *testing.T) {
+	var processedIDs []int16
+	flushCtx := &schemaFlushContext{
+		logger:         zap.NewNop(),
+		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
+		processSchemaFn: func(_ context.Context, id int16) error {
+			processedIDs = append(processedIDs, id)
+			return nil
+		},
+	}
+
+	err := flushCtx.processSchemas(context.Background(), []int64{7, 8})
 	require.NoError(t, err)
-	require.True(t, called)
+	require.Equal(t, []int16{7, 8}, processedIDs)
+	require.NotEmpty(t, flushCtx.attrCaches[7])
+	require.NotEmpty(t, flushCtx.attrCaches[8])
 }
