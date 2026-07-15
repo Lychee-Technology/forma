@@ -173,18 +173,12 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		manifestResolver: manifestResolver,
 	}
 
-	var schemaErrs []error
-	for _, sid := range schemaIDs {
-		schemaID := int16(sid)
-		if err := flushCtx.processSchema(ctx, schemaID); err != nil {
-			r.logger.Sugar().Errorw("process schema failed", "schema_id", schemaID, "err", err)
-			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
-		}
-	}
-	if len(schemaErrs) > 0 {
-		return errors.Join(schemaErrs...)
-	}
-	return nil
+	// Delegate to processSchemas so the Runner path runs the same pre-flight
+	// (resolve every schema's attribute cache, abort the whole run before any
+	// side effect if one is unresolvable) that populates flushCtx.attrCaches for
+	// executeFlush. Duplicating the loop here silently skipped the pre-flight and
+	// left attrCaches nil, so the exporter hard-errored on every schema (#193).
+	return flushCtx.processSchemas(ctx, schemaIDs)
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
