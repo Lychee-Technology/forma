@@ -26,9 +26,12 @@ import (
 //     the #197 contract (error names the orphaned key, retry is a no-op, no
 //     self-repair) must hold per-schema without disturbing the sibling.
 //
-// Missing schema metadata is deliberately NOT a vector: the flusher only
-// warns and falls back to the generic projection (internal/cdc/flusher.go),
-// a latent path owned by #193.
+// Missing schema metadata is not exercised here: as of #193 the flusher and
+// init both pre-flight every schema's attribute cache and abort the whole run
+// (ErrSchemaAttrCacheUnavailable) before any side effect, rather than falling
+// back to a generic projection. That contract is pinned by unit tests in
+// internal/cdc (TestProcessSchemas_AbortsWhenSchemaCacheUnavailable,
+// TestProcessInitSchemas_AbortsWhenSchemaCacheUnavailable).
 func TestMultiSchemaFlushIsolation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
