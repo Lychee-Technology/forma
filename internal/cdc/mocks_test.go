@@ -36,6 +36,46 @@ func (r errorSchemaRegistry) ListSchemas() []string {
 	return nil
 }
 
+// stubSchemaRegistry returns a fixed attribute cache with no error. A nil/empty
+// cache field models a schema whose lookup succeeds but carries no attributes.
+type stubSchemaRegistry struct{ cache forma.SchemaAttributeCache }
+
+func (r stubSchemaRegistry) GetSchemaAttributeCacheByName(string) (int16, forma.SchemaAttributeCache, error) {
+	return 0, r.cache, nil
+}
+
+func (r stubSchemaRegistry) GetSchemaAttributeCacheByID(int16) (string, forma.SchemaAttributeCache, error) {
+	return "", r.cache, nil
+}
+
+func (r stubSchemaRegistry) GetSchemaByName(string) (int16, forma.JSONSchema, error) {
+	return 0, forma.JSONSchema{}, nil
+}
+
+func (r stubSchemaRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error) {
+	return "", forma.JSONSchema{}, nil
+}
+
+func (r stubSchemaRegistry) ListSchemas() []string { return nil }
+
+// testAttrCache is a minimal populated cache (one column-bound text attr, one
+// EAV bool attr) shared by tests that need a resolvable schema.
+func testAttrCache() forma.SchemaAttributeCache {
+	return forma.SchemaAttributeCache{
+		"name": {
+			AttributeName: "name",
+			AttributeID:   10,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01},
+		},
+		"flag": {
+			AttributeName: "flag",
+			AttributeID:   11,
+			ValueType:     forma.ValueTypeBool,
+		},
+	}
+}
+
 type inMemoryManifestStore struct {
 	data    map[string][]byte
 	etags   map[string]string
