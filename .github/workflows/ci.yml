@@ -95,6 +95,104 @@ jobs:
       - name: Run E2E production harness smoke
         run: make test-e2e-production
 
+  k6-smoke:
+    name: k6 Smoke
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Start infrastructure (Postgres + RustFS)
+        run: docker compose -f deploy/docker-compose.yml up -d
+
+      - name: Build tools and server
+        run: make build-all
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec forma-postgres pg_isready -U postgres >/dev/null 2>&1; then echo "Postgres ready"; exit 0; fi
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2; exit 1
+
+      - name: Initialize database
+        run: |
+          ./build/tools init-db \
+            --db-host localhost --db-port 5432 --db-name forma \
+            --db-user postgres --db-password postgres --db-ssl-mode disable \
+            --schema-table schema_registry_dev --eav-table eav_data_dev \
+            --entity-main-table entity_main_dev --schema-dir cmd/server/schemas
+
+      - name: Start server (DuckDB federated engine enabled)
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: forma
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_SSL_MODE: disable
+          PORT: 8080
+          SCHEMA_DIR: cmd/server/schemas
+          # Enable the federated DuckDB engine against the compose RustFS so the
+          # smoke genuinely exercises the warm/cold S3 read path, not just Postgres.
+          DUCKDB_ENABLED: "true"
+          S3_ENDPOINT: http://localhost:9000
+          S3_ACCESS_KEY: minio
+          S3_SECRET_KEY: minio_password
+        run: |
+          ./build/server &
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:8080/api/v1/lead?page=1&items_per_page=1" >/dev/null 2>&1; then echo "Server up"; exit 0; fi
+            sleep 1
+          done
+          echo "Server did not become ready" >&2; exit 1
+
+      - name: Seed + flush + federated consistency + DuckDB route
+        working-directory: tests/e2e
+        run: |
+          bun install
+          bun run register-schemas
+          bun run gen-data -- --schema all --count 2000
+          bun run cdc-flush
+          # Row-identity consistency across all schemas (hybrid → Postgres route).
+          bun run federated-check -- --schema all
+          # Prove the federated read actually goes through DuckDB/S3. 'log' is a
+          # flat schema; lead/visit have nested dotted attributes that currently
+          # hit a federated-projection binder bug (tracked separately).
+          bun run federated-check -- --schema log --require-duckdb
+
+      # OLTP-path load smoke. The DuckDB route is proven above by
+      # federated-check --require-duckdb; the k6 latency SLA deliberately does
+      # not include the seconds-slow federated reads.
+      - name: k6 smoke (OLTP load)
+        working-directory: tests/e2e
+        run: SKIP_SEED=1 bun run k6-smoke
+
+      - name: Upload k6 report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k6-smoke-report
+          path: tests/e2e/reports/k6-smoke.json
+          retention-days: 14
+
   benchmark-smoke:
     name: Benchmark Smoke
     runs-on: ubuntu-latest

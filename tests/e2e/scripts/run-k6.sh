@@ -25,13 +25,25 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUNDLE_PATH="$ROOT_DIR/k6/dist/bundle.js"
 REPORT_PATH="reports/k6-${SCENARIO}.json"
 
-if [ ! -f "$BUNDLE_PATH" ]; then
-  echo "k6 bundle not found: $BUNDLE_PATH" >&2
-  echo "run 'bun run build-k6' in tests/e2e first." >&2
-  exit 1
+cd "$ROOT_DIR"
+
+# Build the k6 bundle if it is missing or stale relative to the source.
+if [ ! -f "$BUNDLE_PATH" ] || [ "k6/scenarios.ts" -nt "$BUNDLE_PATH" ]; then
+  echo "Building k6 bundle..." >&2
+  bun run build-k6
 fi
 
-cd "$ROOT_DIR"
+# Seed data before the load test — an empty DB makes every check vacuously
+# true. Also flush to S3 so warm/cold tiers exist and the DuckDB-forced
+# requests have data to read (a hot-only DB reduces the "federated" load to
+# Postgres). Skip with SKIP_SEED=1 when the stack is already populated.
+if [ "${SKIP_SEED:-0}" != "1" ]; then
+  echo "Seeding data before load test (set SKIP_SEED=1 to skip)..." >&2
+  bun run register-schemas
+  bun run gen-data
+  echo "Flushing to S3 so warm/cold tiers exist..." >&2
+  bun run cdc-flush
+fi
 
 if command -v k6 >/dev/null 2>&1; then
   exec k6 run --out "json=${REPORT_PATH}" -e "SCENARIO=${SCENARIO}" k6/dist/bundle.js "$@"

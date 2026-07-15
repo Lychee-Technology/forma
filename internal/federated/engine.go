@@ -131,7 +131,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// tiers — a direct engine caller must not silently lose warm/cold (#184).
 	if fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
 		recordHotOnlyGatePlan(opts, tables)
-		return e.queryPostgresOnly(ctx, tables, fq)
+		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}
 
 	if opts != nil && opts.IncludeExecutionPlan {
@@ -146,7 +146,8 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		opts.ExecutionPlan.Routing = decision
 	}
 	if !decision.UseDuckDB {
-		return e.queryPostgresOnly(ctx, tables, fq)
+		recordRoutedPostgresSource(opts, tables, decision)
+		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
@@ -250,6 +251,38 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
 		Reason: "degraded fallback (postgres-only)",
 	})
+}
+
+// recordRoutedPostgresSource records the postgres source for a request that
+// EvaluateRoutingPolicy sent to the Postgres-only path (decision.UseDuckDB
+// false, but not via the hot-only gate). Without it the plan carries the
+// routing decision but never names the source actually served, so "the plan
+// reflects actual access" would not hold for the cost/policy-routed hot path
+// (#243 — the plan must reach HTTP callers, and it must be truthful).
+func recordRoutedPostgresSource(opts *model.FederatedQueryOptions, tables model.StorageTables, decision model.RoutingDecision) {
+	if opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
+		return
+	}
+	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, model.DataSourcePlan{
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		SQL:    fmt.Sprintf("OLTP optimized query over %s", tables.EntityMain),
+		Reason: fmt.Sprintf("routing: postgres-only (%s)", decision.Reason),
+	})
+}
+
+// queryPostgresOnlyWithPlan serves the Postgres-only path and stitches the
+// recorded execution plan onto the returned page so HTTP callers that only see
+// the page observe the route actually taken (#243). The DuckDB path already
+// carries the plan on the page it builds; the plain hot-only and routed
+// Postgres-only returns previously dropped it.
+func (e *DBFederatedQueryEngine) queryPostgresOnlyWithPlan(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
+	page, err := e.queryPostgresOnly(ctx, tables, fq)
+	if err != nil {
+		return nil, fmt.Errorf("postgres-only query: %w", err)
+	}
+	attachExecutionPlan(page, opts)
+	return page, nil
 }
 
 // attachExecutionPlan stitches the recorded plan onto the returned page so

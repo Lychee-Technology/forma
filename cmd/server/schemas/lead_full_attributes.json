@@ -1,0 +1,319 @@
+{
+  "closedAt": {
+    "attributeID": 1,
+    "valueType": "date"
+  },
+  "communications": {
+    "attributeID": 2,
+    "valueType": "text"
+  },
+  "contact.annualIncome": {
+    "attributeID": 3,
+    "valueType": "numeric"
+  },
+  "contact.annualIncomeCurrency": {
+    "attributeID": 4,
+    "valueType": "text"
+  },
+  "contact.birthday": {
+    "attributeID": 5,
+    "valueType": "date"
+  },
+  "contact.company": {
+    "attributeID": 6,
+    "valueType": "text"
+  },
+  "contact.currentResidence": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "contact.email": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "contact.employmentYear": {
+    "attributeID": 9,
+    "valueType": "numeric"
+  },
+  "contact.familySize": {
+    "attributeID": 10,
+    "valueType": "numeric"
+  },
+  "contact.isBlacklisted": {
+    "attributeID": 11,
+    "valueType": "bool"
+  },
+  "contact.lineId": {
+    "attributeID": 12,
+    "valueType": "text"
+  },
+  "contact.maritalStatus": {
+    "attributeID": 13,
+    "valueType": "text"
+  },
+  "contact.memo": {
+    "attributeID": 14,
+    "valueType": "text"
+  },
+  "contact.name": {
+    "attributeID": 15,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "contact.nameKana": {
+    "attributeID": 16,
+    "valueType": "text"
+  },
+  "contact.nameNative": {
+    "attributeID": 17,
+    "valueType": "text"
+  },
+  "contact.occupation": {
+    "attributeID": 18,
+    "valueType": "text"
+  },
+  "contact.phones": {
+    "attributeID": 19,
+    "valueType": "text"
+  },
+  "contact.preferredChannel": {
+    "attributeID": 20,
+    "valueType": "text"
+  },
+  "contact.preferredLanguage": {
+    "attributeID": 21,
+    "valueType": "text"
+  },
+  "contact.primaryPhone": {
+    "attributeID": 22,
+    "valueType": "text"
+  },
+  "contact.wechatId": {
+    "attributeID": 23,
+    "valueType": "text"
+  },
+  "createdAt": {
+    "attributeID": 24,
+    "valueType": "date",
+    "required_policy": "required_always"
+  },
+  "firstTouchAt": {
+    "attributeID": 25,
+    "valueType": "date"
+  },
+  "id": {
+    "attributeID": 26,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "lastContactedAt": {
+    "attributeID": 27,
+    "valueType": "date"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 28,
+    "valueType": "date"
+  },
+  "ownerUserId": {
+    "attributeID": 29,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "pipeline": {
+    "attributeID": 30,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "propertyInterests.firstSeenAt": {
+    "attributeID": 31,
+    "valueType": "date"
+  },
+  "propertyInterests.isPrimary": {
+    "attributeID": 32,
+    "valueType": "bool"
+  },
+  "propertyInterests.lastActivityAt": {
+    "attributeID": 33,
+    "valueType": "date"
+  },
+  "propertyInterests.notes": {
+    "attributeID": 34,
+    "valueType": "text"
+  },
+  "propertyInterests.propertyId": {
+    "attributeID": 35,
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
+  },
+  "propertyInterests.snapshot.address": {
+    "attributeID": 36,
+    "valueType": "text"
+  },
+  "propertyInterests.snapshot.code": {
+    "attributeID": 37,
+    "valueType": "text"
+  },
+  "propertyInterests.snapshot.price": {
+    "attributeID": 38,
+    "valueType": "numeric"
+  },
+  "propertyInterests.snapshot.rent": {
+    "attributeID": 39,
+    "valueType": "numeric"
+  },
+  "propertyInterests.snapshot.title": {
+    "attributeID": 40,
+    "valueType": "text"
+  },
+  "propertyInterests.status": {
+    "attributeID": 41,
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
+  },
+  "rating": {
+    "attributeID": 42,
+    "valueType": "text"
+  },
+  "reason": {
+    "attributeID": 43,
+    "valueType": "text"
+  },
+  "requirement.areas.city": {
+    "attributeID": 44,
+    "valueType": "text"
+  },
+  "requirement.areas.note": {
+    "attributeID": 45,
+    "valueType": "text"
+  },
+  "requirement.areas.prefecture": {
+    "attributeID": 46,
+    "valueType": "text"
+  },
+  "requirement.areas.ward": {
+    "attributeID": 47,
+    "valueType": "text"
+  },
+  "requirement.budget.currency": {
+    "attributeID": 48,
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
+  },
+  "requirement.budget.display": {
+    "attributeID": 49,
+    "valueType": "text"
+  },
+  "requirement.budget.max": {
+    "attributeID": 50,
+    "valueType": "numeric"
+  },
+  "requirement.budget.min": {
+    "attributeID": 51,
+    "valueType": "numeric"
+  },
+  "requirement.freeText": {
+    "attributeID": 52,
+    "valueType": "text"
+  },
+  "requirement.intentType": {
+    "attributeID": 53,
+    "valueType": "text"
+  },
+  "requirement.mustHave": {
+    "attributeID": 54,
+    "valueType": "text"
+  },
+  "requirement.niceToHave": {
+    "attributeID": 55,
+    "valueType": "text"
+  },
+  "requirement.propertyType": {
+    "attributeID": 56,
+    "valueType": "text"
+  },
+  "requirement.propertyTypeDescription": {
+    "attributeID": 57,
+    "valueType": "text"
+  },
+  "requirement.purpose": {
+    "attributeID": 58,
+    "valueType": "text"
+  },
+  "requirement.size.max": {
+    "attributeID": 59,
+    "valueType": "numeric"
+  },
+  "requirement.size.min": {
+    "attributeID": 60,
+    "valueType": "numeric"
+  },
+  "requirement.size.unit": {
+    "attributeID": 61,
+    "valueType": "text"
+  },
+  "requirement.stationWalkTimeMinutes": {
+    "attributeID": 62,
+    "valueType": "numeric"
+  },
+  "requirement.targetMoveIn": {
+    "attributeID": 63,
+    "valueType": "date"
+  },
+  "requirement.unwantedConditions": {
+    "attributeID": 64,
+    "valueType": "text"
+  },
+  "score": {
+    "attributeID": 65,
+    "valueType": "numeric"
+  },
+  "source.campaign": {
+    "attributeID": 66,
+    "valueType": "text"
+  },
+  "source.channel": {
+    "attributeID": 67,
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
+  },
+  "source.name": {
+    "attributeID": 68,
+    "valueType": "text"
+  },
+  "source.originalLeadId": {
+    "attributeID": 69,
+    "valueType": "text"
+  },
+  "stage": {
+    "attributeID": 70,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "status": {
+    "attributeID": 71,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "tags": {
+    "attributeID": 72,
+    "valueType": "text"
+  },
+  "temperature": {
+    "attributeID": 73,
+    "valueType": "text"
+  },
+  "tenantId": {
+    "attributeID": 74,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "updatedAt": {
+    "attributeID": 75,
+    "valueType": "date",
+    "required_policy": "required_always"
+  },
+  "visits": {
+    "attributeID": 76,
+    "valueType": "text"
+  }
+}

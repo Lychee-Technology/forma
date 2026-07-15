@@ -1,0 +1,47 @@
+{
+  "createdAt": {
+    "attributeID": 1,
+    "valueType": "date",
+    "required_policy": "required_always"
+  },
+  "data": {
+    "attributeID": 2,
+    "valueType": "text"
+  },
+  "id": {
+    "attributeID": 3,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "leadId": {
+    "attributeID": 4,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "noteId": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "ownerId": {
+    "attributeID": 6,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "summary": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "type": {
+    "attributeID": 8,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "updatedAt": {
+    "attributeID": 9,
+    "valueType": "date"
+  },
+  "visitId": {
+    "attributeID": 10,
+    "valueType": "text"
+  }
+}

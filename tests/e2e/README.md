@@ -4,6 +4,18 @@ End-to-end tests for validating Forma's CDC (Change Data Capture) and Federated 
 
 For the repo-wide E2E inventory across both Go harness tests and Bun/k6 workflows, see [../../docs/e2e-tests-cn.md](../../docs/e2e-tests-cn.md) and [../../docs/e2e-tests-en.md](../../docs/e2e-tests-en.md).
 
+## Scope
+
+This Bun/k6 suite is a **deployment smoke + real federated load test**. It runs the shipped CDC tool binaries against the `deploy/docker-compose.yml` stack and drives the HTTP API under load, then checks that the federated read path agrees with Postgres at the smoke level.
+
+Rigorous correctness is owned by the **Go production harness** (`internal/e2e_harness/production/`, run via `make test-e2e-production`), which validates every result against an independent oracle. In particular, these are **out of scope here** and covered there:
+
+- attribute-level correctness across all value types and tiers,
+- CDC failure-mode testing (fault injection, degraded mode, recovery),
+- consistency oracles (dirty-set dedup, LWW, tie-break, tombstones).
+
+`federated-check` is a smoke-level agreement check (count + checksum + sampled record match on the federated route), not a substitute for that harness.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) runtime
@@ -40,13 +52,17 @@ For a one-shot local performance run that starts Forma, waits for `/health`, run
 tests/e2e/
 ├── lib/
 │   ├── env.ts          # Environment configuration loader
-│   └── http.ts         # HTTP client with retry logic
+│   ├── http.ts         # HTTP client with retry logic
+│   ├── proc.ts         # CDC tool subprocess runner (timeout, drain, redaction)
+│   ├── s3.ts           # S3/RustFS helper (list/get, bucket create, validation)
+│   └── oracle.ts       # Postgres oracle helpers for federated-check
 ├── scripts/
 │   ├── register-schemas.ts  # Register lead/visit/log schemas
 │   ├── gen-data.ts          # Generate test data via API
 │   ├── cdc-init.ts          # Backfill base parquet from existing data
 │   ├── cdc-flush.ts         # Trigger CDC flush to S3
 │   ├── compactor.ts         # Merge delta parquet files into base
+│   ├── clean-s3.ts          # Delete CDC S3 objects for repeatable runs
 │   └── federated-check.ts   # Validate federated query consistency
 ├── k6/
 │   ├── scenarios.ts    # k6 load test scenarios
@@ -63,7 +79,7 @@ tests/e2e/
 
 - Default flow: `bun run test`
 - Included by default: `register-schemas`, `gen-data`, `cdc-flush`, `federated-check`
-- Manual extensions: `cdc-init`, `compactor`, `build-k6`, `k6-smoke`, `k6-full`, `k6-perf`
+- Manual extensions: `cdc-init`, `compactor`, `clean-s3`, `build-k6`, `k6-smoke`, `k6-full`, `k6-perf`
 
 ### Register Schemas
 
@@ -136,17 +152,36 @@ bun run compactor -- --schema-id 101
 
 ### Federated Check
 
-Validates data consistency between Forma API and direct Postgres queries:
+Validates that the federated read path (`advanced_query` with `federated.enabled=true`) agrees with records reconstructed directly from Postgres. Sampling is by identity and seed-reproducible, so both sides compare the same rows. Fails on count mismatch, checksum mismatch, zero sample overlap, or any missing/mismatched record.
 
 ```bash
 # Check all schemas with default sample size
 bun run federated-check
 
-# Check specific schema
-bun run federated-check -- --schema lead --sample-size 200
+# Check specific schema with a fixed seed (reproducible sample)
+bun run federated-check -- --schema lead --sample-size 200 --seed my-seed
 
 # Full scan (compare all records)
 bun run federated-check -- --full-scan
+```
+
+Each run writes a versioned report `reports/federated-check-<runId>.json`.
+
+By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). To prove the read actually goes through **DuckDB/S3**, start the server with the federated engine enabled and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
+
+```bash
+# server env: DUCKDB_ENABLED=true S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
+bun run federated-check -- --schema log --require-duckdb
+```
+
+This forces `preferred_tiers=["warm","cold"]` (which the router serves from DuckDB) and fails unless `execution_plan.routing.used_duckdb` is true. Requires the rows to be flushed first (`cdc-flush`). Use a **flat** schema like `log`: `lead`/`visit` have nested dotted attributes (`contact.annualIncome`) that currently hit a federated-projection binder bug in DuckDB (tracked as a follow-up).
+
+### Clean S3 (repeatable runs)
+
+Deletes CDC objects (`delta/`, `base/`, `manifest/`) so a re-run starts clean. Destructive — test bucket only:
+
+```bash
+bun run clean-s3
 ```
 
 ## Load Testing with k6
@@ -177,12 +212,17 @@ The `k6-*` scripts prefer a local `k6` binary. If `k6` is not installed, they au
 
 ### k6 Thresholds
 
+Metrics are split by the route the engine actually reports in `execution_plan.routing` (only the `advanced_query` path carries one), not by which test function ran.
+
 | Metric | Threshold | Description |
 |--------|-----------|-------------|
-| `forma_federated_query_duration` | p95 < 200ms | Primary SLA for federated queries |
-| `forma_query_duration` | p95 < 100ms | General query latency |
+| `forma_federated_query_duration` | p95 < 200ms | Advanced queries the engine routed to DuckDB |
+| `forma_pg_routed_query_duration` | p95 < 100ms | Advanced queries the engine served Postgres-only |
+| `forma_query_duration` | p95 < 100ms | General (OLTP GET) query latency |
 | `forma_query_success` | rate > 99% | Query success rate |
 | `http_req_failed` | rate < 1% | HTTP error rate |
+
+`forma_route_duckdb` / `forma_route_postgres` counters show the routing split. Note: with `items_per_page` ≤ 100 and shallow offsets the hybrid router often serves advanced queries Postgres-only, so `forma_federated_query_duration` may have few samples in the smoke scenario — that reflects real routing, not a bug.
 
 ## Environment Variables
 
@@ -199,12 +239,16 @@ See `.env.example` for all available configuration options:
 | `PG_SSL_MODE` | `disable` | Postgres sslmode (disable, require, verify-full) |
 | `SCHEMA_TABLE` | `schema_registry_dev` | Schema registry table for CDC/schema-aware export |
 | `SCHEMA_DIR` | `../../cmd/server/schemas` | Directory containing schema JSON files |
-| `S3_ENDPOINT` | `http://localhost:19000` | S3/RustFS endpoint |
-| `S3_BUCKET` | `forma-cdc` | S3 bucket for CDC data |
+| `S3_ENDPOINT` | `http://localhost:9000` | S3/RustFS endpoint (matches `deploy/docker-compose.yml`) |
+| `S3_BUCKET` | `forma-cdc` | S3 bucket for CDC data (auto-created if missing) |
 | `DATASET_SIZE` | `10000` | Default dataset size |
 | `BATCH_SIZE` | `500` | Default batch size |
 | `CDC_EST_ROW_BYTES` | `0` | Estimated bytes per row (0 to auto) for CDC batch sizing |
 | `CDC_MAX_BATCH_BYTES` | `0` | Max bytes per CDC batch (0 to auto) |
+| `TOOL_TIMEOUT_MS` | `300000` | Timeout for each CDC tool subprocess (killed on expiry) |
+| `DUCKDB_ENABLED` | `false` | Server: enable the federated DuckDB engine (reads warm/cold S3 parquet) |
+| `DUCKDB_S3_ENDPOINT` | `$S3_ENDPOINT` | Server: S3 endpoint for the DuckDB engine (falls back to `S3_ENDPOINT`) |
+| `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
 ## Reports
 
@@ -213,9 +257,9 @@ All scripts generate JSON reports in the `reports/` directory:
 - `schema-registration.json` - Schema registration results
 - `data-gen.json` - Data generation results
 - `cdc-init.json` - CDC base initialization results
-- `cdc-flush.json` - CDC flush results
-- `compactor.json` - Compaction results
-- `federated-check.json` - Federated query validation results
+- `cdc-flush.json` - CDC flush results (includes S3 validation)
+- `compactor.json` - Compaction results (includes manifest-consistency validation)
+- `federated-check-<runId>.json` - Federated query validation results (versioned per run)
 - `k6-*.json` - k6 load test results
 
 ## Full E2E Flow
@@ -258,10 +302,10 @@ bun run k6-full
 
 ### CDC tools not found
 
-Ensure you've built the CDC tools:
+Ensure you've built the CDC tools **and** created the `build/tools` symlink the wrappers resolve (`make build-tools` alone does not create it):
 
 ```bash
-make build-tools
+make build-tools link
 ```
 
 ### Connection refused

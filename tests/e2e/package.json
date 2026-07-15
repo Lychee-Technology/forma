@@ -6,6 +6,7 @@
   "scripts": {
     "register-schemas": "bun run scripts/register-schemas.ts",
     "gen-data": "bun run scripts/gen-data.ts",
+    "clean-s3": "bun run scripts/clean-s3.ts",
     "cdc-flush": "bun run scripts/cdc-flush.ts",
     "cdc-init": "bun run scripts/cdc-init.ts",
     "compactor": "bun run scripts/compactor.ts",

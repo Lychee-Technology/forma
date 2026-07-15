@@ -54,6 +54,46 @@ func TestDBFederatedQueryEngine_QueryHotOnlyDelegatesToPostgres(t *testing.T) {
 	require.Equal(t, int16(7), pg.lastQuery.SchemaID)
 }
 
+// TestDBFederatedQueryEngine_HotOnlyGateAttachesPlanToPage pins the #243 gap:
+// the hot-only gate recorded the plan on opts but returned the page from
+// queryPostgresOnly without stitching it on, so an HTTP caller that only sees
+// the page could not tell a hot-routed federated read from a DuckDB one.
+func TestDBFederatedQueryEngine_HotOnlyGateAttachesPlanToPage(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []model.DataTier{model.DataTierHot},
+	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true})
+
+	require.NoError(t, err)
+	require.NotNil(t, page.ExecutionPlan, "hot-only gate must stitch the plan onto the page (#243)")
+	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
+	require.Equal(t, []model.DataTier{model.DataTierHot}, page.ExecutionPlan.Routing.Tiers)
+	requirePlanHasPostgresSource(t, page.ExecutionPlan, "hot-only gate")
+}
+
+// TestDBFederatedQueryEngine_RoutedPostgresOnlyAttachesPlanToPage pins the
+// second #243 gap: when EvaluateRoutingPolicy (not the hot-only gate) sends a
+// multi-tier request to Postgres-only — e.g. DuckDB globally disabled — the
+// plan must ride on the returned page and name the postgres source served.
+func TestDBFederatedQueryEngine_RoutedPostgresOnlyAttachesPlanToPage(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
+	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, pg.queryCalls)
+	require.NotNil(t, page.ExecutionPlan, "routed postgres-only must stitch the plan onto the page (#243)")
+	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
+	requirePlanHasPostgresSource(t, page.ExecutionPlan, "routing: postgres-only")
+}
+
 func TestDBFederatedQueryEngine_DuckDBFailureWithDegradedModeFallsBackToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}

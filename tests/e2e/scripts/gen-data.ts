@@ -97,6 +97,7 @@ function generateLead(seq: number): Record<string, unknown> {
       campaign: `Campaign-${randomInt(1, 10)}`,
     },
     contact: {
+      isAnonymous: false,
       name: `Contact-${seq}`,
       nameNative: `連絡先-${seq}`,
       email: `contact${seq}@example.com`,
@@ -128,9 +129,6 @@ function generateLead(seq: number): Record<string, unknown> {
     firstTouchAt: randomDate(2023, 2024),
     createdAt: now,
     updatedAt: now,
-    // E2E tracking fields
-    _trace_id: `lead-${seq}`,
-    _seq: seq,
   };
 }
 
@@ -165,9 +163,6 @@ function generateVisit(seq: number): Record<string, unknown> {
     attendees: [`user-${randomInt(1, 100)}`],
     createdAt: now,
     updatedAt: now,
-    // E2E tracking fields
-    _trace_id: `visit-${seq}`,
-    _seq: seq,
   };
 }
 
@@ -189,9 +184,6 @@ function generateLog(seq: number): Record<string, unknown> {
     summary: `Log entry ${seq}: ${randomElement(['Call notes', 'Meeting summary', 'Follow-up', 'Property feedback', 'Client request'])}`,
     createdAt: now,
     updatedAt: now,
-    // E2E tracking fields
-    _trace_id: `log-${seq}`,
-    _seq: seq,
   };
 }
 
@@ -310,7 +302,7 @@ async function main() {
     },
   };
 
-  const schemasToGenerate = schema === 'all' ? ['lead', 'visit'] : [schema];
+  const schemasToGenerate = schema === 'all' ? ['lead', 'visit', 'log'] : [schema];
 
   for (const schemaName of schemasToGenerate) {
     let generator: (seq: number) => Record<string, unknown>;

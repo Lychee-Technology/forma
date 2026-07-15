@@ -55,6 +55,25 @@ func main() {
 	}
 }
 
+// duckDBConfigFromEnv turns on the federated DuckDB engine when DUCKDB_ENABLED
+// is set, wiring its S3/httpfs settings from the environment. It reuses the
+// S3_* vars the CDC tooling already uses (with DUCKDB_S3_* overrides) so a
+// single stack configuration drives both. When disabled it returns base
+// unchanged (DuckDB off — the production default).
+func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
+	if !bootstrap.EnvBool("DUCKDB_ENABLED", false) {
+		return base
+	}
+	base.Enabled = true
+	base.EnableS3 = true
+	base.EnableParquet = true
+	base.S3Endpoint = bootstrap.Env("DUCKDB_S3_ENDPOINT", bootstrap.Env("S3_ENDPOINT", base.S3Endpoint))
+	base.S3AccessKey = bootstrap.Env("DUCKDB_S3_ACCESS_KEY", bootstrap.Env("S3_ACCESS_KEY", base.S3AccessKey))
+	base.S3SecretKey = bootstrap.Env("DUCKDB_S3_SECRET_KEY", bootstrap.Env("S3_SECRET_KEY", base.S3SecretKey))
+	base.S3Region = bootstrap.Env("DUCKDB_S3_REGION", "us-east-1")
+	return base
+}
+
 func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRuntime, error) {
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
@@ -113,6 +132,11 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	config.Database = dbConfig
 	config.Database.TableNames = tableNames
 	config.SchemaRegistry = registry
+
+	// Enable the federated DuckDB engine when configured (disabled by default).
+	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
+	// suite turns it on so its federated checks are genuinely federated.
+	config.DuckDB = duckDBConfigFromEnv(config.DuckDB)
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)

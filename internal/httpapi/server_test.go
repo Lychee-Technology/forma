@@ -117,6 +117,82 @@ func TestHandleAdvancedQuerySuccess(t *testing.T) {
 	}
 }
 
+// TestHandleAdvancedQueryFederatedExecutionPlan pins the #243 wire contract:
+// a federated request with include_execution_plan reaches the manager as a
+// Federated hint, and the ExecutionPlan the manager returns marshals onto the
+// HTTP response so a caller (e.g. the k6 suite) can read the actual route.
+func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
+	result := &forma.QueryResult{
+		Data: []*forma.DataRecord{},
+		ExecutionPlan: &forma.ExecutionPlan{
+			Routing: forma.ExecutionRouting{UsedDuckDB: true, Tiers: []string{"hot", "warm", "cold"}, Reason: "hybrid"},
+			Sources: []forma.ExecutionSource{
+				{Tier: "cold", Engine: "duckdb", ActualRows: 5, PredicatePushdown: true},
+			},
+		},
+	}
+	mgr := &mockEntityManager{advancedResult: result}
+	server := &Server{manager: mgr}
+
+	payload := []byte(`{
+		"schema_name": "lead",
+		"condition": {"a": "status", "v": "equals:hot"},
+		"page": 1,
+		"items_per_page": 10,
+		"federated": {"enabled": true, "include_execution_plan": true}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handleAdvancedQuery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Request side: the federated hint (incl. include_execution_plan) reached the manager.
+	if mgr.advancedReq == nil || mgr.advancedReq.Federated == nil {
+		t.Fatalf("expected federated hint on the manager request, got %+v", mgr.advancedReq)
+	}
+	if !mgr.advancedReq.Federated.Enabled || !mgr.advancedReq.Federated.IncludeExecutionPlan {
+		t.Fatalf("federated flags not parsed: %+v", mgr.advancedReq.Federated)
+	}
+
+	// Response side: execution_plan carries routing AND sources on the wire (#243).
+	body := rec.Body.String()
+	for _, want := range []string{`"execution_plan"`, `"used_duckdb":true`, `"reason":"hybrid"`, `"sources"`, `"tier":"cold"`} {
+		if !bytes.Contains(rec.Body.Bytes(), []byte(want)) {
+			t.Fatalf("response body missing %q; body: %s", want, body)
+		}
+	}
+	// Security: the raw SQL / bind params must never reach the wire (P0).
+	for _, forbidden := range []string{`"sql"`, `postgres_scan`, `"params"`, `password=`} {
+		if bytes.Contains(rec.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("response body must not contain %q; body: %s", forbidden, body)
+		}
+	}
+}
+
+// TestHandleAdvancedQueryNoPlanOmitted pins that a plain (non-federated)
+// response omits execution_plan entirely, so the field never appears unless a
+// route was actually recorded.
+func TestHandleAdvancedQueryNoPlanOmitted(t *testing.T) {
+	mgr := &mockEntityManager{advancedResult: &forma.QueryResult{Data: []*forma.DataRecord{}}}
+	server := &Server{manager: mgr}
+
+	payload := []byte(`{"schema_name": "lead", "condition": {"a": "status", "v": "equals:hot"}, "page": 1, "items_per_page": 10}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handleAdvancedQuery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(`"execution_plan"`)) {
+		t.Fatalf("expected execution_plan omitted; body: %s", rec.Body.String())
+	}
+}
+
 func TestHandleAdvancedQueryValidation(t *testing.T) {
 	server := &Server{
 		manager: &mockEntityManager{},
