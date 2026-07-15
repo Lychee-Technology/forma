@@ -149,7 +149,68 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		HasNext:       req.Page < totalPages,
 		HasPrevious:   req.Page > 1,
 		ExecutionTime: time.Since(startTime),
+		ExecutionPlan: toExecutionPlan(page.ExecutionPlan),
 	}, nil
+}
+
+// toExecutionPlan converts the engine's internal execution plan into the
+// public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
+// when no plan was recorded (non-federated requests, or federated requests that
+// did not ask for the plan), so QueryResult.ExecutionPlan stays omitted.
+func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
+	if plan == nil {
+		return nil
+	}
+
+	out := &forma.ExecutionPlan{
+		Routing: forma.ExecutionRouting{
+			UsedDuckDB: plan.Routing.UseDuckDB,
+			Tiers:      tiersToStrings(plan.Routing.Tiers),
+			Reason:     plan.Routing.Reason,
+		},
+		Timings: plan.Timings,
+		Notes:   plan.Notes,
+	}
+
+	if len(plan.Sources) > 0 {
+		out.Sources = make([]forma.ExecutionSource, 0, len(plan.Sources))
+		for _, src := range plan.Sources {
+			out.Sources = append(out.Sources, forma.ExecutionSource{
+				Tier:              string(src.Tier),
+				Engine:            src.Engine,
+				SQL:               src.SQL,
+				Params:            src.Params,
+				RowEstimate:       src.RowEstimate,
+				ActualRows:        src.ActualRows,
+				PredicatePushdown: src.PredicatePushdown,
+				DurationMs:        src.DurationMs,
+				Reason:            src.Reason,
+			})
+		}
+	}
+
+	if plan.Merge.Strategy != "" || plan.Merge.PreferHot || len(plan.Merge.DedupKeys) > 0 {
+		out.Merge = &forma.ExecutionMerge{
+			Strategy:   string(plan.Merge.Strategy),
+			PreferHot:  plan.Merge.PreferHot,
+			DedupKeys:  plan.Merge.DedupKeys,
+			DurationMs: plan.Merge.DurationMs,
+			Notes:      plan.Merge.Notes,
+		}
+	}
+
+	return out
+}
+
+func tiersToStrings(tiers []model.DataTier) []string {
+	if len(tiers) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tiers))
+	for _, t := range tiers {
+		out = append(out, string(t))
+	}
+	return out
 }
 
 func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest) (*model.PersistentRecordPage, error) {

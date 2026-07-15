@@ -135,14 +135,14 @@ const (
 
 // QueryRequest represents a pagination query request.
 type QueryRequest struct {
-	SchemaName   string     `json:"schema_name" validate:"required"`
-	Page         int        `json:"page" validate:"min=1"`
-	ItemsPerPage int        `json:"items_per_page" validate:"min=1,max=100"`
-	Condition    Condition  `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
-	SortBy       []string   `json:"sort_by,omitempty"`
-	SortOrder    SortOrder  `json:"sort_order,omitempty"`
-	RowID        *uuid.UUID `json:"row_id,omitempty"` // For entity-specific operations
-	Attrs        []string   `json:"attrs,omitempty"`  // Attributes to return (field projection)
+	SchemaName   string                 `json:"schema_name" validate:"required"`
+	Page         int                    `json:"page" validate:"min=1"`
+	ItemsPerPage int                    `json:"items_per_page" validate:"min=1,max=100"`
+	Condition    Condition              `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
+	SortBy       []string               `json:"sort_by,omitempty"`
+	SortOrder    SortOrder              `json:"sort_order,omitempty"`
+	RowID        *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
+	Attrs        []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
 	Federated    *FederatedQueryRequest `json:"federated,omitempty"`
 }
 
@@ -150,14 +150,14 @@ type QueryRequest struct {
 // federated repository path while preserving the normal API surface for callers that
 // do not need DuckDB/S3-backed reads.
 type FederatedQueryRequest struct {
-	Enabled                   bool     `json:"enabled,omitempty"`
-	PreferredTiers            []string `json:"preferred_tiers,omitempty"`
-	PreferHot                 bool     `json:"prefer_hot,omitempty"`
-	UseMainAsAnchor           bool     `json:"use_main_as_anchor,omitempty"`
-	S3ParquetPathTemplate     string   `json:"s3_parquet_path_template,omitempty"`
-	AllowPartialDegradedMode  bool     `json:"allow_partial_degraded_mode,omitempty"`
-	IncludeExecutionPlan      bool     `json:"include_execution_plan,omitempty"`
-	ConsistencyMode           string   `json:"consistency_mode,omitempty"`
+	Enabled                  bool     `json:"enabled,omitempty"`
+	PreferredTiers           []string `json:"preferred_tiers,omitempty"`
+	PreferHot                bool     `json:"prefer_hot,omitempty"`
+	UseMainAsAnchor          bool     `json:"use_main_as_anchor,omitempty"`
+	S3ParquetPathTemplate    string   `json:"s3_parquet_path_template,omitempty"`
+	AllowPartialDegradedMode bool     `json:"allow_partial_degraded_mode,omitempty"`
+	IncludeExecutionPlan     bool     `json:"include_execution_plan,omitempty"`
+	ConsistencyMode          string   `json:"consistency_mode,omitempty"`
 }
 
 func unmarshalConditionField(data []byte) (Condition, bool, error) {
@@ -270,6 +270,52 @@ type QueryResult struct {
 	HasNext       bool          `json:"has_next"`
 	HasPrevious   bool          `json:"has_previous"`
 	ExecutionTime time.Duration `json:"execution_time"`
+	// ExecutionPlan is populated only for federated requests that set
+	// federated.include_execution_plan; it reports the route the engine
+	// actually took (DuckDB vs Postgres-only) and per-tier sources so callers
+	// can distinguish federated reads from hot-path reads without guessing.
+	ExecutionPlan *ExecutionPlan `json:"execution_plan,omitempty"`
+}
+
+// ExecutionPlan is the JSON-serializable projection of the engine's internal
+// execution plan surfaced on QueryResult. It carries only what an external
+// caller needs to understand and replay the route; it deliberately imports
+// nothing so it can live in the public API surface.
+type ExecutionPlan struct {
+	Routing ExecutionRouting  `json:"routing"`
+	Sources []ExecutionSource `json:"sources,omitempty"`
+	Merge   *ExecutionMerge   `json:"merge,omitempty"`
+	Timings map[string]int64  `json:"timings,omitempty"`
+	Notes   []string          `json:"notes,omitempty"`
+}
+
+// ExecutionRouting reports the routing decision the engine committed to.
+type ExecutionRouting struct {
+	UsedDuckDB bool     `json:"used_duckdb"`
+	Tiers      []string `json:"tiers,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// ExecutionSource describes one physical data source (tier) the plan read from.
+type ExecutionSource struct {
+	Tier              string   `json:"tier"`
+	Engine            string   `json:"engine,omitempty"`
+	SQL               string   `json:"sql,omitempty"`
+	Params            []string `json:"params,omitempty"`
+	RowEstimate       int64    `json:"row_estimate,omitempty"`
+	ActualRows        int64    `json:"actual_rows,omitempty"`
+	PredicatePushdown bool     `json:"predicate_pushdown,omitempty"`
+	DurationMs        int64    `json:"duration_ms,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+}
+
+// ExecutionMerge describes the tier-merge strategy the plan applied.
+type ExecutionMerge struct {
+	Strategy   string   `json:"strategy,omitempty"`
+	PreferHot  bool     `json:"prefer_hot,omitempty"`
+	DedupKeys  []string `json:"dedup_keys,omitempty"`
+	DurationMs int64    `json:"duration_ms,omitempty"`
+	Notes      []string `json:"notes,omitempty"`
 }
 
 // CursorQueryResult represents cursor-based pagination results.
