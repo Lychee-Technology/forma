@@ -158,37 +158,3 @@ func buildEAVAggregationSQL(eQueryEsc string, eavAgg []string) string {
 		eQueryEsc,
 	)
 }
-
-func defaultDeltaMainColumns() []string {
-	return []string{
-		"ltbase_row_id",
-		"ltbase_schema_id",
-		"ltbase_created_at",
-		"ltbase_updated_at",
-		"ltbase_deleted_at",
-		"text_01", "text_02", "text_03", "text_04", "text_05",
-		"text_06", "text_07", "text_08", "text_09", "text_10",
-		"smallint_01", "smallint_02",
-		"integer_01", "integer_02", "integer_03",
-		"bigint_01", "bigint_02", "bigint_03", "bigint_04", "bigint_05",
-		"double_01", "double_02", "double_03", "double_04", "double_05",
-		"uuid_01", "uuid_02",
-	}
-}
-
-func defaultBaseMainColumns() []string {
-	return []string{
-		"ltbase_row_id",
-		"ltbase_schema_id",
-		"ltbase_created_at",
-		"ltbase_updated_at",
-		"ltbase_deleted_at",
-		"text_01", "text_02", "text_03", "text_04", "text_05",
-		"text_06", "text_07", "text_08", "text_09", "text_10",
-		"smallint_01", "smallint_02", "smallint_03",
-		"integer_01", "integer_02", "integer_03",
-		"bigint_01", "bigint_02", "bigint_03", "bigint_04", "bigint_05",
-		"double_01", "double_02", "double_03", "double_04", "double_05",
-		"uuid_01", "uuid_02",
-	}
-}

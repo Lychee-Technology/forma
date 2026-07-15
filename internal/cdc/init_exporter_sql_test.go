@@ -6,13 +6,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildBaseExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 	cfg := CDCConfig{EntityMainTable: "entity_main_dev", DuckMemLimit: "6GB", ParquetCompression: "zstd", ParquetCompressionLevel: 5}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, nil)
+	sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildBaseExportSQL returned error: %v", err)
 	}
@@ -33,9 +34,17 @@ func TestBuildBaseExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 	if !strings.Contains(sql, "PARQUET_VERSION V2") {
 		t.Fatalf("sql missing parquet v2 export option: %s", sql)
 	}
-	if !strings.Contains(sql, "changed_at") || !strings.Contains(sql, "attributes") {
-		t.Fatalf("sql missing projected columns (changed_at/attributes): %s", sql)
+	if !strings.Contains(sql, "changed_at") || !strings.Contains(sql, "flag") {
+		t.Fatalf("sql missing projected columns (changed_at/flag): %s", sql)
 	}
+}
+
+func TestBuildBaseExportSQL_ErrorsWithoutAttrCache(t *testing.T) {
+	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
+	_, _, _, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, nil)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
+	require.Contains(t, err.Error(), "1")
 }
 
 func TestBuildBaseExportSQL_ErrorsOnEmptyRowIDs(t *testing.T) {
@@ -87,7 +96,7 @@ func TestBuildBaseExportSQL_UsesCustomTableNames(t *testing.T) {
 	}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	_, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, nil)
+	_, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildBaseExportSQL returned error: %v", err)
 	}

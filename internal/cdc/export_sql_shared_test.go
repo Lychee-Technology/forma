@@ -93,8 +93,8 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name+"/generic", func(t *testing.T) {
-			res, err := tt.build(nil)
+		t.Run(tt.name+"/mode-invariants", func(t *testing.T) {
+			res, err := tt.build(attrCache)
 			if err != nil {
 				t.Fatalf("build failed: %v", err)
 			}
