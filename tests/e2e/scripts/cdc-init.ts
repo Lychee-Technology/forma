@@ -15,6 +15,8 @@
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../lib/env';
+import { runTool, redactArgs } from '../lib/proc';
+import { validateCDCOutput, ensureBucket, amzDate, type CDCValidation } from '../lib/s3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +50,7 @@ interface CDCInitReport {
     parquetFiles?: string[];
     error?: string;
   };
+  s3Validation?: CDCValidation;
 }
 
 function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number } {
@@ -136,13 +139,14 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
     args.push('--dry-run');
   }
 
-  console.log(`Executing: ${config.toolsPath} ${args.join(' ')}`);
+  // Log the command with the pg password redacted — never echo secrets.
+  console.log(`Executing: ${config.toolsPath} ${redactArgs(args)}`);
 
   try {
     // Check if tools binary exists
     const toolsFile = Bun.file(config.toolsPath);
     if (!(await toolsFile.exists())) {
-      throw new Error(`CDC tools binary not found at: ${config.toolsPath}. Run 'make build-tools' first.`);
+      throw new Error(`CDC tools binary not found at: ${config.toolsPath}. Run 'make build-tools link' first.`);
     }
 
     // Set environment variables for AWS credentials
@@ -154,75 +158,45 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
       PGPASSWORD: config.pg.password,
     };
 
-    // Run the CDC init command
-    const proc = Bun.spawn([config.toolsPath, ...args], {
-      env,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-
-    // Collect output
-    const stdoutChunks: Uint8Array[] = [];
-    const stderrChunks: Uint8Array[] = [];
-
-    // Read stdout
-    const stdoutReader = proc.stdout.getReader();
-    while (true) {
-      const { done, value } = await stdoutReader.read();
-      if (done) break;
-      stdoutChunks.push(value);
-    }
-
-    // Read stderr
-    const stderrReader = proc.stderr.getReader();
-    while (true) {
-      const { done, value } = await stderrReader.read();
-      if (done) break;
-      stderrChunks.push(value);
-    }
-
-    // Wait for process to exit
-    const exitCode = await proc.exited;
-
-    const stdout = new TextDecoder().decode(Buffer.concat(stdoutChunks));
-    const stderr = new TextDecoder().decode(Buffer.concat(stderrChunks));
+    const res = await runTool(config.toolsPath, args, { env, timeoutMs: config.toolTimeoutMs });
 
     report.execution = {
-      exitCode,
-      duration_ms: Date.now() - startTime,
-      stdout: stdout.slice(-10000), // Keep last 10KB
-      stderr: stderr.slice(-10000),
+      exitCode: res.exitCode,
+      duration_ms: res.durationMs,
+      stdout: res.stdout.slice(-10000), // Keep last 10KB
+      stderr: res.stderr.slice(-10000),
     };
 
-    // Parse output for metrics
-    if (exitCode === 0) {
-      report.result.success = true;
-      
-      // Try to extract metrics from logs
-      const rowsMatch = stdout.match(/total_rows_exported["\s:=]+(\d+)/i) || stderr.match(/total_rows_exported["\s:=]+(\d+)/i);
-      if (rowsMatch) {
-        report.result.rowsExported = parseInt(rowsMatch[1], 10);
-      }
-
-      const filesMatch = stdout.match(/total_files_created["\s:=]+(\d+)/i) || stderr.match(/total_files_created["\s:=]+(\d+)/i);
-      if (filesMatch) {
-        report.result.filesCreated = parseInt(filesMatch[1], 10);
-      }
-
-      const schemasMatch = stdout.match(/initializing schema/gi) || stderr.match(/initializing schema/gi);
-      if (schemasMatch) {
-        report.result.schemasProcessed = schemasMatch.length;
-      }
-
-      // Look for parquet file paths
-      const parquetMatches = [...(stdout + stderr).matchAll(/base\/\d+\/[a-f0-9-]+_[a-f0-9-]+\.parquet/gi)];
-      if (parquetMatches.length > 0) {
-        report.result.parquetFiles = parquetMatches.map((m) => m[0]);
-      }
-    } else {
+    if (res.timedOut) {
       report.result.success = false;
-      report.result.error = stderr || stdout || `Exit code: ${exitCode}`;
+      report.result.error = `CDC init timed out after ${config.toolTimeoutMs}ms and was killed`;
+      return report;
     }
+    if (res.exitCode !== 0) {
+      report.result.success = false;
+      report.result.error = res.stderr || res.stdout || `Exit code: ${res.exitCode}`;
+      return report;
+    }
+
+    // Validate the actual base-tier S3 state rather than trusting exit code.
+    // cdc-init writes to the 'base' prefix; a dry run writes nothing.
+    const validation = await validateCDCOutput({
+      dataPrefix: 'base',
+      manifestPrefix: 'manifest',
+      requireParquet: !dryRun,
+    });
+    report.s3Validation = validation;
+    report.result.parquetFiles = validation.parquetKeys;
+    report.result.filesCreated = validation.parquetCount;
+    report.result.schemasProcessed = Object.keys(validation.parquetBySchema).length;
+
+    if (!validation.ok) {
+      report.result.success = false;
+      report.result.error = `S3 validation failed: ${validation.errors.join('; ')}`;
+      return report;
+    }
+
+    report.result.success = true;
   } catch (err) {
     report.execution.duration_ms = Date.now() - startTime;
     report.result.success = false;
@@ -247,6 +221,9 @@ async function main() {
   console.log(`Dry Run: ${dryRun}`);
   console.log('');
 
+  // cdc-init writes base parquet to S3; ensure the bucket exists first.
+  await ensureBucket(amzDate(new Date()));
+
   const report = await runCDCInit(dryRun, schemaId, targetFileSizeMB);
 
   console.log('');
@@ -267,8 +244,15 @@ async function main() {
     console.log(`Schemas Processed: ${report.result.schemasProcessed}`);
   }
   if (report.result.parquetFiles && report.result.parquetFiles.length > 0) {
-    console.log(`Parquet Files: ${report.result.parquetFiles.length}`);
+    console.log(`Parquet Files (from S3 listing): ${report.result.parquetFiles.length}`);
     report.result.parquetFiles.slice(0, 5).forEach((f) => console.log(`  - ${f}`));
+  }
+  if (report.s3Validation) {
+    const v = report.s3Validation;
+    console.log(`S3 Validation: ${v.ok ? 'PASS' : 'FAIL'} — ${v.parquetCount} parquet across ${Object.keys(v.parquetBySchema).length} schema(s), ${v.manifestCount} manifest(s)`);
+    if (v.missingFiles.length > 0) {
+      console.log(`  Missing (manifest-referenced): ${v.missingFiles.slice(0, 5).join(', ')}`);
+    }
   }
   if (report.result.error) {
     console.log(`Error: ${report.result.error}`);

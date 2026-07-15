@@ -13,6 +13,8 @@
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../lib/env';
+import { runTool, redactArgs } from '../lib/proc';
+import { validateCDCOutput, type CDCValidation } from '../lib/s3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -45,6 +47,7 @@ interface SchemaCompactionResult {
   stdout: string;
   stderr: string;
   error?: string;
+  s3Validation?: CDCValidation;
 }
 
 function parseArgs(): { schemaIds: number[] } {
@@ -97,7 +100,7 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
     '--data-prefix', reportConfig.dataPrefix,
   ];
 
-  console.log(`\n[Schema ${schemaId}] Executing: ${config.toolsPath} ${args.join(' ')}`);
+  console.log(`\n[Schema ${schemaId}] Executing: ${config.toolsPath} ${redactArgs(args)}`);
 
   try {
     // Set environment variables for AWS credentials
@@ -108,48 +111,40 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
       AWS_REGION: 'us-east-1',
     };
 
-    // Run the compactor command
-    const proc = Bun.spawn([config.toolsPath, ...args], {
-      env,
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const res = await runTool(config.toolsPath, args, { env, timeoutMs: config.toolTimeoutMs });
+
+    result.exitCode = res.exitCode;
+    result.duration_ms = res.durationMs;
+    result.stdout = res.stdout.slice(-5000); // Keep last 5KB
+    result.stderr = res.stderr.slice(-5000);
+
+    if (res.timedOut) {
+      result.success = false;
+      result.error = `compactor timed out after ${config.toolTimeoutMs}ms and was killed`;
+      return result;
+    }
+    if (res.exitCode !== 0) {
+      result.success = false;
+      result.error = res.stderr || res.stdout || `Exit code: ${res.exitCode}`;
+      return result;
+    }
+
+    // Compaction merges delta into base, so file counts may shrink; the
+    // invariant that must hold is manifest consistency — every parquet the
+    // manifest still references must exist on S3.
+    const validation = await validateCDCOutput({
+      dataPrefix: '',
+      manifestPrefix: 'manifest',
+      requireParquet: true,
     });
-
-    // Collect output
-    const stdoutChunks: Uint8Array[] = [];
-    const stderrChunks: Uint8Array[] = [];
-
-    // Read stdout
-    const stdoutReader = proc.stdout.getReader();
-    while (true) {
-      const { done, value } = await stdoutReader.read();
-      if (done) break;
-      stdoutChunks.push(value);
+    result.s3Validation = validation;
+    if (!validation.ok) {
+      result.success = false;
+      result.error = `S3 validation failed: ${validation.errors.join('; ')}`;
+      return result;
     }
 
-    // Read stderr
-    const stderrReader = proc.stderr.getReader();
-    while (true) {
-      const { done, value } = await stderrReader.read();
-      if (done) break;
-      stderrChunks.push(value);
-    }
-
-    // Wait for process to exit
-    const exitCode = await proc.exited;
-
-    const stdout = new TextDecoder().decode(Buffer.concat(stdoutChunks));
-    const stderr = new TextDecoder().decode(Buffer.concat(stderrChunks));
-
-    result.exitCode = exitCode;
-    result.duration_ms = Date.now() - startTime;
-    result.stdout = stdout.slice(-5000); // Keep last 5KB
-    result.stderr = stderr.slice(-5000);
-    result.success = exitCode === 0;
-
-    if (!result.success) {
-      result.error = stderr || stdout || `Exit code: ${exitCode}`;
-    }
+    result.success = true;
   } catch (err) {
     result.duration_ms = Date.now() - startTime;
     result.error = String(err);
@@ -174,7 +169,7 @@ async function main() {
   // Check if tools binary exists
   const toolsFile = Bun.file(config.toolsPath);
   if (!(await toolsFile.exists())) {
-    console.error(`CDC tools binary not found at: ${config.toolsPath}. Run 'make build-tools' first.`);
+    console.error(`CDC tools binary not found at: ${config.toolsPath}. Run 'make build-tools link' first.`);
     process.exit(1);
   }
 
@@ -232,6 +227,10 @@ async function main() {
     console.log(`  Status: ${schema.success ? 'SUCCESS' : 'FAILED'}`);
     console.log(`  Exit Code: ${schema.exitCode}`);
     console.log(`  Duration: ${schema.duration_ms}ms`);
+    if (schema.s3Validation) {
+      const v = schema.s3Validation;
+      console.log(`  S3 Validation: ${v.ok ? 'PASS' : 'FAIL'} — ${v.parquetCount} parquet, ${v.manifestCount} manifest(s), ${v.missingFiles.length} missing`);
+    }
     if (schema.stderr) {
       console.log(`  Log (last 300 chars): ${schema.stderr.slice(-300)}`);
     }

@@ -310,7 +310,7 @@ async function main() {
     },
   };
 
-  const schemasToGenerate = schema === 'all' ? ['lead', 'visit'] : [schema];
+  const schemasToGenerate = schema === 'all' ? ['lead', 'visit', 'log'] : [schema];
 
   for (const schemaName of schemasToGenerate) {
     let generator: (seq: number) => Record<string, unknown>;

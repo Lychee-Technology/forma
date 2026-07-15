@@ -99,6 +99,9 @@ export interface Config {
   // Paths
   toolsPath: string;
   schemaDir: string;
+
+  // Subprocess timeout for the Go CDC tool wrappers (ms).
+  toolTimeoutMs: number;
 }
 
 export function loadConfig(): Config {
@@ -123,7 +126,7 @@ export function loadConfig(): Config {
     },
 
     s3: {
-      endpoint: getEnv('S3_ENDPOINT', 'http://localhost:19000'),
+      endpoint: getEnv('S3_ENDPOINT', 'http://localhost:9000'),
       bucket: getEnv('S3_BUCKET', 'forma-cdc'),
       prefix: getEnv('S3_PREFIX', 'delta'),
       accessKey: getEnv('S3_ACCESS_KEY', 'minio'),
@@ -146,6 +149,8 @@ export function loadConfig(): Config {
 
     toolsPath: resolve(__dirname, '..', getEnv('TOOLS_PATH', '../../build/tools')),
     schemaDir: resolve(__dirname, '..', getEnv('SCHEMA_DIR', '../../cmd/server/schemas')),
+
+    toolTimeoutMs: getEnvInt('TOOL_TIMEOUT_MS', 300000),
   };
 }
 
