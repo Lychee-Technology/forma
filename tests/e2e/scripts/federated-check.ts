@@ -2,18 +2,24 @@
 /**
  * Federated Query Validation
  *
- * Validates that the Forma federated read path agrees with Postgres. It queries
- * /api/v1/advanced_query with federated.enabled=true (so the federated engine,
- * not the plain OLTP list endpoint, serves the read) and compares the result
- * against records reconstructed directly from entity_main + eav_data.
+ * Validates that the Forma federated read path agrees with Postgres at the
+ * row-identity level. It queries /api/v1/advanced_query with
+ * federated.enabled=true (so the federated engine, not the plain OLTP list
+ * endpoint, serves the read) and checks total count, row-ID set membership, and
+ * a checksum over row IDs against an independent Postgres source.
  *
  * Sampling is by identity: a seeded, reproducible set of row IDs is drawn from
  * Postgres, then the same rows are located in the federated result — so the two
  * sides compare the SAME rows and overlap is meaningful (the old script sampled
  * different rows on each side and passed vacuously with zero overlap).
  *
+ * Deep per-attribute comparison is intentionally out of scope (the EAV store
+ * would need Forma's full read path to reconstruct nested/array/typed values);
+ * attribute-level correctness across tiers is owned by the Go production
+ * harness. This is a smoke-level agreement check.
+ *
  * Fails on: count mismatch, checksum mismatch, zero sample overlap, or any
- * missing / mismatched record.
+ * sampled row missing from the federated result.
  *
  * Usage:
  *   bun run scripts/federated-check.ts --schema lead --sample-size 100
@@ -26,15 +32,7 @@ import { fileURLToPath } from 'url';
 import postgres from 'postgres';
 import { config } from '../lib/env';
 import { post } from '../lib/http';
-import {
-  simpleHash,
-  compareAttributes,
-  getSchemaId,
-  getPostgresCount,
-  sampleRowIds,
-  attributesForRowIds,
-  type AttributeMismatch,
-} from '../lib/oracle';
+import { checksumRowIds, getSchemaId, getPostgresCount, sampleRowIds } from '../lib/oracle';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -94,7 +92,6 @@ interface ComparisonResult {
   missingInForma: string[];
   formaChecksum: string;
   postgresChecksum: string;
-  attributeMismatches: (AttributeMismatch & { rowId: string })[];
   route: string;
   passed: boolean;
   notes: string[];
@@ -127,31 +124,29 @@ function routeLabel(plan?: { routing: ExecutionRouting }): string {
 }
 
 /**
- * Page the federated result and keep only rows whose row_id is in targetSet,
- * stopping once all are found or the pages are exhausted. Returns the collected
- * attribute map and the execution route reported for the query.
+ * Page the federated result and collect which target row IDs are present,
+ * stopping once all are found or the pages are exhausted. Returns the set of
+ * found row IDs and the execution route reported for the query.
  */
-async function collectFederatedRows(
+async function collectFederatedRowIds(
   schemaName: string,
   targetSet: Set<string>,
   formaCount: number,
-): Promise<{ records: Map<string, Record<string, unknown>>; route: string }> {
-  const records = new Map<string, Record<string, unknown>>();
+): Promise<{ found: Set<string>; route: string }> {
+  const found = new Set<string>();
   let route = 'unknown';
   const maxPages = Math.ceil(formaCount / API_PAGE_SIZE) + 2;
 
-  for (let page = 1; page <= maxPages && records.size < targetSet.size; page++) {
+  for (let page = 1; page <= maxPages && found.size < targetSet.size; page++) {
     const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE);
     if (!pageResult) break;
     if (page === 1) route = routeLabel(pageResult.execution_plan);
     if (pageResult.data.length === 0) break;
     for (const record of pageResult.data) {
-      if (targetSet.has(record.row_id)) {
-        records.set(record.row_id, record.attributes);
-      }
+      if (targetSet.has(record.row_id)) found.add(record.row_id);
     }
   }
-  return { records, route };
+  return { found, route };
 }
 
 async function compareSchema(
@@ -170,7 +165,6 @@ async function compareSchema(
     missingInForma: [],
     formaChecksum: '',
     postgresChecksum: '',
-    attributeMismatches: [],
     route: 'unknown',
     passed: false,
     notes: [],
@@ -206,46 +200,29 @@ async function compareSchema(
     return result;
   }
 
-  const pgRecords = await attributesForRowIds(sql, schemaName, schemaId, targetIds);
-  const { records: formaRecords, route } = await collectFederatedRows(schemaName, targetSet, result.formaCount);
+  const { found, route } = await collectFederatedRowIds(schemaName, targetSet, result.formaCount);
   if (route !== 'unknown') result.route = route;
 
-  const formaPresent: string[] = [];
   for (const rowId of targetIds) {
-    const formaAttrs = formaRecords.get(rowId);
-    const pgAttrs = pgRecords.get(rowId) ?? {};
-    if (!formaAttrs) {
-      result.missingInForma.push(rowId);
-      continue;
-    }
-    formaPresent.push(rowId);
-    const mismatches = compareAttributes(formaAttrs, pgAttrs);
-    if (mismatches.length === 0) {
-      result.matchingRecords++;
-    } else {
-      for (const m of mismatches.slice(0, 10)) {
-        result.attributeMismatches.push({ rowId, ...m });
-      }
-    }
+    if (found.has(rowId)) result.matchingRecords++;
+    else result.missingInForma.push(rowId);
   }
 
-  result.formaChecksum = simpleHash([...formaPresent].sort().join(','));
-  result.postgresChecksum = simpleHash([...targetIds].sort().join(','));
+  // Checksum over the row-ID set each side presents for the sample.
+  result.formaChecksum = checksumRowIds([...found]);
+  result.postgresChecksum = checksumRowIds(targetIds);
   const checksumMatch = result.formaChecksum === result.postgresChecksum;
   const hasOverlap = result.matchingRecords > 0;
+  const allFound = result.missingInForma.length === 0;
 
-  // Trim for report readability (after all assertions are computed).
-  result.missingInForma = result.missingInForma.slice(0, 20);
-  result.attributeMismatches = result.attributeMismatches.slice(0, 50);
-
-  result.passed =
-    countMatch && checksumMatch && hasOverlap && result.missingInForma.length === 0 && result.attributeMismatches.length === 0;
+  result.passed = countMatch && checksumMatch && hasOverlap && allFound;
 
   if (!countMatch) result.notes.push(`Count mismatch: Forma=${result.formaCount}, Postgres=${result.postgresCount}`);
   if (!checksumMatch) result.notes.push(`Checksum mismatch: Forma=${result.formaChecksum}, Postgres=${result.postgresChecksum}`);
   if (!hasOverlap) result.notes.push('Zero sample overlap: federated result returned none of the sampled rows');
-  if (result.missingInForma.length > 0) result.notes.push(`${result.missingInForma.length} sampled record(s) missing from the federated result`);
-  if (result.attributeMismatches.length > 0) result.notes.push(`${result.attributeMismatches.length} attribute mismatch(es)`);
+  if (!allFound) result.notes.push(`${result.missingInForma.length} sampled row(s) missing from the federated result`);
+  // Trim for report readability (after assertions are computed).
+  result.missingInForma = result.missingInForma.slice(0, 20);
   result.notes.push(`Federated route: ${result.route}`);
 
   return result;
@@ -288,7 +265,7 @@ async function main() {
       fullScan: args.fullScan,
     },
     results: [] as ComparisonResult[],
-    summary: { totalSchemas: 0, passedSchemas: 0, failedSchemas: 0, totalMismatches: 0 },
+    summary: { totalSchemas: 0, passedSchemas: 0, failedSchemas: 0, totalMissing: 0 },
   };
 
   try {
@@ -301,7 +278,7 @@ async function main() {
       const result = await compareSchema(sql, schemaName, args);
       report.results.push(result);
       report.summary.totalSchemas++;
-      report.summary.totalMismatches += result.attributeMismatches.length;
+      report.summary.totalMissing += result.missingInForma.length;
       if (result.passed) {
         report.summary.passedSchemas++;
         console.log('  Status: PASSED');
@@ -321,7 +298,7 @@ async function main() {
     console.log(`Total schemas: ${report.summary.totalSchemas}`);
     console.log(`Passed: ${report.summary.passedSchemas}`);
     console.log(`Failed: ${report.summary.failedSchemas}`);
-    console.log(`Total attribute mismatches: ${report.summary.totalMismatches}`);
+    console.log(`Total sampled rows missing from federated result: ${report.summary.totalMissing}`);
 
     // Versioned, reproducible report filename (run ID + timestamp).
     const reportPath = resolve(__dirname, '..', 'reports', `federated-check-${runId}.json`);

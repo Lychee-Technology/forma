@@ -163,13 +163,25 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
       return report;
     }
 
+    // A flush legitimately writes nothing when no schema meets the flush
+    // thresholds (min-records / max-age). That is a valid no-op, not a silent
+    // failure, so only require parquet when a flush was actually expected.
+    const flushSkipped = /skip flush: thresholds not met/i.test(res.stdout + res.stderr);
+
     // Exit 0 is necessary but not sufficient: validate the actual S3 state.
     // A dry run writes nothing, so skip the object requirement there.
     const validation = await validateCDCOutput({
       dataPrefix: config.s3.prefix,
       manifestPrefix: 'manifest',
-      requireParquet: !dryRun,
+      requireParquet: !dryRun && !flushSkipped,
     });
+    if (flushSkipped && validation.parquetCount === 0) {
+      report.result.error = undefined;
+      report.result.success = true;
+      report.s3Validation = validation;
+      console.log('Note: flush skipped (no schema met thresholds); nothing to validate.');
+      return report;
+    }
     report.s3Validation = validation;
     report.result.parquetFiles = validation.parquetKeys;
     report.result.schemasProcessed = Object.keys(validation.parquetBySchema).length;
