@@ -41,6 +41,7 @@ type initRunContext struct {
 	duck                 *DuckExporter
 	s3Client             S3ObjectClient
 	schemaRegistry       forma.SchemaRegistry
+	attrCaches           map[int16]forma.SchemaAttributeCache
 	manifestStore        manifest.Store
 	manifestResolver     manifest.PathResolver
 	logger               *zap.Logger
@@ -177,6 +178,16 @@ func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 }
 
 func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs []int64) (InitSummary, error) {
+	runCtx.attrCaches = make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
+	for _, sid := range schemaIDs {
+		schemaID := int16(sid)
+		cache, err := resolveRequiredAttrCache(runCtx.schemaRegistry, schemaID)
+		if err != nil {
+			return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
+		}
+		runCtx.attrCaches[schemaID] = cache
+	}
+
 	summary := InitSummary{}
 	var schemaErrors []error
 
@@ -272,21 +283,10 @@ func prepareSchemaInit(ctx context.Context, runCtx *initRunContext, schemaID int
 	state := &schemaInitState{
 		schemaID: schemaID,
 	}
-	state.attrCache = resolveSchemaAttrCache(runCtx, schemaID)
+	// Cache was resolved and validated by the processInitSchemas pre-flight (#193).
+	state.attrCache = runCtx.attrCaches[schemaID]
 	state.batchSize = resolveInitBatchSize(runCtx, schemaID, state.attrCache)
 	return state, nil
-}
-
-func resolveSchemaAttrCache(runCtx *initRunContext, schemaID int16) forma.SchemaAttributeCache {
-	if runCtx.schemaRegistry == nil {
-		return nil
-	}
-	_, cache, err := runCtx.schemaRegistry.GetSchemaAttributeCacheByID(schemaID)
-	if err != nil {
-		runCtx.logger.Warn("schema registry lookup failed, using generic projection", zap.Int16("schema_id", schemaID), zap.Error(err))
-		return nil
-	}
-	return cache
 }
 
 func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
