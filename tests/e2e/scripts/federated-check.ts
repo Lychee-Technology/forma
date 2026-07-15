@@ -44,6 +44,7 @@ interface Args {
   sampleSize: number;
   seed: string;
   fullScan: boolean;
+  requireDuckDB: boolean;
 }
 
 function parseArgs(): Args {
@@ -52,6 +53,8 @@ function parseArgs(): Args {
   let sampleSize = 100;
   let seed = DEFAULT_SEED;
   let fullScan = false;
+  // Also honor an env flag so CI can require the DuckDB route without args.
+  let requireDuckDB = process.env.REQUIRE_DUCKDB === '1' || process.env.REQUIRE_DUCKDB === 'true';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schema' && args[i + 1]) {
@@ -62,9 +65,11 @@ function parseArgs(): Args {
       seed = args[++i];
     } else if (args[i] === '--full-scan') {
       fullScan = true;
+    } else if (args[i] === '--require-duckdb') {
+      requireDuckDB = true;
     }
   }
-  return { schema, sampleSize, seed, fullScan };
+  return { schema, sampleSize, seed, fullScan, requireDuckDB };
 }
 
 interface DataRecord {
@@ -97,19 +102,35 @@ interface ComparisonResult {
   notes: string[];
 }
 
-/** POST advanced_query on the federated path with a match-all condition. */
+/**
+ * POST advanced_query on the federated path with a match-all condition. When
+ * forceDuckDB is set, preferred_tiers excludes hot ("warm","cold"), which the
+ * hybrid router treats as cold-only and serves from DuckDB regardless of page
+ * size — the only way to reach the DuckDB/S3 path via the API (hot page sizes
+ * <1000 otherwise route to Postgres). Requires the rows to be flushed to
+ * warm/cold parquet first.
+ */
 async function queryFederated(
   schemaName: string,
   page: number,
   itemsPerPage: number,
+  forceDuckDB: boolean,
 ): Promise<FederatedQueryResult | null> {
+  const federated: Record<string, unknown> = { enabled: true, include_execution_plan: true };
+  if (forceDuckDB) {
+    federated.preferred_tiers = ['warm', 'cold'];
+    // The DuckDB read needs to know where the parquet lives. Point read_parquet
+    // at the flushed delta layout (s3://<bucket>/<prefix>/<schemaID>/*.parquet),
+    // mirroring how the Go production harness supplies its glob.
+    federated.s3_parquet_path_template = `s3://${config.s3.bucket}/${config.s3.prefix}/{{.SchemaID}}/*.parquet`;
+  }
   const response = await post<FederatedQueryResult>('/api/v1/advanced_query', {
     schema_name: schemaName,
     // Empty AND composite renders to "1=1" server-side (match all).
     condition: { l: 'and', c: [] },
     page,
     items_per_page: itemsPerPage,
-    federated: { enabled: true, include_execution_plan: true },
+    federated,
   });
   if (!response.ok || !response.data) {
     console.error(`Federated API error for ${schemaName}: ${response.error}`);
@@ -132,13 +153,14 @@ async function collectFederatedRowIds(
   schemaName: string,
   targetSet: Set<string>,
   formaCount: number,
+  forceDuckDB: boolean,
 ): Promise<{ found: Set<string>; route: string }> {
   const found = new Set<string>();
   let route = 'unknown';
   const maxPages = Math.ceil(formaCount / API_PAGE_SIZE) + 2;
 
   for (let page = 1; page <= maxPages && found.size < targetSet.size; page++) {
-    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE);
+    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE, forceDuckDB);
     if (!pageResult) break;
     if (page === 1) route = routeLabel(pageResult.execution_plan);
     if (pageResult.data.length === 0) break;
@@ -177,7 +199,7 @@ async function compareSchema(
   }
 
   result.postgresCount = await getPostgresCount(sql, schemaId);
-  const countProbe = await queryFederated(schemaName, 1, 1);
+  const countProbe = await queryFederated(schemaName, 1, 1, args.requireDuckDB);
   if (countProbe) {
     result.formaCount = countProbe.total_records;
     result.route = routeLabel(countProbe.execution_plan);
@@ -200,7 +222,7 @@ async function compareSchema(
     return result;
   }
 
-  const { found, route } = await collectFederatedRowIds(schemaName, targetSet, result.formaCount);
+  const { found, route } = await collectFederatedRowIds(schemaName, targetSet, result.formaCount, args.requireDuckDB);
   if (route !== 'unknown') result.route = route;
 
   for (const rowId of targetIds) {
@@ -214,13 +236,17 @@ async function compareSchema(
   const checksumMatch = result.formaChecksum === result.postgresChecksum;
   const hasOverlap = result.matchingRecords > 0;
   const allFound = result.missingInForma.length === 0;
+  // When required, the read must have actually gone through DuckDB/S3 — a
+  // postgres-only route would silently reduce this to a hot-tier check.
+  const routeOk = !args.requireDuckDB || result.route === 'duckdb';
 
-  result.passed = countMatch && checksumMatch && hasOverlap && allFound;
+  result.passed = countMatch && checksumMatch && hasOverlap && allFound && routeOk;
 
   if (!countMatch) result.notes.push(`Count mismatch: Forma=${result.formaCount}, Postgres=${result.postgresCount}`);
   if (!checksumMatch) result.notes.push(`Checksum mismatch: Forma=${result.formaChecksum}, Postgres=${result.postgresChecksum}`);
   if (!hasOverlap) result.notes.push('Zero sample overlap: federated result returned none of the sampled rows');
   if (!allFound) result.notes.push(`${result.missingInForma.length} sampled row(s) missing from the federated result`);
+  if (!routeOk) result.notes.push(`Expected DuckDB route but got '${result.route}' (is the server DUCKDB_ENABLED and are rows flushed?)`);
   // Trim for report readability (after assertions are computed).
   result.missingInForma = result.missingInForma.slice(0, 20);
   result.notes.push(`Federated route: ${result.route}`);

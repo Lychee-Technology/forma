@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma"
@@ -37,6 +38,16 @@ func EnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// EnvBool reads a boolean env var, treating "true"/"1" (case-insensitive) as
+// true. Any other non-empty value is false; an unset var returns the default.
+func EnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return strings.EqualFold(value, "true") || value == "1"
 }
 
 func DatabaseConfigFromEnv(defaults DBDefaults) forma.DatabaseConfig {

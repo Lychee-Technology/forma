@@ -33,6 +33,16 @@ const routePostgres = new Counter('forma_route_postgres');
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN || '';
 const SCHEMAS = (__ENV.SCHEMAS || 'lead,visit,log').split(',');
+// When set, the run must observe at least one DuckDB-routed query (a real
+// federated read). Requires the server to be DUCKDB_ENABLED and data flushed.
+const REQUIRE_DUCKDB = __ENV.REQUIRE_DUCKDB === '1' || __ENV.REQUIRE_DUCKDB === 'true';
+// Schema used for DuckDB-forced requests. Must be a flat schema — nested
+// dotted attributes (lead/visit) currently hit a federated-projection binder
+// bug in DuckDB; 'log' is flat and reads cleanly.
+const DUCKDB_SCHEMA = __ENV.DUCKDB_SCHEMA || 'log';
+// Where the flushed parquet lives, for the DuckDB read (matches cdc-flush).
+const S3_BUCKET = __ENV.S3_BUCKET || 'forma-cdc';
+const S3_PREFIX = __ENV.S3_PREFIX || 'delta';
 
 // Scenario definitions
 interface ScenarioConfig {
@@ -87,6 +97,9 @@ export const options = {
     // Standard k6 thresholds
     'http_req_duration': ['p(95)<500'],
     'http_req_failed': ['rate<0.01'],
+    // When required, at least one query must actually route through DuckDB —
+    // otherwise the "federated" load never left Postgres.
+    ...(REQUIRE_DUCKDB ? { 'forma_route_duckdb': ['count>0'] } : {}),
   },
 };
 
@@ -224,14 +237,22 @@ function conditionFor(schema: string): Record<string, unknown> {
 }
 
 // Test: Advanced query with conditions on the federated path.
-function testAdvancedQuery(schema: string): void {
+// When forceDuckDB is set, preferred_tiers excludes hot so the hybrid router
+// serves the query from DuckDB/S3 (the only way to reach the federated path via
+// the API at page sizes <1000); requires flushed warm/cold data.
+function testAdvancedQuery(schema: string, forceDuckDB: boolean): void {
+  const federated: Record<string, unknown> = { enabled: true, include_execution_plan: true };
+  if (forceDuckDB) {
+    federated.preferred_tiers = ['warm', 'cold'];
+    federated.s3_parquet_path_template = `s3://${S3_BUCKET}/${S3_PREFIX}/{{.SchemaID}}/*.parquet`;
+  }
   const payload = {
     schema_name: schema,
     condition: conditionFor(schema),
     page: randomInt(1, 5),
     items_per_page: randomElement([20, 50, 100]),
     // Route through the federated engine and ask it to report the route it took.
-    federated: { enabled: true, include_execution_plan: true },
+    federated,
   };
 
   const url = `${BASE_URL}/api/v1/advanced_query`;
@@ -373,9 +394,12 @@ export default function (): void {
     } else if (testRoll < 0.60) {
       // 20%: Sorted queries
       testSortedQuery(schema);
+    } else if (testRoll < 0.70) {
+      // 10%: Advanced queries (hybrid routing, typically Postgres for small pages)
+      testAdvancedQuery(schema, false);
     } else if (testRoll < 0.80) {
-      // 20%: Advanced queries with conditions
-      testAdvancedQuery(schema);
+      // 10%: Advanced queries forced onto the DuckDB/S3 federated path (flat schema)
+      testAdvancedQuery(DUCKDB_SCHEMA, true);
     } else if (testRoll < 0.90) {
       // 10%: Single record fetches
       testGetSingleRecord(schema);

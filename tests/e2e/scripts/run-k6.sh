@@ -34,11 +34,15 @@ if [ ! -f "$BUNDLE_PATH" ] || [ "k6/scenarios.ts" -nt "$BUNDLE_PATH" ]; then
 fi
 
 # Seed data before the load test — an empty DB makes every check vacuously
-# true. Skip with SKIP_SEED=1 when the DB is already populated.
+# true. Also flush to S3 so warm/cold tiers exist and the DuckDB-forced
+# requests have data to read (a hot-only DB reduces the "federated" load to
+# Postgres). Skip with SKIP_SEED=1 when the stack is already populated.
 if [ "${SKIP_SEED:-0}" != "1" ]; then
   echo "Seeding data before load test (set SKIP_SEED=1 to skip)..." >&2
   bun run register-schemas
   bun run gen-data
+  echo "Flushing to S3 so warm/cold tiers exist..." >&2
+  bun run cdc-flush
 fi
 
 if command -v k6 >/dev/null 2>&1; then

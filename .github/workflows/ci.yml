@@ -140,7 +140,7 @@ jobs:
             --schema-table schema_registry_dev --eav-table eav_data_dev \
             --entity-main-table entity_main_dev --schema-dir cmd/server/schemas
 
-      - name: Start server
+      - name: Start server (DuckDB federated engine enabled)
         env:
           DB_HOST: localhost
           DB_PORT: 5432
@@ -150,6 +150,12 @@ jobs:
           DB_SSL_MODE: disable
           PORT: 8080
           SCHEMA_DIR: cmd/server/schemas
+          # Enable the federated DuckDB engine against the compose RustFS so the
+          # smoke genuinely exercises the warm/cold S3 read path, not just Postgres.
+          DUCKDB_ENABLED: "true"
+          S3_ENDPOINT: http://localhost:9000
+          S3_ACCESS_KEY: minio
+          S3_SECRET_KEY: minio_password
         run: |
           ./build/server &
           for i in $(seq 1 30); do
@@ -158,14 +164,25 @@ jobs:
           done
           echo "Server did not become ready" >&2; exit 1
 
-      - name: Seed data + CDC flush + k6 smoke
+      - name: Seed + flush + federated consistency + DuckDB route
         working-directory: tests/e2e
         run: |
           bun install
           bun run register-schemas
           bun run gen-data -- --schema all --count 2000
           bun run cdc-flush
-          SKIP_SEED=1 bun run k6-smoke
+          # Row-identity consistency across all schemas (hybrid → Postgres route).
+          bun run federated-check -- --schema all
+          # Prove the federated read actually goes through DuckDB/S3. 'log' is a
+          # flat schema; lead/visit have nested dotted attributes that currently
+          # hit a federated-projection binder bug (tracked separately).
+          bun run federated-check -- --schema log --require-duckdb
+
+      - name: k6 smoke (require a DuckDB route)
+        working-directory: tests/e2e
+        env:
+          REQUIRE_DUCKDB: "1"
+        run: SKIP_SEED=1 bun run k6-smoke
 
       - name: Upload k6 report
         if: always()

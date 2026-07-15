@@ -167,6 +167,15 @@ bun run federated-check -- --full-scan
 
 Each run writes a versioned report `reports/federated-check-<runId>.json`.
 
+By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). To prove the read actually goes through **DuckDB/S3**, start the server with the federated engine enabled and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
+
+```bash
+# server env: DUCKDB_ENABLED=true S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
+bun run federated-check -- --schema log --require-duckdb
+```
+
+This forces `preferred_tiers=["warm","cold"]` (which the router serves from DuckDB) and fails unless `execution_plan.routing.used_duckdb` is true. Requires the rows to be flushed first (`cdc-flush`). Use a **flat** schema like `log`: `lead`/`visit` have nested dotted attributes (`contact.annualIncome`) that currently hit a federated-projection binder bug in DuckDB (tracked as a follow-up).
+
 ### Clean S3 (repeatable runs)
 
 Deletes CDC objects (`delta/`, `base/`, `manifest/`) so a re-run starts clean. Destructive — test bucket only:
@@ -237,6 +246,9 @@ See `.env.example` for all available configuration options:
 | `CDC_EST_ROW_BYTES` | `0` | Estimated bytes per row (0 to auto) for CDC batch sizing |
 | `CDC_MAX_BATCH_BYTES` | `0` | Max bytes per CDC batch (0 to auto) |
 | `TOOL_TIMEOUT_MS` | `300000` | Timeout for each CDC tool subprocess (killed on expiry) |
+| `DUCKDB_ENABLED` | `false` | Server: enable the federated DuckDB engine (reads warm/cold S3 parquet) |
+| `DUCKDB_S3_ENDPOINT` | `$S3_ENDPOINT` | Server: S3 endpoint for the DuckDB engine (falls back to `S3_ENDPOINT`) |
+| `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
 ## Reports
 
