@@ -1,0 +1,173 @@
+{
+  "actualEndAt": {
+    "attributeID": 1,
+    "valueType": "date"
+  },
+  "actualStartAt": {
+    "attributeID": 2,
+    "valueType": "date"
+  },
+  "attendees": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "contactSnapshot.annualIncome": {
+    "attributeID": 4,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.annualIncomeCurrency": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "contactSnapshot.birthday": {
+    "attributeID": 6,
+    "valueType": "date"
+  },
+  "contactSnapshot.company": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "contactSnapshot.currentResidence": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "contactSnapshot.email": {
+    "attributeID": 9,
+    "valueType": "text"
+  },
+  "contactSnapshot.employmentYear": {
+    "attributeID": 10,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.familySize": {
+    "attributeID": 11,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.isBlacklisted": {
+    "attributeID": 12,
+    "valueType": "bool"
+  },
+  "contactSnapshot.lineId": {
+    "attributeID": 13,
+    "valueType": "text"
+  },
+  "contactSnapshot.maritalStatus": {
+    "attributeID": 14,
+    "valueType": "text"
+  },
+  "contactSnapshot.memo": {
+    "attributeID": 15,
+    "valueType": "text"
+  },
+  "contactSnapshot.name": {
+    "attributeID": 16,
+    "valueType": "text",
+    "required_policy": "required_if_parent_present"
+  },
+  "contactSnapshot.nameKana": {
+    "attributeID": 17,
+    "valueType": "text"
+  },
+  "contactSnapshot.nameNative": {
+    "attributeID": 18,
+    "valueType": "text"
+  },
+  "contactSnapshot.occupation": {
+    "attributeID": 19,
+    "valueType": "text"
+  },
+  "contactSnapshot.phones": {
+    "attributeID": 20,
+    "valueType": "text"
+  },
+  "contactSnapshot.preferredChannel": {
+    "attributeID": 21,
+    "valueType": "text"
+  },
+  "contactSnapshot.preferredLanguage": {
+    "attributeID": 22,
+    "valueType": "text"
+  },
+  "contactSnapshot.primaryPhone": {
+    "attributeID": 23,
+    "valueType": "text"
+  },
+  "contactSnapshot.wechatId": {
+    "attributeID": 24,
+    "valueType": "text"
+  },
+  "createdAt": {
+    "attributeID": 25,
+    "valueType": "date"
+  },
+  "feedback": {
+    "attributeID": 26,
+    "valueType": "text"
+  },
+  "id": {
+    "attributeID": 27,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "leadId": {
+    "attributeID": 28,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "logs": {
+    "attributeID": 29,
+    "valueType": "text"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 30,
+    "valueType": "date"
+  },
+  "propertyId": {
+    "attributeID": 31,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "propertySnapshot.address": {
+    "attributeID": 32,
+    "valueType": "text"
+  },
+  "propertySnapshot.code": {
+    "attributeID": 33,
+    "valueType": "text"
+  },
+  "propertySnapshot.price": {
+    "attributeID": 34,
+    "valueType": "numeric"
+  },
+  "propertySnapshot.rent": {
+    "attributeID": 35,
+    "valueType": "numeric"
+  },
+  "propertySnapshot.title": {
+    "attributeID": 36,
+    "valueType": "text"
+  },
+  "scheduledEndAt": {
+    "attributeID": 37,
+    "valueType": "date"
+  },
+  "scheduledStartAt": {
+    "attributeID": 38,
+    "valueType": "date",
+    "required_policy": "required_always"
+  },
+  "status": {
+    "attributeID": 39,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "updatedAt": {
+    "attributeID": 40,
+    "valueType": "date"
+  },
+  "userId": {
+    "attributeID": 41,
+    "valueType": "text",
+    "required_policy": "required_always"
+  }
+}

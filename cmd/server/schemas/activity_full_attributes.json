@@ -1,0 +1,40 @@
+{
+  "at": {
+    "attributeID": 1,
+    "valueType": "date",
+    "required_policy": "required_always"
+  },
+  "direction": {
+    "attributeID": 2,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "id": {
+    "attributeID": 3,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "leadId": {
+    "attributeID": 4,
+    "valueType": "text"
+  },
+  "nextFollowUpAt": {
+    "attributeID": 5,
+    "valueType": "date"
+  },
+  "summary": {
+    "attributeID": 6,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "type": {
+    "attributeID": 7,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "userId": {
+    "attributeID": 8,
+    "valueType": "text",
+    "required_policy": "required_always"
+  }
+}

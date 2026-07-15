@@ -1,0 +1,24 @@
+{
+  "company": {
+    "attributeID": 1,
+    "valueType": "text"
+  },
+  "email": {
+    "attributeID": 2,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "id": {
+    "attributeID": 3,
+    "valueType": "text",
+    "required_policy": "required_always"
+  },
+  "name": {
+    "attributeID": 4,
+    "valueType": "text"
+  },
+  "phone": {
+    "attributeID": 5,
+    "valueType": "text"
+  }
+}
