@@ -194,6 +194,14 @@ func (h *TestHarness) StopPostgres(ctx context.Context) error {
 	return nil
 }
 
+// RustFS credentials used by StartS3. They intentionally match the historical
+// MinIO defaults so callers can switch S3 backends without touching client
+// configuration.
+const (
+	RustFSAccessKey = "minioadmin"
+	RustFSSecretKey = "minioadmin"
+)
+
 // StartS3 starts an S3-compatible object store container (RustFS, the same
 // image as deploy/docker-compose.yml) and returns its endpoint. RustFS replaced
 // the archived minio/minio image, which no longer receives updates. Caller is
