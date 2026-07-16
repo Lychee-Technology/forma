@@ -12,6 +12,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
 
@@ -309,13 +310,11 @@ func sortedAttrKeys(cache forma.SchemaAttributeCache) []string {
 	return keys
 }
 
+// safeColumnAlias derives the parquet column name for an attribute. It
+// delegates to the shared writer/reader contract in sqlgen: the federated
+// reader projects the same names back out of parquet (#260).
 func safeColumnAlias(name string) string {
-	replacer := strings.NewReplacer("`", "", ".", "_", " ", "_", "[", "", "]", "")
-	alias := replacer.Replace(name)
-	if alias == "" {
-		alias = "attr"
-	}
-	return alias
+	return sqlgen.ParquetAttrColumn(name)
 }
 
 func duckTypeForValue(v forma.ValueType) string {
