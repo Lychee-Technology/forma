@@ -120,24 +120,11 @@ func (s *entityRelationService) fetchParents(ctx context.Context, rel RelationDe
 		return nil, fmt.Errorf("get parent schema %s: %w", rel.ParentSchema, err)
 	}
 
-	var cond forma.Condition
-	if len(ids) == 1 {
-		cond = &forma.KvCondition{Attr: rel.ParentIDAttr, Value: ids[0]}
-	} else {
-		conditions := make([]forma.Condition, 0, len(ids))
-		for _, id := range ids {
-			conditions = append(conditions, &forma.KvCondition{Attr: rel.ParentIDAttr, Value: id})
-		}
-		cond = &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: conditions}
-	}
-
-	page, err := s.repository.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
-		Tables:    s.resolveTables(),
-		SchemaID:  parentSchemaID,
-		Condition: cond,
-		Limit:     len(ids),
-		Offset:    0,
-	})
+	// One set-based lookup for the whole page (#268): expanding per-id
+	// equality conditions into an OR composite degenerated into N correlated
+	// EXISTS subqueries against the EAV table.
+	page, err := s.repository.QueryPersistentRecordsByAttrValues(
+		ctx, s.resolveTables(), parentSchemaID, rel.ParentIDAttr, ids, len(ids))
 	if err != nil {
 		return nil, fmt.Errorf("query parent records for schema %s: %w", rel.ParentSchema, err)
 	}

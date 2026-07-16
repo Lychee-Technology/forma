@@ -195,7 +195,7 @@ bun run build-k6
 ### Run Scenarios
 
 ```bash
-# Smoke test (5 VUs, 30s)
+# Smoke test (3 VUs, 30s steady)
 bun run k6-smoke
 
 # Full test (30 VUs, 2m)
@@ -212,17 +212,16 @@ The `k6-*` scripts prefer a local `k6` binary. If `k6` is not installed, they au
 
 ### k6 Thresholds
 
-Metrics are split by the route the engine actually reports in `execution_plan.routing` (only the `advanced_query` path carries one), not by which test function ran.
+Since #190/#243 the k6 smoke is a **functional concurrency gate, not a latency SLA**: precise latency numbers are owned by `benchmark-smoke` on dedicated hardware. All requests run the OLTP path (`federated.enabled` is never set); the DuckDB/S3 route is proven separately by `federated-check --require-duckdb` in CI.
 
-| Metric | Threshold | Description |
-|--------|-----------|-------------|
-| `forma_federated_query_duration` | p95 < 200ms | Advanced queries the engine routed to DuckDB |
-| `forma_pg_routed_query_duration` | p95 < 100ms | Advanced queries the engine served Postgres-only |
-| `forma_query_duration` | p95 < 100ms | General (OLTP GET) query latency |
-| `forma_query_success` | rate > 99% | Query success rate |
-| `http_req_failed` | rate < 1% | HTTP error rate |
+| Metric | Threshold | Role |
+|--------|-----------|------|
+| `forma_query_success` | rate > 97% | Functional gate (the real signal) |
+| `http_req_failed` | rate < 3% | Functional gate (the real signal) |
+| `forma_query_duration` | p95 < 8000ms | Hung/broken-server ceiling, not an SLA |
+| `http_req_duration` | p95 < 8000ms | Hung/broken-server ceiling, not an SLA |
 
-`forma_route_duckdb` / `forma_route_postgres` counters show the routing split. Note: with `items_per_page` ≤ 100 and shallow offsets the hybrid router often serves advanced queries Postgres-only, so `forma_federated_query_duration` may have few samples in the smoke scenario — that reflects real routing, not a bug.
+Every request is tagged with `qtype` (`simple_list`, `sorted_list`, `advanced_query`, `search`, `get_by_id`, `get_by_id_prefetch`) and `schema`, so a tail blowup can be attributed from `http_req_duration{qtype:…}` / `forma_query_duration{schema:…}` submetrics without re-analyzing the raw report (#263/#268 required exactly that attribution).
 
 ## Environment Variables
 

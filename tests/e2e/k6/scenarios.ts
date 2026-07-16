@@ -146,13 +146,17 @@ function testSimpleQuery(schema: string): void {
   const itemsPerPage = randomElement([10, 20, 50, 100]);
   
   const url = `${BASE_URL}/api/v1/${schema}?page=${page}&items_per_page=${itemsPerPage}`;
+  // qtype/schema tags make http_req_duration submetrics attributable: the #263
+  // tail turned out to be one schema's requests (#268), which the untagged
+  // aggregate could not show without downloading the raw report.
+  const tags = { qtype: 'simple_list', schema };
   const start = Date.now();
-  
-  const res = http.get(url, { headers: getHeaders() });
+
+  const res = http.get(url, { headers: getHeaders(), tags });
   const duration = Date.now() - start;
-  
-  queryDuration.add(duration);
-  
+
+  queryDuration.add(duration, tags);
+
   const success = check(res, {
     'status is 200': (r) => r.status === 200,
     'response has data': (r) => {
@@ -185,13 +189,14 @@ function testSortedQuery(schema: string): void {
   const itemsPerPage = randomElement([20, 50]);
   
   const url = `${BASE_URL}/api/v1/${schema}?page=1&items_per_page=${itemsPerPage}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+  const tags = { qtype: 'sorted_list', schema };
   const start = Date.now();
-  
-  const res = http.get(url, { headers: getHeaders() });
+
+  const res = http.get(url, { headers: getHeaders(), tags });
   const duration = Date.now() - start;
-  
+
   // Sorted list is an OLTP GET (no execution plan); it is not a federated route.
-  queryDuration.add(duration);
+  queryDuration.add(duration, tags);
 
   const success = check(res, {
     'sorted query status 200': (r) => r.status === 200,
@@ -243,12 +248,13 @@ function testAdvancedQuery(schema: string): void {
   };
 
   const url = `${BASE_URL}/api/v1/advanced_query`;
+  const tags = { qtype: 'advanced_query', schema };
   const start = Date.now();
 
-  const res = http.post(url, JSON.stringify(payload), { headers: getHeaders() });
+  const res = http.post(url, JSON.stringify(payload), { headers: getHeaders(), tags });
   const duration = Date.now() - start;
 
-  queryDuration.add(duration);
+  queryDuration.add(duration, tags);
 
   const success = check(res, {
     'advanced query status 200': (r) => r.status === 200,
@@ -276,13 +282,14 @@ function testCrossSchemaSearch(): void {
   
   // The search endpoint requires a `schemas` CSV param (else 400).
   const url = `${BASE_URL}/api/v1/search?q=${encodeURIComponent(searchTerm)}&schemas=${encodeURIComponent(SCHEMAS.join(','))}&page=1&items_per_page=20`;
+  const tags = { qtype: 'search', schema: 'multi' };
   const start = Date.now();
-  
-  const res = http.get(url, { headers: getHeaders() });
+
+  const res = http.get(url, { headers: getHeaders(), tags });
   const duration = Date.now() - start;
-  
+
   // Cross-schema search is its own endpoint (no execution plan); not a federated route.
-  queryDuration.add(duration);
+  queryDuration.add(duration, tags);
 
   const success = check(res, {
     'search status 200': (r) => r.status === 200,
@@ -300,7 +307,10 @@ function testCrossSchemaSearch(): void {
 function testGetSingleRecord(schema: string): void {
   // First, get a page of records to extract an ID
   const listUrl = `${BASE_URL}/api/v1/${schema}?page=1&items_per_page=10`;
-  const listRes = http.get(listUrl, { headers: getHeaders() });
+  const listRes = http.get(listUrl, {
+    headers: getHeaders(),
+    tags: { qtype: 'get_by_id_prefetch', schema },
+  });
   
   if (listRes.status !== 200) {
     queryErrors.add(1);
@@ -327,12 +337,13 @@ function testGetSingleRecord(schema: string): void {
   
   // Get single record
   const url = `${BASE_URL}/api/v1/${schema}/${rowId}`;
+  const tags = { qtype: 'get_by_id', schema };
   const start = Date.now();
-  
-  const res = http.get(url, { headers: getHeaders() });
+
+  const res = http.get(url, { headers: getHeaders(), tags });
   const duration = Date.now() - start;
-  
-  queryDuration.add(duration);
+
+  queryDuration.add(duration, tags);
   
   const success = check(res, {
     'get single status 200': (r) => r.status === 200,
