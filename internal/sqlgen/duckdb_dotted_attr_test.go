@@ -128,3 +128,18 @@ func TestBuildNonKeysetOrderBy_DottedEAVAttrUsesAlias(t *testing.T) {
 	}
 	require.Equal(t, "contact_note DESC, row_id ASC", buildNonKeysetOrderBy(q))
 }
+
+// TestBuildSchemaProjection_AliasCollisionFails pins the lossy-fold guard:
+// "contact.name" and "contact_name" both fold to parquet column
+// "contact_name"; projecting both would silently serve one attribute's
+// values as the other's, so the reader must refuse.
+func TestBuildSchemaProjection_AliasCollisionFails(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"contact_name": {AttributeID: 2, ValueType: forma.ValueTypeText},
+	}
+	_, err := BuildSchemaProjection(30, cache)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "contact.name")
+	require.Contains(t, err.Error(), "contact_name")
+}

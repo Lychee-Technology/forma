@@ -232,7 +232,10 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 		return exportSQLPlan{}, fmt.Errorf("build export SQL for schema %d: attribute metadata cache is required but empty: %w", schemaID, ErrSchemaAttrCacheUnavailable)
 	}
 
-	projection := buildSchemaDrivenProjection(attrCache)
+	projection, err := buildSchemaDrivenProjection(attrCache)
+	if err != nil {
+		return exportSQLPlan{}, fmt.Errorf("build export projection for schema %d: %w", schemaID, err)
+	}
 	plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, spec.activeOnly)
 	plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
 	mainSelectCols := append(spec.baseSelectColumns(), projection.mainProjections...)

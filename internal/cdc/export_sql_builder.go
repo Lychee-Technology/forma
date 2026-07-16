@@ -95,7 +95,7 @@ type schemaDrivenProjection struct {
 	eavAttrIDs      []int16
 }
 
-func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDrivenProjection {
+func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDrivenProjection, error) {
 	mainColumns := []string{
 		"ltbase_row_id",
 		"ltbase_schema_id",
@@ -116,9 +116,15 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDri
 	eavSelect := make([]string, 0, len(attrCache))
 	eavAttrIDs := make([]int16, 0, len(attrCache))
 
+	aliasToAttr := make(map[string]string, len(attrCache))
 	for _, attrName := range sortedAttrKeys(attrCache) {
 		meta := attrCache[attrName]
 		alias := safeColumnAlias(attrName)
+		if prev, ok := aliasToAttr[alias]; ok {
+			return schemaDrivenProjection{}, fmt.Errorf(
+				"attributes %q and %q both map to parquet column %q; refusing to export ambiguous columns", prev, attrName, alias)
+		}
+		aliasToAttr[alias] = attrName
 		if meta.ColumnBinding != nil {
 			colName := string(meta.ColumnBinding.ColumnName)
 			if _, ok := mainColSet[colName]; !ok {
@@ -143,7 +149,7 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDri
 		eavAgg:          eavAgg,
 		eavSelect:       eavSelect,
 		eavAttrIDs:      eavAttrIDs,
-	}
+	}, nil
 }
 
 func buildEAVAggregationSQL(eQueryEsc string, eavAgg []string) string {
