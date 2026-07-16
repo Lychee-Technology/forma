@@ -44,7 +44,7 @@
 
 - `go test ./internal -run TestIntegration_`
 - `go test ./internal -run TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration`
-- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestExecuteDuckDBFederatedQuery_ClientUnavailable|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_BasicExecution|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestBuildDuckDBQuery_InvalidTemplateSyntax|TestRenderDuckDBQuery_ParameterMerging`
+- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestRenderDuckDBQuery_ParameterMerging`
 
 用例清单：
 
@@ -62,12 +62,8 @@
   验收条件：优化查询返回记录、总数及属性符合预期。
 - `A-GI-007` `TestEvaluateRoutingPolicy_VariousStrategies`  
   验收条件：`hybrid`/`cost-first`/禁用配置下路由决策符合策略。
-- `A-GI-008` `TestExecuteDuckDBFederatedQuery_ClientUnavailable`  
-  验收条件：DuckDB 客户端不可用时返回明确错误，不 silent fail。
 - `A-GI-009` `TestNewDuckDBClient_HealthCheck`  
   验收条件：DuckDB client 初始化成功且健康检查通过。
-- `A-GI-010` `TestStreamDuckDBFederatedQuery_BasicExecution`  
-  验收条件：模板 SQL 可执行并返回预期行数。
 - `A-GI-011` `TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion`  
   验收条件：脏 ID 排除子句构造正确（包含 `NOT IN` 且参数正确）。
 - `A-GI-012` `TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation`  
@@ -76,8 +72,8 @@
   验收条件：模板渲染出的 SQL 包含预期 `LIMIT/OFFSET` 语义。
 - `A-GI-014` `TestExecuteDuckDBFederatedQuery_NilQuery`  
   验收条件：空查询入参返回明确错误。
-- `A-GI-015` `TestBuildDuckDBQuery_InvalidTemplateSyntax`  
-  验收条件：异常模板不会导致进程崩溃（允许返回错误）。
+- `A-GI-015` `TestBuildDuckDBQuery_PropagatesRenderError` (`internal/sqlgen`)  
+  验收条件：模板渲染错误由 `BuildDuckDBQuery` 向上抛出（surfaced），不被吞掉。
 - `A-GI-016` `TestRenderDuckDBQuery_ParameterMerging`  
   验收条件：where 参数合并顺序和内容正确。
 

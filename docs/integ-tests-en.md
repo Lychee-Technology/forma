@@ -44,7 +44,7 @@ Execution entry:
 
 - `go test ./internal -run TestIntegration_`
 - `go test ./internal -run TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration`
-- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestExecuteDuckDBFederatedQuery_ClientUnavailable|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_BasicExecution|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestBuildDuckDBQuery_InvalidTemplateSyntax|TestRenderDuckDBQuery_ParameterMerging`
+- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestRenderDuckDBQuery_ParameterMerging`
 
 Test cases:
 
@@ -62,12 +62,8 @@ Test cases:
   Acceptance: optimized query returns expected records, total, and attributes.
 - `A-GI-007` `TestEvaluateRoutingPolicy_VariousStrategies`  
   Acceptance: routing decisions match strategy for `hybrid`, `cost-first`, and disabled config.
-- `A-GI-008` `TestExecuteDuckDBFederatedQuery_ClientUnavailable`  
-  Acceptance: explicit error returned when DuckDB client is unavailable; no silent failure.
 - `A-GI-009` `TestNewDuckDBClient_HealthCheck`  
   Acceptance: DuckDB client initializes successfully and health check passes.
-- `A-GI-010` `TestStreamDuckDBFederatedQuery_BasicExecution`  
-  Acceptance: template SQL executes and returns expected row count.
 - `A-GI-011` `TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion`  
   Acceptance: dirty-ID exclusion clause is constructed correctly (`NOT IN` + correct args).
 - `A-GI-012` `TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation`  
@@ -76,8 +72,8 @@ Test cases:
   Acceptance: rendered SQL includes expected `LIMIT/OFFSET` semantics.
 - `A-GI-014` `TestExecuteDuckDBFederatedQuery_NilQuery`  
   Acceptance: nil query input returns explicit error.
-- `A-GI-015` `TestBuildDuckDBQuery_InvalidTemplateSyntax`  
-  Acceptance: invalid template does not crash process (error is acceptable).
+- `A-GI-015` `TestBuildDuckDBQuery_PropagatesRenderError` (`internal/sqlgen`)  
+  Acceptance: a template render error is propagated (surfaced) by `BuildDuckDBQuery` rather than swallowed.
 - `A-GI-016` `TestRenderDuckDBQuery_ParameterMerging`  
   Acceptance: merged where-args order and content are correct.
 
