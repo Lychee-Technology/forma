@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"testing"
+	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -134,4 +135,29 @@ func TestBuildNonKeysetOrderBy_AlwaysAppendsRowIDTiebreak(t *testing.T) {
 		},
 	}
 	require.Equal(t, "qty ASC, row_id ASC", buildNonKeysetOrderBy(q))
+}
+
+// TestBuildDuckDBQuery_PropagatesRenderError verifies that a render-time
+// (template Execute) failure inside BuildDuckDBQuery is surfaced to the caller
+// rather than swallowed. It replaces the retired federated stub
+// TestBuildDuckDBQuery_InvalidTemplateSyntax (#196), whose premise was stale:
+// BuildDuckDBQuery receives an already-parsed *template.Template, so a *parse*
+// error cannot occur at that boundary — only an Execute error can. A template
+// calling ident on an invalid identifier forces exactly that Execute error,
+// because RenderSQLTemplate re-binds "ident" to the validating renderer.
+func TestBuildDuckDBQuery_PropagatesRenderError(t *testing.T) {
+	// A placeholder ident func is registered so the template parses; the real
+	// validating ident is injected by RenderSQLTemplate at render time.
+	tpl := template.Must(template.New("bad").Funcs(template.FuncMap{
+		"ident": func(name string) string { return name },
+	}).Parse(`SELECT * FROM {{ident .BadIdent}}`))
+
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
+	}
+
+	// dual == nil forces the generic render path through RenderSQLTemplate.
+	_, _, err := BuildDuckDBQuery(tpl, map[string]any{"BadIdent": "bad-name"}, q, nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid SQL identifier")
 }
