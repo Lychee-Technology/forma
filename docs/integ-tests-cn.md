@@ -43,8 +43,9 @@
 执行入口：
 
 - `go test ./internal -run TestIntegration_`
-- `go test ./internal -run TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration`
-- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestRenderDuckDBQuery_ParameterMerging`
+- `go test ./internal -run 'TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration'`
+- `go test ./internal/federated -run 'TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestAppendDirtyExclusion|TestFinalizeDuckDBExecutionPlan_CaptureDisabled|TestBuildDuckDBQuery_AdvancedTemplate|TestExecuteDuckDBFederatedQuery_NilQuery'`
+- `go test ./internal/sqlgen -run 'TestBuildDuckDBQuery_PropagatesRenderError|TestBuildDuckDBQuery_KeysetArgsBindLast'`
 
 用例清单：
 
@@ -64,18 +65,18 @@
   验收条件：`hybrid`/`cost-first`/禁用配置下路由决策符合策略。
 - `A-GI-009` `TestNewDuckDBClient_HealthCheck`  
   验收条件：DuckDB client 初始化成功且健康检查通过。
-- `A-GI-011` `TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion`  
-  验收条件：脏 ID 排除子句构造正确（包含 `NOT IN` 且参数正确）。
-- `A-GI-012` `TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation`  
-  验收条件：执行计划链路可初始化且不崩溃。
-- `A-GI-013` `TestBuildDuckDBQuery_TemplateRendering`  
-  验收条件：模板渲染出的 SQL 包含预期 `LIMIT/OFFSET` 语义。
+- `A-GI-011` `TestAppendDirtyExclusion`  
+  验收条件：脏 ID 排除子句构造正确（包含 `NOT IN`，参数数量与脏 ID 一一对应）。
+- `A-GI-012` `TestFinalizeDuckDBExecutionPlan_CaptureDisabled`  
+  验收条件：执行计划捕获关闭时，finalize 路径可安全执行且不崩溃。
+- `A-GI-013` `TestBuildDuckDBQuery_AdvancedTemplate`  
+  验收条件：高级查询模板携带 Limit/Offset 参数渲染成功，产出非空 SQL 与非 nil 参数。
 - `A-GI-014` `TestExecuteDuckDBFederatedQuery_NilQuery`  
   验收条件：空查询入参返回明确错误。
 - `A-GI-015` `TestBuildDuckDBQuery_PropagatesRenderError` (`internal/sqlgen`)  
   验收条件：模板渲染错误由 `BuildDuckDBQuery` 向上抛出（surfaced），不被吞掉。
-- `A-GI-016` `TestRenderDuckDBQuery_ParameterMerging`  
-  验收条件：where 参数合并顺序和内容正确。
+- `A-GI-016` `TestBuildDuckDBQuery_KeysetArgsBindLast` (`internal/sqlgen`)  
+  验收条件：keyset 查询参数合并顺序正确——keyset 值最后绑定，`?` 占位符数量与参数数一致，且不出现 `$n` 占位符。
 
 ## 3.2 Go E2E Harness 基础用例
 
@@ -364,7 +365,7 @@
 
 - Go 集成：`internal/integration_suite_test.go`  
 - Repo 集成：`internal/postgres_persistent_repository_integration_test.go`  
-- DuckDB/联邦集成：`internal/postgres_duckdb_federated_integration_test.go`  
+- DuckDB/联邦集成：`internal/federated/duckdb_federated_integration_test.go`  
 - E2E Harness：`internal/e2e_harness/e2e_test.go`  
 - Federated E2E：`internal/e2e_harness/federated/*_test.go`  
 - Bun E2E：`tests/e2e/scripts/*.ts`  
