@@ -126,6 +126,21 @@ The `"federated"` object carries optional controls that affect execution routing
 
 These controls are part of the request payload; they are not conveyed via HTTP headers.
 
+### **4.4 Attribute → Column Naming Contract**
+
+Attribute names are logical and may contain dots (nested JSON objects flatten
+to `contact.annualIncome`). Physical parquet columns and every unified-CTE
+column use the folded form produced by `sqlgen.ParquetAttrColumn` (dots and
+spaces → underscores, backticks/brackets stripped): `contact_annualIncome`.
+
+The fold is shared by the CDC exporter (write side) and the federated SQL
+generator (read side) and cannot diverge: the logical WHERE clause is applied
+both against raw `read_parquet` output (physical columns) and against the
+`visible` CTE (unified columns), so both must expose the same names (#260).
+The fold is lossy, so both sides fail fast if two attributes of one schema
+collide on the same folded column. Keyset cursors only accept system columns
+and never carry attribute names.
+
 ## **5. SQL Execution Template**
 
 This SQL template represents the core logic of the Federated Query Engine.
