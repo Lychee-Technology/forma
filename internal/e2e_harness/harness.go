@@ -204,11 +204,12 @@ const (
 
 // StartS3 starts an S3-compatible object store container (RustFS, the same
 // image as deploy/docker-compose.yml) and returns its endpoint. RustFS replaced
-// the archived MinIO image, which no longer receives updates. Caller is
-// responsible for calling StopS3.
+// the archived MinIO image, which no longer receives updates. The image is
+// pinned by digest so CI and review results stay reproducible across upstream
+// RustFS releases. Caller is responsible for calling StopS3.
 func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	req := testcontainers.ContainerRequest{
-		Image:        "rustfs/rustfs:latest",
+		Image:        "rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3",
 		ExposedPorts: []string{"9000/tcp"},
 		Env: map[string]string{
 			"RUSTFS_ACCESS_KEY": RustFSAccessKey,
@@ -221,16 +222,20 @@ func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 		Started:          true,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to start rustfs container: %w", err)
 	}
 	h.S3Container = container
 	host, err := container.Host(ctx)
 	if err != nil {
-		return "", err
+		_ = container.Terminate(ctx)
+		h.S3Container = nil
+		return "", fmt.Errorf("failed to get rustfs container host: %w", err)
 	}
 	mapped, err := container.MappedPort(ctx, "9000")
 	if err != nil {
-		return "", err
+		_ = container.Terminate(ctx)
+		h.S3Container = nil
+		return "", fmt.Errorf("failed to get rustfs container mapped port: %w", err)
 	}
 	endpoint := fmt.Sprintf("http://%s:%s", host, mapped.Port())
 	h.S3Endpoint = endpoint
@@ -241,7 +246,7 @@ func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 func (h *TestHarness) StopS3(ctx context.Context) error {
 	if h.S3Container != nil {
 		if err := h.S3Container.Terminate(ctx); err != nil {
-			return err
+			return fmt.Errorf("failed to terminate rustfs container: %w", err)
 		}
 		h.S3Container = nil
 	}
