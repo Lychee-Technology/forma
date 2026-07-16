@@ -204,7 +204,7 @@ const (
 
 // StartS3 starts an S3-compatible object store container (RustFS, the same
 // image as deploy/docker-compose.yml) and returns its endpoint. RustFS replaced
-// the archived minio/minio image, which no longer receives updates. Caller is
+// the archived MinIO image, which no longer receives updates. Caller is
 // responsible for calling StopS3.
 func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	req := testcontainers.ContainerRequest{
