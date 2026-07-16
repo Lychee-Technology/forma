@@ -408,6 +408,7 @@ export function setup(): Record<string, unknown> {
   // seed first (run-k6.sh seeds before invoking k6).
   const healthRes = http.get(`${BASE_URL}/api/v1/lead?page=1&items_per_page=1`, {
     headers: getHeaders(),
+    tags: { qtype: 'setup_health_check', schema: 'lead' },
   });
 
   if (healthRes.status !== 200) {

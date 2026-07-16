@@ -29,20 +29,20 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecordsByAttrValues(
 		return &model.PersistentRecordPage{CurrentPage: 1}, nil
 	}
 	if r.metadataCache == nil {
-		return nil, fmt.Errorf("failed to query records by attr %q: schema metadata cache not available for schema_id %d", attr, schemaID)
+		return nil, fmt.Errorf("failed to query records by attr %q for schema %d: metadata cache is nil (expected a loaded schema metadata cache)", attr, schemaID)
 	}
 	cache, ok := r.metadataCache.GetSchemaCacheByID(schemaID)
 	if !ok {
-		return nil, fmt.Errorf("failed to query records by attr %q: no schema metadata for schema_id %d", attr, schemaID)
+		return nil, fmt.Errorf("failed to query records by attr %q: schema %d not in metadata cache (expected a registered schema)", attr, schemaID)
 	}
 	meta, ok := cache[attr]
 	if !ok {
-		return nil, fmt.Errorf("failed to query records by attr %q: attribute not found in schema_id %d", attr, schemaID)
+		return nil, fmt.Errorf("failed to query records by attr %q: attribute not in metadata cache for schema %d (expected a registered attribute with a value type)", attr, schemaID)
 	}
 
 	clause, args, useMainTableAsAnchor, err := buildAttrValuesAnchor(attr, meta, values)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query records by attr %q for schema %d: %w", attr, schemaID, err)
 	}
 
 	if limit <= 0 {
@@ -72,8 +72,8 @@ func buildAttrValuesAnchor(attr string, meta forma.AttributeMetadata, values []s
 		// this batch path does not perform; plain text columns bind directly.
 		if meta.ColumnBinding.Encoding != "" || !isTextLikeValueType(meta.ValueType) {
 			return "", nil, false, fmt.Errorf(
-				"failed to build attr-values anchor for %q: unsupported main-column binding (column %s, encoding %q, value_type %s)",
-				attr, meta.ColumnBinding.ColumnName, meta.ColumnBinding.Encoding, meta.ValueType)
+				"unsupported main-column binding for %s attribute %q: column %s with encoding %q (expected an unencoded text/uuid column for batch value lookup)",
+				meta.ValueType, attr, meta.ColumnBinding.ColumnName, meta.ColumnBinding.Encoding)
 		}
 		clause := fmt.Sprintf("m.%s = ANY($2)", sanitizeIdentifier(string(meta.ColumnBinding.ColumnName)))
 		return clause, []any{values}, true, nil
@@ -90,14 +90,16 @@ func buildAttrValuesAnchor(attr string, meta forma.AttributeMetadata, values []s
 			parsed, err := strconv.ParseFloat(v, 64)
 			if err != nil {
 				return "", nil, false, fmt.Errorf(
-					"failed to build attr-values anchor for %q: invalid numeric value %q", attr, v)
+					"invalid value %q for %s attribute %q: not parseable as float64 (expected a decimal value_numeric operand): %w",
+					v, meta.ValueType, attr, err)
 			}
 			numeric = append(numeric, parsed)
 		}
 		return "t.attr_id = $2 AND t.value_numeric = ANY($3)", []any{meta.AttributeID, numeric}, false, nil
 	default:
 		return "", nil, false, fmt.Errorf(
-			"failed to build attr-values anchor for %q: unsupported value_type %s", attr, meta.ValueType)
+			"unsupported value_type %s for attribute %q: no batch value column (expected text, uuid, or a numeric family type)",
+			meta.ValueType, attr)
 	}
 }
 
