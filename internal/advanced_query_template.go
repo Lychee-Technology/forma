@@ -6,14 +6,17 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
 	        WITH anchor AS (
+	            {{- /* Every condition injection is parenthesized (#269): the
+	                 sites join it with AND, and a bare top-level OR would bind
+	                 tighter than the schema/correlation constraints. */}}
 	            {{- if .UseMainTableAsAnchor }}
 	            SELECT m.ltbase_row_id AS row_id
 	            FROM {{.MainTable}} m
-	            WHERE m.ltbase_schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
+	            WHERE m.ltbase_schema_id = {{.SchemaID}} AND ({{.Anchor.Condition}})
 	            {{- else }}
 	            SELECT DISTINCT t.row_id
 	            FROM {{.EAVTable}} t
-	            WHERE t.schema_id = {{.SchemaID}} AND {{.Anchor.Condition}}
+	            WHERE t.schema_id = {{.SchemaID}} AND ({{.Anchor.Condition}})
 	            {{- end }}
 	            {{- if .ChangeLogTable }}
 	            UNION
@@ -29,7 +32,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
 	                    FROM {{.MainTable}} m
 	                    WHERE m.ltbase_schema_id = {{.SchemaID}}
 	                        AND m.ltbase_row_id = cl.row_id
-	                        AND {{.Anchor.Condition}}
+	                        AND ({{.Anchor.Condition}})
 	                )
 	                {{- else }}
 	                AND EXISTS (
@@ -37,7 +40,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
 	                    FROM {{.EAVTable}} t
 	                    WHERE t.schema_id = {{.SchemaID}}
 	                        AND t.row_id = cl.row_id
-	                        AND {{.Anchor.Condition}}
+	                        AND ({{.Anchor.Condition}})
 	                )
 	                {{- end }}
 	            {{- end }}

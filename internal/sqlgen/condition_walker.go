@@ -85,8 +85,11 @@ var (
 		nilNode:            nilNodeTrue,
 	}
 	hybridStyle = compositeStyle{
-		emptyAnd:           "1=1",
-		emptyOr:            "1=0",
+		emptyAnd: "1=1",
+		emptyOr:  "1=0",
+		// Safe only because every consumer parenthesizes the injected clause
+		// at the template seam (optimizedQuerySQLTemplate anchor sites per
+		// #269; the DuckDB template has always wrapped its injections).
 		outerParensOnMulti: false,
 		allEmpty:           allEmptyOmit,
 		nilNode:            nilNodeError,
