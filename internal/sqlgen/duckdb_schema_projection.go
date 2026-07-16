@@ -147,7 +147,9 @@ func (sp *SchemaProjection) buildS3Projection(sortedAttrs []string) {
 		"changed_at AS ver_ts",
 		"deleted_at AS deleted_ts",
 	)
-	parts = append(parts, sortedAttrs...)
+	for _, attr := range sortedAttrs {
+		parts = append(parts, ParquetAttrColumn(attr))
+	}
 	sp.S3SourceSelect = strings.Join(parts, ", ")
 }
 
@@ -177,6 +179,7 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 	// benchmark projection, which already aggregates the same way (#173).
 	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
 	for _, a := range attrs {
+		unified := ParquetAttrColumn(a.name)
 		if a.isColumn {
 			colName := string(a.meta.ColumnBinding.ColumnName)
 			var expr string
@@ -186,21 +189,21 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 				// EAV pivot fix); m.<col> must be normalized by encoding.
 				mainBoolExpr := mainColBoolExpr(colName, a.meta.ColumnBinding.Encoding)
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
-					a.name, mainBoolExpr, a.name)
+					unified, mainBoolExpr, unified)
 			} else if a.meta.ValueType == forma.ValueTypeUUID {
 				// hot_vals pivots uuid attributes out of value_text (VARCHAR);
 				// the UUID main column must be cast explicitly because DuckDB
 				// refuses to mix VARCHAR and UUID inside COALESCE.
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s",
-					a.name, colName, a.name)
+					unified, colName, unified)
 			} else {
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), m.%s) AS %s",
-					a.name, colName, a.name)
+					unified, colName, unified)
 			}
 			selectParts = append(selectParts, expr)
 			groupParts = append(groupParts, "m."+colName)
 		} else {
-			expr := fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", a.name, a.name)
+			expr := fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", unified, unified)
 			selectParts = append(selectParts, expr)
 		}
 	}
@@ -227,7 +230,7 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 				"MAX(CASE WHEN attr_id = %d THEN %s END)",
 				a.attrID, eavValueColumn(a.meta.ValueType))
 		}
-		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s", pivotExpr, a.name))
+		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s", pivotExpr, ParquetAttrColumn(a.name)))
 	}
 
 	if len(pivotParts) > 0 {
@@ -294,7 +297,7 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 	for _, desc := range allMainCols {
 		if attr, ok := mainColToAttr[desc.Name]; ok {
 			parts = append(parts, fmt.Sprintf("%s AS %s",
-				duckDBAttrCast(attr, sp.UnifiedColumnTypes[attr]), desc.Name))
+				duckDBAttrCast(ParquetAttrColumn(attr), sp.UnifiedColumnTypes[attr]), desc.Name))
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s",
@@ -313,20 +316,21 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 		if !eavOnlySelects[attr] {
 			continue
 		}
+		unified := ParquetAttrColumn(attr)
 		valueText, valueNumeric := "NULL", "NULL"
 		vt := sp.UnifiedColumnTypes[attr]
 		if eavValueColumn(vt) == "value_numeric" {
 			if vt == forma.ValueTypeBool {
-				valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", attr)
+				valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", unified)
 			} else {
-				valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", attr)
+				valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", unified)
 			}
 		} else {
-			valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", attr)
+			valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", unified)
 		}
 		jsonParts = append(jsonParts, fmt.Sprintf(
 			"CASE WHEN %s IS NOT NULL THEN {'schema_id': %d, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': %d, 'array_indices': '', 'value_text': %s, 'value_numeric': %s} END",
-			attr, schemaID, sp.attrIDForName(attr), valueText, valueNumeric))
+			unified, schemaID, sp.attrIDForName(attr), valueText, valueNumeric))
 	}
 
 	if len(jsonParts) > 0 {
@@ -358,7 +362,7 @@ func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
 
 	for _, attr := range attrs {
 		col := sp.AttrToMainColumn[attr]
-		selectParts = append(selectParts, fmt.Sprintf("m.%s AS %s", col, attr))
+		selectParts = append(selectParts, fmt.Sprintf("m.%s AS %s", col, ParquetAttrColumn(attr)))
 	}
 
 	return strings.Join(selectParts, ",\n\t\t\t")
