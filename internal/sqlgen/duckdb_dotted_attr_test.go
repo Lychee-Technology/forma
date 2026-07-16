@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,4 +85,46 @@ func TestBuildSchemaProjection_DottedAttrsEmitAliasedColumns(t *testing.T) {
 	// Metadata maps stay keyed by the logical attribute name.
 	require.Contains(t, sp.AttrToMainColumn, "contact.annualIncome")
 	require.Equal(t, forma.ValueTypeBigInt, sp.UnifiedColumnTypes["contact.annualIncome"])
+}
+
+// TestBuildDuckClause_DottedAttrsEmitAliasedColumns pins #260 for the WHERE
+// side: the DuckClause is applied both against raw read_parquet (physical
+// parquet columns) and against the visible CTE (unified columns), so it must
+// reference the folded alias in both — a bare dotted name binder-errors, a
+// quoted dotted name misses the physical column.
+func TestBuildDuckClause_DottedAttrsEmitAliasedColumns(t *testing.T) {
+	cache := dottedCache()
+
+	clause, args, err := BuildDuckClause(&forma.KvCondition{
+		Attr:  "contact.annualIncome",
+		Value: "gt:5000",
+	}, cache)
+	require.NoError(t, err)
+	require.Contains(t, clause, "contact_annualIncome >")
+	require.NotContains(t, clause, "contact.annualIncome")
+	require.Len(t, args, 1)
+
+	clause, args, err = BuildDuckClause(&forma.KvCondition{
+		Attr:  "contact.note",
+		Value: "hello",
+	}, cache)
+	require.NoError(t, err)
+	require.Equal(t, "contact_note = ?", clause)
+	require.Len(t, args, 1)
+}
+
+// TestBuildNonKeysetOrderBy_DottedEAVAttrUsesAlias pins #260 for the sort
+// side: an EAV attribute order references the unified CTE column, which
+// carries the folded alias. (Column-bound orders use the physical
+// entity_main output alias and never contained dots.)
+func TestBuildNonKeysetOrderBy_DottedEAVAttrUsesAlias(t *testing.T) {
+	q := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			AttributeOrders: []model.AttributeOrder{{
+				AttrName:  "contact.note",
+				SortOrder: forma.SortOrderDesc,
+			}},
+		},
+	}
+	require.Equal(t, "contact_note DESC, row_id ASC", buildNonKeysetOrderBy(q))
 }

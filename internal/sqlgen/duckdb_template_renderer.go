@@ -278,8 +278,9 @@ func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
 			parts = append(parts, fmt.Sprintf("%s %s", ao.ColumnName, dir))
 		} else if ao.AttrName != "" {
 			// EAV attributes are projected as named columns in the unified CTE via the
-			// EAV pivot (MAX(CASE WHEN attr_id = N THEN value_col END) AS attr_name).
-			parts = append(parts, fmt.Sprintf("%s %s", ao.AttrName, dir))
+			// EAV pivot (MAX(CASE WHEN attr_id = N THEN value_col END) AS attr_name),
+			// under their parquet column alias (#260).
+			parts = append(parts, fmt.Sprintf("%s %s", ParquetAttrColumn(ao.AttrName), dir))
 		}
 		// If neither ColumnName nor AttrName is set the attribute is unresolvable; skip it.
 	}

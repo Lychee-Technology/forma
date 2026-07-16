@@ -160,6 +160,11 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 // translateDuckClauseToBenchmark (#167). Contrast resolveMainTableColumn, which
 // correctly uses the physical `m.<col>` because PgMainClause references the real
 // entity_main table `m` joined in the pg_source CTE.
+//
+// Dotted attribute names fold through ParquetAttrColumn (#260): the CTEs
+// project every attribute under its parquet column alias, because the same
+// clause also runs against raw read_parquet output where only the physical
+// (folded) column exists.
 func resolveDuckDBColumn(attr string) string {
-	return attr
+	return ParquetAttrColumn(attr)
 }
