@@ -127,7 +127,7 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 func optimizedQueryShapeKey(tables model.StorageTables, useMainTableAsAnchor bool, clause string, argCount int, orders []model.AttributeOrder) uint64 {
 	parts := make([]string, 0, 6+6*len(orders))
 	parts = append(parts,
-		"pg-optimized-v1",
+		"pg-optimized-v2", // v2: anchor condition parenthesized (#269)
 		tables.EAVData,
 		tables.EntityMain,
 		tables.ChangeLog,
