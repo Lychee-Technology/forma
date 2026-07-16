@@ -508,6 +508,7 @@ type mockPersistentRecordRepository struct {
 	lastQuery          *model.PersistentRecordQuery
 	queries            []*model.PersistentRecordQuery
 	queryFunc          func(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
+	byAttrValuesCalls  []mockByAttrValuesCall
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
 	atomicDeleteFailAt int

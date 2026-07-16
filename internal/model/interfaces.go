@@ -50,6 +50,11 @@ type PersistentRecordWriter interface {
 type PersistentRecordReader interface {
 	GetPersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) (*PersistentRecord, error)
 	QueryPersistentRecords(ctx context.Context, query *PersistentRecordQuery) (*PersistentRecordPage, error)
+	// QueryPersistentRecordsByAttrValues fetches full records whose attribute
+	// equals any of the given values via one set-based lookup (#268). It exists
+	// for internal batch lookups (relation enrichment); it must never expand to
+	// an OR-of-N condition per value.
+	QueryPersistentRecordsByAttrValues(ctx context.Context, tables StorageTables, schemaID int16, attr string, values []string, limit int) (*PersistentRecordPage, error)
 }
 
 type FederatedQueryEngine interface {
