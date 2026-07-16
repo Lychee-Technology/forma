@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E2E Nested",
+  "description": "Nested (dotted) attribute fixture: federated DuckDB reads of dotted attribute names (#260)",
+  "type": "object",
+  "properties": {
+    "contact": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "annualIncome": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "flag": {
+      "type": "string"
+    }
+  }
+}

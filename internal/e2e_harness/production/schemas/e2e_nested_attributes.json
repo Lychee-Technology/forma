@@ -1,0 +1,24 @@
+{
+  "contact.name": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "contact.annualIncome": {
+    "attributeID": 2,
+    "valueType": "bigint",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "contact.note": {
+    "attributeID": 3,
+    "valueType": "text"
+  },
+  "flag": {
+    "attributeID": 4,
+    "valueType": "text"
+  }
+}
