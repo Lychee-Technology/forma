@@ -150,7 +150,7 @@ func (c *Cluster) startInfra(ctx context.Context) error {
 	if _, err := c.Base.StartPostgres(ctx); err != nil {
 		return fmt.Errorf("start postgres container: %w", err)
 	}
-	if _, err := c.Base.StartRustFS(ctx); err != nil {
+	if _, err := c.Base.StartS3(ctx); err != nil {
 		_ = c.Base.StopPostgres(ctx)
 		return fmt.Errorf("start rustfs container: %w", err)
 	}
