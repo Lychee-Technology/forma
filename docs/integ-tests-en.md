@@ -43,8 +43,9 @@ Pure unit-test-level assertions are out of scope.
 Execution entry:
 
 - `go test ./internal -run TestIntegration_`
-- `go test ./internal -run TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration`
-- `go test ./internal -run TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion|TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation|TestBuildDuckDBQuery_TemplateRendering|TestExecuteDuckDBFederatedQuery_NilQuery|TestRenderDuckDBQuery_ParameterMerging`
+- `go test ./internal -run 'TestInsertPersistentRecordIntegration|TestChangeLogWritesOnUpdateAndDeleteIntegration|TestRunOptimizedQueryIntegration'`
+- `go test ./internal/federated -run 'TestEvaluateRoutingPolicy_VariousStrategies|TestNewDuckDBClient_HealthCheck|TestAppendDirtyExclusion|TestFinalizeDuckDBExecutionPlan_CaptureDisabled|TestBuildDuckDBQuery_AdvancedTemplate|TestExecuteDuckDBFederatedQuery_NilQuery'`
+- `go test ./internal/sqlgen -run 'TestBuildDuckDBQuery_PropagatesRenderError|TestBuildDuckDBQuery_KeysetArgsBindLast'`
 
 Test cases:
 
@@ -64,18 +65,18 @@ Test cases:
   Acceptance: routing decisions match strategy for `hybrid`, `cost-first`, and disabled config.
 - `A-GI-009` `TestNewDuckDBClient_HealthCheck`  
   Acceptance: DuckDB client initializes successfully and health check passes.
-- `A-GI-011` `TestStreamDuckDBFederatedQuery_WithDirtyIDsExclusion`  
-  Acceptance: dirty-ID exclusion clause is constructed correctly (`NOT IN` + correct args).
-- `A-GI-012` `TestStreamDuckDBFederatedQuery_ExecutionPlanInstrumentation`  
-  Acceptance: execution-plan instrumentation path initializes without crash.
-- `A-GI-013` `TestBuildDuckDBQuery_TemplateRendering`  
-  Acceptance: rendered SQL includes expected `LIMIT/OFFSET` semantics.
+- `A-GI-011` `TestAppendDirtyExclusion`  
+  Acceptance: dirty-ID exclusion clause is constructed correctly (`NOT IN` present; arg count matches the dirty IDs).
+- `A-GI-012` `TestFinalizeDuckDBExecutionPlan_CaptureDisabled`  
+  Acceptance: the execution-plan finalize path runs safely without crashing when capture is disabled.
+- `A-GI-013` `TestBuildDuckDBQuery_AdvancedTemplate`  
+  Acceptance: the advanced query template renders successfully with Limit/Offset params, producing non-empty SQL and non-nil args.
 - `A-GI-014` `TestExecuteDuckDBFederatedQuery_NilQuery`  
   Acceptance: nil query input returns explicit error.
 - `A-GI-015` `TestBuildDuckDBQuery_PropagatesRenderError` (`internal/sqlgen`)  
   Acceptance: a template render error is propagated (surfaced) by `BuildDuckDBQuery` rather than swallowed.
-- `A-GI-016` `TestRenderDuckDBQuery_ParameterMerging`  
-  Acceptance: merged where-args order and content are correct.
+- `A-GI-016` `TestBuildDuckDBQuery_KeysetArgsBindLast` (`internal/sqlgen`)  
+  Acceptance: merged arg order for keyset queries is correct — the keyset value binds last, `?` placeholder count equals arg count, and no `$n` placeholders appear.
 
 ## 3.2 Go E2E Harness Baseline Cases
 
@@ -364,7 +365,7 @@ Note: These manual cases close automation gaps and cover pre-production must-che
 
 - Go integration: `internal/integration_suite_test.go`  
 - Repository integration: `internal/postgres_persistent_repository_integration_test.go`  
-- DuckDB/federated integration: `internal/postgres_duckdb_federated_integration_test.go`  
+- DuckDB/federated integration: `internal/federated/duckdb_federated_integration_test.go`  
 - E2E harness: `internal/e2e_harness/e2e_test.go`  
 - Federated E2E: `internal/e2e_harness/federated/*_test.go`  
 - Bun E2E scripts: `tests/e2e/scripts/*.ts`  
