@@ -58,21 +58,30 @@ func TestFederatedReadNestedDottedAttributes(t *testing.T) {
 	}
 
 	// Dotted attribute in WHERE (column-bound) and ORDER BY, on the DuckDB path.
-	env.AssertQueryMatches(ctx, Query{
+	boundRes := env.AssertQueryMatches(ctx, Query{
 		Schema:         nested,
 		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
 		Filters:        []Filter{{Attr: "contact.annualIncome", Op: "gte", Value: "200"}},
 		Sorts:          []Sort{{Attr: "contact.annualIncome", Desc: true}},
 		Limit:          100,
 	})
+	if boundRes == nil || boundRes.Plan == nil || !boundRes.Plan.Routing.UseDuckDB {
+		t.Fatalf("dotted column-bound WHERE/ORDER BY query did not route to duckdb: %+v", boundRes)
+	}
 
-	// Dotted EAV-only attribute in WHERE, on the DuckDB path.
-	env.AssertQueryMatches(ctx, Query{
+	// Dotted EAV-only attribute in WHERE, on the DuckDB path. note values are
+	// "note %d for row %d" with the second number the deterministic ordinal, so
+	// "contains for row 2" is selective (exactly one matching row among ordinals
+	// 0-8) — both under- and over-inclusion regress loudly.
+	eavRes := env.AssertQueryMatches(ctx, Query{
 		Schema:         nested,
 		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		Filters:        []Filter{{Attr: "contact.note", Op: "starts_with", Value: "note"}},
+		Filters:        []Filter{{Attr: "contact.note", Op: "contains", Value: "for row 2"}},
 		Limit:          100,
 	})
+	if eavRes == nil || eavRes.Plan == nil || !eavRes.Plan.Routing.UseDuckDB {
+		t.Fatalf("dotted EAV-only WHERE query did not route to duckdb: %+v", eavRes)
+	}
 
 	// Hot tier: 3 unflushed creates; an all-tier read merges them back in.
 	hot := env.GenerateScript(ScriptSpec{Schema: nested, Creates: 3})

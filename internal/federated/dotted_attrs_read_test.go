@@ -119,3 +119,31 @@ SELECT bigint_01, text_01 FROM (SELECT %[4]s FROM visible) q ORDER BY bigint_01 
 	require.Equal(t, []int64{9000, 8000}, incomes)
 	require.Equal(t, []string{"carol", "alice"}, names)
 }
+
+// TestInjectSchemaProjectionsPropagatesCollision pins #260/F1: the reader-side
+// alias-collision guard in BuildSchemaProjection now returns a non-nil error,
+// and injectSchemaProjections must propagate it (not swallow it and fall
+// through to the retired toy-schema projection defaults, #222). Both colliding
+// attribute names must appear in the returned error — that proves the failure
+// came from the collision guard, not from a generic projection default.
+func TestInjectSchemaProjectionsPropagatesCollision(t *testing.T) {
+	e := &DBFederatedQueryEngine{projections: sqlgen.NewProjectionCache()}
+
+	// "contact.name" and "contact_name" both fold to parquet column
+	// "contact_name" — a lossy alias collision the guard must refuse.
+	cache := forma.SchemaAttributeCache{
+		"contact.name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"contact_name": {AttributeID: 2, ValueType: forma.ValueTypeText},
+	}
+
+	sqlParams := map[string]any{}
+	hit, err := e.injectSchemaProjections(sqlParams, 30, cache)
+	require.Error(t, err, "colliding schema must fail fast, not fall through to toy defaults")
+	require.False(t, hit)
+	require.ErrorContains(t, err, "contact.name")
+	require.ErrorContains(t, err, "contact_name")
+
+	// The swallowed path would have populated the projection params; a
+	// propagated error must leave them untouched.
+	require.NotContains(t, sqlParams, "S3SourceSelect")
+}

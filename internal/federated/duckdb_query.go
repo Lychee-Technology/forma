@@ -252,7 +252,14 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 
 	// Production schema: compute projections from the attribute cache
 	sp, hit, projErr := e.schemaProjection(schemaID, cache)
-	if projErr != nil || sp == nil {
+	if projErr != nil {
+		// A non-nil projection error is a hard data-contract failure (e.g. the
+		// alias-collision guard in BuildSchemaProjection). Propagate it so the
+		// query fails fast instead of silently falling through to the retired
+		// toy-schema projection defaults (#222/#260).
+		return hit, fmt.Errorf("build schema projection for schema %d: %w", schemaID, projErr)
+	}
+	if sp == nil {
 		return hit, nil
 	}
 	sqlParams["S3SourceSelect"] = sp.S3SourceSelect

@@ -131,7 +131,7 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		col := ParquetAttrColumn(name)
 		if prev, ok := colToAttr[col]; ok {
 			return nil, fmt.Errorf(
-				"schema %d: attributes %q and %q both map to parquet column %q; attribute names must remain distinct after dot/space folding",
+				"schema %d: attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
 				schemaID, prev, name, col)
 		}
 		colToAttr[col] = name
