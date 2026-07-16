@@ -62,6 +62,35 @@ func ExpectedStateFromEvents(events []*Event, schema SchemaRef, cache forma.Sche
 	return state, nil
 }
 
+// flattenEventAttrs folds nested object values into dotted attribute names,
+// mirroring the production write path (transform.flattenToAttributes): a
+// profile emits {"contact": {"name": ...}} and the entity manager stores
+// attribute "contact.name". A cache-known name wins before recursion, so a
+// whole-object attribute would not be split.
+func flattenEventAttrs(prefix string, attrs map[string]any, cache forma.SchemaAttributeCache) map[string]any {
+	out := make(map[string]any, len(attrs))
+	for key, value := range attrs {
+		name := key
+		if prefix != "" {
+			name = prefix + "." + key
+		}
+		if _, ok := cache[name]; ok {
+			out[name] = value
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			for k, v := range flattenEventAttrs(name, nested, cache) {
+				out[k] = v
+			}
+			continue
+		}
+		// Unknown attribute: keep it; applyEvent's cache check folds it to
+		// absent (schema-evolution semantics, #189).
+		out[name] = value
+	}
+	return out
+}
+
 func (s *ExpectedState) applyEvent(ev *Event) error {
 	row := s.Rows[ev.RowID]
 	if row == nil {
@@ -74,7 +103,7 @@ func (s *ExpectedState) applyEvent(ev *Event) error {
 	switch ev.Kind {
 	case EventCreate, EventUpdate:
 		row.Deleted = false
-		for name, value := range ev.Attrs {
+		for name, value := range flattenEventAttrs("", ev.Attrs, s.Cache) {
 			meta, ok := s.Cache[name]
 			if !ok {
 				// The attribute is absent from the CURRENT schema generation:
