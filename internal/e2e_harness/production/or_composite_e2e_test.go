@@ -30,25 +30,7 @@ func TestORCompositeSchemaScoping(t *testing.T) {
 	fixtures := DefaultSchemaFixtures()
 	wide, second := fixtures[1], fixtures[2]
 
-	// Target schema: three rows, exactly one matching the first OR branch and
-	// none matching the second.
-	mustApplyEvents(ctx, t, env, "seed e2e_second",
-		CreateEvent(second, map[string]any{"label": "match", "code": 111}),
-		CreateEvent(second, map[string]any{"label": "other-a", "code": 222}),
-		CreateEvent(second, map[string]any{"label": "other-b", "code": 333}),
-	)
-
-	// Pollution source: five e2e_wide rows whose integer_01 (count) equals the
-	// second OR branch's value. Under the unparenthesized render these enter
-	// the anchor of the e2e_second query.
-	wideCreates := make([]*Event, 0, 5)
-	for i := 0; i < 5; i++ {
-		wideCreates = append(wideCreates, CreateEvent(wide, map[string]any{
-			"title": "pollution",
-			"count": 777,
-		}))
-	}
-	mustApplyEvents(ctx, t, env, "seed e2e_wide pollution rows", wideCreates...)
+	seedCrossSchemaIntegerCollision(ctx, t, env, wide, second)
 
 	// Positive control: the pollution rows are really present and matchable
 	// in their own schema — a broken seed cannot fake the probe green.
@@ -65,36 +47,7 @@ func TestORCompositeSchemaScoping(t *testing.T) {
 		t.Fatalf("positive control: e2e_wide count=777 total %d, want 5", control.Total)
 	}
 
-	// The probe: top-level OR on the target schema. The harness Query spec only
-	// builds AND composites, so construct the federated query directly (same
-	// shape Env.buildFederatedQuery emits). PreferHot pins the hot-only OLTP
-	// route through the optimized PG template.
-	fq := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			SchemaID: second.ID,
-			Condition: &forma.CompositeCondition{
-				Logic: forma.LogicOr,
-				Conditions: []forma.Condition{
-					&forma.KvCondition{Attr: "code", Value: "equals:111"},
-					&forma.KvCondition{Attr: "code", Value: "equals:777"},
-				},
-			},
-			Limit: 10,
-		},
-		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
-		PreferHot:      true,
-	}
-	opts := &model.FederatedQueryOptions{
-		IncludeExecutionPlan: true,
-		ExecutionPlan:        &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
-	}
-	page, err := env.Engine().Query(ctx, env.Tables, fq, opts)
-	if err != nil {
-		t.Fatalf("OR query on e2e_second: %v", err)
-	}
-	if opts.ExecutionPlan.Routing.UseDuckDB {
-		t.Fatalf("OR probe unexpectedly routed to DuckDB; the #269 surface is the PG optimized path: %+v", opts.ExecutionPlan.Routing)
-	}
+	page := queryHotTopLevelOR(ctx, t, env, second, "code", "111", "777")
 
 	// Exactly one e2e_second row matches (code=111, since 777 exists only in
 	// e2e_wide). A polluted anchor reports total_records=6 (1 + 5 foreign).
@@ -109,4 +62,66 @@ func TestORCompositeSchemaScoping(t *testing.T) {
 	if page.TotalRecords != 1 {
 		t.Errorf("OR query total_records = %d, want 1 (anchor polluted by foreign-schema rows, #269)", page.TotalRecords)
 	}
+}
+
+// seedCrossSchemaIntegerCollision seeds the #269 pollution geometry: three
+// target-schema rows (exactly one matching the probe's first OR branch, none
+// matching the second) plus five e2e_wide rows whose integer_01 (count)
+// equals the second branch's value — the rows an unscoped branch would admit
+// into the target schema's anchor.
+func seedCrossSchemaIntegerCollision(ctx context.Context, t *testing.T, env *Env, wide, second SchemaRef) {
+	t.Helper()
+
+	mustApplyEvents(ctx, t, env, "seed e2e_second",
+		CreateEvent(second, map[string]any{"label": "match", "code": 111}),
+		CreateEvent(second, map[string]any{"label": "other-a", "code": 222}),
+		CreateEvent(second, map[string]any{"label": "other-b", "code": 333}),
+	)
+
+	wideCreates := make([]*Event, 0, 5)
+	for i := 0; i < 5; i++ {
+		wideCreates = append(wideCreates, CreateEvent(wide, map[string]any{
+			"title": "pollution",
+			"count": 777,
+		}))
+	}
+	mustApplyEvents(ctx, t, env, "seed e2e_wide pollution rows", wideCreates...)
+}
+
+// queryHotTopLevelOR runs `attr = v1 OR attr = v2` as a top-level OR against
+// the real engine and returns the page. The harness Query spec only builds
+// AND composites, so the federated query is constructed directly (same shape
+// Env.buildFederatedQuery emits). PreferHot pins the hot-only OLTP route
+// through the optimized PG template; a DuckDB-routing guard keeps the probe
+// on the #269 surface.
+func queryHotTopLevelOR(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, attr, v1, v2 string) *model.PersistentRecordPage {
+	t.Helper()
+
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{
+			SchemaID: schema.ID,
+			Condition: &forma.CompositeCondition{
+				Logic: forma.LogicOr,
+				Conditions: []forma.Condition{
+					&forma.KvCondition{Attr: attr, Value: "equals:" + v1},
+					&forma.KvCondition{Attr: attr, Value: "equals:" + v2},
+				},
+			},
+			Limit: 10,
+		},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
+		PreferHot:      true,
+	}
+	opts := &model.FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan:        &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
+	}
+	page, err := env.Engine().Query(ctx, env.Tables, fq, opts)
+	if err != nil {
+		t.Fatalf("top-level OR query on %s: %v", schema.Name, err)
+	}
+	if opts.ExecutionPlan.Routing.UseDuckDB {
+		t.Fatalf("OR probe unexpectedly routed to DuckDB; the #269 surface is the PG optimized path: %+v", opts.ExecutionPlan.Routing)
+	}
+	return page
 }
