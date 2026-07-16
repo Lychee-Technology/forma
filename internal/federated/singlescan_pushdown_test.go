@@ -27,10 +27,13 @@ type scanForm struct {
 }
 
 func scanForms() []scanForm {
+	// post-lww-only is FIRST so it is the reference the equivalence guard
+	// seeds from: it applies no pushdown, so it is the trivially-correct
+	// ground truth (pure filter-after-LWW) that every other form must match.
 	return []scanForm{
+		{"post-lww-only", postLWWOnlyS3Source},
 		{"semijoin-current", semijoinS3Source},
 		{"qualify-single-scan", qualifyS3Source},
-		{"post-lww-only", postLWWOnlyS3Source},
 	}
 }
 
@@ -204,10 +207,13 @@ func TestScanForms_AgreeOnVisibleSet(t *testing.T) {
 	for _, pred := range predicates {
 		t.Run(pred.name, func(t *testing.T) {
 			var reference []scanFormRow
-			for _, form := range scanForms() {
+			for i, form := range scanForms() {
 				got := queryScanForm(t, db,
 					scanFormQuery(form.s3Source(paths, pred.expr), pred.expr, 1000000))
-				if reference == nil {
+				if i == 0 {
+					// post-lww-only is the control (scanForms()[0]); seed by
+					// index, not nil-check, so a legitimately empty reference
+					// set still forces every later form to match it.
 					reference = got
 					continue
 				}
@@ -230,9 +236,11 @@ func TestScanForms_AgreeOnVisibleSet(t *testing.T) {
 }
 
 // TestScanForms_QualifyBindsPreparedArgs pins that a parameter placeholder
-// inside the QUALIFY window CASE binds correctly — the production template
-// renders the logical clause with ? placeholders in exactly this position
-// (once in s3_source, once in visible; args are appended twice, in order).
+// inside the QUALIFY window CASE binds correctly. Production has NO QUALIFY —
+// the #195 rewrite was rejected — but a future QUALIFY revival WOULD render
+// the logical clause with ? placeholders in exactly this position (once in
+// the s3_source QUALIFY, once in visible; args appended twice, in order).
+// This test is kept as a guard for any future revival of #195.
 func TestScanForms_QualifyBindsPreparedArgs(t *testing.T) {
 	db := openScanFormDB(t)
 	paths := seedScanFormParquet(t, db, t.TempDir(), 5000, 4)
@@ -248,8 +256,11 @@ func TestScanForms_QualifyBindsPreparedArgs(t *testing.T) {
 
 // BenchmarkScanForms measures each formulation on local parquet shards.
 // Scale via FORMA_SCANFORM_ROWS (logical rows; ×3 physical versions).
-// Local NVMe understates the second scan's S3 GET amplification — the
-// medium-live harness run (RustFS-backed) covers that dimension.
+// Caveat: local NVMe understates the second scan's S3 GET amplification.
+// The inner semijoin scan is projection- and row-group-pruned, so its byte
+// footprint is only a fraction of the full-glob read — but an S3-backed
+// comparative run must be measured separately before these numbers are cited
+// against a network-storage argument.
 func BenchmarkScanForms(b *testing.B) {
 	rows := 200000
 	if env := os.Getenv("FORMA_SCANFORM_ROWS"); env != "" {
