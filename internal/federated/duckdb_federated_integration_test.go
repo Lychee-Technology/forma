@@ -84,10 +84,6 @@ func TestEvaluateRoutingPolicy_QueryShapeAware(t *testing.T) {
 	require.False(t, dec.UseDuckDB)
 }
 
-func TestExecuteDuckDBFederatedQuery_ClientUnavailable(t *testing.T) {
-	t.Skip("requires root symbols (setupIntegrationEnv, NewDBPersistentRecordRepository); covered by root integration tests")
-}
-
 func TestNewDuckDBClient_HealthCheck(t *testing.T) {
 	skipIfNoDuckDB(t)
 	client, err := NewDuckDBClient(forma.DuckDBConfig{Enabled: true, DBPath: ":memory:"})
@@ -98,18 +94,10 @@ func TestNewDuckDBClient_HealthCheck(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestStreamDuckDBFederatedQuery_BasicExecution(t *testing.T) {
-	t.Skip("requires root symbols (setupIntegrationEnv, NewDBPersistentRecordRepository); covered by root integration tests")
-}
-
 func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 	engine := &DBFederatedQueryEngine{}
 	_, _, err := engine.ExecuteDuckDBFederatedQuery(context.Background(), model.StorageTables{}, nil, 10, 0, nil, nil)
 	require.Error(t, err)
-}
-
-func TestBuildDuckDBQuery_InvalidTemplateSyntax(t *testing.T) {
-	t.Skip("requires root symbols (NewDBPersistentRecordRepository); covered by root integration tests")
 }
 
 func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
