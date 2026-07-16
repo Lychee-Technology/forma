@@ -194,17 +194,19 @@ func (h *TestHarness) StopPostgres(ctx context.Context) error {
 	return nil
 }
 
-// StartS3 starts a MinIO container (optional) and returns its endpoint.
+// StartS3 starts an S3-compatible object store container (RustFS, the same
+// image as deploy/docker-compose.yml) and returns its endpoint. RustFS replaced
+// the archived minio/minio image, which no longer receives updates. Caller is
+// responsible for calling StopS3.
 func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	req := testcontainers.ContainerRequest{
-		Image:        "minio/minio:latest",
+		Image:        "rustfs/rustfs:latest",
 		ExposedPorts: []string{"9000/tcp"},
 		Env: map[string]string{
-			"MINIO_ROOT_USER":     "minioadmin",
-			"MINIO_ROOT_PASSWORD": "minioadmin",
+			"RUSTFS_ACCESS_KEY": RustFSAccessKey,
+			"RUSTFS_SECRET_KEY": RustFSSecretKey,
 		},
-		Cmd:        []string{"server", "/data", "--address", ":9000"},
-		WaitingFor: wait.ForListeningPort("9000/tcp").WithStartupTimeout(30 * time.Second),
+		WaitingFor: wait.ForListeningPort("9000/tcp").WithStartupTimeout(60 * time.Second),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
@@ -227,7 +229,7 @@ func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	return endpoint, nil
 }
 
-// StopS3 stops the MinIO container.
+// StopS3 stops the S3 (RustFS) container.
 func (h *TestHarness) StopS3(ctx context.Context) error {
 	if h.S3Container != nil {
 		if err := h.S3Container.Terminate(ctx); err != nil {
