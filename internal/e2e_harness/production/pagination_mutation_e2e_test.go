@@ -68,8 +68,8 @@ func mustQuery(ctx context.Context, t *testing.T, env *Env, q Query) *QueryResul
 }
 
 // nextKeysetCursor builds an "after" cursor from a page's last record for the
-// given system columns, mirroring the engine's own extractCursorFromRecord
-// value types (created_at → int64 CreatedAt, row_id → RowID.String()).
+// given system columns, using the value types the keyset predicate binds
+// (created_at → int64 CreatedAt, row_id → RowID.String()).
 func nextKeysetCursor(cols []model.KeysetColumn, rec *model.PersistentRecord) *model.KeysetCursor {
 	vals := make([]any, len(cols))
 	for i, c := range cols {
