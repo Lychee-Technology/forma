@@ -389,3 +389,22 @@ func TestBuildSchemaDrivenProjectionAliasCollision(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildSchemaDrivenProjectionReservedColumn pins the PR #273 review P1
+// on the writer: "row.id" folds to "row_id", which the export SQL already
+// emits as a system column — a duplicate parquet column must be refused
+// before any export side effect.
+func TestBuildSchemaDrivenProjectionReservedColumn(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"row.id": {AttributeID: 1, ValueType: forma.ValueTypeText},
+	}
+	_, err := buildSchemaDrivenProjection(cache)
+	if err == nil {
+		t.Fatal("expected reserved column error, got nil")
+	}
+	for _, want := range []string{"row.id", "reserved"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q must contain %q", err, want)
+		}
+	}
+}

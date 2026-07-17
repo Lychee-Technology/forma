@@ -123,18 +123,12 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 	}
 	sort.Strings(sortedAttrNames)
 
-	// The alias fold is lossy ("contact.name" and "contact_name" both become
-	// contact_name); a collision would silently project one attribute's
-	// values as another's, so refuse loudly (plain read-path error).
-	colToAttr := make(map[string]string, len(sortedAttrNames))
-	for _, name := range sortedAttrNames {
-		col := ParquetAttrColumn(name)
-		if prev, ok := colToAttr[col]; ok {
-			return nil, fmt.Errorf(
-				"schema %d: attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
-				schemaID, prev, name, col)
-		}
-		colToAttr[col] = name
+	// Folded names must not collide with each other or with the system
+	// columns this projection emits itself; registration already rejects
+	// such schemas, this re-check is defense in depth (plain read-path
+	// error).
+	if err := ValidateParquetAttrColumns(cache); err != nil {
+		return nil, fmt.Errorf("schema %d: %w", schemaID, err)
 	}
 
 	// Build S3 source projection

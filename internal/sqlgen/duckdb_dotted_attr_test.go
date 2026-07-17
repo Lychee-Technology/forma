@@ -143,3 +143,15 @@ func TestBuildSchemaProjection_AliasCollisionFails(t *testing.T) {
 	require.Contains(t, err.Error(), "contact.name")
 	require.Contains(t, err.Error(), "contact_name")
 }
+
+// TestBuildSchemaProjection_ReservedColumnFails pins the PR #273 review P1
+// on the reader: "row.id" folds to the system column "row_id", which the
+// s3_source/pg_source projections emit themselves.
+func TestBuildSchemaProjection_ReservedColumnFails(t *testing.T) {
+	_, err := BuildSchemaProjection(30, forma.SchemaAttributeCache{
+		"row.id": {AttributeID: 1, ValueType: forma.ValueTypeText},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "row.id")
+	require.Contains(t, err.Error(), "reserved")
+}

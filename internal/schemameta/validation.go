@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 func parseAttributeID(raw any, attrName, source string) (int16, error) {
@@ -37,6 +38,14 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 			return fmt.Errorf("schema %s has duplicate column binding %s for %s and %s", schemaName, meta.ColumnBinding.ColumnName, existingAttr, attrName)
 		}
 		seenBindings[meta.ColumnBinding.ColumnName] = attrName
+	}
+
+	// Reject attribute names whose folded parquet columns land on a CDC/read
+	// system column or collide with each other — such a schema would accept
+	// hot-tier writes it can never flush or read back federated (#260,
+	// PR #273 review).
+	if err := sqlgen.ValidateParquetAttrColumns(cache); err != nil {
+		return fmt.Errorf("schema %s: %w", schemaName, err)
 	}
 	return nil
 }

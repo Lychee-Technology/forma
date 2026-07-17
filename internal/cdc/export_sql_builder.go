@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 type exportSQLOptions struct {
@@ -116,15 +117,17 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 	eavSelect := make([]string, 0, len(attrCache))
 	eavAttrIDs := make([]int16, 0, len(attrCache))
 
-	aliasToAttr := make(map[string]string, len(attrCache))
+	// Folded aliases must not duplicate each other or the system columns
+	// this export emits itself (schema_id/row_id/changed_at/...);
+	// registration already rejects such schemas, this re-check refuses the
+	// export before any side effect (defense in depth).
+	if err := sqlgen.ValidateParquetAttrColumns(attrCache); err != nil {
+		return schemaDrivenProjection{}, fmt.Errorf("refusing to export ambiguous parquet columns: %w", err)
+	}
+
 	for _, attrName := range sortedAttrKeys(attrCache) {
 		meta := attrCache[attrName]
 		alias := safeColumnAlias(attrName)
-		if prev, ok := aliasToAttr[alias]; ok {
-			return schemaDrivenProjection{}, fmt.Errorf(
-				"attributes %q and %q both map to parquet column %q; refusing to export ambiguous columns", prev, attrName, alias)
-		}
-		aliasToAttr[alias] = attrName
 		if meta.ColumnBinding != nil {
 			colName := string(meta.ColumnBinding.ColumnName)
 			if _, ok := mainColSet[colName]; !ok {
