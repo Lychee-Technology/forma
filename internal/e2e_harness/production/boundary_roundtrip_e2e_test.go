@@ -196,9 +196,10 @@ func buildBoundaryEvents(wide SchemaRef) (nullRow, zeroRow, maxRow, minRow *Even
 // TestNullAndBoundaryRoundTripAcrossTiers proves that NULL, empty-string,
 // zero, and extreme boundary values survive write → CDC export → parquet →
 // federated merge-on-read intact across all three tiers. Null+max land
-// cold-only, zero+min stay warm, and fresh null+max copies stay hot. The
-// physical layer reuses Task 4's per-file value assertion; the logical layer
-// adds float64-proof exact typed assertions the oracle cannot make.
+// cold-only, zero+min plus a fresh warm max stay warm, and fresh null+max
+// copies stay hot — so +MaxInt64 is proven on all three tiers. The physical
+// layer reuses Task 4's per-file value assertion; the logical layer adds
+// float64-proof exact typed assertions the oracle cannot make.
 func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -222,6 +223,15 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	env.ExecSQL(ctx,
 		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
 		wide.ID, rowIDs([]*Event{nullRow, maxRow}))
+
+	// Warm tier: a fresh max-shape row applied after init and flushed to
+	// delta, so +MaxInt64 is proven on warm too (PR #284 review, AC4) —
+	// the original maxRow is cold-only and hotMax stays hot.
+	_, _, warmMax, _ := buildBoundaryEvents(wide)
+	if err := env.ApplyEvents(ctx, warmMax); err != nil {
+		t.Fatalf("apply warm max boundary create: %v", err)
+	}
+
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -234,7 +244,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 
 	// Physical layer: reuse Task 4's per-file value assertion (NULL columns
 	// included), then the NULL-vs-zero distinction per boundary row.
-	truth := buildWideTruth(ctx, t, env, wide.ID, append(batch, hotNull, hotMax))
+	truth := buildWideTruth(ctx, t, env, wide.ID, append(batch, hotNull, hotMax, warmMax))
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
@@ -252,7 +262,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	if fed == nil {
 		return
 	}
-	assertBoundaryRecords(t, "federated", fed, nullRow, zeroRow, maxRow, minRow, hotNull, hotMax)
+	assertBoundaryRecords(t, "federated", fed, nullRow, zeroRow, maxRow, minRow, hotNull, hotMax, warmMax)
 }
 
 // assertBoundaryRecords asserts exact typed values that the oracle's float64
