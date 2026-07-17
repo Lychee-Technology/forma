@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // Shared fixture for the filter-LWW production suites (#178, #215).
@@ -56,6 +57,20 @@ func assertRowCount(ctx context.Context, t *testing.T, env *Env, name string, q 
 	t.Helper()
 	if res := env.AssertQueryMatches(ctx, q); res != nil && len(res.Records) != want {
 		t.Fatalf("%s returned %d rows, want %d", name, len(res.Records), want)
+	}
+}
+
+// waitClockPast blocks until the process wall clock is strictly past every
+// given event's ChangedAt. The repository stamps changed_at from this same
+// process clock (nowMillis, postgres_persistent_repository.go), so a write
+// issued after this returns lands on a strictly later millisecond — making a
+// subsequent assertStrictlyNewer deterministic instead of racing the clock.
+func waitClockPast(t *testing.T, evs ...*Event) {
+	t.Helper()
+	for _, ev := range evs {
+		for time.Now().UnixMilli() <= ev.ChangedAt {
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 

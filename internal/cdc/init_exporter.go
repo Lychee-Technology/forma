@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -21,13 +22,13 @@ func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, cfg CDCConfig, p
 
 // buildBaseExportSQL constructs the DuckDB SQL for exporting base files.
 // Key differences from delta export:
-// 1. No change_log table involved
-// 2. Uses ltbase_updated_at as changed_at (the reader's version timestamp):
-//    the base row IS the state as of its last update, and every write path
-//    stamps ltbase_updated_at and change_log.changed_at from the same clock
-//    read, so the base copy ranks exactly at its newest flushed delta — never
-//    below a previously flushed older version (#210)
-// 3. Queries entity_main directly for row metadata
+//  1. No change_log table involved
+//  2. Uses ltbase_updated_at as changed_at (the reader's version timestamp):
+//     the base row IS the state as of its last update, and every write path
+//     stamps ltbase_updated_at and change_log.changed_at from the same clock
+//     read, so the base copy ranks exactly at its newest flushed delta — never
+//     below a previously flushed older version (#210)
+//  3. Queries entity_main directly for row metadata
 func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "8GB",
@@ -39,7 +40,7 @@ func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schem
 		deletedAtSelect:    "COALESCE(m.ltbase_deleted_at, 0) AS deleted_at",
 	}, pgConnStr, s3TmpPath, cfg, schemaID, 0, rowIDs, attrCache)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", fmt.Errorf("failed to build base export SQL plan for schema %d: %w", schemaID, err)
 	}
 
 	return plan.sql, plan.mainQuery, plan.eavQuery, nil

@@ -55,11 +55,13 @@ func testFreshBaseBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env, w
 	bystander := CreateEvent(wide, map[string]any{"title": "bystander", "count": float64(999)})
 	mustApplyEvents(ctx, t, env, "fm1 creates", target, bystander)
 
+	waitClockPast(t, target)
 	v2 := UpdateEvent(wide, target.RowID, map[string]any{"title": "stale-v2", "count": float64(400000)})
 	mustApplyEvents(ctx, t, env, "fm1 update v2", v2)
 	assertStrictlyNewer(t, []*Event{target}, []*Event{v2})
 	mustFlush(ctx, t, env) // delta: v2 attrs @ ver_ts = T2
 
+	waitClockPast(t, v2)
 	v3 := UpdateEvent(wide, target.RowID, map[string]any{"title": "fresh-v3", "count": float64(500000)})
 	mustApplyEvents(ctx, t, env, "fm1 update v3", v3)
 	assertStrictlyNewer(t, []*Event{v2}, []*Event{v3})

@@ -106,6 +106,7 @@ func testInitRestampBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env,
 	mustApplyEvents(ctx, t, env, "restamp create + bystander", target, bystander)
 	mustFlush(ctx, t, env) // delta v1 @ T1
 
+	waitClockPast(t, target)
 	upd := UpdateEvent(wide, target.RowID, map[string]any{"title": "fresh-v2", "count": float64(222)})
 	mustApplyEvents(ctx, t, env, "restamp update", upd)
 	assertStrictlyNewer(t, []*Event{target}, []*Event{upd}) // v2 is a genuinely later write
