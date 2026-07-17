@@ -20,9 +20,10 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 	}
 	dual := &DualClauses{DuckClause: "1=1"}
 	// Mirror the production params from buildDuckDBQueryWithPlan
-	// (internal/federated/duckdb_query.go); injectDuckDBTemplateParams fills
-	// the projection defaults, including HasEAVPivot = true.
-	params := map[string]any{
+	// (internal/federated/duckdb_query.go); the schema projection params come
+	// from the shared fixture (HasEAVPivot = true via the EAV tag attribute),
+	// mirroring the engine's injectSchemaProjections (#222).
+	params := withTestProjection(t, map[string]any{
 		"PG_CONN":              "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
@@ -32,7 +33,7 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 		"EAVScanTable":         "eav_data_dev",
 		"S3_PATHS":             "['s3://bucket/base/*.parquet']",
 		"LOGICAL_WHERE_CLAUSE": "1=1",
-	}
+	}, 1)
 
 	sqlText, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
@@ -72,7 +73,7 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		DuckClause: "age > ?", DuckArgs: []any{int64(10)},
 		PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(10)},
 	}
-	params := map[string]any{
+	params := withTestProjection(t, map[string]any{
 		"PG_CONN":              "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
@@ -82,7 +83,7 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		"EAVScanTable":         "eav_data_dev",
 		"S3_PATHS":             "['s3://bucket/base/*.parquet']",
 		"LOGICAL_WHERE_CLAUSE": "age > ?",
-	}
+	}, 1)
 
 	sqlText, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)

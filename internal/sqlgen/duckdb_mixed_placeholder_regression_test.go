@@ -33,7 +33,7 @@ func TestDuckDBMixedComposite_NoPlaceholderStyleMixing(t *testing.T) {
 	require.NotEmpty(t, dual.PgMainClause, "expected a main-column pushdown clause")
 	require.NotEmpty(t, dual.DuckClause, "expected a DuckDB logical clause")
 
-	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, nil, &dual)
+	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, nil, &dual)
 	require.NoError(t, err)
 
 	// Core guard: no "$n" numbered placeholders anywhere in the DuckDB statement.
@@ -75,7 +75,7 @@ func TestDuckDBMixedComposite_KeysetNoPlaceholderStyleMixing(t *testing.T) {
 	require.NotEmpty(t, dual.PgMainClause)
 	require.NotEmpty(t, dual.DuckClause)
 
-	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, nil, &dual)
+	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, nil, &dual)
 	require.NoError(t, err)
 
 	require.NotContains(t, sql, "$", "keyset clause must obey the single-style invariant (#161/#212)")

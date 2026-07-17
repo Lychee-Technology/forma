@@ -128,6 +128,24 @@ func TestBuildDuckDBQuery_AdvancedTemplate(t *testing.T) {
 		"Offset":               0,
 		"PageSize":             20,
 	}
+	// The advanced template refuses to render without schema projection params
+	// (#222 retired the toy defaults); derive them like injectSchemaProjections
+	// does, from the same fixture shape design_doc_sql_test.go pins.
+	sp, err := sqlgen.BuildSchemaProjection(1, forma.SchemaAttributeCache{
+		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
+		"age": {AttributeID: 2, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
+		"tag": {AttributeID: 205, ValueType: forma.ValueTypeText},
+	})
+	require.NoError(t, err)
+	params["S3SourceSelect"] = sp.S3SourceSelect
+	params["PGSourceSelect"] = sp.PGSourceSelect
+	params["PGGroupBy"] = sp.PGGroupBy
+	params["EAVPivotSelect"] = sp.EAVPivotSelect
+	params["EAVPivotAttrs"] = sp.EAVPivotAttrs
+	params["HasEAVPivot"] = sp.EAVPivotAttrs != ""
+	params["OuterSelect"] = sp.OuterSelect
 	sql, args, err := sqlgen.BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{}, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, sql)

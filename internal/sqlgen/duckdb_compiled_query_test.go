@@ -10,8 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func compiledParityParams() map[string]any {
-	return map[string]any{
+func compiledParityParams(t *testing.T) map[string]any {
+	t.Helper()
+	return withTestProjection(t, map[string]any{
 		"EAVTable":       "eav_t",
 		"MainTable":      "main_t",
 		"ChangeLogTable": "cl_t",
@@ -20,7 +21,7 @@ func compiledParityParams() map[string]any {
 		"Limit":          25,
 		"Offset":         0,
 		"PageSize":       25,
-	}
+	}, 7)
 }
 
 // requireCompiledParity is the #142 phase-5 contract: Compile+Bind must
@@ -29,10 +30,10 @@ func compiledParityParams() map[string]any {
 func requireCompiledParity(t *testing.T, q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID) {
 	t.Helper()
 
-	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, dirtyIDs, &dual)
+	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, dirtyIDs, &dual)
 	require.NoError(t, err)
 
-	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, &dual, len(dirtyIDs) > 0)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, &dual, len(dirtyIDs) > 0)
 	require.NoError(t, err)
 	require.NotNil(t, compiled)
 
@@ -105,7 +106,7 @@ func TestCompiledQueryColdOnlyParityOmitsPgSource(t *testing.T) {
 	require.NotEmpty(t, dual.PgMainArgs,
 		"precondition: the shape must carry pushdown args for the drop to be observable")
 
-	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, &dual, false)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, &dual, false)
 	require.NoError(t, err)
 	require.NotNil(t, compiled)
 
@@ -134,7 +135,7 @@ func TestCompiledQueryReuseAcrossRequests(t *testing.T) {
 	dirtyB := []uuid.UUID{uuid.New()}
 
 	dualA := parityDual(t, qA.Condition, cache)
-	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), qA, &dualA, true)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), qA, &dualA, true)
 	require.NoError(t, err)
 
 	// Bind request B through the plan compiled from request A's shape.
@@ -144,7 +145,7 @@ func TestCompiledQueryReuseAcrossRequests(t *testing.T) {
 	require.NoError(t, err)
 
 	gotSQL, gotArgs := compiled.Bind(qB, dualB, dirtyB)
-	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), qB, dirtyB, &dualB)
+	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), qB, dirtyB, &dualB)
 	require.NoError(t, err)
 	require.Equal(t, wantSQL, gotSQL, "request B served from request A's skeleton must equal the direct build")
 	require.Equal(t, wantArgs, gotArgs)
@@ -154,13 +155,13 @@ func TestCompiledQueryReuseAcrossRequests(t *testing.T) {
 func TestCompileDuckDBQueryRejectsNonCacheablePaths(t *testing.T) {
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}
 	empty := DualClauses{}
-	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(), q, &empty, false)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, &empty, false)
 	require.NoError(t, err)
 	require.Nil(t, compiled, "empty dual clause is not cacheable")
 
 	dual := DualClauses{DuckClause: "1=1"}
 	generic := template.Must(template.New("generic").Parse("SELECT 1 WHERE {{.Anchor.Condition}}"))
-	compiled, err = CompileDuckDBQuery(generic, compiledParityParams(), q, &dual, false)
+	compiled, err = CompileDuckDBQuery(generic, compiledParityParams(t), q, &dual, false)
 	require.NoError(t, err)
 	require.Nil(t, compiled, "non-advanced templates are not cacheable")
 }

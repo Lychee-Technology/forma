@@ -22,7 +22,7 @@ func TestAdvancedTemplate_NoResourcePragmas(t *testing.T) {
 	}
 	dual := &DualClauses{DuckClause: "1=1"}
 
-	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, map[string]any{}, q, nil, dual)
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, withTestProjection(t, map[string]any{}, 1), q, nil, dual)
 	require.NoError(t, err)
 	require.NotContains(t, sql, "PRAGMA")
 }
@@ -108,7 +108,7 @@ func TestBuildDuckDBQuery_KeysetArgsBindLast(t *testing.T) {
 		DuckArgs:   []any{int64(25), "Alice"},
 	}
 
-	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, map[string]any{}, q, nil, dual)
+	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, withTestProjection(t, map[string]any{}, 1), q, nil, dual)
 	require.NoError(t, err)
 
 	// [DuckArgs(2), PgMainArgs(0), DuckArgs(2), keyset(1)]

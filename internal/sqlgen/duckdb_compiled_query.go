@@ -68,6 +68,9 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	m["HasHot"] = hasHot
 
 	injectDuckDBTemplateParams(m, q, dual)
+	if err := requireProjectionParams(m); err != nil {
+		return nil, err
+	}
 	// Compile-time keyset arg values are discarded; Bind re-derives them from
 	// the request cursor.
 	delete(m, "KEYSET_ARGS")
