@@ -147,3 +147,23 @@ func TestInjectSchemaProjectionsPropagatesCollision(t *testing.T) {
 	// propagated error must leave them untouched.
 	require.NotContains(t, sqlParams, "S3SourceSelect")
 }
+
+// TestApplySchemaProjection_NilProjectionFails pins the nil-projection guard
+// (#222/#280 review): a nil projection with no error must be refused, never
+// treated as success. The real schemaProjection seam never yields sp==nil
+// without an error, so the guard is exercised directly.
+func TestApplySchemaProjection_NilProjectionFails(t *testing.T) {
+	sqlParams := map[string]any{}
+	err := applySchemaProjection(sqlParams, 42, nil, nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "42")
+	require.NotContains(t, sqlParams, "S3SourceSelect", "a refused projection must leave params unset")
+
+	// A non-nil projErr is still wrapped with schema context.
+	perr := applySchemaProjection(sqlParams, 42, nil, errTestProjection)
+	require.ErrorIs(t, perr, errTestProjection)
+	require.ErrorContains(t, perr, "42")
+	require.NotContains(t, sqlParams, "S3SourceSelect")
+}
+
+var errTestProjection = fmt.Errorf("boom")

@@ -36,7 +36,6 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 	// Prepare where variables
 	var whereClause string
 	var whereArgs []any
-	var err error
 
 	// Ensure params is a map so we can inject Anchor.Condition, PgMainClause, and dirty helpers
 	m, ok := params.(map[string]any)
@@ -87,6 +86,11 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 			}
 		}
 		injectDuckDBTemplateParams(m, q, dual)
+		if isAdvancedTemplate {
+			if err := requireProjectionParams(m); err != nil {
+				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+			}
+		}
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
 			whereArgs = append(whereArgs, dual.PgMainArgs...)
 		}
@@ -96,13 +100,18 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		return RenderDuckDBQuery(tpl, merged, whereArgs)
 	}
 
-	// Legacy path (preserved for tests with dual=nil; production always uses dual path).
-	// A nil query must keep the old GenerateDuckDBWhereClause(nil) contract: "1=1".
+	return buildDuckDBQueryLegacy(tpl, m, anchor, q, dirtyIDs, isAdvancedTemplate)
+}
+
+// buildDuckDBQueryLegacy renders the dual==nil fallback path (preserved for
+// tests; production always takes the dual path). A nil query keeps the old
+// GenerateDuckDBWhereClause(nil) contract: "1=1".
+func buildDuckDBQueryLegacy(tpl *template.Template, m map[string]any, anchor map[string]any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, isAdvancedTemplate bool) (string, []any, error) {
 	var fallbackCond forma.Condition
 	if q != nil {
 		fallbackCond = q.Condition
 	}
-	whereClause, whereArgs, err = buildDuckClause(fallbackCond, nil)
+	whereClause, whereArgs, err := buildDuckClause(fallbackCond, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -120,10 +129,49 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		}
 	}
 	injectDuckDBTemplateParams(m, q, nil)
+	if isAdvancedTemplate {
+		if err := requireProjectionParams(m); err != nil {
+			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+		}
+	}
 	whereArgs = appendKeysetArgs(m, whereArgs)
 
 	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
 	return RenderDuckDBQuery(tpl, merged, whereArgs)
+}
+
+// projectionParamKeys are the schema-derived projection params the advanced
+// template renders (sorted; keep sorted so the missing-param error is
+// deterministic). Production always sets all seven via the engine's
+// injectSchemaProjections — from BuildSchemaProjection (schema cache) or
+// BuildBenchmarkProjections (benchmark schemas). The renderer used to
+// substitute a retired toy-schema projection (name/age/tag, phantom ltbase_*
+// parquet aliases) for any missing key; that projection cannot be scanned by
+// duckDBScanBuffers under the #147 positional-scan contract, so a missing key
+// is now a hard error instead (#222).
+var projectionParamKeys = []string{
+	"EAVPivotAttrs",
+	"EAVPivotSelect",
+	"HasEAVPivot",
+	"OuterSelect",
+	"PGGroupBy",
+	"PGSourceSelect",
+	"S3SourceSelect",
+}
+
+// requireProjectionParams fails an advanced-template render whose params are
+// missing any schema-projection key, naming every absent key.
+func requireProjectionParams(params map[string]any) error {
+	var missing []string
+	for _, key := range projectionParamKeys {
+		if _, ok := params[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("advanced DuckDB template render is missing schema projection params [%s]; derive them via BuildSchemaProjection or BuildBenchmarkProjections — the toy-schema defaults were retired (#222)", strings.Join(missing, ", "))
 }
 
 func defaultIfEmpty(s, fallback string) string {
@@ -189,41 +237,6 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 		if paths, ok := params["DuckDBS3Paths"].([]string); ok && len(paths) > 0 {
 			params["S3_PATHS"] = formatDuckDBPathList(paths)
 		}
-	}
-
-	// Inject defaults for schema-driven projection parameters if not already set.
-	// These defaults match the pre-dynamic-template fixed schema layout.
-	if _, ok := params["S3SourceSelect"]; !ok {
-		params["S3SourceSelect"] = "row_id, ltbase_created_at AS created_at, ltbase_updated_at AS ver_ts, ltbase_deleted_at AS deleted_ts, name, age, tag"
-	}
-	if _, ok := params["PGSourceSelect"]; !ok {
-		params["PGSourceSelect"] = "m.ltbase_row_id AS row_id, m.ltbase_created_at AS created_at, cl.changed_at AS ver_ts, cl.deleted_at AS deleted_ts, CAST(m.text_01 AS VARCHAR) AS name, CAST(m.integer_01 AS INTEGER) AS age, MAX(CASE WHEN e.attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
-	}
-	if _, ok := params["PGGroupBy"]; !ok {
-		params["PGGroupBy"] = "m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01"
-	}
-	if _, ok := params["EAVPivotSelect"]; !ok {
-		params["EAVPivotSelect"] = "MAX(CASE WHEN attr_id = 205 THEN CAST(e.value_text AS VARCHAR) END) AS tag"
-	}
-	if _, ok := params["EAVPivotAttrs"]; !ok {
-		params["EAVPivotAttrs"] = "205"
-	}
-	if _, ok := params["HasEAVPivot"]; !ok {
-		params["HasEAVPivot"] = true
-	}
-	if _, ok := params["OuterSelect"]; !ok {
-		schemaID := int16(0)
-		if q != nil {
-			schemaID = q.SchemaID
-		}
-		params["OuterSelect"] = fmt.Sprintf(`%d::SMALLINT AS ltbase_schema_id,
-			CAST(row_id AS UUID) AS ltbase_row_id,
-			created_at AS ltbase_created_at,
-			ver_ts AS ltbase_updated_at,
-			deleted_ts AS ltbase_deleted_at,
-			name AS text_01,
-			age AS integer_01,
-			'[]'::TEXT AS attributes_json`, schemaID)
 	}
 
 	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.

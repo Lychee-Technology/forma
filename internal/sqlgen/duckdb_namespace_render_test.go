@@ -14,18 +14,7 @@ import (
 // the actual attribute-aliased CTE columns (`... AS age`, `... AS tag`).
 func nonBenchmarkNamespaceParams(t *testing.T, cache forma.SchemaAttributeCache) map[string]any {
 	t.Helper()
-	sp, err := BuildSchemaProjection(7, cache)
-	require.NoError(t, err)
-
-	p := compiledParityParams()
-	p["S3SourceSelect"] = sp.S3SourceSelect
-	p["PGSourceSelect"] = sp.PGSourceSelect
-	p["PGGroupBy"] = sp.PGGroupBy
-	p["EAVPivotSelect"] = sp.EAVPivotSelect
-	p["EAVPivotAttrs"] = sp.EAVPivotAttrs
-	p["HasEAVPivot"] = sp.EAVPivotAttrs != ""
-	p["OuterSelect"] = sp.OuterSelect
-	return p
+	return applyProjectionParams(t, compiledParityParams(t), 7, cache)
 }
 
 // TestDuckDBNamespace_RenderPaths_AttributeAliasedClause is the #167 render-path

@@ -110,6 +110,23 @@ func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T)
 		"EAVScanTable":       "eav_data",
 		"Anchor":             map[string]any{},
 	}
+	// The advanced template refuses to render without schema projection params
+	// (#222 retired the toy defaults); derive them like the engine's
+	// injectSchemaProjections does. The EAV attribute keeps the eav_data pivot
+	// scan in the rendered SQL, which this test asserts on.
+	sp, err := sqlgen.BuildSchemaProjection(42, forma.SchemaAttributeCache{
+		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
+		"tag": {AttributeID: 205, ValueType: forma.ValueTypeText},
+	})
+	require.NoError(t, err)
+	params["S3SourceSelect"] = sp.S3SourceSelect
+	params["PGSourceSelect"] = sp.PGSourceSelect
+	params["PGGroupBy"] = sp.PGGroupBy
+	params["EAVPivotSelect"] = sp.EAVPivotSelect
+	params["EAVPivotAttrs"] = sp.EAVPivotAttrs
+	params["HasEAVPivot"] = sp.EAVPivotAttrs != ""
+	params["OuterSelect"] = sp.OuterSelect
 
 	sql, _, err := sqlgen.BuildDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
