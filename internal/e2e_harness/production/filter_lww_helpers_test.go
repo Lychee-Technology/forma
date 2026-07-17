@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // Shared fixture for the filter-LWW production suites (#178, #215).
@@ -59,9 +60,24 @@ func assertRowCount(ctx context.Context, t *testing.T, env *Env, name string, q 
 	}
 }
 
+// waitClockPast blocks until the process wall clock is strictly past every
+// given event's ChangedAt. The repository stamps changed_at from this same
+// process clock (nowMillis, postgres_persistent_repository.go), so a write
+// issued after this returns lands on a strictly later millisecond — making a
+// subsequent assertStrictlyNewer deterministic instead of racing the clock.
+func waitClockPast(t *testing.T, evs ...*Event) {
+	t.Helper()
+	for _, ev := range evs {
+		for time.Now().UnixMilli() <= ev.ChangedAt {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 // assertStrictlyNewer fails fast when any new version's changed_at is not
 // strictly after its predecessor's at millisecond resolution — otherwise an
-// LWW probe degrades into the undefined equal-ver_ts tie tracked by #210.
+// LWW probe degrades into an undefined equal-ver_ts tie (#210 fixed the init
+// stamp; equal-timestamp DIVERGENT versions of a row remain unranked).
 func assertStrictlyNewer(t *testing.T, olds, news []*Event) {
 	t.Helper()
 	for i := range olds {

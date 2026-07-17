@@ -213,16 +213,13 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 }
 
 // testChangedAtBeatsTierLayout supersedes the ConflictingCreatedAndUpdatedAt
-// stub. The init export contract makes created_at and updated_at orderings
-// genuinely conflict across tiers: cdc-init stamps base rows with
-// ltbase_created_at as the version timestamp (internal/cdc/init_exporter.go),
-// so the base copy written LAST carries the OLDEST ver_ts while the freshest
-// version lives in a delta written earlier. LWW must pick the strictly newest
-// changed_at (the update time) — not created_at, tier tags, or file write
-// order. The equal-ver_ts tie between CONFLICTING parquet versions (base
-// state newer than the last flush) is undefined by the ranking and
-// deliberately not exercised here; the init ver_ts contract is tracked by
-// #210.
+// stub. Three physical copies of every row coexist across the cold tier: v1
+// and v2 in two delta generations plus the base duplicate of v2 written by
+// cdc-init (which since #210 stamps ltbase_updated_at as the version
+// timestamp, so the base copy ranks exactly at v2's delta). LWW must pick the
+// strictly newest changed_at (the update time) — not created_at, tier tags,
+// or file write order: a ranking keyed on created_at would see all three
+// copies tie and could surface v1.
 func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
@@ -254,7 +251,7 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 		t.Fatalf("manifest holds %d delta files, want 2 (v1 and v2 generations)", got)
 	}
 
-	report, err := env.RunInit(ctx, wide) // base = v2 attrs @ create-time ver_ts
+	report, err := env.RunInit(ctx, wide) // base = v2 attrs @ update-time ver_ts (#210)
 	if err != nil {
 		t.Fatalf("run init: %v", err)
 	}
