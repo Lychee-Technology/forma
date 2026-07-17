@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -453,6 +454,12 @@ func toBool(value any) (bool, error) {
 		return v != 0, nil
 	case float64:
 		return v != 0, nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
+		}
+		return f != 0, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}

@@ -79,7 +79,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	zap.S().Infow("create request received", "schema", schemaName)
 
 	var rawBody any
-	if err := readJSONBody(r, &rawBody); err != nil {
+	if err := readEntityJSONBody(r, &rawBody); err != nil {
 		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	if err := readJSONBody(r, &body); err != nil {
+	if err := readEntityJSONBody(r, &body); err != nil {
 		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
 		return
 	}
@@ -617,6 +617,17 @@ func parseUUID(s string) (uuid.UUID, error) {
 func readJSONBody(r *http.Request, v any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// readEntityJSONBody decodes an entity data payload with json.Number for
+// numeric literals, so integer attribute values above 2^53 reach the
+// transform chain undamaged (#205). Non-entity payloads (row-id arrays,
+// typed query requests) keep readJSONBody's plain decoding.
+func readEntityJSONBody(r *http.Request, v any) error {
+	defer r.Body.Close()
+	dec := json.NewDecoder(r.Body)
+	dec.UseNumber()
+	return dec.Decode(v)
 }
 
 // parseCreateObjects parses create payloads that can be either a single object or an object array.
