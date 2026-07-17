@@ -36,7 +36,6 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 	// Prepare where variables
 	var whereClause string
 	var whereArgs []any
-	var err error
 
 	// Ensure params is a map so we can inject Anchor.Condition, PgMainClause, and dirty helpers
 	m, ok := params.(map[string]any)
@@ -89,7 +88,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		injectDuckDBTemplateParams(m, q, dual)
 		if isAdvancedTemplate {
 			if err := requireProjectionParams(m); err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
 			}
 		}
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
@@ -101,13 +100,18 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		return RenderDuckDBQuery(tpl, merged, whereArgs)
 	}
 
-	// Legacy path (preserved for tests with dual=nil; production always uses dual path).
-	// A nil query must keep the old GenerateDuckDBWhereClause(nil) contract: "1=1".
+	return buildDuckDBQueryLegacy(tpl, m, anchor, q, dirtyIDs, isAdvancedTemplate)
+}
+
+// buildDuckDBQueryLegacy renders the dual==nil fallback path (preserved for
+// tests; production always takes the dual path). A nil query keeps the old
+// GenerateDuckDBWhereClause(nil) contract: "1=1".
+func buildDuckDBQueryLegacy(tpl *template.Template, m map[string]any, anchor map[string]any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, isAdvancedTemplate bool) (string, []any, error) {
 	var fallbackCond forma.Condition
 	if q != nil {
 		fallbackCond = q.Condition
 	}
-	whereClause, whereArgs, err = buildDuckClause(fallbackCond, nil)
+	whereClause, whereArgs, err := buildDuckClause(fallbackCond, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -127,7 +131,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 	injectDuckDBTemplateParams(m, q, nil)
 	if isAdvancedTemplate {
 		if err := requireProjectionParams(m); err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
 		}
 	}
 	whereArgs = appendKeysetArgs(m, whereArgs)

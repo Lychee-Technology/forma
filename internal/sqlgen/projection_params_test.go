@@ -15,10 +15,10 @@ import (
 // real BuildSchemaProjection call — never hand-written SQL, which is exactly
 // the drift the retired toy defaults caused.
 
-// testProjectionCache is the canonical name/age/tag fixture: a text main
+// buildTestProjectionCache is the canonical name/age/tag fixture: a text main
 // column, an integer main column, and one EAV attribute (id 205) — the same
 // shape the design-doc §5 guard uses (internal/federated/design_doc_sql_test.go).
-func testProjectionCache() forma.SchemaAttributeCache {
+func buildTestProjectionCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
 		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
@@ -44,10 +44,10 @@ func applyProjectionParams(t *testing.T, params map[string]any, schemaID int16, 
 	return params
 }
 
-// withTestProjection injects the canonical fixture projection into params.
-func withTestProjection(t *testing.T, params map[string]any, schemaID int16) map[string]any {
+// injectTestProjection injects the canonical fixture projection into params.
+func injectTestProjection(t *testing.T, params map[string]any, schemaID int16) map[string]any {
 	t.Helper()
-	return applyProjectionParams(t, params, schemaID, testProjectionCache())
+	return applyProjectionParams(t, params, schemaID, buildTestProjectionCache())
 }
 
 // TestBuildDuckDBQuery_MissingProjectionParamsRejected pins the retirement of

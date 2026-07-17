@@ -252,15 +252,24 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 
 	// Production schema: compute projections from the attribute cache
 	sp, hit, projErr := e.schemaProjection(schemaID, cache)
+	return hit, applySchemaProjection(sqlParams, schemaID, sp, projErr)
+}
+
+// applySchemaProjection writes the seven schema-projection params into sqlParams
+// from a computed projection, or refuses. Both a non-nil projErr and a nil
+// projection are hard failures: with the toy-schema defaults retired (#222)
+// there is nothing to fall through to, so an advanced-template render must fail
+// fast rather than emit unset projection params. Extracted so the nil-guard is
+// unit-testable (the real schemaProjection seam never yields sp==nil without an
+// error).
+func applySchemaProjection(sqlParams map[string]any, schemaID int16, sp *sqlgen.SchemaProjection, projErr error) error {
 	if projErr != nil {
 		// A non-nil projection error is a hard data-contract failure (e.g. the
-		// alias-collision guard in BuildSchemaProjection). Propagate it so the
-		// query fails fast instead of silently falling through to the retired
-		// toy-schema projection defaults (#222/#260).
-		return hit, fmt.Errorf("build schema projection for schema %d: %w", schemaID, projErr)
+		// alias-collision guard in BuildSchemaProjection). Propagate it.
+		return fmt.Errorf("build schema projection for schema %d: %w", schemaID, projErr)
 	}
 	if sp == nil {
-		return hit, nil
+		return fmt.Errorf("schema projection for schema %d is nil with no error; refusing to render with an undefined projection", schemaID)
 	}
 	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
 	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
@@ -269,7 +278,7 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
 	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
 	sqlParams["OuterSelect"] = sp.OuterSelect
-	return hit, nil
+	return nil
 }
 
 func duckDBPostgresScanLocation(name string) (string, string) {

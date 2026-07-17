@@ -23,7 +23,7 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 	// (internal/federated/duckdb_query.go); the schema projection params come
 	// from the shared fixture (HasEAVPivot = true via the EAV tag attribute),
 	// mirroring the engine's injectSchemaProjections (#222).
-	params := withTestProjection(t, map[string]any{
+	params := injectTestProjection(t, map[string]any{
 		"PG_CONN":              "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
@@ -73,7 +73,7 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		DuckClause: "age > ?", DuckArgs: []any{int64(10)},
 		PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(10)},
 	}
-	params := withTestProjection(t, map[string]any{
+	params := injectTestProjection(t, map[string]any{
 		"PG_CONN":              "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
