@@ -60,22 +60,38 @@ func TestToPersistentRecordPreservesBoundBigintExactly(t *testing.T) {
 }
 
 // TestFromPersistentRecordReturnsBoundBigintExactly pins the read-back leg: a
-// stored MaxInt64 (legal Postgres BIGINT, e.g. written by external tooling)
+// stored bigint (legal Postgres BIGINT, e.g. written by external tooling)
 // must surface exactly through the JSON transform, not via int64→float64→int64.
+// Pre-#205, the read path contains a float64 hop (persistent_record.go:402
+// `f := float64(val)` + attribute_converter.go:496 `int64(*record.ValueNumeric)`).
+// MaxInt64 case: saturation on arm64 (implementation-defined); kept for symmetry.
+// NegMaxInt64 and Above2_53: deterministic on all platforms pre-fix. They must red.
 func TestFromPersistentRecordReturnsBoundBigintExactly(t *testing.T) {
 	tr := NewPersistentRecordTransformer(newBigintPrecisionRegistry())
-	rec := &model.PersistentRecord{
-		SchemaID:     202,
-		RowID:        uuid.New(),
-		TextItems:    map[string]string{},
-		Int16Items:   map[string]int16{},
-		Int32Items:   map[string]int32{},
-		Int64Items:   map[string]int64{"bigint_01": math.MaxInt64},
-		Float64Items: map[string]float64{},
-		UUIDItems:    map[string]uuid.UUID{},
+	cases := []struct {
+		name string
+		val  int64
+	}{
+		{"max_int64", math.MaxInt64},
+		{"neg_max_int64", -math.MaxInt64},
+		{"above_2_53", 1<<53 + 1},
 	}
-	out, err := tr.FromPersistentRecord(context.Background(), rec)
-	require.NoError(t, err)
-	require.EqualValues(t, int64(math.MaxInt64), out["amount"],
-		"read-back must not round through float64")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &model.PersistentRecord{
+				SchemaID:     202,
+				RowID:        uuid.New(),
+				TextItems:    map[string]string{},
+				Int16Items:   map[string]int16{},
+				Int32Items:   map[string]int32{},
+				Int64Items:   map[string]int64{"bigint_01": tc.val},
+				Float64Items: map[string]float64{},
+				UUIDItems:    map[string]uuid.UUID{},
+			}
+			out, err := tr.FromPersistentRecord(context.Background(), rec)
+			require.NoError(t, err)
+			require.EqualValues(t, tc.val, out["amount"],
+				"read-back must not round through float64")
+		})
+	}
 }
