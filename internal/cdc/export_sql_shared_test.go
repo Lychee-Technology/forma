@@ -87,7 +87,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			},
 			expectedMemoryLimit:  "6GB",
 			expectedModeTable:    "",
-			expectedTimeSlotExpr: "m.ltbase_created_at AS changed_at",
+			expectedTimeSlotExpr: "m.ltbase_updated_at AS changed_at",
 			expectActiveOnly:     true,
 		},
 	}

@@ -22,7 +22,11 @@ func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, cfg CDCConfig, p
 // buildBaseExportSQL constructs the DuckDB SQL for exporting base files.
 // Key differences from delta export:
 // 1. No change_log table involved
-// 2. Uses ltbase_created_at as changed_at (the reader's version timestamp)
+// 2. Uses ltbase_updated_at as changed_at (the reader's version timestamp):
+//    the base row IS the state as of its last update, and every write path
+//    stamps ltbase_updated_at and change_log.changed_at from the same clock
+//    read, so the base copy ranks exactly at its newest flushed delta — never
+//    below a previously flushed older version (#210)
 // 3. Queries entity_main directly for row metadata
 func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
@@ -31,7 +35,7 @@ func buildBaseExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schem
 		useChangeLog:       false,
 		schemaIDSelect:     "m.ltbase_schema_id AS schema_id",
 		rowIDSelect:        "m.ltbase_row_id AS row_id",
-		timeSlotSelect:     "m.ltbase_created_at AS changed_at",
+		timeSlotSelect:     "m.ltbase_updated_at AS changed_at",
 		deletedAtSelect:    "COALESCE(m.ltbase_deleted_at, 0) AS deleted_at",
 	}, pgConnStr, s3TmpPath, cfg, schemaID, 0, rowIDs, attrCache)
 	if err != nil {
