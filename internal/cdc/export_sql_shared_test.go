@@ -328,40 +328,63 @@ func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigi
 	}, projection.mainProjections)
 }
 
+// TestCastMainValue_DateAndDatetimeEncodings pins the #219 normalization: every
+// date/datetime encoding must export epoch-ms BIGINT so the federated reader's
+// CAST(attr AS BIGINT) projection and epoch-ms predicate binds line up on every
+// tier. iso8601 (RFC3339 text) is parsed to a TIMESTAMP then to epoch millis;
+// unix_ms and default (epoch millis already in a bigint column) pass through.
 func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 	unixMs := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}
-	unbound := &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}
+	iso := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
+	defaultBigint := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02}
 
 	tests := []struct {
 		name     string
 		meta     forma.AttributeMetadata
+		col      string
 		expected string
 	}{
 		{
 			name:     "date unix_ms stays epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: unixMs},
+			col:      "m.bigint_02",
 			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
 		},
 		{
 			name:     "datetime unix_ms stays epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: unixMs},
+			col:      "m.bigint_02",
 			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
 		},
 		{
-			name:     "date default encoding keeps native cast",
-			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: unbound},
-			expected: "TRY_CAST(m.bigint_02 AS DATE)",
+			name:     "date iso8601 parses text to epoch-ms bigint",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: iso},
+			col:      "m.text_02",
+			expected: "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))",
 		},
 		{
-			name:     "datetime default encoding keeps native cast",
-			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: unbound},
-			expected: "TRY_CAST(m.bigint_02 AS TIMESTAMP)",
+			name:     "datetime iso8601 parses text to epoch-ms bigint",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: iso},
+			col:      "m.text_02",
+			expected: "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))",
+		},
+		{
+			name:     "date default encoding (epoch-ms bigint) passes through",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: defaultBigint},
+			col:      "m.bigint_02",
+			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
+		},
+		{
+			name:     "datetime default encoding (epoch-ms bigint) passes through",
+			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: defaultBigint},
+			col:      "m.bigint_02",
+			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.expected, castMainValue("m.bigint_02", tt.meta))
+			require.Equal(t, tt.expected, castMainValue(tt.col, tt.meta))
 		})
 	}
 }
