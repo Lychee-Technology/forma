@@ -117,23 +117,37 @@ func TestNewDuckDBClientContext_DeadlineExceeded(t *testing.T) {
 	require.Contains(t, err.Error(), "ping duckdb")
 }
 
-func TestNewDuckDBClientContext_ExtensionStepsUseCallerCtx(t *testing.T) {
-	cfg := forma.DuckDBConfig{
-		Enabled:        true,
-		DBPath:         ":memory:",
-		MemoryLimitMB:  256,
-		MaxParallelism: 1,
-		MaxConnections: 1,
-		QueryTimeout:   5 * time.Second,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+// The ping issued during construction opens (and thereby initializes) the first
+// pooled connection, so a freshly constructed client must already expose the S3
+// session settings and extensions on that connection.
+func TestNewDuckDBClientContext_FirstConnectionConfigured(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	duck, err := NewDuckDBClientContext(ctx, cfg)
+	duck, err := NewDuckDBClientContext(ctx, s3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	require.NotNil(t, duck)
 	defer duck.Close()
+
+	var region string
+	require.NoError(t, duck.DB.QueryRowContext(ctx, "SELECT current_setting('s3_region');").Scan(&region))
+	require.Equal(t, "us-test-1", region)
+
+	var loaded int
+	require.NoError(t, duck.DB.QueryRowContext(ctx,
+		"SELECT count(*) FROM duckdb_extensions() WHERE extension_name IN ('httpfs','parquet') AND loaded;").Scan(&loaded))
+	require.Equal(t, 2, loaded)
+}
+
+// Invalid S3 credentials must fail construction (before any connection opens), not
+// surface as per-connection init warnings.
+func TestNewDuckDBClientContext_InvalidS3CredentialFailsFast(t *testing.T) {
+	cfg := s3ConfiguredDuckDBConfig()
+	cfg.S3SecretKey = "bad'key"
+
+	_, err := NewDuckDBClient(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forbidden character")
 }
 
 // s3ConfiguredDuckDBConfig returns a multi-connection S3-enabled config for the

@@ -3,11 +3,12 @@ package federated
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
@@ -75,10 +76,22 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 		dsn = ":memory:"
 	}
 
-	db, err := sql.Open("duckdb", dsn)
+	// Pre-build the init statements; S3 credential validation fails fast here,
+	// before any connection is opened.
+	stmts, err := buildInitStatements(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("open duckdb: %w", err)
+		return nil, fmt.Errorf("build duckdb init statements: %w", err)
 	}
+
+	// LOAD/SET/PRAGMA are session-scoped, so they must run on every pooled
+	// connection — not once against the pool, which reaches a single arbitrary
+	// connection (issue #245). The connector init hook runs for each new physical
+	// connection; PingContext below opens and thereby initializes the first one.
+	connector, err := duckdb.NewConnector(dsn, makeConnInit(stmts))
+	if err != nil {
+		return nil, fmt.Errorf("open duckdb connector: %w", err)
+	}
+	db := sql.OpenDB(connector)
 
 	// Apply a small connection configuration.
 	// File-backed DuckDB in read/write mode is effectively single-writer; more
@@ -102,127 +115,117 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 		return nil, fmt.Errorf("ping duckdb: %w", err)
 	}
 
-	if err := configureExtensions(ctx, db, cfg); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	if err := configureS3(ctx, db, cfg); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	if err := applyResourcePragmas(ctx, db, cfg); err != nil {
-		db.Close()
-		return nil, err
-	}
-
 	return &DuckDBClient{DB: db, cfg: cfg}, nil
 }
 
-// configureExtensions installs and loads user-specified extensions, plus httpfs (when S3
-// is enabled) and parquet (when parquet is enabled).
-func configureExtensions(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
-	// User-supplied extensions
-	for _, ext := range cfg.Extensions {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSTALL %s;", ext)); err != nil {
-			zap.S().Warnw("duckdb: install extension failed", "extension", ext, "err", err)
-			continue
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("LOAD %s;", ext)); err != nil {
-			zap.S().Warnw("duckdb: load extension failed", "extension", ext, "err", err)
-		}
-	}
-
-	// httpfs — required for S3 access
-	if cfg.EnableS3 {
-		if _, err := db.ExecContext(ctx, "INSTALL httpfs;"); err == nil {
-			if _, err := db.ExecContext(ctx, "LOAD httpfs;"); err != nil {
-				zap.S().Warnw("duckdb: load httpfs failed", "err", err)
-			}
-		} else {
-			zap.S().Warnw("duckdb: install httpfs failed", "err", err)
-		}
-	}
-
-	// parquet extension
-	if cfg.EnableParquet {
-		if _, err := db.ExecContext(ctx, "INSTALL parquet;"); err == nil {
-			if _, err := db.ExecContext(ctx, "LOAD parquet;"); err != nil {
-				zap.S().Warnw("duckdb: load parquet failed", "err", err)
-			}
-		} else {
-			zap.S().Warnw("duckdb: install parquet failed", "err", err)
-		}
-	}
-
-	return nil
+// initStmt is a single statement executed on every new physical DuckDB connection.
+type initStmt struct {
+	sql   string
+	label string
 }
 
-// configureS3 sets DuckDB S3 PRAGMA values when S3 is enabled in the config.
-// Returns an error (and expects the caller to close the DB) if a credential fails
-// the character-denylist validation.
-func configureS3(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
+// buildInitStatements assembles the INSTALL/LOAD/SET/PRAGMA statements every pooled
+// connection must run on open: user extensions, httpfs (when S3 is enabled), parquet
+// (when parquet is enabled), S3 session settings, and resource pragmas.
+func buildInitStatements(cfg forma.DuckDBConfig) ([]initStmt, error) {
+	stmts := extensionStmts(cfg)
+	s3, err := s3Stmts(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build duckdb s3 statements: %w", err)
+	}
+	stmts = append(stmts, s3...)
+	stmts = append(stmts, pragmaStmts(cfg)...)
+	return stmts, nil
+}
+
+func extensionStmts(cfg forma.DuckDBConfig) []initStmt {
+	var stmts []initStmt
+	for _, ext := range cfg.Extensions {
+		stmts = append(stmts,
+			initStmt{sql: fmt.Sprintf("INSTALL %s;", ext), label: "install " + ext},
+			initStmt{sql: fmt.Sprintf("LOAD %s;", ext), label: "load " + ext},
+		)
+	}
+	if cfg.EnableS3 {
+		stmts = append(stmts,
+			initStmt{sql: "INSTALL httpfs;", label: "install httpfs"},
+			initStmt{sql: "LOAD httpfs;", label: "load httpfs"},
+		)
+	}
+	if cfg.EnableParquet {
+		stmts = append(stmts,
+			initStmt{sql: "INSTALL parquet;", label: "install parquet"},
+			initStmt{sql: "LOAD parquet;", label: "load parquet"},
+		)
+	}
+	return stmts
+}
+
+// s3Stmts builds the S3 session SET statements. Each credential passes the
+// character-denylist validation first, so invalid values fail construction.
+func s3Stmts(cfg forma.DuckDBConfig) ([]initStmt, error) {
 	if !cfg.EnableS3 {
-		return nil
+		return nil, nil
 	}
 
+	var stmts []initStmt
 	if cfg.S3AccessKey != "" {
 		if err := validateS3Credential("s3_access_key_id", cfg.S3AccessKey); err != nil {
-			return err
+			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey)); err != nil {
-			zap.S().Warnw("duckdb: set s3_access_key_id failed", "err", err)
-		}
+		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey), label: "set s3_access_key_id"})
 	}
 	if cfg.S3SecretKey != "" {
 		if err := validateS3Credential("s3_secret_access_key", cfg.S3SecretKey); err != nil {
-			return err
+			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey)); err != nil {
-			zap.S().Warnw("duckdb: set s3_secret_access_key failed", "err", err)
-		}
+		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey), label: "set s3_secret_access_key"})
 	}
 	if cfg.S3Region != "" {
 		if err := validateS3Credential("s3_region", cfg.S3Region); err != nil {
-			return err
+			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
-			zap.S().Warnw("duckdb: set s3_region failed", "err", err)
-		}
+		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_region='%s';", cfg.S3Region), label: "set s3_region"})
 	}
 	if cfg.S3Endpoint != "" {
 		endpoint := strings.TrimPrefix(cfg.S3Endpoint, "http://")
 		if err := validateS3Credential("s3_endpoint", endpoint); err != nil {
-			return err
+			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("SET s3_endpoint='%s';", endpoint)); err != nil {
-			zap.S().Warnw("duckdb: set s3_endpoint failed", "err", err)
-		}
-		if _, err := db.ExecContext(ctx, "SET s3_use_ssl=false;"); err != nil {
-			zap.S().Warnw("duckdb: set s3_use_ssl failed", "err", err)
-		}
-		if _, err := db.ExecContext(ctx, "SET s3_url_style='path';"); err != nil {
-			zap.S().Warnw("duckdb: set s3_url_style failed", "err", err)
-		}
+		stmts = append(stmts,
+			initStmt{sql: fmt.Sprintf("SET s3_endpoint='%s';", endpoint), label: "set s3_endpoint"},
+			initStmt{sql: "SET s3_use_ssl=false;", label: "set s3_use_ssl"},
+			initStmt{sql: "SET s3_url_style='path';", label: "set s3_url_style"},
+		)
 	}
-
-	return nil
+	return stmts, nil
 }
 
-// applyResourcePragmas sets memory_limit and thread-count pragmas when the config requests them.
-func applyResourcePragmas(ctx context.Context, db *sql.DB, cfg forma.DuckDBConfig) error {
+func pragmaStmts(cfg forma.DuckDBConfig) []initStmt {
+	var stmts []initStmt
 	if cfg.MemoryLimitMB > 0 {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB)); err != nil {
-			zap.S().Warnw("duckdb: set memory_limit failed", "err", err, "memoryLimitMB", cfg.MemoryLimitMB)
-		}
+		stmts = append(stmts, initStmt{sql: fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB), label: "set memory_limit"})
 	}
 	if cfg.MaxParallelism > 0 {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA threads=%d;", cfg.MaxParallelism)); err != nil {
-			zap.S().Warnw("duckdb: set threads failed", "err", err, "maxParallelism", cfg.MaxParallelism)
-		}
+		stmts = append(stmts, initStmt{sql: fmt.Sprintf("PRAGMA threads=%d;", cfg.MaxParallelism), label: "set threads"})
 	}
-	return nil
+	return stmts
+}
+
+// makeConnInit returns the connector init hook the driver runs for every new physical
+// connection. Failed statements are logged and skipped so a degraded init never blocks
+// the connection — the same policy the pool-level configuration used before.
+func makeConnInit(stmts []initStmt) func(driver.ExecerContext) error {
+	return func(execer driver.ExecerContext) error {
+		for _, s := range stmts {
+			// The driver binds the Connect context to the connection while this hook
+			// runs; the statements are literal SQL, so no driver.NamedValue args.
+			if _, err := execer.ExecContext(context.Background(), s.sql, nil); err != nil {
+				zap.S().Warnw("duckdb: connection init step failed", "step", s.label, "err", err)
+			}
+		}
+		return nil
+	}
 }
 
 // Close closes the underlying DuckDB DB.
