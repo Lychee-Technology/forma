@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,9 @@ type mockEntityManager struct {
 	batchCreateResult *forma.BatchResult
 	batchCreateErr    error
 	batchCreateReq    *forma.BatchOperation
+	updateResult      *forma.DataRecord
+	updateErr         error
+	updateReq         *forma.EntityOperation
 	crossSchemaResult *forma.QueryResult
 	crossSchemaErr    error
 	crossSchemaReq    *forma.CrossSchemaRequest
@@ -39,6 +43,10 @@ func (m *mockEntityManager) Get(ctx context.Context, req *forma.QueryRequest) (*
 }
 
 func (m *mockEntityManager) Update(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
+	m.updateReq = req
+	if m.updateResult != nil || m.updateErr != nil {
+		return m.updateResult, m.updateErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -249,6 +257,60 @@ func TestHandleCreateRejectsNonObjectArrayElements(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+// TestCreateAndUpdateDecodeEntityNumbersExactly guards #205: HTTP entity
+// bodies must decode integer literals with json.Number so values above 2^53
+// (including the full ±int64 range) reach the manager boundary undamaged,
+// rather than being pre-rounded through float64 by the default decoder.
+func TestCreateAndUpdateDecodeEntityNumbersExactly(t *testing.T) {
+	signs := []string{"9223372036854775807", "-9223372036854775807"}
+
+	for _, lit := range signs {
+		t.Run("create/"+lit, func(t *testing.T) {
+			manager := &mockEntityManager{batchCreateResult: &forma.BatchResult{}}
+			server := &Server{manager: manager}
+
+			body := fmt.Sprintf(`{"amount": %s}`, lit)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/visit", bytes.NewReader([]byte(body)))
+			rec := httptest.NewRecorder()
+			server.handleCreate(rec, req)
+
+			if manager.batchCreateReq == nil {
+				t.Fatalf("expected BatchCreate request to be captured")
+			}
+			if len(manager.batchCreateReq.Operations) != 1 {
+				t.Fatalf("expected 1 operation, got %d", len(manager.batchCreateReq.Operations))
+			}
+			got := manager.batchCreateReq.Operations[0].Data["amount"]
+			if want := json.Number(lit); got != want {
+				t.Fatalf("Data[amount] = %#v (%T), want %#v", got, got, want)
+			}
+		})
+
+		t.Run("update/"+lit, func(t *testing.T) {
+			manager := &mockEntityManager{updateResult: &forma.DataRecord{}}
+			server := &Server{manager: manager}
+
+			rowID := uuid.New()
+			body := fmt.Sprintf(`{"amount": %s}`, lit)
+			url := fmt.Sprintf("/api/v1/visit/%s", rowID.String())
+			req := httptest.NewRequest(http.MethodPut, url, bytes.NewReader([]byte(body)))
+			rec := httptest.NewRecorder()
+			server.handleUpdate(rec, req)
+
+			if manager.updateReq == nil {
+				t.Fatalf("expected Update request to be captured")
+			}
+			want := json.Number(lit)
+			if got := manager.updateReq.Data["amount"]; got != want {
+				t.Fatalf("Data[amount] = %#v (%T), want %#v", got, got, want)
+			}
+			if got := manager.updateReq.Updates["amount"]; got != want {
+				t.Fatalf("Updates[amount] = %#v (%T), want %#v", got, got, want)
+			}
+		})
 	}
 }
 

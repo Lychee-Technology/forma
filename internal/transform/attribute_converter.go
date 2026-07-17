@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -54,6 +55,11 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 			return record, fmt.Errorf("convert to numeric: %w", err)
 		}
 		record.ValueNumeric = &numVal
+		if attr.ValueType == forma.ValueTypeBigInt {
+			if exact, ok := toInt64ExactForEAV(attr.Value); ok {
+				record.ValueInt64 = &exact
+			}
+		}
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTimeForEAV(attr.Value)
@@ -62,6 +68,8 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 		}
 		unixMillis := timeToUnixMillisFloat64(timeVal)
 		record.ValueNumeric = &unixMillis
+		exactMs := timeVal.UnixMilli()
+		record.ValueInt64 = &exactMs
 
 	case forma.ValueTypeUUID:
 		if uuidVal, ok := attr.Value.(uuid.UUID); ok {
@@ -446,6 +454,12 @@ func toBool(value any) (bool, error) {
 		return v != 0, nil
 	case float64:
 		return v != 0, nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
+		}
+		return f != 0, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
@@ -490,6 +504,9 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		if record.ValueText != nil {
 			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
+		if record.ValueInt64 != nil {
+			return *record.ValueInt64, nil
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
@@ -507,6 +524,9 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if record.ValueText != nil {
 			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
+		if record.ValueInt64 != nil {
+			return time.UnixMilli(*record.ValueInt64).UTC(), nil
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil

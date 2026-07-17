@@ -32,6 +32,13 @@ type EAVRecord struct {
 	ArrayIndices string
 	ValueText    *string
 	ValueNumeric *float64
+	// ValueInt64 is an exact int64 sidecar for bigint and epoch-ms date
+	// values. It is in-memory only: eav_data persistence and the EAV read
+	// paths keep the float64 ValueNumeric contract (2^53 ceiling), while
+	// main-column routing (storeInMainColumn) and read-back prefer
+	// ValueInt64 so column-bound bigint/unix_ms values carry the full
+	// int64 range without a float64 hop (#205).
+	ValueInt64 *int64
 }
 
 // AttributeOrder specifies how to sort by a particular attribute.

@@ -88,6 +88,10 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
 		} else {
+			// EAV storage keeps the float64 ValueNumeric contract (2^53
+			// ceiling); clear the exact sidecar so the create-response echo
+			// matches what eav_data actually persists (#205).
+			eavRecord.ValueInt64 = nil
 			record.OtherAttributes = append(record.OtherAttributes, eavRecord)
 		}
 	}
@@ -156,7 +160,9 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 	switch binding.Encoding {
 	case forma.MainColumnEncodingUnixMs:
 		// Date stored as Unix milliseconds in bigint column
-		if attr.ValueNumeric != nil {
+		if attr.ValueInt64 != nil {
+			record.Int64Items[columnName] = *attr.ValueInt64
+		} else if attr.ValueNumeric != nil {
 			record.Int64Items[columnName] = int64(*attr.ValueNumeric)
 		}
 
@@ -207,7 +213,9 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 			}
 
 		case forma.MainColumnTypeBigint:
-			if attr.ValueNumeric != nil {
+			if attr.ValueInt64 != nil {
+				record.Int64Items[columnName] = *attr.ValueInt64
+			} else if attr.ValueNumeric != nil {
 				record.Int64Items[columnName] = int64(*attr.ValueNumeric)
 			}
 
@@ -322,7 +330,9 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 		// Read Unix milliseconds from bigint column and convert to time
 		if val, ok := record.Int64Items[columnName]; ok {
 			f := float64(val)
+			exact := val
 			attr.ValueNumeric = &f
+			attr.ValueInt64 = &exact
 			return attr, true, nil
 		}
 
@@ -400,7 +410,9 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 	case forma.MainColumnTypeBigint:
 		if val, ok := record.Int64Items[columnName]; ok {
 			f := float64(val)
+			exact := val
 			attr.ValueNumeric = &f
+			attr.ValueInt64 = &exact
 			return attr, true, nil
 		}
 
