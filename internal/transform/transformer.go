@@ -354,6 +354,11 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 			return handleConversionError(err)
 		}
 		attr.ValueNumeric = &numVal
+		if meta.ValueType == forma.ValueTypeBigInt {
+			if exact, ok := numutil.Int64Exact(value); ok {
+				attr.ValueInt64 = &exact
+			}
+		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTime(value)
 		if err != nil {
@@ -361,6 +366,8 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		}
 		unixMillis := timeToUnixMillisFloat64(timeVal)
 		attr.ValueNumeric = &unixMillis
+		exactMs := timeVal.UnixMilli()
+		attr.ValueInt64 = &exactMs
 	case forma.ValueTypeBool:
 		boolVal, err := toBool(value)
 		if err != nil {

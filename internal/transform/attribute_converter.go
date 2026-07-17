@@ -54,6 +54,11 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 			return record, fmt.Errorf("convert to numeric: %w", err)
 		}
 		record.ValueNumeric = &numVal
+		if attr.ValueType == forma.ValueTypeBigInt {
+			if exact, ok := int64ExactForEAV(attr.Value); ok {
+				record.ValueInt64 = &exact
+			}
+		}
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTimeForEAV(attr.Value)
@@ -62,6 +67,8 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 		}
 		unixMillis := timeToUnixMillisFloat64(timeVal)
 		record.ValueNumeric = &unixMillis
+		exactMs := timeVal.UnixMilli()
+		record.ValueInt64 = &exactMs
 
 	case forma.ValueTypeUUID:
 		if uuidVal, ok := attr.Value.(uuid.UUID); ok {
@@ -179,6 +186,18 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 }
 
 // Helper functions for conversion
+
+// int64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
+// shapes ToEAVRecord tolerates for numeric values.
+func int64ExactForEAV(value any) (int64, bool) {
+	if p, ok := value.(*int64); ok {
+		if p == nil {
+			return 0, false
+		}
+		return *p, true
+	}
+	return numutil.Int64Exact(value)
+}
 
 func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
@@ -490,6 +509,9 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		if record.ValueText != nil {
 			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
+		if record.ValueInt64 != nil {
+			return *record.ValueInt64, nil
+		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
@@ -507,6 +529,9 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if record.ValueText != nil {
 			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+		}
+		if record.ValueInt64 != nil {
+			return time.UnixMilli(*record.ValueInt64).UTC(), nil
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
