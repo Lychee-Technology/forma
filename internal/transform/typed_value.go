@@ -78,3 +78,15 @@ func toString(value any) (string, error) {
 		return fmt.Sprintf("%v", value), nil
 	}
 }
+
+// toInt64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
+// shapes ToEAVRecord tolerates for numeric values.
+func toInt64ExactForEAV(value any) (int64, bool) {
+	if p, ok := value.(*int64); ok {
+		if p == nil {
+			return 0, false
+		}
+		return *p, true
+	}
+	return numutil.Int64Exact(value)
+}

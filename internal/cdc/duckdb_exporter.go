@@ -400,7 +400,7 @@ func castDateMainValue(col string, meta forma.AttributeMetadata) string {
 // uuid live in value_text. The output types mirror the federated reader's
 // EAV pivot (sqlgen.BuildSchemaProjection): BOOLEAN for bool, epoch-ms
 // BIGINT for dates, native numeric types otherwise (#173).
-// 热端 pivot(sqlgen.eavPivotExpr)必须与本映射保持一致(#205)。
+// 热端 pivot(sqlgen.buildEAVPivotExpr)必须与本映射保持一致(#205)。
 func castEAVValue(meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:

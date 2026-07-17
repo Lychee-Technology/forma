@@ -55,7 +55,7 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 		}
 		record.ValueNumeric = &numVal
 		if attr.ValueType == forma.ValueTypeBigInt {
-			if exact, ok := int64ExactForEAV(attr.Value); ok {
+			if exact, ok := toInt64ExactForEAV(attr.Value); ok {
 				record.ValueInt64 = &exact
 			}
 		}
@@ -186,18 +186,6 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 }
 
 // Helper functions for conversion
-
-// int64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
-// shapes ToEAVRecord tolerates for numeric values.
-func int64ExactForEAV(value any) (int64, bool) {
-	if p, ok := value.(*int64); ok {
-		if p == nil {
-			return 0, false
-		}
-		return *p, true
-	}
-	return numutil.Int64Exact(value)
-}
 
 func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {

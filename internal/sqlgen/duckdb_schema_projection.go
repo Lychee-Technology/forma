@@ -213,7 +213,7 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 	for _, a := range attrs {
 		attrIDParts = append(attrIDParts, fmt.Sprintf("%d", a.attrID))
 		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s",
-			eavPivotExpr(a), ParquetAttrColumn(a.name)))
+			buildEAVPivotExpr(a), ParquetAttrColumn(a.name)))
 	}
 
 	if len(pivotParts) > 0 {
@@ -224,14 +224,14 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 	}
 }
 
-// eavPivotExpr renders the hot-tier EAV pivot expression for one attribute.
+// buildEAVPivotExpr renders the hot-tier EAV pivot expression for one attribute.
 // The output type must mirror the CDC export side (cdc.castEAVValue) so the
 // pg_source leg type-unifies with the parquet legs through COALESCE and
 // UNION ALL instead of widening to DOUBLE — which silently rounded bound
 // bigint values above 2^53 and crashed CAST-back at a stored MaxInt64 (#205).
 // TRY_CAST (not CAST) matches export semantics: an out-of-range NUMERIC in
 // eav_data becomes NULL on every tier alike instead of a read-path crash.
-func eavPivotExpr(a attrProjectionInfo) string {
+func buildEAVPivotExpr(a attrProjectionInfo) string {
 	if a.meta.ValueType == forma.ValueTypeBool {
 		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).
 		return fmt.Sprintf("(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)", a.attrID)
