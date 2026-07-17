@@ -212,19 +212,8 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
 	for _, a := range attrs {
 		attrIDParts = append(attrIDParts, fmt.Sprintf("%d", a.attrID))
-		var pivotExpr string
-		if a.meta.ValueType == forma.ValueTypeBool {
-			// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE.
-			// DuckDB WHERE uses CAST(? AS BOOLEAN); the pivot output must match.
-			pivotExpr = fmt.Sprintf(
-				"(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)",
-				a.attrID)
-		} else {
-			pivotExpr = fmt.Sprintf(
-				"MAX(CASE WHEN attr_id = %d THEN %s END)",
-				a.attrID, eavValueColumn(a.meta.ValueType))
-		}
-		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s", pivotExpr, ParquetAttrColumn(a.name)))
+		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s",
+			eavPivotExpr(a), ParquetAttrColumn(a.name)))
 	}
 
 	if len(pivotParts) > 0 {
@@ -232,6 +221,33 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 	}
 	if len(attrIDParts) > 0 {
 		sp.EAVPivotAttrs = strings.Join(attrIDParts, ", ")
+	}
+}
+
+// eavPivotExpr renders the hot-tier EAV pivot expression for one attribute.
+// The output type must mirror the CDC export side (cdc.castEAVValue) so the
+// pg_source leg type-unifies with the parquet legs through COALESCE and
+// UNION ALL instead of widening to DOUBLE — which silently rounded bound
+// bigint values above 2^53 and crashed CAST-back at a stored MaxInt64 (#205).
+// TRY_CAST (not CAST) matches export semantics: an out-of-range NUMERIC in
+// eav_data becomes NULL on every tier alike instead of a read-path crash.
+func eavPivotExpr(a attrProjectionInfo) string {
+	if a.meta.ValueType == forma.ValueTypeBool {
+		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).
+		return fmt.Sprintf("(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)", a.attrID)
+	}
+	base := fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END)",
+		a.attrID, eavValueColumn(a.meta.ValueType))
+	switch a.meta.ValueType {
+	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
+		return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", base)
+	case forma.ValueTypeInteger:
+		return fmt.Sprintf("TRY_CAST(%s AS INTEGER)", base)
+	case forma.ValueTypeSmallInt:
+		return fmt.Sprintf("TRY_CAST(%s AS SMALLINT)", base)
+	default:
+		// numeric 保持 DOUBLE;text/uuid 走 value_text,无 cast
+		return base
 	}
 }
 
