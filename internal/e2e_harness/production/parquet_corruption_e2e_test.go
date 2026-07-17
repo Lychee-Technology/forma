@@ -36,7 +36,7 @@ func runParquetFaultScenario(t *testing.T, mutate func([]byte) []byte) {
 	t.Helper()
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -93,7 +93,7 @@ func runParquetFaultScenario(t *testing.T, mutate func([]byte) []byte) {
 func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -136,7 +136,7 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -185,7 +185,7 @@ func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 func TestParquetCorruption_EmptyParquetFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -217,7 +217,7 @@ func TestParquetCorruption_EmptyParquetFile(t *testing.T) {
 func TestParquetCorruption_WrongSchemaFile_GlobHint(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)

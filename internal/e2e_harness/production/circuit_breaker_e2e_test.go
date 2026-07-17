@@ -95,11 +95,10 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 // calls go through eng.Query directly: Env.Query records results without a
 // lock and is not safe for concurrent use.
 //
-// DuckDB MaxConnections is pinned to 1: NewDuckDBClient applies the
-// session-scoped S3 SET statements to a single pooled connection, so a
-// second :memory: connection opened under concurrency lacks S3 config and
-// 404s — a harness/client gap unrelated to breaker behavior (production
-// defaults to MaxConnections=1 and is unaffected; follow-up issue drafted).
+// Runs on the harness-default DuckDB pool (2 connections): this test is the
+// regression gate for #245 — per-connection init must configure every pooled
+// connection, or one of the concurrent recovery queries 404s with an empty
+// s3_region.
 func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	const threshold = 3
 	const cooldown = 3 * time.Second
@@ -107,7 +106,7 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	const queriesPerWorker = 5
 
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithBreaker(threshold, cooldown), WithDuckMaxConnections(1))
+	env := NewEnv(t, SharedCluster(t), WithBreaker(threshold, cooldown))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)

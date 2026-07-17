@@ -22,7 +22,7 @@ import (
 func TestParquetPermission_BadCredentials(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)

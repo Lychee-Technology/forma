@@ -25,7 +25,7 @@ import (
 func TestPostgresHalt_ParquetTiersError(t *testing.T) {
 	ctx := context.Background()
 	cluster := DedicatedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	seedAllTiers(ctx, t, env, wide)

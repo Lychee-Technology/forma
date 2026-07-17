@@ -108,11 +108,9 @@ func WithDuckMemoryMB(mb int) EnvOption {
 }
 
 // WithDuckMaxConnections overrides the per-test DuckDB connection pool size
-// (default 2). NewDuckDBClient applies the session-scoped S3 SET statements
-// on a single pooled connection (duckdb_conn.go), so with :memory: a second
-// pooled connection opened under load lacks S3 config and fails S3 reads
-// with HTTP 404 / empty region. Tests that issue concurrent DuckDB queries
-// should pin this to 1 until that gap is fixed.
+// (default 2). Since #245 every pooled connection self-configures via the
+// driver's per-connection init hook, so this is purely a pool-sizing knob —
+// no pinning is needed for concurrent DuckDB queries.
 func WithDuckMaxConnections(n int) EnvOption {
 	return func(o *envOptions) { o.duckMaxConns = n }
 }
