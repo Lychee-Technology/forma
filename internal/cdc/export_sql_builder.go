@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 type exportSQLOptions struct {
@@ -95,7 +96,7 @@ type schemaDrivenProjection struct {
 	eavAttrIDs      []int16
 }
 
-func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDrivenProjection {
+func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDrivenProjection, error) {
 	mainColumns := []string{
 		"ltbase_row_id",
 		"ltbase_schema_id",
@@ -115,6 +116,14 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDri
 	eavAgg := make([]string, 0, len(attrCache))
 	eavSelect := make([]string, 0, len(attrCache))
 	eavAttrIDs := make([]int16, 0, len(attrCache))
+
+	// Folded aliases must not duplicate each other or the system columns
+	// this export emits itself (schema_id/row_id/changed_at/...);
+	// registration already rejects such schemas, this re-check refuses the
+	// export before any side effect (defense in depth).
+	if err := sqlgen.ValidateParquetAttrColumns(attrCache); err != nil {
+		return schemaDrivenProjection{}, fmt.Errorf("refusing to export ambiguous parquet columns: %w", err)
+	}
 
 	for _, attrName := range sortedAttrKeys(attrCache) {
 		meta := attrCache[attrName]
@@ -143,7 +152,7 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) schemaDri
 		eavAgg:          eavAgg,
 		eavSelect:       eavSelect,
 		eavAttrIDs:      eavAttrIDs,
-	}
+	}, nil
 }
 
 func buildEAVAggregationSQL(eQueryEsc string, eavAgg []string) string {

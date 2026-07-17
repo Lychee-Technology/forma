@@ -98,6 +98,8 @@ func defaultProfile(schema SchemaRef) AttrProfile {
 		return FullTypeProfile()
 	case "e2e_second":
 		return SecondProfile()
+	case "e2e_nested":
+		return NestedProfile()
 	default:
 		return MinimalProfile()
 	}
@@ -152,6 +154,27 @@ func SecondProfile() AttrProfile {
 		return map[string]any{
 			"label": fmt.Sprintf("label-%05d-%04d", ordinal, r.Intn(10000)),
 			"code":  float64(ordinal*10 + r.Intn(10)),
+		}
+	}
+}
+
+// NestedProfile fits the e2e_nested fixture (for #260): attributes arrive as
+// a nested object so the write path flattens them to dotted names
+// ("contact.annualIncome"). annualIncome encodes the ordinal so ordered
+// assertions are deterministic.
+func NestedProfile() AttrProfile {
+	return func(r *rand.Rand, ordinal int, partial bool) map[string]any {
+		contact := map[string]any{
+			"name":         fmt.Sprintf("contact-%05d-%04d", ordinal, r.Intn(10000)),
+			"annualIncome": float64(ordinal*100 + r.Intn(100)),
+		}
+		if partial {
+			return map[string]any{"contact": contact}
+		}
+		contact["note"] = fmt.Sprintf("note %d for row %d", r.Intn(1000), ordinal)
+		return map[string]any{
+			"contact": contact,
+			"flag":    fmt.Sprintf("flag-%d", r.Intn(3)),
 		}
 	}
 }

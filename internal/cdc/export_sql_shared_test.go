@@ -197,7 +197,7 @@ func TestBuildEAVQuery_OmitsAttrFilterWhenAttrIDsAreEmpty(t *testing.T) {
 }
 
 func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggregates(t *testing.T) {
-	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
 		"display_name": {
 			AttributeName: "display_name",
 			AttributeID:   10,
@@ -216,6 +216,7 @@ func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggre
 			ValueType:     forma.ValueTypeBool,
 		},
 	})
+	require.NoError(t, err)
 
 	mainColumnCount := 0
 	for _, col := range projection.mainColumns {
@@ -246,7 +247,7 @@ func TestBuildParquetCopyOptions_FormatsResolvedOptionsForDuckDB(t *testing.T) {
 }
 
 func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAliasesAndAttrIDsAligned(t *testing.T) {
-	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
 		"display_name": {
 			AttributeName: "display_name",
 			AttributeID:   20,
@@ -264,6 +265,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 			ValueType:     forma.ValueTypeBool,
 		},
 	})
+	require.NoError(t, err)
 
 	require.Contains(t, projection.mainColumns, string(forma.MainColumnText01))
 	require.Len(t, projection.mainProjections, 1)
@@ -281,7 +283,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 }
 
 func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnboundAttributes(t *testing.T) {
-	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
 		"company_name": {
 			AttributeName: "company_name",
 			AttributeID:   30,
@@ -294,6 +296,7 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 			ValueType:     forma.ValueTypeNumeric,
 		},
 	})
+	require.NoError(t, err)
 
 	require.Contains(t, projection.mainColumns, string(forma.MainColumnText02))
 	require.Equal(t, []string{"CAST(m.text_02 AS VARCHAR) AS company_name"}, projection.mainProjections)
@@ -303,7 +306,7 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 }
 
 func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigint(t *testing.T) {
-	projection := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
 		"joined": {
 			AttributeName: "joined",
 			AttributeID:   13,
@@ -317,6 +320,7 @@ func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigi
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs},
 		},
 	})
+	require.NoError(t, err)
 
 	require.Equal(t, []string{
 		"TRY_CAST(m.bigint_02 AS BIGINT) AS joined",
@@ -368,4 +372,39 @@ func TestBuildEAVAggregationSQL_GroupsByRowIDWhenNoAggregatesExist(t *testing.T)
 	require.Contains(t, query, "SELECT row_id FROM postgres_query")
 	require.Contains(t, query, "GROUP BY row_id")
 	require.NotContains(t, query, ",\n    MAX(")
+}
+
+func TestBuildSchemaDrivenProjectionAliasCollision(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"contact_name": {AttributeID: 2, ValueType: forma.ValueTypeText},
+	}
+	_, err := buildSchemaDrivenProjection(cache)
+	if err == nil {
+		t.Fatal("expected alias collision error, got nil")
+	}
+	for _, want := range []string{"contact.name", "contact_name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q must name attribute %q", err, want)
+		}
+	}
+}
+
+// TestBuildSchemaDrivenProjectionReservedColumn pins the PR #273 review P1
+// on the writer: "row.id" folds to "row_id", which the export SQL already
+// emits as a system column — a duplicate parquet column must be refused
+// before any export side effect.
+func TestBuildSchemaDrivenProjectionReservedColumn(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"row.id": {AttributeID: 1, ValueType: forma.ValueTypeText},
+	}
+	_, err := buildSchemaDrivenProjection(cache)
+	if err == nil {
+		t.Fatal("expected reserved column error, got nil")
+	}
+	for _, want := range []string{"row.id", "reserved"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q must contain %q", err, want)
+		}
+	}
 }

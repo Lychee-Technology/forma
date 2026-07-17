@@ -171,10 +171,10 @@ By default the identity check routes through Postgres (hybrid routing serves sma
 
 ```bash
 # server env: DUCKDB_ENABLED=true S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
-bun run federated-check -- --schema log --require-duckdb
+bun run federated-check -- --schema lead --require-duckdb
 ```
 
-This forces `preferred_tiers=["warm","cold"]` (which the router serves from DuckDB) and fails unless `execution_plan.routing.used_duckdb` is true. Requires the rows to be flushed first (`cdc-flush`). Use a **flat** schema like `log`: `lead`/`visit` have nested dotted attributes (`contact.annualIncome`) that currently hit a federated-projection binder bug in DuckDB (tracked as a follow-up).
+This forces `preferred_tiers=["warm","cold"]` (which the router serves from DuckDB) and fails unless `execution_plan.routing.used_duckdb` is true. Requires the rows to be flushed first (`cdc-flush`). Any schema works, including `lead`/`visit` with nested dotted attributes (`contact.annualIncome`) — the federated projection folds dotted names to their parquet column aliases (#260).
 
 ### Clean S3 (repeatable runs)
 

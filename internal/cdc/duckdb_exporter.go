@@ -12,6 +12,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
 
@@ -231,7 +232,10 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 		return exportSQLPlan{}, fmt.Errorf("build export SQL for schema %d: attribute metadata cache is required but empty: %w", schemaID, ErrSchemaAttrCacheUnavailable)
 	}
 
-	projection := buildSchemaDrivenProjection(attrCache)
+	projection, err := buildSchemaDrivenProjection(attrCache)
+	if err != nil {
+		return exportSQLPlan{}, fmt.Errorf("build export projection for schema %d: %w", schemaID, err)
+	}
 	plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, spec.activeOnly)
 	plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
 	mainSelectCols := append(spec.baseSelectColumns(), projection.mainProjections...)
@@ -309,13 +313,11 @@ func sortedAttrKeys(cache forma.SchemaAttributeCache) []string {
 	return keys
 }
 
+// safeColumnAlias derives the parquet column name for an attribute. It
+// delegates to the shared writer/reader contract in sqlgen: the federated
+// reader projects the same names back out of parquet (#260).
 func safeColumnAlias(name string) string {
-	replacer := strings.NewReplacer("`", "", ".", "_", " ", "_", "[", "", "]", "")
-	alias := replacer.Replace(name)
-	if alias == "" {
-		alias = "attr"
-	}
-	return alias
+	return sqlgen.ParquetAttrColumn(name)
 }
 
 func duckTypeForValue(v forma.ValueType) string {

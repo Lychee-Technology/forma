@@ -17,6 +17,7 @@ const (
 	SchemaIDSimple int16 = 20
 	SchemaIDWide   int16 = 21
 	SchemaIDSecond int16 = 22
+	SchemaIDNested int16 = 23
 )
 
 // SchemaRef names a fixture schema and its fixed ID.
@@ -31,11 +32,14 @@ type SchemaRef struct {
 //   - e2e_wide:   one attribute per scalar forma.ValueType, mixing
 //     main-column bindings and EAV-only storage (for #174)
 //   - e2e_second: a second schema for multi-schema isolation (for #186)
+//   - e2e_nested: dotted (nested-object) attribute names, mixing a
+//     column-bound and an EAV-only dotted attribute (for #260)
 func DefaultSchemaFixtures() []SchemaRef {
 	return []SchemaRef{
 		{ID: SchemaIDSimple, Name: "e2e_simple"},
 		{ID: SchemaIDWide, Name: "e2e_wide"},
 		{ID: SchemaIDSecond, Name: "e2e_second"},
+		{ID: SchemaIDNested, Name: "e2e_nested"},
 	}
 }
 

@@ -141,3 +141,40 @@ func TestFileSchemaRegistryRejectsDuplicateAttributeIDsAtLoad(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate attribute id")
 }
+
+// TestFileSchemaRegistryRejectsReservedFoldedColumnAtLoad pins the PR #273
+// review P1 at the earliest gate: a schema whose attribute folds onto a
+// parquet system column ("row.id" -> "row_id") is rejected at registration,
+// before it can accept hot-tier writes it could never flush or read back.
+func TestFileSchemaRegistryRejectsReservedFoldedColumnAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeJSONFile(t, fmt.Sprintf("%s/rowid.json", dir), map[string]any{
+		"type": "object",
+	})
+	writeJSONFile(t, fmt.Sprintf("%s/rowid_attributes.json", dir), map[string]any{
+		"row.id": map[string]any{"attributeID": float64(1), "valueType": "text"},
+	})
+
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "row.id")
+	assert.Contains(t, err.Error(), "reserved")
+}
+
+// TestFileSchemaRegistryRejectsFoldedAttrCollisionAtLoad: two attributes
+// whose folded parquet columns collide are likewise rejected at load.
+func TestFileSchemaRegistryRejectsFoldedAttrCollisionAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeJSONFile(t, fmt.Sprintf("%s/fold.json", dir), map[string]any{
+		"type": "object",
+	})
+	writeJSONFile(t, fmt.Sprintf("%s/fold_attributes.json", dir), map[string]any{
+		"contact.name": map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"contact_name": map[string]any{"attributeID": float64(2), "valueType": "text"},
+	})
+
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contact.name")
+	assert.Contains(t, err.Error(), "contact_name")
+}
