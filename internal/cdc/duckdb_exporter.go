@@ -348,10 +348,9 @@ func duckTypeForValue(v forma.ValueType) string {
 // castMainValue projects a main-column-bound attribute into its parquet
 // column. The output type must match what the federated reader consumes:
 // its projection casts date/datetime attrs with CAST(attr AS BIGINT)
-// (sqlgen.duckDBAttrCast) and scans them as epoch-ms int64, mirroring the
-// write side (transform.storeInMainColumn), which stores unix_ms-encoded
-// dates as raw epoch millis in a bigint column. So unix_ms dates must stay
-// epoch-ms BIGINT here, matching castEAVValue's date handling (#194).
+// (sqlgen.duckDBAttrCast) and scans them as epoch-ms int64. So every
+// date/datetime encoding must export epoch-ms BIGINT here, matching
+// castEAVValue's date handling (#194, #219).
 func castMainValue(col string, meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:
@@ -363,16 +362,8 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 		default:
 			return fmt.Sprintf("TRY_CAST(%s AS BOOLEAN)", col)
 		}
-	case forma.ValueTypeDate:
-		if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingUnixMs {
-			return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
-		}
-		return fmt.Sprintf("TRY_CAST(%s AS DATE)", col)
-	case forma.ValueTypeDateTime:
-		if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingUnixMs {
-			return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
-		}
-		return fmt.Sprintf("TRY_CAST(%s AS TIMESTAMP)", col)
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		return castDateMainValue(col, meta)
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		return fmt.Sprintf("TRY_CAST(%s AS %s)", col, duckTypeForValue(meta.ValueType))
 	case forma.ValueTypeUUID:
@@ -380,6 +371,26 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 	default:
 		return fmt.Sprintf("CAST(%s AS VARCHAR)", col)
 	}
+}
+
+// castDateMainValue normalizes a date/datetime main column to epoch-ms BIGINT
+// regardless of its declared storage encoding, so the federated reader's
+// CAST(attr AS BIGINT) projection and epoch-ms BIGINT predicate binds (#200)
+// receive a consistent value on every tier (#219). The two storable shapes:
+//   - iso8601: an RFC3339 string in a text column -> parse to TIMESTAMP, then
+//     epoch_ms() yields BIGINT milliseconds.
+//   - unix_ms / default: epoch millis already in a bigint column -> pass
+//     through as BIGINT.
+//
+// Before #219 the non-unix_ms branch exported a native DATE/TIMESTAMP column,
+// which the reader's CAST(... AS BIGINT) reinterpreted as days- or
+// microseconds-since-epoch — silently off from the epoch-ms convention by a
+// factor of 10^3-10^8 on the warm/cold tiers.
+func castDateMainValue(col string, meta forma.AttributeMetadata) string {
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
+		return fmt.Sprintf("epoch_ms(TRY_CAST(%s AS TIMESTAMP))", col)
+	}
+	return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
 }
 
 // castEAVValue projects an eav_data value into the parquet column for its
