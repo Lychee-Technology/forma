@@ -202,11 +202,13 @@ const (
 	RustFSSecretKey = "minioadmin"
 )
 
-// StartS3 starts an S3-compatible object store container (RustFS, the same
-// image as deploy/docker-compose.yml) and returns its endpoint. RustFS replaced
-// the archived MinIO image, which no longer receives updates. The image is
-// pinned by digest so CI and review results stay reproducible across upstream
-// RustFS releases. Caller is responsible for calling StopS3.
+// StartS3 starts an S3-compatible object store container (RustFS) and returns
+// its endpoint. RustFS replaced the archived MinIO image, which no longer
+// receives updates. The image is pinned by digest so CI and review results
+// stay reproducible across upstream RustFS releases; deploy/docker-compose.yml
+// deliberately tracks rustfs:latest instead, so the dev stack picks up
+// upstream fixes without a manual digest bump (#262). Caller is responsible
+// for calling StopS3.
 func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3",
