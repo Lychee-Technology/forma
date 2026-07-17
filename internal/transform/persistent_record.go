@@ -88,6 +88,10 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
 		} else {
+			// EAV storage keeps the float64 ValueNumeric contract (2^53
+			// ceiling); clear the exact sidecar so the create-response echo
+			// matches what eav_data actually persists (#205).
+			eavRecord.ValueInt64 = nil
 			record.OtherAttributes = append(record.OtherAttributes, eavRecord)
 		}
 	}

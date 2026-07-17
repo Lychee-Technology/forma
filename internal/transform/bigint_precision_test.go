@@ -95,3 +95,30 @@ func TestFromPersistentRecordReturnsBoundBigintExactly(t *testing.T) {
 		})
 	}
 }
+
+// TestToPersistentRecordClearsSidecarForEAVOnlyBigint pins the EAV-tier
+// contract: an unbound bigint attribute keeps the float64 ValueNumeric
+// contract (2^53 ceiling), so the exact sidecar must be cleared before the
+// record lands in OtherAttributes — otherwise the create-response echo
+// (which prefers ValueInt64) would diverge from what eav_data persists.
+func TestToPersistentRecordClearsSidecarForEAVOnlyBigint(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   203,
+		schemaName: "bigint_eav_only_test",
+		cache: forma.SchemaAttributeCache{
+			"total": {
+				AttributeID: 1,
+				ValueType:   forma.ValueTypeBigInt,
+				// no ColumnBinding: EAV-only attribute
+			},
+		},
+	}
+	tr := NewPersistentRecordTransformer(registry)
+	rec, err := tr.ToPersistentRecord(context.Background(), 203, uuid.New(),
+		map[string]any{"total": int64(1<<53 + 3)})
+	require.NoError(t, err)
+	require.Len(t, rec.OtherAttributes, 1)
+	require.Nil(t, rec.OtherAttributes[0].ValueInt64,
+		"EAV-only bigint must not carry the exact sidecar")
+	require.NotNil(t, rec.OtherAttributes[0].ValueNumeric)
+}
