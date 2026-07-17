@@ -5,7 +5,6 @@ package production
 import (
 	"context"
 	"math"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -116,25 +115,14 @@ func TestBoundBigintMaxInt64WriteCorrupts(t *testing.T) {
 	}
 }
 
-// TestFederatedReadRejectsStoredMaxInt64 pins the federated crash on a stored
-// math.MaxInt64 (#205). A stored MaxInt64 is a legal Postgres BIGINT state an
-// external writer can produce, but the forma write path cannot produce it
-// portably (float64(MaxInt64) is out of int64 range and the conversion is
-// implementation-dependent per the Go spec), so it is injected with ExecSQL —
-// the harness's documented escape hatch — rather than written through the API.
-//
-// The corruption is NOT in storage: the direct hot read returns MaxInt64
-// exactly, proving Postgres holds it losslessly. It is the federated DuckDB
-// projection that fails, because duckdb_schema_projection unifies the hot leg
-// and the parquet main column with
-// COALESCE(ANY_VALUE(hot_vals.amount), m.bigint_01) into DOUBLE
-// (internal/sqlgen/duckdb_schema_projection.go:197-198), and casting DOUBLE
-// 2^63 back to INT64 overflows.
-//
-// When #205 fixes the projection to preserve int64 the federated read will
-// succeed and the guard below fails the test on purpose: flip it to assert the
-// exact round-trip and raise maxBoundBigint to math.MaxInt64.
-func TestFederatedReadRejectsStoredMaxInt64(t *testing.T) {
+// TestFederatedReadReturnsStoredMaxInt64 proves the #205 Hop-2 fix: a stored
+// math.MaxInt64 — a legal Postgres BIGINT state an external writer can produce,
+// injected via ExecSQL because the pre-#205 write path could not produce it
+// portably — now survives the federated DuckDB projection exactly. Pre-#205
+// the COALESCE(DOUBLE pivot, m.bigint_01) unification made CAST-back overflow
+// ("Conversion Error ... out of range for INT64") on every federated read of
+// the schema.
+func TestFederatedReadReturnsStoredMaxInt64(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -144,18 +132,16 @@ func TestFederatedReadRejectsStoredMaxInt64(t *testing.T) {
 	if err := env.ApplyEvents(ctx, ev); err != nil {
 		t.Fatalf("apply create: %v", err)
 	}
-
 	// Base file so the federated query routes to DuckDB; the row stays
-	// unflushed in change_log, so it is still served from the hot pg_source leg.
+	// unflushed in change_log, so it is served from the hot pg_source leg.
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	// Inject a legal-but-API-unreachable stored MaxInt64.
 	env.ExecSQL(ctx,
 		"UPDATE entity_main SET bigint_01 = $1 WHERE ltbase_schema_id = $2",
 		int64(math.MaxInt64), wide.ID)
 
-	// Direct path is exact: Postgres holds MaxInt64 losslessly.
+	// Direct hot path: storage holds MaxInt64 losslessly (unchanged pre/post fix).
 	hot, err := env.Query(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
 	if err != nil {
 		t.Fatalf("hot query: %v", err)
@@ -164,20 +150,23 @@ func TestFederatedReadRejectsStoredMaxInt64(t *testing.T) {
 		t.Fatal("hot query returned no records")
 	}
 	if got := hot.Records[0].Int64Items["bigint_01"]; got != math.MaxInt64 {
-		t.Fatalf("stored bound bigint via hot read = %d, want %d — storage must hold MaxInt64 exactly",
-			got, int64(math.MaxInt64))
+		t.Fatalf("stored bound bigint via hot read = %d, want %d", got, int64(math.MaxInt64))
 	}
 
-	// Federated path crashes: the DOUBLE 2^63 → INT64 cast overflows.
-	_, ferr := env.Query(ctx, Query{Schema: wide, Limit: 10})
-	if ferr == nil {
-		t.Fatalf("federated read of a stored MaxInt64 succeeded — #205 appears fixed; " +
-			"flip this test to assert the exact round-trip and raise maxBoundBigint to math.MaxInt64")
+	// Federated path: must succeed and be exact (#205).
+	fed, ferr := env.Query(ctx, Query{Schema: wide, Limit: 10})
+	if ferr != nil {
+		t.Fatalf("federated read of stored MaxInt64 must succeed post-#205: %v", ferr)
 	}
-	if !strings.Contains(ferr.Error(), "out of range") {
-		t.Fatalf("federated error = %q, want the DOUBLE→INT64 out-of-range cast failure (#205)", ferr.Error())
+	if !fed.Plan.Routing.UseDuckDB {
+		t.Errorf("federated query did not route to duckdb: %+v", fed.Plan.Routing)
 	}
-	t.Logf("OBSERVED federated read failure on stored MaxInt64: %v", ferr)
+	if len(fed.Records) == 0 {
+		t.Fatal("federated query returned no records")
+	}
+	if got := fed.Records[0].Int64Items["bigint_01"]; got != math.MaxInt64 {
+		t.Fatalf("federated bound bigint = %d, want %d (exact MaxInt64)", got, int64(math.MaxInt64))
+	}
 }
 
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
