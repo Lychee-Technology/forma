@@ -80,12 +80,13 @@ func testStaleFilterDeltaGenerations(ctx context.Context, t *testing.T, env *Env
 
 // testStaleFilterBaseVsDelta is issue #178 scenario 1 in the base-vs-delta
 // layout: v1 (matching) in base via init + onboarding cleanup, v2
-// (non-matching) in a delta flushed afterwards. Deterministic under #210:
-// base ver_ts = create time < delta ver_ts = update time.
+// (non-matching) in a delta flushed afterwards. Deterministic ordering: base
+// ver_ts = v1's ltbase_updated_at (#210), equal to its create time since the
+// row was never updated before init, < delta ver_ts = v2's update time.
 func testStaleFilterBaseVsDelta(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := buildOpenCreates(wide, 5)
 	mustApplyEvents(ctx, t, env, "apply creates", creates...)
-	report, err := env.RunInit(ctx, wide) // base = v1 @ create-time ver_ts
+	report, err := env.RunInit(ctx, wide) // base = v1 @ its update-time ver_ts (= create time here)
 	if err != nil {
 		t.Fatalf("run init: %v", err)
 	}

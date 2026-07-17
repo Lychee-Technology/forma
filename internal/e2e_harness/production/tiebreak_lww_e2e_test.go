@@ -9,21 +9,22 @@ import (
 
 // TestWarmColdTiebreak (#183, epic #172 Phase 3) probes the federated LWW
 // tiebreak when a live BASE (cold init) copy and a live DELTA (cold flush)
-// copy of the same row_id carry an EQUAL ver_ts — the tie #210 calls
-// "undefined". The dedup ranks
+// copy of the same row_id meet in one glob scan. The dedup ranks
 //
 //	ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
 //	(advanced_query_template_duckdb.go:76-83)
 //
 // All parquet rows share tier priority 1; live BASE rows carry deleted_ts = 0
-// (init COALESCEs ltbase_deleted_at, init_exporter.go:36) while live DELTA
-// rows carry deleted_ts = NULL. Under DuckDB's default NULLS LAST, 0 sorts
-// before NULL in a DESC key, so on an equal-ver_ts tie the BASE copy wins
-// deterministically. cdc-init stamps base ver_ts from ltbase_created_at
-// (init_exporter.go:35) and delta from changed_at, so create->flush->init with
-// no intervening update yields identical ver_ts (scenario 1) while
-// create->flush->update->init yields equal-ver_ts DIVERGENT values (scenario
-// 2). Scenario 3 pins the same asymmetry from the deleted-row side.
+// (init COALESCEs ltbase_deleted_at, init_exporter.go) while live DELTA rows
+// carry deleted_ts = NULL — under DuckDB's default NULLS LAST, 0 sorts before
+// NULL in a DESC key, so on an equal-ver_ts tie the BASE copy wins. Since
+// #210, cdc-init stamps base ver_ts from ltbase_updated_at (the same clock
+// read as change_log.changed_at), so an equal-ver_ts base/delta tie only
+// arises between copies encoding the SAME version: create->flush->init with
+// no intervening update (scenario 1, identical values) or a restamped
+// tombstone (scenario 3). Scenario 2 pins the #210 fix itself: an intervening
+// update no longer yields the pre-#210 divergent equal-ver_ts tie — the base
+// copy carries the update's timestamp and wins by strict recency.
 func TestWarmColdTiebreak(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -33,7 +34,7 @@ func TestWarmColdTiebreak(t *testing.T) {
 		run  func(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 	}{
 		{"equal_verts_identical_copies", testEqualVertsIdenticalCopies},
-		{"equal_verts_divergent_values_probe", testEqualVertsDivergentProbe},
+		{"init_restamp_beats_stale_delta", testInitRestampBeatsStaleDelta},
 		{"equal_verts_tombstone_wins", testEqualVertsTombstoneWins},
 	}
 	for _, sc := range scenarios {
@@ -45,9 +46,9 @@ func TestWarmColdTiebreak(t *testing.T) {
 }
 
 // testEqualVertsIdenticalCopies pins the hard invariant of the identical-copy
-// tie: create -> flush (delta @ create-ts) -> RunInit (base @ ltbase_created_at
-// = the same ts) leaves each row with two cold copies sharing ver_ts AND
-// attribute values. Whichever copy wins rn = 1, the row set must be exactly the
+// tie: create -> flush (delta @ create-ts) -> RunInit (base @
+// ltbase_updated_at, which equals the create ts for a never-updated row)
+// leaves each row with two cold copies sharing ver_ts AND attribute values. Whichever copy wins rn = 1, the row set must be exactly the
 // three v1 rows — no duplication (both copies surfacing) and no drop. The
 // winner identity is irrelevant here (copies are identical), so this is a
 // multiplicity invariant, not a scan-order pin.
@@ -87,65 +88,49 @@ func testEqualVertsIdenticalCopies(ctx context.Context, t *testing.T, env *Env, 
 	}
 }
 
-// testEqualVertsDivergentProbe is #210's failure-mode-2 construction, built
-// entirely from production verbs: create stale-v1 + a bystander -> flush (delta
-// v1 @ T1, deleted_ts NULL) -> update to fresh-v2 -> RunInit (base carries the
-// v2 attrs but ver_ts = ltbase_created_at = T1, deleted_ts 0). After clearing
-// change_log the row is cold-only with two live copies at an EQUAL ver_ts and
-// DIVERGENT values. The probe settles empirically whether the tie is
-// deterministic; it deliberately does NOT route through AssertQueryMatches
-// because the oracle's Seq tiebreak would declare v2 the truth and beg the
-// question. The only hard invariant is exactly-once (rn = 1).
-func testEqualVertsDivergentProbe(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+// testInitRestampBeatsStaleDelta pins the #210 fix from the read side. The
+// construction is the former failure-mode-2 probe, unchanged: create stale-v1
+// + a bystander -> flush (delta v1 @ T1, deleted_ts NULL) -> update to
+// fresh-v2 @ T2 -> RunInit -> clear change_log. Pre-#210 the base copy
+// carried the v2 attrs at ver_ts = ltbase_created_at = T1, producing an
+// equal-ver_ts DIVERGENT tie that base only won through the deleted_ts
+// 0-vs-NULL accident (the retired adjudication A3, arm A). Since #210,
+// cdc-init stamps ver_ts from ltbase_updated_at, so the base copy carries T2
+// and beats the stale delta by strict recency — no tie exists. The oracle now
+// agrees for the same reason (its Seq tiebreak has no equal-ChangedAt pair to
+// break), so AssertQueryMatches carries the value assertion; exactly-once
+// (rn = 1) stays as the hard invariant.
+func testInitRestampBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	target := CreateEvent(wide, map[string]any{"title": "stale-v1", "count": float64(111)})
 	bystander := CreateEvent(wide, map[string]any{"title": "bystander", "count": float64(999)})
-	mustApplyEvents(ctx, t, env, "divergent create + bystander", target, bystander)
+	mustApplyEvents(ctx, t, env, "restamp create + bystander", target, bystander)
 	mustFlush(ctx, t, env) // delta v1 @ T1
 
 	upd := UpdateEvent(wide, target.RowID, map[string]any{"title": "fresh-v2", "count": float64(222)})
-	mustApplyEvents(ctx, t, env, "divergent update", upd)
+	mustApplyEvents(ctx, t, env, "restamp update", upd)
 	assertStrictlyNewer(t, []*Event{target}, []*Event{upd}) // v2 is a genuinely later write
 
-	if _, err := env.RunInit(ctx, wide); err != nil { // base v2 attrs @ ver_ts = create T1
+	if _, err := env.RunInit(ctx, wide); err != nil { // base v2 attrs @ ver_ts = update T2 (#210)
 		t.Fatalf("run init: %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "count"}}, Limit: 10}
-	winners := make(map[string]int)
-	for i := 0; i < 20; i++ {
-		res, err := env.Query(ctx, q)
-		if err != nil {
-			t.Fatalf("probe run %d: %v", i, err)
-		}
-		if i == 0 && !res.Plan.Routing.UseDuckDB {
-			t.Fatalf("expected DuckDB routing, got OLTP: %+v", res.Plan.Routing)
-		}
-		seen := 0
-		title := ""
-		for _, rec := range res.Records {
-			if rec.RowID == target.RowID {
-				seen++
-				title = rec.TextItems["text_01"]
-			}
-		}
-		if seen != 1 { // hard invariant: rn = 1 must yield exactly one surviving copy
-			t.Fatalf("probe run %d: target row_id appeared %d times, want exactly 1 (rn = 1 broke)", i, seen)
-		}
-		winners[title]++
+	res := env.AssertQueryMatches(ctx, q) // oracle expects fresh-v2 by strict recency
+	if res == nil {
+		return
 	}
-
-	// Adjudication A3 — arm A (finalized from the 20-run probe: fresh-v2 won
-	// 20/20). The base copy (fresh-v2, deleted_ts 0) beats the live delta
-	// (stale-v1, deleted_ts NULL) on every run: 0 sorts before NULL under
-	// deleted_ts DESC + DuckDB's default NULLS LAST, so on an equal ver_ts the
-	// base wins deterministically. This is a CHARACTERIZATION of the
-	// #174-pinned init/flush export asymmetry, NOT a designed contract — #210
-	// still calls this tie undefined, so this assertion must be revisited when
-	// #210 lands a deliberate tie rule.
-	t.Logf("arm A: equal-ver_ts winner distribution %v", winners)
-	if winners["fresh-v2"] != 20 {
-		t.Fatalf("equal-ver_ts base/delta tie: fresh-v2 (base) won %d/20 runs, want 20 — the deterministic deleted_ts 0 < NULL tiebreak regressed (revisit against #210)", winners["fresh-v2"])
+	if !res.Plan.Routing.UseDuckDB {
+		t.Fatalf("expected DuckDB routing, got OLTP: %+v", res.Plan.Routing)
+	}
+	seen := 0
+	for _, rec := range res.Records {
+		if rec.RowID == target.RowID {
+			seen++
+		}
+	}
+	if seen != 1 { // hard invariant: rn = 1 must yield exactly one surviving copy
+		t.Fatalf("target row_id surfaced %d times, want exactly 1 (rn = 1 broke)", seen)
 	}
 }
 

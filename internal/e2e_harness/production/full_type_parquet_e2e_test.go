@@ -348,12 +348,13 @@ type systemCols struct {
 // picking the producer-specific expectation per tier. Observed emissions
 // (2026-07): schema_id == fixture ID (both tiers); ltbase_created_at /
 // ltbase_updated_at == the entity_main source stamps (both tiers). changed_at:
-// BASE exporter emits m.ltbase_created_at AS changed_at
-// (internal/cdc/init_exporter.go:35); DELTA emits cl.changed_at
-// (internal/cdc/duckdb_exporter.go:153) == Event.ChangedAt. deleted_at: BASE
-// COALESCEs to 0 (init_exporter.go:36); DELTA emits raw cl.deleted_at, NULL for
-// a live create (duckdb_exporter.go:154). ltbase_deleted_at is the raw
-// entity_main main column, NULL for every non-deleted row on both tiers.
+// BASE exporter emits m.ltbase_updated_at AS changed_at — the row's true
+// latest-version timestamp (#210; internal/cdc/init_exporter.go); DELTA emits
+// cl.changed_at (internal/cdc/duckdb_exporter.go) == Event.ChangedAt.
+// deleted_at: BASE COALESCEs to 0 (init_exporter.go); DELTA emits raw
+// cl.deleted_at, NULL for a live create (duckdb_exporter.go).
+// ltbase_deleted_at is the raw entity_main main column, NULL for every
+// non-deleted row on both tiers.
 func checkSystemColumns(t *testing.T, tier string, rowID uuid.UUID, schemaID int16, want *wideVals, got systemCols) {
 	t.Helper()
 	if !got.schema.Valid || got.schema.Int16 != schemaID {
@@ -369,7 +370,7 @@ func checkSystemColumns(t *testing.T, tier string, rowID uuid.UUID, schemaID int
 	wantChangedAt := want.changedAt      // delta: cl.changed_at
 	var wantDeletedAt *int64             // delta: raw cl.deleted_at, NULL for a create
 	if tier == "base" {
-		wantChangedAt = want.ltbaseCreatedAt // base: m.ltbase_created_at AS changed_at
+		wantChangedAt = want.ltbaseUpdatedAt // base: m.ltbase_updated_at AS changed_at (#210)
 		zero := int64(0)                     // base: COALESCE(ltbase_deleted_at, 0)
 		wantDeletedAt = &zero
 	}

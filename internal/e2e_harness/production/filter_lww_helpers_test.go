@@ -61,7 +61,8 @@ func assertRowCount(ctx context.Context, t *testing.T, env *Env, name string, q 
 
 // assertStrictlyNewer fails fast when any new version's changed_at is not
 // strictly after its predecessor's at millisecond resolution — otherwise an
-// LWW probe degrades into the undefined equal-ver_ts tie tracked by #210.
+// LWW probe degrades into an undefined equal-ver_ts tie (#210 fixed the init
+// stamp; equal-timestamp DIVERGENT versions of a row remain unranked).
 func assertStrictlyNewer(t *testing.T, olds, news []*Event) {
 	t.Helper()
 	for i := range olds {
