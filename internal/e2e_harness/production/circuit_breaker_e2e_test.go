@@ -166,6 +166,49 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 		t.Fatalf("close duckdb client: %v", err)
 	}
 
+	// Outage phase: every outcome must be a real failure or a breaker
+	// rejection — never a success.
+	succeeded, rejected, real := classifyBurstOutcomes(runConcurrentBurst(workers, queriesPerWorker, runOne))
+	if succeeded > 0 {
+		t.Errorf("%d queries succeeded while duckdb was closed", succeeded)
+	}
+	if rejected == 0 {
+		t.Errorf("no breaker rejections across %d concurrent queries (real failures: %d)", workers*queriesPerWorker, len(real))
+	}
+	t.Logf("open phase: %d real failures, %d breaker rejections", len(real), rejected)
+
+	// Recovery under single-probe (#246): after openDuration a concurrent
+	// burst yields exactly one admitted probe; the rest are rejected until
+	// the probe's success closes the breaker. With a healthy client the
+	// only legal outcomes are success or breaker rejection.
+	if err := env.ReopenDuckDB(); err != nil {
+		t.Fatalf("reopen duckdb: %v", err)
+	}
+	eng = env.Engine()
+	time.Sleep(cooldown + time.Second)
+
+	succeeded, rejected, real = classifyBurstOutcomes(runConcurrentBurst(workers, 1, runOne))
+	for _, err := range real {
+		t.Errorf("recovery burst: want success or breaker rejection, got: %v", err)
+	}
+	if succeeded == 0 {
+		t.Errorf("recovery burst: no worker succeeded (breaker rejections: %d)", rejected)
+	}
+	t.Logf("recovery burst: %d succeeded, %d rejected while the probe was in flight", succeeded, rejected)
+
+	// The probe has closed the breaker: a full concurrent burst must now
+	// succeed (this is the #245 pooled-connection regression gate).
+	for _, err := range runConcurrentBurst(workers, 1, runOne) {
+		if err != nil {
+			t.Errorf("post-recovery concurrent query failed: %v", err)
+		}
+	}
+}
+
+// runConcurrentBurst fans runOne out over workers goroutines, each calling
+// it queriesPerWorker times, and returns every outcome after all goroutines
+// have terminated.
+func runConcurrentBurst(workers, queriesPerWorker int, runOne func() error) []error {
 	errCh := make(chan error, workers*queriesPerWorker)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -180,76 +223,25 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	wg.Wait()
 	close(errCh)
 
-	var real, rejected int
+	outcomes := make([]error, 0, workers*queriesPerWorker)
 	for err := range errCh {
-		switch {
-		case err == nil:
-			t.Error("query succeeded while duckdb was closed")
-		case strings.Contains(err.Error(), breakerRejection):
-			rejected++
-		default:
-			real++
-		}
+		outcomes = append(outcomes, err)
 	}
-	if rejected == 0 {
-		t.Errorf("no breaker rejections across %d concurrent queries (real failures: %d)", workers*queriesPerWorker, real)
-	}
-	t.Logf("open phase: %d real failures, %d breaker rejections", real, rejected)
+	return outcomes
+}
 
-	// Recovery under single-probe (#246): after openDuration a concurrent
-	// burst yields exactly one admitted probe; the rest are rejected until
-	// the probe's success closes the breaker. With a healthy client the
-	// only legal outcomes are success or breaker rejection.
-	if err := env.ReopenDuckDB(); err != nil {
-		t.Fatalf("reopen duckdb: %v", err)
-	}
-	eng = env.Engine()
-	time.Sleep(cooldown + time.Second)
-
-	errs2 := make(chan error, workers)
-	var wg2 sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg2.Add(1)
-		go func() {
-			defer wg2.Done()
-			errs2 <- runOne()
-		}()
-	}
-	wg2.Wait()
-	close(errs2)
-
-	var succeeded, probeRejected int
-	for err := range errs2 {
+// classifyBurstOutcomes splits burst outcomes into successes, breaker
+// rejections, and the remaining real errors.
+func classifyBurstOutcomes(outcomes []error) (succeeded, rejected int, real []error) {
+	for _, err := range outcomes {
 		switch {
 		case err == nil:
 			succeeded++
 		case strings.Contains(err.Error(), breakerRejection):
-			probeRejected++
+			rejected++
 		default:
-			t.Errorf("recovery burst: want success or breaker rejection, got: %v", err)
+			real = append(real, err)
 		}
 	}
-	if succeeded == 0 {
-		t.Errorf("recovery burst: no worker succeeded (breaker rejections: %d)", probeRejected)
-	}
-	t.Logf("recovery burst: %d succeeded, %d rejected while the probe was in flight", succeeded, probeRejected)
-
-	// The probe has closed the breaker: a full concurrent burst must now
-	// succeed (this is the #245 pooled-connection regression gate).
-	errs3 := make(chan error, workers)
-	var wg3 sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg3.Add(1)
-		go func() {
-			defer wg3.Done()
-			errs3 <- runOne()
-		}()
-	}
-	wg3.Wait()
-	close(errs3)
-	for err := range errs3 {
-		if err != nil {
-			t.Errorf("post-recovery concurrent query failed: %v", err)
-		}
-	}
+	return succeeded, rejected, real
 }
