@@ -232,6 +232,14 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 // TRY_CAST (not CAST) matches export semantics: an out-of-range NUMERIC in
 // eav_data becomes NULL on every tier alike instead of a read-path crash.
 func buildEAVPivotExpr(a attrProjectionInfo) string {
+	if a.meta.ValueType == forma.ValueTypeList {
+		// One eav_data row per element: aggregate into a LIST in element-index
+		// order instead of MAX-collapsing, mirroring the CDC export side
+		// (cdc.castEAVValue with the items-typed meta) so the hot leg
+		// type-unifies with the parquet LIST column (#204).
+		return fmt.Sprintf("list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d)",
+			eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
+	}
 	if a.meta.ValueType == forma.ValueTypeBool {
 		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).
 		return fmt.Sprintf("(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)", a.attrID)
@@ -248,6 +256,26 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 	default:
 		// numeric 保持 DOUBLE;text/uuid 走 value_text,无 cast
 		return base
+	}
+}
+
+// eavElementCastExpr renders the raw-column cast for one list element of the
+// given items type. Must mirror cdc.castEAVValue applied to the same type so
+// hot LIST elements type-unify with the parquet LIST column (#204, cf. #205).
+func eavElementCastExpr(vt forma.ValueType) string {
+	switch vt {
+	case forma.ValueTypeBool:
+		return "(value_numeric <> 0)"
+	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
+		return "TRY_CAST(value_numeric AS BIGINT)"
+	case forma.ValueTypeInteger:
+		return "TRY_CAST(value_numeric AS INTEGER)"
+	case forma.ValueTypeSmallInt:
+		return "TRY_CAST(value_numeric AS SMALLINT)"
+	case forma.ValueTypeNumeric:
+		return "TRY_CAST(value_numeric AS DOUBLE)"
+	default: // text / uuid
+		return "value_text"
 	}
 }
 
@@ -410,6 +438,10 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 
 func duckDBAttrCast(attr string, vt forma.ValueType) string {
 	switch vt {
+	case forma.ValueTypeList:
+		// LIST columns are consumed by attributes_json reconstruction;
+		// CAST(... AS VARCHAR) would stringify them, so pass through (#204).
+		return attr
 	case forma.ValueTypeText, forma.ValueTypeUUID:
 		return fmt.Sprintf("CAST(%s AS VARCHAR)", attr)
 	case forma.ValueTypeSmallInt:
