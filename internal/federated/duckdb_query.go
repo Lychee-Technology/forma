@@ -88,10 +88,13 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
 
-	// Reject-before-DuckDB (#185): an open breaker must short-circuit before
-	// ANY DuckDB or S3 work — including the #189 pre-read schema probes and
-	// path resolution, which reach storage.
-	if e.breaker != nil && e.breaker.IsOpen() {
+	// Reject-before-DuckDB (#185): a non-admitted caller must short-circuit
+	// before ANY DuckDB or S3 work — including the #189 pre-read schema
+	// probes and path resolution, which reach storage. Allow also reserves
+	// the half-open single probe (#246); early-error returns between here
+	// and duck.Query abandon the probe, whose reservation lapses after
+	// openDuration (see the CircuitBreaker type doc).
+	if !e.breaker.Allow() {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}

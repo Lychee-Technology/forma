@@ -33,6 +33,7 @@
 //	#181 failure-state injection   -> Env.ExecSQL escape hatch
 //	#182 mid-flush concurrency     -> PausingS3, RunFlushWith(FlushOverrides{S3})
 //	#185 degraded/breaker          -> WithBreaker, HaltS3, ReopenDuckDB, Query.AllowPartialDegradedMode
+//	#246 breaker single-probe      -> WithBreaker, Duck.Close, ReopenDuckDB
 //	#186 multi-schema isolation    -> schemas/e2e_simple + e2e_second, per-test DB
 //	#260 nested dotted attributes  -> schemas/e2e_nested, nested_attrs_e2e_test.go
 //

@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"text/template"
 	"time"
@@ -60,9 +61,9 @@ func newBreakerTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *Circu
 
 func breakerTestQuery() (*model.FederatedAttributeQuery, model.StorageTables) {
 	return &model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		}, model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
+	}, model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
 }
 
 func TestBreakerRecordsExecutionFailures(t *testing.T) {
@@ -129,4 +130,77 @@ func TestBreakerSuccessResetsFailureHistory(t *testing.T) {
 	_, err = engine.Query(context.Background(), tables, fq, nil)
 	require.Error(t, err)
 	require.False(t, breaker.IsOpen(), "success must have cleared the failure history")
+}
+
+// blockingDuckDBExecutor blocks each Query until released, letting a test
+// hold the half-open probe in flight while other callers race the breaker.
+type blockingDuckDBExecutor struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockingDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	b.calls.Add(1)
+	select {
+	case b.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-b.release:
+		return &singleDuckDBRow{rowID: uuid.New()}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// #246: through the real Query path, the half-open probe executes DuckDB
+// while a concurrent caller is rejected without reaching the executor —
+// mirroring the open-breaker short-circuit call-count assertion above.
+func TestBreakerHalfOpenSingleProbeThroughQueryPath(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	breaker := NewCircuitBreaker(1, time.Minute, 50*time.Millisecond)
+	duck := &blockingDuckDBExecutor{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	engine := newBreakerTestEngine(t, duck, breaker)
+	fq, tables := breakerTestQuery()
+
+	breaker.RecordFailure() // threshold 1: breaker opens
+	time.Sleep(100 * time.Millisecond)
+
+	// A cancellable context plus the ctx-aware executor guarantee the probe
+	// goroutine terminates even when an assertion below fails fatally.
+	ctx, cancel := context.WithCancel(context.Background())
+	var probeErr error
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		_, probeErr = engine.Query(ctx, tables, fq, nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-probeDone
+	})
+
+	select {
+	case <-duck.entered: // probe admitted and inside the executor
+	case <-probeDone:
+		t.Fatalf("probe exited before reaching the executor: %v", probeErr)
+	}
+
+	// A concurrent caller is rejected without reaching the executor.
+	_, err := engine.Query(ctx, tables, fq, nil)
+	require.ErrorContains(t, err, "circuit breaker open")
+	require.Equal(t, int32(1), duck.calls.Load(), "non-probe caller must not reach the executor")
+
+	close(duck.release)
+	<-probeDone
+	require.NoError(t, probeErr, "probe must succeed and close the breaker")
+
+	// Probe success closed the breaker: the next caller flows through.
+	_, err = engine.Query(ctx, tables, fq, nil)
+	require.NoError(t, err, "breaker must be closed after probe success")
+	require.Equal(t, int32(2), duck.calls.Load(), "post-probe caller must reach the executor")
 }
