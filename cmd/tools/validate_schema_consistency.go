@@ -215,7 +215,7 @@ func (v schemaConsistencyValidator) checkStorageMismatches(ctx context.Context, 
 			continue
 		}
 		for _, meta := range schemaCache {
-			if valueTypeUsesNumericColumn(meta.ValueType) {
+			if attributeUsesNumericColumn(meta) {
 				if numericBacked[schemaID] == nil {
 					numericBacked[schemaID] = make(map[int16]struct{})
 				}
@@ -294,6 +294,17 @@ func (v schemaConsistencyValidator) scanStorageIssueRows(ctx context.Context, qu
 		return nil, fmt.Errorf("iterate storage mismatches: %w", err)
 	}
 	return issues, nil
+}
+
+// attributeUsesNumericColumn classifies which eav_data column backs the
+// attribute. List attributes store one element per row typed by items_type,
+// so they classify by the element type, never the container type (#204).
+func attributeUsesNumericColumn(meta forma.AttributeMetadata) bool {
+	vt := meta.ValueType
+	if vt == forma.ValueTypeList {
+		vt = meta.EffectiveItemsType()
+	}
+	return valueTypeUsesNumericColumn(vt)
 }
 
 func valueTypeUsesNumericColumn(valueType forma.ValueType) bool {

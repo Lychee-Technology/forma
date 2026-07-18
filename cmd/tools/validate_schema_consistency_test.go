@@ -48,6 +48,37 @@ func TestValueTypeUsesNumericColumn(t *testing.T) {
 	}
 }
 
+// TestAttributeUsesNumericColumn_ListClassifiedByItemsType: list attrs store
+// one element per row typed by items_type, so the storage-column check must
+// classify them by the element type — numeric-item lists live in
+// value_numeric, default (text) items in value_text (#204).
+func TestAttributeUsesNumericColumn_ListClassifiedByItemsType(t *testing.T) {
+	tests := []struct {
+		name string
+		meta forma.AttributeMetadata
+		want bool
+	}{
+		{name: "list default items -> text backed",
+			meta: forma.AttributeMetadata{ValueType: forma.ValueTypeList}, want: false},
+		{name: "list integer items -> numeric backed",
+			meta: forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeInteger}, want: true},
+		{name: "list bool items -> numeric backed",
+			meta: forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBool}, want: true},
+		{name: "scalar text unchanged",
+			meta: forma.AttributeMetadata{ValueType: forma.ValueTypeText}, want: false},
+		{name: "scalar numeric unchanged",
+			meta: forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := attributeUsesNumericColumn(tt.meta); got != tt.want {
+				t.Fatalf("attributeUsesNumericColumn(%+v)=%v want %v", tt.meta, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateSchemaConsistencyReportsSuccess(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
