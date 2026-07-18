@@ -5,111 +5,41 @@ package production
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
-	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// TestListAttributeRoundTrip probes issue #174 hypothesis 3: do list (array)
-// attributes survive the write -> CDC export -> parquet -> federated path?
+// TestListAttributeRoundTrip is the executable acceptance spec for issue
+// #204: list (array) attributes round-trip end to end. The write path
+// persists one eav_data row per element (transform.populateTypedValue types
+// elements by items_type), the CDC export aggregates them into a DuckDB LIST
+// ordered by array_indices (internal/cdc/export_sql_builder.go), and the
+// federated reader reconstructs positional array_indices from the LIST
+// column (internal/sqlgen/duckdb_schema_projection_json.go).
 //
-// Empirically established behavior (2026-07): they do not survive because they
-// never enter the pipeline. The WRITE PATH rejects them at the transform
-// boundary: transform.flattenToAttributes decomposes an array into indexed
-// elements (the array machinery works), but each element resolves to the
-// attribute's declared value type `list`, and populateTypedValue's type switch
-// has no `list` case, so it hits default and returns
-// "unsupported value type 'list'" (internal/transform/transformer.go:337-372).
-// No eav_data row is persisted, so the downstream CDC collapse the static
-// analysis predicted (export drops array_indices and MAX-collapses multi-row
-// attributes — internal/cdc/export_sql_builder.go:79-88,135; reader hardcodes
-// array_indices='' — internal/sqlgen/duckdb_schema_projection.go:328) is a
-// latent SECOND blocker that is never reached today.
-//
-// This is variant B2 of the task plan: the shared e2e_wide fixture keeps `tags`
-// OUT (an EAV attribute becomes an unconditional parquet column in the
-// schema-driven CDC export, which would break the exhaustive column assertion
-// in the sibling TestFullTypeRoundTripAcrossTiers). The `tags` list attribute
-// is injected only into a PRIVATE temp copy of the fixture (writeListSchemaDir
-// + WithSchemaDir), so no other test sees it. See task-6-report.md.
-//
-// This top-level test pins the CURRENT contract: list writes are rejected,
-// cleanly, with a specific error, and nothing partially lands. The skipped
-// "round-trip across tiers" subtest is the executable acceptance spec for the
-// follow-up issue that lifts this limitation.
+// The `tags` list attribute (attrID 18, text items) lives in the shared
+// e2e_wide fixture; the exhaustive parquet-schema assertion in the sibling
+// TestFullTypeRoundTripAcrossTiers pins its physical column as VARCHAR[]
+// (wideParquetTypes). The pre-#204 private-schema-dir injection variant is
+// retired.
 func TestListAttributeRoundTrip(t *testing.T) {
 	cluster := SharedCluster(t)
-	schemaDir := writeListSchemaDir(t)
-	env := NewEnv(t, cluster, WithSchemaDir(schemaDir))
-	ctx := context.Background()
-	wide := DefaultSchemaFixtures()[1] // e2e_wide; here it carries attr 18 "tags" (list)
-
-	ev := CreateEvent(wide, map[string]any{
-		"title": "list-probe",
-		"tags":  []any{"alpha", "beta", "gamma"},
-	})
-	err := env.ApplyEvents(ctx, ev)
-	if err == nil {
-		t.Fatalf("write path ACCEPTED a list payload — list support may have landed; " +
-			"convert this probe to a real round-trip test (the skipped subtest below is the spec)")
-	}
-	t.Logf("OBSERVED write-path rejection: %v", err)
-
-	// The rejection must be the specific unsupported-list-type error from
-	// transform.populateTypedValue's default arm — not a generic failure — so a
-	// future change that mishandles lists (silently drops, panics, or half
-	// applies) is caught rather than passing as "still rejected".
-	if !errors.Is(err, forma.ErrInvalidInput) {
-		t.Errorf("rejection is not wrapped forma.ErrInvalidInput: %v", err)
-	}
-	if !strings.Contains(err.Error(), "unsupported value type 'list'") {
-		t.Errorf("rejection = %q, want it to mention \"unsupported value type 'list'\"", err.Error())
-	}
-	if !strings.Contains(err.Error(), "attrID=18") {
-		t.Errorf("rejection = %q, want it to name the offending attribute (attrID=18)", err.Error())
-	}
-
-	// The rejected create must not have partially landed: no eav_data row for
-	// attr 18, and the hot read sees zero records for the schema.
-	if rows := dumpEAVRows(ctx, t, env, wide.ID, 18); len(rows) != 0 {
-		t.Errorf("eav_data has %d row(s) for rejected list attr 18, want 0: %+v", len(rows), rows)
-	}
-	hot, qerr := env.Query(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
-	if qerr != nil {
-		t.Fatalf("hot query after rejected create: %v", qerr)
-	}
-	if len(hot.Records) != 0 {
-		t.Errorf("hot read returned %d record(s) after a rejected create, want 0", len(hot.Records))
-	}
-
-	t.Run("round-trip across tiers", func(t *testing.T) {
-		t.Skipf("list round-trip blocked by #204: transform.populateTypedValue " +
-			"rejects list attributes at write (internal/transform/transformer.go:372); even if " +
-			"accepted, the CDC EAV export drops array_indices and MAX-collapses multi-element rows " +
-			"(internal/cdc/export_sql_builder.go:79-88,135) and the federated reader hardcodes " +
-			"array_indices='' (internal/sqlgen/duckdb_schema_projection.go:328). This subtest is the " +
-			"executable acceptance spec for that issue; un-skip and it must pass end to end.")
-		runListRoundTripSpec(ctx, t, cluster)
-	})
+	runListRoundTripSpec(context.Background(), t, cluster)
 }
 
 // runListRoundTripSpec is the value-precise acceptance spec for full list
-// round-trip support. It is only reached once #204 is fixed and the skip above
-// is removed. It probes every hop across all three tiers and asserts the three
-// list elements survive intact and IN INDEX ORDER: hot eav_data rows, the hot
-// federated read, both base (cold) and delta (warm) parquet, and the federated
-// merge-on-read.
+// round-trip support. It probes every hop across all three tiers and asserts
+// the three list elements survive intact and IN INDEX ORDER: hot eav_data
+// rows, the hot federated read, both base (cold) and delta (warm) parquet,
+// and the federated merge-on-read.
 func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	t.Helper()
-	env := NewEnv(t, cluster, WithSchemaDir(writeListSchemaDir(t)))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 	wantElems := []string{"alpha", "beta", "gamma"}
 
@@ -399,55 +329,3 @@ func dumpParquetTags(ctx context.Context, t *testing.T, env *Env, key string) (s
 	return typ, vals
 }
 
-// writeListSchemaDir materializes a private, throwaway schema directory: a
-// verbatim copy of the bundled fixtures with the `tags` list attribute added
-// to e2e_wide only. WithSchemaDir(this) keeps the list attribute out of the
-// shared bundled fixture, so no sibling test sees an extra parquet column.
-func writeListSchemaDir(t *testing.T) string {
-	t.Helper()
-	src := FixtureSchemasDir()
-	dst := t.TempDir()
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		t.Fatalf("read bundled schemas dir: %v", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(src, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", e.Name(), err)
-		}
-	}
-
-	injectJSON(t, filepath.Join(dst, "e2e_wide.json"),
-		`"token": { "type": "string", "format": "uuid" }`,
-		`"token": { "type": "string", "format": "uuid" },
-    "tags": { "type": "array", "items": { "type": "string" } }`)
-	injectJSON(t, filepath.Join(dst, "e2e_wide_attributes.json"),
-		`"token": { "attributeID": 17, "valueType": "uuid" }`,
-		`"token": { "attributeID": 17, "valueType": "uuid" },
-  "tags": { "attributeID": 18, "valueType": "list" }`)
-
-	return dst
-}
-
-func injectJSON(t *testing.T, path, anchor, replacement string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	s := string(data)
-	if !strings.Contains(s, anchor) {
-		t.Fatalf("anchor %q not found in %s (fixture drift?)", anchor, path)
-	}
-	if err := os.WriteFile(path, []byte(strings.Replace(s, anchor, replacement, 1)), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
