@@ -3,6 +3,8 @@ package federated
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -124,7 +126,7 @@ func TestNewDuckDBClientContext_FirstConnectionConfigured(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	duck, err := NewDuckDBClientContext(ctx, s3ConfiguredDuckDBConfig())
+	duck, err := NewDuckDBClientContext(ctx, newS3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	require.NotNil(t, duck)
 	defer duck.Close()
@@ -142,7 +144,7 @@ func TestNewDuckDBClientContext_FirstConnectionConfigured(t *testing.T) {
 // Invalid S3 credentials must fail construction (before any connection opens), not
 // surface as per-connection init warnings.
 func TestNewDuckDBClientContext_InvalidS3CredentialFailsFast(t *testing.T) {
-	cfg := s3ConfiguredDuckDBConfig()
+	cfg := newS3ConfiguredDuckDBConfig()
 	cfg.S3SecretKey = "bad'key"
 
 	_, err := NewDuckDBClient(cfg)
@@ -150,10 +152,10 @@ func TestNewDuckDBClientContext_InvalidS3CredentialFailsFast(t *testing.T) {
 	require.Contains(t, err.Error(), "forbidden character")
 }
 
-// s3ConfiguredDuckDBConfig returns a multi-connection S3-enabled config for the
+// newS3ConfiguredDuckDBConfig returns a multi-connection S3-enabled config for the
 // issue #245 tests. SET statements never touch the network, so no real S3
 // endpoint is required to observe per-connection session settings.
-func s3ConfiguredDuckDBConfig() forma.DuckDBConfig {
+func newS3ConfiguredDuckDBConfig() forma.DuckDBConfig {
 	return forma.DuckDBConfig{
 		Enabled:        true,
 		DBPath:         ":memory:",
@@ -173,7 +175,7 @@ func s3ConfiguredDuckDBConfig() forma.DuckDBConfig {
 // Issue #245: session-scoped SET statements (s3_region etc.) must reach every pooled
 // connection, not just the one that happened to serve the configuration calls.
 func TestNewDuckDBClientContext_AllConnectionsConfigured(t *testing.T) {
-	duck, err := NewDuckDBClient(s3ConfiguredDuckDBConfig())
+	duck, err := NewDuckDBClient(newS3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	defer duck.Close()
 
@@ -205,7 +207,7 @@ func TestNewDuckDBClientContext_AllConnectionsConfigured(t *testing.T) {
 // Issue #245: mirrors the real failure shape — concurrent federated queries spread
 // across the pool must all see the configured S3 session settings.
 func TestNewDuckDBClientContext_ConcurrentConnectionsConfigured(t *testing.T) {
-	duck, err := NewDuckDBClient(s3ConfiguredDuckDBConfig())
+	duck, err := NewDuckDBClient(newS3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	defer duck.Close()
 
@@ -234,6 +236,39 @@ func TestNewDuckDBClientContext_ConcurrentConnectionsConfigured(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
+}
+
+// recordingExecer is a driver.ExecerContext fake that records every attempted
+// statement and fails the one matching failOn.
+type recordingExecer struct {
+	executed []string
+	failOn   string
+}
+
+func (r *recordingExecer) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	r.executed = append(r.executed, query)
+	if query == r.failOn {
+		return nil, errors.New("injected init failure")
+	}
+	return driver.RowsAffected(0), nil
+}
+
+// A failed INSTALL must skip that extension's LOAD (the pre-#245 log-and-skip
+// contract), while later init steps still run.
+func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
+	cfg := newS3ConfiguredDuckDBConfig()
+	cfg.Extensions = []string{"bad_ext"}
+
+	steps, err := buildInitSteps(cfg)
+	require.NoError(t, err)
+
+	execer := &recordingExecer{failOn: "INSTALL bad_ext;"}
+	require.NoError(t, makeConnInit(steps)(execer))
+
+	require.Contains(t, execer.executed, "INSTALL bad_ext;")
+	require.NotContains(t, execer.executed, "LOAD bad_ext;")
+	require.Contains(t, execer.executed, "LOAD httpfs;", "later steps must still run after a failed step")
+	require.Contains(t, execer.executed, "SET s3_region='us-test-1';")
 }
 
 func TestNewDuckDBClient_DisabledConfig(t *testing.T) {

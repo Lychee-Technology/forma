@@ -78,7 +78,7 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 
 	// Pre-build the init statements; S3 credential validation fails fast here,
 	// before any connection is opened.
-	stmts, err := buildInitStatements(cfg)
+	steps, err := buildInitSteps(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb init statements: %w", err)
 	}
@@ -87,7 +87,9 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// connection — not once against the pool, which reaches a single arbitrary
 	// connection (issue #245). The connector init hook runs for each new physical
 	// connection; PingContext below opens and thereby initializes the first one.
-	connector, err := duckdb.NewConnector(dsn, makeConnInit(stmts))
+	// Failed init statements are logged and skipped, never blocking the
+	// connection — construction fails only on credential validation or ping.
+	connector, err := duckdb.NewConnector(dsn, makeConnInit(steps))
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}
@@ -124,104 +126,115 @@ type initStmt struct {
 	label string
 }
 
-// buildInitStatements assembles the INSTALL/LOAD/SET/PRAGMA statements every pooled
-// connection must run on open: user extensions, httpfs (when S3 is enabled), parquet
-// (when parquet is enabled), S3 session settings, and resource pragmas.
-func buildInitStatements(cfg forma.DuckDBConfig) ([]initStmt, error) {
-	stmts := extensionStmts(cfg)
-	s3, err := s3Stmts(cfg)
+// initStep groups statements that depend on each other: when one fails, the
+// step's remaining statements are skipped (an extension whose INSTALL fails
+// must not be LOADed), while later steps still run.
+type initStep struct {
+	stmts []initStmt
+}
+
+func makeSingleStmtStep(sql, label string) initStep {
+	return initStep{stmts: []initStmt{{sql: sql, label: label}}}
+}
+
+// buildInitSteps assembles the INSTALL/LOAD/SET/PRAGMA steps every pooled
+// connection must run on open: user extensions, httpfs (when S3 is enabled),
+// parquet (when parquet is enabled), S3 session settings, and resource pragmas.
+func buildInitSteps(cfg forma.DuckDBConfig) ([]initStep, error) {
+	steps := buildExtensionSteps(cfg)
+	s3, err := buildS3Steps(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb s3 statements: %w", err)
 	}
-	stmts = append(stmts, s3...)
-	stmts = append(stmts, pragmaStmts(cfg)...)
-	return stmts, nil
+	steps = append(steps, s3...)
+	steps = append(steps, buildPragmaSteps(cfg)...)
+	return steps, nil
 }
 
-func extensionStmts(cfg forma.DuckDBConfig) []initStmt {
-	var stmts []initStmt
+// buildExtensionSteps pairs each extension's INSTALL and LOAD into one step, so a
+// failed INSTALL skips that extension's LOAD.
+func buildExtensionSteps(cfg forma.DuckDBConfig) []initStep {
+	var steps []initStep
+	appendExt := func(ext string) {
+		steps = append(steps, initStep{stmts: []initStmt{
+			{sql: fmt.Sprintf("INSTALL %s;", ext), label: "install " + ext},
+			{sql: fmt.Sprintf("LOAD %s;", ext), label: "load " + ext},
+		}})
+	}
 	for _, ext := range cfg.Extensions {
-		stmts = append(stmts,
-			initStmt{sql: fmt.Sprintf("INSTALL %s;", ext), label: "install " + ext},
-			initStmt{sql: fmt.Sprintf("LOAD %s;", ext), label: "load " + ext},
-		)
+		appendExt(ext)
 	}
 	if cfg.EnableS3 {
-		stmts = append(stmts,
-			initStmt{sql: "INSTALL httpfs;", label: "install httpfs"},
-			initStmt{sql: "LOAD httpfs;", label: "load httpfs"},
-		)
+		appendExt("httpfs")
 	}
 	if cfg.EnableParquet {
-		stmts = append(stmts,
-			initStmt{sql: "INSTALL parquet;", label: "install parquet"},
-			initStmt{sql: "LOAD parquet;", label: "load parquet"},
-		)
+		appendExt("parquet")
 	}
-	return stmts
+	return steps
 }
 
-// s3Stmts builds the S3 session SET statements. Each credential passes the
-// character-denylist validation first, so invalid values fail construction.
-func s3Stmts(cfg forma.DuckDBConfig) ([]initStmt, error) {
+// buildS3Steps builds the S3 session SET statements. Each credential passes the
+// character-denylist validation first, so invalid values fail construction. The
+// SET statements are independent of each other, hence one step apiece.
+func buildS3Steps(cfg forma.DuckDBConfig) ([]initStep, error) {
 	if !cfg.EnableS3 {
 		return nil, nil
 	}
 
-	var stmts []initStmt
-	if cfg.S3AccessKey != "" {
-		if err := validateS3Credential("s3_access_key_id", cfg.S3AccessKey); err != nil {
-			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
-		}
-		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_access_key_id='%s';", cfg.S3AccessKey), label: "set s3_access_key_id"})
+	var steps []initStep
+	credentials := []struct{ name, value string }{
+		{"s3_access_key_id", cfg.S3AccessKey},
+		{"s3_secret_access_key", cfg.S3SecretKey},
+		{"s3_region", cfg.S3Region},
 	}
-	if cfg.S3SecretKey != "" {
-		if err := validateS3Credential("s3_secret_access_key", cfg.S3SecretKey); err != nil {
+	for _, c := range credentials {
+		if c.value == "" {
+			continue
+		}
+		if err := validateS3Credential(c.name, c.value); err != nil {
 			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_secret_access_key='%s';", cfg.S3SecretKey), label: "set s3_secret_access_key"})
-	}
-	if cfg.S3Region != "" {
-		if err := validateS3Credential("s3_region", cfg.S3Region); err != nil {
-			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
-		}
-		stmts = append(stmts, initStmt{sql: fmt.Sprintf("SET s3_region='%s';", cfg.S3Region), label: "set s3_region"})
+		steps = append(steps, makeSingleStmtStep(fmt.Sprintf("SET %s='%s';", c.name, c.value), "set "+c.name))
 	}
 	if cfg.S3Endpoint != "" {
 		endpoint := strings.TrimPrefix(cfg.S3Endpoint, "http://")
 		if err := validateS3Credential("s3_endpoint", endpoint); err != nil {
 			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		stmts = append(stmts,
-			initStmt{sql: fmt.Sprintf("SET s3_endpoint='%s';", endpoint), label: "set s3_endpoint"},
-			initStmt{sql: "SET s3_use_ssl=false;", label: "set s3_use_ssl"},
-			initStmt{sql: "SET s3_url_style='path';", label: "set s3_url_style"},
+		steps = append(steps,
+			makeSingleStmtStep(fmt.Sprintf("SET s3_endpoint='%s';", endpoint), "set s3_endpoint"),
+			makeSingleStmtStep("SET s3_use_ssl=false;", "set s3_use_ssl"),
+			makeSingleStmtStep("SET s3_url_style='path';", "set s3_url_style"),
 		)
 	}
-	return stmts, nil
+	return steps, nil
 }
 
-func pragmaStmts(cfg forma.DuckDBConfig) []initStmt {
-	var stmts []initStmt
+func buildPragmaSteps(cfg forma.DuckDBConfig) []initStep {
+	var steps []initStep
 	if cfg.MemoryLimitMB > 0 {
-		stmts = append(stmts, initStmt{sql: fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB), label: "set memory_limit"})
+		steps = append(steps, makeSingleStmtStep(fmt.Sprintf("PRAGMA memory_limit='%dMB';", cfg.MemoryLimitMB), "set memory_limit"))
 	}
 	if cfg.MaxParallelism > 0 {
-		stmts = append(stmts, initStmt{sql: fmt.Sprintf("PRAGMA threads=%d;", cfg.MaxParallelism), label: "set threads"})
+		steps = append(steps, makeSingleStmtStep(fmt.Sprintf("PRAGMA threads=%d;", cfg.MaxParallelism), "set threads"))
 	}
-	return stmts
+	return steps
 }
 
 // makeConnInit returns the connector init hook the driver runs for every new physical
 // connection. Failed statements are logged and skipped so a degraded init never blocks
 // the connection — the same policy the pool-level configuration used before.
-func makeConnInit(stmts []initStmt) func(driver.ExecerContext) error {
+func makeConnInit(steps []initStep) func(driver.ExecerContext) error {
 	return func(execer driver.ExecerContext) error {
-		for _, s := range stmts {
-			// The driver binds the Connect context to the connection while this hook
-			// runs; the statements are literal SQL, so no driver.NamedValue args.
-			if _, err := execer.ExecContext(context.Background(), s.sql, nil); err != nil {
-				zap.S().Warnw("duckdb: connection init step failed", "step", s.label, "err", err)
+		for _, step := range steps {
+			for _, s := range step.stmts {
+				// The driver binds the Connect context to the connection while this
+				// hook runs; the statements are literal SQL, so no driver.NamedValue
+				// args.
+				if _, err := execer.ExecContext(context.Background(), s.sql, nil); err != nil {
+					zap.S().Warnw("duckdb: connection init step failed", "step", s.label, "err", err)
+					break
+				}
 			}
 		}
 		return nil
