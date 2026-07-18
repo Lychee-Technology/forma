@@ -5,111 +5,44 @@ package production
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
-	forma "github.com/lychee-technology/forma"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// TestListAttributeRoundTrip probes issue #174 hypothesis 3: do list (array)
-// attributes survive the write -> CDC export -> parquet -> federated path?
+// TestListAttributeRoundTrip is the executable acceptance spec for issue
+// #204: list (array) attributes round-trip end to end. The write path
+// persists one eav_data row per element (transform.populateTypedValue types
+// elements by items_type), the CDC export aggregates them into a DuckDB LIST
+// ordered by array_indices (internal/cdc/export_sql_builder.go), and the
+// federated reader reconstructs positional array_indices from the LIST
+// column (internal/sqlgen/duckdb_schema_projection_json.go).
 //
-// Empirically established behavior (2026-07): they do not survive because they
-// never enter the pipeline. The WRITE PATH rejects them at the transform
-// boundary: transform.flattenToAttributes decomposes an array into indexed
-// elements (the array machinery works), but each element resolves to the
-// attribute's declared value type `list`, and populateTypedValue's type switch
-// has no `list` case, so it hits default and returns
-// "unsupported value type 'list'" (internal/transform/transformer.go:337-372).
-// No eav_data row is persisted, so the downstream CDC collapse the static
-// analysis predicted (export drops array_indices and MAX-collapses multi-row
-// attributes — internal/cdc/export_sql_builder.go:79-88,135; reader hardcodes
-// array_indices='' — internal/sqlgen/duckdb_schema_projection.go:328) is a
-// latent SECOND blocker that is never reached today.
-//
-// This is variant B2 of the task plan: the shared e2e_wide fixture keeps `tags`
-// OUT (an EAV attribute becomes an unconditional parquet column in the
-// schema-driven CDC export, which would break the exhaustive column assertion
-// in the sibling TestFullTypeRoundTripAcrossTiers). The `tags` list attribute
-// is injected only into a PRIVATE temp copy of the fixture (writeListSchemaDir
-// + WithSchemaDir), so no other test sees it. See task-6-report.md.
-//
-// This top-level test pins the CURRENT contract: list writes are rejected,
-// cleanly, with a specific error, and nothing partially lands. The skipped
-// "round-trip across tiers" subtest is the executable acceptance spec for the
-// follow-up issue that lifts this limitation.
+// The `tags` list attribute (attrID 18, text items) lives in the shared
+// e2e_wide fixture; the exhaustive parquet-schema assertion in the sibling
+// TestFullTypeRoundTripAcrossTiers pins its physical column as VARCHAR[]
+// (wideParquetTypes). The pre-#204 private-schema-dir injection variant is
+// retired.
 func TestListAttributeRoundTrip(t *testing.T) {
 	cluster := SharedCluster(t)
-	schemaDir := writeListSchemaDir(t)
-	env := NewEnv(t, cluster, WithSchemaDir(schemaDir))
-	ctx := context.Background()
-	wide := DefaultSchemaFixtures()[1] // e2e_wide; here it carries attr 18 "tags" (list)
-
-	ev := CreateEvent(wide, map[string]any{
-		"title": "list-probe",
-		"tags":  []any{"alpha", "beta", "gamma"},
-	})
-	err := env.ApplyEvents(ctx, ev)
-	if err == nil {
-		t.Fatalf("write path ACCEPTED a list payload — list support may have landed; " +
-			"convert this probe to a real round-trip test (the skipped subtest below is the spec)")
-	}
-	t.Logf("OBSERVED write-path rejection: %v", err)
-
-	// The rejection must be the specific unsupported-list-type error from
-	// transform.populateTypedValue's default arm — not a generic failure — so a
-	// future change that mishandles lists (silently drops, panics, or half
-	// applies) is caught rather than passing as "still rejected".
-	if !errors.Is(err, forma.ErrInvalidInput) {
-		t.Errorf("rejection is not wrapped forma.ErrInvalidInput: %v", err)
-	}
-	if !strings.Contains(err.Error(), "unsupported value type 'list'") {
-		t.Errorf("rejection = %q, want it to mention \"unsupported value type 'list'\"", err.Error())
-	}
-	if !strings.Contains(err.Error(), "attrID=18") {
-		t.Errorf("rejection = %q, want it to name the offending attribute (attrID=18)", err.Error())
-	}
-
-	// The rejected create must not have partially landed: no eav_data row for
-	// attr 18, and the hot read sees zero records for the schema.
-	if rows := dumpEAVRows(ctx, t, env, wide.ID, 18); len(rows) != 0 {
-		t.Errorf("eav_data has %d row(s) for rejected list attr 18, want 0: %+v", len(rows), rows)
-	}
-	hot, qerr := env.Query(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
-	if qerr != nil {
-		t.Fatalf("hot query after rejected create: %v", qerr)
-	}
-	if len(hot.Records) != 0 {
-		t.Errorf("hot read returned %d record(s) after a rejected create, want 0", len(hot.Records))
-	}
-
-	t.Run("round-trip across tiers", func(t *testing.T) {
-		t.Skipf("list round-trip blocked by #204: transform.populateTypedValue " +
-			"rejects list attributes at write (internal/transform/transformer.go:372); even if " +
-			"accepted, the CDC EAV export drops array_indices and MAX-collapses multi-element rows " +
-			"(internal/cdc/export_sql_builder.go:79-88,135) and the federated reader hardcodes " +
-			"array_indices='' (internal/sqlgen/duckdb_schema_projection.go:328). This subtest is the " +
-			"executable acceptance spec for that issue; un-skip and it must pass end to end.")
-		runListRoundTripSpec(ctx, t, cluster)
-	})
+	runListRoundTripSpec(context.Background(), t, cluster)
 }
 
 // runListRoundTripSpec is the value-precise acceptance spec for full list
-// round-trip support. It is only reached once #204 is fixed and the skip above
-// is removed. It probes every hop across all three tiers and asserts the three
-// list elements survive intact and IN INDEX ORDER: hot eav_data rows, the hot
-// federated read, both base (cold) and delta (warm) parquet, and the federated
-// merge-on-read.
+// round-trip support. It probes every hop across all three tiers and asserts
+// the three list elements survive intact and IN INDEX ORDER: hot eav_data
+// rows, the hot federated read, both base (cold) and delta (warm) parquet,
+// and the federated merge-on-read.
 func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	t.Helper()
-	env := NewEnv(t, cluster, WithSchemaDir(writeListSchemaDir(t)))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 	wantElems := []string{"alpha", "beta", "gamma"}
 
@@ -193,6 +126,154 @@ func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	for _, rec := range fed.Records {
 		assertListElements(t, "federated "+rec.RowID.String(), recordListAttrs(rec, 18), wantElems)
 	}
+}
+
+// TestEmptyListRoundTrip pins the #204 empty-list contract across tiers: an
+// explicit `"tags": []` persists a single marker EAV row (array_indices '',
+// both value columns NULL), exports as an empty (non-NULL) parquet LIST, and
+// survives the federated read as the marker — distinguishable at every hop
+// from an absent attribute. Under merge-update semantics `"tags": []` is the
+// only way to clear a list (omit preserves, null is rejected), so the clear
+// gesture must not be lossy.
+func TestEmptyListRoundTrip(t *testing.T) {
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	ctx := context.Background()
+	wide := DefaultSchemaFixtures()[1]
+
+	// rowE: created empty. rowF: created with elements, then cleared via
+	// update. rowG: never had tags — the absent control.
+	rowE := CreateEvent(wide, map[string]any{"title": "list-empty", "tags": []any{}})
+	rowF := CreateEvent(wide, map[string]any{"title": "list-then-clear", "tags": []any{"alpha", "beta", "gamma"}})
+	rowG := CreateEvent(wide, map[string]any{"title": "list-absent"})
+	if err := env.ApplyEvents(ctx, rowE, rowF, rowG); err != nil {
+		t.Fatalf("apply creates: %v", err)
+	}
+	assertEmptyListMarker(t, "rowE create", dumpEAVRowsFor(ctx, t, env, wide.ID, 18, rowE.RowID))
+
+	clearEv := UpdateEvent(wide, rowF.RowID, map[string]any{"tags": []any{}})
+	if err := env.ApplyEvents(ctx, clearEv); err != nil {
+		t.Fatalf("apply clear update: %v", err)
+	}
+	assertEmptyListMarker(t, "rowF after clear", dumpEAVRowsFor(ctx, t, env, wide.ID, 18, rowF.RowID))
+	if rows := dumpEAVRowsFor(ctx, t, env, wide.ID, 18, rowG.RowID); len(rows) != 0 {
+		t.Errorf("rowG (absent control) has %d eav rows for attr 18, want 0", len(rows))
+	}
+
+	// Hot read: marker rows survive, no phantom elements.
+	hot, err := env.Query(ctx, Query{Schema: wide, PreferHot: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("hot query: %v", err)
+	}
+	for _, rec := range hot.Records {
+		switch rec.RowID {
+		case rowE.RowID, rowF.RowID:
+			assertRecordHasListMarker(t, "hot "+rec.RowID.String(), rec, 18)
+		case rowG.RowID:
+			assertRecordHasNoListAttr(t, "hot "+rec.RowID.String(), rec, 18)
+		}
+	}
+
+	// Parquet: [] exports as an empty non-NULL LIST; absent stays NULL.
+	if _, err := env.RunFlush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	manifests, err := env.loadManifests(ctx)
+	if err != nil {
+		t.Fatalf("load manifests: %v", err)
+	}
+	m := manifests[wide.ID]
+	if m == nil {
+		t.Fatal("no manifest for e2e_wide after flush")
+	}
+	emptySeen, nullSeen := false, false
+	for _, f := range m.Files {
+		_, vals := dumpParquetTags(ctx, t, env, f.Path)
+		t.Logf("%s parquet tags values=%v", f.Tier, vals)
+		for _, v := range vals {
+			switch v {
+			case "[]":
+				emptySeen = true
+			case "<NULL>":
+				nullSeen = true
+			}
+		}
+	}
+	if !emptySeen {
+		t.Error("no parquet row carries an explicit empty tags LIST ([])")
+	}
+	if !nullSeen {
+		t.Error("no parquet row carries a NULL tags column (absent control)")
+	}
+
+	// Federated read: marker survives merge-on-read; absent stays absent.
+	fed, err := env.Query(ctx, Query{Schema: wide, Limit: 10})
+	if err != nil {
+		t.Fatalf("federated query: %v", err)
+	}
+	if len(fed.Records) != 3 {
+		t.Fatalf("federated read = %d records, want 3", len(fed.Records))
+	}
+	for _, rec := range fed.Records {
+		switch rec.RowID {
+		case rowE.RowID, rowF.RowID:
+			assertRecordHasListMarker(t, "federated "+rec.RowID.String(), rec, 18)
+		case rowG.RowID:
+			assertRecordHasNoListAttr(t, "federated "+rec.RowID.String(), rec, 18)
+		}
+	}
+}
+
+// assertEmptyListMarker requires exactly one marker row: array_indices ''
+// with both value columns NULL.
+func assertEmptyListMarker(t *testing.T, label string, rows []eavRow) {
+	t.Helper()
+	if len(rows) != 1 {
+		t.Fatalf("%s: %d eav rows, want exactly 1 marker: %+v", label, len(rows), rows)
+	}
+	if rows[0].indices != "" || rows[0].text.Valid || rows[0].num.Valid {
+		t.Errorf("%s: marker row = %+v, want array_indices '' and both values NULL", label, rows[0])
+	}
+}
+
+// assertRecordHasListMarker requires the record to carry the empty-list
+// marker for attrID and zero element values.
+func assertRecordHasListMarker(t *testing.T, label string, rec *model.PersistentRecord, attrID int16) {
+	t.Helper()
+	if elems := recordListAttrs(rec, attrID); len(elems) != 0 {
+		t.Errorf("%s: %d phantom elements on cleared/empty list: %v", label, len(elems), elems)
+	}
+	for _, a := range rec.OtherAttributes {
+		if a.AttrID == attrID && a.ArrayIndices == "" && a.ValueText == nil && a.ValueNumeric == nil {
+			return
+		}
+	}
+	t.Errorf("%s: no empty-list marker for attr %d in %+v", label, attrID, rec.OtherAttributes)
+}
+
+// assertRecordHasNoListAttr requires the record to carry nothing at all for
+// attrID — the absent control stays absent.
+func assertRecordHasNoListAttr(t *testing.T, label string, rec *model.PersistentRecord, attrID int16) {
+	t.Helper()
+	for _, a := range rec.OtherAttributes {
+		if a.AttrID == attrID {
+			t.Errorf("%s: unexpected attr %d entry on absent control: %+v", label, attrID, a)
+		}
+	}
+}
+
+// dumpEAVRowsFor is dumpEAVRows scoped to a single row_id.
+func dumpEAVRowsFor(ctx context.Context, t *testing.T, env *Env, schemaID, attrID int16, rowID uuid.UUID) []eavRow {
+	t.Helper()
+	rows, err := env.Pool.Query(ctx,
+		`SELECT array_indices, value_text, value_numeric
+		 FROM eav_data WHERE schema_id = $1 AND attr_id = $2 AND row_id = $3
+		 ORDER BY array_indices`, schemaID, attrID, rowID)
+	if err != nil {
+		t.Fatalf("dump eav_data for row: %v", err)
+	}
+	defer rows.Close()
+	return scanEAVRows(t, rows)
 }
 
 // assertEAVElements pins the write-layer decomposition: exactly len(want)
@@ -293,6 +374,11 @@ func dumpEAVRows(ctx context.Context, t *testing.T, env *Env, schemaID, attrID i
 		t.Fatalf("dump eav_data: %v", err)
 	}
 	defer rows.Close()
+	return scanEAVRows(t, rows)
+}
+
+func scanEAVRows(t *testing.T, rows pgx.Rows) []eavRow {
+	t.Helper()
 	var out []eavRow
 	for rows.Next() {
 		var r eavRow
@@ -397,57 +483,4 @@ func dumpParquetTags(ctx context.Context, t *testing.T, env *Env, key string) (s
 		t.Fatalf("parquet tags rows: %v", err)
 	}
 	return typ, vals
-}
-
-// writeListSchemaDir materializes a private, throwaway schema directory: a
-// verbatim copy of the bundled fixtures with the `tags` list attribute added
-// to e2e_wide only. WithSchemaDir(this) keeps the list attribute out of the
-// shared bundled fixture, so no sibling test sees an extra parquet column.
-func writeListSchemaDir(t *testing.T) string {
-	t.Helper()
-	src := FixtureSchemasDir()
-	dst := t.TempDir()
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		t.Fatalf("read bundled schemas dir: %v", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(src, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", e.Name(), err)
-		}
-	}
-
-	injectJSON(t, filepath.Join(dst, "e2e_wide.json"),
-		`"token": { "type": "string", "format": "uuid" }`,
-		`"token": { "type": "string", "format": "uuid" },
-    "tags": { "type": "array", "items": { "type": "string" } }`)
-	injectJSON(t, filepath.Join(dst, "e2e_wide_attributes.json"),
-		`"token": { "attributeID": 17, "valueType": "uuid" }`,
-		`"token": { "attributeID": 17, "valueType": "uuid" },
-  "tags": { "attributeID": 18, "valueType": "list" }`)
-
-	return dst
-}
-
-func injectJSON(t *testing.T, path, anchor, replacement string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	s := string(data)
-	if !strings.Contains(s, anchor) {
-		t.Fatalf("anchor %q not found in %s (fixture drift?)", anchor, path)
-	}
-	if err := os.WriteFile(path, []byte(strings.Replace(s, anchor, replacement, 1)), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
 }

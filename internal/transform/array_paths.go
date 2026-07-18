@@ -39,6 +39,22 @@ func parseIndices(indices string) ([]int, error) {
 	return result, nil
 }
 
+// pathAlreadySet reports whether a value already exists at the given path.
+// Used by the empty-list marker so it never clobbers element values that were
+// placed first (#204).
+func pathAlreadySet(target map[string]any, segments []string) bool {
+	current := target
+	for i := 0; i < len(segments)-1; i++ {
+		next, ok := current[segments[i]].(map[string]any)
+		if !ok || next == nil {
+			return false
+		}
+		current = next
+	}
+	_, ok := current[segments[len(segments)-1]]
+	return ok
+}
+
 // setValueAtPath sets a value in a nested map structure following the given path and indices
 func setValueAtPath(target map[string]any, segments []string, indices []int, value any) error {
 	if len(segments) == 0 {

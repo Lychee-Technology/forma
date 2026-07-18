@@ -130,9 +130,12 @@ const (
 
 // AttributeMetadata stores cached metadata from the attributes table.
 type AttributeMetadata struct {
-	AttributeName  string         `json:"attr_name"`  // attr_name, JSON Path
-	AttributeID    int16          `json:"attr_id"`    // attr_id
-	ValueType      ValueType      `json:"value_type"` // 'text', 'numeric', 'date', 'bool'
+	AttributeName string    `json:"attr_name"`  // attr_name, JSON Path
+	AttributeID   int16     `json:"attr_id"`    // attr_id
+	ValueType     ValueType `json:"value_type"` // 'text', 'numeric', 'date', 'bool'
+	// ItemsType is the element value type when ValueType is ValueTypeList.
+	// Empty means text (see EffectiveItemsType).
+	ItemsType      ValueType      `json:"items_type,omitempty"`
 	RequiredPolicy RequiredPolicy `json:"required_policy,omitempty"`
 	// Required is kept for backward compatibility with older metadata readers.
 	// New code should use RequiredPolicy.
@@ -150,6 +153,15 @@ func (m AttributeMetadata) EffectiveRequiredPolicy() RequiredPolicy {
 		return RequiredPolicyIfParentPresent
 	}
 	return RequiredPolicyOptional
+}
+
+// EffectiveItemsType returns the element type of a list attribute,
+// defaulting to text when items_type is not declared.
+func (m AttributeMetadata) EffectiveItemsType() ValueType {
+	if m.ItemsType != "" {
+		return m.ItemsType
+	}
+	return ValueTypeText
 }
 
 // AttributeStorageLocation enumerates where the attribute physically resides.

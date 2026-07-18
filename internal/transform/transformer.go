@@ -97,7 +97,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 	result := make(map[string]any)
 
 	for _, attr := range attributes {
-		_, idToName, err := schemameta.GetSchemaMetadata(t.registry, attr.SchemaID)
+		cache, idToName, err := schemameta.GetSchemaMetadata(t.registry, attr.SchemaID)
 		if err != nil {
 			return nil, err
 		}
@@ -108,6 +108,19 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 		}
 
 		if attr.Value == nil {
+			// An empty-list marker (list attr, no indices, no value)
+			// materializes an explicit empty array. A marker placed first is
+			// grown in place by later element records; a stale marker arriving
+			// after elements is skipped so it never clobbers them (#204).
+			if meta, isKnown := cache[attrName]; isKnown &&
+				meta.ValueType == forma.ValueTypeList && attr.ArrayIndices == "" {
+				segments := strings.Split(attrName, ".")
+				if !pathAlreadySet(result, segments) {
+					if err := setValueAtPath(result, segments, nil, []any{}); err != nil {
+						return nil, fmt.Errorf("materialize empty list for attribute '%s': %w", attrName, err)
+					}
+				}
+			}
 			continue
 		}
 
@@ -283,6 +296,22 @@ func (t *transformer) flattenToAttributes(
 			}
 		}
 	case []any:
+		if len(v) == 0 {
+			// An explicit empty list persists a marker row (array_indices "",
+			// both value columns NULL) so it round-trips as [] instead of
+			// silently degrading to an absent attribute. Under merge-update
+			// semantics "tags": [] is the only way to clear a list (#204).
+			attrName := strings.Join(path, ".")
+			if meta, ok := cache[attrName]; ok && meta.ValueType == forma.ValueTypeList {
+				*result = append(*result, model.EAVRecord{
+					SchemaID:     schemaID,
+					RowID:        rowID,
+					AttrID:       meta.AttributeID,
+					ArrayIndices: "",
+				})
+			}
+			return nil
+		}
 		for i, item := range v {
 			if item == nil {
 				attrName := strings.Join(path, ".")

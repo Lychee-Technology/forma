@@ -15,6 +15,7 @@ import (
 type attributeSpec struct {
 	AttributeID    int    `json:"attributeID"`
 	ValueType      string `json:"valueType"`
+	ItemsType      string `json:"items_type,omitempty"`
 	RequiredPolicy string `json:"required_policy,omitempty"`
 }
 
@@ -123,6 +124,11 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 		if spec, exists := newAttributes[name]; exists {
 			// Attribute still exists in schema: update valueType if changed
 			existingData["valueType"] = spec.ValueType
+			if spec.ItemsType != "" {
+				existingData["items_type"] = spec.ItemsType
+			} else {
+				delete(existingData, "items_type")
+			}
 			applyRequiredPolicy(existingData, spec.RequiredPolicy)
 		} else {
 			// Attribute no longer exists in schema path; it must not stay required.
@@ -139,6 +145,9 @@ func generateAttributesJSON(schemaPath, outputPath string) error {
 			result[name] = map[string]any{
 				"attributeID": newIDMap[name],
 				"valueType":   spec.ValueType,
+			}
+			if spec.ItemsType != "" {
+				result[name]["items_type"] = spec.ItemsType
 			}
 			applyRequiredPolicy(result[name], spec.RequiredPolicy)
 		}
@@ -291,8 +300,12 @@ func traverseSchemaWithRequiredState(
 					return traverseSchemaWithRequiredState(items, path, true, attributes, false, true)
 				}
 			case "string", "integer", "number", "boolean":
+				// #204: primitive arrays are list containers; the element type
+				// travels in items_type so the CDC export can aggregate one
+				// row per element instead of collapsing to a scalar.
 				attributes[path] = attributeSpec{
-					ValueType:      getValueType(items),
+					ValueType:      "list",
+					ItemsType:      getValueType(items),
 					RequiredPolicy: resolveRequiredPolicy(pathRequired, currentRequired),
 				}
 				return attributes

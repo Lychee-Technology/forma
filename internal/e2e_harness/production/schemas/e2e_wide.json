@@ -51,6 +51,7 @@
     "qty": { "type": "integer" },
     "total": { "type": "integer" },
     "ratio": { "type": "number" },
-    "token": { "type": "string", "format": "uuid" }
+    "token": { "type": "string", "format": "uuid" },
+    "tags": { "type": "array", "items": { "type": "string" } }
   }
 }

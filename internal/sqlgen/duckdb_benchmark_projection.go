@@ -261,30 +261,62 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 type eavJSONAttr struct {
 	id    int
 	name  string
-	type_ string // "text" or "numeric"
+	type_ string // "text", "numeric" or "list" (text elements)
 }
 
 // benchmarkEAVJSONArray generates a DuckDB json_array of json_objects for EAV attributes.
 // Each object has: schema_id, row_id, attr_id, array_indices, value_text, value_numeric.
+// Scalar-only shapes keep the historical json_array output byte-identical; a
+// list attribute switches to the flatten form and expands one object per
+// element with positional array_indices, mirroring the production
+// attributes_json reconstruction (#204).
 func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs ...eavJSONAttr) string {
+	hasList := false
+	for _, a := range attrs {
+		if a.type_ == "list" {
+			hasList = true
+			break
+		}
+	}
+
+	if !hasList {
+		var parts []string
+		for _, a := range attrs {
+			parts = append(parts, benchmarkScalarJSONObject(targetSchemaID, a))
+		}
+		if len(parts) == 0 {
+			return "'[]'"
+		}
+		return "json_array(" + strings.Join(parts, ", ") + ")"
+	}
+
 	var parts []string
 	for _, a := range attrs {
-		valColumn := "value_text"
-		nullColumn := "value_numeric"
-		valueExpr := a.name
-		if a.type_ == "numeric" {
-			valColumn = "value_numeric"
-			nullColumn = "value_text"
-			if a.name == "isCash" {
-				valueExpr = "CASE WHEN isCash THEN 1 ELSE 0 END"
-			}
+		if a.type_ == "list" {
+			parts = append(parts, fmt.Sprintf(
+				`CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', 'value_text', NULL, 'value_numeric', NULL)] ELSE list_transform(%s, (x, i) -> json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', CAST(i - 1 AS VARCHAR), 'value_text', CAST(x AS VARCHAR), 'value_numeric', NULL)) END`,
+				a.name, a.name, targetSchemaID, a.id, a.name, targetSchemaID, a.id))
+			continue
 		}
-		parts = append(parts, fmt.Sprintf(
-			`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', CAST(%s AS VARCHAR), '%s', NULL)`,
-			targetSchemaID, a.id, valColumn, valueExpr, nullColumn))
+		parts = append(parts, "["+benchmarkScalarJSONObject(targetSchemaID, a)+"]")
 	}
-	if len(parts) == 0 {
-		return "'[]'"
+	return "to_json(list_filter(flatten([" + strings.Join(parts, ", ") + "]), x -> x IS NOT NULL))"
+}
+
+// benchmarkScalarJSONObject renders the single json_object for one scalar
+// benchmark EAV attribute (array_indices '' — scalars carry no position).
+func benchmarkScalarJSONObject(targetSchemaID int16, a eavJSONAttr) string {
+	valColumn := "value_text"
+	nullColumn := "value_numeric"
+	valueExpr := a.name
+	if a.type_ == "numeric" {
+		valColumn = "value_numeric"
+		nullColumn = "value_text"
+		if a.name == "isCash" {
+			valueExpr = "CASE WHEN isCash THEN 1 ELSE 0 END"
+		}
 	}
-	return "json_array(" + strings.Join(parts, ", ") + ")"
+	return fmt.Sprintf(
+		`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', CAST(%s AS VARCHAR), '%s', NULL)`,
+		targetSchemaID, a.id, valColumn, valueExpr, nullColumn)
 }

@@ -57,6 +57,9 @@ type SchemaProjection struct {
 
 	// attrIDs maps attribute name to its attribute ID.
 	attrIDs map[string]int
+
+	// itemsTypes maps a list attribute's name to its effective element type.
+	itemsTypes map[string]forma.ValueType
 }
 
 // attrProjectionInfo holds the projection-relevant metadata for one schema attribute.
@@ -82,6 +85,7 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		},
 		AttrToMainColumn: make(map[string]string),
 		attrIDs:          make(map[string]int),
+		itemsTypes:       make(map[string]forma.ValueType),
 	}
 
 	attrs := make([]attrProjectionInfo, 0, len(cache))
@@ -97,6 +101,9 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		}
 		sp.UnifiedColumnNames = append(sp.UnifiedColumnNames, name)
 		sp.UnifiedColumnTypes[name] = meta.ValueType
+		if meta.ValueType == forma.ValueTypeList {
+			sp.itemsTypes[name] = meta.EffectiveItemsType()
+		}
 		attrs = append(attrs, ai)
 	}
 	sort.Strings(sp.EAVAttrs)
@@ -232,6 +239,18 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 // TRY_CAST (not CAST) matches export semantics: an out-of-range NUMERIC in
 // eav_data becomes NULL on every tier alike instead of a read-path crash.
 func buildEAVPivotExpr(a attrProjectionInfo) string {
+	if a.meta.ValueType == forma.ValueTypeList {
+		// One eav_data row per element: aggregate into a LIST in element-index
+		// order instead of MAX-collapsing, mirroring the CDC export side
+		// (cdc.castEAVValue with the items-typed meta) so the hot leg
+		// type-unifies with the parquet LIST column. The empty-list marker row
+		// (array_indices '') is excluded from the element aggregate but
+		// detected by the presence count: explicit [] stays distinguishable
+		// from an absent attribute (NULL) on every tier (#204).
+		return fmt.Sprintf(
+			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND array_indices <> ''), []) END",
+			a.attrID, eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
+	}
 	if a.meta.ValueType == forma.ValueTypeBool {
 		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).
 		return fmt.Sprintf("(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)", a.attrID)
@@ -248,6 +267,26 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 	default:
 		// numeric 保持 DOUBLE;text/uuid 走 value_text,无 cast
 		return base
+	}
+}
+
+// eavElementCastExpr renders the raw-column cast for one list element of the
+// given items type. Must mirror cdc.castEAVValue applied to the same type so
+// hot LIST elements type-unify with the parquet LIST column (#204, cf. #205).
+func eavElementCastExpr(vt forma.ValueType) string {
+	switch vt {
+	case forma.ValueTypeBool:
+		return "(value_numeric <> 0)"
+	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
+		return "TRY_CAST(value_numeric AS BIGINT)"
+	case forma.ValueTypeInteger:
+		return "TRY_CAST(value_numeric AS INTEGER)"
+	case forma.ValueTypeSmallInt:
+		return "TRY_CAST(value_numeric AS SMALLINT)"
+	case forma.ValueTypeNumeric:
+		return "TRY_CAST(value_numeric AS DOUBLE)"
+	default: // text / uuid
+		return "value_text"
 	}
 }
 
@@ -293,8 +332,6 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 		mainColToAttr[col] = attr
 	}
 
-	// Build attributes_json
-	var jsonParts []string
 	eavOnlySelects := make(map[string]bool)
 	for _, attr := range sp.EAVAttrs {
 		eavOnlySelects[attr] = true
@@ -314,41 +351,9 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 			duckDBColumnType(desc.Kind), desc.Name))
 	}
 
-	// Build attributes_json for EAV-only attributes. The shape must match
-	// model.ParseAttributesJSON (the same contract the Postgres template's
-	// JSON_AGG(JSON_BUILD_OBJECT(...)) emits): a JSON array of objects with
-	// schema_id/row_id/attr_id/array_indices and the value in the storage
-	// column for the attribute's type (value_numeric for the numeric family
-	// including bool as 1/0 and dates as epoch millis; value_text otherwise).
-	// NULL (absent) attributes are filtered out, mirroring the PG INNER JOIN
-	// which only aggregates rows that exist in eav_data (#173).
-	for _, attr := range sortedAttrs {
-		if !eavOnlySelects[attr] {
-			continue
-		}
-		unified := ParquetAttrColumn(attr)
-		valueText, valueNumeric := "NULL", "NULL"
-		vt := sp.UnifiedColumnTypes[attr]
-		if eavValueColumn(vt) == "value_numeric" {
-			if vt == forma.ValueTypeBool {
-				valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", unified)
-			} else {
-				valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", unified)
-			}
-		} else {
-			valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", unified)
-		}
-		jsonParts = append(jsonParts, fmt.Sprintf(
-			"CASE WHEN %s IS NOT NULL THEN {'schema_id': %d, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': %d, 'array_indices': '', 'value_text': %s, 'value_numeric': %s} END",
-			unified, schemaID, sp.attrIDForName(attr), valueText, valueNumeric))
-	}
-
-	if len(jsonParts) > 0 {
-		j := "to_json(list_filter([" + strings.Join(jsonParts, ", ") + "], x -> x IS NOT NULL))"
-		parts = append(parts, j+"::TEXT AS attributes_json")
-	} else {
-		parts = append(parts, "'[]'::TEXT AS attributes_json")
-	}
+	// Build attributes_json for EAV-only attributes; the shape contract and
+	// the per-element list expansion live in duckdb_schema_projection_json.go.
+	parts = append(parts, sp.buildAttributesJSONExpr(schemaID, sortedAttrs, eavOnlySelects))
 
 	sp.OuterSelect = strings.Join(parts, ",\n\t\t\t")
 }
@@ -410,6 +415,10 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 
 func duckDBAttrCast(attr string, vt forma.ValueType) string {
 	switch vt {
+	case forma.ValueTypeList:
+		// LIST columns are consumed by attributes_json reconstruction;
+		// CAST(... AS VARCHAR) would stringify them, so pass through (#204).
+		return attr
 	case forma.ValueTypeText, forma.ValueTypeUUID:
 		return fmt.Sprintf("CAST(%s AS VARCHAR)", attr)
 	case forma.ValueTypeSmallInt:
