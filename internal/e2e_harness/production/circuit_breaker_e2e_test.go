@@ -16,13 +16,14 @@ import (
 const breakerRejection = "circuit breaker open"
 
 // TestCircuitBreaker_OpensAtThresholdAndRecovers covers #185 breaker
-// scenarios 1-3 end to end: exactly N real DuckDB failures (a closed
-// database/sql client) open the breaker, an open breaker rejects queries
-// before reaching DuckDB (rejection persists across a DuckDB rebuild while
-// openDuration lasts), after openDuration the first success closes the
-// breaker immediately, and the cleared failure history means one fresh
-// failure does not reopen it — the documented immediate-forgiveness design
-// with no half-open state accumulation (circuit_breaker.go design note).
+// scenarios 1-3 plus the #246 single-probe semantics end to end: exactly N
+// real DuckDB failures (a closed database/sql client) open the breaker, an
+// open breaker rejects queries before reaching DuckDB (rejection persists
+// across a DuckDB rebuild while openDuration lasts), after openDuration the
+// single admitted probe succeeds and closes the breaker (failure history
+// cleared, so one fresh failure does not reopen it), and a FAILED probe
+// re-opens the breaker for a fresh openDuration with no threshold
+// re-accumulation (circuit_breaker.go type doc).
 func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	const threshold = 3
 	const cooldown = 5 * time.Second
@@ -66,8 +67,8 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 		t.Fatalf("query while open with healthy duckdb: want breaker rejection, got: %v", err)
 	}
 
-	// Scenario 2: after openDuration the first query flows through, succeeds,
-	// and closes the breaker (oracle-checked result).
+	// Scenario 2: after openDuration the first query is admitted as the
+	// single probe, succeeds, and closes the breaker (oracle-checked result).
 	time.Sleep(cooldown + time.Second)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
 
@@ -85,20 +86,57 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 		t.Fatalf("reopen duckdb after single failure: %v", err)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+
+	// Scenario 4 (#246): a failed probe re-opens the breaker for a fresh
+	// openDuration without threshold re-accumulation.
+	if err := env.Duck.Close(); err != nil {
+		t.Fatalf("close duckdb client for probe-failure leg: %v", err)
+	}
+	for i := 0; i < threshold; i++ {
+		if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil {
+			t.Fatalf("probe-failure leg failure %d/%d: expected error with duckdb closed, got success", i+1, threshold)
+		} else if strings.Contains(err.Error(), breakerRejection) {
+			t.Fatalf("probe-failure leg failure %d/%d: breaker opened before the threshold: %v", i+1, threshold, err)
+		}
+	}
+	// Breaker is open again; wait out the cooldown with DuckDB STILL closed.
+	time.Sleep(cooldown + time.Second)
+	// The single admitted probe reaches the dead client and fails for real...
+	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil {
+		t.Fatal("probe against closed duckdb: expected real failure, got success")
+	} else if strings.Contains(err.Error(), breakerRejection) {
+		t.Fatalf("probe against closed duckdb: want a real failure, got breaker rejection: %v", err)
+	}
+	// ...and that SINGLE failure re-opens the breaker immediately — no
+	// threshold re-accumulation while half-open.
+	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil || !strings.Contains(err.Error(), breakerRejection) {
+		t.Fatalf("query after failed probe: want breaker rejection, got: %v", err)
+	}
+	// Recovery: healthy client + a fresh expired openDuration → the next
+	// probe succeeds and closes the breaker.
+	if err := env.ReopenDuckDB(); err != nil {
+		t.Fatalf("reopen duckdb after failed probe: %v", err)
+	}
+	time.Sleep(cooldown + time.Second)
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
 }
 
-// TestCircuitBreaker_ConcurrentTransitions is #185 breaker scenario 4:
-// goroutines hammer the engine while the breaker trips, and again after it
-// recovers. During the outage every outcome must be one of the two legal
-// failures — a real DuckDB error or a breaker rejection, never a success or
-// a panic — and after recovery every concurrent query must succeed. Engine
-// calls go through eng.Query directly: Env.Query records results without a
-// lock and is not safe for concurrent use.
+// TestCircuitBreaker_ConcurrentTransitions is #185 breaker scenario 4 under
+// the #246 single-probe semantics: goroutines hammer the engine while the
+// breaker trips, and again after it recovers. During the outage every
+// outcome must be one of the two legal failures — a real DuckDB error or a
+// breaker rejection, never a success or a panic. At recovery a concurrent
+// burst gets exactly one admitted probe: the only legal outcomes are
+// success (the probe, plus stragglers arriving after it closed the breaker)
+// or a breaker rejection; once the probe has closed the breaker a full
+// concurrent burst must succeed. Engine calls go through eng.Query
+// directly: Env.Query records results without a lock and is not safe for
+// concurrent use.
 //
-// Runs on the harness-default DuckDB pool (2 connections): this test is the
-// regression gate for #245 — per-connection init must configure every pooled
-// connection, or one of the concurrent recovery queries 404s with an empty
-// s3_region.
+// Runs on the harness-default DuckDB pool (2 connections): the final
+// all-succeed burst is the regression gate for #245 — per-connection init
+// must configure every pooled connection, or one of the concurrent queries
+// 404s with an empty s3_region.
 func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	const threshold = 3
 	const cooldown = 3 * time.Second
@@ -158,8 +196,10 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	}
 	t.Logf("open phase: %d real failures, %d breaker rejections", real, rejected)
 
-	// Recovery under concurrency: healthy client + expired openDuration must
-	// let every worker through. Engine is rebuilt single-threaded first.
+	// Recovery under single-probe (#246): after openDuration a concurrent
+	// burst yields exactly one admitted probe; the rest are rejected until
+	// the probe's success closes the breaker. With a healthy client the
+	// only legal outcomes are success or breaker rejection.
 	if err := env.ReopenDuckDB(); err != nil {
 		t.Fatalf("reopen duckdb: %v", err)
 	}
@@ -177,7 +217,37 @@ func TestCircuitBreaker_ConcurrentTransitions(t *testing.T) {
 	}
 	wg2.Wait()
 	close(errs2)
+
+	var succeeded, probeRejected int
 	for err := range errs2 {
+		switch {
+		case err == nil:
+			succeeded++
+		case strings.Contains(err.Error(), breakerRejection):
+			probeRejected++
+		default:
+			t.Errorf("recovery burst: want success or breaker rejection, got: %v", err)
+		}
+	}
+	if succeeded == 0 {
+		t.Errorf("recovery burst: no worker succeeded (breaker rejections: %d)", probeRejected)
+	}
+	t.Logf("recovery burst: %d succeeded, %d rejected while the probe was in flight", succeeded, probeRejected)
+
+	// The probe has closed the breaker: a full concurrent burst must now
+	// succeed (this is the #245 pooled-connection regression gate).
+	errs3 := make(chan error, workers)
+	var wg3 sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg3.Add(1)
+		go func() {
+			defer wg3.Done()
+			errs3 <- runOne()
+		}()
+	}
+	wg3.Wait()
+	close(errs3)
+	for err := range errs3 {
 		if err != nil {
 			t.Errorf("post-recovery concurrent query failed: %v", err)
 		}
