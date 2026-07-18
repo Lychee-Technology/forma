@@ -25,6 +25,8 @@ var wideParquetTypes = map[string]string{
 	"score": "DOUBLE", "ref": "UUID", "joined": "BIGINT", "touched": "BIGINT",
 	"note": "VARCHAR", "active": "BOOLEAN", "born": "BIGINT", "seen": "BIGINT",
 	"level": "SMALLINT", "qty": "INTEGER", "total": "BIGINT", "ratio": "DOUBLE", "token": "VARCHAR",
+	// #204: list attrs export as a DuckDB LIST of the items type.
+	"tags": "VARCHAR[]",
 }
 
 // wideVals is the parquet-physical expected row: pointers are nil for NULL.

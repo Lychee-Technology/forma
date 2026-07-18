@@ -77,5 +77,6 @@
   "qty": { "attributeID": 14, "valueType": "integer" },
   "total": { "attributeID": 15, "valueType": "bigint" },
   "ratio": { "attributeID": 16, "valueType": "numeric" },
-  "token": { "attributeID": 17, "valueType": "uuid" }
+  "token": { "attributeID": 17, "valueType": "uuid" },
+  "tags": { "attributeID": 18, "valueType": "list", "items_type": "text" }
 }
