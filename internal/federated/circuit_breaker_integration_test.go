@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"text/template"
 	"time"
@@ -129,4 +130,55 @@ func TestBreakerSuccessResetsFailureHistory(t *testing.T) {
 	_, err = engine.Query(context.Background(), tables, fq, nil)
 	require.Error(t, err)
 	require.False(t, breaker.IsOpen(), "success must have cleared the failure history")
+}
+
+// blockingDuckDBExecutor blocks each Query until released, letting a test
+// hold the half-open probe in flight while other callers race the breaker.
+type blockingDuckDBExecutor struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockingDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	b.calls.Add(1)
+	b.entered <- struct{}{}
+	<-b.release
+	return &singleDuckDBRow{rowID: uuid.New()}, nil
+}
+
+// #246: through the real Query path, the half-open probe executes DuckDB
+// while a concurrent caller is rejected without reaching the executor —
+// mirroring the open-breaker short-circuit call-count assertion above.
+func TestBreakerHalfOpenSingleProbeThroughQueryPath(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	breaker := NewCircuitBreaker(1, time.Minute, 50*time.Millisecond)
+	duck := &blockingDuckDBExecutor{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	engine := newBreakerTestEngine(t, duck, breaker)
+	fq, tables := breakerTestQuery()
+
+	breaker.RecordFailure() // threshold 1: breaker opens
+	time.Sleep(100 * time.Millisecond)
+
+	probeErr := make(chan error, 1)
+	go func() {
+		_, err := engine.Query(context.Background(), tables, fq, nil)
+		probeErr <- err
+	}()
+	<-duck.entered // probe admitted and inside the executor
+
+	// A concurrent caller is rejected without reaching the executor.
+	_, err := engine.Query(context.Background(), tables, fq, nil)
+	require.ErrorContains(t, err, "circuit breaker open")
+	require.Equal(t, int32(1), duck.calls.Load(), "non-probe caller must not reach the executor")
+
+	close(duck.release)
+	require.NoError(t, <-probeErr, "probe must succeed and close the breaker")
+
+	// Probe success closed the breaker: the next caller flows through.
+	_, err = engine.Query(context.Background(), tables, fq, nil)
+	require.NoError(t, err, "breaker must be closed after probe success")
+	require.Equal(t, int32(2), duck.calls.Load(), "post-probe caller must reach the executor")
 }
