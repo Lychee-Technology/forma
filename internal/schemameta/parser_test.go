@@ -211,6 +211,37 @@ func TestParseAttributeMetadata(t *testing.T) {
 	}
 }
 
+func TestParseAttributeMetadata_ItemsType(t *testing.T) {
+	source := "test-source"
+
+	meta, err := parseAttributeMetadata("tags", map[string]any{
+		"attributeID": 18.0,
+		"valueType":   "list",
+		"items_type":  "integer",
+	}, source)
+	require.NoError(t, err)
+	assert.Equal(t, forma.ValueTypeInteger, meta.ItemsType)
+	assert.Equal(t, forma.ValueTypeInteger, meta.EffectiveItemsType())
+
+	// Absent items_type: field stays empty, effective type falls back to text.
+	meta, err = parseAttributeMetadata("tags", map[string]any{
+		"attributeID": 18.0,
+		"valueType":   "list",
+	}, source)
+	require.NoError(t, err)
+	assert.Equal(t, forma.ValueType(""), meta.ItemsType)
+	assert.Equal(t, forma.ValueTypeText, meta.EffectiveItemsType())
+
+	// Nested list containers are rejected at parse time.
+	_, err = parseAttributeMetadata("tags", map[string]any{
+		"attributeID": 18.0,
+		"valueType":   "list",
+		"items_type":  "list",
+	}, source)
+	require.ErrorContains(t, err, "items_type 'list'")
+	require.ErrorContains(t, err, "tags")
+}
+
 func TestExtractMainColumnBinding(t *testing.T) {
 	source := "test-source"
 	attrName := "foo"

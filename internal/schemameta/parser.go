@@ -24,6 +24,14 @@ func parseAttributeMetadata(attrName string, attrData map[string]any, source str
 	}
 	meta.ValueType = forma.ValueType(valueType)
 
+	if itemsType, ok := attrData["items_type"].(string); ok && itemsType != "" {
+		if forma.ValueType(itemsType) == forma.ValueTypeList {
+			return forma.AttributeMetadata{}, fmt.Errorf(
+				"invalid items_type 'list' for attribute %s in %s: nested lists are not supported", attrName, source)
+		}
+		meta.ItemsType = forma.ValueType(itemsType)
+	}
+
 	requiredPolicy, _, err := parseRequiredPolicy(attrName, attrData, source)
 	if err != nil {
 		return forma.AttributeMetadata{}, err
