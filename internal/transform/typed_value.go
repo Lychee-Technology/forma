@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
@@ -59,6 +60,23 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		}
 		floatBool := boolToFloat64(boolVal)
 		attr.ValueNumeric = &floatBool
+	case forma.ValueTypeList:
+		// flattenToAttributes already decomposed the array into one call per
+		// element with ArrayIndices set; type the single scalar element by the
+		// declared items type. Parquet LIST reconstruction is positional, so
+		// only flat (single-index) lists are representable across tiers (#204).
+		if attr.ArrayIndices == "" {
+			return handleConversionError(fmt.Errorf("list attribute requires an array value, got scalar %v", value))
+		}
+		if strings.Contains(attr.ArrayIndices, ",") {
+			return handleConversionError(fmt.Errorf("multi-dimensional array not supported for list attribute (indices %q)", attr.ArrayIndices))
+		}
+		elemMeta := meta
+		elemMeta.ValueType = meta.EffectiveItemsType()
+		if elemMeta.ValueType == forma.ValueTypeList {
+			return handleConversionError(fmt.Errorf("items_type 'list' is not supported"))
+		}
+		return populateTypedValue(attr, attrName, value, elemMeta)
 	default:
 		return handleConversionError(fmt.Errorf("unsupported value type '%s'", meta.ValueType))
 	}
