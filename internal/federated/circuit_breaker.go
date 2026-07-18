@@ -20,7 +20,10 @@ import (
 // Probe abandonment: a probe that never reports (its query was cancelled
 // between Allow and Record*) lapses openDuration after admission, and the
 // next Allow reclaims the slot. A lost probe therefore costs at most one
-// extra openDuration of rejections.
+// extra openDuration of rejections. The flip side: a probe still legitimately
+// running past openDuration is indistinguishable from an abandoned one, so a
+// slow dependency can see more than one concurrent probe — "exactly one" holds
+// only for probes that resolve within openDuration.
 //
 // Stale callers: RecordSuccess closes the breaker from any state — a query
 // admitted before the breaker opened that completes afterwards is real
