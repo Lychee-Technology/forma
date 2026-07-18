@@ -57,6 +57,9 @@ type SchemaProjection struct {
 
 	// attrIDs maps attribute name to its attribute ID.
 	attrIDs map[string]int
+
+	// itemsTypes maps a list attribute's name to its effective element type.
+	itemsTypes map[string]forma.ValueType
 }
 
 // attrProjectionInfo holds the projection-relevant metadata for one schema attribute.
@@ -82,6 +85,7 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		},
 		AttrToMainColumn: make(map[string]string),
 		attrIDs:          make(map[string]int),
+		itemsTypes:       make(map[string]forma.ValueType),
 	}
 
 	attrs := make([]attrProjectionInfo, 0, len(cache))
@@ -97,6 +101,9 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		}
 		sp.UnifiedColumnNames = append(sp.UnifiedColumnNames, name)
 		sp.UnifiedColumnTypes[name] = meta.ValueType
+		if meta.ValueType == forma.ValueTypeList {
+			sp.itemsTypes[name] = meta.EffectiveItemsType()
+		}
 		attrs = append(attrs, ai)
 	}
 	sort.Strings(sp.EAVAttrs)
@@ -321,8 +328,6 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 		mainColToAttr[col] = attr
 	}
 
-	// Build attributes_json
-	var jsonParts []string
 	eavOnlySelects := make(map[string]bool)
 	for _, attr := range sp.EAVAttrs {
 		eavOnlySelects[attr] = true
@@ -342,41 +347,9 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 			duckDBColumnType(desc.Kind), desc.Name))
 	}
 
-	// Build attributes_json for EAV-only attributes. The shape must match
-	// model.ParseAttributesJSON (the same contract the Postgres template's
-	// JSON_AGG(JSON_BUILD_OBJECT(...)) emits): a JSON array of objects with
-	// schema_id/row_id/attr_id/array_indices and the value in the storage
-	// column for the attribute's type (value_numeric for the numeric family
-	// including bool as 1/0 and dates as epoch millis; value_text otherwise).
-	// NULL (absent) attributes are filtered out, mirroring the PG INNER JOIN
-	// which only aggregates rows that exist in eav_data (#173).
-	for _, attr := range sortedAttrs {
-		if !eavOnlySelects[attr] {
-			continue
-		}
-		unified := ParquetAttrColumn(attr)
-		valueText, valueNumeric := "NULL", "NULL"
-		vt := sp.UnifiedColumnTypes[attr]
-		if eavValueColumn(vt) == "value_numeric" {
-			if vt == forma.ValueTypeBool {
-				valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", unified)
-			} else {
-				valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", unified)
-			}
-		} else {
-			valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", unified)
-		}
-		jsonParts = append(jsonParts, fmt.Sprintf(
-			"CASE WHEN %s IS NOT NULL THEN {'schema_id': %d, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': %d, 'array_indices': '', 'value_text': %s, 'value_numeric': %s} END",
-			unified, schemaID, sp.attrIDForName(attr), valueText, valueNumeric))
-	}
-
-	if len(jsonParts) > 0 {
-		j := "to_json(list_filter([" + strings.Join(jsonParts, ", ") + "], x -> x IS NOT NULL))"
-		parts = append(parts, j+"::TEXT AS attributes_json")
-	} else {
-		parts = append(parts, "'[]'::TEXT AS attributes_json")
-	}
+	// Build attributes_json for EAV-only attributes; the shape contract and
+	// the per-element list expansion live in duckdb_schema_projection_json.go.
+	parts = append(parts, sp.buildAttributesJSONExpr(schemaID, sortedAttrs, eavOnlySelects))
 
 	sp.OuterSelect = strings.Join(parts, ",\n\t\t\t")
 }
