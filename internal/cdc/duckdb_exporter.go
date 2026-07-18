@@ -401,6 +401,7 @@ func castDateMainValue(col string, meta forma.AttributeMetadata) string {
 // EAV pivot (sqlgen.BuildSchemaProjection): BOOLEAN for bool, epoch-ms
 // BIGINT for dates, native numeric types otherwise (#173).
 // 热端 pivot(sqlgen.buildEAVPivotExpr)必须与本映射保持一致(#205)。
+// list 属性以 items 类型的 elemMeta 调用本函数取元素 cast，聚合成 LIST 列(#204)。
 func castEAVValue(meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:

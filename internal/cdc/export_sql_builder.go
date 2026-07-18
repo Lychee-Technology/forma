@@ -83,7 +83,7 @@ func buildEAVQuery(eavData string, schemaID int16, eavFilter string, eavAttrIDs 
 		attrFilter = fmt.Sprintf(" AND attr_id IN (%s)", joinInt16(eavAttrIDs))
 	}
 	return fmt.Sprintf(
-		"SELECT schema_id, row_id, attr_id, value_text, value_numeric FROM %s WHERE schema_id = %d AND %s%s",
+		"SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM %s WHERE schema_id = %d AND %s%s",
 		eavData, schemaID, eavFilter, attrFilter,
 	)
 }
@@ -140,8 +140,19 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 			continue
 		}
 
-		castExpr := castEAVValue(meta)
-		eavAgg = append(eavAgg, fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END) AS %s", meta.AttributeID, castExpr, alias))
+		if meta.ValueType == forma.ValueTypeList {
+			// One eav_data row per element: aggregate into a DuckDB LIST in
+			// element-index order instead of MAX-collapsing to one scalar.
+			// The element cast follows the declared items type (#204).
+			elemMeta := meta
+			elemMeta.ValueType = meta.EffectiveItemsType()
+			eavAgg = append(eavAgg, fmt.Sprintf(
+				"list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d) AS %s",
+				castEAVValue(elemMeta), meta.AttributeID, alias))
+		} else {
+			castExpr := castEAVValue(meta)
+			eavAgg = append(eavAgg, fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END) AS %s", meta.AttributeID, castExpr, alias))
+		}
 		eavSelect = append(eavSelect, fmt.Sprintf("e.%s", alias))
 		eavAttrIDs = append(eavAttrIDs, meta.AttributeID)
 	}
