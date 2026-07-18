@@ -38,9 +38,9 @@ func TestBuildOuterSelectListAttrEmitsPerElementObjects(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Contains(t, sp.OuterSelect,
-		"CASE WHEN tags IS NOT NULL THEN list_transform(tags, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': CAST(x AS VARCHAR), 'value_numeric': NULL}) ELSE [] END")
+		"CASE WHEN tags IS NOT NULL AND len(tags) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN tags IS NOT NULL THEN list_transform(tags, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': CAST(x AS VARCHAR), 'value_numeric': NULL}) ELSE [] END")
 	require.Contains(t, sp.OuterSelect,
-		"CASE WHEN nums IS NOT NULL THEN list_transform(nums, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': NULL, 'value_numeric': CAST(x AS DOUBLE)}) ELSE [] END")
+		"CASE WHEN nums IS NOT NULL AND len(nums) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN nums IS NOT NULL THEN list_transform(nums, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': NULL, 'value_numeric': CAST(x AS DOUBLE)}) ELSE [] END")
 	// Scalar attr keeps its single object, wrapped for the flatten form.
 	require.Contains(t, sp.OuterSelect,
 		"[CASE WHEN note IS NOT NULL THEN {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 7, 'array_indices': '', 'value_text': CAST(note AS VARCHAR), 'value_numeric': NULL} END]")
@@ -90,4 +90,30 @@ func TestListAttributesJSONRoundTripsThroughParser(t *testing.T) {
 	}
 	require.Equal(t, []string{"alpha", "beta", "gamma"}, gotTags)
 	require.Equal(t, []string{"0", "1", "2"}, gotIndices)
+
+	// An explicit empty list ([] column, non-NULL) reconstructs as the marker
+	// object — array_indices '' with both value columns NULL — which the
+	// transform layer materializes back into an empty array (#204).
+	query = "SELECT " + expr + " FROM (SELECT '" + rowID + "' AS row_id, []::VARCHAR[] AS tags, 'hello' AS note)"
+	require.NoError(t, db.QueryRow(query).Scan(&attrsJSON), "query: %s", query)
+	record = model.PersistentRecord{}
+	require.NoError(t, model.ParseAttributesJSON([]byte(attrsJSON), &record))
+	require.Len(t, record.OtherAttributes, 2, "1 tags marker + 1 note, got: %s", attrsJSON)
+	var marker *model.EAVRecord
+	for i := range record.OtherAttributes {
+		if record.OtherAttributes[i].AttrID == 18 {
+			marker = &record.OtherAttributes[i]
+		}
+	}
+	require.NotNil(t, marker, "no marker object for empty list: %s", attrsJSON)
+	require.Equal(t, "", marker.ArrayIndices)
+	require.Nil(t, marker.ValueText)
+	require.Nil(t, marker.ValueNumeric)
+
+	// An absent attribute (NULL column) emits nothing.
+	query = "SELECT " + expr + " FROM (SELECT '" + rowID + "' AS row_id, CAST(NULL AS VARCHAR[]) AS tags, 'hello' AS note)"
+	require.NoError(t, db.QueryRow(query).Scan(&attrsJSON), "query: %s", query)
+	record = model.PersistentRecord{}
+	require.NoError(t, model.ParseAttributesJSON([]byte(attrsJSON), &record))
+	require.Len(t, record.OtherAttributes, 1, "only note expected, got: %s", attrsJSON)
 }

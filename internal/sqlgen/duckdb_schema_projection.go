@@ -243,9 +243,13 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 		// One eav_data row per element: aggregate into a LIST in element-index
 		// order instead of MAX-collapsing, mirroring the CDC export side
 		// (cdc.castEAVValue with the items-typed meta) so the hot leg
-		// type-unifies with the parquet LIST column (#204).
-		return fmt.Sprintf("list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d)",
-			eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
+		// type-unifies with the parquet LIST column. The empty-list marker row
+		// (array_indices '') is excluded from the element aggregate but
+		// detected by the presence count: explicit [] stays distinguishable
+		// from an absent attribute (NULL) on every tier (#204).
+		return fmt.Sprintf(
+			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND array_indices <> ''), []) END",
+			a.attrID, eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
 	}
 	if a.meta.ValueType == forma.ValueTypeBool {
 		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).

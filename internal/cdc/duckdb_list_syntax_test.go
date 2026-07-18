@@ -47,4 +47,25 @@ func TestDuckDBListSyntaxSupport(t *testing.T) {
 	]), x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
 	require.NoError(t, err, "struct unification across scalar/list parts")
 	require.Equal(t, `[{"attr_id":18,"array_indices":"0","value_text":"a"},{"attr_id":18,"array_indices":"1","value_text":"b"}]`, s)
+
+	// Empty-list representation (#204): the presence-count CASE distinguishes
+	// an explicit [] (marker row only) from NULL (no rows at all), and the
+	// untyped [] literal unifies with the typed LIST through coalesce.
+	err = db.QueryRow(`SELECT to_json(CASE WHEN count(*) FILTER (WHERE k = 1) > 0
+			THEN coalesce(list(v ORDER BY TRY_CAST(i AS BIGINT)) FILTER (WHERE k = 1 AND i <> ''), [])
+		END)::VARCHAR
+		FROM (VALUES ('x', '', 1)) t(v, i, k)`).Scan(&s)
+	require.NoError(t, err, "empty-list presence CASE")
+	require.Equal(t, `[]`, s)
+
+	var typ string
+	err = db.QueryRow(`SELECT typeof(coalesce(CAST(NULL AS VARCHAR[]), []))`).Scan(&typ)
+	require.NoError(t, err, "untyped [] coalesce unification")
+	require.Equal(t, `VARCHAR[]`, typ)
+
+	// A struct literal whose fields are all NULL is itself non-NULL, so the
+	// empty-list marker object survives list_filter(x -> x IS NOT NULL).
+	err = db.QueryRow(`SELECT to_json(list_filter([{'a': CAST(NULL AS VARCHAR)}], x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
+	require.NoError(t, err, "all-NULL-field struct retention")
+	require.Equal(t, `[{"a":null}]`, s)
 }

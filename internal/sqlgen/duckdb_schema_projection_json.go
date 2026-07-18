@@ -85,7 +85,10 @@ func (sp *SchemaProjection) scalarEAVJSONObject(schemaID int16, attr string) str
 
 // listEAVJSONPart expands a LIST-typed attribute column into one object per
 // element. The 1-based lambda index i becomes the 0-based array_indices, so
-// the parquet LIST position round-trips the original element index (#204).
+// the parquet LIST position round-trips the original element index. An
+// explicit empty list ([] column, non-NULL) emits the marker object —
+// array_indices '' with both value columns NULL — which the transform layer
+// materializes back into an empty array; NULL (absent) emits nothing (#204).
 func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string {
 	unified := ParquetAttrColumn(attr)
 	itemsVT := sp.itemsTypes[attr]
@@ -99,7 +102,9 @@ func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string 
 	} else {
 		valueText = "CAST(x AS VARCHAR)"
 	}
+	rowExpr := "CAST(row_id AS VARCHAR)"
 	return fmt.Sprintf(
-		"CASE WHEN %s IS NOT NULL THEN list_transform(%s, (x, i) -> {'schema_id': %d, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': %d, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': %s, 'value_numeric': %s}) ELSE [] END",
-		unified, unified, schemaID, sp.attrIDForName(attr), valueText, valueNumeric)
+		"CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [{'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN %s IS NOT NULL THEN list_transform(%s, (x, i) -> {'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': %s, 'value_numeric': %s}) ELSE [] END",
+		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr),
+		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr), valueText, valueNumeric)
 }

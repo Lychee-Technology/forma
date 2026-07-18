@@ -143,12 +143,16 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 		if meta.ValueType == forma.ValueTypeList {
 			// One eav_data row per element: aggregate into a DuckDB LIST in
 			// element-index order instead of MAX-collapsing to one scalar.
-			// The element cast follows the declared items type (#204).
+			// The element cast follows the declared items type. The empty-list
+			// marker row (array_indices '') is excluded from the element
+			// aggregate but detected by the presence count, so an explicit
+			// empty list exports as [] while an absent attribute stays NULL —
+			// mirrored by sqlgen.buildEAVPivotExpr (#204).
 			elemMeta := meta
 			elemMeta.ValueType = meta.EffectiveItemsType()
 			eavAgg = append(eavAgg, fmt.Sprintf(
-				"list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d) AS %s",
-				castEAVValue(elemMeta), meta.AttributeID, alias))
+				"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND array_indices <> ''), []) END AS %s",
+				meta.AttributeID, castEAVValue(elemMeta), meta.AttributeID, alias))
 		} else {
 			castExpr := castEAVValue(meta)
 			eavAgg = append(eavAgg, fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END) AS %s", meta.AttributeID, castExpr, alias))
