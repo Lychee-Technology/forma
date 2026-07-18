@@ -156,7 +156,14 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 		indexSet[record.ArrayIndices] = struct{}{}
 
 		meta := cache[attrName]
-		attr, err := c.FromEAVRecord(record, meta.ValueType)
+		vt := meta.ValueType
+		if vt == forma.ValueTypeList {
+			// List elements are stored one row per element; type each element
+			// by the declared items type so downstream conversion (including
+			// ToEAVRecord) sees a scalar type, never the container type (#204).
+			vt = meta.EffectiveItemsType()
+		}
+		attr, err := c.FromEAVRecord(record, vt)
 		if err != nil {
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
