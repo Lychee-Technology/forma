@@ -354,10 +354,82 @@ func TestTraverseSchemaArrayOfStrings(t *testing.T) {
 
 	result := traverseSchema(schema, "", false, make(map[string]attributeSpec), true)
 
+	// #204: primitive arrays are list containers with the element type carried
+	// in items_type, so multiplicity survives the CDC export.
 	if attr, ok := result["tags"]; !ok {
 		t.Errorf("tags attribute not found")
-	} else if attr.ValueType != "text" {
-		t.Errorf("expected tags to have type text, got %q", attr.ValueType)
+	} else {
+		if attr.ValueType != "list" {
+			t.Errorf("expected tags to have type list, got %q", attr.ValueType)
+		}
+		if attr.ItemsType != "text" {
+			t.Errorf("expected tags items_type text, got %q", attr.ItemsType)
+		}
+	}
+}
+
+// TestRunGenerateAttributesListRegeneration: regenerating over an existing
+// attributes file must flip a legacy scalar-typed array to list+items_type
+// while preserving its attributeID; scalar attrs never gain items_type.
+func TestRunGenerateAttributesListRegeneration(t *testing.T) {
+	tempDir := t.TempDir()
+	schemaPath := filepath.Join(tempDir, "test.json")
+	outputPath := filepath.Join(tempDir, "test_attributes.json")
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+			"tags": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "integer"},
+			},
+		},
+	}
+	schemaData, _ := json.Marshal(schema)
+	if err := os.WriteFile(schemaPath, schemaData, 0o644); err != nil {
+		t.Fatalf("failed to write schema file: %v", err)
+	}
+
+	// Legacy attributes file: tags flattened to its element type (pre-#204).
+	legacy := `{
+  "name": { "attributeID": 1, "valueType": "text" },
+  "tags": { "attributeID": 2, "valueType": "numeric" }
+}`
+	if err := os.WriteFile(outputPath, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("failed to write legacy attributes file: %v", err)
+	}
+
+	args := []string{"-schema-dir", tempDir, "-schema", "test", "-out", outputPath}
+	if err := runGenerateAttributes(context.Background(), args); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var out map[string]map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+
+	tags := out["tags"]
+	if tags["attributeID"] != float64(2) {
+		t.Errorf("tags attributeID = %v, want 2 (preserved)", tags["attributeID"])
+	}
+	if tags["valueType"] != "list" {
+		t.Errorf("tags valueType = %v, want list", tags["valueType"])
+	}
+	if tags["items_type"] != "numeric" {
+		t.Errorf("tags items_type = %v, want numeric", tags["items_type"])
+	}
+	name := out["name"]
+	if name["valueType"] != "text" {
+		t.Errorf("name valueType = %v, want text", name["valueType"])
+	}
+	if _, ok := name["items_type"]; ok {
+		t.Errorf("name must not gain items_type, got %v", name["items_type"])
 	}
 }
 
