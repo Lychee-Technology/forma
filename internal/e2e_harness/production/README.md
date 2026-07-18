@@ -79,7 +79,7 @@ needs schema IDs beyond the fixtures can register its own via
 `RegisterSchemas` + `WithSchemaDir`.
 
 Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
-`WithDuckMemoryMB`, `WithBreaker` (#185), `WithDuckMaxConnections` (#185),
+`WithDuckMemoryMB`, `WithBreaker` (#185), `WithDuckMaxConnections`,
 `WithRoutingStrategy`, `WithoutManifest`.
 
 ## Fixture schemas (`schemas/`)
@@ -182,10 +182,9 @@ where cdc-init bootstraps base files before federated reads. Use
   observe the open-to-closed transition against a healthy DuckDB.
 - `WithBreaker(maxFailures, cooldown)` (#185) enables the federated engine's
   circuit breaker; `WithDuckMaxConnections(n)` overrides the per-test DuckDB
-  pool size (default 2). Pin it to `1` for tests that issue **concurrent**
-  DuckDB queries: `NewDuckDBClient` applies the session-scoped S3 `SET`
-  statements on a single pooled connection (`duckdb_conn.go`), so over
-  `:memory:` a second connection opened under load lacks S3 config and 404s.
+  pool size (default 2). Since #245 every pooled connection self-configures
+  via the driver's per-connection init hook, so this is purely a pool-sizing
+  knob — concurrent DuckDB queries need no pinning.
   Set `Query.AllowPartialDegradedMode` to forward the public degraded-mode
   flag so a tier outage falls back to a postgres-only result (complete in
   today's PG-retains-all model) instead of erroring.
@@ -227,5 +226,5 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #179 flush failure matrix | `FaultInjectingS3` + `RunFlushWith` + `ExecSQL` |
 | #180 dry-run semantics | `RunFlushDry` |
 | #181 failure injection | `ExecSQL` |
-| #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB`, `WithDuckMaxConnections` |
+| #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB` |
 | #186 multi-schema isolation | `e2e_simple`/`e2e_second` + `FaultInjectingS3`/`PausingS3` (`multi_schema_isolation_e2e_test.go`, `concurrent_flush_multi_schema_e2e_test.go`) |

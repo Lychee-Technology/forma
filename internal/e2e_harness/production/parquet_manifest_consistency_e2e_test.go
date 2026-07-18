@@ -21,7 +21,7 @@ import (
 func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	keys := seedMultiParquet(ctx, t, env, wide)
@@ -86,7 +86,7 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster, WithDuckMaxConnections(1))
+	env := NewEnv(t, cluster)
 	wide := DefaultSchemaFixtures()[1]
 
 	keys := seedMultiParquet(ctx, t, env, wide)
