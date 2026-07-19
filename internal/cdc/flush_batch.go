@@ -87,7 +87,9 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		// them: a delta file missing from the manifest stays invisible to
 		// manifest consumers (e.g. compaction) forever. Propagate so the run
 		// reports failure; the final key in the error is the operator's
-		// pointer to the orphaned file for manual reconciliation (#197).
+		// pointer to the orphaned file. Recovery: run
+		// `forma-tools manifest-reconcile --repair` (#203), which appends
+		// the orphaned delta with metadata recomputed from its contents.
 		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, sizeBytes, e.logger); err != nil {
 			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
 		}

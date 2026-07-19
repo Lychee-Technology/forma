@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,6 +38,13 @@ func runToolMain(ctx context.Context, args []string, out io.Writer) int {
 	}
 
 	if err := cmd.run(ctx, args[1:]); err != nil {
+		// Commands report semantic outcomes (e.g. manifest-reconcile's
+		// "discrepancies found" = 2) via an ExitCode; those already rendered
+		// their output, so no error line is printed for them.
+		var ec exitCoder
+		if errors.As(err, &ec) {
+			return ec.ExitCode()
+		}
 		fmt.Fprintf(out, "%s: %v\n", cmd.name, err)
 		if cmd.exitOnError {
 			return 1
@@ -44,6 +52,11 @@ func runToolMain(ctx context.Context, args []string, out io.Writer) int {
 	}
 
 	return 0
+}
+
+// exitCoder lets a command error carry its own process exit code.
+type exitCoder interface {
+	ExitCode() int
 }
 
 func lookupToolCommand(name string) (toolCommand, bool) {
@@ -64,6 +77,7 @@ func toolCommands() []toolCommand {
 		{name: "cdc-flush", run: runCDCFlush, exitOnError: true},
 		{name: "cdc-init", run: runCDCInit, exitOnError: true},
 		{name: "compactor", run: runCompactor, exitOnError: true},
+		{name: "manifest-reconcile", run: runManifestReconcileFn, exitOnError: true},
 	}
 }
 
@@ -78,4 +92,5 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  cdc-flush             Run CDC change_log flush to S3 parquet files")
 	fmt.Fprintln(out, "  cdc-init              Initialize S3 parquet base files from existing data")
 	fmt.Fprintln(out, "  compactor             Run compaction on parquet files for a schema")
+	fmt.Fprintln(out, "  manifest-reconcile    Diff S3 parquet objects against manifests; report, --repair orphaned deltas, --gc compaction leftovers")
 }
