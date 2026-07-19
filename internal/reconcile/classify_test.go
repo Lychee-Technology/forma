@@ -21,8 +21,8 @@ func TestClassifyObjectKey(t *testing.T) {
 		ok    bool
 	}{
 		{"delta uuid", "data/7/" + uuidA + ".parquet", ClassDelta, true},
-		{"init base min_max", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBase, true},
-		{"merged base", "data/7/base-" + uuidA + ".parquet", ClassBase, true},
+		{"init base min_max", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBaseInit, true},
+		{"merged base", "data/7/base-" + uuidA + ".parquet", ClassBaseMerged, true},
 		{"tmp staged", "data/7/_tmp/" + uuidA + ".parquet", ClassTmp, true},
 		{"unrecognized stem", "data/7/weird.parquet", ClassUnknown, true},
 		{"nested non-tmp dir", "data/7/sub/" + uuidA + ".parquet", ClassUnknown, true},
@@ -93,7 +93,7 @@ func TestDiffSchema_OrphansDanglingUnverifiable(t *testing.T) {
 		[]ObjectInfo{listedDelta, listedBase, listedTmp, listedKnown, listedUnknown, ignoredTxt}, m)
 
 	assertKeys(t, "delta orphans", objectKeys(d.deltaOrphans), []string{listedDelta.Key})
-	assertKeys(t, "base orphans", objectKeys(d.baseOrphans), []string{listedBase.Key})
+	assertKeys(t, "merged base orphans", objectKeys(d.baseMergedOrphans), []string{listedBase.Key})
 	assertKeys(t, "tmp orphans", objectKeys(d.tmpOrphans), []string{listedTmp.Key})
 	assertKeys(t, "unknown", objectKeys(d.unknown), []string{listedUnknown.Key})
 	assertKeys(t, "dangling", d.dangling, []string{"data/7/base-" + uuidA + ".parquet"})
@@ -110,7 +110,7 @@ func TestDiffSchema_CleanManifestNoFindings(t *testing.T) {
 	d := diffSchema("bkt", "data", 7,
 		[]ObjectInfo{{Key: "data/7/" + uuidA + ".parquet"}}, m)
 
-	if len(d.deltaOrphans)+len(d.baseOrphans)+len(d.tmpOrphans)+len(d.unknown) != 0 {
+	if len(d.deltaOrphans)+len(d.baseInitOrphans)+len(d.baseMergedOrphans)+len(d.tmpOrphans)+len(d.unknown) != 0 {
 		t.Fatalf("expected no orphans, got %+v", d)
 	}
 	if len(d.dangling)+len(d.unverifiable) != 0 {

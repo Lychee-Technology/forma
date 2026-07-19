@@ -46,13 +46,10 @@ func TestRegistrySchemaEnumerator_Filter(t *testing.T) {
 	}
 }
 
-func TestRegistrySchemaEnumerator_FilterMissingSchemaEmpty(t *testing.T) {
+func TestRegistrySchemaEnumerator_FilterMissingSchemaErrors(t *testing.T) {
 	enum := &RegistrySchemaEnumerator{DB: openRegistryDB(t), Table: "schema_registry", SchemaIDFilter: 42}
-	ids, err := enum.SchemaIDs(context.Background())
-	if err != nil {
-		t.Fatalf("SchemaIDs: %v", err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("SchemaIDs = %v, want empty", ids)
+	_, err := enum.SchemaIDs(context.Background())
+	if err == nil {
+		t.Fatal("an unregistered --schema-id must error, not report an empty (clean) run")
 	}
 }

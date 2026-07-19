@@ -36,7 +36,9 @@ type fakeManifests struct {
 	saves          []savedManifest
 	saveErrs       []error // consumed per Save call; nil entry = success
 	loadErr        error
+	loads          int
 	onSaveConflict func(*fakeManifests) // invoked after a non-nil saveErr is consumed
+	onLoad         func(*fakeManifests) // invoked before each Load returns
 }
 
 func newFakeManifests(ms ...*manifest.Manifest) *fakeManifests {
@@ -54,6 +56,10 @@ func newFakeManifests(ms ...*manifest.Manifest) *fakeManifests {
 func (f *fakeManifests) Load(_ context.Context, schemaID int16) (*manifest.Manifest, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.loads++
+	if f.onLoad != nil {
+		f.onLoad(f)
+	}
 	if f.loadErr != nil {
 		return nil, "", f.loadErr
 	}
@@ -120,17 +126,56 @@ func (f *fakeDeleter) DeleteObject(_ context.Context, key string) error {
 }
 
 type fakeStats struct {
-	stats  map[string]compaction.MergeStats // uri -> stats
+	stats  map[string]compaction.MergeStats // key -> stats
 	errFor map[string]error
 	calls  []string
+	// uncovered maps orphan key -> row ids absent from every listed file.
+	// Keys not in the map default to one synthetic uncovered row, so
+	// append-path tests behave like a genuine #197 orphan.
+	uncovered      map[string][]string
+	uncoveredCalls [][]string // listedKeys per UncoveredRowIDs call
+	uncoveredErr   map[string]error
 }
 
-func (f *fakeStats) FileStats(_ context.Context, uri string) (compaction.MergeStats, error) {
-	f.calls = append(f.calls, uri)
-	if err := f.errFor[uri]; err != nil {
+func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeStats, error) {
+	f.calls = append(f.calls, key)
+	if err := f.errFor[key]; err != nil {
 		return compaction.MergeStats{}, err
 	}
-	return f.stats[uri], nil
+	return f.stats[key], nil
+}
+
+func (f *fakeStats) UncoveredRowIDs(_ context.Context, key string, listedKeys []string) ([]string, error) {
+	f.uncoveredCalls = append(f.uncoveredCalls, listedKeys)
+	if err := f.uncoveredErr[key]; err != nil {
+		return nil, err
+	}
+	if rows, ok := f.uncovered[key]; ok {
+		return rows, nil
+	}
+	return []string{"synthetic-uncovered-row"}, nil
+}
+
+// fakeLiveRows reports which row ids are missing from entity_main. The
+// zero value treats every row as live (the safe-append case).
+type fakeLiveRows struct {
+	missing map[string]bool // row id -> deleted in Postgres
+	err     error
+	queried [][]string
+}
+
+func (f *fakeLiveRows) MissingLiveRows(_ context.Context, _ int16, rowIDs []string) ([]string, error) {
+	f.queried = append(f.queried, rowIDs)
+	if f.err != nil {
+		return nil, f.err
+	}
+	var missing []string
+	for _, id := range rowIDs {
+		if f.missing[id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
 }
 
 type fakeEnum struct {

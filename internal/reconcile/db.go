@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 
+	"strings"
+
+	"github.com/google/uuid"
+
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -47,6 +51,12 @@ func (e *RegistrySchemaEnumerator) SchemaIDs(ctx context.Context) ([]int16, erro
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate schema ids from %s: %w", table, err)
 	}
+	if e.SchemaIDFilter > 0 && len(ids) == 0 {
+		// A silent empty run would report "consistent" for a schema that
+		// was never inspected (typo'd --schema-id, or a deregistered
+		// schema whose S3 objects linger).
+		return nil, fmt.Errorf("schema %d is not registered in %s; nothing was inspected", e.SchemaIDFilter, table)
+	}
 	return ids, nil
 }
 
@@ -84,7 +94,55 @@ func (l *PGAdvisoryLocker) TryLock(ctx context.Context, schemaID int16) (bool, f
 	return true, unlock, nil
 }
 
+// PGLiveRows implements LiveRowChecker over the entity main table. Deletes
+// are physical (postgres_persistent_repository issues DELETE), so liveness
+// is row existence under the (schema_id, row_id) primary key.
+type PGLiveRows struct {
+	DB    *sql.DB
+	Table string // entity_main table name
+}
+
+func (p *PGLiveRows) MissingLiveRows(ctx context.Context, schemaID int16, rowIDs []string) ([]string, error) {
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+	for _, id := range rowIDs {
+		if err := uuid.Validate(id); err != nil {
+			return nil, fmt.Errorf("row id %q from parquet is not a UUID: %w", id, err)
+		}
+	}
+	query := fmt.Sprintf(
+		"SELECT ltbase_row_id::text FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = ANY(string_to_array($2, ',')::uuid[])",
+		sqlutil.SanitizeIdentifier(p.Table))
+	rows, err := p.DB.QueryContext(ctx, query, schemaID, strings.Join(rowIDs, ","))
+	if err != nil {
+		return nil, fmt.Errorf("query live rows of schema %d from %s: %w", schemaID, p.Table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	live := make(map[string]bool, len(rowIDs))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan live row id: %w", err)
+		}
+		live[strings.ToLower(id)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate live rows of schema %d: %w", schemaID, err)
+	}
+
+	var missing []string
+	for _, id := range rowIDs {
+		if !live[strings.ToLower(id)] {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
+}
+
 var (
 	_ SchemaEnumerator = (*RegistrySchemaEnumerator)(nil)
 	_ Locker           = (*PGAdvisoryLocker)(nil)
+	_ LiveRowChecker   = (*PGLiveRows)(nil)
 )

@@ -60,6 +60,7 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		}
 		exporter.DB.SetMaxOpenConns(1)
 		r.Stats = &reconcile.DuckStatsReader{DB: exporter.DB, Bucket: env.Cluster.Bucket}
+		r.LiveRows = &reconcile.PGLiveRows{DB: db, Table: env.Tables.EntityMain}
 		cleanup = func() {
 			_ = exporter.DB.Close()
 			_ = db.Close()
@@ -245,10 +246,17 @@ func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
 		// originally wrote — recovery may not fabricate different stats.
 		if repaired.Tier != original.Tier ||
 			repaired.RowCount != original.RowCount ||
-			repaired.RowIDMin != original.RowIDMin ||
-			repaired.RowIDMax != original.RowIDMax ||
 			repaired.SizeBytes != original.SizeBytes {
 			t.Fatalf("repaired entry diverges from original:\n got %+v\nwant %+v", *repaired, *original)
+		}
+		// RowID bounds: repair recomputes lexicographic MIN/MAX over the
+		// varchar row_id, while the flusher's minMaxRowID tie-breaks
+		// same-millisecond UUIDv7s by first-seen order — over the same set,
+		// the lexicographic min/max always bound the flusher's picks.
+		if repaired.RowIDMin == "" || repaired.RowIDMin > original.RowIDMin ||
+			repaired.RowIDMax < original.RowIDMax {
+			t.Fatalf("repaired RowID range [%s, %s] does not bound original [%s, %s]",
+				repaired.RowIDMin, repaired.RowIDMax, original.RowIDMin, original.RowIDMax)
 		}
 		// Created* semantics differ by design (#203): the flusher stamps
 		// both with the flush timestamp, while reconcile recomputes them
@@ -314,9 +322,12 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 	staleBase := fmt.Sprintf("%s/%d/base-%s.parquet", env.S3Prefix, schema.ID, uuid.Must(uuid.NewV7()).String())
 	staleTmp := fmt.Sprintf("%s/%d/_tmp/%s.parquet", env.S3Prefix, schema.ID, uuid.Must(uuid.NewV7()).String())
 	deltaOrphan := fmt.Sprintf("%s/%d/%s.parquet", env.S3Prefix, schema.ID, uuid.Must(uuid.NewV7()).String())
+	initShaped := fmt.Sprintf("%s/%d/%s_%s.parquet", env.S3Prefix, schema.ID,
+		uuid.Must(uuid.NewV7()).String(), uuid.Must(uuid.NewV7()).String())
 	putJunkObject(t, ctx, env, staleBase)
 	putJunkObject(t, ctx, env, staleTmp)
 	putJunkObject(t, ctx, env, deltaOrphan)
+	putJunkObject(t, ctx, env, initShaped)
 
 	gcOpts := reconcile.Options{GC: true, GCGrace: 15 * time.Minute}
 
@@ -332,8 +343,8 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 		if len(s.Deleted) != 0 {
 			t.Fatalf("gc within grace deleted %v, want nothing", s.Deleted)
 		}
-		if len(s.BaseOrphans) != 1 || len(s.TmpOrphans) != 1 || len(s.DeltaOrphans) != 1 {
-			t.Fatalf("expected 1 orphan per class, got %+v", s)
+		if len(s.BaseOrphans) != 2 || len(s.TmpOrphans) != 1 || len(s.DeltaOrphans) != 1 {
+			t.Fatalf("expected 2 base (merged+init) / 1 tmp / 1 delta orphans, got %+v", s)
 		}
 	})
 
@@ -367,6 +378,9 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 		}
 		if !remaining[deltaOrphan] {
 			t.Fatal("gc deleted a delta-shaped orphan; delta orphans carry unique data")
+		}
+		if !remaining[initShaped] {
+			t.Fatal("gc deleted an init-shaped base orphan; an in-flight cdc-init writes these before publishing its manifest")
 		}
 		for _, f := range mBefore.Files {
 			if key, ok := normalizedManifestKey(env, f.Path); ok && !remaining[key] {

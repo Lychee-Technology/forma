@@ -19,10 +19,21 @@ type ManifestStore interface {
 	Save(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error)
 }
 
-// StatsReader recomputes one parquet file's manifest metadata from its
-// contents. Only consulted under --repair.
+// StatsReader inspects one parquet file's contents: FileStats recomputes
+// manifest metadata; UncoveredRowIDs returns the file's row_ids absent from
+// every listed file (the repair guard's coverage probe). Both take
+// bucket-relative keys. Only consulted under --repair.
 type StatsReader interface {
-	FileStats(ctx context.Context, uri string) (compaction.MergeStats, error)
+	FileStats(ctx context.Context, key string) (compaction.MergeStats, error)
+	UncoveredRowIDs(ctx context.Context, key string, listedKeys []string) ([]string, error)
+}
+
+// LiveRowChecker reports which of the given row ids are NOT live in the
+// Postgres entity store. A row absent from every manifest-listed parquet
+// AND missing from Postgres was deleted — its tombstone won a compaction
+// merge and was dropped, so re-appending the file would resurrect it.
+type LiveRowChecker interface {
+	MissingLiveRows(ctx context.Context, schemaID int16, rowIDs []string) ([]string, error)
 }
 
 // Locker serializes reconciliation against the live flusher per schema.
@@ -52,7 +63,8 @@ type Reconciler struct {
 	Lister     ObjectLister
 	Deleter    ObjectDeleter
 	Manifests  ManifestStore
-	Stats      StatsReader // may be nil unless Opts.Repair
+	Stats      StatsReader    // may be nil unless Opts.Repair
+	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
 	Locker     Locker
 	Schemas    SchemaEnumerator
 	Now        func() time.Time
@@ -92,6 +104,15 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 	defer unlock()
 
+	// Load the manifest BEFORE listing: a file created after the manifest
+	// snapshot then still appears in the listing, so a racing compactor's
+	// freshly committed base entry can never be reported dangling.
+	m, etag, err := r.Manifests.Load(ctx, schemaID)
+	if err != nil {
+		s.Err = fmt.Errorf("load schema %d manifest: %w", schemaID, err)
+		return s
+	}
+
 	prefix := schemaDataPrefix(r.DataPrefix, schemaID)
 	objects, err := r.Lister.ListObjects(ctx, prefix)
 	if err != nil {
@@ -99,34 +120,87 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		return s
 	}
 
-	m, etag, err := r.Manifests.Load(ctx, schemaID)
-	if err != nil {
-		s.Err = fmt.Errorf("load schema %d manifest: %w", schemaID, err)
-		return s
-	}
-
 	d := diffSchema(r.Bucket, r.DataPrefix, schemaID, objects, m)
 	s.DeltaOrphans = objectKeyList(d.deltaOrphans)
-	s.BaseOrphans = objectKeyList(d.baseOrphans)
+	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)
 	s.Unknown = objectKeyList(d.unknown)
-	s.Dangling = d.dangling
+	s.Dangling = r.confirmDangling(ctx, schemaID, d.dangling)
 	s.Unverifiable = d.unverifiable
 
+	var deltaLeftovers []ObjectInfo
 	if r.Opts.Repair && len(d.deltaOrphans) > 0 {
-		s.Repaired, err = r.repairSchema(ctx, schemaID, m, etag, d.deltaOrphans)
+		outcome, err := r.repairSchema(ctx, schemaID, m, etag, d.deltaOrphans)
 		if err != nil {
 			s.Err = err
 			return s
 		}
+		s.Repaired = outcome.repaired
+		s.DeltaLeftovers = objectKeyList(outcome.leftovers)
+		deltaLeftovers = outcome.leftovers
 	}
 	if r.Opts.GC {
-		candidates := append(append([]ObjectInfo(nil), d.baseOrphans...), d.tmpOrphans...)
+		// Init-shaped base orphans are never GC candidates: an in-flight
+		// cdc-init promotes them long before publishing the manifest and
+		// holds no advisory lock. Delta leftovers require the repair
+		// analysis, so they are only deletable under --repair --gc.
+		candidates := append(append([]ObjectInfo(nil), d.baseMergedOrphans...), d.tmpOrphans...)
+		candidates = append(candidates, deltaLeftovers...)
 		if len(candidates) > 0 {
 			s.Deleted = r.gcSchema(ctx, schemaID, candidates)
 		}
 	}
 	return s
+}
+
+// confirmDangling re-verifies dangling candidates against a fresh manifest
+// load and a per-key existence probe. The lock excludes the flusher but not
+// the compactor or cdc-init, so a splice landing mid-run could otherwise
+// surface a properly handled (or freshly created) object as dangling.
+func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) []string {
+	if len(dangling) == 0 {
+		return nil
+	}
+	still := make(map[string]bool, len(dangling))
+	m2, _, err := r.Manifests.Load(ctx, schemaID)
+	if err != nil {
+		r.Logger.Warn("could not reload manifest to confirm dangling entries; reporting unconfirmed",
+			zap.Int16("schema_id", schemaID), zap.Error(err))
+		for _, key := range dangling {
+			still[key] = true
+		}
+	} else {
+		for _, f := range m2.Files {
+			if key, ok := normalizeKey(r.Bucket, f.Path); ok {
+				still[key] = true
+			}
+		}
+	}
+
+	var confirmed []string
+	for _, key := range dangling {
+		if !still[key] {
+			continue // spliced out concurrently; nothing dangling anymore
+		}
+		objs, err := r.Lister.ListObjects(ctx, key)
+		if err != nil {
+			r.Logger.Warn("dangling re-probe failed; keeping candidate",
+				zap.Int16("schema_id", schemaID), zap.String("key", key), zap.Error(err))
+			confirmed = append(confirmed, key)
+			continue
+		}
+		exists := false
+		for _, o := range objs {
+			if o.Key == key {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			confirmed = append(confirmed, key)
+		}
+	}
+	return confirmed
 }
 
 func objectKeyList(objs []ObjectInfo) []string {

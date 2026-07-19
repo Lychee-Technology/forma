@@ -165,7 +165,7 @@ func (c *Compactor) deleteObjects(ctx context.Context, schemaID int16, paths []s
 			key = trimmed
 		}
 		if err := cdc.DeleteObjectKey(ctx, c.S3, c.Bucket, key); err != nil {
-			c.Logger.Warn("failed to delete merged source object; leaving orphan for manifest-reconcile --gc (#203)",
+			c.Logger.Warn("failed to delete merged source object; leaving orphan for manifest-reconcile (#203; base/tmp shapes need --gc, delta shapes --repair --gc)",
 				zap.Int16("schema_id", schemaID), zap.String("key", key), zap.Error(err))
 		}
 	}

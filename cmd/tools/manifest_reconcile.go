@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -32,17 +33,18 @@ func (e *discrepancyError) ExitCode() int { return 2 }
 
 // reconcileOptions carries the parsed manifest-reconcile flag values.
 type reconcileOptions struct {
-	s3            s3Flags
-	pg            postgresFlags
-	manifest      cdc.ManifestConfig
-	dataPrefix    string
-	registryTable string
-	schemaID      int
-	repair        bool
-	gc            bool
-	gcGrace       time.Duration
-	etagRetries   int
-	duck          duckExportFlags
+	s3              s3Flags
+	pg              postgresFlags
+	manifest        cdc.ManifestConfig
+	dataPrefix      string
+	entityMainTable string
+	registryTable   string
+	schemaID        int
+	repair          bool
+	gc              bool
+	gcGrace         time.Duration
+	etagRetries     int
+	duck            duckExportFlags
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil
@@ -80,6 +82,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	// --s3-prefix / compactor --data-prefix): listing a different prefix
 	// reports every real file as dangling and every listed key as orphaned.
 	dataPrefix := fs.String("data-prefix", "data", "Data prefix for parquet files (must match the flusher's prefix)")
+	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table (repair guard's liveness check)")
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3")
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 	registryTable := fs.String("schema-registry-table", "", "Schema registry table for schema enumeration (required)")
@@ -103,12 +106,17 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 		return nil, fmt.Errorf("--schema-registry-table is required")
 	}
 
+	if *gc && *gcGrace <= 0 {
+		return nil, fmt.Errorf("--gc-grace must be positive; a zero grace would delete a live compaction's staging objects")
+	}
+
 	opts.manifest = cdc.ManifestConfig{
 		Bucket:       opts.s3.bucket,
 		Prefix:       *manifestPrefix,
 		PathTemplate: *manifestTemplate,
 	}
 	opts.dataPrefix = *dataPrefix
+	opts.entityMainTable = *entityMainTable
 	opts.registryTable = *registryTable
 	opts.schemaID = *schemaID
 	opts.repair = *repair
@@ -146,9 +154,10 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 
+	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
 	r := &reconcile.Reconciler{
-		Lister:     &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket},
-		Deleter:    &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket},
+		Lister:     objectStore,
+		Deleter:    objectStore,
 		Manifests:  buildReconcileManifestStore(opts, s3Client),
 		Locker:     &reconcile.PGAdvisoryLocker{DB: db},
 		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID},
@@ -171,6 +180,7 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		}
 		defer func() { _ = exporter.DB.Close() }()
 		r.Stats = &reconcile.DuckStatsReader{DB: exporter.DB, Bucket: opts.s3.bucket}
+		r.LiveRows = &reconcile.PGLiveRows{DB: db, Table: opts.entityMainTable}
 	}
 
 	logger.Info("starting manifest reconcile",
@@ -184,15 +194,30 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		return fmt.Errorf("reconcile failed: %w", err)
 	}
 	report.Render(os.Stdout)
+	return reconcileExitError(report)
+}
 
-	if report.HasResidualDiscrepancies() {
-		count := 0
-		for _, s := range report.Schemas {
-			if s.Residual() {
-				count++
-			}
+// reconcileExitError maps a rendered report to the process outcome:
+// per-schema tool failures are a plain error (exit 1) — monitoring must not
+// mistake an S3 outage for data inconsistency — while pure residual
+// discrepancies exit 2 via discrepancyError, and a clean run exits 0.
+func reconcileExitError(report reconcile.Report) error {
+	var failed []string
+	residual := 0
+	for _, s := range report.Schemas {
+		if s.Err != nil {
+			failed = append(failed, fmt.Sprintf("schema %d: %v", s.SchemaID, s.Err))
+			continue
 		}
-		return &discrepancyError{count: count}
+		if s.Residual() {
+			residual++
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("reconcile failed for %d schema(s): %s", len(failed), strings.Join(failed, "; "))
+	}
+	if residual > 0 {
+		return &discrepancyError{count: residual}
 	}
 	return nil
 }
@@ -237,13 +262,26 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 
 // buildToolSQLDB opens a database/sql handle (pgx driver) for tools that
 // need session-scoped Postgres features — the reconcile advisory lock pins
-// a single connection, which pgxpool does not expose.
+// a single connection, which pgxpool does not expose. Values are quoted so
+// passwords with spaces or quotes survive DSN parsing (the sibling copies
+// in internal/cdc/flusher.go and init.go still interpolate raw — follow-up:
+// extract one shared DSN builder).
 func buildToolSQLDB(pg postgresFlags) (*sql.DB, error) {
 	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		pg.host, pg.port, pg.user, pg.resolvedPassword("PGPASSWORD"), pg.database, pg.sslMode)
+		quotePGConnValue(pg.host), pg.port, quotePGConnValue(pg.user),
+		quotePGConnValue(pg.resolvedPassword("PGPASSWORD")),
+		quotePGConnValue(pg.database), quotePGConnValue(pg.sslMode))
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("open pg: %w", err)
 	}
 	return db, nil
+}
+
+// quotePGConnValue quotes one keyword/value DSN value per libpq rules:
+// wrapped in single quotes with backslash and single-quote escaped.
+func quotePGConnValue(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `'`, `\'`)
+	return "'" + v + "'"
 }

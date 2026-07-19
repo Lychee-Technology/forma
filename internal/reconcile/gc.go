@@ -20,6 +20,14 @@ import (
 // Deletion is best-effort — a failed delete is logged and the key stays in
 // the report as an orphan, exactly like the compactor's own source cleanup.
 func (r *Reconciler) gcSchema(ctx context.Context, schemaID int16, candidates []ObjectInfo) []string {
+	if r.Opts.GCGrace <= 0 {
+		// A zero grace would delete objects uploaded milliseconds ago —
+		// including a live compaction rewrite's staging files. Refuse
+		// instead of silently degrading the documented protection.
+		r.Logger.Error("gc requested with a non-positive grace period; refusing to delete anything",
+			zap.Int16("schema_id", schemaID), zap.Duration("gc_grace", r.Opts.GCGrace))
+		return nil
+	}
 	cutoff := r.Now().Add(-r.Opts.GCGrace)
 	var deleted []string
 	for _, obj := range candidates {

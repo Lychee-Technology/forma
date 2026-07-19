@@ -11,22 +11,41 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 
 ## 差异分类
 
-按文件名形态把「S3 存在、manifest 未列」的对象分为三类，处置方向相反：
+按文件名形态把「S3 存在、manifest 未列」的对象分为四类：
 
 | 类别 | 形态 | 来源 | 处置 |
 |------|------|------|------|
-| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 | `--repair` 补录回 manifest |
-| base 孤儿 | `{min}_{max}.parquet` / `base-{uuid}.parquet` | #188 | `--gc` 删除（宽限期后） |
-| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | #188 staging | `--gc` 删除（宽限期后） |
+| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
+| merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 删除（宽限期后） |
+| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | 只报告，**永不自动删除**：in-flight cdc-init 先落对象、跑完才发布 manifest，且不持 advisory lock |
+| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留 | `--gc` 删除（宽限期后） |
 
 另报告两类只读发现：
 
-- **dangling**：manifest 条目指向的对象已不存在。移除条目会让数据从读路径消失，
-  本工具**不**自动删除，保持人工处置。
-- **unverifiable**：指向其他 bucket 或带 glob 的条目、以及不在本次 list 前缀下的
-  key——本次列举无法证明其缺席，只做信息展示。
+- **dangling**：manifest 条目指向的对象已不存在（经二次确认：重载 manifest 后条目仍在
+  且逐 key 探测仍缺席才判定，规避与无锁 compactor 的竞态假阳性）。移除条目会让数据从
+  读路径消失，本工具**不**自动删除，保持人工处置。
+- **unverifiable**：指向其他 bucket、带 glob、或不在本次 list 前缀下的条目——本次列举
+  无法证明其缺席，只做信息展示。
 
 无法识别形态的 `.parquet`（unknown）只报告，永不 repair / GC。
+
+## `--repair` 的安全守卫（防墓碑复活）
+
+一个 delta 形态孤儿有两种截然相反的身份：#197 孤儿（数据仅存于该文件，必须补录）或
+#188 中删除失败的 merged source（数据已并入 merged base，其中墓碑行在合并时被物理丢弃
+——**补录会让已删除的行复活**）。工具用两级探测区分：
+
+1. **覆盖探测**（DuckDB 反连接）：孤儿中有哪些 row_id 不出现在任何 manifest 已列文件里；
+2. **活性探测**（Postgres `entity_main`，`--entity-main-table`）：这些未覆盖行是否仍存活。
+
+裁决：
+
+- 存在未覆盖行且**全部存活** → 真 #197 孤儿，补录（元数据从 parquet 内容重算，幂等，
+  绝不重复已有 Path）；
+- 无未覆盖行，或未覆盖行**全部已删除**（其墓碑赢了合并后被丢弃）→ 判定为合并残留
+  （报告列在 `delta leftover`），在 `--repair --gc` 同时开启且过宽限期时删除；
+- 未覆盖行**存活/已删混杂** → 拒绝自动补录与自动删除，留人工处置（保持非零退出码）。
 
 ## 用法
 
@@ -37,11 +56,11 @@ forma-tools manifest-reconcile \
   --schema-registry-table schema_registry \
   --pg-host ... --pg-db forma
 
-# 修复 #197 孤儿：按 parquet 实际内容重算 RowCount/RowIDMin/Max/CreatedMin/Max
+# 修复 #197 孤儿（经守卫判定）
 forma-tools manifest-reconcile ... --repair
 
-# 清理 #188 遗留：只删 base/_tmp 形态、且对象最后修改时间早于宽限期的孤儿
-forma-tools manifest-reconcile ... --gc --gc-grace 15m
+# 清理 #188 遗留：merged base / _tmp / 已判定的 delta 残留
+forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
 ```
 
 要点：
@@ -50,14 +69,14 @@ forma-tools manifest-reconcile ... --gc --gc-grace 15m
   `--s3-prefix`、compactor 的 `--data-prefix`）。前缀不一致时列举落空，所有 manifest
   条目会被误报为 unverifiable/dangling、所有对象被误报为孤儿。
 - 工具需要 Postgres：逐 schema 取与 flusher 同款 advisory lock
-  （`pg_try_advisory_lock(schemaID, schemaID)`），消除「list 与 manifest 加载之间新
-  上传文件被误判孤儿」的假阳性；拿不到锁的 schema 跳过并计入差异退出码。manifest
-  写入另有 ETag 条件写保护（compactor 不持这把锁）。
-- `--repair` 幂等：绝不重复已有 `Path`；统计读取失败的文件跳过并保留为孤儿。
-  一个 delta 孤儿也可能是 #188 中删除失败的 merged source——补录它是安全的
-  （联邦读按 row_id LWW 去重，下轮 compaction 会重新合并），而误删真正的 #197
-  孤儿等于丢数据，因此对 delta 形态一律偏向补录。
-- `--gc` 的宽限期兜住 in-flight reader 竞态：持有 splice 前对象清单的查询在
-  manifest 提交后约一个查询时长内仍可能引用已解除列出的 key。默认 15m 远超查询
-  超时；残余窗口（对象很老、恰在 GC 前一刻才被 splice）在实践中可忽略。
-- 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema）；`1` 工具自身失败。
+  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上），消除与 flusher 的
+  list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。compactor 与 cdc-init 不持
+  这把锁，故 manifest 写入另有 ETag 条件写保护（不存在的 manifest 用 If-None-Match
+  条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认，init 形态对象
+  排除在 GC 之外。
+- `--schema-id` 指向未注册 schema 时直接报错退出 1（而不是空跑报「一致」）。
+- `--gc-grace` 必须为正（默认 15m），兜住 in-flight reader 竞态：持有 splice 前对象
+  清单的查询在 manifest 提交后约一个查询时长内仍可能引用已解除列出的 key。残余窗口
+  （对象很老、恰在 GC 前一刻才被 splice）在实践中可忽略。
+- 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件）；
+  `1` 工具自身失败（含任一 schema 的 list/load/lock 失败——不会伪装成「有差异」）。

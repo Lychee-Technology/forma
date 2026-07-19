@@ -2,9 +2,10 @@
 // (issue #203). It reports orphans — live objects the manifest does not list,
 // classified by filename shape — and dangling entries — manifest paths whose
 // object is gone. Optional repair appends delta-shaped orphans back to the
-// manifest (the #197 flush failure mode: rows already marked flushed, data
-// exists only in the orphaned file); optional GC deletes base-shaped and
-// _tmp/ orphans left behind by compaction rewrites (#188).
+// manifest when the coverage + Postgres-liveness guard proves they are the
+// #197 flush failure mode (data exists nowhere else); provable compaction
+// leftovers are instead classified for GC, which also deletes merged-base
+// and _tmp/ orphans left behind by compaction rewrites (#188).
 package reconcile
 
 import (
@@ -17,15 +18,19 @@ import (
 )
 
 // OrphanClass is the filename-shape class of an unlisted parquet object. The
-// class decides the recovery direction: delta orphans carry data that exists
-// nowhere else and are appended back to the manifest, base and _tmp orphans
-// are compaction leftovers whose data already lives in the merged base and
-// are garbage-collected. Unknown shapes are reported and never touched.
+// class decides the recovery direction: delta orphans may carry data that
+// exists nowhere else and are candidates for repair (guarded by row coverage
+// and Postgres liveness), merged-base and _tmp orphans are compaction
+// leftovers eligible for GC, and init-shaped base orphans are only reported —
+// an in-flight cdc-init promotes them long before it publishes the manifest
+// and holds no advisory lock, so deleting them could destroy a running
+// re-export. Unknown shapes are reported and never touched.
 type OrphanClass int
 
 const (
-	ClassDelta OrphanClass = iota
-	ClassBase
+	ClassDelta      OrphanClass = iota
+	ClassBaseInit               // {minRowID}_{maxRowID}.parquet (cdc-init export)
+	ClassBaseMerged             // base-{uuid}.parquet (compaction rewrite)
 	ClassTmp
 	ClassUnknown
 )
@@ -53,9 +58,9 @@ func classifyObjectKey(prefix, key string) (OrphanClass, bool) {
 	stem := strings.TrimSuffix(rel, ".parquet")
 	switch {
 	case strings.HasPrefix(stem, "base-"):
-		return ClassBase, true // cdc.BuildMergedBasePath: base-{uuid}.parquet
+		return ClassBaseMerged, true // cdc.BuildMergedBasePath: base-{uuid}.parquet
 	case strings.Contains(stem, "_"):
-		return ClassBase, true // cdc.BuildBasePath: {minRowID}_{maxRowID}.parquet
+		return ClassBaseInit, true // cdc.BuildBasePath: {minRowID}_{maxRowID}.parquet
 	case uuid.Validate(stem) == nil:
 		return ClassDelta, true // cdc.BuildDeltaPath: {uuid}.parquet
 	default:
@@ -85,12 +90,13 @@ func normalizeKey(bucket, path string) (string, bool) {
 // diffResult is one schema's raw two-way diff between listed objects and
 // manifest entries, before repair or GC acts on it.
 type diffResult struct {
-	deltaOrphans []ObjectInfo
-	baseOrphans  []ObjectInfo
-	tmpOrphans   []ObjectInfo
-	unknown      []ObjectInfo
-	dangling     []string
-	unverifiable []string
+	deltaOrphans      []ObjectInfo
+	baseInitOrphans   []ObjectInfo
+	baseMergedOrphans []ObjectInfo
+	tmpOrphans        []ObjectInfo
+	unknown           []ObjectInfo
+	dangling          []string
+	unverifiable      []string
 }
 
 // diffSchema computes the two-way diff for one schema: objects absent from
@@ -123,8 +129,10 @@ func diffSchema(bucket, dataPrefix string, schemaID int16, objects []ObjectInfo,
 		switch class {
 		case ClassDelta:
 			d.deltaOrphans = append(d.deltaOrphans, obj)
-		case ClassBase:
-			d.baseOrphans = append(d.baseOrphans, obj)
+		case ClassBaseInit:
+			d.baseInitOrphans = append(d.baseInitOrphans, obj)
+		case ClassBaseMerged:
+			d.baseMergedOrphans = append(d.baseMergedOrphans, obj)
 		case ClassTmp:
 			d.tmpOrphans = append(d.tmpOrphans, obj)
 		case ClassUnknown:

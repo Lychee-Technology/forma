@@ -18,8 +18,12 @@ type SchemaReport struct {
 	Dangling     []string // manifest entries with no live object; removal stays manual
 	Unverifiable []string // manifest paths this listing cannot prove absent
 	Repaired     []string // delta orphans appended to the manifest (--repair)
-	Deleted      []string // base/tmp orphans removed (--gc)
-	Err          error    // per-schema failure; other schemas still reconcile
+	// DeltaLeftovers are delta orphans the repair guard classified as
+	// compaction leftovers (no uncovered rows, or every uncovered row
+	// deleted in Postgres): never appended, GC-eligible under --gc.
+	DeltaLeftovers []string
+	Deleted        []string // leftover/merged-base/tmp orphans removed (--gc)
+	Err            error    // per-schema failure; other schemas still reconcile
 }
 
 // Report is a full reconcile run across schemas.
@@ -79,6 +83,7 @@ func (r Report) Render(w io.Writer) {
 		}
 		fmt.Fprintf(w, "schema %d:\n", s.SchemaID)
 		renderKeys(w, "delta orphan", s.DeltaOrphans)
+		renderKeys(w, "delta leftover (gc-eligible)", s.DeltaLeftovers)
 		renderKeys(w, "base orphan", s.BaseOrphans)
 		renderKeys(w, "tmp orphan", s.TmpOrphans)
 		renderKeys(w, "unknown shape", s.Unknown)
@@ -93,8 +98,8 @@ func (r Report) Render(w io.Writer) {
 }
 
 func (s SchemaReport) clean() bool {
-	return len(s.DeltaOrphans)+len(s.BaseOrphans)+len(s.TmpOrphans)+
-		len(s.Unknown)+len(s.Dangling)+len(s.Unverifiable)+
+	return len(s.DeltaOrphans)+len(s.DeltaLeftovers)+len(s.BaseOrphans)+
+		len(s.TmpOrphans)+len(s.Unknown)+len(s.Dangling)+len(s.Unverifiable)+
 		len(s.Repaired)+len(s.Deleted) == 0 && s.Err == nil
 }
 

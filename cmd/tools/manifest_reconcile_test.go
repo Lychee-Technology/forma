@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
 func TestRunToolMain_ManifestReconcileExitCodes(t *testing.T) {
@@ -50,6 +52,52 @@ func TestRunToolMain_DiscrepancyExitPrintsNoErrorLine(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "manifest-reconcile:") {
 		t.Fatalf("discrepancy exit must not print an error line (report already rendered), got %q", out.String())
+	}
+}
+
+func TestReconcileExitError_ToolFailureBeatsDiscrepancy(t *testing.T) {
+	// Per-schema tool failures (S3 outage, lock error) must exit 1, not be
+	// folded into the exit-2 "discrepancies found" signal monitoring treats
+	// as data inconsistency.
+	failed := reconcile.Report{Schemas: []reconcile.SchemaReport{
+		{SchemaID: 1, Err: errors.New("s3 unavailable")},
+		{SchemaID: 2, Dangling: []string{"data/2/x.parquet"}},
+	}}
+	err := reconcileExitError(failed)
+	if err == nil {
+		t.Fatal("schema errors must surface as a tool failure")
+	}
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) {
+		t.Fatalf("tool failure must be a plain error (exit 1), got exit code %d", ec.ExitCode())
+	}
+
+	residual := reconcile.Report{Schemas: []reconcile.SchemaReport{
+		{SchemaID: 1, Dangling: []string{"data/1/x.parquet"}},
+		{SchemaID: 2, Skipped: true},
+	}}
+	err = reconcileExitError(residual)
+	if !errors.As(err, &ec) || ec.ExitCode() != 2 {
+		t.Fatalf("residual discrepancies must exit 2, got %v", err)
+	}
+
+	if err := reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{{SchemaID: 1}}}); err != nil {
+		t.Fatalf("clean report must exit 0, got %v", err)
+	}
+}
+
+func TestQuotePGConnValue(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"plain", "'plain'"},
+		{"pa ss", "'pa ss'"},
+		{"it's", `'it\'s'`},
+		{`back\slash`, `'back\\slash'`},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		if got := quotePGConnValue(tt.in); got != tt.want {
+			t.Fatalf("quotePGConnValue(%q) = %s, want %s", tt.in, got, tt.want)
+		}
 	}
 }
 
