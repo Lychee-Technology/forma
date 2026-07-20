@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // #257: mixed-generation compaction equivalence. Base parquet is written
@@ -50,29 +51,23 @@ const evoV2Attrs = `{
 }
 `
 
-// evoV1Profile seeds v1 rows: integer score (score = ordinal*10) always, and
-// old_col ONLY on ordinals 0-2. Ordinals 3-4 deliberately never carry the
-// to-be-dropped attribute: the OLTP update path transforms every existing EAV
-// record under CURRENT metadata (entity_crud_service.go Update →
-// FromPersistentRecord), so updating a row that still holds a dropped
-// attribute's EAV data fails loudly with "unknown attribute id … not in
-// metadata cache" — a write-path evolution sharp edge this fixture routes
-// around (delete does no such transform, so the tombstoned ordinal 0 CAN
-// carry old_col). The retype is safe on this path: integer and numeric share
-// the value_numeric EAV column.
-func evoV1Profile() AttrProfile {
+// buildEvoV1Profile seeds v1 rows: old_col + integer score (score =
+// ordinal*10). Every v1 row carries old_col so the base parquet holds a
+// non-NULL value for the rows the v2 generation later updates — that is what
+// makes the merged winner's old_col-is-NULL assertion prove ROW-level LWW
+// rather than pass vacuously.
+func buildEvoV1Profile() AttrProfile {
 	return buildEvolutionProfile(func(ordinal int) map[string]any {
-		attrs := map[string]any{"score": float64(ordinal * 10)}
-		if ordinal < 3 {
-			attrs["old_col"] = fmt.Sprintf("old-%04d", ordinal)
+		return map[string]any{
+			"old_col": fmt.Sprintf("old-%04d", ordinal),
+			"score":   float64(ordinal * 10),
 		}
-		return attrs
 	})
 }
 
-// evoV2Profile seeds v2 rows: new_col + fractional score, so any silent
+// buildEvoV2Profile seeds v2 rows: new_col + fractional score, so any silent
 // DOUBLE→INTEGER coercion in the merge corrupts a visible value.
-func evoV2Profile() AttrProfile {
+func buildEvoV2Profile() AttrProfile {
 	return buildEvolutionProfile(func(ordinal int) map[string]any {
 		return map[string]any{
 			"new_col": float64(ordinal * 10),
@@ -81,15 +76,16 @@ func evoV2Profile() AttrProfile {
 	})
 }
 
-// evolutionEquivalenceQueries is the before/after snapshot set: an unsorted
-// page, a sort on a generation-stable attribute, a score filter spanning both
-// generations (v1 INTEGER rows and v2 DOUBLE rows in one numeric domain), and
-// a new_col filter that only v2-generation rows can match (v1 rows are NULL).
-func evolutionEquivalenceQueries(schema SchemaRef) []Query {
+// buildEvolutionEquivalenceQueries is the before/after snapshot set: an
+// unsorted page, a sort on a generation-stable attribute, a score filter
+// spanning both generations (v1 INTEGER rows and v2 DOUBLE rows in one
+// numeric domain, with the boundary row score=20 included), and a new_col
+// filter that only v2-generation rows can match (v1 rows are NULL).
+func buildEvolutionEquivalenceQueries(schema SchemaRef) []Query {
 	return []Query{
 		{Schema: schema, Limit: 100},
 		{Schema: schema, Sorts: []Sort{{Attr: "value"}}, Limit: 100},
-		{Schema: schema, Filters: []Filter{{Attr: "score", Op: "gte", Value: "15"}}, Limit: 100},
+		{Schema: schema, Filters: []Filter{{Attr: "score", Op: "gte", Value: "20"}}, Limit: 100},
 		{Schema: schema, Filters: []Filter{{Attr: "new_col", Op: "gte", Value: "0"}}, Limit: 100},
 	}
 }
@@ -108,13 +104,25 @@ type evolutionSeed struct {
 // base via init, evolve to v2, then — all under v2 — 2 updates + 1 delete
 // against v1 base rows plus 4 new rows flushed as ONE delta (dirty ratio
 // 3/5 = 60% > the 5% rewrite trigger), and 3 hot rows left unflushed.
+//
+// #294 detour: the OLTP update path transforms every existing EAV record
+// under CURRENT metadata (entity_crud_service.go Update →
+// FromPersistentRecord) and hard-errors on the dropped old_col's attrID, so
+// the two update targets get the documented stale-EAV cleanup migration
+// first. Their old_col values are already exported in the base parquet — the
+// merged winner dropping them is the row-level-LWW proof — while delete does
+// no transform, so the tombstoned row needs no cleanup.
 func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, v2Dir string) *evolutionSeed {
 	t.Helper()
 	s := &evolutionSeed{}
-	s.creates = seedGeneration(ctx, t, env, schema, 5, evoV1Profile())
+	s.creates = seedGeneration(ctx, t, env, schema, 5, buildEvoV1Profile())
 	s.baseKey = runInitBase(ctx, t, env, schema)
 	if err := env.EvolveSchema(ctx, v2Dir); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
+	}
+	for _, target := range []*Event{s.creates[3], s.creates[4]} {
+		env.ExecSQL(ctx, "DELETE FROM eav_data WHERE schema_id = $1 AND attr_id = 3 AND row_id = $2",
+			schema.ID, target.RowID)
 	}
 	s.updates = []*Event{
 		UpdateEvent(schema, s.creates[3].RowID, map[string]any{"score": 1000.5, "new_col": float64(400)}),
@@ -124,10 +132,34 @@ func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schem
 	if err := env.ApplyEvents(ctx, s.updates[0], s.updates[1], s.deleted); err != nil {
 		t.Fatalf("apply v2 updates/delete to v1 base rows: %v", err)
 	}
-	s.v2Creates = seedGeneration(ctx, t, env, schema, 4, evoV2Profile())
+	s.v2Creates = seedGeneration(ctx, t, env, schema, 4, buildEvoV2Profile())
 	s.deltaKey = requireSoleParquet(t, "flush", mustFlush(ctx, t, env).NewObjects)
-	seedGeneration(ctx, t, env, schema, 3, evoV2Profile()) // hot tier
+	seedGeneration(ctx, t, env, schema, 3, buildEvoV2Profile()) // hot tier
 	return s
+}
+
+// buildParquetS3Path renders one parquet object key as the s3:// URI DuckDB
+// reads.
+func buildParquetS3Path(env *Env, key string) string {
+	return fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+}
+
+// requireBaseOldCol asserts the base parquet physically stores the given
+// old_col value for a row — the positive control that makes the merged
+// winner's old_col-NULL assertion prove row-level replacement instead of
+// passing vacuously on an already-NULL source.
+func requireBaseOldCol(ctx context.Context, t *testing.T, env *Env, path string, rowID uuid.UUID, want string) {
+	t.Helper()
+	var oldCol sql.NullString
+	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT MAX(old_col) FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
+		rowID.String()).Scan(&oldCol); err != nil {
+		t.Fatalf("scan base parquet old_col for row %s: %v", rowID, err)
+	}
+	if !oldCol.Valid || oldCol.String != want {
+		t.Fatalf("base parquet old_col for row %s = %q (valid=%t), want %q (row-level-LWW positive-control precondition)",
+			rowID, oldCol.String, oldCol.Valid, want)
+	}
 }
 
 // scanMergedEvoRow reads one row's evolved attributes out of the merged base.
@@ -156,7 +188,7 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		"score":   "DOUBLE",  // INTEGER widened to the delta's DOUBLE
 	})
 
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := buildParquetS3Path(env, key)
 	var total, tombstones, nullDeleted int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT COUNT(*),
@@ -172,9 +204,10 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		t.Errorf("merged base holds %d tombstones, %d NULL deleted_at, want 0/0 (dropped and normalized)", tombstones, nullDeleted)
 	}
 
-	// v2 winners over v1 rows: fractional score, new_col set, old_col NULL
-	// (these rows never carried old_col — see evoV1Profile — and the v2
-	// winner row cannot introduce it).
+	// v2 winners over v1 rows: fractional score, new_col set, old_col NULL.
+	// The base copies carry non-NULL old_col (requireBaseOldCol positive
+	// control), so NULL here proves the winner replaced the WHOLE row — a
+	// column merge would leak the base values through.
 	for i, up := range seed.updates {
 		n, score, oldCol, newCol := scanMergedEvoRow(ctx, t, env, path, up.RowID)
 		wantScore := up.Attrs["score"].(float64)
@@ -211,6 +244,34 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 	}
 }
 
+// assertMixedGenRewriteSurfaces pins the manifest and hot-tier surfaces after
+// the mixed-generation rewrite: exactly one base entry (the merged file),
+// zero delta entries, monotonic manifest version, no duplicate entries,
+// manifest == S3 inventory, and an untouched hot tier.
+func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, mBefore *manifest.Manifest, hotBefore int64) {
+	t.Helper()
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
+	if got := countTier(mAfter, "delta"); got != 0 {
+		t.Errorf("delta entries after rewrite = %d, want 0", got)
+	}
+	if got := countTier(mAfter, "base"); got != 1 {
+		t.Errorf("base entries after rewrite = %d, want exactly the merged file", got)
+	}
+	if mAfter.Version <= mBefore.Version {
+		t.Errorf("manifest version %d -> %d, want monotonic advance", mBefore.Version, mAfter.Version)
+	}
+	assertNoDuplicateManifestEntries(t, mAfter)
+	assertManifestMatchesInventory(ctx, t, env, schema)
+
+	hotAfter, err := env.countUnflushed(ctx)
+	if err != nil {
+		t.Fatalf("count hot rows after rewrite: %v", err)
+	}
+	if hotAfter != hotBefore {
+		t.Errorf("hot change_log rows %d -> %d across rewrite, want untouched", hotBefore, hotAfter)
+	}
+}
+
 // TestCompactionMixedGenerationEquivalence covers #257: the real compactor
 // over a v1 base + v2 delta (removed old_col, retyped score, added new_col)
 // must produce bit-for-bit identical federated results, a union-shaped merged
@@ -237,17 +298,26 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 		"score": "DOUBLE", "new_col": "INTEGER"})
 	forbidParquetCols(t, "delta (v2)", deltaCols, "old_col")
 
+	// Positive control for the row-level LWW assertion: the update targets'
+	// base copies physically carry old_col, so the merged winner showing NULL
+	// (assertMergedBaseUnion) proves whole-row replacement — a column merge
+	// would leak these values through.
+	basePath := buildParquetS3Path(env, seed.baseKey)
+	requireBaseOldCol(ctx, t, env, basePath, seed.creates[3].RowID, "old-0003")
+	requireBaseOldCol(ctx, t, env, basePath, seed.creates[4].RowID, "old-0004")
+
 	// Query-set discrimination preconditions: 11 visible entities (4 base
-	// survivors + 4 delta creates + 3 hot); score>=15 excludes exactly the
-	// untouched v1 row with score 10; new_col>=0 excludes both untouched v1 rows.
-	queries := evolutionEquivalenceQueries(simple)
+	// survivors + 4 delta creates + 3 hot); score>=20 excludes exactly the
+	// untouched v1 row with score 10 and boundary-includes the one with score
+	// 20; new_col>=0 excludes both untouched v1 rows.
+	queries := buildEvolutionEquivalenceQueries(simple)
 	full := env.AssertQueryMatches(ctx, queries[0])
 	assertUsesDuckDB(t, full)
 	if full != nil && full.Total != 11 {
 		t.Fatalf("full scan total = %d, want 11 (4 base survivors + 4 delta + 3 hot)", full.Total)
 	}
 	if scored := env.AssertQueryMatches(ctx, queries[2]); scored != nil && scored.Total != 10 {
-		t.Fatalf("score >= 15 total = %d, want 10 (only the v1 row with score 10 excluded)", scored.Total)
+		t.Fatalf("score >= 20 total = %d, want 10 (only the v1 row with score 10 excluded)", scored.Total)
 	}
 	if newcol := env.AssertQueryMatches(ctx, queries[3]); newcol != nil && newcol.Total != 9 {
 		t.Fatalf("new_col >= 0 total = %d, want 9 (2 updated + 4 delta + 3 hot; untouched v1 rows are NULL)", newcol.Total)
@@ -277,27 +347,7 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 		t.Fatal("RewriteApplied result carries no NewBaseKey")
 	}
 
-	mAfter := loadSchemaManifest(ctx, t, env, simple)
-	if got := countTier(mAfter, "delta"); got != 0 {
-		t.Errorf("delta entries after rewrite = %d, want 0", got)
-	}
-	if got := countTier(mAfter, "base"); got != 1 {
-		t.Errorf("base entries after rewrite = %d, want exactly the merged file", got)
-	}
-	if mAfter.Version <= mBefore.Version {
-		t.Errorf("manifest version %d -> %d, want monotonic advance", mBefore.Version, mAfter.Version)
-	}
-	assertNoDuplicateManifestEntries(t, mAfter)
-	assertManifestMatchesInventory(ctx, t, env, simple)
-
-	hotAfter, err := env.countUnflushed(ctx)
-	if err != nil {
-		t.Fatalf("count hot rows after rewrite: %v", err)
-	}
-	if hotAfter != hotBefore {
-		t.Errorf("hot change_log rows %d -> %d across rewrite, want untouched", hotBefore, hotAfter)
-	}
-
+	assertMixedGenRewriteSurfaces(ctx, t, env, simple, mBefore, hotBefore)
 	assertMergedBaseUnion(ctx, t, env, result.NewBaseKey, seed)
 	verifyPostCompactionEvolution(ctx, t, env, simple, seed)
 }
@@ -316,12 +366,12 @@ func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, 
 	if err := env.ApplyEvents(ctx, update); err != nil {
 		t.Fatalf("apply post-compaction v2 update: %v", err)
 	}
-	seedGeneration(ctx, t, env, schema, 1, evoV2Profile()) // ordinal 12
+	seedGeneration(ctx, t, env, schema, 1, buildEvoV2Profile()) // ordinal 12
 	// This flush drains the update + new create + the 3 still-hot seed rows
 	// into one fresh v2 delta over the merged base.
 	mustFlush(ctx, t, env)
 
-	queries := evolutionEquivalenceQueries(schema)
+	queries := buildEvolutionEquivalenceQueries(schema)
 	full := env.AssertQueryMatches(ctx, queries[0])
 	assertUsesDuckDB(t, full)
 	if full != nil && full.Total != 12 { // 8 merged + 3 ex-hot + 1 new create
@@ -346,7 +396,7 @@ func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, 
 	// Monotonic healing: the second merge output keeps the union shape.
 	requireParquetCols(t, "second merged base", describeParquetCols(ctx, t, env, second.NewBaseKey),
 		map[string]string{"old_col": "VARCHAR", "new_col": "INTEGER", "score": "DOUBLE"})
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(second.NewBaseKey, "/"))
+	path := buildParquetS3Path(env, second.NewBaseKey)
 	var oldColSurvivors int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
 		"SELECT COUNT(*) FROM read_parquet('%s') WHERE old_col IS NOT NULL", path)).Scan(&oldColSurvivors); err != nil {

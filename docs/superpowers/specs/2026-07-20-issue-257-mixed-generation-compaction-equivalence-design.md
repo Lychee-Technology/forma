@@ -56,17 +56,28 @@ Deliberately NOT `seedEvolutionTiers` (it has no update/delete step); the test
 composes the same primitives:
 
 1. Under v1: create 5 rows (`seedGeneration` with a profile writing
-   `old_col`/integer `score`) → `runInitBase` → **base parquet** (v1 shape).
+   `old_col`/integer `score` on every row) → `runInitBase` → **base parquet**
+   (v1 shape).
 2. `env.EvolveSchema(ctx, v2Dir)`.
-3. Under v2: `UpdateEvent` on 2 v1 base rows (fractional `score`, a `new_col`
+3. **#294 detour** (discovered during implementation): the OLTP update path
+   transforms every existing EAV record under current metadata and
+   hard-errors on the dropped `old_col`'s attrID, so the two update targets
+   first get the documented stale-EAV cleanup migration (direct
+   `DELETE FROM eav_data … attr_id = 3` for those row_ids). Their `old_col`
+   values are already exported in the base parquet — which is exactly what
+   makes the merged winner's `old_col`-NULL assertion prove ROW-level LWW.
+   Delete does no transform, so the tombstoned row needs no cleanup.
+4. Under v2: `UpdateEvent` on 2 v1 base rows (fractional `score`, a `new_col`
    value), `DeleteEvent` on 1 v1 base row, create 4 new rows → single
    `mustFlush` → **one delta parquet** (v2 shape). Dirty ratio 3/5 = 60% > 5%.
-4. Create 3 more v2 rows, left unflushed → **hot tier** (compaction must not
+5. Create 3 more v2 rows, left unflushed → **hot tier** (compaction must not
    touch it; assert via `env.countUnflushed` before/after, as in
    `TestCompactionRewriteEquivalence`).
-5. Shape preconditions (`describeParquetCols` + `requireParquetCols` / `forbidParquetCols`):
+6. Shape preconditions (`describeParquetCols` + `requireParquetCols` / `forbidParquetCols`):
    - base: `old_col` VARCHAR, `score` INTEGER; no `new_col`.
    - delta: `new_col` INTEGER, `score` DOUBLE; no `old_col`.
+   - Row-level LWW positive control: the two update targets' base-parquet
+     rows carry non-NULL `old_col` values (`requireBaseOldCol`).
 
    Without these the equivalence pass proves nothing about cross-generation
    resolution.

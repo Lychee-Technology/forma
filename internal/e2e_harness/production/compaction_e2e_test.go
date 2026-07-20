@@ -25,7 +25,7 @@ func compactionEquivalenceQueries(schema SchemaRef) []Query {
 // literal before/after identity plus oracle equality on both sides (#188
 // success criterion: bit-for-bit identical federated results). The query set
 // must fit the schema's attributes (compactionEquivalenceQueries for
-// e2e_wide, evolutionEquivalenceQueries for the #257 evolution fixture).
+// e2e_wide, buildEvolutionEquivalenceQueries for the #257 evolution fixture).
 // Returns the result.
 func assertCompactionEquivalence(
 	ctx context.Context,
