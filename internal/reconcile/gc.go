@@ -10,9 +10,11 @@ import (
 )
 
 // gcSchema deletes provable garbage — merged-base and _tmp orphans (#188
-// rewrite leftovers) plus delta orphans the repair guard classified as
-// leftovers. Init-shaped base orphans never reach here (see
-// reconcileSchema), and delta orphans require the repair analysis first.
+// rewrite leftovers), init-shaped base orphans (#290: cdc-init holds the same
+// per-schema advisory lock, so under it an init-shaped orphan is provably not
+// from an in-flight init), plus delta orphans the repair guard classified as
+// leftovers. Delta orphans require the repair analysis first (see
+// reconcileSchema).
 //
 // Deletion implements the #188 follow-up's "unlisted longer than the grace
 // period" contract with a persisted sighting state: the first run that
@@ -62,7 +64,7 @@ func (r *Reconciler) gcSchema(ctx context.Context, schemaID int16, candidates []
 			next[obj.Key] = firstSeen
 			continue
 		}
-		r.Logger.Info("deleted orphaned compaction leftover",
+		r.Logger.Info("deleted orphaned object past the grace period",
 			zap.Int16("schema_id", schemaID), zap.String("key", obj.Key))
 		deleted = append(deleted, obj.Key)
 	}

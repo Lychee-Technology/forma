@@ -11,7 +11,7 @@ import (
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
-func TestGC_SkipsInitShapedBaseOrphans(t *testing.T) {
+func TestGC_CollectsInitShapedBaseOrphans(t *testing.T) {
 	old := testClock().Add(-24 * time.Hour)
 	initShaped := "data/7/" + uuidA + "_" + uuidB + ".parquet"
 	merged := "data/7/base-" + uuidB + ".parquet"
@@ -28,12 +28,14 @@ func TestGC_SkipsInitShapedBaseOrphans(t *testing.T) {
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
-	// An in-flight cdc-init promotes {min}_{max} base files long before it
-	// publishes the manifest and holds no advisory lock — GC must never
-	// touch that shape, no matter how old or how long unlisted.
-	require.Equal(t, []string{merged}, deleter.deleted)
+	// Since #290 cdc-init holds the same per-schema advisory lock, so under
+	// this lock an init-shaped {min}_{max} base orphan is provably not from
+	// an in-flight init — it is either a failed manifest publish or a file
+	// superseded by a later init run, and joins the two-phase --gc sweep.
+	require.ElementsMatch(t, []string{initShaped, merged}, deleter.deleted)
+	require.ElementsMatch(t, []string{initShaped, merged}, report.Schemas[0].Deleted)
 	require.ElementsMatch(t, []string{initShaped, merged}, report.Schemas[0].BaseOrphans)
-	require.True(t, report.HasResidualDiscrepancies(), "undeletable init-shaped orphan stays residual")
+	require.False(t, report.HasResidualDiscrepancies())
 }
 
 func TestGC_ZeroGraceRefusesDeletion(t *testing.T) {

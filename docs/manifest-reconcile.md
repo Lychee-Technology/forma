@@ -25,7 +25,7 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 |------|------|------|------|
 | delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
 | merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
-| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | 只报告，**永不自动删除**：in-flight cdc-init 先落对象、跑完才发布 manifest，且不持 advisory lock（自动处置需 init 先持锁，见 follow-up） |
+| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件（`--repair` 自动重建留 follow-up） |
 | `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
 
 形态匹配是严格的：`base-` 后缀与 `{min}_{max}` 两段都必须是合法 UUID，否则归
@@ -107,12 +107,12 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
 - **`--data-prefix` 必须与 flusher/compactor 的数据前缀一致**（cdc-flush 的
   `--s3-prefix`、compactor 的 `--data-prefix`）。前缀不一致时列举落空，所有 manifest
   条目会被误报为 unverifiable/dangling、所有对象被误报为孤儿。
-- 工具需要 Postgres：逐 schema 取与 flusher 同款 advisory lock
+- 工具需要 Postgres：逐 schema 取与 flusher/cdc-init 同款 advisory lock
   （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上），消除与 flusher 的
-  list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。compactor 与 cdc-init 不持
-  这把锁，故 manifest 写入另有 ETag 条件写保护（不存在的 manifest 用 If-None-Match
-  条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认，init 形态对象
-  排除在 GC 之外。
+  list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。#290 起 cdc-init 也持这把锁，
+  故此锁下的 init 形态孤儿必非 in-flight init，纳入 `--gc` 候选。compactor 仍不持这把锁，
+  故 manifest 写入另有 ETag 条件写保护（不存在的 manifest 用 If-None-Match
+  条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认。
 - `--schema-id` 指向未注册 schema 时直接报错退出 1（而不是空跑报「一致」）。
 - `--gc-grace` 必须为正（默认 15m）。
 - `--data-prefix` 允许为空（对象 key 形如 `/7/{uuid}.parquet`，与 cdc path builder
@@ -123,7 +123,8 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
 
 ## 已知范围限制（follow-up）
 
-cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）没有自动恢复路
-径：init 形态对象既不补录也不删除，因为 in-flight init 与「发布失败的 init」从对象
-层面不可区分——init 不持 schema advisory lock。安全的自动处置需要 init 先持锁，见
-follow-up issue。
+cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）留下的 init 形态
+孤儿自 #290 起可由 `--gc` 两阶段删除（cdc-init 与 reconcile 持同一把 per-schema
+advisory lock，故此锁下的 init 形态孤儿必非 in-flight init）。删除后重跑 cdc-init 即
+可从 entity_main 重新导出；把孤儿直接自动补录进 manifest（`--repair` 提升 init 形态）
+仍留 follow-up issue——部分导出误提升风险尚未有守卫。
