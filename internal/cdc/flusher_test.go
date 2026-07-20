@@ -306,6 +306,11 @@ func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
 		logger: zap.NewNop(),
 		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
 			lockAttempts++
+			// Intentionally returns a non-nil unlock alongside locked=false,
+			// violating the "unlock non-nil iff locked" contract on purpose:
+			// the require.Zero(unlockCalls) below proves the skip path never
+			// invokes unlock. Do NOT "fix" this to a nil unlock — that would
+			// hollow the assertion (a nil call would panic instead of counting).
 			return false, func() { unlockCalls++ }, nil
 		},
 	}
