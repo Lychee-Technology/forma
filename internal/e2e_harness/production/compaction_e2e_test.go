@@ -20,21 +20,24 @@ func compactionEquivalenceQueries(schema SchemaRef) []Query {
 	}
 }
 
-// assertCompactionEquivalence snapshots the query set, runs one compaction
-// pass via RunCompactionWith, re-snapshots, and asserts the literal
-// before/after identity plus oracle equality on both sides (#188 success
-// criterion: bit-for-bit identical federated results). Returns the result.
+// assertCompactionEquivalence snapshots the caller-supplied query set, runs
+// one compaction pass via RunCompactionWith, re-snapshots, and asserts the
+// literal before/after identity plus oracle equality on both sides (#188
+// success criterion: bit-for-bit identical federated results). The query set
+// must fit the schema's attributes (compactionEquivalenceQueries for
+// e2e_wide, evolutionEquivalenceQueries for the #257 evolution fixture).
+// Returns the result.
 func assertCompactionEquivalence(
 	ctx context.Context,
 	t *testing.T,
 	env *Env,
 	schema SchemaRef,
+	queries []Query,
 	ov CompactionOverrides,
 	label string,
 ) compaction.CompactionResult {
 	t.Helper()
 
-	queries := compactionEquivalenceQueries(schema)
 	before := make([]*resultSnapshot, len(queries))
 	for i, q := range queries {
 		env.AssertQueryMatches(ctx, q) // oracle equality pre-compaction
@@ -75,7 +78,8 @@ func TestCompactionNoopPaths(t *testing.T) {
 		}
 
 		state := captureState(t, ctx, env, wide)
-		result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "noop-no-deltas")
+		result := assertCompactionEquivalence(ctx, t, env, wide,
+			compactionEquivalenceQueries(wide), CompactionOverrides{}, "noop-no-deltas")
 		if result.Outcome != compaction.Noop {
 			t.Errorf("outcome = %s, want %s", result.Outcome, compaction.Noop)
 		}
@@ -100,7 +104,8 @@ func TestCompactionNoopPaths(t *testing.T) {
 		assertDeltaSizesPopulated(t, loadSchemaManifest(ctx, t, env, wide))
 
 		state := captureState(t, ctx, env, wide)
-		result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "low-dirty-ratio")
+		result := assertCompactionEquivalence(ctx, t, env, wide,
+			compactionEquivalenceQueries(wide), CompactionOverrides{}, "low-dirty-ratio")
 		if result.Outcome != compaction.Noop {
 			t.Errorf("outcome = %s, want %s (ratio below threshold must skip)", result.Outcome, compaction.Noop)
 		}
@@ -150,7 +155,7 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 	invBefore := snapshotS3Inventory(t, ctx, env)
 
 	result := assertCompactionEquivalence(ctx, t, env, wide,
-		CompactionOverrides{TargetBaseSizeBytes: 1}, "promotion")
+		compactionEquivalenceQueries(wide), CompactionOverrides{TargetBaseSizeBytes: 1}, "promotion")
 	if result.Outcome != compaction.PromotionApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.PromotionApplied)
 	}

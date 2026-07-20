@@ -142,7 +142,8 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 	mBefore := loadSchemaManifest(ctx, t, env, wide)
 	mergedFiles := len(mBefore.Files)
 
-	result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "rewrite")
+	result := assertCompactionEquivalence(ctx, t, env, wide,
+		compactionEquivalenceQueries(wide), CompactionOverrides{}, "rewrite")
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
@@ -198,7 +199,8 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 
 	// Idempotency: rewriting the rewrite output must be a Noop.
 	state := captureState(t, ctx, env, wide)
-	second := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "rewrite-idempotency")
+	second := assertCompactionEquivalence(ctx, t, env, wide,
+		compactionEquivalenceQueries(wide), CompactionOverrides{}, "rewrite-idempotency")
 	if second.Outcome != compaction.Noop {
 		t.Errorf("second pass outcome = %s, want %s (no deltas remain)", second.Outcome, compaction.Noop)
 	}
@@ -233,7 +235,8 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	}
 	mustFlush(ctx, t, env) // delta #2: v2 of row 0
 
-	result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "multi-version")
+	result := assertCompactionEquivalence(ctx, t, env, wide,
+		compactionEquivalenceQueries(wide), CompactionOverrides{}, "multi-version")
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
@@ -273,7 +276,8 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 	}
 	mustFlush(ctx, t, env)
 
-	result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "all-tombstones")
+	result := assertCompactionEquivalence(ctx, t, env, wide,
+		compactionEquivalenceQueries(wide), CompactionOverrides{}, "all-tombstones")
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
@@ -321,7 +325,8 @@ func TestCompactionFullLifecycleEquivalence(t *testing.T) {
 	flush := mustFlush(ctx, t, env)
 	assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush), del)
 
-	result := assertCompactionEquivalence(ctx, t, env, wide, CompactionOverrides{}, "full-lifecycle")
+	result := assertCompactionEquivalence(ctx, t, env, wide,
+		compactionEquivalenceQueries(wide), CompactionOverrides{}, "full-lifecycle")
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
