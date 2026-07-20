@@ -60,6 +60,9 @@ func TestBuildAttributeOrdersLegacyUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAttributeOrders legacy: %v", err)
 	}
+	if len(orders) != 2 {
+		t.Fatalf("legacy orders length = %d, want 2", len(orders))
+	}
 	for i, o := range orders {
 		if o.SortOrder != forma.SortOrderDesc {
 			t.Fatalf("legacy orders[%d].SortOrder = %s, want shared desc", i, o.SortOrder)
