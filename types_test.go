@@ -440,6 +440,40 @@ func TestQueryRequest_MarshalJSON(t *testing.T) {
 	}
 }
 
+func TestQueryRequestSortFieldJSONRoundTrip(t *testing.T) {
+	payload := []byte(`{
+		"schema_name": "orders",
+		"sort": [
+			{"attribute": "status"},
+			{"attribute": "created_at", "sort_order": "desc"}
+		],
+		"condition": {"a": "status", "v": "equals:hot"}
+	}`)
+
+	var req QueryRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("unmarshal QueryRequest with sort: %v", err)
+	}
+	if len(req.Sort) != 2 {
+		t.Fatalf("Sort length = %d, want 2", len(req.Sort))
+	}
+	assert.Equal(t, "status", req.Sort[0].Attribute)
+	assert.Equal(t, SortOrder(""), req.Sort[0].SortOrder) // direction omitted stays empty at the type layer
+	assert.Equal(t, "created_at", req.Sort[1].Attribute)
+	assert.Equal(t, SortOrderDesc, req.Sort[1].SortOrder)
+
+	// Round-trip: the custom MarshalJSON (alias-based) must carry the field back out.
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal QueryRequest with sort: %v", err)
+	}
+	var decoded QueryRequest
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("re-unmarshal QueryRequest: %v", err)
+	}
+	assert.Equal(t, req.Sort, decoded.Sort)
+}
+
 // =============================================================================
 // CrossSchemaRequest JSON Tests
 // =============================================================================

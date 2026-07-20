@@ -141,9 +141,12 @@ type QueryRequest struct {
 	Condition    Condition              `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
 	SortBy       []string               `json:"sort_by,omitempty"`
 	SortOrder    SortOrder              `json:"sort_order,omitempty"`
-	RowID        *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
-	Attrs        []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
-	Federated    *FederatedQueryRequest `json:"federated,omitempty"`
+	// Sort carries per-key sort directions (#240). Mutually exclusive with
+	// SortBy/SortOrder; an entry's empty SortOrder defaults to asc.
+	Sort      []OrderBy              `json:"sort,omitempty"`
+	RowID     *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
+	Attrs     []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
+	Federated *FederatedQueryRequest `json:"federated,omitempty"`
 }
 
 // FederatedQueryRequest carries optional hints for routing QueryRequest through the
