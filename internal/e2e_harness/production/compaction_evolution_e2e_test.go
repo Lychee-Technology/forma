@@ -299,5 +299,60 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 	}
 
 	assertMergedBaseUnion(ctx, t, env, result.NewBaseKey, seed)
-	// verifyPostCompactionEvolution — Task 3
+	verifyPostCompactionEvolution(ctx, t, env, simple, seed)
+}
+
+// verifyPostCompactionEvolution pins #257 criterion (c): after the mixed-
+// generation rewrite, a fresh v2 flush layers a delta on the union-shaped
+// merged base and queries still resolve; a second compaction pass folds the
+// union-typed base again (monotonic healing), keeping the widened types and
+// the v1 legacy column data. The update targets a v2-created row (NOT a v1
+// survivor) so both untouched v1 rows keep their old_col values through the
+// second merge — the legacy column's DATA must survive repeated folds, not
+// just the column.
+func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, seed *evolutionSeed) {
+	t.Helper()
+	update := UpdateEvent(schema, seed.v2Creates[0].RowID, map[string]any{"score": 3000.5, "new_col": float64(600)})
+	if err := env.ApplyEvents(ctx, update); err != nil {
+		t.Fatalf("apply post-compaction v2 update: %v", err)
+	}
+	seedGeneration(ctx, t, env, schema, 1, evoV2Profile()) // ordinal 12
+	// This flush drains the update + new create + the 3 still-hot seed rows
+	// into one fresh v2 delta over the merged base.
+	mustFlush(ctx, t, env)
+
+	queries := evolutionEquivalenceQueries(schema)
+	full := env.AssertQueryMatches(ctx, queries[0])
+	assertUsesDuckDB(t, full)
+	if full != nil && full.Total != 12 { // 8 merged + 3 ex-hot + 1 new create
+		t.Fatalf("post-compaction full scan total = %d, want 12", full.Total)
+	}
+	for _, q := range queries[1:] {
+		env.AssertQueryMatches(ctx, q)
+	}
+
+	second := assertCompactionEquivalence(ctx, t, env, schema, queries,
+		CompactionOverrides{}, "second-merge")
+	if second.Outcome != compaction.RewriteApplied {
+		t.Fatalf("second pass outcome = %s (dirty ratio %.2f), want %s (union-typed base must be re-mergeable)", second.Outcome, second.DirtyRatio, compaction.RewriteApplied)
+	}
+	if second.RowsIn != 13 { // 8 merged base + delta(1 update + 1 create + 3 ex-hot)
+		t.Errorf("second-merge RowsIn = %d, want 13", second.RowsIn)
+	}
+	if second.RowsOut != 12 {
+		t.Errorf("second-merge RowsOut = %d, want 12", second.RowsOut)
+	}
+
+	// Monotonic healing: the second merge output keeps the union shape.
+	requireParquetCols(t, "second merged base", describeParquetCols(ctx, t, env, second.NewBaseKey),
+		map[string]string{"old_col": "VARCHAR", "new_col": "INTEGER", "score": "DOUBLE"})
+	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(second.NewBaseKey, "/"))
+	var oldColSurvivors int
+	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM read_parquet('%s') WHERE old_col IS NOT NULL", path)).Scan(&oldColSurvivors); err != nil {
+		t.Fatalf("scan second merged base %s: %v", second.NewBaseKey, err)
+	}
+	if oldColSurvivors != 2 {
+		t.Errorf("second merged base has %d rows with old_col data, want 2 (untouched v1 rows must survive repeated folds)", oldColSurvivors)
+	}
 }
