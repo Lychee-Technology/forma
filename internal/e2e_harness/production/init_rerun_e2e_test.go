@@ -41,7 +41,8 @@ func TestInitRerunIdempotency(t *testing.T) {
 		t.Fatalf("second init: %v", err)
 	}
 	// No duplicate objects: identical batching -> identical keys -> overwrite.
-	// (_tmp keys are copy-staging garbage, not duplicates, if one survives.)
+	// (_tmp keys are copy-staging garbage, not duplicates, if one survives —
+	// swallowed-delete residue is reclaimed by manifest-reconcile --gc, #226.)
 	for _, k := range second.NewObjects {
 		if !strings.Contains(k, "/_tmp/") {
 			t.Errorf("rerun created new object %s, want overwrite of existing keys only", k)

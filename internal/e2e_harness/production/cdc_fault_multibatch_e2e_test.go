@@ -13,7 +13,9 @@ import (
 // manifest entry) and must NOT be re-exported by the retry; only the
 // remaining 6 dirty rows are. After retry: 3 final objects, 3 manifest
 // entries, zero physically duplicated row_ids, oracle-identical query (#179
-// multi-batch scenario).
+// multi-batch scenario). No tmp residue at any point: chunk 1's tmp is
+// deleted on the success path and chunk 2's by #226's in-band cleanup after
+// the copy failure.
 func TestFlushFaultMultiBatchMiddleChunk(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -33,9 +35,12 @@ func TestFlushFaultMultiBatchMiddleChunk(t *testing.T) {
 	if faulty.Injected() == 0 {
 		t.Fatal("fault never fired")
 	}
-	finals, _ := splitKeys(report.NewObjects)
+	finals, tmps := splitKeys(report.NewObjects)
 	if len(finals) != 1 {
 		t.Fatalf("exactly chunk 1 must have landed, got finals %v", finals)
+	}
+	if len(tmps) != 0 {
+		t.Errorf("no tmp may survive: chunk-1 post-copy delete + chunk-2 in-band cleanup (#226), got %v", tmps)
 	}
 	if report.UnflushedAfter != 6 {
 		t.Errorf("chunks 2-3 must stay dirty, unflushed = %d, want 6", report.UnflushedAfter)

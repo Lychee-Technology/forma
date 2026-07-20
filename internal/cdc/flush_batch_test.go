@@ -177,10 +177,11 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 	require.NoError(t, err)
 
 	store := newInMemoryManifestStore()
+	s3Client := &recordingS3Client{}
 	executor := &flushBatchExecutor{
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
-		s3Client:      &objectOnlyS3Client{},
+		s3Client:      s3Client,
 		cfg:           CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
 		tableName:     "change_log",
 		schemaID:      7,
@@ -196,6 +197,10 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "duck export snapshot")
+
+	// #226: DuckDB may have written the tmp object before failing and the
+	// retry uses a fresh UUID, so the batch must best-effort delete its tmp.
+	require.Equal(t, []string{"cdc/7/_tmp/file.parquet"}, s3Client.deletedKeys)
 
 	var flushedAt int64
 	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)

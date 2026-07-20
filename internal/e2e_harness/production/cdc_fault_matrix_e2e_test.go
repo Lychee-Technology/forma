@@ -4,7 +4,12 @@ package production
 
 import (
 	"context"
+	"slices"
 	"testing"
+	"time"
+
+	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
 // TestFlushFaultDirtySelection breaks step 1 (dirty ID selection) by
@@ -79,13 +84,11 @@ func assertRetryConverges(ctx context.Context, t *testing.T, env *Env, schema Sc
 }
 
 // TestFlushFaultCopyObject breaks step 3 (S3 CopyObject tmp->final). The
-// export succeeded, so the tmp object exists, but no final object, no
-// flushed_at update, and no manifest entry may appear. Today the failed
-// attempt's tmp object is orphaned permanently (retry uses fresh UUIDs and
-// CopyTmpToFinal only deletes its own tmp key) — cleanup is tracked in #226;
-// until it lands this test pins the current behavior. Correctness holds
-// regardless: the production glob's `*` does not cross `/` and skips _tmp/
-// (production/query.go:52-56), and orphans never enter the manifest.
+// export succeeded, so the tmp object exists at failure time, but no final
+// object, no flushed_at update, and no manifest entry may appear. A retry
+// uses fresh UUIDs, so the failed attempt's tmp would be unreachable
+// garbage — #226 makes CopyTmpToFinal best-effort delete its own tmp before
+// surfacing the copy error, so no tmp survives the failed attempt either.
 func TestFlushFaultCopyObject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -105,25 +108,27 @@ func TestFlushFaultCopyObject(t *testing.T) {
 	if len(finals) != 0 {
 		t.Errorf("no final object may exist after CopyObject failure, got %v", finals)
 	}
-	if len(tmps) != 1 {
-		t.Errorf("expected exactly the orphaned tmp object, got %v", tmps)
+	if len(tmps) != 0 {
+		t.Errorf("in-band cleanup must remove the tmp after copy failure (#226), got %v", tmps)
 	}
 	if report.UnflushedAfter != 3 {
 		t.Errorf("rows must stay dirty, unflushed = %d, want 3", report.UnflushedAfter)
 	}
 	assertManifestDeltaPaths(t, report.Manifests, simple, nil)
 
-	// Clean retry converges; the orphaned tmp object stays behind (until
-	// #226 adds cleanup) but is invisible to both the manifest and the
-	// federated glob.
+	// Clean retry converges from a bucket free of the failed attempt's tmp.
 	assertRetryConverges(ctx, t, env, simple, 3)
 }
 
 // TestFlushFaultTempCleanup breaks step 4 (DeleteObject of the tmp object).
-// CopyTmpToFinal swallows delete failures by design (helpers.go:165-167), so
-// the flush must SUCCEED: rows flushed, manifest updated, query correct —
-// with an orphaned tmp object left behind that must not affect anything.
-// Removing such orphans is #226's scope; this test pins today's behavior.
+// CopyTmpToFinal swallows delete failures by design, so the flush must
+// SUCCEED: rows flushed, manifest updated, query correct — with an orphaned
+// tmp object left behind that must not affect anything. This swallowed-delete
+// residue is the one leak path #226 intentionally leaves to the GC backstop:
+// the test closes the loop by driving manifest-reconcile --gc's two-phase
+// sighting contract (#188/#203) and asserting the real leaked object is
+// reclaimed past the grace window while the final object and manifest
+// survive untouched.
 func TestFlushFaultTempCleanup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -157,4 +162,58 @@ func TestFlushFaultTempCleanup(t *testing.T) {
 	if noop.UnflushedBefore != 0 || len(noop.NewObjects) != 0 {
 		t.Errorf("no-op flush moved state: unflushed %d, new %v", noop.UnflushedBefore, noop.NewObjects)
 	}
+
+	// GC backstop, phase 1 (within grace): the run only records the leaked
+	// tmp's first-unlisted sighting; nothing may be deleted yet.
+	leakedTmp := tmps[0]
+	gcOpts := reconcile.Options{GC: true, GCGrace: 15 * time.Minute}
+	{
+		r, cleanup := newReconcileHarness(t, ctx, env, simple, gcOpts, false)
+		defer cleanup()
+		gcReport, err := r.Run(ctx)
+		if err != nil {
+			t.Fatalf("gc run within grace: %v", err)
+		}
+		s := gcReport.Schemas[0]
+		if len(s.Deleted) != 0 {
+			t.Fatalf("gc within grace deleted %v, want nothing", s.Deleted)
+		}
+		if !slices.Contains(s.TmpOrphans, leakedTmp) {
+			t.Fatalf("gc must sight the leaked tmp %s, got tmp orphans %v", leakedTmp, s.TmpOrphans)
+		}
+	}
+
+	// GC backstop, phase 2 (past grace): pretend the run happens an hour
+	// later; both GC clocks (sighting age + object age) expire and the
+	// leaked tmp is reclaimed. The final delta object and the manifest must
+	// survive untouched.
+	{
+		r, cleanup := newReconcileHarness(t, ctx, env, simple, gcOpts, false)
+		defer cleanup()
+		r.Now = func() time.Time { return time.Now().Add(time.Hour) }
+		gcReport, err := r.Run(ctx)
+		if err != nil {
+			t.Fatalf("gc run past grace: %v", err)
+		}
+		s := gcReport.Schemas[0]
+		if len(s.Deleted) != 1 || s.Deleted[0] != leakedTmp {
+			t.Fatalf("gc past grace deleted %v, want exactly the leaked tmp %s", s.Deleted, leakedTmp)
+		}
+	}
+
+	keys, err := env.listS3Keys(ctx)
+	if err != nil {
+		t.Fatalf("list s3 keys after gc: %v", err)
+	}
+	if slices.Contains(keys, leakedTmp) {
+		t.Errorf("leaked tmp %s must be gone after gc", leakedTmp)
+	}
+	for _, final := range finals {
+		if !slices.Contains(keys, final) {
+			t.Errorf("final delta object %s must survive gc", final)
+		}
+	}
+	mAfter, _ := loadManifestWithETag(t, ctx, env, simple)
+	assertManifestDeltaPaths(t, map[int16]*manifest.Manifest{simple.ID: mAfter}, simple, finals)
+	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
 }

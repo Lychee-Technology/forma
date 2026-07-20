@@ -160,7 +160,8 @@ func assertDeltaSizesPopulated(t *testing.T, m *manifest.Manifest) {
 
 // parquetInventory filters an S3 inventory snapshot down to parquet objects,
 // excluding the manifest JSON (which legitimately changes when compaction
-// commits) and _tmp staging keys (#226 tolerance).
+// commits) and _tmp staging keys (swallowed-delete residue is possible by
+// design and reclaimed by manifest-reconcile --gc, #226).
 func parquetInventory(inv map[string]s3ObjectStat) map[string]s3ObjectStat {
 	out := make(map[string]s3ObjectStat, len(inv))
 	for key, stat := range inv {

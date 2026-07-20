@@ -160,6 +160,12 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 		CopySource: &src,
 		Key:        &finalKey,
 	}); err != nil {
+		// #226: the retry uses fresh UUIDv7 keys, so this tmp would be
+		// unreachable garbage — best-effort delete before surfacing the copy
+		// error. A failed cleanup is reclaimed by manifest-reconcile --gc.
+		if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &tmpKey}); delErr != nil {
+			logger.Sugar().Warnw("failed to delete tmp object after copy failure", "tmp_key", tmpKey, "err", delErr)
+		}
 		return fmt.Errorf("copy tmp->final: %w", err)
 	}
 	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &tmpKey}); err != nil {
