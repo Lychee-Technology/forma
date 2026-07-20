@@ -26,25 +26,6 @@ func redactConnStr(s string) string {
 	return reConnPassword.ReplaceAllString(s, "${1}***REDACTED***")
 }
 
-// AcquireSchemaLock tries to grab an advisory lock for the schema to avoid
-// concurrent flush/compaction on the same schema.
-func AcquireSchemaLock(ctx context.Context, db *sql.DB, schemaID int16) (bool, error) {
-	row := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1, $2)", int32(schemaID), int32(schemaID))
-	var locked bool
-	if err := row.Scan(&locked); err != nil {
-		return false, fmt.Errorf("acquire lock: %w", err)
-	}
-	return locked, nil
-}
-
-// ReleaseSchemaLock releases the advisory lock for the schema.
-func ReleaseSchemaLock(ctx context.Context, db *sql.DB, schemaID int16) error {
-	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1, $2)", int32(schemaID), int32(schemaID)); err != nil {
-		return fmt.Errorf("release lock: %w", err)
-	}
-	return nil
-}
-
 // GetChangeLogStats returns count and oldest changed_at for unflushed rows.
 func GetChangeLogStats(ctx context.Context, db *sql.DB, table string, schemaID int16) (int64, int64, error) {
 	if table == "" {

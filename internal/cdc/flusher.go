@@ -248,8 +248,7 @@ type schemaFlushContext struct {
 	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
-	acquireLock      func(context.Context, *sql.DB, int16) (bool, error)
-	releaseLock      func(context.Context, *sql.DB, int16) error
+	tryLock          func(context.Context, *sql.DB, int16) (bool, func(), error)
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	processSchemaFn  func(context.Context, int16) error
@@ -295,17 +294,11 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) error {
 	c.logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
-	acquireLock := c.acquireLock
-	if acquireLock == nil {
-		acquireLock = AcquireSchemaLock
+	tryLock := c.tryLock
+	if tryLock == nil {
+		tryLock = TrySchemaLock
 	}
-	releaseLock := c.releaseLock
-	if releaseLock == nil {
-		releaseLock = ReleaseSchemaLock
-	}
-
-	// Try advisory lock
-	locked, err := acquireLock(ctx, c.db, schemaID)
+	locked, unlock, err := tryLock(ctx, c.db, schemaID)
 	if err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
@@ -313,7 +306,7 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 		c.logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return nil
 	}
-	defer func() { _ = releaseLock(ctx, c.db, schemaID) }()
+	defer unlock()
 
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
