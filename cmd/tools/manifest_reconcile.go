@@ -257,25 +257,18 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 // buildToolSQLDB opens a database/sql handle (pgx driver) for tools that
 // need session-scoped Postgres features — the reconcile advisory lock pins
 // a single connection, which pgxpool does not expose. Values are quoted so
-// passwords with spaces or quotes survive DSN parsing (the sibling copies
-// in internal/cdc/flusher.go and init.go still interpolate raw — follow-up:
-// extract one shared DSN builder).
 func buildToolSQLDB(pg postgresFlags) (*sql.DB, error) {
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		quotePGConnValue(pg.host), pg.port, quotePGConnValue(pg.user),
-		quotePGConnValue(pg.resolvedPassword("PGPASSWORD")),
-		quotePGConnValue(pg.database), quotePGConnValue(pg.sslMode))
+	connStr := cdc.BuildPGDSN(cdc.PGDSNParams{
+		Host:     pg.host,
+		Port:     pg.port,
+		User:     pg.user,
+		Password: pg.resolvedPassword("PGPASSWORD"),
+		DB:       pg.database,
+		SSLMode:  pg.sslMode,
+	})
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("open pg: %w", err)
 	}
 	return db, nil
-}
-
-// quotePGConnValue quotes one keyword/value DSN value per libpq rules:
-// wrapped in single quotes with backslash and single-quote escaped.
-func quotePGConnValue(v string) string {
-	v = strings.ReplaceAll(v, `\`, `\\`)
-	v = strings.ReplaceAll(v, `'`, `\'`)
-	return "'" + v + "'"
 }

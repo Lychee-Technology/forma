@@ -203,8 +203,7 @@ func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, 
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
-	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
+	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: pgPassword, DB: cfg.PGDB, SSLMode: sslMode})
 
 	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
@@ -366,8 +365,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
-	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.pgPassword, c.cfg.PGDB, sslMode)
+	pgConnForDuck := BuildPGDSN(PGDSNParams{Host: c.cfg.PGHost, Port: c.cfg.PGPort, User: c.cfg.PGUser, Password: c.pgPassword, DB: c.cfg.PGDB, SSLMode: sslMode})
 	pgConnForDuckLoggable := fmt.Sprintf("host=%s port=%d user=%s password=***REDACTED*** dbname=%s sslmode=%s",
 		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.cfg.PGDB, sslMode)
 	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuckLoggable)

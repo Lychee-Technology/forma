@@ -85,8 +85,7 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	if sslMode == "" {
 		sslMode = "require"
 	}
-	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, sslMode)
+	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: cfg.PGPassword, DB: cfg.PGDB, SSLMode: sslMode})
 
 	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {

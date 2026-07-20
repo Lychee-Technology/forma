@@ -86,21 +86,6 @@ func TestReconcileExitError_ToolFailureBeatsDiscrepancy(t *testing.T) {
 	}
 }
 
-func TestQuotePGConnValue(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"plain", "'plain'"},
-		{"pa ss", "'pa ss'"},
-		{"it's", `'it\'s'`},
-		{`back\slash`, `'back\\slash'`},
-		{"", "''"},
-	}
-	for _, tt := range tests {
-		if got := quotePGConnValue(tt.in); got != tt.want {
-			t.Fatalf("quotePGConnValue(%q) = %s, want %s", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestParseReconcileFlags_Defaults(t *testing.T) {
 	opts, err := parseReconcileFlags([]string{
 		"--s3-bucket", "bkt",
