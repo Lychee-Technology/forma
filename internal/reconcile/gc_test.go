@@ -30,6 +30,7 @@ func TestGC_DeletesBaseAndTmpPastGrace(t *testing.T) {
 	}}
 	deleter := &fakeDeleter{}
 	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	seedGCSighting(t, r, 7, old, baseKey, tmpKey)
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
@@ -41,14 +42,18 @@ func TestGC_DeletesBaseAndTmpPastGrace(t *testing.T) {
 func TestGC_GraceBoundaryNotDeleted(t *testing.T) {
 	atBoundary := testClock().Add(-15 * time.Minute) // exactly grace old: survives
 	within := testClock().Add(-14 * time.Minute)
+	baseKey := "data/7/base-" + uuidA + ".parquet"
+	tmpKey := "data/7/_tmp/" + uuidB + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
 		"data/7/": {
-			{Key: "data/7/base-" + uuidA + ".parquet", LastModified: atBoundary},
-			{Key: "data/7/_tmp/" + uuidB + ".parquet", LastModified: within},
+			{Key: baseKey, LastModified: atBoundary},
+			{Key: tmpKey, LastModified: within},
 		},
 	}}
 	deleter := &fakeDeleter{}
 	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	// Sightings are old enough — the object-age gate alone must hold.
+	seedGCSighting(t, r, 7, testClock().Add(-time.Hour), baseKey, tmpKey)
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
@@ -102,6 +107,7 @@ func TestGC_DeleteFailureBestEffortContinues(t *testing.T) {
 	}}
 	deleter := &fakeDeleter{errFor: map[string]error{failKey: fmt.Errorf("access denied")}}
 	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	seedGCSighting(t, r, 7, old, failKey, okKey)
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)

@@ -21,10 +21,24 @@ func newTestReconciler(lister *fakeLister, manifests *fakeManifests, deleter *fa
 		Manifests:  manifests,
 		Locker:     locker,
 		Schemas:    enum,
+		GCStates:   newFakeGCState(),
 		Now:        testClock,
 		Bucket:     "bkt",
 		DataPrefix: "data",
 		Logger:     zap.NewNop(),
+	}
+}
+
+// seedGCSighting marks keys as already observed unlisted at the given time,
+// so single-run GC tests can exercise the deletion path directly.
+func seedGCSighting(t *testing.T, r *Reconciler, schemaID int16, at time.Time, keys ...string) {
+	t.Helper()
+	fake, ok := r.GCStates.(*fakeGCState)
+	if !ok {
+		t.Fatalf("reconciler GCStates is %T, want *fakeGCState", r.GCStates)
+	}
+	for _, key := range keys {
+		fake.seed(schemaID, key, at)
 	}
 }
 

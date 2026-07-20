@@ -55,22 +55,34 @@ func classifyObjectKey(prefix, key string) (OrphanClass, bool) {
 		}
 		return ClassUnknown, true
 	}
+	// Shapes are matched strictly — the class drives repair/GC actions, so
+	// anything that merely resembles a known shape must stay Unknown
+	// (report-only) rather than become deletable.
 	stem := strings.TrimSuffix(rel, ".parquet")
-	switch {
-	case strings.HasPrefix(stem, "base-"):
-		return ClassBaseMerged, true // cdc.BuildMergedBasePath: base-{uuid}.parquet
-	case strings.Contains(stem, "_"):
-		return ClassBaseInit, true // cdc.BuildBasePath: {minRowID}_{maxRowID}.parquet
-	case uuid.Validate(stem) == nil:
-		return ClassDelta, true // cdc.BuildDeltaPath: {uuid}.parquet
-	default:
+	if rest, found := strings.CutPrefix(stem, "base-"); found {
+		if uuid.Validate(rest) == nil {
+			return ClassBaseMerged, true // cdc.BuildMergedBasePath: base-{uuid}.parquet
+		}
 		return ClassUnknown, true
 	}
+	if minID, maxID, found := strings.Cut(stem, "_"); found {
+		if uuid.Validate(minID) == nil && uuid.Validate(maxID) == nil {
+			return ClassBaseInit, true // cdc.BuildBasePath: {minRowID}_{maxRowID}.parquet
+		}
+		return ClassUnknown, true
+	}
+	if uuid.Validate(stem) == nil {
+		return ClassDelta, true // cdc.BuildDeltaPath: {uuid}.parquet
+	}
+	return ClassUnknown, true
 }
 
 // normalizeKey reduces a manifest FileEntry.Path to a bucket-relative key.
 // Manifest paths appear both bucket-relative and as absolute s3:// URIs
-// (manifest/query_source.go tolerates either). ok is false for paths whose
+// (manifest/query_source.go tolerates either). Relative keys are compared
+// verbatim: with an empty data prefix cdc.Build*Path emits keys with a
+// leading slash, and the manifest stores that literal key, so stripping it
+// would break the match against the S3 listing. ok is false for paths whose
 // existence this bucket's listing cannot prove — foreign-bucket URIs and
 // glob entries — which must surface as unverifiable, never as dangling.
 func normalizeKey(bucket, path string) (string, bool) {
@@ -84,7 +96,7 @@ func normalizeKey(bucket, path string) (string, bool) {
 		}
 		return key, true
 	}
-	return strings.TrimPrefix(path, "/"), true
+	return path, true
 }
 
 // diffResult is one schema's raw two-way diff between listed objects and

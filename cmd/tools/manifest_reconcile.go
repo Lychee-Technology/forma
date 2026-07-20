@@ -131,7 +131,7 @@ var runManifestReconcileFn = runManifestReconcile
 func runManifestReconcile(ctx context.Context, args []string) error {
 	opts, err := parseReconcileFlags(args)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse manifest-reconcile flags: %w", err)
 	}
 	if opts == nil { // help requested
 		return nil
@@ -155,10 +155,13 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	}
 
 	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
+	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
+	resolver := manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate}
 	r := &reconcile.Reconciler{
 		Lister:     objectStore,
 		Deleter:    objectStore,
-		Manifests:  buildReconcileManifestStore(opts, s3Client),
+		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
+		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
 		Locker:     &reconcile.PGAdvisoryLocker{DB: db},
 		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID},
 		Now:        time.Now,
@@ -220,15 +223,6 @@ func reconcileExitError(report reconcile.Report) error {
 		return &discrepancyError{count: residual}
 	}
 	return nil
-}
-
-// buildReconcileManifestStore wires the etag-aware S3 manifest store behind
-// the reconcile LoadOrCreate adapter.
-func buildReconcileManifestStore(opts *reconcileOptions, s3Client manifest.S3Client) *reconcile.ResolverManifestStore {
-	return &reconcile.ResolverManifestStore{
-		Store:    &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket},
-		Resolver: manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate},
-	}
 }
 
 // openReconcileStatsEngine builds the CDC DuckDB exporter the repair path

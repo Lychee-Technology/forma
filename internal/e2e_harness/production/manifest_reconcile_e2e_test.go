@@ -35,13 +35,13 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 	}
 
 	store := &reconcile.S3ObjectStore{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
+	manifestStore := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
+	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
 	r := &reconcile.Reconciler{
-		Lister:  store,
-		Deleter: store,
-		Manifests: &reconcile.ResolverManifestStore{
-			Store:    &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket},
-			Resolver: manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate},
-		},
+		Lister:     store,
+		Deleter:    store,
+		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
+		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
 		Locker:     &reconcile.PGAdvisoryLocker{DB: db},
 		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: env.Tables.SchemaRegistry, SchemaIDFilter: int(schema.ID)},
 		Now:        time.Now,
@@ -121,10 +121,28 @@ func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
 	ctx := context.Background()
 	schema := DefaultSchemaFixtures()[0] // e2e_simple
 
-	// Two flush batches so the manifest stays non-empty after stripping one
-	// entry: an empty manifest sends reads to the legacy glob fallback
-	// (manifest/query_source.go), which would see the orphan and defeat the
-	// visibility oracle.
+	original := seedStrippedDeltaOrphan(t, ctx, env, schema)
+
+	t.Run("report_only_names_diff_and_mutates_nothing", func(t *testing.T) {
+		testReconcileReportOnly(t, ctx, env, schema, original)
+	})
+	t.Run("repair_restores_entry_and_visibility", func(t *testing.T) {
+		testReconcileRepairRestores(t, ctx, env, schema, original)
+	})
+	t.Run("second_repair_run_is_idempotent", func(t *testing.T) {
+		testReconcileRepairIdempotent(t, ctx, env, schema)
+	})
+}
+
+// seedStrippedDeltaOrphan flushes two batches and strips the second flush's
+// delta entry from the manifest — the exact post-state of a #197 manifest
+// append failure (file at its final key, rows marked flushed, manifest
+// without the entry). Two batches keep the manifest non-empty: an empty
+// manifest sends reads to the legacy glob fallback
+// (manifest/query_source.go), which would see the orphan and defeat the
+// visibility oracle. Returns the stripped entry.
+func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) *manifest.FileEntry {
+	t.Helper()
 	seed := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 4})
 	if err := env.ApplyEvents(ctx, seed...); err != nil {
 		t.Fatalf("apply seed events: %v", err)
@@ -142,9 +160,6 @@ func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
 	}
 	mustFlush(ctx, t, env)
 
-	// Capture the second flush's delta entry, then strip it — the exact
-	// post-state of a #197 manifest append failure (file at its final key,
-	// rows marked flushed, manifest without the entry).
 	m, etag := loadManifestWithETag(t, ctx, env, schema)
 	var original *manifest.FileEntry
 	var kept []manifest.FileEntry
@@ -169,144 +184,148 @@ func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
 	if len(stripped.Records) != 4 {
 		t.Fatalf("stripped manifest yields %d records, want 4 (second batch must be invisible)", len(stripped.Records))
 	}
+	return original
+}
 
-	t.Run("report_only_names_diff_and_mutates_nothing", func(t *testing.T) {
-		// Dangling probe: a manifest entry pointing at a key that never
-		// existed. Removed again at the end of this subtest so the ghost
-		// does not break later read-path assertions.
-		ghostKey := fmt.Sprintf("%s/%d/%s.parquet", env.S3Prefix, schema.ID, uuid.Must(uuid.NewV7()).String())
-		if err := env.RegisterParquetInManifest(ctx, schema, ghostKey, "delta"); err != nil {
-			t.Fatalf("register ghost manifest entry: %v", err)
-		}
+func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *manifest.FileEntry) {
+	// Dangling probe: a manifest entry pointing at a key that never
+	// existed. Removed again at the end so the ghost does not break later
+	// read-path assertions.
+	ghostKey := fmt.Sprintf("%s/%d/%s.parquet", env.S3Prefix, schema.ID, uuid.Must(uuid.NewV7()).String())
+	if err := env.RegisterParquetInManifest(ctx, schema, ghostKey, "delta"); err != nil {
+		t.Fatalf("register ghost manifest entry: %v", err)
+	}
 
-		mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
-		r, cleanup := newReconcileHarness(t, ctx, env, schema, reconcile.Options{}, false)
-		defer cleanup()
+	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	r, cleanup := newReconcileHarness(t, ctx, env, schema, reconcile.Options{}, false)
+	defer cleanup()
 
-		report, err := r.Run(ctx)
-		if err != nil {
-			t.Fatalf("reconcile report run: %v", err)
-		}
-		if len(report.Schemas) != 1 {
-			t.Fatalf("expected 1 schema report, got %d", len(report.Schemas))
-		}
-		s := report.Schemas[0]
-		if len(s.DeltaOrphans) != 1 || s.DeltaOrphans[0] != original.Path {
-			t.Fatalf("delta orphans = %v, want [%s]", s.DeltaOrphans, original.Path)
-		}
-		if len(s.Dangling) != 1 || s.Dangling[0] != ghostKey {
-			t.Fatalf("dangling = %v, want [%s]", s.Dangling, ghostKey)
-		}
-		if !report.HasResidualDiscrepancies() {
-			t.Fatal("report run must flag residual discrepancies")
-		}
-		mAfter, etagAfter := loadManifestWithETag(t, ctx, env, schema)
-		if mAfter.Version != mBefore.Version {
-			t.Fatalf("report mode bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
-		}
+	report, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("reconcile report run: %v", err)
+	}
+	if len(report.Schemas) != 1 {
+		t.Fatalf("expected 1 schema report, got %d", len(report.Schemas))
+	}
+	s := report.Schemas[0]
+	if len(s.DeltaOrphans) != 1 || s.DeltaOrphans[0] != original.Path {
+		t.Fatalf("delta orphans = %v, want [%s]", s.DeltaOrphans, original.Path)
+	}
+	if len(s.Dangling) != 1 || s.Dangling[0] != ghostKey {
+		t.Fatalf("dangling = %v, want [%s]", s.Dangling, ghostKey)
+	}
+	if !report.HasResidualDiscrepancies() {
+		t.Fatal("report run must flag residual discrepancies")
+	}
+	mAfter, etagAfter := loadManifestWithETag(t, ctx, env, schema)
+	if mAfter.Version != mBefore.Version {
+		t.Fatalf("report mode bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	}
 
-		// Remove the ghost entry again.
-		var files []manifest.FileEntry
-		for _, f := range mAfter.Files {
-			if f.Path != ghostKey {
-				files = append(files, f)
-			}
+	// Remove the ghost entry again.
+	var files []manifest.FileEntry
+	for _, f := range mAfter.Files {
+		if f.Path != ghostKey {
+			files = append(files, f)
 		}
-		mAfter.Files = files
-		saveManifestWithETag(t, ctx, env, schema, mAfter, etagAfter)
-	})
+	}
+	mAfter.Files = files
+	saveManifestWithETag(t, ctx, env, schema, mAfter, etagAfter)
+}
 
-	t.Run("repair_restores_entry_and_visibility", func(t *testing.T) {
-		r, cleanup := newReconcileHarness(t, ctx, env, schema,
-			reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
-		defer cleanup()
+func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *manifest.FileEntry) {
+	r, cleanup := newReconcileHarness(t, ctx, env, schema,
+		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
+	defer cleanup()
 
-		report, err := r.Run(ctx)
-		if err != nil {
-			t.Fatalf("reconcile repair run: %v", err)
-		}
-		s := report.Schemas[0]
-		if len(s.Repaired) != 1 || s.Repaired[0] != original.Path {
-			t.Fatalf("repaired = %v, want [%s]", s.Repaired, original.Path)
-		}
+	report, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("reconcile repair run: %v", err)
+	}
+	s := report.Schemas[0]
+	if len(s.Repaired) != 1 || s.Repaired[0] != original.Path {
+		t.Fatalf("repaired = %v, want [%s]", s.Repaired, original.Path)
+	}
 
-		mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-		var repaired *manifest.FileEntry
-		for _, f := range mAfter.Files {
-			if f.Path == original.Path {
-				e := f
-				repaired = &e
-				break
-			}
+	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
+	var repaired *manifest.FileEntry
+	for _, f := range mAfter.Files {
+		if f.Path == original.Path {
+			e := f
+			repaired = &e
+			break
 		}
-		if repaired == nil {
-			t.Fatalf("repaired entry %s missing from manifest: %+v", original.Path, mAfter.Files)
-		}
-		// The recomputed identity metadata must match what the flusher
-		// originally wrote — recovery may not fabricate different stats.
-		if repaired.Tier != original.Tier ||
-			repaired.RowCount != original.RowCount ||
-			repaired.SizeBytes != original.SizeBytes {
-			t.Fatalf("repaired entry diverges from original:\n got %+v\nwant %+v", *repaired, *original)
-		}
-		// RowID bounds: repair recomputes lexicographic MIN/MAX over the
-		// varchar row_id, while the flusher's minMaxRowID tie-breaks
-		// same-millisecond UUIDv7s by first-seen order — over the same set,
-		// the lexicographic min/max always bound the flusher's picks.
-		if repaired.RowIDMin == "" || repaired.RowIDMin > original.RowIDMin ||
-			repaired.RowIDMax < original.RowIDMax {
-			t.Fatalf("repaired RowID range [%s, %s] does not bound original [%s, %s]",
-				repaired.RowIDMin, repaired.RowIDMax, original.RowIDMin, original.RowIDMax)
-		}
-		// Created* semantics differ by design (#203): the flusher stamps
-		// both with the flush timestamp, while reconcile recomputes them
-		// from the parquet's changed_at range — the same contents-derived
-		// convention compaction uses for merged files. Row changed_at is
-		// always <= the flush timestamp.
-		if repaired.CreatedMin <= 0 || repaired.CreatedMin > repaired.CreatedMax ||
-			repaired.CreatedMax > original.CreatedMax {
-			t.Fatalf("repaired Created range [%d, %d] outside (0, %d]",
-				repaired.CreatedMin, repaired.CreatedMax, original.CreatedMax)
-		}
+	}
+	if repaired == nil {
+		t.Fatalf("repaired entry %s missing from manifest: %+v", original.Path, mAfter.Files)
+	}
+	assertRepairedEntryMatches(t, repaired, original)
 
-		result, err := env.Query(ctx, Query{Schema: schema, Limit: 100})
-		if err != nil {
-			t.Fatalf("query after repair: %v", err)
-		}
-		if len(result.Records) != 7 {
-			t.Fatalf("query after repair returned %d records, want 7 (both flush batches)", len(result.Records))
-		}
-		if !result.Plan.Routing.UseDuckDB {
-			t.Errorf("post-repair query did not route through duckdb: %+v", result.Plan.Routing)
-		}
-	})
+	result, err := env.Query(ctx, Query{Schema: schema, Limit: 100})
+	if err != nil {
+		t.Fatalf("query after repair: %v", err)
+	}
+	if len(result.Records) != 7 {
+		t.Fatalf("query after repair returned %d records, want 7 (both flush batches)", len(result.Records))
+	}
+	if !result.Plan.Routing.UseDuckDB {
+		t.Errorf("post-repair query did not route through duckdb: %+v", result.Plan.Routing)
+	}
+}
 
-	t.Run("second_repair_run_is_idempotent", func(t *testing.T) {
-		mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
-		r, cleanup := newReconcileHarness(t, ctx, env, schema,
-			reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
-		defer cleanup()
+// assertRepairedEntryMatches compares a repaired entry against the
+// flusher-written original: identity metadata must match exactly; RowID
+// bounds tolerate the flusher's same-millisecond first-seen tie-break
+// (repair recomputes lexicographic MIN/MAX, which always bounds the
+// flusher's picks over the same set); Created* semantics differ by design —
+// the flusher stamps the flush timestamp, reconcile recomputes the
+// parquet's changed_at range (compaction's convention for merged files),
+// and row changed_at is always <= the flush timestamp.
+func assertRepairedEntryMatches(t *testing.T, repaired, original *manifest.FileEntry) {
+	t.Helper()
+	if repaired.Tier != original.Tier ||
+		repaired.RowCount != original.RowCount ||
+		repaired.SizeBytes != original.SizeBytes {
+		t.Fatalf("repaired entry diverges from original:\n got %+v\nwant %+v", *repaired, *original)
+	}
+	if repaired.RowIDMin == "" || repaired.RowIDMin > original.RowIDMin ||
+		repaired.RowIDMax < original.RowIDMax {
+		t.Fatalf("repaired RowID range [%s, %s] does not bound original [%s, %s]",
+			repaired.RowIDMin, repaired.RowIDMax, original.RowIDMin, original.RowIDMax)
+	}
+	if repaired.CreatedMin <= 0 || repaired.CreatedMin > repaired.CreatedMax ||
+		repaired.CreatedMax > original.CreatedMax {
+		t.Fatalf("repaired Created range [%d, %d] outside (0, %d]",
+			repaired.CreatedMin, repaired.CreatedMax, original.CreatedMax)
+	}
+}
 
-		report, err := r.Run(ctx)
-		if err != nil {
-			t.Fatalf("second reconcile repair run: %v", err)
-		}
-		if len(report.Schemas[0].Repaired) != 0 {
-			t.Fatalf("second run repaired %v, want nothing", report.Schemas[0].Repaired)
-		}
-		mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-		if mAfter.Version != mBefore.Version {
-			t.Fatalf("idempotent run bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
-		}
-		assertNoDuplicateManifestEntries(t, mAfter)
-	})
+func testReconcileRepairIdempotent(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) {
+	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	r, cleanup := newReconcileHarness(t, ctx, env, schema,
+		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
+	defer cleanup()
+
+	report, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("second reconcile repair run: %v", err)
+	}
+	if len(report.Schemas[0].Repaired) != 0 {
+		t.Fatalf("second run repaired %v, want nothing", report.Schemas[0].Repaired)
+	}
+	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
+	if mAfter.Version != mBefore.Version {
+		t.Fatalf("idempotent run bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	}
+	assertNoDuplicateManifestEntries(t, mAfter)
 }
 
 // TestManifestReconcile_GCRemovesRewriteLeftovers drives the #188 recovery
-// path: staged _tmp objects and unlisted base files from a crashed or
-// half-cleaned compaction rewrite are deleted by --gc only once they age
-// past the grace period, while delta-shaped orphans and manifest-listed
-// objects are never touched.
+// path with the two-phase sighting contract: the first --gc run only
+// records each leftover's first-unlisted sighting (persisted next to the
+// manifest), and a later run deletes it once BOTH the observed-unlisted
+// duration and the object age exceed the grace period. Delta-shaped and
+// init-shaped orphans and manifest-listed objects are never touched.
 func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -332,6 +351,8 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 	gcOpts := reconcile.Options{GC: true, GCGrace: 15 * time.Minute}
 
 	t.Run("within_grace_nothing_deleted", func(t *testing.T) {
+		// This run doubles as the sighting-recording phase: it persists
+		// each candidate's first-unlisted timestamp for the next run.
 		r, cleanup := newReconcileHarness(t, ctx, env, schema, gcOpts, false)
 		defer cleanup()
 

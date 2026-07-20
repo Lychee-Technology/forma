@@ -20,12 +20,13 @@ type ManifestStore interface {
 }
 
 // StatsReader inspects one parquet file's contents: FileStats recomputes
-// manifest metadata; UncoveredRowIDs returns the file's row_ids absent from
-// every listed file (the repair guard's coverage probe). Both take
-// bucket-relative keys. Only consulted under --repair.
+// manifest metadata; UncoveredRows returns the rows whose newest version no
+// listed file supersedes, with a tombstone flag (the repair guard's
+// version-aware coverage probe). Both take bucket-relative keys. Only
+// consulted under --repair.
 type StatsReader interface {
 	FileStats(ctx context.Context, key string) (compaction.MergeStats, error)
-	UncoveredRowIDs(ctx context.Context, key string, listedKeys []string) ([]string, error)
+	UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error)
 }
 
 // LiveRowChecker reports which of the given row ids are NOT live in the
@@ -45,6 +46,17 @@ type Locker interface {
 // SchemaEnumerator yields the schema IDs to reconcile.
 type SchemaEnumerator interface {
 	SchemaIDs(ctx context.Context) ([]int16, error)
+}
+
+// GCStateStore persists per-schema first-unlisted sighting timestamps
+// (key -> unix ms) with optimistic concurrency. GC deletes an orphan only
+// after it has been observed unlisted for longer than the grace period —
+// LastModified alone cannot express "unlisted duration" (#188 follow-up:
+// an old source freshly spliced out by the compactor would otherwise be
+// deleted inside the in-flight-reader window).
+type GCStateStore interface {
+	Load(ctx context.Context, schemaID int16) (map[string]int64, string, error)
+	Save(ctx context.Context, schemaID int16, state map[string]int64, etag string) (string, error)
 }
 
 // Options selects the reconcile actions. The zero value is a read-only
@@ -67,6 +79,7 @@ type Reconciler struct {
 	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
 	Locker     Locker
 	Schemas    SchemaEnumerator
+	GCStates   GCStateStore // may be nil unless Opts.GC
 	Now        func() time.Time
 	Bucket     string
 	DataPrefix string
@@ -125,8 +138,14 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)
 	s.Unknown = objectKeyList(d.unknown)
-	s.Dangling = r.confirmDangling(ctx, schemaID, d.dangling)
 	s.Unverifiable = d.unverifiable
+	s.Dangling, err = r.confirmDangling(ctx, schemaID, d.dangling)
+	if err != nil {
+		// An unconfirmable candidate is a tool failure, not a data-drift
+		// verdict: the caller maps s.Err to exit 1, never 2.
+		s.Err = fmt.Errorf("confirm schema %d dangling candidates: %w", schemaID, err)
+		return s
+	}
 
 	var deltaLeftovers []ObjectInfo
 	if r.Opts.Repair && len(d.deltaOrphans) > 0 {
@@ -146,8 +165,13 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		// analysis, so they are only deletable under --repair --gc.
 		candidates := append(append([]ObjectInfo(nil), d.baseMergedOrphans...), d.tmpOrphans...)
 		candidates = append(candidates, deltaLeftovers...)
-		if len(candidates) > 0 {
-			s.Deleted = r.gcSchema(ctx, schemaID, candidates)
+		// Run even with zero candidates: sighting-state entries for keys
+		// that stopped being orphans must be pruned so a later unlisting
+		// restarts their grace clock.
+		s.Deleted, err = r.gcSchema(ctx, schemaID, candidates)
+		if err != nil {
+			s.Err = err
+			return s
 		}
 	}
 	return s
@@ -156,24 +180,22 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 // confirmDangling re-verifies dangling candidates against a fresh manifest
 // load and a per-key existence probe. The lock excludes the flusher but not
 // the compactor or cdc-init, so a splice landing mid-run could otherwise
-// surface a properly handled (or freshly created) object as dangling.
-func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) []string {
+// surface a properly handled (or freshly created) object as dangling. A
+// failed reload or probe leaves the candidate UNCONFIRMED and is returned
+// as an error — a storage outage must surface as a tool failure (exit 1),
+// never as a confirmed data-drift report (exit 2).
+func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) ([]string, error) {
 	if len(dangling) == 0 {
-		return nil
+		return nil, nil
 	}
-	still := make(map[string]bool, len(dangling))
 	m2, _, err := r.Manifests.Load(ctx, schemaID)
 	if err != nil {
-		r.Logger.Warn("could not reload manifest to confirm dangling entries; reporting unconfirmed",
-			zap.Int16("schema_id", schemaID), zap.Error(err))
-		for _, key := range dangling {
+		return nil, fmt.Errorf("reload manifest: %w", err)
+	}
+	still := make(map[string]bool, len(m2.Files))
+	for _, f := range m2.Files {
+		if key, ok := normalizeKey(r.Bucket, f.Path); ok {
 			still[key] = true
-		}
-	} else {
-		for _, f := range m2.Files {
-			if key, ok := normalizeKey(r.Bucket, f.Path); ok {
-				still[key] = true
-			}
 		}
 	}
 
@@ -184,10 +206,7 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 		}
 		objs, err := r.Lister.ListObjects(ctx, key)
 		if err != nil {
-			r.Logger.Warn("dangling re-probe failed; keeping candidate",
-				zap.Int16("schema_id", schemaID), zap.String("key", key), zap.Error(err))
-			confirmed = append(confirmed, key)
-			continue
+			return nil, fmt.Errorf("re-probe candidate %s: %w", key, err)
 		}
 		exists := false
 		for _, o := range objs {
@@ -200,7 +219,7 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 			confirmed = append(confirmed, key)
 		}
 	}
-	return confirmed
+	return confirmed, nil
 }
 
 func objectKeyList(objs []ObjectInfo) []string {

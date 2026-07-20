@@ -65,7 +65,7 @@ func (s *S3Store) Save(ctx context.Context, path string, data []byte, etag strin
 	}
 	out, err := s.Client.PutObject(ctx, input)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("put manifest object %s/%s: %w", s.Bucket, path, err)
 	}
 	newETag := ""
 	if out.ETag != nil {

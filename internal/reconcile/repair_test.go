@@ -27,12 +27,12 @@ func (l *localStatsReader) FileStats(ctx context.Context, key string) (compactio
 	return compaction.SingleFileStats(ctx, l.db, filepath.Join(l.dir, filepath.Base(key)))
 }
 
-func (l *localStatsReader) UncoveredRowIDs(ctx context.Context, key string, listedKeys []string) ([]string, error) {
+func (l *localStatsReader) UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
 	listed := make([]string, 0, len(listedKeys))
 	for _, k := range listedKeys {
 		listed = append(listed, filepath.Join(l.dir, filepath.Base(k)))
 	}
-	return compaction.UncoveredRowIDs(ctx, l.db, filepath.Join(l.dir, filepath.Base(key)), listed)
+	return compaction.UncoveredRows(ctx, l.db, filepath.Join(l.dir, filepath.Base(key)), listed)
 }
 
 func writeDeltaFixture(t *testing.T, db *sql.DB, path string) {

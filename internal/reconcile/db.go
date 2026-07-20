@@ -94,9 +94,11 @@ func (l *PGAdvisoryLocker) TryLock(ctx context.Context, schemaID int16) (bool, f
 	return true, unlock, nil
 }
 
-// PGLiveRows implements LiveRowChecker over the entity main table. Deletes
-// are physical (postgres_persistent_repository issues DELETE), so liveness
-// is row existence under the (schema_id, row_id) primary key.
+// PGLiveRows implements LiveRowChecker over the entity main table. Liveness
+// mirrors cdc-init's export filter (init.go): the row exists under the
+// (schema_id, row_id) primary key AND ltbase_deleted_at IS NULL — writes can
+// soft-delete by setting the column, and treating such rows as live would
+// let repair re-append data whose tombstone compaction already dropped.
 type PGLiveRows struct {
 	DB    *sql.DB
 	Table string // entity_main table name
@@ -112,7 +114,7 @@ func (p *PGLiveRows) MissingLiveRows(ctx context.Context, schemaID int16, rowIDs
 		}
 	}
 	query := fmt.Sprintf(
-		"SELECT ltbase_row_id::text FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = ANY(string_to_array($2, ',')::uuid[])",
+		"SELECT ltbase_row_id::text FROM %s WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL AND ltbase_row_id = ANY(string_to_array($2, ',')::uuid[])",
 		sqlutil.SanitizeIdentifier(p.Table))
 	rows, err := p.DB.QueryContext(ctx, query, schemaID, strings.Join(rowIDs, ","))
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
@@ -129,11 +130,11 @@ type fakeStats struct {
 	stats  map[string]compaction.MergeStats // key -> stats
 	errFor map[string]error
 	calls  []string
-	// uncovered maps orphan key -> row ids absent from every listed file.
-	// Keys not in the map default to one synthetic uncovered row, so
-	// append-path tests behave like a genuine #197 orphan.
-	uncovered      map[string][]string
-	uncoveredCalls [][]string // listedKeys per UncoveredRowIDs call
+	// uncovered maps orphan key -> uncovered rows. Keys not in the map
+	// default to one synthetic live uncovered row, so append-path tests
+	// behave like a genuine #197 orphan.
+	uncovered      map[string][]compaction.UncoveredRow
+	uncoveredCalls [][]string // listedKeys per UncoveredRows call
 	uncoveredErr   map[string]error
 }
 
@@ -145,7 +146,7 @@ func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeSt
 	return f.stats[key], nil
 }
 
-func (f *fakeStats) UncoveredRowIDs(_ context.Context, key string, listedKeys []string) ([]string, error) {
+func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
 	f.uncoveredCalls = append(f.uncoveredCalls, listedKeys)
 	if err := f.uncoveredErr[key]; err != nil {
 		return nil, err
@@ -153,7 +154,7 @@ func (f *fakeStats) UncoveredRowIDs(_ context.Context, key string, listedKeys []
 	if rows, ok := f.uncovered[key]; ok {
 		return rows, nil
 	}
-	return []string{"synthetic-uncovered-row"}, nil
+	return []compaction.UncoveredRow{{RowID: "synthetic-uncovered-row"}}, nil
 }
 
 // fakeLiveRows reports which row ids are missing from entity_main. The
@@ -185,4 +186,49 @@ type fakeEnum struct {
 
 func (f *fakeEnum) SchemaIDs(context.Context) ([]int16, error) {
 	return f.ids, f.err
+}
+
+type fakeGCState struct {
+	state   map[int16]map[string]int64
+	etags   map[int16]string
+	saves   int
+	loadErr error
+	saveErr error
+}
+
+func newFakeGCState() *fakeGCState {
+	return &fakeGCState{state: map[int16]map[string]int64{}, etags: map[int16]string{}}
+}
+
+func (f *fakeGCState) seed(schemaID int16, key string, at time.Time) {
+	if f.state[schemaID] == nil {
+		f.state[schemaID] = map[string]int64{}
+	}
+	f.state[schemaID][key] = at.UnixMilli()
+}
+
+func (f *fakeGCState) Load(_ context.Context, schemaID int16) (map[string]int64, string, error) {
+	if f.loadErr != nil {
+		return nil, "", f.loadErr
+	}
+	cp := make(map[string]int64, len(f.state[schemaID]))
+	for k, v := range f.state[schemaID] {
+		cp[k] = v
+	}
+	return cp, f.etags[schemaID], nil
+}
+
+func (f *fakeGCState) Save(_ context.Context, schemaID int16, state map[string]int64, _ string) (string, error) {
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
+	f.saves++
+	cp := make(map[string]int64, len(state))
+	for k, v := range state {
+		cp[k] = v
+	}
+	f.state[schemaID] = cp
+	etag := fmt.Sprintf("gc-etag-%d", f.saves)
+	f.etags[schemaID] = etag
+	return etag, nil
 }

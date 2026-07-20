@@ -100,12 +100,12 @@ func (d *DuckStatsReader) FileStats(ctx context.Context, key string) (compaction
 	return compaction.SingleFileStats(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
 }
 
-func (d *DuckStatsReader) UncoveredRowIDs(ctx context.Context, key string, listedKeys []string) ([]string, error) {
+func (d *DuckStatsReader) UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
 	listed := make([]string, 0, len(listedKeys))
 	for _, k := range listedKeys {
 		listed = append(listed, fmt.Sprintf("s3://%s/%s", d.Bucket, k))
 	}
-	return compaction.UncoveredRowIDs(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
+	return compaction.UncoveredRows(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
 }
 
 var (

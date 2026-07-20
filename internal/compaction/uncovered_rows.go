@@ -7,19 +7,29 @@ import (
 	"strings"
 )
 
-// UncoveredRowIDs returns the distinct row_ids present in the orphan parquet
-// that appear in none of the listed parquet files. The manifest-reconcile
-// tool (#203) uses it to decide whether a delta-shaped orphan still carries
-// rows the manifest-listed inventory does not cover: only such files are
-// candidates for re-appending, everything else is a compaction leftover
-// whose re-registration could resurrect rows whose tombstones the merge
-// already dropped.
-func UncoveredRowIDs(ctx context.Context, db *sql.DB, orphanURI string, listedURIs []string) ([]string, error) {
+// UncoveredRow is one row_id in an orphan parquet whose newest uncovered
+// version is not superseded by any manifest-listed file. Tombstone reports
+// whether that version is a delete marker — re-appending an uncovered
+// tombstone RESTORES a lost delete, while re-appending an uncovered live
+// version of a Postgres-deleted row resurrects it.
+type UncoveredRow struct {
+	RowID     string
+	Tombstone bool
+}
+
+// UncoveredRows returns, per row_id, the orphan parquet's versions that no
+// listed file supersedes. Coverage is version-aware: a listed version with
+// changed_at >= the orphan version's covers it (equal ties resolve
+// base-wins in LWW, #183), so a same-row lost update — an orphan carrying a
+// NEWER version than anything listed — still counts as uncovered. The
+// manifest-reconcile tool (#203) builds its repair verdict on this: a
+// row_id-only anti-join would misclassify lost updates as deletable
+// leftovers.
+func UncoveredRows(ctx context.Context, db *sql.DB, orphanURI string, listedURIs []string) ([]UncoveredRow, error) {
 	if err := validateMergeURI(orphanURI); err != nil {
 		return nil, fmt.Errorf("uncovered-rows orphan: %w", err)
 	}
-	query := fmt.Sprintf(
-		"SELECT DISTINCT CAST(row_id AS VARCHAR) FROM read_parquet('%s') ORDER BY 1", orphanURI)
+	notSuperseded := ""
 	if len(listedURIs) > 0 {
 		quoted := make([]string, 0, len(listedURIs))
 		for _, uri := range listedURIs {
@@ -28,31 +38,37 @@ func UncoveredRowIDs(ctx context.Context, db *sql.DB, orphanURI string, listedUR
 			}
 			quoted = append(quoted, "'"+uri+"'")
 		}
-		query = fmt.Sprintf(
-			`SELECT DISTINCT CAST(o.row_id AS VARCHAR)
-FROM read_parquet('%s') o
+		notSuperseded = fmt.Sprintf(`
 WHERE NOT EXISTS (
-  SELECT 1 FROM read_parquet([%s], union_by_name=true) l WHERE l.row_id = o.row_id
-)
-ORDER BY 1`, orphanURI, strings.Join(quoted, ", "))
+  SELECT 1 FROM read_parquet([%s], union_by_name=true) l
+  WHERE l.row_id = o.row_id AND l.changed_at >= o.changed_at
+)`, strings.Join(quoted, ", "))
 	}
+	// arg_max picks the newest uncovered version per row; its deleted_at
+	// decides the tombstone flag.
+	query := fmt.Sprintf(`
+SELECT CAST(row_id AS VARCHAR) AS rid,
+       (arg_max(COALESCE(deleted_at, 0), changed_at) > 0) AS tomb
+FROM read_parquet('%s') o%s
+GROUP BY row_id
+ORDER BY rid`, orphanURI, notSuperseded)
 
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("query uncovered row ids of %s: %w", orphanURI, err)
+		return nil, fmt.Errorf("query uncovered rows of %s: %w", orphanURI, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var ids []string
+	var uncovered []UncoveredRow
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan uncovered row id of %s: %w", orphanURI, err)
+		var row UncoveredRow
+		if err := rows.Scan(&row.RowID, &row.Tombstone); err != nil {
+			return nil, fmt.Errorf("scan uncovered row of %s: %w", orphanURI, err)
 		}
-		ids = append(ids, id)
+		uncovered = append(uncovered, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate uncovered row ids of %s: %w", orphanURI, err)
+		return nil, fmt.Errorf("iterate uncovered rows of %s: %w", orphanURI, err)
 	}
-	return ids, nil
+	return uncovered, nil
 }

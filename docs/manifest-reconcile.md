@@ -16,9 +16,12 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 | 类别 | 形态 | 来源 | 处置 |
 |------|------|------|------|
 | delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
-| merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 删除（宽限期后） |
-| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | 只报告，**永不自动删除**：in-flight cdc-init 先落对象、跑完才发布 manifest，且不持 advisory lock |
-| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留 | `--gc` 删除（宽限期后） |
+| merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
+| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | 只报告，**永不自动删除**：in-flight cdc-init 先落对象、跑完才发布 manifest，且不持 advisory lock（自动处置需 init 先持锁，见 follow-up） |
+| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留 | `--gc` 两阶段删除（见下） |
+
+形态匹配是严格的：`base-` 后缀与 `{min}_{max}` 两段都必须是合法 UUID，否则归
+unknown（只报告，永不删除）。
 
 另报告两类只读发现：
 
@@ -39,13 +42,37 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 1. **覆盖探测**（DuckDB 反连接）：孤儿中有哪些 row_id 不出现在任何 manifest 已列文件里；
 2. **活性探测**（Postgres `entity_main`，`--entity-main-table`）：这些未覆盖行是否仍存活。
 
-裁决：
+覆盖判定是**版本感知**的：孤儿中某行只有当某个已列文件携带同 row_id 且
+`changed_at >=` 该版本时才算被覆盖（相等平局按 LWW base-wins，#183）——因此「同
+row_id 的更新丢失」（孤儿携带比所有已列文件更新的版本）会被正确判为未覆盖，而不是
+被 row_id 级比较误判成可删残留。活性判定对齐 cdc-init 的导出口径：行存在于
+entity_main 且 `ltbase_deleted_at IS NULL`。
 
-- 存在未覆盖行且**全部存活** → 真 #197 孤儿，补录（元数据从 parquet 内容重算，幂等，
-  绝不重复已有 Path）；
-- 无未覆盖行，或未覆盖行**全部已删除**（其墓碑赢了合并后被丢弃）→ 判定为合并残留
-  （报告列在 `delta leftover`），在 `--repair --gc` 同时开启且过宽限期时删除；
-- 未覆盖行**存活/已删混杂** → 拒绝自动补录与自动删除，留人工处置（保持非零退出码）。
+逐未覆盖行裁决（取该行未覆盖版本中最新者）：
+
+- **活版本 + PG 存活** → #197 丢失数据，须补录；
+- **墓碑 + PG 已删除** → 丢失的删除标记：它缺席时更老的已列版本正在读路径上复活，
+  补录恢复删除语义；
+- **活版本 + PG 已删除** → 复活风险：该行墓碑赢了合并后被物理丢弃，补录会复活它；
+- **墓碑 + PG 存活** → 与实体状态矛盾，永不自动处理。
+
+文件级裁决：存在须补录行且无风险/矛盾行 → 补录（元数据从 parquet 内容重算，幂等，
+绝不重复已有 Path）；无未覆盖行或仅有复活风险行 → 判定为合并残留（报告列在
+`delta leftover`），在 `--repair --gc` 同时开启时按下述两阶段删除；混杂 → 拒绝自动
+补录与自动删除，留人工处置（保持非零退出码）。
+
+## `--gc` 的两阶段删除（unlisted 时长语义）
+
+#188 follow-up 要求「对象解除列出超过最大查询时长后才删除」。对象的 LastModified
+无法表达该时长（一个很老的 source 可能刚刚被 compactor splice 出 manifest），因此
+工具在 manifest 旁持久化目击状态（`<manifest path>.gc-state`，同 ETag 乐观并发）：
+
+1. 第一次观察到某候选对象未被列出 → 只记录 first-unlisted 时间戳，不删除；
+2. 后续运行中，当「已观察的未列出时长」与「对象年龄」**都**超过 `--gc-grace` 时才
+   删除；重新回到 manifest 的 key 会从状态中剪除，宽限时钟重新起算。
+
+状态丢失/写入失败只会让下次运行重新记录（推迟删除，绝不提前）；状态读取失败拒绝
+删除并按工具故障退出。
 
 ## 用法
 
@@ -75,8 +102,16 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
   条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认，init 形态对象
   排除在 GC 之外。
 - `--schema-id` 指向未注册 schema 时直接报错退出 1（而不是空跑报「一致」）。
-- `--gc-grace` 必须为正（默认 15m），兜住 in-flight reader 竞态：持有 splice 前对象
-  清单的查询在 manifest 提交后约一个查询时长内仍可能引用已解除列出的 key。残余窗口
-  （对象很老、恰在 GC 前一刻才被 splice）在实践中可忽略。
-- 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件）；
-  `1` 工具自身失败（含任一 schema 的 list/load/lock 失败——不会伪装成「有差异」）。
+- `--gc-grace` 必须为正（默认 15m）。
+- `--data-prefix` 允许为空（对象 key 形如 `/7/{uuid}.parquet`，与 cdc path builder
+  一致，比较时不做任何前导斜杠归一化）。
+- 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件、
+  记录目击但尚未过宽限期的残留）；`1` 工具自身失败（含任一 schema 的
+  list/load/lock/dangling 复核/GC 状态读取失败——不会伪装成「有差异」）。
+
+## 已知范围限制（follow-up）
+
+cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）没有自动恢复路
+径：init 形态对象既不补录也不删除，因为 in-flight init 与「发布失败的 init」从对象
+层面不可区分——init 不持 schema advisory lock。安全的自动处置需要 init 先持锁，见
+follow-up issue。

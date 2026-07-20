@@ -51,7 +51,11 @@ func TestNormalizeKey(t *testing.T) {
 	}{
 		{"relative key", "data/7/a.parquet", "data/7/a.parquet", true},
 		{"absolute same bucket", "s3://bkt/data/7/a.parquet", "data/7/a.parquet", true},
-		{"leading slash", "/data/7/a.parquet", "data/7/a.parquet", true},
+		// An empty data prefix makes cdc.Build*Path emit keys with a
+		// leading slash (`/7/a.parquet`); the manifest stores the same
+		// literal key, so it must NOT be stripped or listing comparison
+		// breaks and --gc could delete manifest-listed objects.
+		{"leading slash preserved", "/7/a.parquet", "/7/a.parquet", true},
 		{"foreign bucket", "s3://other/data/7/a.parquet", "", false},
 		{"glob entry", "data/7/*.parquet", "", false},
 	}
@@ -115,6 +119,51 @@ func TestDiffSchema_CleanManifestNoFindings(t *testing.T) {
 	}
 	if len(d.dangling)+len(d.unverifiable) != 0 {
 		t.Fatalf("expected no dangling/unverifiable, got %+v", d)
+	}
+}
+
+func TestDiffSchema_EmptyDataPrefixKeysMatch(t *testing.T) {
+	// cdc.BuildDeltaPath("", 7, uuid) emits "/7/{uuid}.parquet"; the same
+	// literal key lands in the manifest. The diff must treat them as the
+	// same object — a mismatch here turns every real file into an orphan
+	// and every manifest entry into a dangling report.
+	listed := ObjectInfo{Key: "/7/" + uuidA + ".parquet"}
+	m := &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: "/7/" + uuidA + ".parquet"},
+	}}
+	d := diffSchema("bkt", "", 7, []ObjectInfo{listed}, m)
+	if len(d.deltaOrphans) != 0 {
+		t.Fatalf("manifest-listed key reported as orphan under empty prefix: %+v", d.deltaOrphans)
+	}
+	if len(d.dangling) != 0 {
+		t.Fatalf("live key reported dangling under empty prefix: %+v", d.dangling)
+	}
+}
+
+func TestClassifyObjectKey_RequiresUUIDShapes(t *testing.T) {
+	prefix := "data/7/"
+	tests := []struct {
+		name  string
+		key   string
+		class OrphanClass
+	}{
+		// base- prefix without a UUID is NOT a merged base — GC must never
+		// delete an unrecognized object.
+		{"base prefix junk", "data/7/base-foo.parquet", ClassUnknown},
+		{"base prefix valid uuid", "data/7/base-" + uuidA + ".parquet", ClassBaseMerged},
+		{"underscore junk", "data/7/a_b.parquet", ClassUnknown},
+		{"underscore valid uuids", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBaseInit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			class, ok := classifyObjectKey(prefix, tt.key)
+			if !ok {
+				t.Fatalf("classifyObjectKey(%q) unexpectedly ignored", tt.key)
+			}
+			if class != tt.class {
+				t.Fatalf("classifyObjectKey(%q) = %v, want %v", tt.key, class, tt.class)
+			}
+		})
 	}
 }
 
