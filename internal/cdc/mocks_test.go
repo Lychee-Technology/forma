@@ -120,9 +120,9 @@ type recordingS3Client struct {
 	deletedKeys []string
 }
 
-func (c *recordingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+func (c *recordingS3Client) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
 	if c.copyErr != nil {
-		return nil, c.copyErr
+		return nil, fmt.Errorf("mock copy object to %s: %w", aws.ToString(in.Key), c.copyErr)
 	}
 	return &s3.CopyObjectOutput{}, nil
 }
@@ -130,7 +130,7 @@ func (c *recordingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput,
 func (c *recordingS3Client) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	c.deletedKeys = append(c.deletedKeys, aws.ToString(in.Key))
 	if c.deleteErr != nil {
-		return nil, c.deleteErr
+		return nil, fmt.Errorf("mock delete object %s: %w", aws.ToString(in.Key), c.deleteErr)
 	}
 	return &s3.DeleteObjectOutput{}, nil
 }
