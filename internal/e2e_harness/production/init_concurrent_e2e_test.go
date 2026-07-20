@@ -27,6 +27,13 @@ type raceCounters struct {
 // The started barrier plus counter snapshots around RunInit prove at least
 // one create and one update genuinely overlapped the init pagination
 // (review round 1: without them the scheduler could serialize the test).
+//
+// Since #290 cdc-init holds the per-schema advisory lock for each schema's
+// export + manifest publish. The mutator here writes entity rows directly
+// and takes no advisory lock, so the race window and every assertion below
+// are unchanged. What DID change: a concurrent init/flusher/reconcile on
+// the same schema now surfaces as ErrSchemaLockContended instead of racing
+// (unit-covered in internal/cdc/init_lock_test.go).
 func TestInitUnderConcurrentMutation(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
