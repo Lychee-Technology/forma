@@ -131,7 +131,6 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}, nil
 }
 
-
 // toExecutionPlan converts the engine's internal execution plan into the
 // public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
 // when no plan was recorded (non-federated requests, or federated requests that
