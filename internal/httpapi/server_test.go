@@ -479,3 +479,59 @@ func TestNewServer_HealthRouteEnabledWhenOptionSet(t *testing.T) {
 		t.Fatalf("expected 200 for /health when EnableHealth=true, got %d", rec.Code)
 	}
 }
+
+// TestHandleAdvancedQueryStructuredSort pins the #240 wire contract: a JSON
+// body carrying the structured "sort" field reaches the manager with per-key
+// directions intact — the handler must not flatten or drop it.
+func TestHandleAdvancedQueryStructuredSort(t *testing.T) {
+	mgr := &mockEntityManager{advancedResult: &forma.QueryResult{Data: []*forma.DataRecord{}}}
+	server := &Server{manager: mgr}
+
+	payload := []byte(`{
+		"schema_name": "lead",
+		"condition": {"a": "status", "v": "equals:hot"},
+		"sort": [
+			{"attribute": "status"},
+			{"attribute": "created_at", "sort_order": "desc"}
+		]
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handleAdvancedQuery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if mgr.advancedReq == nil || len(mgr.advancedReq.Sort) != 2 {
+		t.Fatalf("manager saw Sort = %+v, want 2 entries", mgr.advancedReq)
+	}
+	if mgr.advancedReq.Sort[1].Attribute != "created_at" || mgr.advancedReq.Sort[1].SortOrder != forma.SortOrderDesc {
+		t.Fatalf("manager saw Sort[1] = %+v, want created_at desc", mgr.advancedReq.Sort[1])
+	}
+}
+
+// TestHandleAdvancedQueryInvalidInputMapsTo400 pins that a manager-side
+// validation failure (e.g. #240's sort vs sort_by mutual exclusion) surfaces
+// as HTTP 400, not 500.
+func TestHandleAdvancedQueryInvalidInputMapsTo400(t *testing.T) {
+	mgr := &mockEntityManager{
+		advancedErr: fmt.Errorf("sort cannot be combined with sort_by/sort_order in schema 'lead': %w", forma.ErrInvalidInput),
+	}
+	server := &Server{manager: mgr}
+
+	payload := []byte(`{
+		"schema_name": "lead",
+		"condition": {"a": "status", "v": "equals:hot"},
+		"sort": [{"attribute": "status"}],
+		"sort_by": ["status"]
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handleAdvancedQuery(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
