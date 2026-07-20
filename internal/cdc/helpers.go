@@ -15,9 +15,14 @@ import (
 )
 
 // reConnPassword matches the password= key-value pair in a libpq-style connection string,
-// including the quoted form used inside DuckDB ATTACH statements.
-// It handles both  password=value  and  password='value'  forms.
-var reConnPassword = regexp.MustCompile(`(?i)(password=)'?[^' \t\r\n;,)]*'?`)
+// including the quoted forms used inside DuckDB ATTACH statements. The alternation is
+// ordered from most- to least-quoted so the doubled form is consumed whole:
+//   - password=''value''  the escapeLiteral'd DSN embedded in a DuckDB SQL literal (#290);
+//     a naive password='?…'? regex matches the empty string between the doubled quotes
+//     and leaks the real value, so this branch must be tried first.
+//   - password='value'    the raw quoted BuildPGDSN output.
+//   - password=value      the legacy unquoted form.
+var reConnPassword = regexp.MustCompile(`(?i)(password=)(''(?:[^']|'')*?''|'[^']*'|[^' \t\r\n;,)]*)`)
 
 // redactConnStr replaces any password value in a connection string (or an SQL
 // string that embeds one) with "***REDACTED***".  It is safe to call on any

@@ -359,9 +359,9 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		sslMode = DefaultPGSSLMode
 	}
 	pgConnForDuck := BuildPGDSN(PGDSNParams{Host: c.cfg.PGHost, Port: c.cfg.PGPort, User: c.cfg.PGUser, Password: c.pgPassword, DB: c.cfg.PGDB, SSLMode: sslMode})
-	pgConnForDuckLoggable := fmt.Sprintf("host=%s port=%d user=%s password=***REDACTED*** dbname=%s sslmode=%s",
-		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.cfg.PGDB, sslMode)
-	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuckLoggable)
+	// Redact the real (quoted) wire DSN rather than hand-building a stale preview
+	// that no longer matches what DuckDB receives (#290).
+	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", redactConnStr(pgConnForDuck))
 
 	// Cache was resolved and validated by the processSchemas pre-flight (#193).
 	attrCache := c.attrCaches[schemaID]
