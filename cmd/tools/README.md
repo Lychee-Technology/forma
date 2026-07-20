@@ -7,6 +7,9 @@ Forma Tools CLI
 --------
 - `generate-attributes`：从 JSON Schema 生成 `<schema>_attributes.json`。
 - `init-db`：创建 schema registry、entity main、EAV 数据表及索引。
+- `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
+  `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
+  详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
 
 generate-attributes
 -------------------

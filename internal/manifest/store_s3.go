@@ -55,10 +55,17 @@ func (s *S3Store) Save(ctx context.Context, path string, data []byte, etag strin
 	}
 	if etag != "" {
 		input.IfMatch = aws.String(etag)
+	} else {
+		// An empty etag means the caller loaded no existing manifest. An
+		// unconditional PUT here would silently clobber a manifest another
+		// writer created in the meantime (#203 review); If-None-Match makes
+		// the create fail with 412 instead, so callers can reload and retry
+		// against the real object.
+		input.IfNoneMatch = aws.String("*")
 	}
 	out, err := s.Client.PutObject(ctx, input)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("put manifest object %s/%s: %w", s.Bucket, path, err)
 	}
 	newETag := ""
 	if out.ETag != nil {

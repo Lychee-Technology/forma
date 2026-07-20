@@ -124,6 +124,17 @@ func Decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
+// IsNotFound reports whether a Store.Load error means the object does not
+// exist. Most S3-compatible stores return an error containing "NoSuchKey"
+// or "not found".
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist")
+}
+
 // LoadOrCreate loads an existing manifest or creates a new empty one for the schema.
 // Returns the manifest, etag (empty if new), and any error.
 func LoadOrCreate(ctx context.Context, st Store, path string, schemaID int16) (*Manifest, string, error) {
@@ -131,10 +142,7 @@ func LoadOrCreate(ctx context.Context, st Store, path string, schemaID int16) (*
 	if err == nil {
 		return m, etag, nil
 	}
-	// If file doesn't exist, create new manifest
-	// Most S3-compatible stores return an error containing "NoSuchKey" or "not found"
-	errStr := strings.ToLower(err.Error())
-	if strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist") {
+	if IsNotFound(err) {
 		return &Manifest{
 			SchemaID: schemaID,
 			Version:  0,

@@ -403,7 +403,8 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 // re-export, so the base tier is replaced wholesale with this run's files:
 // reruns neither duplicate entries nor leave stale ranges behind (#176).
 // Obsolete S3 objects are not deleted here — glob-based readers stay exact
-// via LWW/tombstones, and object reconciliation is #203.
+// via LWW/tombstones, and object cleanup belongs to
+// `forma-tools manifest-reconcile --gc` (#203).
 func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
 		return nil
