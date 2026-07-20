@@ -8,6 +8,11 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 - **#188 compaction 遗留**：rewrite 崩溃留下的 `_tmp/` staging 对象与未列入 manifest 的
   `base-{uuid}.parquet`，以及 manifest 提交后删除失败的 merged source。这些对象的数据
   已并入 merged base，属于纯垃圾。
+- **#226 swallowed-delete 残留**：flush / cdc-init / compaction 经 `CopyTmpToFinal`
+  提升成功后，对 `_tmp/` staging 对象的 DeleteObject 失败被有意吞掉（提升已成功，
+  流程不应失败）。CopyObject 或导出失败时 #226 已在带内当场自愈（best-effort 删除
+  自己的 tmp），因此只有这条 post-copy delete 失败路径会留下 `_tmp/` 残留；本工具的
+  `--gc` 两阶段删除即其成文回收机制，回收窗口为 grace 期（默认 15 分钟）。
 
 ## 差异分类
 
@@ -18,7 +23,7 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 | delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
 | merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
 | init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | 只报告，**永不自动删除**：in-flight cdc-init 先落对象、跑完才发布 manifest，且不持 advisory lock（自动处置需 init 先持锁，见 follow-up） |
-| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留 | `--gc` 两阶段删除（见下） |
+| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
 
 形态匹配是严格的：`base-` 后缀与 `{min}_{max}` 两段都必须是合法 UUID，否则归
 unknown（只报告，永不删除）。

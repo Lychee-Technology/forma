@@ -20,7 +20,7 @@ import (
 // Two failure vectors, one per pipeline side of mark-flushed:
 //
 //   - CopyFault (step 3, pre-mark): the faulted schema has zero side effects
-//     beyond a /_tmp/ orphan (#226) — all rows stay dirty for retry.
+//     (its tmp is self-healed in-band, #226) — all rows stay dirty for retry.
 //   - ManifestSaveFault (step 7, post-mark): the faulted schema's rows are
 //     already flushed and its final exists, but its manifest tracks nothing;
 //     the #197 contract (error names the orphaned key, retry is a no-op, no

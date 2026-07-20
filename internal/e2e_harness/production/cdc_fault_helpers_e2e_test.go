@@ -220,13 +220,19 @@ func finalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
 
 // assertSchemaUntouchedByFault is the per-schema face of assertUntouched for
 // multi-schema passes (#186): the faulted schema promoted no final parquet,
-// every one of its rows stays dirty, and its manifest tracks nothing — while
-// sibling schemas may legitimately create objects in the same report. A
-// surviving /_tmp/ orphan under the schema is tolerated (cleanup is #226).
+// no /_tmp/ residue (in-band cleanup, #226), every one of its rows stays
+// dirty, and its manifest tracks nothing — while sibling schemas may
+// legitimately create objects in the same report.
 func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, report *FlushReport, schema SchemaRef, wantDirty int) {
 	t.Helper()
 	if finals := finalsForSchema(env, report.NewObjects, schema); len(finals) != 0 {
 		t.Errorf("schema %d must promote no final parquet after its fault, got %v", schema.ID, finals)
+	}
+	_, tmps := splitKeys(report.NewObjects)
+	for _, k := range tmps {
+		if strings.HasPrefix(k, schemaKeyPrefix(env, schema)) {
+			t.Errorf("schema %d must leave no tmp residue after its copy fault (#226), got %s", schema.ID, k)
+		}
 	}
 	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, schema)
 	if len(flushed) != 0 || len(dirty) != wantDirty {

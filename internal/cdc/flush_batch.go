@@ -57,6 +57,13 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	}
 
 	if err := exportSnapshot(e.duck, ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+		// #226: DuckDB may have written the tmp object before failing and the
+		// retry uses a fresh UUID. Best-effort delete; an S3 delete of a
+		// missing key is a no-op, so this is safe even if nothing was written.
+		if delErr := DeleteObjectKey(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey); delErr != nil {
+			e.logger.Sugar().Warnw("failed to delete tmp object after export failure",
+				"schema_id", e.schemaID, "tmp_key", tmpKey, "err", delErr)
+		}
 		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
 	}
 

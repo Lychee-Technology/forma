@@ -84,7 +84,8 @@ func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string
 
 // assertManifestMatchesInventory pins the #188 success criteria "manifest
 // correctly reflects object inventory" and "no orphan objects": the schema's
-// live parquet keys (tmp excluded, #226 tolerance) and the manifest's file
+// live parquet keys (tmp excluded: swallowed-delete residue is reclaimed by
+// manifest-reconcile --gc, #226) and the manifest's file
 // paths must be exactly the same set.
 func assertManifestMatchesInventory(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
