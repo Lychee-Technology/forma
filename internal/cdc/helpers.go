@@ -16,13 +16,21 @@ import (
 
 // reConnPassword matches the password= key-value pair in a libpq-style connection string,
 // including the quoted forms used inside DuckDB ATTACH statements. The alternation is
-// ordered from most- to least-quoted so the doubled form is consumed whole:
-//   - password=''value''  the escapeLiteral'd DSN embedded in a DuckDB SQL literal (#290);
-//     a naive password='?…'? regex matches the empty string between the doubled quotes
-//     and leaks the real value, so this branch must be tried first.
-//   - password='value'    the raw quoted BuildPGDSN output.
-//   - password=value      the legacy unquoted form.
-var reConnPassword = regexp.MustCompile(`(?i)(password=)(''(?:[^']|'')*?''|'[^']*'|[^' \t\r\n;,)]*)`)
+// ordered from most- to least-quoted so each form is consumed whole and no password
+// material survives past ***REDACTED***. libpq quoting escapes both ' and \ with a
+// backslash (quotePGConnValue), and escapeLiteral additionally doubles every ' when the
+// DSN is embedded in a DuckDB SQL literal — so the matcher must understand backslash
+// escapes, not just balanced quotes.
+//   - Branch 1 — password=''…''  the escapeLiteral'd doubled form (tried first). Content
+//     atoms are `\''` (a libpq escaped quote whose ' was doubled by escapeLiteral), `\[^']`
+//     (any other backslash escape, incl. `\\`), and `[^'\]` (a plain char). A bare `'`
+//     never matches an atom, so the closing `''` is unreachable from inside the content:
+//     greedy matching is safe and the old non-greedy early-close leak is structurally gone.
+//   - Branch 2 — password='…'  the raw quoted BuildPGDSN output. Standard libpq quoted
+//     value `'(?:\.|[^'\])*'` consumes `\'` and `\\` as escapes instead of terminating on
+//     the escaped quote (the old '[^']*' branch mistook `\'` for the closing quote).
+//   - Branch 3 — password=value  the legacy unquoted form (unchanged).
+var reConnPassword = regexp.MustCompile(`(?i)(password=)(''(?:\\''|\\[^']|[^'\\])*''|'(?:\\.|[^'\\])*'|[^' \t\r\n;,)]*)`)
 
 // redactConnStr replaces any password value in a connection string (or an SQL
 // string that embeds one) with "***REDACTED***".  It is safe to call on any

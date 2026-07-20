@@ -92,5 +92,5 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  cdc-flush             Run CDC change_log flush to S3 parquet files")
 	fmt.Fprintln(out, "  cdc-init              Initialize S3 parquet base files from existing data")
 	fmt.Fprintln(out, "  compactor             Run compaction on parquet files for a schema")
-	fmt.Fprintln(out, "  manifest-reconcile    Diff S3 parquet objects against manifests; report, --repair orphaned deltas, --gc compaction leftovers")
+	fmt.Fprintln(out, "  manifest-reconcile    Diff S3 parquet objects against manifests; report, --repair orphaned deltas, --gc stale base/tmp leftovers (compaction + init-shaped)")
 }

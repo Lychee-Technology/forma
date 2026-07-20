@@ -9,6 +9,19 @@ import (
 
 const redactSecret = "secret123"
 
+// redactHostileSecret is a password carrying both an embedded single quote and a
+// backslash (Go literal for p'w\d). Once quoted by BuildPGDSN it becomes
+// password='p\'w\\d', whose escaped quote \' fools a naive '[^']*' matcher into
+// treating the escape as the closing quote and leaking the tail (#290).
+const redactHostileSecret = "p'w\\d"
+
+// redactHostileFragment is the leaking password tail as it appears *after*
+// quoting: quotePGConnValue doubles the backslash, so the tail that a naive
+// matcher leaks is w\\d (Go literal for w, backslash, backslash, d). This is
+// the exact material the buggy '[^']*' branch surfaced past ***REDACTED***; it
+// must never survive redaction in any DSN form.
+const redactHostileFragment = "w\\\\d"
+
 func redactTestParams() PGDSNParams {
 	return PGDSNParams{
 		Host:     "db.internal",
@@ -18,6 +31,67 @@ func redactTestParams() PGDSNParams {
 		DB:       "forma",
 		SSLMode:  "require",
 	}
+}
+
+func redactHostileParams() PGDSNParams {
+	p := redactTestParams()
+	p.Password = redactHostileSecret
+	return p
+}
+
+// TestRedactConnStr_HostilePasswordRawQuoted feeds a password with an embedded
+// quote+backslash through BuildPGDSN's raw quoted form. The escaped \' must not
+// be mistaken for the closing quote: neither the password nor its w\d tail may
+// leak, and the trailing keys must survive un-mangled.
+func TestRedactConnStr_HostilePasswordRawQuoted(t *testing.T) {
+	dsn := BuildPGDSN(redactHostileParams())
+	redacted := redactConnStr(dsn)
+	t.Logf("raw dsn:      %q", dsn)
+	t.Logf("raw redacted: %q", redacted)
+
+	require.NotContains(t, redacted, redactHostileFragment, "password tail leaked in redacted output: %q", redacted)
+	require.NotContains(t, redacted, redactHostileSecret, "full password leaked in redacted output: %q", redacted)
+	require.Contains(t, redacted, "***REDACTED***")
+	require.Contains(t, redacted, "dbname=")
+	require.Contains(t, redacted, "sslmode=")
+}
+
+// TestRedactConnStr_HostilePasswordEscapedQuoted feeds the same hostile password
+// through the escapeLiteral'd (doubled-quote) form embedded in a DuckDB literal.
+func TestRedactConnStr_HostilePasswordEscapedQuoted(t *testing.T) {
+	sqlLiteral := escapeLiteral(BuildPGDSN(redactHostileParams()))
+	redacted := redactConnStr(sqlLiteral)
+	t.Logf("escaped literal:  %q", sqlLiteral)
+	t.Logf("escaped redacted: %q", redacted)
+
+	require.NotContains(t, redacted, redactHostileFragment, "password tail leaked in redacted output: %q", redacted)
+	require.NotContains(t, redacted, redactHostileSecret, "full password leaked in redacted output: %q", redacted)
+	require.Contains(t, redacted, "***REDACTED***")
+	// In the escaped form trailing keys look like dbname=''forma''.
+	require.Contains(t, redacted, "dbname=''")
+	require.Contains(t, redacted, "sslmode=''")
+}
+
+// TestRedactConnStr_EmptyPasswordRawQuoted pins that an empty password (raw
+// password='') does not derail redaction of surrounding keys.
+func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
+	p := redactTestParams()
+	p.Password = ""
+	redacted := redactConnStr(BuildPGDSN(p))
+	require.Contains(t, redacted, "***REDACTED***")
+	require.Contains(t, redacted, "dbname=")
+	require.Contains(t, redacted, "sslmode=")
+}
+
+// TestRedactConnStr_EmptyPasswordEscapedQuoted pins the doubled-quote empty form
+// (password='''') — the branch-1 fallback must not swallow the trailing keys.
+func TestRedactConnStr_EmptyPasswordEscapedQuoted(t *testing.T) {
+	p := redactTestParams()
+	p.Password = ""
+	redacted := redactConnStr(escapeLiteral(BuildPGDSN(p)))
+	require.Contains(t, redacted, "***REDACTED***")
+	require.Contains(t, redacted, "dbname=''")
+	require.Contains(t, redacted, "sslmode=''")
 }
 
 // TestRedactConnStr_EscapedQuotedDSN pins the #290 regression: the flusher/init

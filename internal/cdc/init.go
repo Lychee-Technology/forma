@@ -243,31 +243,6 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 	return schemaIDs, nil
 }
 
-// initSchemaUnderLock holds the per-schema advisory lock for the whole
-// export + manifest publish, so manifest-reconcile (which reconciles under
-// the same lock) can never race an in-flight init (#290). Contended is an
-// error, not a skip: init is operator-initiated and a silently skipped
-// schema would stay uninitialized unnoticed.
-func initSchemaUnderLock(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
-	tryLock := runCtx.tryLock
-	if tryLock == nil {
-		tryLock = TrySchemaLock
-	}
-	locked, unlock, err := tryLock(ctx, runCtx.db, schemaID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("acquire advisory lock: %w", err)
-	}
-	if !locked {
-		return 0, 0, ErrSchemaLockContended
-	}
-	defer unlock()
-	initSchemaFn := runCtx.initSchemaFn
-	if initSchemaFn == nil {
-		initSchemaFn = initSchema
-	}
-	return initSchemaFn(ctx, runCtx, schemaID)
-}
-
 // initSchema exports all existing data for a single schema to S3 base files.
 func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
 	state, err := prepareSchemaInit(ctx, runCtx, schemaID)
