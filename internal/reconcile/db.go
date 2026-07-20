@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -61,37 +62,17 @@ func (e *RegistrySchemaEnumerator) SchemaIDs(ctx context.Context) ([]int16, erro
 }
 
 // PGAdvisoryLocker takes the flusher's per-schema advisory lock
-// (pg_try_advisory_lock(schemaID, schemaID), cdc.AcquireSchemaLock). Unlike
-// the flusher it pins one physical connection for the lock's lifetime: on a
-// pool, acquire and release could land on different connections, and a
-// session-scoped lock released on the wrong session silently fails.
+// (pg_try_advisory_lock(schemaID, schemaID)). It delegates to cdc.TrySchemaLock,
+// the single source of truth for the pinned-connection acquire/release dance:
+// on a pool, acquire and release could land on different connections, and a
+// session-scoped lock released on the wrong session silently fails, so the lock
+// pins one physical connection for its lifetime and closes it to unlock.
 type PGAdvisoryLocker struct {
 	DB *sql.DB
 }
 
 func (l *PGAdvisoryLocker) TryLock(ctx context.Context, schemaID int16) (bool, func(), error) {
-	conn, err := l.DB.Conn(ctx)
-	if err != nil {
-		return false, nil, fmt.Errorf("pin connection for schema %d lock: %w", schemaID, err)
-	}
-	var locked bool
-	row := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1, $2)", int32(schemaID), int32(schemaID))
-	if err := row.Scan(&locked); err != nil {
-		_ = conn.Close()
-		return false, nil, fmt.Errorf("acquire schema %d advisory lock: %w", schemaID, err)
-	}
-	if !locked {
-		_ = conn.Close()
-		return false, nil, nil
-	}
-	unlock := func() {
-		// Background context: the unlock must run even when the reconcile
-		// context is already cancelled; closing the pinned connection
-		// releases the session-scoped lock regardless.
-		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1, $2)", int32(schemaID), int32(schemaID))
-		_ = conn.Close()
-	}
-	return true, unlock, nil
+	return cdc.TrySchemaLock(ctx, l.DB, schemaID)
 }
 
 // PGLiveRows implements LiveRowChecker over the entity main table. Liveness

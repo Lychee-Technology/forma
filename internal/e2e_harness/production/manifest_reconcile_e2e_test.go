@@ -324,8 +324,10 @@ func testReconcileRepairIdempotent(t *testing.T, ctx context.Context, env *Env, 
 // path with the two-phase sighting contract: the first --gc run only
 // records each leftover's first-unlisted sighting (persisted next to the
 // manifest), and a later run deletes it once BOTH the observed-unlisted
-// duration and the object age exceed the grace period. Delta-shaped and
-// init-shaped orphans and manifest-listed objects are never touched.
+// duration and the object age exceed the grace period. Init-shaped base
+// orphans join the sweep since #290 (cdc-init holds the same per-schema
+// advisory lock reconcile takes). Delta-shaped orphans and manifest-listed
+// objects are never touched.
 func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -382,8 +384,8 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 			t.Fatalf("gc run past grace: %v", err)
 		}
 		s := report.Schemas[0]
-		if len(s.Deleted) != 2 {
-			t.Fatalf("gc deleted %v, want the base and _tmp leftovers", s.Deleted)
+		if len(s.Deleted) != 3 {
+			t.Fatalf("gc deleted %v, want the merged-base, _tmp, and init-shaped leftovers", s.Deleted)
 		}
 
 		keys, err := env.listS3Keys(ctx)
@@ -394,14 +396,12 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 		for _, k := range keys {
 			remaining[k] = true
 		}
-		if remaining[staleBase] || remaining[staleTmp] {
-			t.Fatalf("gc left leftovers behind: base=%v tmp=%v", remaining[staleBase], remaining[staleTmp])
+		if remaining[staleBase] || remaining[staleTmp] || remaining[initShaped] {
+			t.Fatalf("gc left leftovers behind: base=%v tmp=%v init=%v",
+				remaining[staleBase], remaining[staleTmp], remaining[initShaped])
 		}
 		if !remaining[deltaOrphan] {
-			t.Fatal("gc deleted a delta-shaped orphan; delta orphans carry unique data")
-		}
-		if !remaining[initShaped] {
-			t.Fatal("gc deleted an init-shaped base orphan; an in-flight cdc-init writes these before publishing its manifest")
+			t.Fatal("gc deleted a delta-shaped orphan; delta orphans carry unique data and need --repair analysis")
 		}
 		for _, f := range mBefore.Files {
 			if key, ok := normalizedManifestKey(env, f.Path); ok && !remaining[key] {

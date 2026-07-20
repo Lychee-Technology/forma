@@ -48,6 +48,9 @@ type initRunContext struct {
 	dryRun               bool
 	autoEstimateRowBytes bool
 	pgConnStr            string
+	// tryLock and initSchemaFn are test seams (nil→real impl below), mirroring the flusher's processSchemaFn seam.
+	tryLock      func(ctx context.Context, db *sql.DB, schemaID int16) (bool, func(), error)
+	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error)
 }
 
 // normalizeInitOptions applies the same config defaults as Runner.RunOnce.
@@ -85,8 +88,7 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	if sslMode == "" {
 		sslMode = "require"
 	}
-	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, cfg.PGPassword, cfg.PGDB, sslMode)
+	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: cfg.PGPassword, DB: cfg.PGDB, SSLMode: sslMode})
 
 	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
@@ -193,7 +195,7 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		rowsExported, filesCreated, err := initSchema(ctx, runCtx, schemaID)
+		rowsExported, filesCreated, err := initSchemaUnderLock(ctx, runCtx, schemaID)
 		if err != nil {
 			runCtx.logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Error(err))
 			schemaErrors = append(schemaErrors, fmt.Errorf("schema %d: %w", schemaID, err))

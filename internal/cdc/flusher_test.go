@@ -299,25 +299,26 @@ func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
 	})
 
 	lockAttempts := 0
-	releaseCalls := 0
+	unlockCalls := 0
 	flushCtx := &schemaFlushContext{
 		db:     db,
 		cfg:    CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		logger: zap.NewNop(),
-		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
+		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
 			lockAttempts++
-			return false, nil
-		},
-		releaseLock: func(context.Context, *sql.DB, int16) error {
-			releaseCalls++
-			return nil
+			// Intentionally returns a non-nil unlock alongside locked=false,
+			// violating the "unlock non-nil iff locked" contract on purpose:
+			// the require.Zero(unlockCalls) below proves the skip path never
+			// invokes unlock. Do NOT "fix" this to a nil unlock — that would
+			// hollow the assertion (a nil call would panic instead of counting).
+			return false, func() { unlockCalls++ }, nil
 		},
 	}
 
 	err = flushCtx.processSchema(context.Background(), 7)
 	require.NoError(t, err)
 	require.Equal(t, 1, lockAttempts)
-	require.Zero(t, releaseCalls)
+	require.Zero(t, unlockCalls)
 }
 
 func TestProcessSchema_ReturnsErrorWhenChangeLogStatsCannotBeRead(t *testing.T) {
@@ -327,25 +328,21 @@ func TestProcessSchema_ReturnsErrorWhenChangeLogStatsCannotBeRead(t *testing.T) 
 		require.NoError(t, db.Close())
 	})
 
-	releaseCalls := 0
+	unlockCalls := 0
 	flushCtx := &schemaFlushContext{
 		db:        db,
 		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		tableName: "missing_change_log",
 		logger:    zap.NewNop(),
-		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
-			return true, nil
-		},
-		releaseLock: func(context.Context, *sql.DB, int16) error {
-			releaseCalls++
-			return nil
+		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
+			return true, func() { unlockCalls++ }, nil
 		},
 	}
 
 	err = flushCtx.processSchema(context.Background(), 7)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "get changelog stats")
-	require.Equal(t, 1, releaseCalls)
+	require.Equal(t, 1, unlockCalls)
 }
 
 func TestProcessSchema_SkipsWhenNoPendingRowsExist(t *testing.T) {
@@ -359,24 +356,20 @@ func TestProcessSchema_SkipsWhenNoPendingRowsExist(t *testing.T) {
 	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
 	require.NoError(t, err)
 
-	releaseCalls := 0
+	unlockCalls := 0
 	flushCtx := &schemaFlushContext{
 		db:        db,
 		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		tableName: "change_log",
 		logger:    zap.NewNop(),
-		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
-			return true, nil
-		},
-		releaseLock: func(context.Context, *sql.DB, int16) error {
-			releaseCalls++
-			return nil
+		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
+			return true, func() { unlockCalls++ }, nil
 		},
 	}
 
 	err = flushCtx.processSchema(ctx, 7)
 	require.NoError(t, err)
-	require.Equal(t, 1, releaseCalls)
+	require.Equal(t, 1, unlockCalls)
 }
 
 func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
@@ -392,24 +385,20 @@ func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, 0)", time.Now().UnixMilli())
 	require.NoError(t, err)
 
-	releaseCalls := 0
+	unlockCalls := 0
 	flushCtx := &schemaFlushContext{
 		db:        db,
 		cfg:       CDCConfig{MinRecords: 10, MaxAgeMs: 1_000_000},
 		tableName: "change_log",
 		logger:    zap.NewNop(),
-		acquireLock: func(context.Context, *sql.DB, int16) (bool, error) {
-			return true, nil
-		},
-		releaseLock: func(context.Context, *sql.DB, int16) error {
-			releaseCalls++
-			return nil
+		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
+			return true, func() { unlockCalls++ }, nil
 		},
 	}
 
 	err = flushCtx.processSchema(ctx, 7)
 	require.NoError(t, err)
-	require.Equal(t, 1, releaseCalls)
+	require.Equal(t, 1, unlockCalls)
 }
 
 func TestProcessSchemas_AbortsWhenSchemaCacheUnavailable(t *testing.T) {

@@ -20,11 +20,12 @@ import (
 // OrphanClass is the filename-shape class of an unlisted parquet object. The
 // class decides the recovery direction: delta orphans may carry data that
 // exists nowhere else and are candidates for repair (guarded by row coverage
-// and Postgres liveness), merged-base and _tmp orphans are compaction
-// leftovers eligible for GC, and init-shaped base orphans are only reported —
-// an in-flight cdc-init promotes them long before it publishes the manifest
-// and holds no advisory lock, so deleting them could destroy a running
-// re-export. Unknown shapes are reported and never touched.
+// and Postgres liveness), while merged-base, _tmp, and init-shaped base
+// orphans are all eligible for GC. Init-shaped orphans became GC candidates in
+// #290: cdc-init now holds the same per-schema advisory lock reconcile takes,
+// so under that lock an init-shaped orphan is provably not from an in-flight
+// init — it is either a failed manifest publish or a file superseded by a
+// later init run. Unknown shapes are reported and never touched.
 type OrphanClass int
 
 const (

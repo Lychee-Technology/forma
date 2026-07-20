@@ -15,34 +15,28 @@ import (
 )
 
 // reConnPassword matches the password= key-value pair in a libpq-style connection string,
-// including the quoted form used inside DuckDB ATTACH statements.
-// It handles both  password=value  and  password='value'  forms.
-var reConnPassword = regexp.MustCompile(`(?i)(password=)'?[^' \t\r\n;,)]*'?`)
+// including the quoted forms used inside DuckDB ATTACH statements. The alternation is
+// ordered from most- to least-quoted so each form is consumed whole and no password
+// material survives past ***REDACTED***. libpq quoting escapes both ' and \ with a
+// backslash (quotePGConnValue), and escapeLiteral additionally doubles every ' when the
+// DSN is embedded in a DuckDB SQL literal — so the matcher must understand backslash
+// escapes, not just balanced quotes.
+//   - Branch 1 — password=''…''  the escapeLiteral'd doubled form (tried first). Content
+//     atoms are `\''` (a libpq escaped quote whose ' was doubled by escapeLiteral), `\[^']`
+//     (any other backslash escape, incl. `\\`), and `[^'\]` (a plain char). A bare `'`
+//     never matches an atom, so the closing `''` is unreachable from inside the content:
+//     greedy matching is safe and the old non-greedy early-close leak is structurally gone.
+//   - Branch 2 — password='…'  the raw quoted BuildPGDSN output. Standard libpq quoted
+//     value `'(?:\.|[^'\])*'` consumes `\'` and `\\` as escapes instead of terminating on
+//     the escaped quote (the old '[^']*' branch mistook `\'` for the closing quote).
+//   - Branch 3 — password=value  the legacy unquoted form (unchanged).
+var reConnPassword = regexp.MustCompile(`(?i)(password=)(''(?:\\''|\\[^']|[^'\\])*''|'(?:\\.|[^'\\])*'|[^' \t\r\n;,)]*)`)
 
 // redactConnStr replaces any password value in a connection string (or an SQL
 // string that embeds one) with "***REDACTED***".  It is safe to call on any
 // string that may or may not contain a password.
 func redactConnStr(s string) string {
 	return reConnPassword.ReplaceAllString(s, "${1}***REDACTED***")
-}
-
-// AcquireSchemaLock tries to grab an advisory lock for the schema to avoid
-// concurrent flush/compaction on the same schema.
-func AcquireSchemaLock(ctx context.Context, db *sql.DB, schemaID int16) (bool, error) {
-	row := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1, $2)", int32(schemaID), int32(schemaID))
-	var locked bool
-	if err := row.Scan(&locked); err != nil {
-		return false, fmt.Errorf("acquire lock: %w", err)
-	}
-	return locked, nil
-}
-
-// ReleaseSchemaLock releases the advisory lock for the schema.
-func ReleaseSchemaLock(ctx context.Context, db *sql.DB, schemaID int16) error {
-	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1, $2)", int32(schemaID), int32(schemaID)); err != nil {
-		return fmt.Errorf("release lock: %w", err)
-	}
-	return nil
 }
 
 // GetChangeLogStats returns count and oldest changed_at for unflushed rows.

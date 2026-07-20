@@ -159,11 +159,17 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		deltaLeftovers = outcome.leftovers
 	}
 	if r.Opts.GC {
-		// Init-shaped base orphans are never GC candidates: an in-flight
-		// cdc-init promotes them long before publishing the manifest and
-		// holds no advisory lock. Delta leftovers require the repair
-		// analysis, so they are only deletable under --repair --gc.
-		candidates := append(append([]ObjectInfo(nil), d.baseMergedOrphans...), d.tmpOrphans...)
+		// Init-shaped base orphans are GC candidates since #290: cdc-init holds
+		// the same per-schema advisory lock, so under this lock an init-shaped
+		// orphan is provably not from an in-flight init — it is either the output
+		// of a failed manifest publish or a file superseded by a later init run.
+		// Recovery for a failed publish is re-running cdc-init (the source of
+		// truth is entity_main); auto-promotion (--repair) is a follow-up.
+		// Delta leftovers require the repair analysis, so they are only deletable
+		// under --repair --gc.
+		candidates := append([]ObjectInfo(nil), d.baseInitOrphans...)
+		candidates = append(candidates, d.baseMergedOrphans...)
+		candidates = append(candidates, d.tmpOrphans...)
 		candidates = append(candidates, deltaLeftovers...)
 		// Run even with zero candidates: sighting-state entries for keys
 		// that stopped being orphans must be pruned so a later unlisting

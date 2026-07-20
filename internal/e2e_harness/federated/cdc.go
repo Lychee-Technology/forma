@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma/internal/cdc"
 )
 
 // RunCDCFlush triggers a CDC flush operation.
@@ -75,28 +76,7 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 }
 
 func (h *FederatedTestHarness) tryAcquireSchemaLock(ctx context.Context) (bool, func(), error) {
-	conn, err := h.PGDB.Conn(ctx)
-	if err != nil {
-		return false, nil, fmt.Errorf("get postgres connection for advisory lock: %w", err)
-	}
-
-	var locked bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1, $2)", int32(h.SchemaID), int32(h.SchemaID)).Scan(&locked); err != nil {
-		_ = conn.Close()
-		return false, nil, fmt.Errorf("acquire advisory lock: %w", err)
-	}
-	if !locked {
-		_ = conn.Close()
-		return false, nil, nil
-	}
-
-	unlock := func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1, $2)", int32(h.SchemaID), int32(h.SchemaID))
-		_ = conn.Close()
-	}
-	return true, unlock, nil
+	return cdc.TrySchemaLock(ctx, h.PGDB, h.SchemaID)
 }
 
 // getUnflushedRowIDs fetches unflushed row IDs from change_log up to batch size.

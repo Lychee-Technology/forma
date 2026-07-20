@@ -203,8 +203,7 @@ func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, 
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
-	pgConnStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.PGHost, cfg.PGPort, cfg.PGUser, pgPassword, cfg.PGDB, sslMode)
+	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: pgPassword, DB: cfg.PGDB, SSLMode: sslMode})
 
 	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
@@ -249,8 +248,7 @@ type schemaFlushContext struct {
 	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
-	acquireLock      func(context.Context, *sql.DB, int16) (bool, error)
-	releaseLock      func(context.Context, *sql.DB, int16) error
+	tryLock          func(context.Context, *sql.DB, int16) (bool, func(), error)
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	processSchemaFn  func(context.Context, int16) error
@@ -296,17 +294,11 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) error {
 	c.logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
-	acquireLock := c.acquireLock
-	if acquireLock == nil {
-		acquireLock = AcquireSchemaLock
+	tryLock := c.tryLock
+	if tryLock == nil {
+		tryLock = TrySchemaLock
 	}
-	releaseLock := c.releaseLock
-	if releaseLock == nil {
-		releaseLock = ReleaseSchemaLock
-	}
-
-	// Try advisory lock
-	locked, err := acquireLock(ctx, c.db, schemaID)
+	locked, unlock, err := tryLock(ctx, c.db, schemaID)
 	if err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
@@ -314,7 +306,7 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 		c.logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return nil
 	}
-	defer func() { _ = releaseLock(ctx, c.db, schemaID) }()
+	defer unlock()
 
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
@@ -366,11 +358,10 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 	if sslMode == "" {
 		sslMode = DefaultPGSSLMode
 	}
-	pgConnForDuck := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.pgPassword, c.cfg.PGDB, sslMode)
-	pgConnForDuckLoggable := fmt.Sprintf("host=%s port=%d user=%s password=***REDACTED*** dbname=%s sslmode=%s",
-		c.cfg.PGHost, c.cfg.PGPort, c.cfg.PGUser, c.cfg.PGDB, sslMode)
-	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", pgConnForDuckLoggable)
+	pgConnForDuck := BuildPGDSN(PGDSNParams{Host: c.cfg.PGHost, Port: c.cfg.PGPort, User: c.cfg.PGUser, Password: c.pgPassword, DB: c.cfg.PGDB, SSLMode: sslMode})
+	// Redact the real (quoted) wire DSN rather than hand-building a stale preview
+	// that no longer matches what DuckDB receives (#290).
+	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", redactConnStr(pgConnForDuck))
 
 	// Cache was resolved and validated by the processSchemas pre-flight (#193).
 	attrCache := c.attrCaches[schemaID]
