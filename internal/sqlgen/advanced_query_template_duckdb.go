@@ -17,13 +17,18 @@ import "text/template"
 // versions. Callers must always set HasHot (a missing map key renders as
 // false and would silently prune pg_source).
 // FlushGraceCutoffMs widens the dirty barrier (#252): rows flushed after the
-// cutoff (query-start now minus the visibility grace) count as dirty even
-// though flushed_at != 0, keeping just-flushed rows hot-readable while the
-// reader's manifest snapshot catches up to the append. Widening is a safe
-// over-approximation — it only shifts rows from parquet-served to PG-served.
-// The cutoff is a server-generated int64 (or the compile-time sentinel that
-// Bind splices); callers must always set it — FlushGraceCutoffDisabled
-// (MaxInt64) restores the exact flushed_at = 0 barrier.
+// cutoff (the instant this query resolved its parquet path set, minus the
+// configured clock-skew margin) count as dirty even though flushed_at != 0.
+// The flush appends the manifest before marking, so a row flushed before
+// path resolution already has its delta listed — the widening therefore
+// catches exactly the rows racing this query, keeping them hot-readable
+// instead of invisible. It renders only in the HasHot form: widening is safe
+// solely because pg_source serves the discarded rows, so hot-excluded
+// shapes keep the strict flushed_at = 0 barrier (their contract is
+// flushed-data-only, and discarding without a hot server would drop rows
+// whose delta IS listed). The cutoff is a server-generated int64 (or the
+// compile-time sentinel that Bind splices); callers must always set it —
+// FlushGraceCutoffDisabled (MaxInt64) restores the exact strict barrier.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
@@ -32,7 +37,7 @@ dirty_ids AS (
   SELECT row_id
   FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}')
   WHERE schema_id = {{.SCHEMA_ID}}
-    AND (flushed_at = 0 OR flushed_at > {{.FlushGraceCutoffMs}})
+    AND (flushed_at = 0{{if .HasHot}} OR flushed_at > {{.FlushGraceCutoffMs}}{{end}})
 ),
 
 s3_source AS (

@@ -68,9 +68,10 @@ type DBFederatedQueryEngine struct {
 	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
 	// the legacy hint-only path resolution. See WithParquetSource.
 	parquetSource ParquetSource
-	// flushVisibilityGraceMs widens the dirty barrier by this many ms of
-	// flushed_at recency (#252); negative disables the grace. Resolved from
-	// DuckDBConfig.FlushVisibilityGraceMs at construction (zero -> default).
+	// flushVisibilityGraceMs is the #252 clock-skew margin subtracted from
+	// the query's path-resolution timestamp to form the dirty-barrier
+	// cutoff; zero = exact anchor (default), negative = widening disabled.
+	// Copied from DuckDBConfig.FlushVisibilityGraceMs at construction.
 	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
@@ -87,18 +88,15 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.planCache = c }
 }
 
-// defaultFlushVisibilityGraceMs covers the reader-side manifest-load-to-scan
-// latency plus cross-host clock skew (flushed_at is stamped on the CDC host,
-// the cutoff on the query host) with wide margin.
-const defaultFlushVisibilityGraceMs int64 = 60_000
-
-// WithFlushVisibilityGrace overrides the #252 flush-visibility grace: rows
-// flushed within d of query start stay hot-readable. d <= 0 disables the
-// grace entirely (the exact flushed_at = 0 barrier — the pre-#252 behavior),
-// unlike the zero config value, which selects the built-in default.
+// WithFlushVisibilityGrace overrides the #252 clock-skew margin subtracted
+// from the query's path-resolution timestamp when computing the dirty-barrier
+// cutoff. d == 0 is the exact anchor (the default); d > 0 hardens against
+// cross-host clock skew (flushed_at is stamped on the CDC host, the cutoff on
+// the query host) at the cost of hot-serving rows flushed up to d before the
+// query; d < 0 disables the widening entirely (the pre-#252 barrier).
 func WithFlushVisibilityGrace(d time.Duration) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
-		if d <= 0 {
+		if d < 0 {
 			e.flushVisibilityGraceMs = -1
 			return
 		}
@@ -106,22 +104,18 @@ func WithFlushVisibilityGrace(d time.Duration) EngineOption {
 	}
 }
 
-// resolveFlushVisibilityGraceMs maps the config value to the engine field:
-// zero -> built-in default, negative -> disabled, positive -> as configured.
-func resolveFlushVisibilityGraceMs(ms int64) int64 {
-	if ms == 0 {
-		return defaultFlushVisibilityGraceMs
-	}
-	return ms
-}
-
-// flushGraceCutoffMs computes the per-request dirty-barrier cutoff: rows with
-// flushed_at strictly after it count as dirty (#252).
-func (e *DBFederatedQueryEngine) flushGraceCutoffMs() int64 {
+// flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the
+// instant the query resolved its parquet path set (#252): rows with
+// flushed_at strictly after the cutoff count as dirty. Because the flush
+// appends the manifest BEFORE marking, any row flushed before path
+// resolution already has its delta listed in the resolved set — so the
+// steady state is never widened; only rows racing this query stay
+// hot-readable. The configured grace is a clock-skew margin, not a window.
+func (e *DBFederatedQueryEngine) flushGraceCutoffMs(pathsResolvedAtMs int64) int64 {
 	if e.flushVisibilityGraceMs < 0 {
 		return sqlgen.FlushGraceCutoffDisabled
 	}
-	return time.Now().UnixMilli() - e.flushVisibilityGraceMs
+	return pathsResolvedAtMs - e.flushVisibilityGraceMs
 }
 
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
@@ -139,7 +133,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 		duckTemplate:           sqlgen.AdvancedQueryTemplateDuckDB,
 		projections:            sqlgen.NewProjectionCache(),
 		schemaValidator:        newParquetSchemaValidator(),
-		flushVisibilityGraceMs: resolveFlushVisibilityGraceMs(cfg.FlushVisibilityGraceMs),
+		flushVisibilityGraceMs: cfg.FlushVisibilityGraceMs,
 	}
 	for _, opt := range opts {
 		opt(e)

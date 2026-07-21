@@ -101,7 +101,11 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	// Resolve the parquet path set once (#187): explicit render hints win,
 	// otherwise the manifest-driven source authors the list. Provenance
-	// gates the read-error classification below.
+	// gates the read-error classification below. The flush-grace cutoff is
+	// stamped BEFORE resolution (#252): any row marked flushed after this
+	// instant may belong to a delta this path set does not list yet, so the
+	// dirty barrier keeps it hot-readable for this query.
+	graceCutoffMs := e.flushGraceCutoffMs(time.Now().UnixMilli())
 	parquetPaths, pathsFromSource, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return 0, fmt.Errorf("resolve parquet paths: %w", err)
@@ -132,7 +136,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, planCtx)
 	if err != nil {
 		return 0, err
 	}

@@ -99,8 +99,11 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		"hot excluded: unified must read from s3_source alone")
 	require.Contains(t, sqlText, "read_parquet",
 		"warm/cold requested: the parquet source must render")
-	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at > ",
-		"the dirty_ids barrier must survive tier pruning")
+	require.Contains(t, sqlText, "AND (flushed_at = 0)",
+		"the dirty_ids barrier must survive tier pruning UNWIDENED: with "+
+			"pg_source pruned there is no hot server for grace-discarded rows (#252)")
+	require.NotContains(t, sqlText, "OR flushed_at > ",
+		"hot-excluded shapes must keep the strict flushed_at = 0 barrier")
 	require.Equal(t, []any{int64(10), int64(10)}, args,
 		"PgMainArgs must be dropped with the pg_source CTE: "+
 			"binds are the s3 semijoin and visible occurrences of DuckArgs only")

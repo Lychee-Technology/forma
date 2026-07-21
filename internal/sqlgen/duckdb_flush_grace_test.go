@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Pins for the #252 read-side grace: the flushed_at barrier widens to
-// (flushed_at = 0 OR flushed_at > cutoff) at BOTH change_log scan sites, the
+// Pins for the #252 read-side grace: in the HasHot form the flushed_at
+// barrier widens to (flushed_at = 0 OR flushed_at > cutoff) at BOTH
+// change_log scan sites (cutoff = the query's path-resolution instant minus
+// the clock-skew margin), hot-excluded shapes keep the strict barrier, the
 // cutoff stays out of the compiled skeleton (sentinel splice, cache-key
 // stable), and every render path supplies a value — a missing cutoff must
 // fall back to FlushGraceCutoffDisabled, never to 0 (which would pull the
@@ -63,6 +65,19 @@ func TestFlushGraceCutoffRendersAtBothSites(t *testing.T) {
 		flushGraceParams(t, cutoff), flushGraceQuery(), nil, dual)
 	require.NoError(t, err)
 	requireGraceSites(t, sqlText, strconv.FormatInt(cutoff, 10))
+}
+
+// TestFlushGraceHotExcludedKeepsStrictBarrier pins the HasHot gate: with
+// pg_source pruned there is no hot server for grace-discarded rows, so the
+// dirty CTE must keep the strict flushed_at = 0 predicate.
+func TestFlushGraceHotExcludedKeepsStrictBarrier(t *testing.T) {
+	q := flushGraceQuery()
+	q.PreferredTiers = []model.DataTier{model.DataTierWarm, model.DataTierCold}
+	sqlText, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB,
+		flushGraceParams(t, int64(1_752_900_000_000)), q, nil, &DualClauses{DuckClause: "1=1"})
+	require.NoError(t, err)
+	require.Contains(t, sqlText, "AND (flushed_at = 0)")
+	require.NotContains(t, sqlText, "OR flushed_at > ")
 }
 
 // TestFlushGraceCutoffDefaultsToDisabled pins the defensive default on both

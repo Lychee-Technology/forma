@@ -11,16 +11,20 @@ import (
 // TestFlushGraceBackstopServesStaleManifestSnapshot pins the #252 read-side
 // grace: even with the append-before-mark ordering, a reader that resolved
 // its parquet path set BEFORE a flush's manifest append but runs its dirty
-// scan AFTER the mark would see the batch in neither tier. The grace widens
-// the dirty barrier to (flushed_at = 0 OR flushed_at > now-GRACE), so
-// just-flushed rows stay hot-readable until the reader's path snapshot
-// catches up.
+// scan AFTER the mark would see the batch in neither tier. The dirty-barrier
+// cutoff anchors at the query's own path-resolution instant (minus the
+// configured clock-skew margin), so rows marked after that instant stay
+// hot-readable while the resolved path set may predate their delta.
 //
-// The stale snapshot is simulated with an explicit S3ParquetPathTemplate
-// hint (an explicit hint wins over the manifest source, #184/#187) listing
-// only the FIRST flush's delta while the second flush has already marked and
-// appended. The disabled-grace probe is the red anchor proving the grace is
-// the serving mechanism, not some other path.
+// The e2e cannot pause a query between its path resolution and its dirty
+// scan, so the race is emulated from the other side: an explicit
+// S3ParquetPathTemplate hint (an explicit hint wins over the manifest
+// source, #184/#187) lists only the FIRST flush's delta while the second
+// flush has already marked and appended, and a large margin stands in for
+// "the path set was resolved before that flush". The default-margin probe is
+// the counterpart pin: in the steady state (flush completed before the
+// query) the exact anchor must NOT widen, so results keep their flushed
+// parquet semantics with zero drift.
 func TestFlushGraceBackstopServesStaleManifestSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -69,29 +73,31 @@ func TestFlushGraceBackstopServesStaleManifestSnapshot(t *testing.T) {
 		return len(res.Records)
 	}
 
-	t.Run("GraceServesJustFlushedRows", func(t *testing.T) {
+	t.Run("MarginServesRowsFlushedAfterSnapshot", func(t *testing.T) {
 		t.Parallel()
 		env := NewEnv(t, SharedCluster(t))
-		staleHint := seedTwoFlushedGenerations(t, env)
-		// Default grace (60s): both generations were flushed within the grace,
+		// A 60s margin emulates a path set resolved before the recent flushes:
+		// both generations' flushed_at land after cutoff = resolution - 60s,
 		// so the widened barrier serves ALL rows from the hot tier even though
 		// the stale path set lists only the first delta.
+		env.DuckCfg.FlushVisibilityGraceMs = 60_000
+		staleHint := seedTwoFlushedGenerations(t, env)
 		if got := queryStale(t, env, staleHint); got != 8 {
-			t.Errorf("graced stale-snapshot query saw %d rows, want 8 — just-flushed rows must stay hot-readable (#252)", got)
+			t.Errorf("margined stale-snapshot query saw %d rows, want 8 — rows flushed after the emulated snapshot must stay hot-readable (#252)", got)
 		}
 	})
 
-	t.Run("DisabledGraceExposesTheGap", func(t *testing.T) {
+	t.Run("ExactAnchorNeverWidensSteadyState", func(t *testing.T) {
 		t.Parallel()
 		env := NewEnv(t, SharedCluster(t))
-		// Restore the exact pre-#252 barrier before the engine is built.
-		env.DuckCfg.FlushVisibilityGraceMs = -1
 		staleHint := seedTwoFlushedGenerations(t, env)
-		// Red anchor: without the grace the second generation is invisible —
-		// marked flushed, absent from the stale path set. This documents that
-		// the grace is the mechanism serving the rows above.
+		// Default (zero margin): both flushes completed before this query
+		// resolved its paths, so nothing is widened — the second generation is
+		// invisible through the stale hint exactly as pre-#252. This pins both
+		// the zero-drift steady state and that the margin is the serving
+		// mechanism in the subtest above.
 		if got := queryStale(t, env, staleHint); got != 4 {
-			t.Errorf("disabled-grace stale-snapshot query saw %d rows, want 4 (the pre-#252 gap)", got)
+			t.Errorf("exact-anchor stale-snapshot query saw %d rows, want 4 (steady state must not widen)", got)
 		}
 	})
 }

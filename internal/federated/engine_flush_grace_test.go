@@ -9,35 +9,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Pins the #252 grace-knob semantics: config zero selects the built-in
-// default, config negative disables, and the disabled engine emits the
-// FlushGraceCutoffDisabled cutoff (the exact pre-#252 barrier) instead of a
-// time-derived one.
+// Pins the #252 grace-knob semantics: the cutoff anchors at the query's
+// path-resolution timestamp minus the configured clock-skew margin (zero =
+// exact anchor, the default), and a negative margin disables the widening
+// entirely (the always-false FlushGraceCutoffDisabled cutoff).
 func TestFlushVisibilityGraceResolution(t *testing.T) {
-	require.Equal(t, defaultFlushVisibilityGraceMs, resolveFlushVisibilityGraceMs(0),
-		"config zero must select the built-in default")
-	require.Equal(t, int64(1234), resolveFlushVisibilityGraceMs(1234))
-	require.Equal(t, int64(-1), resolveFlushVisibilityGraceMs(-1),
-		"negative config must stay disabled")
-
 	newEngine := func(cfg forma.DuckDBConfig, opts ...EngineOption) *DBFederatedQueryEngine {
 		return NewDBFederatedQueryEngine(nil, nil, nil, nil, cfg, nil, "", opts...)
 	}
+	const resolvedAt = int64(1_752_900_000_000)
+
+	exact := newEngine(forma.DuckDBConfig{})
+	require.Equal(t, resolvedAt, exact.flushGraceCutoffMs(resolvedAt),
+		"zero margin must anchor the cutoff exactly at path resolution")
+
+	margined := newEngine(forma.DuckDBConfig{FlushVisibilityGraceMs: 5000})
+	require.Equal(t, resolvedAt-5000, margined.flushGraceCutoffMs(resolvedAt),
+		"a positive margin subtracts from the path-resolution anchor")
 
 	disabled := newEngine(forma.DuckDBConfig{FlushVisibilityGraceMs: -1})
-	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, disabled.flushGraceCutoffMs(),
-		"disabled grace must emit the always-false cutoff, not now-minus-anything")
+	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, disabled.flushGraceCutoffMs(resolvedAt),
+		"disabled widening must emit the always-false cutoff")
 
-	graced := newEngine(forma.DuckDBConfig{FlushVisibilityGraceMs: 5000})
-	cutoff := graced.flushGraceCutoffMs()
-	now := time.Now().UnixMilli()
-	require.InDelta(t, now-5000, cutoff, 1000,
-		"cutoff must be query-start now minus the configured grace")
-
-	// The option overrides the config, and d <= 0 disables (unlike config 0).
+	// The option overrides the config; a negative duration disables.
 	overridden := newEngine(forma.DuckDBConfig{FlushVisibilityGraceMs: 5000},
-		WithFlushVisibilityGrace(0))
-	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, overridden.flushGraceCutoffMs())
+		WithFlushVisibilityGrace(-time.Second))
+	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, overridden.flushGraceCutoffMs(resolvedAt))
 	widened := newEngine(forma.DuckDBConfig{}, WithFlushVisibilityGrace(2*time.Minute))
 	require.Equal(t, int64(120_000), widened.flushVisibilityGraceMs)
 }

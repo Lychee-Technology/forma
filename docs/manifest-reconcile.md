@@ -23,7 +23,7 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 
 | 类别 | 形态 | 来源 | 处置 |
 |------|------|------|------|
-| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | #197 或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
+| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
 | merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
 | init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件（`--repair` 自动重建留 follow-up） |
 | `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
@@ -43,9 +43,11 @@ unknown（只报告，永不删除）。
 
 ## `--repair` 的安全守卫（防墓碑复活）
 
-一个 delta 形态孤儿有两种截然相反的身份：#197 孤儿（数据仅存于该文件，必须补录）或
-#188 中删除失败的 merged source（数据已并入 merged base，其中墓碑行在合并时被物理丢弃
-——**补录会让已删除的行复活**）。工具用两级探测区分：
+一个 delta 形态孤儿有两种截然相反的身份：数据仅存于该文件的丢失形态（#197；#252 把
+flush 改为 append 先于 mark 后，新产生的 append-失败孤儿其行仍 dirty、会被重试自愈覆盖，
+从而落入下面的残留分支——丢失形态只剩历史遗留与极端交错）或 #188 中删除失败的 merged
+source（数据已并入 merged base，其中墓碑行在合并时被物理丢弃——**补录会让已删除的行
+复活**）。工具用两级探测区分：
 
 1. **覆盖探测**（DuckDB 反连接）：孤儿中有哪些 row_id 不出现在任何 manifest 已列文件里；
 2. **活性探测**（Postgres `entity_main`，`--entity-main-table`）：这些未覆盖行是否仍存活。
