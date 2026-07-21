@@ -63,9 +63,11 @@ func TestExecuteFlush_SplitsBatchWhenByteTargetIsExceeded(t *testing.T) {
 
 // executeBatch must not swallow manifest failures: a delta file absent from
 // the manifest is invisible to manifest consumers (e.g. compaction) while
-// the run would otherwise report success. Rows are already marked flushed
-// by this point, so the flush state persists even though the pass fails —
-// the returned error carries the final key for manual reconciliation.
+// the run would otherwise report success. Under the #252 ordering the
+// manifest append runs BEFORE mark-flushed, so an append failure leaves the
+// rows dirty: the retry re-selects them and self-heals with a fresh key,
+// and the old copied final is an unlisted orphan for manifest-reconcile
+// --gc. The error still carries the final key for observability.
 func TestExecuteBatch_ReturnsErrorWhenManifestLoadFails(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -107,12 +109,12 @@ func TestExecuteBatch_ReturnsErrorWhenManifestLoadFails(t *testing.T) {
 	require.Contains(t, err.Error(), "manifest update")
 	require.Contains(t, err.Error(), "cdc/7/delta-file.parquet")
 
-	// The flush itself is durable: rows stay marked flushed even though the
-	// pass reports failure. A re-run will not re-export them.
+	// #252: mark-flushed runs after the append, so the failed append leaves
+	// the rows dirty — the retry re-selects and re-exports them.
 	var flushedAt int64
 	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
 	require.NoError(t, err)
-	require.NotZero(t, flushedAt)
+	require.Zero(t, flushedAt)
 	require.Zero(t, store.saved)
 }
 
@@ -159,6 +161,70 @@ func TestExecuteBatch_ReturnsErrorWhenManifestSaveFails(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, saveErr)
 	require.Contains(t, err.Error(), "cdc/7/delta-file.parquet")
+
+	// #252: the failed save precedes mark-flushed, so the rows stay dirty.
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.Zero(t, flushedAt)
+}
+
+// TestExecuteBatch_MarkFailsAfterManifestAppend pins the #252 failure
+// contract's second leg: mark-flushed failing after a successful append
+// leaves a LISTED delta with dirty rows. The retry then produces a second
+// listed delta whose duplicate (row_id, ver_ts) copies are LWW-deduped at
+// read time — the write path must only propagate the error, not attempt to
+// roll the manifest entry back.
+func TestExecuteBatch_MarkFailsAfterManifestAppend(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	store := newInMemoryManifestStore()
+	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
+	markErr := errors.New("pg connection reset")
+
+	executor := &flushBatchExecutor{
+		db:               db,
+		duck:             &DuckExporter{Logger: zap.NewNop()},
+		s3Client:         &objectOnlyS3Client{},
+		cfg:              CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:        "change_log",
+		schemaID:         7,
+		snapshot:         snapshot,
+		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		logger:           zap.NewNop(),
+		manifestStore:    store,
+		manifestResolver: resolver,
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+			return nil
+		},
+		markFlushed: func(context.Context, *sql.DB, string, int16, []uuid.UUID, int64, int64) ([]uuid.UUID, error) {
+			return nil, markErr
+		},
+	}
+
+	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
+	require.Error(t, err)
+	require.ErrorIs(t, err, markErr)
+	require.Contains(t, err.Error(), "mark flushed at snapshot")
+
+	// The manifest entry stays: the delta is listed while the rows stay dirty.
+	require.Equal(t, 1, store.saved)
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.Zero(t, flushedAt)
 }
 
 func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testing.T) {
