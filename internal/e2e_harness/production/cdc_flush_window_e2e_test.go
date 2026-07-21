@@ -24,6 +24,10 @@ func TestFlushManifestWindowVisibility(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
+	// The #252 read-side grace would also serve the window (see
+	// cdc_flush_grace_e2e_test.go); disable it so this test pins the
+	// write-side ordering fix in isolation.
+	env.DuckCfg.FlushVisibilityGraceMs = -1
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 
 	gen1 := buildOpenCreates(wide, 4)
