@@ -35,20 +35,19 @@ func resolveSortKeys(req *forma.QueryRequest) ([]sortKey, error) {
 
 	if len(req.SortBy) > 0 || req.SortOrder != "" {
 		return nil, fmt.Errorf(
-			"sort cannot be combined with sort_by/sort_order in schema '%s': use sort alone for per-key directions: %w",
-			req.SchemaName, forma.ErrInvalidInput)
+			"sort cannot be combined with sort_by/sort_order: use sort alone for per-key directions: %w",
+			forma.ErrInvalidInput)
 	}
 
 	keys := make([]sortKey, 0, len(req.Sort))
 	for i, entry := range req.Sort {
 		attr := strings.TrimSpace(entry.Attribute)
 		if attr == "" {
-			return nil, fmt.Errorf("sort entry %d in schema '%s' has an empty attribute: %w",
-				i, req.SchemaName, forma.ErrInvalidInput)
+			return nil, fmt.Errorf("sort entry %d has an empty attribute: %w", i, forma.ErrInvalidInput)
 		}
 		order, err := normalizeSortOrder(entry.SortOrder)
 		if err != nil {
-			return nil, fmt.Errorf("sort entry for attribute '%s' in schema '%s': %w", attr, req.SchemaName, err)
+			return nil, fmt.Errorf("sort entry for attribute '%s': %w", attr, err)
 		}
 		keys = append(keys, sortKey{attr: attr, order: order})
 	}
@@ -75,7 +74,7 @@ func normalizeSortOrder(raw forma.SortOrder) (forma.SortOrder, error) {
 func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) ([]model.AttributeOrder, error) {
 	keys, err := resolveSortKeys(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve sort keys for schema '%s': %w", req.SchemaName, err)
 	}
 
 	orders := make([]model.AttributeOrder, 0, len(keys))
