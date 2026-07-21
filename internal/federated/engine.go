@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"text/template"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -67,6 +68,10 @@ type DBFederatedQueryEngine struct {
 	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
 	// the legacy hint-only path resolution. See WithParquetSource.
 	parquetSource ParquetSource
+	// flushVisibilityGraceMs widens the dirty barrier by this many ms of
+	// flushed_at recency (#252); negative disables the grace. Resolved from
+	// DuckDBConfig.FlushVisibilityGraceMs at construction (zero -> default).
+	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
 	// so schema corruption must be caught by probing instead of by the
@@ -82,21 +87,59 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.planCache = c }
 }
 
+// defaultFlushVisibilityGraceMs covers the reader-side manifest-load-to-scan
+// latency plus cross-host clock skew (flushed_at is stamped on the CDC host,
+// the cutoff on the query host) with wide margin.
+const defaultFlushVisibilityGraceMs int64 = 60_000
+
+// WithFlushVisibilityGrace overrides the #252 flush-visibility grace: rows
+// flushed within d of query start stay hot-readable. d <= 0 disables the
+// grace entirely (the exact flushed_at = 0 barrier — the pre-#252 behavior),
+// unlike the zero config value, which selects the built-in default.
+func WithFlushVisibilityGrace(d time.Duration) EngineOption {
+	return func(e *DBFederatedQueryEngine) {
+		if d <= 0 {
+			e.flushVisibilityGraceMs = -1
+			return
+		}
+		e.flushVisibilityGraceMs = d.Milliseconds()
+	}
+}
+
+// resolveFlushVisibilityGraceMs maps the config value to the engine field:
+// zero -> built-in default, negative -> disabled, positive -> as configured.
+func resolveFlushVisibilityGraceMs(ms int64) int64 {
+	if ms == 0 {
+		return defaultFlushVisibilityGraceMs
+	}
+	return ms
+}
+
+// flushGraceCutoffMs computes the per-request dirty-barrier cutoff: rows with
+// flushed_at strictly after it count as dirty (#252).
+func (e *DBFederatedQueryEngine) flushGraceCutoffMs() int64 {
+	if e.flushVisibilityGraceMs < 0 {
+		return sqlgen.FlushGraceCutoffDisabled
+	}
+	return time.Now().UnixMilli() - e.flushVisibilityGraceMs
+}
+
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
 // duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
 // nil breaker disables circuit breaking.
 func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string, opts ...EngineOption) *DBFederatedQueryEngine {
 	e := &DBFederatedQueryEngine{
-		pgSource:        pgSource,
-		dirtyIDFetcher:  dirtyIDFetcher,
-		duck:            duck,
-		breaker:         breaker,
-		cfg:             cfg,
-		metadataCache:   metadataCache,
-		pgConnString:    pgConnString,
-		duckTemplate:    sqlgen.AdvancedQueryTemplateDuckDB,
-		projections:     sqlgen.NewProjectionCache(),
-		schemaValidator: newParquetSchemaValidator(),
+		pgSource:               pgSource,
+		dirtyIDFetcher:         dirtyIDFetcher,
+		duck:                   duck,
+		breaker:                breaker,
+		cfg:                    cfg,
+		metadataCache:          metadataCache,
+		pgConnString:           pgConnString,
+		duckTemplate:           sqlgen.AdvancedQueryTemplateDuckDB,
+		projections:            sqlgen.NewProjectionCache(),
+		schemaValidator:        newParquetSchemaValidator(),
+		flushVisibilityGraceMs: resolveFlushVisibilityGraceMs(cfg.FlushVisibilityGraceMs),
 	}
 	for _, opt := range opts {
 		opt(e)

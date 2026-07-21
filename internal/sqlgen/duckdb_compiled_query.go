@@ -2,6 +2,8 @@ package sqlgen
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -13,6 +15,22 @@ import (
 // the per-request dirty-ID VALUES list belongs. UUID CSV output can never
 // contain this text, so a plain string splice is unambiguous.
 const dirtyIDsSentinel = "__FORMA_DIRTY_IDS_SENTINEL__"
+
+// flushGraceCutoffSentinel is the placeholder rendered into a compiled
+// skeleton where the per-request flush-visibility cutoff (#252) belongs. The
+// cutoff is a server-generated epoch-ms int64, never user input, so a literal
+// splice at Bind is injection-free and keeps the plan-cache key independent
+// of the per-request value (a bind ? would slot into two different positions
+// of the HasHot-sensitive arg interleave).
+const flushGraceCutoffSentinel = "__FORMA_FLUSH_GRACE_CUTOFF__"
+
+// FlushGraceCutoffDisabled renders the pre-#252 dirty barrier: no BIGINT
+// flushed_at can exceed MaxInt64, so `flushed_at > cutoff` is always false
+// and only flushed_at = 0 rows count as dirty. It is also the defensive
+// default when a render path fails to supply the cutoff — rendering 0 would
+// pull every flushed row back to hot (bypassing the parquet tiers), and an
+// absent key would render invalid SQL.
+const FlushGraceCutoffDisabled int64 = math.MaxInt64
 
 // DuckDBCompiledQuery is the shape/scope-stable half of BuildDuckDBQuery for
 // the production path (advanced template + dual clauses): the rendered SQL
@@ -82,6 +100,9 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	} else {
 		m["DirtyIDsCSV"] = ""
 	}
+	// The cutoff is per-request: the skeleton carries the sentinel (keeping
+	// the cache key cutoff-independent) and Bind splices the real value.
+	m["FlushGraceCutoffMs"] = flushGraceCutoffSentinel
 
 	sql, tplArgs, err := RenderSQLTemplate(tpl, m)
 	if err != nil {
@@ -91,14 +112,15 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 }
 
 // Bind produces the executable SQL and full argument list for a request whose
-// shape matches the compiled skeleton: dirty CSV spliced, condition args in
-// the advanced-template interleave (DuckArgs, PgMainArgs, DuckArgs), keyset
-// cursor values, then the cached template args.
-func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID) (string, []any) {
+// shape matches the compiled skeleton: dirty CSV and flush-grace cutoff
+// spliced, condition args in the advanced-template interleave (DuckArgs,
+// PgMainArgs, DuckArgs), keyset cursor values, then the cached template args.
+func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID, graceCutoffMs int64) (string, []any) {
 	sql := c.Skeleton
 	if c.HasDirty {
 		sql = strings.ReplaceAll(sql, dirtyIDsSentinel, RenderDirtyIDsValuesCSV(dirtyIDs))
 	}
+	sql = strings.ReplaceAll(sql, flushGraceCutoffSentinel, strconv.FormatInt(graceCutoffMs, 10))
 
 	args := make([]any, 0, 2*len(dual.DuckArgs)+len(dual.PgMainArgs)+len(c.TplArgs)+4)
 	args = append(args, dual.DuckArgs...)

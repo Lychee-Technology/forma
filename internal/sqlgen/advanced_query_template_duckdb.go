@@ -16,6 +16,14 @@ import "text/template"
 // stay consistently invisible instead of resurfacing as stale parquet
 // versions. Callers must always set HasHot (a missing map key renders as
 // false and would silently prune pg_source).
+// FlushGraceCutoffMs widens the dirty barrier (#252): rows flushed after the
+// cutoff (query-start now minus the visibility grace) count as dirty even
+// though flushed_at != 0, keeping just-flushed rows hot-readable while the
+// reader's manifest snapshot catches up to the append. Widening is a safe
+// over-approximation — it only shifts rows from parquet-served to PG-served.
+// The cutoff is a server-generated int64 (or the compile-time sentinel that
+// Bind splices); callers must always set it — FlushGraceCutoffDisabled
+// (MaxInt64) restores the exact flushed_at = 0 barrier.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
@@ -24,7 +32,7 @@ dirty_ids AS (
   SELECT row_id
   FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}')
   WHERE schema_id = {{.SCHEMA_ID}}
-    AND flushed_at = 0
+    AND (flushed_at = 0 OR flushed_at > {{.FlushGraceCutoffMs}})
 ),
 
 s3_source AS (
@@ -74,7 +82,7 @@ pg_source AS (
   ) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
   {{end}}
   WHERE cl.schema_id = {{.SCHEMA_ID}}
-    AND cl.flushed_at = 0
+    AND (cl.flushed_at = 0 OR cl.flushed_at > {{.FlushGraceCutoffMs}})
     AND m.ltbase_schema_id = {{.SCHEMA_ID}}
     AND ({{.PG_WHERE_CLAUSE}})
   GROUP BY {{.PGGroupBy}}

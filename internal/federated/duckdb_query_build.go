@@ -147,6 +147,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	if len(parquetPaths) > 0 {
 		sqlParams["DuckDBS3Paths"] = parquetPaths
 	}
+	// Per-request dirty-barrier cutoff (#252). The direct builder renders it
+	// as a literal; the compiled path overwrites it with the splice sentinel
+	// so the cached skeleton stays cutoff-independent.
+	sqlParams["FlushGraceCutoffMs"] = e.flushGraceCutoffMs()
 	return sqlParams
 }
 
@@ -236,7 +240,7 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		bound.PgMainClause = entry.dualPlan.PgMainClause
 		bound.DuckClause = entry.dualPlan.DuckClause
 	}
-	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs)
+	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs, e.flushGraceCutoffMs())
 	return sqlStr, args, true
 }
 

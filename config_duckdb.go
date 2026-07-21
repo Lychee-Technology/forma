@@ -33,6 +33,15 @@ type DuckDBConfig struct {
 	// tripping. Zero means use the built-in default.
 	CircuitBreakerOpenDuration time.Duration `json:"circuitBreakerOpenDuration"`
 
+	// FlushVisibilityGraceMs widens the federated dirty barrier (#252): rows
+	// whose flushed_at is within this many milliseconds of query start stay
+	// hot-readable, covering the reader-side staleness between loading the
+	// manifest and scanning change_log while a flush publishes. Zero means the
+	// built-in default (60s); a negative value disables the grace and restores
+	// the exact flushed_at = 0 barrier. Widening is a safe over-approximation:
+	// affected rows are served from Postgres, which always holds current state.
+	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
+
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
 
