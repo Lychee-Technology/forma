@@ -135,15 +135,18 @@ const (
 
 // QueryRequest represents a pagination query request.
 type QueryRequest struct {
-	SchemaName   string                 `json:"schema_name" validate:"required"`
-	Page         int                    `json:"page" validate:"min=1"`
-	ItemsPerPage int                    `json:"items_per_page" validate:"min=1,max=100"`
-	Condition    Condition              `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
-	SortBy       []string               `json:"sort_by,omitempty"`
-	SortOrder    SortOrder              `json:"sort_order,omitempty"`
-	RowID        *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
-	Attrs        []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
-	Federated    *FederatedQueryRequest `json:"federated,omitempty"`
+	SchemaName   string    `json:"schema_name" validate:"required"`
+	Page         int       `json:"page" validate:"min=1"`
+	ItemsPerPage int       `json:"items_per_page" validate:"min=1,max=100"`
+	Condition    Condition `json:"-"` // Custom unmarshal, can be CompositeCondition or KvCondition
+	SortBy       []string  `json:"sort_by,omitempty"`
+	SortOrder    SortOrder `json:"sort_order,omitempty"`
+	// Sort carries per-key sort directions (#240). Mutually exclusive with
+	// SortBy/SortOrder; an entry's empty SortOrder defaults to asc.
+	Sort      []OrderBy              `json:"sort,omitempty"`
+	RowID     *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
+	Attrs     []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
+	Federated *FederatedQueryRequest `json:"federated,omitempty"`
 }
 
 // FederatedQueryRequest carries optional hints for routing QueryRequest through the

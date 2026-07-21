@@ -31,6 +31,30 @@ Base URL: `http://localhost:8080` (configurable via `PORT` env var).
 
 Reference: [Advanced Query documentation](./advanced_query.md)
 
+### Sorting (advanced_query)
+
+`POST /api/v1/advanced_query` bodies support two mutually exclusive sort surfaces:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sort_by` + `sort_order` | `string[]` + `string` | Legacy: every key shares the one direction (`asc` default). |
+| `sort` | `{attribute, sort_order}[]` | Per-key directions (#240). `sort_order` per entry: `asc` (default when omitted) or `desc`, case-insensitive. |
+
+Mixed-direction example — `status ASC, created_at DESC`:
+
+```json
+{
+  "schema_name": "orders",
+  "condition": {"a": "status", "v": "not_equals:archived"},
+  "sort": [
+    {"attribute": "status"},
+    {"attribute": "created_at", "sort_order": "desc"}
+  ]
+}
+```
+
+Supplying `sort` together with `sort_by`/`sort_order` is rejected with `400`. The GET list endpoint keeps the legacy `sort_by`/`sort_order` query parameters only (uniform direction). NULL placement (NULLS LAST on every path and direction) applies per key.
+
 ## Error Codes
 
 | Status | Meaning |

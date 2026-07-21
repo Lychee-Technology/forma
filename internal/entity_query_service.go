@@ -131,38 +131,6 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}, nil
 }
 
-// buildAttributeOrders resolves the request's SortBy attributes against the
-// schema cache into typed AttributeOrders, tagging each with its storage
-// location (main column vs EAV). It errors on an unknown sort attribute.
-func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) ([]model.AttributeOrder, error) {
-	sortOrder := req.SortOrder
-	if sortOrder == "" {
-		sortOrder = forma.SortOrderAsc
-	}
-
-	orders := make([]model.AttributeOrder, 0, len(req.SortBy))
-	for _, sortAttr := range req.SortBy {
-		meta, ok := schemaCache[sortAttr]
-		if !ok {
-			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", sortAttr, req.SchemaName)
-		}
-		order := model.AttributeOrder{
-			AttrID:    meta.AttributeID,
-			ValueType: meta.ValueType,
-			SortOrder: sortOrder,
-			AttrName:  sortAttr,
-		}
-		if meta.ColumnBinding != nil {
-			order.StorageLocation = forma.AttributeStorageLocationMain
-			order.ColumnName = string(meta.ColumnBinding.ColumnName)
-		} else {
-			order.StorageLocation = forma.AttributeStorageLocationEAV
-		}
-		orders = append(orders, order)
-	}
-	return orders, nil
-}
-
 // toExecutionPlan converts the engine's internal execution plan into the
 // public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
 // when no plan was recorded (non-federated requests, or federated requests that

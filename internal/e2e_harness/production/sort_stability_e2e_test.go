@@ -34,6 +34,8 @@ func TestSortStability(t *testing.T) {
 		{"hot_oltp_page_union", testHotOLTPPageUnion},
 		{"multi_key_mixed_directions", testMultiKeyMixedDirections},
 		{"multi_key_public_api_desc", testMultiKeyPublicAPIDesc},
+		{"multi_key_mixed_public_federated", testMultiKeyMixedPublicFederated},
+		{"multi_key_mixed_public_hot", testMultiKeyMixedPublicHot},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -273,13 +275,11 @@ func testHotOLTPPageUnion(ctx context.Context, t *testing.T, env *Env, wide Sche
 // testMultiKeyMixedDirections pins the two-key sort (rank ASC, count DESC) on
 // the DuckDB path against the oracle and by direct inspection.
 //
-// Adjudication A6: mixed per-key directions are unreachable through the public
-// QueryRequest — entity_query_service.go:79-104 threads a single shared
-// SortOrder across all keys. This scenario drives the internal AttributeOrders
-// contract the federated engine actually implements, where each key carries its
-// own direction, so it remains the pin for the per-key-direction contract. The
-// publicly expressible slice — a uniform-direction multi-key sort — is covered
-// by testMultiKeyPublicAPIDesc through the real EntityManager.Query surface.
+// This scenario pins the per-key-direction contract at the internal
+// AttributeOrders level the federated engine implements. Since #240 the same
+// shape is publicly reachable through QueryRequest.Sort — see
+// testMultiKeyMixedPublicFederated / testMultiKeyMixedPublicHot for the
+// public-surface twins; this internal pin stays as the engine-level anchor.
 func testMultiKeyMixedDirections(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "mixed-rank creates", creates...)
@@ -302,10 +302,11 @@ func testMultiKeyMixedDirections(ctx context.Context, t *testing.T, env *Env, wi
 
 // testMultiKeyPublicAPIDesc covers the publicly expressible half of #183's
 // (status, created_at DESC) ask: a two-key sort through the real
-// forma.EntityManager.Query surface. The public QueryRequest threads a single
-// shared SortOrder across all SortBy keys (entity_query_service.go:79-104), so
-// mixed per-key directions are unreachable — but a uniform-DESC multi-key sort
-// is. Here (rank DESC, count DESC) stands in for the categorical-primary +
+// forma.EntityManager.Query surface. The legacy SortBy surface threads a single
+// shared SortOrder across all keys, so this scenario pins the uniform-DESC slice
+// of that legacy contract; mixed per-key directions travel through the
+// structured Sort field (#240). Here (rank DESC, count DESC) stands in for the
+// categorical-primary +
 // distinct-secondary shape: rank repeats (six 1s, six 2s) so the count key is
 // load-bearing, and count is unique so the pair is a total order. The rows are
 // cold-only and the request opts into the federated path, so a correct ordered
@@ -356,4 +357,95 @@ func testMultiKeyPublicAPIDesc(ctx context.Context, t *testing.T, env *Env, wide
 				i, res.Data[i].RowID, want[i].RowID)
 		}
 	}
+}
+
+// buildMixedRankOracle sorts the created events by (rank ASC, count DESC) — the
+// exact #183 shape (categorical primary ascending, distinct secondary
+// descending) that #240 makes publicly expressible. count is unique so the
+// pair is a total order and row_id never has to break ties.
+func buildMixedRankOracle(creates []*Event) []*Event {
+	want := make([]*Event, len(creates))
+	copy(want, creates)
+	sort.SliceStable(want, func(i, j int) bool {
+		ri, rj := want[i].Attrs["rank"].(float64), want[j].Attrs["rank"].(float64)
+		if ri != rj {
+			return ri < rj // rank ASC
+		}
+		return want[i].Attrs["count"].(float64) > want[j].Attrs["count"].(float64) // count DESC
+	})
+	return want
+}
+
+// assertPublicOrderMatches compares a public QueryResult's row order against
+// the oracle event order, failing on the first divergence.
+func assertPublicOrderMatches(t *testing.T, label string, res *forma.QueryResult, want []*Event) {
+	t.Helper()
+	if len(res.Data) != len(want) {
+		t.Fatalf("%s returned %d rows, want %d", label, len(res.Data), len(want))
+	}
+	for i := range want {
+		if res.Data[i].RowID != want[i].RowID {
+			t.Fatalf("%s row %d = %s, want %s: (rank ASC, count DESC) order drift",
+				label, i, res.Data[i].RowID, want[i].RowID)
+		}
+	}
+}
+
+// testMultiKeyMixedPublicFederated promotes the mixed-direction pin (#240) to
+// the public surface on the DuckDB path: (rank ASC, count DESC) through the
+// real forma.EntityManager.Query via the structured Sort field. Rows are
+// cold-only, so a correctly ordered result can only come back through the
+// federated per-key ORDER BY rendering.
+func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := buildMixedRankRows(wide)
+	mustApplyEvents(ctx, t, env, "mixed-public federated creates", creates...)
+	mustFlush(ctx, t, env)
+	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+
+	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName:   wide.Name,
+		Page:         1,
+		ItemsPerPage: 20,
+		Sort: []forma.OrderBy{
+			{Attribute: "rank"}, // direction omitted → asc default
+			{Attribute: "count", SortOrder: forma.SortOrderDesc},
+		},
+		Federated: &forma.FederatedQueryRequest{
+			Enabled:               true,
+			PreferredTiers:        []string{"hot", "warm", "cold"},
+			S3ParquetPathTemplate: env.ParquetGlob(),
+			IncludeExecutionPlan:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("public mixed-direction federated query: %v", err)
+	}
+	if res.ExecutionPlan == nil || !res.ExecutionPlan.Routing.UsedDuckDB {
+		t.Fatalf("expected DuckDB routing, got plan %+v", res.ExecutionPlan)
+	}
+	assertPublicOrderMatches(t, "public federated mixed sort", res, buildMixedRankOracle(creates))
+}
+
+// testMultiKeyMixedPublicHot is the OLTP twin: unflushed rows without a
+// federated hint route through the Postgres optimized template, pinning that
+// the PG dialect also renders per-key directions arriving from the public
+// Sort field.
+func testMultiKeyMixedPublicHot(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	creates := buildMixedRankRows(wide)
+	mustApplyEvents(ctx, t, env, "mixed-public hot creates", creates...)
+	// No flush: rows stay hot ⇒ OLTP path.
+
+	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName:   wide.Name,
+		Page:         1,
+		ItemsPerPage: 20,
+		Sort: []forma.OrderBy{
+			{Attribute: "rank"},
+			{Attribute: "count", SortOrder: forma.SortOrderDesc},
+		},
+	})
+	if err != nil {
+		t.Fatalf("public mixed-direction hot query: %v", err)
+	}
+	assertPublicOrderMatches(t, "public hot mixed sort", res, buildMixedRankOracle(creates))
 }
