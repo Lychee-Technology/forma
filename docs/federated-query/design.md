@@ -47,7 +47,7 @@ Formula:
 
 $$Result = (S3_{Data} \notin DirtySet) \cup PG_{HotData}$$
 
-* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, widened by the **flush-visibility grace** (#252): rows marked flushed after the instant this query resolved its parquet path set (minus the `FlushVisibilityGraceMs` clock-skew margin, default 0) also count as dirty. Because the flush appends the manifest before marking, a row flushed before path resolution already has its delta listed — the widening therefore catches exactly the rows racing this query (their delta may be missing from the resolved set) and keeps them hot-readable, while the steady state is never widened. The widening renders only in the HasHot tier form: it is safe solely because pg_source serves the discarded rows, so hot-excluded queries keep the strict flushed_at = 0 barrier.
+* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, widened by the **flush-visibility grace** (#252): rows marked flushed at or after the instant this query resolved its parquet path set (minus the `FlushVisibilityGraceMs` clock-skew margin, default 0) also count as dirty — inclusive, because millisecond stamps cannot order a mark and a path resolution landing in the same tick. Because the flush appends the manifest before marking, a row flushed before path resolution already has its delta listed — the widening therefore catches exactly the rows racing this query (their delta may be missing from the resolved set) and keeps them hot-readable, while the steady state is never widened. The widening renders only in the HasHot tier form: it is safe solely because pg_source serves the discarded rows, so hot-excluded queries keep the strict flushed_at = 0 barrier.
 * Any record found in S3 that also exists in the DirtySet is **discarded** immediately during the read phase, regardless of its timestamp.
 * **Flush ordering (#252):** the CDC flush publishes `copy tmp→final → manifest-append → mark-flushed`, so a batch is never simultaneously absent from the hot tier and from the manifest-listed delta set. The listed-but-unmarked middle state is resolved by this anti-join: the S3 copies of still-dirty rows are discarded and the hot versions serve.
 
@@ -172,7 +172,7 @@ dirty_ids AS (
     SELECT row_id   
     FROM postgres_scan($PG_CONN, 'public', 'change_log')  
     WHERE schema_id = $SCHEMA_ID  
-        AND (flushed_at = 0 OR flushed_at > $FLUSH_GRACE_CUTOFF_MS)  
+        AND (flushed_at = 0 OR flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
 ),
 
 -- =========================================================================  
@@ -242,7 +242,7 @@ pg_source AS (
       ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id  
       
     WHERE cl.schema_id = $SCHEMA_ID  
-        AND (cl.flushed_at = 0 OR cl.flushed_at > $FLUSH_GRACE_CUTOFF_MS)  
+        AND (cl.flushed_at = 0 OR cl.flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
         AND m.ltbase_schema_id = $SCHEMA_ID  
         AND ($PG_WHERE_CLAUSE)  
     GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01  

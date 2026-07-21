@@ -24,12 +24,12 @@ const dirtyIDsSentinel = "__FORMA_DIRTY_IDS_SENTINEL__"
 // of the HasHot-sensitive arg interleave).
 const flushGraceCutoffSentinel = "__FORMA_FLUSH_GRACE_CUTOFF__"
 
-// FlushGraceCutoffDisabled renders the pre-#252 dirty barrier: no BIGINT
-// flushed_at can exceed MaxInt64, so `flushed_at > cutoff` is always false
-// and only flushed_at = 0 rows count as dirty. It is also the defensive
-// default when a render path fails to supply the cutoff — rendering 0 would
-// pull every flushed row back to hot (bypassing the parquet tiers), and an
-// absent key would render invalid SQL.
+// FlushGraceCutoffDisabled renders the pre-#252 dirty barrier: real
+// flushed_at stamps are epoch milliseconds, so `flushed_at >= MaxInt64` is
+// never true and only flushed_at = 0 rows count as dirty. It is also the
+// defensive default when a render path fails to supply the cutoff —
+// rendering 0 would pull every flushed row back to hot (bypassing the
+// parquet tiers), and an absent key would render invalid SQL.
 const FlushGraceCutoffDisabled int64 = math.MaxInt64
 
 // DuckDBCompiledQuery is the shape/scope-stable half of BuildDuckDBQuery for

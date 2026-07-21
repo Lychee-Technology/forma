@@ -169,6 +169,58 @@ func TestExecuteBatch_ReturnsErrorWhenManifestSaveFails(t *testing.T) {
 	require.Zero(t, flushedAt)
 }
 
+// TestExecuteBatch_MarkStampSampledAfterManifestAppend pins the #252 review-P1
+// fix: the flushed_at stamp must be sampled AFTER the manifest append
+// completes. A reader that anchored its cutoff and resolved its path set
+// while the append was in flight has cutoff >= append-start; sampling the
+// stamp before the append could write flushed_at < cutoff and hide the rows
+// from the widened barrier. The store's Save is slowed so a pre-append stamp
+// is strictly older than the append completion at millisecond resolution.
+func TestExecuteBatch_MarkStampSampledAfterManifestAppend(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+
+	ctx := context.Background()
+	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	snapshot := time.Now().UnixMilli()
+	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", rowID, snapshot-1000)
+	require.NoError(t, err)
+
+	store := newInMemoryManifestStore()
+	store.saveDelay = 5 * time.Millisecond
+	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
+
+	executor := &flushBatchExecutor{
+		db:               db,
+		duck:             &DuckExporter{Logger: zap.NewNop()},
+		s3Client:         &objectOnlyS3Client{},
+		cfg:              CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		tableName:        "change_log",
+		schemaID:         7,
+		snapshot:         snapshot,
+		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
+		logger:           zap.NewNop(),
+		manifestStore:    store,
+		manifestResolver: resolver,
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+			return nil
+		},
+	}
+
+	require.NoError(t, executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single"))
+
+	var flushedAt int64
+	err = db.QueryRowContext(ctx, "SELECT flushed_at FROM change_log WHERE schema_id = 7 AND row_id = ?", rowID).Scan(&flushedAt)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, flushedAt, store.lastSaveDoneMs,
+		"flushed_at must be sampled after the manifest append completes")
+}
+
 // TestExecuteBatch_MarkFailsAfterManifestAppend pins the #252 failure
 // contract's second leg: mark-flushed failing after a successful append
 // leaves a LISTED delta with dirty rows. The retry then produces a second

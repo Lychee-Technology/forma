@@ -99,46 +99,21 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
-	// Resolve the parquet path set once (#187): explicit render hints win,
-	// otherwise the manifest-driven source authors the list. Provenance
-	// gates the read-error classification below. The flush-grace cutoff is
-	// stamped BEFORE resolution (#252): any row marked flushed after this
-	// instant may belong to a delta this path set does not list yet, so the
-	// dirty barrier keeps it hot-readable for this query.
-	graceCutoffMs := e.flushGraceCutoffMs(time.Now().UnixMilli())
-	parquetPaths, pathsFromSource, err := e.resolveParquetPaths(ctx, q)
+	parquetPaths, pathsFromSource, graceCutoffMs, err := e.resolveScanSources(ctx, q)
 	if err != nil {
-		return 0, fmt.Errorf("resolve parquet paths: %w", err)
-	}
-
-	// Pre-read schema-invariant validation (#189): the scan's union_by_name
-	// tolerates attribute-column drift across parquet generations, which
-	// would let a wrong-schema object's rows silently vanish (NULL row_id
-	// drops out of the dirty anti-join) instead of failing loudly (#187).
-	// Schema violations fail here, classified and degradable; unreadable
-	// footers are inconclusive and stay with the execution-path classifier.
-	// No recordQueryFailure: the query never started, and its timing fields
-	// would read from an unset start time. Benchmark schemas (100-102) are
-	// exempt: their parquet is the legacy CSV-sniffed harness shape (row_id
-	// VARCHAR, cast by the hardcoded benchmark projections) — the
-	// parquetcheck invariant codifies the PRODUCTION exporters, which never
-	// write those IDs (ValidateFixtureSchemaID reserves the range).
-	if !isBenchmarkSchemaID(q.SchemaID) {
-		if err := e.schemaValidator.Validate(ctx, e.duck, parquetPaths); err != nil {
-			return 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
-		}
+		return 0, err
 	}
 
 	// Fetch dirty IDs and record in execution plan
 	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("fetch dirty row ids: %w", err)
 	}
 
 	// Build and execute the query
 	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, planCtx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("build duckdb federated query: %w", err)
 	}
 
 	// Record translation in plan
@@ -173,7 +148,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 				return 0, fmt.Errorf("%w: %w", classified, err)
 			}
 		}
-		return 0, err
+		return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
 	}
 
 	// Record success in circuit breaker
@@ -185,6 +160,44 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	e.finalizeDuckDBExecutionPlan(ctx, planCtx, dirtyIDs, totalRecords, rowCount)
 
 	return totalRecords, nil
+}
+
+// resolveScanSources is the storage-facing pre-flight of a DuckDB federated
+// query: it stamps the #252 flush-grace cutoff, resolves the parquet path
+// set, and validates the parquet system-column invariant.
+func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, graceCutoffMs int64, err error) {
+	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
+	// marked flushed at or after this instant may belong to a delta this
+	// path set does not list yet, so the dirty barrier keeps it hot-readable
+	// for this query.
+	graceCutoffMs = e.flushGraceCutoffMs(time.Now().UnixMilli())
+
+	// Resolve the parquet path set once (#187): explicit render hints win,
+	// otherwise the manifest-driven source authors the list. Provenance
+	// gates the read-error classification.
+	paths, fromSource, err = e.resolveParquetPaths(ctx, q)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("resolve parquet paths: %w", err)
+	}
+
+	// Pre-read schema-invariant validation (#189): the scan's union_by_name
+	// tolerates attribute-column drift across parquet generations, which
+	// would let a wrong-schema object's rows silently vanish (NULL row_id
+	// drops out of the dirty anti-join) instead of failing loudly (#187).
+	// Schema violations fail here, classified and degradable; unreadable
+	// footers are inconclusive and stay with the execution-path classifier.
+	// No recordQueryFailure: the query never started, and its timing fields
+	// would read from an unset start time. Benchmark schemas (100-102) are
+	// exempt: their parquet is the legacy CSV-sniffed harness shape (row_id
+	// VARCHAR, cast by the hardcoded benchmark projections) — the
+	// parquetcheck invariant codifies the PRODUCTION exporters, which never
+	// write those IDs (ValidateFixtureSchemaID reserves the range).
+	if !isBenchmarkSchemaID(q.SchemaID) {
+		if err := e.schemaValidator.Validate(ctx, e.duck, paths); err != nil {
+			return nil, false, 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
+		}
+	}
+	return paths, fromSource, graceCutoffMs, nil
 }
 
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.

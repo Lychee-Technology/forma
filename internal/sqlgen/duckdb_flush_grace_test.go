@@ -11,7 +11,7 @@ import (
 )
 
 // Pins for the #252 read-side grace: in the HasHot form the flushed_at
-// barrier widens to (flushed_at = 0 OR flushed_at > cutoff) at BOTH
+// barrier widens to (flushed_at = 0 OR flushed_at >= cutoff) at BOTH
 // change_log scan sites (cutoff = the query's path-resolution instant minus
 // the clock-skew margin), hot-excluded shapes keep the strict barrier, the
 // cutoff stays out of the compiled skeleton (sentinel splice, cache-key
@@ -48,9 +48,9 @@ func flushGraceQuery() *model.FederatedAttributeQuery {
 // change_log sites with the given cutoff literal.
 func requireGraceSites(t *testing.T, sqlText, cutoff string) {
 	t.Helper()
-	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at > "+cutoff+")",
+	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at >= "+cutoff+")",
 		"dirty_ids must render the widened barrier with the cutoff")
-	require.Contains(t, sqlText, "AND (cl.flushed_at = 0 OR cl.flushed_at > "+cutoff+")",
+	require.Contains(t, sqlText, "AND (cl.flushed_at = 0 OR cl.flushed_at >= "+cutoff+")",
 		"pg_source must render the widened barrier with the cutoff")
 	require.Equal(t, 2, strings.Count(sqlText, "flushed_at = 0 OR"),
 		"the widened barrier must appear at exactly the two change_log sites")
@@ -77,7 +77,7 @@ func TestFlushGraceHotExcludedKeepsStrictBarrier(t *testing.T) {
 		flushGraceParams(t, int64(1_752_900_000_000)), q, nil, &DualClauses{DuckClause: "1=1"})
 	require.NoError(t, err)
 	require.Contains(t, sqlText, "AND (flushed_at = 0)")
-	require.NotContains(t, sqlText, "OR flushed_at > ")
+	require.NotContains(t, sqlText, "OR flushed_at >= ")
 }
 
 // TestFlushGraceCutoffDefaultsToDisabled pins the defensive default on both
@@ -134,7 +134,7 @@ func TestFlushGraceCompiledSkeletonIsCutoffIndependent(t *testing.T) {
 	require.NotNil(t, compiled)
 	require.Contains(t, compiled.Skeleton, flushGraceCutoffSentinel,
 		"the skeleton must carry the sentinel so the cache key is cutoff-independent")
-	require.NotContains(t, compiled.Skeleton, "flushed_at > 111",
+	require.NotContains(t, compiled.Skeleton, "flushed_at >= 111",
 		"a per-request cutoff must never bake into the skeleton")
 
 	sqlA, argsA := compiled.Bind(q, dual, nil, 1000)

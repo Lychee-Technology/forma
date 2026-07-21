@@ -16,9 +16,12 @@ import "text/template"
 // stay consistently invisible instead of resurfacing as stale parquet
 // versions. Callers must always set HasHot (a missing map key renders as
 // false and would silently prune pg_source).
-// FlushGraceCutoffMs widens the dirty barrier (#252): rows flushed after the
-// cutoff (the instant this query resolved its parquet path set, minus the
-// configured clock-skew margin) count as dirty even though flushed_at != 0.
+// FlushGraceCutoffMs widens the dirty barrier (#252): rows flushed at or
+// after the cutoff (the instant this query resolved its parquet path set,
+// minus the configured clock-skew margin) count as dirty even though
+// flushed_at != 0. The comparison is inclusive because millisecond stamps
+// cannot order a mark and a path resolution landing in the same tick — the
+// ambiguous tick must resolve toward visibility (review P1).
 // The flush appends the manifest before marking, so a row flushed before
 // path resolution already has its delta listed — the widening therefore
 // catches exactly the rows racing this query, keeping them hot-readable
@@ -37,7 +40,7 @@ dirty_ids AS (
   SELECT row_id
   FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}')
   WHERE schema_id = {{.SCHEMA_ID}}
-    AND (flushed_at = 0{{if .HasHot}} OR flushed_at > {{.FlushGraceCutoffMs}}{{end}})
+    AND (flushed_at = 0{{if .HasHot}} OR flushed_at >= {{.FlushGraceCutoffMs}}{{end}})
 ),
 
 s3_source AS (
@@ -87,7 +90,7 @@ pg_source AS (
   ) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
   {{end}}
   WHERE cl.schema_id = {{.SCHEMA_ID}}
-    AND (cl.flushed_at = 0 OR cl.flushed_at > {{.FlushGraceCutoffMs}})
+    AND (cl.flushed_at = 0 OR cl.flushed_at >= {{.FlushGraceCutoffMs}})
     AND m.ltbase_schema_id = {{.SCHEMA_ID}}
     AND ({{.PG_WHERE_CLAUSE}})
   GROUP BY {{.PGGroupBy}}

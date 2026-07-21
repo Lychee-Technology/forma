@@ -100,13 +100,21 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	// heuristic; reconcile recomputes stats from parquet contents. A batch
 	// whose rows ALL changed concurrently leaves an LWW-inert junk delta
 	// listed — accepted, never rolled back.
-	flushedAt := time.Now().UnixMilli()
+	entryCreatedAt := time.Now().UnixMilli()
 	if e.manifestStore != nil {
-		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, flushedAt, sizeBytes, e.logger); err != nil {
+		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, entryCreatedAt, sizeBytes, e.logger); err != nil {
 			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
 		}
 	}
 
+	// The mark timestamp is sampled AFTER the append completes, separately
+	// from the manifest entry's CreatedMin/Max stamp: a reader that anchored
+	// its dirty-barrier cutoff and resolved its path set while the append was
+	// still in flight (its set lacks this delta) must observe
+	// flushed_at >= cutoff so the widened barrier keeps the rows hot-readable
+	// (#252 review P1). CreatedMin/Max only feed compaction ordering, so the
+	// two stamps diverging by the append latency is harmless.
+	flushedAt := time.Now().UnixMilli()
 	markFlushed := e.markFlushed
 	if markFlushed == nil {
 		markFlushed = MarkFlushedIDsAtSnapshot

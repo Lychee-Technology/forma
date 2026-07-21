@@ -106,8 +106,10 @@ func WithFlushVisibilityGrace(d time.Duration) EngineOption {
 
 // flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the
 // instant the query resolved its parquet path set (#252): rows with
-// flushed_at strictly after the cutoff count as dirty. Because the flush
-// appends the manifest BEFORE marking, any row flushed before path
+// flushed_at at or after the cutoff count as dirty (inclusive, because
+// millisecond stamps cannot order a mark and a path resolution landing in
+// the same tick). Because the flush appends the manifest BEFORE marking and
+// samples the mark stamp after the append, any row flushed before path
 // resolution already has its delta listed in the resolved set — so the
 // steady state is never widened; only rows racing this query stay
 // hot-readable. The configured grace is a clock-skew margin, not a window.

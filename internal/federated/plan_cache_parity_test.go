@@ -44,7 +44,9 @@ func TestEnginePlanCachePathParity(t *testing.T) {
 	directSQL, directArgs := capturePlanPathSQL(t, false, 100, mc)
 	cachedSQL, cachedArgs := capturePlanPathSQL(t, true, 100, mc)
 
-	require.Equal(t, directSQL, cachedSQL,
+	// Each request stamps its own #252 cutoff, the sole legitimate byte
+	// difference between the two paths; normalize it before comparing.
+	require.Equal(t, normalizeFlushGraceCutoff(directSQL), normalizeFlushGraceCutoff(cachedSQL),
 		"engine cache path must produce byte-identical SQL to the direct builder")
 	require.Equal(t, directArgs, cachedArgs)
 }

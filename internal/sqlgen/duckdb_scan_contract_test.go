@@ -52,9 +52,9 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 			"flushed_at = 0 is a WHERE predicate, not a scan argument")
 	}
 
-	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at > ",
+	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at >= ",
 		"dirty_ids must restrict to unflushed-or-grace rows via a WHERE predicate (#252)")
-	require.Contains(t, sqlText, "AND (cl.flushed_at = 0 OR cl.flushed_at > ",
+	require.Contains(t, sqlText, "AND (cl.flushed_at = 0 OR cl.flushed_at >= ",
 		"pg_source must restrict to unflushed-or-grace rows via a WHERE predicate (#252)")
 }
 
@@ -102,7 +102,7 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 	require.Contains(t, sqlText, "AND (flushed_at = 0)",
 		"the dirty_ids barrier must survive tier pruning UNWIDENED: with "+
 			"pg_source pruned there is no hot server for grace-discarded rows (#252)")
-	require.NotContains(t, sqlText, "OR flushed_at > ",
+	require.NotContains(t, sqlText, "OR flushed_at >= ",
 		"hot-excluded shapes must keep the strict flushed_at = 0 barrier")
 	require.Equal(t, []any{int64(10), int64(10)}, args,
 		"PgMainArgs must be dropped with the pg_source CTE: "+

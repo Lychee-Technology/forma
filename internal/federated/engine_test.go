@@ -378,7 +378,10 @@ func TestEngineCompiledPlanCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, optsB.ExecutionPlan.Notes, "plan_cache=hit")
 	require.Equal(t, int64(1), optsB.ExecutionPlan.Timings["plan_cache_hit"])
-	require.Equal(t, duckA.lastSQL, duckB.lastSQL, "same shape must reuse the rendered skeleton")
+	// The per-request #252 cutoff is the only legitimate difference between
+	// the two bound SQLs; normalize it so the skeleton-reuse pin is exact.
+	require.Equal(t, normalizeFlushGraceCutoff(duckA.lastSQL), normalizeFlushGraceCutoff(duckB.lastSQL),
+		"same shape must reuse the rendered skeleton")
 	require.Contains(t, duckB.lastArgs, int64(77), "hit must bind the second request's operand")
 	require.NotContains(t, duckB.lastArgs, int64(10))
 

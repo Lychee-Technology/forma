@@ -36,6 +36,9 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 
 	var opts []fedengine.EngineOption
 	if src := e.parquetSource(); src != nil {
+		if e.ParquetSourceWrap != nil {
+			src = e.ParquetSourceWrap(src)
+		}
 		opts = append(opts, fedengine.WithParquetSource(src))
 	}
 	e.engine = fedengine.NewDBFederatedQueryEngine(

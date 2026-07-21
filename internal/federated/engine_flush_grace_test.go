@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
@@ -8,6 +9,17 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
+
+// flushGraceCutoffLiteral matches the #252 per-request cutoff spliced into
+// bound SQL. Tests comparing SQL across separate engine requests must
+// normalize it: each request stamps its own millisecond cutoff, so two
+// otherwise-identical builds legitimately differ in exactly this literal
+// (review P0 — the raw comparison was flaky across a millisecond boundary).
+var flushGraceCutoffLiteral = regexp.MustCompile(`flushed_at >= \d+`)
+
+func normalizeFlushGraceCutoff(sql string) string {
+	return flushGraceCutoffLiteral.ReplaceAllString(sql, "flushed_at >= <cutoff>")
+}
 
 // Pins the #252 grace-knob semantics: the cutoff anchors at the query's
 // path-resolution timestamp minus the configured clock-skew margin (zero =
