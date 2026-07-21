@@ -359,11 +359,11 @@ func testMultiKeyPublicAPIDesc(ctx context.Context, t *testing.T, env *Env, wide
 	}
 }
 
-// mixedRankOracle sorts the created events by (rank ASC, count DESC) — the
+// buildMixedRankOracle sorts the created events by (rank ASC, count DESC) — the
 // exact #183 shape (categorical primary ascending, distinct secondary
 // descending) that #240 makes publicly expressible. count is unique so the
 // pair is a total order and row_id never has to break ties.
-func mixedRankOracle(creates []*Event) []*Event {
+func buildMixedRankOracle(creates []*Event) []*Event {
 	want := make([]*Event, len(creates))
 	copy(want, creates)
 	sort.SliceStable(want, func(i, j int) bool {
@@ -423,7 +423,7 @@ func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *En
 	if res.ExecutionPlan == nil || !res.ExecutionPlan.Routing.UsedDuckDB {
 		t.Fatalf("expected DuckDB routing, got plan %+v", res.ExecutionPlan)
 	}
-	assertPublicOrderMatches(t, "public federated mixed sort", res, mixedRankOracle(creates))
+	assertPublicOrderMatches(t, "public federated mixed sort", res, buildMixedRankOracle(creates))
 }
 
 // testMultiKeyMixedPublicHot is the OLTP twin: unflushed rows without a
@@ -447,5 +447,5 @@ func testMultiKeyMixedPublicHot(ctx context.Context, t *testing.T, env *Env, wid
 	if err != nil {
 		t.Fatalf("public mixed-direction hot query: %v", err)
 	}
-	assertPublicOrderMatches(t, "public hot mixed sort", res, mixedRankOracle(creates))
+	assertPublicOrderMatches(t, "public hot mixed sort", res, buildMixedRankOracle(creates))
 }

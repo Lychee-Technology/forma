@@ -7,9 +7,9 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-// sortTestCache mirrors the e2e_wide shape used by the sort-stability suite:
+// buildSortTestCache mirrors the e2e_wide shape used by the sort-stability suite:
 // two main-bound attributes plus one pure-EAV attribute.
-func sortTestCache() forma.SchemaAttributeCache {
+func buildSortTestCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
 		"rank": {
 			AttributeName: "rank", AttributeID: 1, ValueType: forma.ValueTypeNumeric,
@@ -27,12 +27,12 @@ func TestBuildAttributeOrdersStructuredSort(t *testing.T) {
 	req := &forma.QueryRequest{
 		SchemaName: "e2e_wide",
 		Sort: []forma.OrderBy{
-			{Attribute: "rank"},                                  // omitted direction → asc
-			{Attribute: "count", SortOrder: forma.SortOrderDesc}, // explicit desc
+			{Attribute: "rank"}, // omitted direction → asc
+			{Attribute: "count", SortOrder: forma.SortOrderDesc},  // explicit desc
 			{Attribute: "qty", SortOrder: forma.SortOrder("ASC")}, // case-insensitive
 		},
 	}
-	orders, err := buildAttributeOrders(req, sortTestCache())
+	orders, err := buildAttributeOrders(req, buildSortTestCache())
 	if err != nil {
 		t.Fatalf("buildAttributeOrders: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestBuildAttributeOrdersLegacyUnchanged(t *testing.T) {
 		SortBy:     []string{"rank", "count"},
 		SortOrder:  forma.SortOrderDesc,
 	}
-	orders, err := buildAttributeOrders(req, sortTestCache())
+	orders, err := buildAttributeOrders(req, buildSortTestCache())
 	if err != nil {
 		t.Fatalf("buildAttributeOrders legacy: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildAttributeOrdersLegacyUnchanged(t *testing.T) {
 
 func TestBuildAttributeOrdersLegacyDefaultAsc(t *testing.T) {
 	req := &forma.QueryRequest{SchemaName: "e2e_wide", SortBy: []string{"qty"}}
-	orders, err := buildAttributeOrders(req, sortTestCache())
+	orders, err := buildAttributeOrders(req, buildSortTestCache())
 	if err != nil {
 		t.Fatalf("buildAttributeOrders legacy default: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestBuildAttributeOrdersValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildAttributeOrders(tc.req, sortTestCache())
+			_, err := buildAttributeOrders(tc.req, buildSortTestCache())
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -123,7 +123,7 @@ func TestBuildAttributeOrdersUnknownSortAttribute(t *testing.T) {
 		SchemaName: "e2e_wide",
 		Sort:       []forma.OrderBy{{Attribute: "ghost"}},
 	}
-	_, err := buildAttributeOrders(req, sortTestCache())
+	_, err := buildAttributeOrders(req, buildSortTestCache())
 	if err == nil {
 		t.Fatalf("expected unknown-attribute error, got nil")
 	}
