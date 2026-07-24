@@ -140,6 +140,17 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 		ChangeLog:      "change_log_dev",
 	})
 
+	// Invariant: the DuckDB manifest read surface is resolved and validated
+	// before the server opens any connection. The factory validates it too, but
+	// only after it has already queried the database — so doing it here is what
+	// makes the documented "invalid configuration fails at startup, before any
+	// I/O" contract (docs/federated-query/design.md §4.3.1) literally true for
+	// the server. Keep this block above NewPostgresPoolFromConfigContext.
+	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
+	if err := duckCfg.ValidateManifestRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
+
 	startupTimeout := dbConfig.Timeout
 	if startupTimeout <= 0 {
 		startupTimeout = 30 * time.Second
@@ -172,8 +183,10 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 
 	// Enable the federated DuckDB engine when configured (disabled by default).
 	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
-	// suite turns it on so its federated checks are genuinely federated.
-	config.DuckDB = duckDBConfigFromEnv(config.DuckDB)
+	// suite turns it on so its federated checks are genuinely federated. The
+	// value was resolved and validated above, before any I/O; re-resolving it
+	// here would risk the two copies drifting apart.
+	config.DuckDB = duckCfg
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)
