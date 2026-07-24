@@ -103,6 +103,43 @@ func TestS3FallbackGlob_MatchesHarnessFormat(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("s3://%s/%s/%d/*.parquet", "bkt", "forma-data", int16(7)), glob(7))
 }
 
+// TestS3FallbackGlob_TrailingSlashCanonicalizesLikeWriter pins writer parity.
+// The CDC writers canonicalize their prefix with strings.TrimSuffix(prefix,
+// "/") before joining (internal/cdc.BuildDeltaPath / BuildBasePath), so
+// S3Prefix "delta/" writes objects at "delta/{schemaID}/{uuid}.parquet". A
+// reader that Sprintf's the raw prefix builds "s3://b/delta//7/*.parquet",
+// whose empty path segment matches nothing — the empty-manifest fallback then
+// silently reads zero rows instead of the schema's parquet.
+func TestS3FallbackGlob_TrailingSlashCanonicalizesLikeWriter(t *testing.T) {
+	glob := S3FallbackGlob("b", "delta/")
+	require.NotNil(t, glob)
+	// Mirrors cdc.BuildDeltaPath("delta/", 7, uuid) == "delta/7/<uuid>.parquet".
+	// (Asserted as a literal rather than by calling the writer: internal/cdc
+	// imports this package, so referencing it here would be an import cycle.)
+	require.Equal(t, "s3://b/delta/7/*.parquet", glob(7))
+}
+
+// TestS3FallbackGlob_RootDataPrefixIsNil: a prefix of "/" canonicalizes to
+// the empty prefix, which must take the same "no fallback" branch as "" —
+// otherwise the glob scans the bucket root.
+func TestS3FallbackGlob_RootDataPrefixIsNil(t *testing.T) {
+	require.Nil(t, S3FallbackGlob("b", "/"))
+}
+
+// TestQuerySource_EmptyManifestFallbackUsesCanonicalGlob closes the loop at
+// the level the reader actually uses: a schema with no manifest entries and a
+// trailing-slash DataPrefix must resolve the writer's canonical prefix.
+func TestQuerySource_EmptyManifestFallbackUsesCanonicalGlob(t *testing.T) {
+	cfg := testS3Config()
+	cfg.DataPrefix = "delta/"
+	src := NewS3QuerySource(&fakeProbeClient{}, cfg)
+	src.Store = &memStore{} // no manifest object => empty manifest
+
+	paths, err := src.Paths(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, []string{"s3://bkt/delta/7/*.parquet"}, paths)
+}
+
 func TestS3ExistsProbe_Found(t *testing.T) {
 	client := &fakeProbeClient{}
 	probe := S3ExistsProbe(client, "bkt")

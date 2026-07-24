@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -94,14 +95,27 @@ func isNotFound(err error) bool {
 // schemas with no manifest entries yet, preserving pre-manifest read
 // behavior. The single `*` does not cross `/`, so in-flight `_tmp/`
 // objects under the schema prefix stay excluded — it must never be widened
-// to `**`. An empty dataPrefix returns a nil func, which QuerySource.Paths
-// reads as "no fallback" (a glob built from an empty prefix would scan the
-// bucket root).
+// to `**`.
+//
+// Writer parity is required: the CDC writers canonicalize the same prefix
+// with strings.TrimSuffix(prefix, "/") before joining (internal/cdc
+// BuildDeltaPath / BuildBasePath), so a configured "delta/" writes objects
+// at "delta/{schemaID}/...". Trimming identically here is what keeps the
+// glob pointed at the objects that were actually written; without it the
+// extra separator produces an empty path segment and the fallback matches
+// nothing — a silently empty cold tier. The trim is a single TrimSuffix,
+// not TrimRight, precisely because that is what the writers do: mirroring
+// their behavior matters more than being maximally forgiving.
+//
+// A prefix that canonicalizes to empty ("" or "/") returns a nil func, which
+// QuerySource.Paths reads as "no fallback" — a glob built from an empty
+// prefix would scan the bucket root.
 func S3FallbackGlob(bucket, dataPrefix string) func(schemaID int16) string {
-	if dataPrefix == "" {
+	trimmed := strings.TrimSuffix(dataPrefix, "/")
+	if trimmed == "" {
 		return nil
 	}
 	return func(schemaID int16) string {
-		return fmt.Sprintf("s3://%s/%s/%d/*.parquet", bucket, dataPrefix, schemaID)
+		return fmt.Sprintf("s3://%s/%s/%d/*.parquet", bucket, trimmed, schemaID)
 	}
 }
