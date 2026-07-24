@@ -29,6 +29,7 @@ type flushBatchExecutor struct {
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
+	markFlushed      func(context.Context, *sql.DB, string, int16, []uuid.UUID, int64, int64) ([]uuid.UUID, error)
 }
 
 func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
@@ -78,8 +79,47 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 			"schema_id", e.schemaID, "final_key", finalKey, "err", err)
 	}
 
+	// Order (#252): manifest-append precedes mark-flushed, so no query ever
+	// lands in a state where the batch's rows are in neither tier. The middle
+	// state — delta listed but rows still flushed_at = 0 — is safe by
+	// construction: the dirty anti-join (advanced_query_template_duckdb.go)
+	// discards the S3 copies of unflushed rows and the hot pg_source serves
+	// them. Failure contract (supersedes #197):
+	//   - Append fails -> rows stay dirty (mark never ran); the retry
+	//     re-exports to a fresh UUIDv7 key and self-heals. The old copied
+	//     final is an unlisted orphan reclaimed by manifest-reconcile --gc
+	//     (ClassDelta). The final key in the error is observability, not a
+	//     --repair pointer.
+	//   - Mark fails after append -> the delta is LISTED and rows stay dirty;
+	//     the retry yields a second listed delta with identical
+	//     (row_id, ver_ts) rows, which LWW (rn=1 + #183 tie-break) dedups and
+	//     compaction later collapses.
+	// The entry is built from batchIDs (mark has not run, so the marked subset
+	// is unknown): RowCount/RowIDMin/Max may overcount rows that concurrently
+	// changed after the snapshot. That feeds only compaction's promotion
+	// heuristic; reconcile recomputes stats from parquet contents. A batch
+	// whose rows ALL changed concurrently leaves an LWW-inert junk delta
+	// listed — accepted, never rolled back.
+	entryCreatedAt := time.Now().UnixMilli()
+	if e.manifestStore != nil {
+		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, entryCreatedAt, sizeBytes, e.logger); err != nil {
+			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
+		}
+	}
+
+	// The mark timestamp is sampled AFTER the append completes, separately
+	// from the manifest entry's CreatedMin/Max stamp: a reader that anchored
+	// its dirty-barrier cutoff and resolved its path set while the append was
+	// still in flight (its set lacks this delta) must observe
+	// flushed_at >= cutoff so the widened barrier keeps the rows hot-readable
+	// (#252 review P1). CreatedMin/Max only feed compaction ordering, so the
+	// two stamps diverging by the append latency is harmless.
 	flushedAt := time.Now().UnixMilli()
-	updatedIDs, err := MarkFlushedIDsAtSnapshot(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
+	markFlushed := e.markFlushed
+	if markFlushed == nil {
+		markFlushed = MarkFlushedIDsAtSnapshot
+	}
+	updatedIDs, err := markFlushed(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
 	if err != nil {
 		return fmt.Errorf("mark flushed at snapshot (%s): %w", batchKind, err)
 	}
@@ -87,19 +127,6 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	if len(updatedIDs) == 0 {
 		e.logger.Sugar().Infow("flush batch marked zero rows; possible concurrent updates", "schema_id", e.schemaID, "batch_kind", batchKind, "batch_size", len(batchIDs))
 		return nil
-	}
-
-	if e.manifestStore != nil {
-		// Rows are already marked flushed, so a re-run will not re-export
-		// them: a delta file missing from the manifest stays invisible to
-		// manifest consumers (e.g. compaction) forever. Propagate so the run
-		// reports failure; the final key in the error is the operator's
-		// pointer to the orphaned file. Recovery: run
-		// `forma-tools manifest-reconcile --repair` (#203), which appends
-		// the orphaned delta with metadata recomputed from its contents.
-		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", updatedIDs, flushedAt, sizeBytes, e.logger); err != nil {
-			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
-		}
 	}
 
 	if len(updatedIDs) < len(batchIDs) {

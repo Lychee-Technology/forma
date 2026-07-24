@@ -52,10 +52,10 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 			"flushed_at = 0 is a WHERE predicate, not a scan argument")
 	}
 
-	require.Contains(t, sqlText, "AND flushed_at = 0",
-		"dirty_ids must restrict to unflushed rows via a WHERE predicate")
-	require.Contains(t, sqlText, "AND cl.flushed_at = 0",
-		"pg_source must restrict to unflushed rows via a WHERE predicate")
+	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at >= ",
+		"dirty_ids must restrict to unflushed-or-grace rows via a WHERE predicate (#252)")
+	require.Contains(t, sqlText, "AND (cl.flushed_at = 0 OR cl.flushed_at >= ",
+		"pg_source must restrict to unflushed-or-grace rows via a WHERE predicate (#252)")
 }
 
 // TestAdvancedTemplate_ColdOnlyOmitsPgSource pins the #184 tier-hint contract:
@@ -99,8 +99,11 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		"hot excluded: unified must read from s3_source alone")
 	require.Contains(t, sqlText, "read_parquet",
 		"warm/cold requested: the parquet source must render")
-	require.Contains(t, sqlText, "AND flushed_at = 0",
-		"the dirty_ids barrier must survive tier pruning")
+	require.Contains(t, sqlText, "AND (flushed_at = 0)",
+		"the dirty_ids barrier must survive tier pruning UNWIDENED: with "+
+			"pg_source pruned there is no hot server for grace-discarded rows (#252)")
+	require.NotContains(t, sqlText, "OR flushed_at >= ",
+		"hot-excluded shapes must keep the strict flushed_at = 0 barrier")
 	require.Equal(t, []any{int64(10), int64(10)}, args,
 		"PgMainArgs must be dropped with the pg_source CTE: "+
 			"binds are the s3 semijoin and visible occurrences of DuckArgs only")

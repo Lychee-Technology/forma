@@ -4,7 +4,6 @@ package production
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -63,42 +62,12 @@ type flushOutcome struct {
 // invokes mutate on the test goroutine while the flush is suspended, then
 // resumes the flush and returns its outcome. The seeds stay small and no
 // chunking config is set, so the single batch issues exactly one CopyObject
-// and the pause fires deterministically once.
+// and the pause fires deterministically once. The goroutine/cleanup core
+// lives in runFlushPausedOn (cdc_flush_window_e2e_test.go), which #252 also
+// drives with a manifest-PutObject pause point.
 func runPausedFlush(ctx context.Context, t *testing.T, env *Env, mutate func()) (*FlushReport, error) {
 	t.Helper()
-	pauser := NewPausingS3(env.Cluster.S3, S3OpCopy)
-	ctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
-
-	// The flush goroutine must not touch t; it reports through done (buffered
-	// so it never leaks even when the test dies before reading it).
-	done := make(chan flushOutcome, 1)
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		report, err := env.RunFlushWith(ctx, FlushOverrides{S3: pauser})
-		done <- flushOutcome{report: report, err: err}
-	}()
-	// Registered after NewEnv's cleanups, so this runs first: any early
-	// t.Fatal (including inside mutate) releases the paused flush and waits
-	// for it to exit while the Env's resources are still alive.
-	t.Cleanup(func() {
-		pauser.Resume()
-		cancel()
-		<-finished
-	})
-
-	select {
-	case <-pauser.Reached():
-	case out := <-done:
-		t.Fatalf("flush finished before reaching the CopyObject pause: err=%v", out.err)
-	}
-	mutate()
-	pauser.Resume()
-	out := <-done
-	if out.err != nil {
-		return out.report, fmt.Errorf("flush under CopyObject pause: %w", out.err)
-	}
-	return out.report, nil
+	return runFlushPausedOn(ctx, t, env, NewPausingS3(env.Cluster.S3, S3OpCopy), mutate)
 }
 
 // runCleanRetry re-runs the flush without any pause and asserts it drains

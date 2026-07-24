@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -82,6 +83,11 @@ type inMemoryManifestStore struct {
 	loadErr error
 	saveErr error
 	saved   int
+	// saveDelay slows Save so tests can order the manifest append against
+	// timestamps sampled around it at millisecond resolution (#252 review P1);
+	// lastSaveDoneMs records when the slowed Save completed.
+	saveDelay      time.Duration
+	lastSaveDoneMs int64
 }
 
 type objectOnlyS3Client struct{}
@@ -173,6 +179,10 @@ func (s *inMemoryManifestStore) Save(_ context.Context, path string, data []byte
 	if s.saveErr != nil {
 		return "", s.saveErr
 	}
+	if s.saveDelay > 0 {
+		time.Sleep(s.saveDelay)
+	}
+	s.lastSaveDoneMs = time.Now().UnixMilli()
 	s.saved++
 	etag := fmt.Sprintf("etag-%d", s.saved)
 	s.data[path] = append([]byte(nil), data...)

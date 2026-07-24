@@ -36,6 +36,7 @@
 //	#246 breaker single-probe      -> WithBreaker, Duck.Close, ReopenDuckDB
 //	#186 multi-schema isolation    -> schemas/e2e_simple + e2e_second, per-test DB
 //	#260 nested dotted attributes  -> schemas/e2e_nested, nested_attrs_e2e_test.go
+//	#252 flush-window visibility   -> runFlushPausedOn, PausingS3 on manifest PUT, DuckCfg.FlushVisibilityGraceMs
 //
 // Environment variables: KEEP_E2E_ENV, E2E_SEED, E2E_ARTIFACTS_DIR,
 // E2E_VERBOSE, and PRODUCTION_E2E_EXTERNAL_* (see README.md).

@@ -42,6 +42,12 @@ type Env struct {
 	S3Prefix string
 	CDC      cdc.CDCConfig
 
+	// ParquetSourceWrap, when set before the Env's first query, decorates the
+	// manifest-driven parquet source the engine is built with — the seam for
+	// observing/pausing path resolution mid-query (#252). Mirrors the DuckCfg
+	// mutate-before-first-use pattern; nil leaves the source untouched.
+	ParquetSourceWrap func(fedengine.ParquetSource) fedengine.ParquetSource
+
 	logger *zap.Logger
 	opts   envOptions
 

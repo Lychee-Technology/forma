@@ -203,6 +203,12 @@ func FederatedQueryHasHot(q *model.FederatedAttributeQuery) bool {
 }
 
 func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) {
+	// Defensive default for the #252 flush-grace cutoff, set before the nil-q
+	// return so every render path (dual, legacy, nil query) produces valid
+	// SQL with the pre-#252 barrier when the engine did not supply a cutoff.
+	if _, ok := params["FlushGraceCutoffMs"]; !ok {
+		params["FlushGraceCutoffMs"] = FlushGraceCutoffDisabled
+	}
 	if q == nil {
 		return
 	}

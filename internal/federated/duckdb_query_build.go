@@ -30,9 +30,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
 	parquetPaths []string,
+	graceCutoffMs int64,
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
-	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths)
+	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths, graceCutoffMs)
 
 	startTranslate := time.Now()
 
@@ -90,7 +91,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Compiled-plan cache (#142): skeleton + template args are reused per
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
 	// request. Test hooks and non-advanced templates bypass the cache.
-	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, sqlParams, &dc, cache, planCtx); ok {
+	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, sqlParams, &dc, cache, planCtx); ok {
 		translateMs := time.Since(startTranslate).Milliseconds()
 		telemetry.EmitLatency(ctx, "translation", translateMs)
 		return sqlStr, args, translateMs, nil
@@ -115,6 +116,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
 	parquetPaths []string,
+	graceCutoffMs int64,
 ) map[string]any {
 	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
 	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
@@ -147,6 +149,11 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	if len(parquetPaths) > 0 {
 		sqlParams["DuckDBS3Paths"] = parquetPaths
 	}
+	// Per-request dirty-barrier cutoff (#252), anchored at the query's
+	// path-resolution instant. The direct builder renders it as a literal;
+	// the compiled path overwrites it with the splice sentinel so the cached
+	// skeleton stays cutoff-independent.
+	sqlParams["FlushGraceCutoffMs"] = graceCutoffMs
 	return sqlParams
 }
 
@@ -169,6 +176,7 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	attributeOrders []model.AttributeOrder,
 	limit, offset int,
 	parquetPaths []string,
+	graceCutoffMs int64,
 	sqlParams map[string]any,
 	dc *sqlgen.DualClauses,
 	cache forma.SchemaAttributeCache,
@@ -236,7 +244,7 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		bound.PgMainClause = entry.dualPlan.PgMainClause
 		bound.DuckClause = entry.dualPlan.DuckClause
 	}
-	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs)
+	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
 	return sqlStr, args, true
 }
 

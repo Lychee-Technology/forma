@@ -33,6 +33,16 @@ type DuckDBConfig struct {
 	// tripping. Zero means use the built-in default.
 	CircuitBreakerOpenDuration time.Duration `json:"circuitBreakerOpenDuration"`
 
+	// FlushVisibilityGraceMs is the #252 clock-skew margin for the federated
+	// dirty barrier. Each query anchors its cutoff at the instant it resolved
+	// its parquet path set: rows marked flushed after that instant (their
+	// delta may be missing from the resolved set) stay hot-readable, minus
+	// this margin to absorb CDC-host vs query-host clock skew. Zero (the
+	// default) is the exact anchor — the steady state is never widened; a
+	// positive value hot-serves rows flushed up to that long before the
+	// query; a negative value disables the widening (the pre-#252 barrier).
+	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
+
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
 

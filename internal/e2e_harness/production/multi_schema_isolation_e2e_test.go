@@ -109,9 +109,11 @@ func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
 }
 
 // testMultiSchemaManifestSaveFault breaks the manifest PutObject for one
-// schema only. The faulted schema lands in the #197 partial-commit state
-// (rows flushed, final promoted, manifest missing, no self-repair on retry)
-// while the sibling schema's manifest and data are untouched by the failure.
+// schema only. Under the #252 ordering the faulted schema's append fails
+// BEFORE mark-flushed, so its rows stay dirty and the healed retry
+// self-heals them into a fresh listed delta (the first copied final stays an
+// unlisted orphan for reconcile --gc) — while the sibling schema's manifest
+// and data are untouched by the failure.
 func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 	env := NewEnv(t, SharedCluster(t))
 	simple, second := seedTwoSchemas(ctx, t, env)
@@ -131,12 +133,12 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 	// Healthy schema: complete commit including its manifest entry.
 	assertSchemaFullyFlushed(ctx, t, env, report.NewObjects, report.Manifests, simple, 3)
 
-	// Faulted schema: the #197 partial commit, scoped to this schema. Rows
-	// are marked flushed and the final exists, so the error must point the
-	// operator at the orphaned key; the manifest tracks nothing.
+	// Faulted schema: the failed append precedes mark-flushed (#252), so its
+	// rows stay dirty; the copied final exists and the error names it for
+	// observability, but the manifest tracks nothing.
 	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, second)
-	if len(flushed) != 3 || len(dirty) != 0 {
-		t.Fatalf("schema %d rows must be marked flushed before the manifest step: flushed=%v dirty=%v",
+	if len(flushed) != 0 || len(dirty) != 3 {
+		t.Fatalf("schema %d rows must stay dirty when its manifest append fails: flushed=%v dirty=%v",
 			second.ID, flushed, dirty)
 	}
 	finals := finalsForSchema(env, report.NewObjects, second)
@@ -144,22 +146,31 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 		t.Fatalf("schema %d final must exist when its manifest save fails, got %v", second.ID, finals)
 	}
 	if !strings.Contains(err.Error(), "manifest update") || !strings.Contains(err.Error(), finals[0]) {
-		t.Errorf("error must point at the orphaned final key %q, got: %v", finals[0], err)
+		t.Errorf("error must point at the copied final key %q, got: %v", finals[0], err)
 	}
 	assertManifestDeltaPaths(t, report.Manifests, second, nil)
 
-	// Retry is a strict no-op for BOTH schemas: nothing dirty anywhere, no
-	// re-export, and no manifest self-repair for the faulted schema (#197).
+	// Retry self-heals ONLY the faulted schema: the healthy schema has
+	// nothing dirty and gains no objects; the faulted schema re-exports to a
+	// fresh listed delta (#252 supersedes the #197 no-op-retry contract).
 	retry, err := env.RunFlushWith(ctx, FlushOverrides{})
 	if err != nil {
 		t.Fatalf("clean retry flush: %v", err)
 	}
-	if retry.UnflushedBefore != 0 || len(retry.NewObjects) != 0 {
-		t.Errorf("retry must be a no-op: unflushed %d, new objects %v", retry.UnflushedBefore, retry.NewObjects)
+	if retry.UnflushedBefore != 3 || retry.UnflushedAfter != 0 {
+		t.Errorf("retry must drain only the faulted schema: unflushed before/after = %d/%d, want 3/0",
+			retry.UnflushedBefore, retry.UnflushedAfter)
 	}
-	assertManifestDeltaPaths(t, retry.Manifests, second, nil)
+	retryFinals := finalsForSchema(env, retry.NewObjects, second)
+	if len(retryFinals) != 1 {
+		t.Fatalf("retry must promote exactly one new final for the faulted schema, got %v", retry.NewObjects)
+	}
+	if healthy := finalsForSchema(env, retry.NewObjects, simple); len(healthy) != 0 {
+		t.Errorf("healthy schema must gain no new objects on retry, got %v", healthy)
+	}
+	assertManifestDeltaPaths(t, retry.Manifests, second, retryFinals)
 
-	// Reads never consult the manifest: both schemas stay fully visible.
+	// Both schemas fully visible after convergence.
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
 	env.AssertQueryMatches(ctx, Query{Schema: second, Limit: 100})
 }

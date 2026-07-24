@@ -163,6 +163,9 @@ func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) s
 		{"$PG_WHERE_CLAUSE", "1 = 1"},
 		{"$PAGE_SIZE", "100"},
 		{"$OFFSET", "0"},
+		// Grace disabled (MaxInt64) so the seed's flushed s3 row keeps its
+		// #173 out-of-dirty-set semantics (#252).
+		{"$FLUSH_GRACE_CUTOFF_MS", "9223372036854775807"},
 		// Scan calls collapse to local relations above; this only clears the
 		// parameter-legend comment lines.
 		{"$PG_CONN", "(local)"},

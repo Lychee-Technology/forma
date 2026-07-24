@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"text/template"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -67,6 +68,11 @@ type DBFederatedQueryEngine struct {
 	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
 	// the legacy hint-only path resolution. See WithParquetSource.
 	parquetSource ParquetSource
+	// flushVisibilityGraceMs is the #252 clock-skew margin subtracted from
+	// the query's path-resolution timestamp to form the dirty-barrier
+	// cutoff; zero = exact anchor (default), negative = widening disabled.
+	// Copied from DuckDBConfig.FlushVisibilityGraceMs at construction.
+	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
 	// so schema corruption must be caught by probing instead of by the
@@ -82,21 +88,54 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.planCache = c }
 }
 
+// WithFlushVisibilityGrace overrides the #252 clock-skew margin subtracted
+// from the query's path-resolution timestamp when computing the dirty-barrier
+// cutoff. d == 0 is the exact anchor (the default); d > 0 hardens against
+// cross-host clock skew (flushed_at is stamped on the CDC host, the cutoff on
+// the query host) at the cost of hot-serving rows flushed up to d before the
+// query; d < 0 disables the widening entirely (the pre-#252 barrier).
+func WithFlushVisibilityGrace(d time.Duration) EngineOption {
+	return func(e *DBFederatedQueryEngine) {
+		if d < 0 {
+			e.flushVisibilityGraceMs = -1
+			return
+		}
+		e.flushVisibilityGraceMs = d.Milliseconds()
+	}
+}
+
+// flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the
+// instant the query resolved its parquet path set (#252): rows with
+// flushed_at at or after the cutoff count as dirty (inclusive, because
+// millisecond stamps cannot order a mark and a path resolution landing in
+// the same tick). Because the flush appends the manifest BEFORE marking and
+// samples the mark stamp after the append, any row flushed before path
+// resolution already has its delta listed in the resolved set — so the
+// steady state is never widened; only rows racing this query stay
+// hot-readable. The configured grace is a clock-skew margin, not a window.
+func (e *DBFederatedQueryEngine) flushGraceCutoffMs(pathsResolvedAtMs int64) int64 {
+	if e.flushVisibilityGraceMs < 0 {
+		return sqlgen.FlushGraceCutoffDisabled
+	}
+	return pathsResolvedAtMs - e.flushVisibilityGraceMs
+}
+
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
 // duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
 // nil breaker disables circuit breaking.
 func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string, opts ...EngineOption) *DBFederatedQueryEngine {
 	e := &DBFederatedQueryEngine{
-		pgSource:        pgSource,
-		dirtyIDFetcher:  dirtyIDFetcher,
-		duck:            duck,
-		breaker:         breaker,
-		cfg:             cfg,
-		metadataCache:   metadataCache,
-		pgConnString:    pgConnString,
-		duckTemplate:    sqlgen.AdvancedQueryTemplateDuckDB,
-		projections:     sqlgen.NewProjectionCache(),
-		schemaValidator: newParquetSchemaValidator(),
+		pgSource:               pgSource,
+		dirtyIDFetcher:         dirtyIDFetcher,
+		duck:                   duck,
+		breaker:                breaker,
+		cfg:                    cfg,
+		metadataCache:          metadataCache,
+		pgConnString:           pgConnString,
+		duckTemplate:           sqlgen.AdvancedQueryTemplateDuckDB,
+		projections:            sqlgen.NewProjectionCache(),
+		schemaValidator:        newParquetSchemaValidator(),
+		flushVisibilityGraceMs: cfg.FlushVisibilityGraceMs,
 	}
 	for _, opt := range opts {
 		opt(e)
