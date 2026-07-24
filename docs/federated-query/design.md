@@ -115,7 +115,7 @@ The `"federated"` object carries optional controls that affect execution routing
 | `preferred_tiers` | []string | `["hot","warm","cold"]` | Ordered list of data tiers to query. |
 | `prefer_hot` | bool | false | Strong preference for Postgres hot tier. |
 | `use_main_as_anchor` | bool | true | Use entity_main as the anchor for predicate pushdown. |
-| `s3_parquet_path_template` | string | — | Template for locating Parquet files in S3. |
+| `s3_parquet_path_template` | string | — | Template for locating Parquet files in S3. Wins over the server's manifest-driven resolution (§4.3.1). |
 | `allow_partial_degraded_mode` | bool | false | Permit execution with a subset of available tiers. |
 | `consistency_mode` | string | `"strict"` | Freshness/availability contract (`"strict"` or `"eventual"`). |
 | `include_execution_plan` | bool | false | Attach diagnostic execution plan to the response. |
@@ -126,6 +126,34 @@ The `"federated"` object carries optional controls that affect execution routing
 * **`eventual`**: Permits S3-only degraded execution when PostgreSQL is unavailable, accepting possible ghost reads (deleted data reappearing) and missing hot-tier rows. Suitable for best-effort analytics where bounded staleness is acceptable.
 
 These controls are part of the request payload; they are not conveyed via HTTP headers.
+
+### **4.3.1 Parquet Path Resolution and Manifest-Driven Reads**
+
+`$S3_PATHS` (§5) is resolved once per query, before the DuckDB template renders. Four levels, first match wins:
+
+1. **Per-request hint** — `federated.s3_parquet_path_template`, rendered for the query's schema (comma-separated templates become a path list). An explicit hint directs `read_parquet` at exactly the requested location and always wins. **A hint that fails to render is invalid input** (wraps `forma.ErrInvalidInput` → 4xx) and never falls through to the manifest source: silently serving a different path set than the caller asked for would misreport the answer.
+2. **Manifest source** — when the server is configured for manifest reads, the schema's manifest is loaded and its file entries become the scan set as full `s3://` URIs. Reads then scan exactly the listed objects rather than expanding a storage glob, which is what makes cold-tier loss detectable (§4.3.1 *Inconsistency detection*).
+3. **Fallback glob** — a schema whose manifest is missing or empty resolves to `s3://{s3Bucket}/{s3DataPrefix}/{schemaID}/*.parquet`, preserving pre-manifest read behavior for never-flushed schemas. The single `*` does not cross `/`, so in-flight `_tmp/` staging objects stay excluded; it must never be widened to `**`. An empty `s3DataPrefix` disables this level.
+4. **No paths** — with no hint, no configured source, and no fallback, the query renders no S3 scan at all and returns **hot-tier rows only**. This is a silent semantic cliff: no error is raised, the result set is merely short.
+
+**Server configuration.** Manifest-driven reads are configured on `DuckDBConfig` and, for `cmd/server`, from the environment (the `DUCKDB_*` names override the shared CDC-stack names in parentheses):
+
+| Config field | Env var | Meaning |
+| :---- | :---- | :---- |
+| `duckdb.s3Bucket` | `DUCKDB_S3_BUCKET` (`S3_BUCKET`) | Bucket holding both the parquet objects and the manifests that index them. Required whenever `manifestTemplate` is set. |
+| `duckdb.s3DataPrefix` | `DUCKDB_S3_PREFIX` (`S3_PREFIX`) | Mirrors the CDC write side's parquet prefix. Used *only* to build the level-3 fallback glob. |
+| `duckdb.manifestPrefix` | `DUCKDB_MANIFEST_PREFIX` (`MANIFEST_PREFIX`) | Root prefix for manifest objects. Must match the CDC/compaction write side. |
+| `duckdb.manifestTemplate` | `DUCKDB_MANIFEST_TEMPLATE` (`MANIFEST_TEMPLATE`) | Per-schema manifest path template, e.g. `manifest/{{.SchemaID}}.json`. **Non-empty is the single enable gate** for manifest reads. |
+
+* **Gate:** the source is built only when `duckdb.enabled` *and* `manifestTemplate` is non-empty. All four fields default to empty, so an upgrade never flips an existing deployment from glob reads to manifest reads on its own.
+* **Must match the writer:** `manifestPrefix` / `manifestTemplate` must be identical to the CDC and compaction write side, and `s3DataPrefix` must match the writers' parquet prefix. A reader pointed at a manifest path the writers never use resolves an empty manifest for every schema and falls back to the glob — or, without `s3DataPrefix`, to nothing at all.
+* **Invalid configuration fails at startup:** the combination is validated before any I/O and the failure is fatal to server construction (a half-configured read surface would silently drop the cold tier). Rejected combinations: `manifestTemplate` set without `s3Bucket`; `manifestPrefix` or `s3DataPrefix` set without `manifestTemplate` (they would sit inert while reading to an operator as "manifest reads are on"); a `manifestTemplate` that is not a parsable `text/template`.
+* **Endpoint addressing:** when `s3Endpoint` is set, the manifest client uses path-style addressing, mirroring the `s3_url_style='path'` DuckDB httpfs receives — both must address the same objects the same way.
+* **Boundary — no startup bucket probe:** the S3 client is constructed at startup but not exercised (no `HeadBucket`). A mistyped bucket, a wrong endpoint, or bad credentials therefore surface as **query-time** read failures, not as a startup failure.
+
+**Inconsistency detection.** `ErrParquetSetInconsistent` (see `docs/error-handling.md`) can only ever trigger on level 2/3 paths: a failed read is classified by probing the exact scanned set for listed-but-absent objects, and that classification is skipped entirely when the paths came from a per-request hint or when no source is configured. A deployment reading via globs alone therefore keeps the pre-manifest failure mode — a shrinking glob silently returns fewer rows.
+
+**Migration note — the silent-loss window.** The write side is already on for most deployments: `forma-tools cdc-flush` defaults `--manifest-template` to `manifest/{{.SchemaID}}.json`, and CDC/compaction gate manifest writing on that template being non-empty, so a stack flushing with CLI defaults **has been writing manifests all along**. The read side is off by default. Upgrading without setting `DUCKDB_MANIFEST_TEMPLATE` (plus `DUCKDB_S3_BUCKET`) is therefore not a no-op-by-choice: the deployment stays in the pre-existing window where a lost cold-tier object degrades to a silently short result set instead of a loud, classified error. Turn the read side on with the same prefix/template values the flusher uses.
 
 ### **4.4 Attribute → Column Naming Contract**
 
