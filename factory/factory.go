@@ -37,6 +37,7 @@ type entityManagerDependencies struct {
 	collectTables     func(context.Context, queryPool, string) ([]string, error)
 	newMetadataLoader func(*pgxpool.Pool, string, string) metadataLoader
 	newDuckDBClient   func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error)
+	newParquetSource  func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error)
 }
 
 func defaultEntityManagerDependencies() entityManagerDependencies {
@@ -45,7 +46,8 @@ func defaultEntityManagerDependencies() entityManagerDependencies {
 		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
-		newDuckDBClient: federated.NewDuckDBClientContext,
+		newDuckDBClient:  federated.NewDuckDBClientContext,
+		newParquetSource: newManifestParquetSource,
 	}
 }
 
@@ -93,6 +95,12 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool, deps entityManagerDependencies) (forma.EntityManager, error) {
 	schemaName := normalizeSchemaName(config.Database.Schema)
 	effectiveConfig := configWithQualifiedTables(config, schemaName)
+	// Configuration errors are rejected before any I/O: an incoherent manifest
+	// read surface must not be discovered halfway through startup, after the
+	// database has already been queried.
+	if err := effectiveConfig.DuckDB.ValidateManifestRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
 		return nil, err
@@ -147,10 +155,23 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 			zap.S().Infow("duckdb client initialized")
 		}
 	}
+	// Unlike the DuckDB client above, this failure is fatal: a manifest read
+	// surface that cannot be built would silently drop the cold tier.
+	parquetSource, err := deps.newParquetSource(ctx, effectiveConfig.DuckDB)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build manifest parquet source: %w", err)
+	}
+
 	// One plan cache shared by the repository and the federated engine (#142):
 	// its lifetime is the manager's, so compiled plans survive across requests.
 	planCache := queryplan.NewCache(4096)
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
+	engineOpts := []federated.EngineOption{federated.WithPlanCache(planCache)}
+	// Append only a real source, so the manifest-off path stays byte-identical
+	// to the pre-#250 engine construction.
+	if parquetSource != nil {
+		engineOpts = append(engineOpts, federated.WithParquetSource(parquetSource))
+	}
 	federatedEngine := federated.NewDBFederatedQueryEngine(
 		repository,
 		federated.NewPostgresDirtyIDFetcher(pool),
@@ -159,7 +180,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		effectiveConfig.DuckDB,
 		metadataCache,
 		federated.DuckDBPostgresConnStringFromPool(pool),
-		federated.WithPlanCache(planCache),
+		engineOpts...,
 	)
 	// Create and return entity manager
 	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
