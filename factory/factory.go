@@ -162,6 +162,14 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// surface that cannot be built would silently drop the cold tier.
 	parquetSource, err := deps.newParquetSource(ctx, effectiveConfig.DuckDB)
 	if err != nil {
+		// The DuckDB client above is already open on this path; nothing else
+		// will ever hold it, so release its handle and pool before the fatal
+		// return rather than leaking them for the process lifetime.
+		// (*DuckDBClient).Close is nil-receiver safe, covering the DuckDB-off
+		// and client-construction-failed cases.
+		if closeErr := duckClient.Close(); closeErr != nil {
+			zap.S().Warnw("failed to close duckdb client after parquet source failure", "err", closeErr)
+		}
 		return nil, fmt.Errorf("failed to build manifest parquet source: %w", err)
 	}
 

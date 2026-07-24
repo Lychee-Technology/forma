@@ -3,7 +3,6 @@ package factory
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
@@ -44,12 +43,13 @@ var newManifestS3Client = func(ctx context.Context, cfg forma.DuckDBConfig) (man
 // set (the cold tier simply goes missing), which is exactly the failure mode
 // this wiring exists to prevent.
 //
-// This is also the single place the four string fields are trimmed. The gate
-// (ManifestReadEnabled) already trims before answering, so a padded value —
-// a YAML quoting slip, a trailing newline from a mounted secret — opens the
-// gate; feeding it untrimmed to PathResolver would resolve manifest keys no
-// writer ever produced, and a missing manifest merely falls back to the glob,
-// so the mistake would never surface as an error.
+// The four string fields are forwarded verbatim, deliberately. They are shared
+// with the CDC/compaction write side, which never trims them, so normalizing
+// here would make one configured string resolve two different object keys —
+// the writer's untrimmed one and the reader's trimmed one — and the divergence
+// would surface only as a silently empty cold tier. ValidateManifestRead
+// rejects padded values outright instead (#250 PR review), so anything that
+// reaches this point is already clean bytes.
 func newManifestParquetSource(ctx context.Context, cfg forma.DuckDBConfig) (federated.ParquetSource, error) {
 	if err := cfg.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
@@ -64,9 +64,9 @@ func newManifestParquetSource(ctx context.Context, cfg forma.DuckDBConfig) (fede
 	}
 
 	return manifest.NewS3QuerySource(client, manifest.S3QuerySourceConfig{
-		Bucket:           strings.TrimSpace(cfg.S3Bucket),
-		ManifestPrefix:   strings.TrimSpace(cfg.ManifestPrefix),
-		ManifestTemplate: strings.TrimSpace(cfg.ManifestTemplate),
-		DataPrefix:       strings.TrimSpace(cfg.S3DataPrefix),
+		Bucket:           cfg.S3Bucket,
+		ManifestPrefix:   cfg.ManifestPrefix,
+		ManifestTemplate: cfg.ManifestTemplate,
+		DataPrefix:       cfg.S3DataPrefix,
 	}), nil
 }

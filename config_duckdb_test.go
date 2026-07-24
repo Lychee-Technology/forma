@@ -1,6 +1,8 @@
 package forma
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,6 +122,57 @@ func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
 			errorField: "",
 		},
 		{
+			// Padded values are rejected rather than trimmed at the reader: the
+			// CDC/compaction write side never trims, so a shared value carrying
+			// a stray newline (a YAML quoting slip, a mounted secret file) would
+			// resolve one key on the write side and a different one on the read
+			// side. Byte parity is the contract; the config surface enforces it.
+			name: "padded manifest template",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: " manifest/{{.SchemaID}}.json\n",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// A whitespace-only template escapes both gates today:
+			// ManifestReadEnabled() trims it to "" (reads stay off) while the
+			// inert-prefix check sees a non-empty string. The whitespace rule
+			// closes that hole.
+			name: "whitespace-only manifest template",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "   ",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "padded s3 bucket",
+			duckDB: DuckDBConfig{
+				S3Bucket:         " forma-lake",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.s3Bucket",
+		},
+		{
+			name: "padded manifest prefix",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestPrefix:   "forma ",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.manifestPrefix",
+		},
+		{
+			name: "padded s3 data prefix",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				S3DataPrefix:     "\tforma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.s3DataPrefix",
+		},
+		{
 			name: "complete manifest config is valid while duckdb is disabled",
 			duckDB: DuckDBConfig{
 				Enabled:          false,
@@ -168,12 +221,17 @@ func TestValidateDuckDBConfig_ManifestReadWiredIntoValidate(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected Validate to reject inert manifest config, got nil")
 	}
-	configErr, ok := err.(*ConfigError)
-	if !ok {
-		t.Fatalf("Expected ConfigError, got %T", err)
+	// Validate() wraps the delegated manifest error with context, so callers
+	// must unwrap: a bare type assertion would break on the wrapper.
+	var configErr *ConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("Expected ConfigError, got %T (%v)", err, err)
 	}
 	if configErr.Field != "duckdb.manifestTemplate" {
 		t.Errorf("Expected error field duckdb.manifestTemplate, got %s", configErr.Field)
+	}
+	if !strings.Contains(err.Error(), "invalid duckdb manifest read configuration") {
+		t.Errorf("Expected the delegated error to be wrapped with context, got %q", err.Error())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
@@ -129,16 +130,21 @@ func TestNewManifestParquetSource_AssemblesQuerySource(t *testing.T) {
 	assert.Equal(t, "s3://bkt/data/21/*.parquet", qs.Fallback(21))
 }
 
-// TestNewManifestParquetSource_TrimsPaddedValues pins that surrounding
-// whitespace is stripped once, where the QuerySource is assembled.
-// ManifestReadEnabled() already trims before answering the gate, so a padded
-// template (a YAML quoting slip, a trailing newline from a secret file) opens
-// the gate; without this trim the untrimmed value would reach PathResolver and
-// resolve manifest keys that no writer ever produced — silently, since a
-// missing manifest just falls back to the glob.
-func TestNewManifestParquetSource_TrimsPaddedValues(t *testing.T) {
+// TestNewManifestParquetSource_RejectsPaddedValues pins the #250 PR review
+// P2a decision: padded values are REJECTED, not silently trimmed here. The
+// CDC/compaction write side never trims these shared values, so a reader-only
+// trim would resolve a different key than the writer wrote for the very same
+// configured string — byte parity between the two sides is the contract, and
+// the config surface is where it is enforced.
+//
+// Boot note for cmd/server: a padded DUCKDB_MANIFEST_TEMPLATE from the
+// environment still opens the manifestOn predicate (TrimSpace-based), so the
+// shared prefixes get adopted and startup then fails here with the explicit
+// whitespace message — loud and diagnosable, which is the intended outcome.
+func TestNewManifestParquetSource_RejectsPaddedValues(t *testing.T) {
 	swapManifestS3Client(t, func(context.Context, forma.DuckDBConfig) (manifest.S3ProbeClient, error) {
-		return stubProbeClient{}, nil
+		t.Fatal("S3 client must not be constructed for a padded manifest configuration")
+		return nil, nil
 	})
 
 	cfg := forma.DuckDBConfig{
@@ -151,21 +157,36 @@ func TestNewManifestParquetSource_TrimsPaddedValues(t *testing.T) {
 
 	src, err := newManifestParquetSource(context.Background(), cfg)
 
-	require.NoError(t, err)
-	require.NotNil(t, src)
+	require.Error(t, err)
+	if src != nil {
+		t.Fatalf("expected literal nil ParquetSource on error, got %#v", src)
+	}
+	var cfgErr *forma.ConfigError
+	require.True(t, errors.As(err, &cfgErr), "expected *forma.ConfigError, got %v", err)
+	assert.Contains(t, cfgErr.Message, "whitespace")
+}
 
+// TestNewManifestParquetSource_PassesFieldsVerbatim: with whitespace rejected
+// upstream, the assembly layer forwards the configured bytes unchanged — no
+// second normalization that could diverge from the writers.
+func TestNewManifestParquetSource_PassesFieldsVerbatim(t *testing.T) {
+	swapManifestS3Client(t, func(context.Context, forma.DuckDBConfig) (manifest.S3ProbeClient, error) {
+		return stubProbeClient{}, nil
+	})
+
+	cfg := manifestReadConfig()
+	cfg.S3DataPrefix = "data/nested"
+
+	src, err := newManifestParquetSource(context.Background(), cfg)
+
+	require.NoError(t, err)
 	qs, ok := src.(*manifest.QuerySource)
 	require.True(t, ok, "expected *manifest.QuerySource, got %T", src)
-	assert.Equal(t, "bkt", qs.Bucket)
-	assert.Equal(t, "manifest", qs.Resolver.Prefix)
-	assert.Equal(t, "{{.SchemaID}}.json", qs.Resolver.PathTemplate)
-
-	store, ok := qs.Store.(*manifest.S3Store)
-	require.True(t, ok, "expected *manifest.S3Store, got %T", qs.Store)
-	assert.Equal(t, "bkt", store.Bucket)
-
+	assert.Equal(t, cfg.S3Bucket, qs.Bucket)
+	assert.Equal(t, cfg.ManifestPrefix, qs.Resolver.Prefix)
+	assert.Equal(t, cfg.ManifestTemplate, qs.Resolver.PathTemplate)
 	require.NotNil(t, qs.Fallback)
-	assert.Equal(t, "s3://bkt/data/21/*.parquet", qs.Fallback(21))
+	assert.Equal(t, "s3://bkt/data/nested/21/*.parquet", qs.Fallback(21))
 }
 
 func TestNewManifestParquetSource_InvalidConfigFailsFast(t *testing.T) {
@@ -274,6 +295,56 @@ func TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorFailsFast(t *testing.
 	assert.Nil(t, em)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "manifest parquet source")
+}
+
+// TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorClosesDuckDBClient
+// pins the #250 PR review P2c leak: the DuckDB client is opened before the
+// parquet source is built, and the source failure is fatal — so the already
+// initialized client (a real DuckDB instance holding a file/memory handle and
+// its connection pool) must be closed on the way out, not abandoned.
+//
+// Observable: HealthCheck runs a real query through the client's *sql.DB,
+// which answers "sql: database is closed" once Close has run. That is the
+// strongest available assertion — DuckDBClient is a concrete type, so no
+// interface seam can record the Close call, and Close itself is idempotent
+// (second call returns nil either way), which would not distinguish the two
+// outcomes.
+func TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorClosesDuckDBClient(t *testing.T) {
+	t.Parallel()
+
+	var built *federated.DuckDBClient
+	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps.newDuckDBClient = func(ctx context.Context, cfg forma.DuckDBConfig) (*federated.DuckDBClient, error) {
+		client, err := federated.NewDuckDBClientContext(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		built = client
+		return client, nil
+	}
+	deps.newParquetSource = func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error) {
+		return nil, errors.New("simulated s3 client failure")
+	}
+
+	config := parquetSourceTestConfig(t)
+	config.DuckDB = forma.DuckDBConfig{
+		Enabled:        true,
+		DBPath:         ":memory:",
+		MaxConnections: 1,
+		QueryTimeout:   30 * time.Second,
+	}
+
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	assert.Nil(t, em)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest parquet source",
+		"the construction error must surface unchanged; cleanup must not mask it")
+	require.NotNil(t, built, "the test needs a real DuckDB client to observe")
+
+	healthErr := built.HealthCheck(context.Background())
+	require.Error(t, healthErr, "the duckdb client must be closed before the fatal return")
+	assert.Contains(t, healthErr.Error(), "database is closed")
 }
 
 func TestNewEntityManagerWithConfig_Unit_InvalidManifestConfigFailsFast(t *testing.T) {

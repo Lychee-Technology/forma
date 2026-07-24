@@ -1,6 +1,7 @@
 package forma
 
 import (
+	"fmt"
 	"strings"
 	"text/template"
 	"time"
@@ -77,8 +78,49 @@ type DuckDBConfig struct {
 
 // ManifestReadEnabled reports whether manifest-driven parquet path resolution
 // is configured. ManifestTemplate is the single enable gate.
+//
+// The TrimSpace here is defense-in-depth, not normalization: a padded template
+// is rejected outright by ValidateManifestRead (byte parity with the untrimmed
+// write side is the contract), so no validated config ever reaches this method
+// with surrounding whitespace. The trim only guards direct programmatic
+// misuse — a caller that builds a DuckDBConfig by hand and skips validation —
+// where reading a whitespace-only template as "manifest reads are on" would be
+// strictly worse.
 func (d DuckDBConfig) ManifestReadEnabled() bool {
 	return strings.TrimSpace(d.ManifestTemplate) != ""
+}
+
+// validateManifestReadWhitespace rejects any manifest read field carrying
+// leading or trailing whitespace. These four values are shared with the CDC
+// and compaction write side, which never trims them: a padded value — a YAML
+// quoting slip, a trailing newline from a mounted secret — would therefore
+// resolve one object key on the write side and a different one on the read
+// side for the very same configured string, and the mismatch surfaces only as
+// a silently empty cold tier. Rejecting keeps the two sides byte-identical
+// instead of normalizing on one side only.
+//
+// It also closes the whitespace-only ManifestTemplate hole: such a value
+// leaves ManifestReadEnabled() false (reads stay off) while the inert-prefix
+// check below sees a non-empty template, so it escapes both gates.
+func (d DuckDBConfig) validateManifestReadWhitespace() error {
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"duckdb.s3Bucket", d.S3Bucket},
+		{"duckdb.s3DataPrefix", d.S3DataPrefix},
+		{"duckdb.manifestPrefix", d.ManifestPrefix},
+		{"duckdb.manifestTemplate", d.ManifestTemplate},
+	}
+	for _, field := range fields {
+		if field.value != strings.TrimSpace(field.value) {
+			return &ConfigError{
+				Field:   field.name,
+				Message: "must not have leading or trailing whitespace",
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateManifestRead validates the manifest read surface. It returns a
@@ -87,6 +129,16 @@ func (d DuckDBConfig) ManifestReadEnabled() bool {
 // effect is the factory's gate, but an incoherent combination is always a
 // configuration error.
 func (d DuckDBConfig) ValidateManifestRead() error {
+	// Whitespace is checked first, and independently of the enable gate: a
+	// padded template must report the whitespace it actually has rather than a
+	// downstream consequence of it (a padded template trims to non-empty, so
+	// the gate opens and the bucket/parse checks would speak about the wrong
+	// problem; a whitespace-only one trims to empty and would be reported as an
+	// inert prefix).
+	if err := d.validateManifestReadWhitespace(); err != nil {
+		return err
+	}
+
 	if !d.ManifestReadEnabled() {
 		// Manifest fields set without a template would sit inert and read as
 		// "manifest reads are on" to an operator. Reject rather than ignore.
@@ -218,7 +270,7 @@ func (c *Config) validateDuckDBConfig() error {
 		return &ConfigError{Field: "duckdb.routing.maxDuckDBScanRows", Message: "must be greater than or equal to 0"}
 	}
 	if err := c.DuckDB.ValidateManifestRead(); err != nil {
-		return err
+		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)
 	}
 
 	return nil
