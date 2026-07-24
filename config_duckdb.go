@@ -1,6 +1,8 @@
 package forma
 
 import (
+	"strings"
+	"text/template"
 	"time"
 )
 
@@ -43,7 +45,73 @@ type DuckDBConfig struct {
 	// query; a negative value disables the widening (the pre-#252 barrier).
 	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
 
+	// S3Bucket is the bucket holding the lakehouse parquet files and the
+	// manifests that index them. Required whenever ManifestTemplate is set.
+	S3Bucket string `json:"s3Bucket"`
+	// S3DataPrefix mirrors the CDC write side's S3Prefix (the prefix under
+	// which delta/base parquet files are written). It is used *only* for the
+	// legacy glob fallback covering schemas that have never been flushed and
+	// therefore have no manifest object yet. Empty disables that fallback:
+	// a schema without a manifest then resolves to zero parquet paths and its
+	// query returns hot-tier rows only — a semantic cliff, silent by nature,
+	// so leave this set unless every schema is known to be manifested.
+	S3DataPrefix string `json:"s3DataPrefix"`
+	// ManifestPrefix is the root prefix for manifest objects in S3. It must
+	// match the CDC/compaction write side's ManifestPrefix.
+	ManifestPrefix string `json:"manifestPrefix"`
+	// ManifestTemplate is the manifest path template (e.g.
+	// "manifest/{{.SchemaID}}.json") and doubles as the enable gate for
+	// manifest-driven parquet resolution. It must be identical to the write
+	// side's template: a writer-on/reader-off mismatch makes the reader miss
+	// the cold tier entirely and lose those rows silently — no error is
+	// raised, the result set is merely short. Empty (the default) keeps the
+	// pre-existing glob-based read path.
+	ManifestTemplate string `json:"manifestTemplate"`
+
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
+}
+
+// ManifestReadEnabled reports whether manifest-driven parquet path resolution
+// is configured. ManifestTemplate is the single enable gate.
+func (d DuckDBConfig) ManifestReadEnabled() bool {
+	return strings.TrimSpace(d.ManifestTemplate) != ""
+}
+
+// ValidateManifestRead validates the manifest read surface. It returns a
+// *ConfigError naming the offending field, or nil when the combination is
+// coherent. Validation is independent of Enabled: whether the settings take
+// effect is the factory's gate, but an incoherent combination is always a
+// configuration error.
+func (d DuckDBConfig) ValidateManifestRead() error {
+	if !d.ManifestReadEnabled() {
+		// Manifest fields set without a template would sit inert and read as
+		// "manifest reads are on" to an operator. Reject rather than ignore.
+		if d.ManifestPrefix != "" || d.S3DataPrefix != "" {
+			return &ConfigError{
+				Field:   "duckdb.manifestTemplate",
+				Message: "must be set when duckdb.manifestPrefix or duckdb.s3DataPrefix is configured",
+			}
+		}
+		return nil
+	}
+
+	if strings.TrimSpace(d.S3Bucket) == "" {
+		return &ConfigError{
+			Field:   "duckdb.s3Bucket",
+			Message: "must be set when duckdb.manifestTemplate is configured",
+		}
+	}
+	// Parsed with text/template directly (not internal/manifest) to keep the
+	// public config package free of internal dependencies; the manifest
+	// resolver uses the same parser, so a template accepted here renders there.
+	if _, err := template.New("manifest").Parse(d.ManifestTemplate); err != nil {
+		return &ConfigError{
+			Field:   "duckdb.manifestTemplate",
+			Message: "must be a valid text/template path template: " + err.Error(),
+		}
+	}
+
+	return nil
 }
 
 // RoutingStrategy specifies the federated query routing algorithm.
@@ -92,6 +160,12 @@ func defaultDuckDBConfig() DuckDBConfig {
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerWindow:           time.Minute,
 		CircuitBreakerOpenDuration:     time.Minute,
+		// The manifest read surface (S3Bucket / S3DataPrefix / ManifestPrefix /
+		// ManifestTemplate) deliberately defaults to all-zero. The cdc CLI
+		// tools default ManifestTemplate to "manifest/{{.SchemaID}}.json", but
+		// mirroring that here would flip every existing deployment from glob
+		// reads to manifest-driven reads on upgrade. Manifest reads must be
+		// opted into explicitly.
 		Routing: RoutingPolicy{
 			Strategy:          RoutingStrategyHybrid,
 			HotTTL:            5 * time.Minute,
@@ -138,6 +212,9 @@ func (c *Config) validateDuckDBConfig() error {
 	}
 	if c.DuckDB.Routing.MaxDuckDBScanRows < 0 {
 		return &ConfigError{Field: "duckdb.routing.maxDuckDBScanRows", Message: "must be greater than or equal to 0"}
+	}
+	if err := c.DuckDB.ValidateManifestRead(); err != nil {
+		return err
 	}
 
 	return nil
