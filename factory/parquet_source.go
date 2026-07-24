@@ -3,6 +3,7 @@ package factory
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
@@ -42,6 +43,13 @@ var newManifestS3Client = func(ctx context.Context, cfg forma.DuckDBConfig) (man
 // half-configured manifest read surface degrades to a silently short result
 // set (the cold tier simply goes missing), which is exactly the failure mode
 // this wiring exists to prevent.
+//
+// This is also the single place the four string fields are trimmed. The gate
+// (ManifestReadEnabled) already trims before answering, so a padded value —
+// a YAML quoting slip, a trailing newline from a mounted secret — opens the
+// gate; feeding it untrimmed to PathResolver would resolve manifest keys no
+// writer ever produced, and a missing manifest merely falls back to the glob,
+// so the mistake would never surface as an error.
 func newManifestParquetSource(ctx context.Context, cfg forma.DuckDBConfig) (federated.ParquetSource, error) {
 	if err := cfg.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
@@ -56,9 +64,9 @@ func newManifestParquetSource(ctx context.Context, cfg forma.DuckDBConfig) (fede
 	}
 
 	return manifest.NewS3QuerySource(client, manifest.S3QuerySourceConfig{
-		Bucket:           cfg.S3Bucket,
-		ManifestPrefix:   cfg.ManifestPrefix,
-		ManifestTemplate: cfg.ManifestTemplate,
-		DataPrefix:       cfg.S3DataPrefix,
+		Bucket:           strings.TrimSpace(cfg.S3Bucket),
+		ManifestPrefix:   strings.TrimSpace(cfg.ManifestPrefix),
+		ManifestTemplate: strings.TrimSpace(cfg.ManifestTemplate),
+		DataPrefix:       strings.TrimSpace(cfg.S3DataPrefix),
 	}), nil
 }

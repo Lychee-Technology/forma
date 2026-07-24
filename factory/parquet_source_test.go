@@ -129,6 +129,45 @@ func TestNewManifestParquetSource_AssemblesQuerySource(t *testing.T) {
 	assert.Equal(t, "s3://bkt/data/21/*.parquet", qs.Fallback(21))
 }
 
+// TestNewManifestParquetSource_TrimsPaddedValues pins that surrounding
+// whitespace is stripped once, where the QuerySource is assembled.
+// ManifestReadEnabled() already trims before answering the gate, so a padded
+// template (a YAML quoting slip, a trailing newline from a secret file) opens
+// the gate; without this trim the untrimmed value would reach PathResolver and
+// resolve manifest keys that no writer ever produced — silently, since a
+// missing manifest just falls back to the glob.
+func TestNewManifestParquetSource_TrimsPaddedValues(t *testing.T) {
+	swapManifestS3Client(t, func(context.Context, forma.DuckDBConfig) (manifest.S3ProbeClient, error) {
+		return stubProbeClient{}, nil
+	})
+
+	cfg := forma.DuckDBConfig{
+		Enabled:          true,
+		S3Bucket:         " bkt\n",
+		S3DataPrefix:     "  data  ",
+		ManifestPrefix:   "\tmanifest ",
+		ManifestTemplate: " {{.SchemaID}}.json\n",
+	}
+
+	src, err := newManifestParquetSource(context.Background(), cfg)
+
+	require.NoError(t, err)
+	require.NotNil(t, src)
+
+	qs, ok := src.(*manifest.QuerySource)
+	require.True(t, ok, "expected *manifest.QuerySource, got %T", src)
+	assert.Equal(t, "bkt", qs.Bucket)
+	assert.Equal(t, "manifest", qs.Resolver.Prefix)
+	assert.Equal(t, "{{.SchemaID}}.json", qs.Resolver.PathTemplate)
+
+	store, ok := qs.Store.(*manifest.S3Store)
+	require.True(t, ok, "expected *manifest.S3Store, got %T", qs.Store)
+	assert.Equal(t, "bkt", store.Bucket)
+
+	require.NotNil(t, qs.Fallback)
+	assert.Equal(t, "s3://bkt/data/21/*.parquet", qs.Fallback(21))
+}
+
 func TestNewManifestParquetSource_InvalidConfigFailsFast(t *testing.T) {
 	swapManifestS3Client(t, func(context.Context, forma.DuckDBConfig) (manifest.S3ProbeClient, error) {
 		t.Fatal("S3 client must not be constructed for an invalid manifest configuration")
