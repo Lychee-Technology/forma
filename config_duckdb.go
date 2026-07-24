@@ -52,9 +52,13 @@ type DuckDBConfig struct {
 	// which delta/base parquet files are written). It is used *only* for the
 	// legacy glob fallback covering schemas that have never been flushed and
 	// therefore have no manifest object yet. Empty disables that fallback:
-	// a schema without a manifest then resolves to zero parquet paths and its
-	// query returns hot-tier rows only — a semantic cliff, silent by nature,
-	// so leave this set unless every schema is known to be manifested.
+	// a schema without a manifest then resolves to zero parquet paths, and
+	// the DuckDB template renders read_parquet with an unbound $S3_PATHS
+	// ("<no value>"), so the read fails at parse time and classifies as the
+	// degradable ErrFederatedReadFailed — an outright failure, or a
+	// Postgres-only answer under AllowPartialDegradedMode, indistinguishable
+	// from a transient S3 outage. Leave this set unless every schema is
+	// known to be manifested.
 	S3DataPrefix string `json:"s3DataPrefix"`
 	// ManifestPrefix is the root prefix for manifest objects in S3. It must
 	// match the CDC/compaction write side's ManifestPrefix.

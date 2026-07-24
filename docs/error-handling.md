@@ -48,9 +48,11 @@ rows in that object are simply gone from the result set.
   exactly the silently short answer this classification exists to make loud.
 - **Trigger precondition.** Only reachable when the server resolves parquet
   paths from the manifest source (`duckdb.manifestTemplate` configured — see
-  `docs/federated-query/design.md` §4.3.1). With per-request path hints or
-  glob-only reads the classification is skipped, and a missing object degrades
-  to a shorter result set with no error.
+  `docs/federated-query/design.md` §4.3.1). With per-request path hints, or
+  with glob paths, the classification is skipped: a hinted path set whose
+  object is missing still fails the scan, but as a plain
+  `ErrFederatedReadFailed`, while a glob quietly expands to whatever objects
+  survive and returns a shorter result set with no error at all.
 - **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
   Extra unlisted objects are tolerated and invisible to reads.
 - **Operator action.** The message names the schema and the missing
