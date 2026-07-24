@@ -56,10 +56,12 @@ func main() {
 }
 
 // duckDBConfigFromEnv turns on the federated DuckDB engine when DUCKDB_ENABLED
-// is set, wiring its S3/httpfs settings from the environment. It reuses the
-// S3_* vars the CDC tooling already uses (with DUCKDB_S3_* overrides) so a
-// single stack configuration drives both. When disabled it returns base
-// unchanged (DuckDB off — the production default).
+// is set, wiring its S3/httpfs and manifest settings from the environment. It
+// reuses the S3_* and MANIFEST_* vars the CDC tooling already uses (with
+// DUCKDB_S3_* and DUCKDB_MANIFEST_* overrides) so a single stack configuration
+// drives both. DUCKDB_MANIFEST_TEMPLATE is the switch for manifest-driven reads;
+// if set without a bucket, the server fails at startup (factory fail-fast). When
+// disabled it returns base unchanged (DuckDB off — the production default).
 func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	if !bootstrap.EnvBool("DUCKDB_ENABLED", false) {
 		return base
@@ -71,6 +73,10 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	base.S3AccessKey = bootstrap.Env("DUCKDB_S3_ACCESS_KEY", bootstrap.Env("S3_ACCESS_KEY", base.S3AccessKey))
 	base.S3SecretKey = bootstrap.Env("DUCKDB_S3_SECRET_KEY", bootstrap.Env("S3_SECRET_KEY", base.S3SecretKey))
 	base.S3Region = bootstrap.Env("DUCKDB_S3_REGION", "us-east-1")
+	base.S3Bucket = bootstrap.Env("DUCKDB_S3_BUCKET", bootstrap.Env("S3_BUCKET", base.S3Bucket))
+	base.S3DataPrefix = bootstrap.Env("DUCKDB_S3_PREFIX", bootstrap.Env("S3_PREFIX", base.S3DataPrefix))
+	base.ManifestPrefix = bootstrap.Env("DUCKDB_MANIFEST_PREFIX", bootstrap.Env("MANIFEST_PREFIX", base.ManifestPrefix))
+	base.ManifestTemplate = bootstrap.Env("DUCKDB_MANIFEST_TEMPLATE", bootstrap.Env("MANIFEST_TEMPLATE", base.ManifestTemplate))
 	return base
 }
 

@@ -51,6 +51,51 @@ func TestDuckDBConfigFromEnv_DuckDBOverridesWin(t *testing.T) {
 	}
 }
 
+// TestDuckDBConfigFromEnv_ManifestFieldsFromSharedVars pins that manifest config
+// fields are wired from shared MANIFEST_* vars when DUCKDB_MANIFEST_* are absent.
+func TestDuckDBConfigFromEnv_ManifestFieldsFromSharedVars(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	t.Setenv("MANIFEST_PREFIX", "shared-prefix")
+	t.Setenv("MANIFEST_TEMPLATE", "shared-template")
+
+	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	if got.ManifestPrefix != "shared-prefix" {
+		t.Fatalf("expected ManifestPrefix from MANIFEST_PREFIX, got %q", got.ManifestPrefix)
+	}
+	if got.ManifestTemplate != "shared-template" {
+		t.Fatalf("expected ManifestTemplate from MANIFEST_TEMPLATE, got %q", got.ManifestTemplate)
+	}
+}
+
+// TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin pins that DUCKDB_MANIFEST_*
+// overrides take precedence over the shared MANIFEST_* vars.
+func TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "1")
+	t.Setenv("MANIFEST_PREFIX", "shared-prefix")
+	t.Setenv("MANIFEST_TEMPLATE", "shared-template")
+	t.Setenv("DUCKDB_MANIFEST_PREFIX", "duck-prefix")
+	t.Setenv("DUCKDB_MANIFEST_TEMPLATE", "duck-template")
+
+	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	if got.ManifestPrefix != "duck-prefix" {
+		t.Fatalf("expected DUCKDB_MANIFEST_PREFIX override, got %q", got.ManifestPrefix)
+	}
+	if got.ManifestTemplate != "duck-template" {
+		t.Fatalf("expected DUCKDB_MANIFEST_TEMPLATE override, got %q", got.ManifestTemplate)
+	}
+}
+
+// TestDuckDBConfigFromEnv_ManifestOffByDefault pins that setting only
+// DUCKDB_ENABLED does not enable manifest reads (ManifestReadEnabled() == false).
+func TestDuckDBConfigFromEnv_ManifestOffByDefault(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "1")
+
+	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	if got.ManifestReadEnabled() {
+		t.Fatalf("expected manifest reads disabled by default, got enabled")
+	}
+}
+
 func TestBootstrapServer_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

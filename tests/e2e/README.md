@@ -247,6 +247,10 @@ See `.env.example` for all available configuration options:
 | `TOOL_TIMEOUT_MS` | `300000` | Timeout for each CDC tool subprocess (killed on expiry) |
 | `DUCKDB_ENABLED` | `false` | Server: enable the federated DuckDB engine (reads warm/cold S3 parquet) |
 | `DUCKDB_S3_ENDPOINT` | `$S3_ENDPOINT` | Server: S3 endpoint for the DuckDB engine (falls back to `S3_ENDPOINT`) |
+| `DUCKDB_S3_BUCKET` | `$S3_BUCKET` | Server: S3 bucket for DuckDB (falls back to `S3_BUCKET`) |
+| `DUCKDB_S3_PREFIX` | `$S3_PREFIX` | Server: S3 data prefix for DuckDB (falls back to `S3_PREFIX`) |
+| `DUCKDB_MANIFEST_PREFIX` | `$MANIFEST_PREFIX` | Server: manifest prefix for DuckDB (falls back to `MANIFEST_PREFIX`) |
+| `DUCKDB_MANIFEST_TEMPLATE` | `$MANIFEST_TEMPLATE` | Server: manifest template (switch for manifest-driven reads; fails at startup if set without bucket) |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
 ## Reports
