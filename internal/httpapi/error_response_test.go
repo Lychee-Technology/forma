@@ -82,12 +82,18 @@ func TestPublicErrorMessageCarriesNoDetail(t *testing.T) {
 	}
 }
 
-// leakCanaries are the two strings that must never appear in a response body.
+// leakCanaries are the strings that must never appear in a response body.
 // The password one is the real shape: DuckDB's postgres_scan attach failure puts
 // the connection string — password included — into its own prose, verified
 // against duckdb-go v2.5.6. The key one is ParquetSetInconsistentError.MissingKeys.
+//
+// canarySecret is the bare value, and it is what assertions must key on.
+// canaryPassword includes the `password=` prefix, so asserting only its absence
+// would pass a partial-redaction regression that strips the prefix and leaves the
+// secret — exactly the truncation class this PR is about. Assert both.
 const (
-	canaryPassword = "password=SUPERSECRET-CANARY"
+	canarySecret   = "SUPERSECRET-CANARY"
+	canaryPassword = "password=" + canarySecret
 	canaryKey      = "base/schema_22/CANARY-KEY.parquet"
 )
 
@@ -120,7 +126,7 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, forbidden := range []string{
-		canaryPassword, canaryKey, "password=", "s3://", "IO Error",
+		canaryPassword, canarySecret, canaryKey, "password=", "s3://", "IO Error",
 		"manifest lists", "schema 22", "postgres_scan",
 	} {
 		if strings.Contains(body, forbidden) {
@@ -165,7 +171,7 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 	}
 	// The credential must not: this log line is written by every redacted response
 	// and flows into whatever collector and retention the deployment runs.
-	if strings.Contains(logged, canaryPassword) {
+	if strings.Contains(logged, canaryPassword) || strings.Contains(logged, canarySecret) {
 		t.Fatalf("operator log leaked the credential; logged error was: %s", logged)
 	}
 	if !strings.Contains(logged, "password=***REDACTED***") {
@@ -273,7 +279,7 @@ func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, forbidden := range []string{
-		canaryPassword, canaryKey, "password=", "s3://", "https://",
+		canaryPassword, canarySecret, canaryKey, "password=", "s3://", "https://",
 		"404 (Not Found)", "HTTP Error", "postgres_scan",
 	} {
 		if strings.Contains(body, forbidden) {
@@ -305,7 +311,7 @@ func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
 			t.Fatalf("operator log lost %q; logged error was: %s", required, logged)
 		}
 	}
-	if strings.Contains(logged, canaryPassword) {
+	if strings.Contains(logged, canaryPassword) || strings.Contains(logged, canarySecret) {
 		t.Fatalf("operator log leaked the credential; logged error was: %s", logged)
 	}
 	if fields["error_id"] != resp.ErrorID {
@@ -422,7 +428,7 @@ func TestMixedChainVerbatimBodyCarriesNoCredential(t *testing.T) {
 		t.Fatalf("precondition failed: expected the verbatim branch to echo the driver cause, got %q", resp.Error)
 	}
 
-	if strings.Contains(resp.Error, canaryPassword) {
+	if strings.Contains(resp.Error, canaryPassword) || strings.Contains(resp.Error, canarySecret) {
 		t.Fatalf("a mixed chain leaked the credential into a 400 body: %q", resp.Error)
 	}
 	if !strings.Contains(resp.Error, "password=***REDACTED***") {

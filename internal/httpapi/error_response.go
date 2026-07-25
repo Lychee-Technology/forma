@@ -113,9 +113,26 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 // classified an error by string comparison, which AGENTS.md forbids outright.
 //
 // The cost is that a genuine client error only earns its 4xx by wrapping a
-// sentinel. That is the correct direction of pressure: the one such site that
-// existed (`cannot sort by unknown attribute`, internal/entity_query_sort.go) was
-// fixed to wrap forma.ErrInvalidInput rather than shipped as a regression (#296).
+// sentinel, and removing the heuristic therefore required a sweep. Six sites
+// across four packages had been relying on it and now wrap forma.ErrInvalidInput,
+// message text unchanged:
+//
+//   - internal/entity_query_sort.go — unknown sort attribute (#296)
+//   - internal/transform/transformer.go and attribute_converter.go — create or
+//     update body omitting a required attribute (the write path; without the
+//     sentinel this would answer an opaque 500)
+//   - internal/sqlgen/predicate_normalizer.go and dualpath_sql_helpers.go —
+//     unknown filter attribute, unparseable filter value, unsupported operator
+//   - internal/conditionexpr/parser.go — malformed "op:value", unknown operator,
+//     unparseable date
+//
+// The table in docs/error-handling.md ("Public HTTP error surface") is the
+// maintained list, with the caller mistake each one represents.
+//
+// IF YOU ADD A VALIDATOR that rejects caller input anywhere behind this boundary,
+// wrap forma.ErrInvalidInput. There is no message-text fallback any more: an
+// unwrapped validation error is a 500 with an opaque body, and the caller is told
+// nothing about what they got wrong.
 func classifyManagerError(err error) int {
 	switch {
 	case err == nil:
