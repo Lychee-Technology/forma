@@ -220,3 +220,161 @@ func TestRespondErrorWithStatusHonoursCallerStatus(t *testing.T) {
 		t.Fatalf("expected verbatim 404 message, got %s", rec.Body.String())
 	}
 }
+
+// misclassifiedReadPathError reproduces the #301 leak that status-based gating
+// missed. DuckDB reports a missing S3 object with the literal words "404 (Not
+// Found)", which classifyManagerError's substring fallback reads as a client
+// 404 — routing a read-path failure, S3 URL and connection string included,
+// straight at the verbatim branch.
+func misclassifiedReadPathError() error {
+	return fmt.Errorf("execute duckdb query: %w: %w",
+		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}},
+		fmt.Errorf(`HTTP Error: Unable to connect to URL "https://b.s3.amazonaws.com/%s": 404 (Not Found). `+
+			`Also failed to attach postgres_scan with "host=h user=u %s"`, canaryKey, canaryPassword))
+}
+
+// TestRespondErrorRedactsMisclassified4xxReadPathError is the regression test for
+// the fix: disclosure is gated on positive sentinel evidence, not on the status,
+// so an error the heuristic mislabels 4xx is still redacted. The status stays 404
+// on purpose — only the body is a leak — and the log must still receive the chain,
+// because at 4xx the old code logged at Debug and production runs at Info.
+func TestRespondErrorRedactsMisclassified4xxReadPathError(t *testing.T) {
+	err := misclassifiedReadPathError()
+
+	// Prove the hazard is real rather than a strawman: the heuristic genuinely
+	// calls this read-path failure a client 404.
+	if got := classifyManagerError(err); got != http.StatusNotFound {
+		t.Fatalf("precondition failed: expected the heuristic to misclassify as 404, got %d", got)
+	}
+
+	core, logs := observer.New(zap.ErrorLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status must stay as classified (404), got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, forbidden := range []string{
+		canaryPassword, canaryKey, "password=", "s3://", "https://",
+		"404 (Not Found)", "HTTP Error", "postgres_scan",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("misclassified 4xx body leaked %q; body: %s", forbidden, body)
+		}
+	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if resp.ErrorClass != errorClassParquetSetInconsistent {
+		t.Fatalf("expected class %q, got %q", errorClassParquetSetInconsistent, resp.ErrorClass)
+	}
+	if _, perr := uuid.Parse(resp.ErrorID); perr != nil {
+		t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, perr)
+	}
+
+	// A redacted 4xx must still reach operators at ERROR level.
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 ERROR log entry for a redacted 404, got %d", len(entries))
+	}
+	fields := entries[0].ContextMap()
+	logged, _ := fields["error"].(string)
+	for _, required := range []string{canaryPassword, canaryKey, "404 (Not Found)"} {
+		if !strings.Contains(logged, required) {
+			t.Fatalf("operator log lost %q; logged error was: %s", required, logged)
+		}
+	}
+	if fields["error_id"] != resp.ErrorID {
+		t.Fatalf("log error_id %v does not match body %q", fields["error_id"], resp.ErrorID)
+	}
+}
+
+// TestRespondErrorRedactsHeuristicOnly4xx pins an accepted consequence of gating
+// on sentinels: a genuine client error that wraps no sentinel and is recognised
+// only by substring matching now gets a redacted body, so its guidance no longer
+// reaches the caller.
+//
+// This is human-approved. Such messages stay opaque until they are made to wrap
+// forma.ErrInvalidInput, which issue #296 tracks; the alternative — trusting the
+// heuristic — leaks S3 URLs and the Postgres password, which is strictly worse.
+// The status is still a correct 400, so clients keying on status are unaffected.
+func TestRespondErrorRedactsHeuristicOnly4xx(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := fmt.Errorf("cannot sort by unknown attribute %q", "nope")
+	if got := classifyManagerError(err); got != http.StatusBadRequest {
+		t.Fatalf("precondition failed: expected heuristic 400, got %d", got)
+	}
+	if isClientError(err) {
+		t.Fatalf("precondition failed: this error wraps no sentinel")
+	}
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status must stay 400, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "unknown attribute") {
+		t.Fatalf("expected a redacted body for a sentinel-less error, got %s", rec.Body.String())
+	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if resp.Error != "internal error" {
+		t.Fatalf("expected the generic internal message, got %q", resp.Error)
+	}
+}
+
+// TestRespondErrorLogLevels pins the log level of each branch. Levels are now
+// contract: the redacted branch must be ERROR so it survives production's Info
+// threshold, and the verbatim branch must stay DEBUG so client mistakes do not
+// page anyone. Asserting Debug positively also closes a hole in
+// TestRespondErrorKeeps4xxMessageVerbatim, whose zero-ERROR-entries check would
+// pass even if nothing were logged at all.
+func TestRespondErrorLogLevels(t *testing.T) {
+	t.Run("verbatim client error logs at debug", func(t *testing.T) {
+		core, logs := observer.New(zap.DebugLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		rec := httptest.NewRecorder()
+		respondError(rec, "create failed",
+			fmt.Errorf("attribute 'age': %w", forma.ErrInvalidInput), "schema", "orders")
+
+		entries := logs.All()
+		if len(entries) != 1 {
+			t.Fatalf("expected exactly 1 log entry, got %d", len(entries))
+		}
+		if entries[0].Level != zap.DebugLevel {
+			t.Fatalf("expected the verbatim branch to log at DEBUG, got %s", entries[0].Level)
+		}
+	})
+
+	t.Run("redacted error logs at error", func(t *testing.T) {
+		core, logs := observer.New(zap.DebugLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		rec := httptest.NewRecorder()
+		respondError(rec, "query failed", operatorDetailError(), "schema", "orders")
+
+		entries := logs.All()
+		if len(entries) != 1 {
+			t.Fatalf("expected exactly 1 log entry, got %d", len(entries))
+		}
+		if entries[0].Level != zap.ErrorLevel {
+			t.Fatalf("expected the redacted branch to log at ERROR, got %s", entries[0].Level)
+		}
+	})
+}

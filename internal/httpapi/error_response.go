@@ -109,11 +109,12 @@ func classifyManagerError(err error) int {
 // respondError classifies err, records the full chain for operators, and writes
 // a client-safe body.
 //
-// 4xx keeps the verbatim message: it describes caller-supplied input, the caller
+// A 4xx that carries positive sentinel evidence of caller fault (isClientError)
+// keeps the verbatim message: it describes caller-supplied input, the caller
 // needs to know what to fix, and nothing on the write path touches S3 or the
 // postgres_scan connection string.
 //
-// 5xx carries no error text at all (#301). Errors reaching this point hold
+// Everything else carries no error text at all (#301). Errors reaching this point hold
 // bucket-relative S3 object keys and — when DuckDB fails to attach
 // postgres_scan — the Postgres password verbatim inside the driver's own
 // message. Redaction is an allowlist rather than a blocklist of known-sensitive
@@ -124,14 +125,44 @@ func respondError(w http.ResponseWriter, op string, err error, logFields ...any)
 	respondErrorWithStatus(w, classifyManagerError(err), op, err, logFields...)
 }
 
+// isClientError reports whether err is provably the caller's fault.
+//
+// Disclosure cannot key off the classified status: classifyManagerError falls
+// back to substring matching over the whole chain, and driver text routinely
+// contains its trigger words — DuckDB reports a missing S3 object as
+// "404 (Not Found)" and an unresolvable column as "not found in FROM clause!".
+// Trusting that heuristic would hand the verbatim branch exactly the errors #301
+// exists to redact. Positive sentinel evidence is the only safe gate (#301).
+func isClientError(err error) bool {
+	return errors.Is(err, forma.ErrInvalidInput) ||
+		errors.Is(err, forma.ErrNotFound) ||
+		errors.Is(err, forma.ErrConflict)
+}
+
 // respondErrorWithStatus is respondError for callers that have already
 // classified in order to choose their message (executeGet's 404 wording).
+//
+// The gate on disclosure is positive sentinel evidence — isClientError — not the
+// status code. classifyManagerError reaches its 4xx verdicts partly by substring
+// matching over the whole error chain, and driver prose trips those words
+// routinely, so a status alone cannot distinguish "the caller mistyped an
+// attribute" from "DuckDB could not fetch an S3 object and said 404 (Not Found)".
+// The second must not be echoed back.
+//
+// The status is deliberately left as classified in both branches: a misclassified
+// read-path error still answers 404, just with a redacted body. Disclosure and
+// status are separate concerns and only the former is a leak.
+//
+// Every redacted response logs at Errorw whatever its status, because a redacted
+// body is the operator's only remaining copy of the detail and the production
+// logger runs at Info (cmd/server/main.go). Only the verbatim branch logs at
+// Debugw: there, the caller already has the full message.
 func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
 	fields := make([]any, 0, len(logFields)+8)
 	fields = append(fields, logFields...)
 	fields = append(fields, "status", status)
 
-	if status < http.StatusInternalServerError {
+	if status < http.StatusInternalServerError && isClientError(err) {
 		fields = append(fields, "error", err.Error())
 		zap.S().Debugw(op, fields...)
 		_ = writeError(w, status, fmt.Sprintf("%s: %v", op, err))
