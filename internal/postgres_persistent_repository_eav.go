@@ -59,8 +59,12 @@ func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, 
 			valuesClause,
 		)
 		zap.S().Debugw("insert EAV attributes", "query", query, "args", args)
+		// Payload-level primary-key collisions are collapsed upstream by
+		// transform.dedupeEAVRecords (#312). Classify anyway so any residual
+		// 23505 — a concurrent writer racing the same (schema_id, row_id) —
+		// answers 409 like the entity_main sites rather than a redacted 500.
 		if _, err := tx.Exec(ctx, query, args...); err != nil {
-			return fmt.Errorf("insert eav attributes: %w", err)
+			return fmt.Errorf("insert eav attributes: %w", classifyPgError(err))
 		}
 	}
 

@@ -80,6 +80,12 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		return nil, err
 	}
 
+	// Dotted attribute names let one payload spell the same attribute twice, so
+	// collapse eav_data primary-key collisions here — once the whole tree is
+	// flattened, not inside the recursion, which appends through a shared slice
+	// and runs per nested value. Last write wins (#312).
+	eavRecords = dedupeEAVRecords(eavRecords)
+
 	// Convert EAVRecords to EntityAttributes
 	attributes, err := t.converter.FromEAVRecords(eavRecords)
 	if err != nil {
