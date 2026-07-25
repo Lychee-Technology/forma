@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -187,5 +190,46 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 				t.Fatalf("read-path error classified as %d, which escapes redaction; message was: %v", got, wrapped)
 			}
 		})
+	}
+}
+
+// TestWriteErrorIsNeverReachedWithAServerError is a source-level guard. The
+// canary tests above only cover handlers that exist today; this one fails the
+// build when a new handler reintroduces the #301 leak by copying an old call
+// site or writing writeError(w, http.StatusInternalServerError, err.Error()).
+//
+// After #301, writeError is reachable only with literal 4xx statuses. Anything
+// that pairs it with classifyManagerError or a 500 must go through
+// respondError instead. Grep-gate precedent: #260.
+func TestWriteErrorIsNeverReachedWithAServerError(t *testing.T) {
+	forbidden := regexp.MustCompile(
+		`writeError\(\s*w\s*,\s*(classifyManagerError\(|http\.StatusInternalServerError)`)
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+
+	scanned := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		scanned++
+
+		src, err := os.ReadFile(filepath.Clean(name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if loc := forbidden.FindIndex(src); loc != nil {
+			line := 1 + strings.Count(string(src[:loc[0]]), "\n")
+			t.Errorf("%s:%d formats a server error into a client body; use respondError instead (#301): %q",
+				name, line, string(src[loc[0]:loc[1]]))
+		}
+	}
+
+	if scanned == 0 {
+		t.Fatalf("guard scanned no source files — it would pass vacuously")
 	}
 }
