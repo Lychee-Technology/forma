@@ -161,6 +161,48 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 	}
 }
 
+// TestCreateUnknownSchemaIs404AndVerbatim pins the only externally visible
+// behaviour change in #301: handleCreate stopped hardcoding 500 and now answers
+// its classified status, so POST to an unknown schema returns 404 instead of
+// 500.
+//
+// It also pins that this 404 takes the *verbatim* branch. The chain is the real
+// one — internal/schemameta/file_registry.go:222 wraps forma.ErrNotFound — so
+// classifyManagerError reaches 404 through its sentinel branch and isClientError
+// is true. That combination must leave the body unredacted and free of
+// error_class/error_id, which is what distinguishes it from a heuristic-only 4xx
+// (TestRespondErrorRedactsHeuristicOnly4xx).
+func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	manager := &mockEntityManager{
+		batchCreateErr: fmt.Errorf("operation[0]: failed to get schema: %w",
+			fmt.Errorf("schema not found: %s: %w", "nosuchschema", forma.ErrNotFound)),
+	}
+	srv := NewServer(manager, Options{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/nosuchschema", bytes.NewReader([]byte(`{"name":"x"}`)))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown schema on create, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "nosuchschema") {
+		t.Fatalf("expected the verbatim message naming the schema, got %q", resp.Error)
+	}
+	if resp.ErrorClass != "" || resp.ErrorID != "" {
+		t.Fatalf("a sentinel-carrying error took the redacted branch: error_class=%q error_id=%q",
+			resp.ErrorClass, resp.ErrorID)
+	}
+}
+
 // TestReadPathErrorsClassifyAs5xx pins status accuracy for the three read-path
 // carriers: classifyManagerError falls back to substring matching, and
 // ManifestSchemaMismatchError already says "must resolve", one word away from
@@ -198,10 +240,15 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 // straight into the client body, so the safe statuses have to be enumerated
 // rather than the unsafe ones excluded. Extend it only when a real call site
 // needs another 4xx constant.
+//
+// It holds exactly the two constants live call sites use today. Deny-by-default
+// is the point: pre-admitting http.StatusNotFound would hand a future
+// `writeError(w, http.StatusNotFound, err.Error())` a free pass, which is the
+// very shape the disclosure gate was reversed to close — DuckDB renders a
+// missing S3 object as "404 (Not Found)". Adding an entry has to be a deliberate
+// act, because that is the moment its author reads the caveat below.
 var writeErrorAllowed4xx = map[string]bool{
 	"http.StatusBadRequest":       true,
-	"http.StatusNotFound":         true,
-	"http.StatusConflict":         true,
 	"http.StatusMethodNotAllowed": true,
 }
 
@@ -229,10 +276,24 @@ var writeErrorAllowed4xx = map[string]bool{
 // http.Error — leaks identically and is invisible here. Widening it to every
 // body-writing path was judged out of scope for #301; the boundary is recorded
 // so the next author trusts the guard for exactly what it checks.
+//
+// NOTE: the other unchecked axis is the message. This guard reads only the
+// *status* expression; it cannot tell whether the third argument is safe to
+// disclose. That judgement belongs to isClientError inside
+// respondErrorWithStatus, and the direct call sites stay safe only because their
+// messages come from request parsing (parsePath, readEntityJSONBody, parseUUID,
+// parseCreateObjects, parseSortParams), never from the manager, the engine, S3,
+// or PG_CONN.
 func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
-	// Captures the status expression of each call. `\w+` for the receiver so a
-	// name other than `w` cannot slip through.
+	// Captures the status expression of each call. The receiver pattern is
+	// deliberately narrow, so it does NOT match every legal Go expression —
+	// `s.w`, `ctx.Writer` and `rec[0]` all fail to parse. Unparsed calls used to
+	// vanish silently; the per-file reconciliation below now turns them into a
+	// loud failure instead, which is what actually enforces the invariant.
 	callSite := regexp.MustCompile(`writeError\(\s*\w+\s*,\s*([^,]+?)\s*,`)
+	// Every textual occurrence of the call, and the one definition to discount.
+	anyCall := regexp.MustCompile(`writeError\(`)
+	definition := regexp.MustCompile(`func\s+writeError\(`)
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -241,6 +302,7 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 
 	scanned, calls := 0, 0
 	var unlisted []string
+	var unparsed []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -254,7 +316,8 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 		}
 		// FindAll, not Find: every offending site must be reported, not just the
 		// first one in each file.
-		for _, loc := range callSite.FindAllSubmatchIndex(src, -1) {
+		matched := callSite.FindAllSubmatchIndex(src, -1)
+		for _, loc := range matched {
 			calls++
 			status := strings.TrimSpace(string(src[loc[2]:loc[3]]))
 			if writeErrorAllowed4xx[status] {
@@ -263,6 +326,16 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 			line := 1 + strings.Count(string(src[:loc[0]]), "\n")
 			unlisted = append(unlisted, fmt.Sprintf("%s:%d (status %q)", name, line, status))
 		}
+
+		// Reconcile against raw occurrences so a call the regex cannot parse
+		// fails the guard instead of disappearing from it. Without this, a
+		// handler on a struct holding its own writer — writeError(s.w, 500,
+		// err.Error()) — matches nothing, is never counted, and reintroduces
+		// #301 while the guard reports green.
+		raw := len(anyCall.FindAllIndex(src, -1)) - len(definition.FindAllIndex(src, -1))
+		if raw != len(matched) {
+			unparsed = append(unparsed, fmt.Sprintf("%s (%d occurrences, %d parsed)", name, raw, len(matched)))
+		}
 	}
 
 	if scanned == 0 {
@@ -270,6 +343,12 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 	}
 	if calls == 0 {
 		t.Fatalf("guard matched no writeError call sites — it would pass vacuously")
+	}
+	if len(unparsed) > 0 {
+		t.Errorf("writeError call sites the guard could not parse, so their status went unchecked: %v\n"+
+			"the receiver must be a plain identifier (writeError(w, ...)); a call on a field, index, or "+
+			"other expression hides its status from this guard and must not be introduced (#301)", unparsed)
+		return
 	}
 
 	if len(unlisted) != 1 {
