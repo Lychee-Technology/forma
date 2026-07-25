@@ -90,6 +90,37 @@ These were settled during design. Do not re-litigate during implementation.
 4. **`ErrParquetSetInconsistent` is promoted to the root `forma` package**,
    following the #299 precedent (see below).
 
+### Decision 3 reversed after review: the body also carries `schema_id`
+
+Decision 3 above is kept as written, because it is what the design settled on and
+what shipped through review round 2. It is superseded, not deleted.
+
+The originating issue #301 asked for "error class + schema id, no object keys".
+Design excluded the schema id, and `docs/error-handling.md` recorded "no schema
+id" as a stated constraint on redacted bodies. Review flagged that as a deviation
+from the originating spec requiring the issue owner's sign-off, and **the issue
+owner ruled that the redacted body should carry `schema_id`.**
+
+- `APIResponse` gains `SchemaID int16` with `json:"schema_id,omitempty"`.
+  `omitempty` is a lossless "absent" encoding here only because schema IDs are
+  always positive in this codebase — the same invariant that makes a manifest
+  `schema_id` of zero mean *unstamped* rather than schema 0.
+- `errorSchemaID(err)` resolves it with `errors.As` from
+  `ParquetSetInconsistentError.SchemaID`, `NoParquetPathsError.SchemaID`, and
+  `ManifestSchemaMismatchError.RequestedSchemaID` — the schema the client asked
+  to read, deliberately not the foreign `ManifestSchemaID` stamped on the object.
+  `errors.As` rather than a type assertion, because these carriers arrive wrapped
+  several levels deep.
+- Populated on the **redacted branch only**, so verbatim 4xx bodies serialize
+  byte-identically to pre-#301.
+- Logged as its own structured field when non-zero, so operators filter on
+  `schema_id` rather than parsing the message.
+
+The rationale is the one decision 3's exclusion never actually contradicted: a
+schema ID is a low-value opaque integer, and `docs/error-handling.md` already
+accepted one crossing verbatim on ID-keyed 404s. Carrying it lets a client
+correlate a redacted failure without an operator round-trip.
+
 ## Contract
 
 **Revised during implementation.** This section originally said redaction keys
@@ -165,6 +196,12 @@ ERROR request failed  error_id=9f2c1a7e-… error_class=parquet_set_inconsistent
 `error_class` and `error_id` are `omitempty` on `APIResponse`, so success and 4xx
 responses serialize exactly as before. Adding fields is backward compatible for
 clients.
+
+**Superseded by the decision-3 reversal above.** The shipped 5xx body also
+carries `"schema_id": 22` when the chain holds a typed read-path carrier, and
+omits the key entirely when it does not. The log line gains a matching
+`schema_id=22` field. The block above is left as the design-time shape; the live
+contract is `docs/error-handling.md`.
 
 ## Error class vocabulary
 

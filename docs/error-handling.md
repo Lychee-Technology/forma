@@ -194,7 +194,8 @@ agree, so **a redacted body is a `500`** — an error without a sentinel classif
 500, and one with a sentinel takes the verbatim branch.
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
-and an `error_id`. No error text crosses. There are exactly two fixed messages
+an `error_id`, and — when the chain holds a typed read-path carrier — a
+`schema_id`. No error text crosses. There are exactly two fixed messages
 (`publicErrorMessage`): `internal read error` for the three typed read-path
 classes, and `internal error` for `errorClassInternal`. **`internal` is the
 common case in production** — it absorbs `ErrFederatedReadFailed`,
@@ -204,6 +205,46 @@ redacted responses. Discriminate on `error_class`, never on `error`. The chain
 goes to `zap.S().Errorw`; the verbatim branch logs the same text at `Debugw`,
 where the caller already has it. An operator retrieves the detail from the
 `error_id` the caller quotes.
+
+#### `schema_id` on a redacted body — a reversed decision
+
+`errorSchemaID` (`internal/httpapi/error_response.go`) resolves the schema with
+`errors.As` against the three typed read-path carriers —
+`ParquetSetInconsistentError.SchemaID`, `NoParquetPathsError.SchemaID`, and
+`ManifestSchemaMismatchError.RequestedSchemaID`. Anything else resolves 0 and
+the field is omitted. `errors.As` rather than a type assertion, because the
+carriers reach the boundary wrapped several levels deep.
+
+For the mismatch carrier it is deliberately the *requested* id, not the
+`ManifestSchemaID` stamped on the object. That stamp belongs to whichever other
+schema misaddressed the manifest; returning it would answer a request about one
+schema with another schema's identity, and would name a schema the caller never
+asked about. Operators still see both ids — the full message is on the log line.
+
+**This reverses a decision recorded in this document.** Issue #301 asked for
+"error class + schema id"; the design settled on `error_class` + `error_id` and
+this section previously stated "no schema id" as a constraint on redacted bodies;
+the issue owner reinstated the schema id. The reasoning that justified excluding
+it is what now permits it — a schema ID is a low-value opaque integer, and one
+already crosses verbatim on the ID-keyed 404s recorded under the "Accepted
+disclosures inside the allowlist" section below. What it buys is a redacted body
+a client can correlate without an operator round-trip.
+
+`schema_id` is `omitempty` on `APIResponse`, and that encoding is lossless rather
+than lossy only because **schema IDs are always positive** — the same invariant
+that lets a manifest `schema_id` of zero read as *unstamped* rather than as
+schema 0 (see `ErrManifestSchemaMismatch` → Compatibility, above). A zero can
+therefore only mean "the error named no schema". Pinned on the serialized bytes,
+not the struct field, by `TestRedactedBodyOmitsSchemaIDWithoutACarrier`.
+
+The same value is logged as its **own structured field**, not folded into the
+message, so operator log queries filter on `schema_id` instead of parsing prose.
+It is omitted from the log line too when zero, so a log entry never asserts a
+schema the error did not name.
+
+Verbatim 4xx bodies are unaffected: population happens on the redacted branch
+only, so their serialization is byte-identical to pre-#301. Pinned by
+`TestVerbatim4xxBodyCarriesNoSchemaID`.
 
 ### Credentials are scrubbed before anything is written
 
@@ -263,8 +304,13 @@ password this repo generates now lands on a quoted branch.
 It is deliberately narrow, and **non-secret operator detail is kept on purpose**:
 S3 object keys, schema ids, endpoint URLs, and the driver's own diagnosis all
 survive verbatim in the log. A redacted response leaves the operator with an
-`error_id` and that log line, and a blanket scrub would leave nothing to
-correlate the id against. Pinned by `TestRedactCredentialsKeepsOperatorDetail`.
+`error_id`, a `schema_id`, and that log line, and a blanket scrub would leave
+nothing to correlate the id against. Pinned by
+`TestRedactCredentialsKeepsOperatorDetail`.
+
+Of that list only the schema id also crosses to the client, as its own
+`schema_id` field (see above). Object keys, endpoint URLs and driver prose are
+log-only.
 
 ### Residual: a mixed chain discloses its non-credential causes
 
@@ -285,12 +331,15 @@ redesign of the 4xx surface, tracked separately.
   "success": false,
   "error": "internal read error",
   "error_class": "parquet_set_inconsistent",
-  "error_id": "9f2c1a7e-…"
+  "error_id": "9f2c1a7e-…",
+  "schema_id": 22
 }
 ```
 
 That example is the `parquet_set_inconsistent` shape; the far more frequent one
-pairs `"error_class": "internal"` with `"error": "internal error"`.
+pairs `"error_class": "internal"` with `"error": "internal error"` and carries
+**no** `schema_id` key at all, because an unclassified chain holds no typed
+carrier to read one from.
 
 Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
 `manifest_schema_mismatch`, and `internal` for everything else. They resolve via
@@ -344,9 +393,16 @@ boundary is stated rather than discovered.
   resolves the ID internally, so this genuinely exposes an internal identifier.
   It is accepted because a schema ID is a low-value opaque integer — not a
   credential, not a storage path, and not something an attacker can act on
-  without already holding the access the 404 just denied. Worth naming because
-  "no schema id" is a stated constraint for *redacted* bodies, and this is
-  exactly where that constraint stops applying.
+  without already holding the access the 404 just denied.
+
+  That judgement is no longer confined to the verbatim branch. "No schema id"
+  was originally a stated constraint on *redacted* bodies, and this bullet
+  existed to record where the constraint stopped applying. The constraint has
+  since been **lifted** — the issue owner reinstated the schema id on redacted
+  bodies, on exactly the reasoning above (see the "`schema_id` on a redacted
+  body" subsection above). Both branches now agree that a bare schema ID may
+  cross; the difference is that the redacted branch emits it as a structured
+  `schema_id` field rather than inside prose.
 
 ### Status change: create errors are now classified
 
@@ -369,7 +425,7 @@ That follows from the gate rather than contradicting it. The chain built by
 `file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
 that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
 `isClientError` is true — the verbatim branch, logged at `Debugw`, with no
-`error_class` and no `error_id`. Pinned by
+`error_class`, no `error_id` and no `schema_id`. Pinned by
 `TestCreateUnknownSchemaIs404AndVerbatim`.
 
 Clients keying on `500` to detect create failures must key on `success: false`
@@ -394,8 +450,9 @@ error wraps `forma.ErrInvalidInput` as part of the sweep above.
 
 **Only the status changed.** The body was verbatim before and is verbatim now —
 this endpoint reached `writeError` directly with the full message, and redaction
-did not exist at all before #301. No `error_class` or `error_id` appeared on this
-response before, and none appears now: it takes the verbatim branch. A client
+did not exist at all before #301. No `error_class`, `error_id` or `schema_id`
+appeared on this response before, and none appears now: it takes the verbatim
+branch, so its serialization is byte-identical to pre-#301. A client
 keying on `404` to detect a filter typo breaks silently, and that is the whole of
 the migration impact.
 
