@@ -92,12 +92,32 @@ These were settled during design. Do not re-litigate during implementation.
 
 ## Contract
 
-Redaction keys off the **classified status**, and is applied strictly *after*
-classification — `classifyManagerError` performs heuristic substring matching on
-`err.Error()` (`server.go:725-744`), so redacted text must never feed back into
-it.
+**Revised during implementation.** This section originally said redaction keys
+off the classified status. That was wrong, and the review caught it: 
+`classifyManagerError` derives the status by substring-matching the whole chain,
+and driver text trips those probes in practice. DuckDB renders a missing object as
+`HTTP Error: … 404 (Not Found).` — which contains `not found`, classifies **404**,
+and would have taken the verbatim branch, leaking the S3 URL. A password-bearing
+chain was reproduced doing the same. The most likely #301 scenario would still
+have leaked.
 
-### 4xx — unchanged, verbatim
+So the two decisions are **decoupled**:
+
+- **Status** is whatever `classifyManagerError` says — unchanged, no endpoint
+  changes its codes beyond decision 2 below.
+- **Disclosure** requires *positive* evidence that the caller is at fault:
+  `errors.Is` against `ErrInvalidInput`, `ErrNotFound`, or `ErrConflict`. Anything
+  else is redacted, whatever its status.
+- **Every redacted response logs at `Errorw`**, whatever its status. `cmd/server`
+  runs `zap.NewProduction()` at Info level, so routing a redacted 4xx to `Debugw`
+  would have leaked nothing but recorded nothing either.
+
+Accepted cost: an error that classifies 4xx by heuristic alone and wraps no
+sentinel now gets an opaque body. The known instance is #296 (unknown sort
+attribute), already tracked to wrap `ErrInvalidInput`. An opaque validation
+message is strictly better than a leaked credential.
+
+### 4xx — verbatim when provably a client error
 
 These describe caller-supplied input and the caller needs to know what to fix.
 The write path touches neither S3 nor `PG_CONN`. Body *text* is unchanged and the

@@ -884,12 +884,16 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 	}
 }
 
-// TestReadPathErrorsClassifyAs5xx guards a fragile coupling: classifyManagerError
-// falls back to substring matching, and redaction keys off the classified
-// status. A read-path consistency error whose message happened to contain
-// "invalid", "required", or "must be" would be reclassified as 4xx and escape
-// redaction with its object keys intact. ManifestSchemaMismatchError already
-// says "must resolve", one word away from the "must be" probe.
+// TestReadPathErrorsClassifyAs5xx pins status accuracy for the three read-path
+// carriers: classifyManagerError falls back to substring matching, and
+// ManifestSchemaMismatchError already says "must resolve", one word away from
+// its "must be" probe. A misclassification here would return a misleading 4xx.
+//
+// It is NOT what keeps object keys out of the body — Task 3's revised gate makes
+// disclosure depend on positive sentinel evidence (isClientError), not on the
+// status, precisely because driver text trips these heuristics in practice
+// (DuckDB renders a missing object as "404 (Not Found)"). This test guards the
+// status; error_response_test.go guards the disclosure.
 func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 	errs := map[string]error{
 		"parquet set inconsistent": &forma.ParquetSetInconsistentError{
