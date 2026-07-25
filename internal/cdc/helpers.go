@@ -4,39 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
 
-// reConnPassword matches the password= key-value pair in a libpq-style connection string,
-// including the quoted forms used inside DuckDB ATTACH statements. The alternation is
-// ordered from most- to least-quoted so each form is consumed whole and no password
-// material survives past ***REDACTED***. libpq quoting escapes both ' and \ with a
-// backslash (quotePGConnValue), and escapeLiteral additionally doubles every ' when the
-// DSN is embedded in a DuckDB SQL literal — so the matcher must understand backslash
-// escapes, not just balanced quotes.
-//   - Branch 1 — password=''…''  the escapeLiteral'd doubled form (tried first). Content
-//     atoms are `\''` (a libpq escaped quote whose ' was doubled by escapeLiteral), `\[^']`
-//     (any other backslash escape, incl. `\\`), and `[^'\]` (a plain char). A bare `'`
-//     never matches an atom, so the closing `''` is unreachable from inside the content:
-//     greedy matching is safe and the old non-greedy early-close leak is structurally gone.
-//   - Branch 2 — password='…'  the raw quoted BuildPGDSN output. Standard libpq quoted
-//     value `'(?:\.|[^'\])*'` consumes `\'` and `\\` as escapes instead of terminating on
-//     the escaped quote (the old '[^']*' branch mistook `\'` for the closing quote).
-//   - Branch 3 — password=value  the legacy unquoted form (unchanged).
-var reConnPassword = regexp.MustCompile(`(?i)(password=)(''(?:\\''|\\[^']|[^'\\])*''|'(?:\\.|[^'\\])*'|[^' \t\r\n;,)]*)`)
-
 // redactConnStr replaces any password value in a connection string (or an SQL
-// string that embeds one) with "***REDACTED***".  It is safe to call on any
+// string that embeds one) with redact.Placeholder. It is safe to call on any
 // string that may or may not contain a password.
+//
+// The matcher itself now lives in internal/redact, shared with the HTTP error
+// boundary, which needs exactly the same scrub (#301) on driver text that quotes
+// the postgres_scan connection string back at us. The #290 regression tests in
+// redact_test.go exercise it through this wrapper and remain the contract.
 func redactConnStr(s string) string {
-	return reConnPassword.ReplaceAllString(s, "${1}***REDACTED***")
+	return redact.ConnStringPassword(s)
 }
 
 // GetChangeLogStats returns count and oldest changed_at for unflushed rows.
