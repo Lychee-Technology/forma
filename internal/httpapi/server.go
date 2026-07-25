@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -586,6 +585,12 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// ErrorClass and ErrorID are populated only on redacted 5xx responses
+	// (#301): a stable machine token for client discrimination, and a
+	// correlation id echoed on the operator log line that holds the full error
+	// chain. Both are omitempty, so success and 4xx bodies are unchanged.
+	ErrorClass string `json:"error_class,omitempty"`
+	ErrorID    string `json:"error_id,omitempty"`
 }
 
 // writeJSON writes JSON response to http.ResponseWriter.
@@ -593,14 +598,6 @@ func writeJSON(w http.ResponseWriter, statusCode int, data any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	return json.NewEncoder(w).Encode(data)
-}
-
-// writeError writes an error response.
-func writeError(w http.ResponseWriter, statusCode int, message string) error {
-	return writeJSON(w, statusCode, APIResponse{
-		Success: false,
-		Error:   message,
-	})
 }
 
 // writeSuccess writes a success response.
@@ -700,48 +697,4 @@ func parseAttrs(queryParams url.Values) []string {
 	}
 
 	return attrs
-}
-
-// classifyManagerError maps a manager-layer error to an HTTP status code.
-// It first checks for sentinel errors (preferred), then falls back to
-// heuristic string matching for errors that do not wrap the sentinels.
-func classifyManagerError(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
-	}
-
-	// Sentinel error checks — use errors.Is so wrapped errors are handled.
-	if errors.Is(err, forma.ErrNotFound) {
-		return http.StatusNotFound
-	}
-	if errors.Is(err, forma.ErrConflict) {
-		return http.StatusConflict
-	}
-	if errors.Is(err, forma.ErrInvalidInput) {
-		return http.StatusBadRequest
-	}
-
-	// Heuristic fallback for errors that do not wrap a sentinel.
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "not found") {
-		return http.StatusNotFound
-	}
-
-	if strings.Contains(msg, "duplicate") ||
-		strings.Contains(msg, "already exists") ||
-		strings.Contains(msg, "conflict") {
-		return http.StatusConflict
-	}
-
-	if strings.Contains(msg, "required") ||
-		strings.Contains(msg, "invalid") ||
-		strings.Contains(msg, "cannot sort") ||
-		strings.Contains(msg, "unknown attribute") ||
-		strings.Contains(msg, "must be") ||
-		strings.Contains(msg, "unsupported") ||
-		strings.Contains(msg, "empty") {
-		return http.StatusBadRequest
-	}
-
-	return http.StatusInternalServerError
 }
