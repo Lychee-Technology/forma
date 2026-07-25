@@ -103,8 +103,7 @@ have leaked.
 
 So the two decisions are **decoupled**:
 
-- **Status** is whatever `classifyManagerError` says — unchanged, no endpoint
-  changes its codes beyond decision 2 below.
+- **Status** is whatever `classifyManagerError` says.
 - **Disclosure** requires *positive* evidence that the caller is at fault:
   `errors.Is` against `ErrInvalidInput`, `ErrNotFound`, or `ErrConflict`. Anything
   else is redacted, whatever its status.
@@ -112,10 +111,25 @@ So the two decisions are **decoupled**:
   runs `zap.NewProduction()` at Info level, so routing a redacted 4xx to `Debugw`
   would have leaked nothing but recorded nothing either.
 
-Accepted cost: an error that classifies 4xx by heuristic alone and wraps no
-sentinel now gets an opaque body. The known instance is #296 (unknown sort
-attribute), already tracked to wrap `ErrInvalidInput`. An opaque validation
-message is strictly better than a leaked credential.
+**Revised again in review round 2.** The paragraphs above describe the state
+mid-implementation and are kept because the reasoning that got there is still the
+reason disclosure is gated on sentinels rather than on status. What shipped goes
+one step further: the substring heuristic was deleted outright, so
+`classifyManagerError` reads sentinels only and anything without one is `500`.
+
+Two things forced that. Redacting the body does not repair the *status*: a client,
+cache or alerting rule that receives `404` for an S3 failure concludes the resource
+is absent and may stop retrying or cache the negative result — and #301 asked for
+read-path consistency errors to answer a generic 5xx, which `AGENTS.md` backs.
+Separately, the heuristic was the last site classifying an error by string
+comparison, which `AGENTS.md` forbids.
+
+The accepted cost recorded here — "an error that classifies 4xx by heuristic alone
+and wraps no sentinel now gets an opaque body" — **no longer applies**, and its
+premise that #296 was the only such site was disproved. Six sites across four
+packages depended on the heuristic, including the write-path `missing required
+attribute` check; all now wrap `ErrInvalidInput` with their message text
+unchanged. The maintained list is the table in `docs/error-handling.md`.
 
 ### 4xx — verbatim when provably a client error
 

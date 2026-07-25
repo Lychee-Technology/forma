@@ -10,6 +10,30 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-25-issue-301-redact-http-error-bodies-design.md`
 
+> **Superseded in places by code review (rounds 1-2).** This plan is kept as the
+> record of what was planned and why. Two contract statements it repeats
+> throughout are no longer what shipped, and the code and doc snippets quoted in
+> the tasks below still show the intermediate state:
+>
+> 1. **Status classification no longer uses substring matching.** The heuristic
+>    was deleted entirely; `classifyManagerError` reads sentinels only and
+>    anything without one is `500`. Redaction alone did not fix the status, and a
+>    `404` for an S3 failure misleads clients, caches and alerting. It was also
+>    the last string-comparison classification site, which `AGENTS.md` forbids.
+> 2. **The "accepted cost" of an opaque 4xx no longer exists,** and its premise
+>    that #296 was the only affected site was disproved — six sites across four
+>    packages depended on the heuristic, including the write-path
+>    `missing required attribute` check. All now wrap `forma.ErrInvalidInput`
+>    with their message text unchanged.
+>
+> A third change has no counterpart here at all: credentials are scrubbed
+> (`internal/redact`) before anything is logged or returned, and
+> `federated.DuckDBPostgresConnStringFromPool` now quotes its DSN values so the
+> scrubber can bound them.
+>
+> The current contract lives in `docs/error-handling.md`, "Public HTTP error
+> surface". Prefer it over anything below.
+
 ## Global Constraints
 
 - Source files ≤500 lines, functions ≤100 lines (`coding-standard.md`).
@@ -1114,6 +1138,11 @@ on the status would therefore have classified the single most likely #301
 scenario as 4xx and echoed the S3 URL — and, on a `postgres_scan` attach failure,
 the password — straight back to the client.
 
+> **Round-2 note.** The reasoning above is why disclosure is gated on sentinels,
+> and that still holds. But `classifyManagerError` no longer substring-matches at
+> all — the heuristic was deleted, so the misclassification it describes is not
+> merely redacted, it cannot happen. See `docs/error-handling.md`.
+
 **The HTTP status is unchanged** by redaction: a misclassified read-path error
 still returns its classified status, just with an opaque body.
 
@@ -1129,6 +1158,12 @@ sentinel now gets an opaque body. The known instance is #296 (unknown sort
 attribute); `classifyManagerError`'s trigger-word list is the worklist of call
 sites that should start wrapping `forma.ErrInvalidInput`. An opaque validation
 message is strictly better than a leaked credential.
+
+> **Round-2 note: this cost was not accepted, it was removed.** The trigger-word
+> list was worked through rather than left as a worklist: six sites across four
+> packages now wrap `forma.ErrInvalidInput`, so none of them returns an opaque
+> body. The claim that #296 was the only instance was wrong — the write-path
+> `missing required attribute` check was the most consequential omission.
 
 ```json
 {

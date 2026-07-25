@@ -222,19 +222,43 @@ by #306; this boundary scrub is what protects deployments in the meantime.
 scrub since #290. Sharing is a correctness requirement, not tidying: a naive
 `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
 the password tail past the placeholder. That was a real bug fixed in #290, and
-its regression tests (`internal/cdc/redact_test.go`) now exercise the shared
-matcher through `redactConnStr`. Three forms are covered — the
+its regression tests (`internal/cdc/redact_test.go`) exercise the shared matcher
+through `redactConnStr`, and `internal/redact/connstring_test.go` gates the
+pattern in the package that owns it. Three forms are covered — the
 `escapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
-the libpq-quoted `password='…'`, and the bare `password=value` that
-`internal/federated/engine.go` builds for `postgres_scan`.
+the libpq-quoted `password='…'`, and the bare `password=value` of legacy or
+third-party text.
 
-Two shapes are deliberately **not** matched, recorded in
-`TestRedactCredentialsKnownGaps`: whitespace around the `=` (`password = secret`)
-and double-quoted values (`password="…"`). Neither is produced here — both DSN
-builders emit `password=` unspaced and quote with single quotes, and DuckDB
-echoes back what it was given. The pattern is kept byte-identical to the one #290
-hardened rather than widened on speculation; widen it in that one place if a
-producer ever appears.
+**A scrubber alone was not enough, because it cannot see where an unquoted value
+ends.** The bare branch has to stop somewhere, and whatever it stops on truncates
+a password containing that character, leaving the tail in the log — which is the
+exposure this whole section exists to prevent. Two changes closed it:
+
+- The bare branch now terminates **only** on a quote or whitespace. It used to
+  also stop on `;`, `,` and `)`, none of which is a separator in a libpq
+  keyword/value DSN, so any password containing one leaked its tail. Pinned by
+  `TestConnStringPassword_UnquotedSeparators`.
+- `federated.DuckDBPostgresConnStringFromPool` now **quotes its values**, via the
+  shared `internal/pgdsn`, as `internal/cdc`'s builder already did since #290. It
+  previously emitted `host=%s … password=%s dbname=%s` raw. That was two bugs in
+  one: a password containing a space produced a DSN libpq cannot parse (so
+  `postgres_scan` could not attach at all), and it was unredactable. Quoting is
+  what makes the value's extent unambiguous.
+
+Because the DSN is interpolated into a single-quoted SQL literal
+(`postgres_scan('{{.PG_CONN}}', …)`), the renderer escapes it —
+`escapeSQLLiteral` in `internal/sqlgen/duckdb_template_renderer.go`, mirroring
+CDC's `escapeLiteral`. Without that, the newly-added quotes would terminate the
+literal early. It also closes a hole that predates the quoting: a Postgres
+password containing a single quote used to be interpolated raw into query
+structure.
+
+One shape is deliberately **not** matched, recorded in
+`TestRedactCredentialsKnownGaps` and `TestConnStringPassword_KnownGaps`:
+whitespace around the `=` (`password = secret`). No producer emits it. The
+residual beyond that is an *unquoted* value containing a space, which no pattern
+can match because nothing marks its end — fixed at the producer instead, so every
+password this repo generates now lands on a quoted branch.
 
 It is deliberately narrow, and **non-secret operator detail is kept on purpose**:
 S3 object keys, schema ids, endpoint URLs, and the driver's own diagnosis all
@@ -350,6 +374,29 @@ that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
 
 Clients keying on `500` to detect create failures must key on `success: false`
 plus the status instead.
+
+### Status change: an unknown filter attribute is now 400, not 404
+
+`POST /api/v1/advanced_query` with a `condition` naming an attribute the schema
+does not define used to answer **`404` with a redacted body**. The error
+(`attribute not found in cache: …`, `internal/sqlgen/predicate_normalizer.go`)
+carried no sentinel, so the substring heuristic saw `not found` and classified it
+as a missing *resource*.
+
+It now answers **`400` with a verbatim body**, because that error wraps
+`forma.ErrInvalidInput` as part of the sweep above. Both halves changed:
+
+| | before | after |
+| --- | --- | --- |
+| status | `404` | `400` |
+| body | redacted (`error_class`, `error_id`) | verbatim, names the attribute |
+
+`400` is the correct answer — the filter is malformed, no resource is absent —
+but a client keying on `404` to detect a filter typo breaks silently, and one
+keying on `error_class` being present on that response will now find it empty.
+The same shift applies to the other condition-DSL validation errors in the sweep
+(unparseable filter values, unknown operators, malformed `"op:value"`), which
+moved from a redacted `400`/`500` to a verbatim `400`.
 
 ### Known gap
 
