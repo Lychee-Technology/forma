@@ -11,11 +11,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// Public error-class tokens surfaced on redacted bodies (#301). They are the only
-// thing a client can discriminate on, because the body carries no error text:
-// operator-detail errors reach the HTTP boundary holding bucket-relative S3 object
-// keys and, when DuckDB fails to attach postgres_scan, the Postgres password
-// verbatim inside the driver's own message.
+// Public error-class tokens surfaced on redacted bodies (#301). A redacted body
+// carries no error text at all — operator-detail errors reach the HTTP boundary
+// holding bucket-relative S3 object keys and, when DuckDB fails to attach
+// postgres_scan, the Postgres password verbatim inside the driver's own message —
+// so this token is what a client discriminates on. The only other structured
+// datum it may carry is the schema id (errorSchemaID); everything else stays on
+// the operator log line.
 //
 // Both redaction and classification key off the same sentinel evidence, so a
 // redacted body is a 500 on every live path: an error with no sentinel classifies
@@ -50,9 +52,56 @@ func errorClass(err error) string {
 	}
 }
 
+// errorSchemaID returns the schema the failed read was addressed to, or 0 when
+// the chain carries no typed read-path error.
+//
+// This reverses a design decision. #301 originally asked for "error class +
+// schema id"; the design settled on error_class + error_id alone and
+// docs/error-handling.md recorded "no schema id" as a constraint on redacted
+// bodies. The issue owner has since reinstated the schema id. The reasoning that
+// justified excluding it is the same reasoning that permits it: a schema ID is a
+// low-value opaque integer, and one already crosses verbatim on the ID-keyed 404s
+// documented under "Accepted disclosures inside the allowlist". What it buys is a
+// redacted body a client can correlate without an operator round-trip.
+//
+// errors.As, not a type assertion: these carriers reach the boundary wrapped
+// several levels deep — the federated engine returns
+// fmt.Errorf("execute duckdb query: %w: %w", carrier, driverErr) — so a bare
+// assertion on err would resolve 0 for every real chain.
+//
+// A zero return is indistinguishable from "no carrier" by design, and safely so:
+// schema IDs are always positive here (see APIResponse.SchemaID), which is what
+// makes the field's omitempty encoding lossless.
+func errorSchemaID(err error) int16 {
+	var inconsistent *forma.ParquetSetInconsistentError
+	if errors.As(err, &inconsistent) {
+		return inconsistent.SchemaID
+	}
+
+	var noPaths *forma.NoParquetPathsError
+	if errors.As(err, &noPaths) {
+		return noPaths.SchemaID
+	}
+
+	// RequestedSchemaID, not ManifestSchemaID. The client asked to read the
+	// requested schema; the manifest stamp is a foreign id found on the object,
+	// belonging to whichever *other* schema misaddressed it. Returning that would
+	// answer a request about schema A with schema B's identity — and disclose the
+	// existence of an unrelated schema to a caller who never named it. The
+	// operator gets both ids on the log line, which is where the collision is
+	// diagnosed.
+	var mismatch *forma.ManifestSchemaMismatchError
+	if errors.As(err, &mismatch) {
+		return mismatch.RequestedSchemaID
+	}
+
+	return 0
+}
+
 // publicErrorMessage returns the fixed prose for a class. It must stay free of
 // schema ids, object keys, configuration key names, and driver text — everything
-// specific belongs on the operator log line instead.
+// specific belongs on the operator log line instead. The schema id travels as its
+// own structured field (APIResponse.SchemaID), never inside this prose.
 func publicErrorMessage(class string) string {
 	if class == errorClassInternal {
 		return "internal error"
@@ -230,7 +279,16 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 
 	class := errorClass(err)
 	errorID := uuid.NewString()
-	fields = append(fields, "error_class", class, "error_id", errorID, "error", safe)
+	schemaID := errorSchemaID(err)
+	fields = append(fields, "error_class", class, "error_id", errorID)
+	// Its own field, not interpolated into the message: operators filter log
+	// queries on schema_id, and parsing it back out of prose is what that would
+	// otherwise cost. Omitted when zero, matching the body, so a log line never
+	// asserts a schema the error did not name.
+	if schemaID != 0 {
+		fields = append(fields, "schema_id", schemaID)
+	}
+	fields = append(fields, "error", safe)
 	zap.S().Errorw(op, fields...)
 
 	_ = writeJSON(w, status, APIResponse{
@@ -238,5 +296,6 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 		Error:      publicErrorMessage(class),
 		ErrorClass: class,
 		ErrorID:    errorID,
+		SchemaID:   schemaID,
 	})
 }

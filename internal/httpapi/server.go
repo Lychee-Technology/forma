@@ -594,6 +594,12 @@ type APIResponse struct {
 	// bodies and verbatim 4xx bodies are unchanged.
 	ErrorClass string `json:"error_class,omitempty"`
 	ErrorID    string `json:"error_id,omitempty"`
+	// SchemaID names the schema a redacted read failure was addressed to (#301,
+	// reinstated by the issue owner after the design excluded it — see
+	// errorSchemaID and docs/error-handling.md). omitempty is a lossless "absent"
+	// encoding because schema IDs are always positive here, the same invariant
+	// that makes a manifest schema_id of zero mean unstamped rather than schema 0.
+	SchemaID int16 `json:"schema_id,omitempty"`
 }
 
 // writeJSON writes JSON response to http.ResponseWriter.
