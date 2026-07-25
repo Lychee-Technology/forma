@@ -219,19 +219,25 @@ func TestHandleSearchParsesCSVSchemas(t *testing.T) {
 }
 
 func TestClassifyManagerError(t *testing.T) {
+	// Contract since #301: classification is by sentinel evidence alone. The
+	// substring heuristic is gone, so an error whose *text* reads like a client
+	// fault but wraps no sentinel is a 500 — driver prose trips those words
+	// (DuckDB renders a missing S3 object as "404 (Not Found)") and answering 404
+	// tells clients and caches a storage failure means the resource is absent.
 	tests := []struct {
 		name       string
 		err        error
 		wantStatus int
 	}{
-		{name: "not found", err: fmt.Errorf("entity not found"), wantStatus: http.StatusNotFound},
-		{name: "validation", err: fmt.Errorf("schema name is required"), wantStatus: http.StatusBadRequest},
-		{name: "conflict", err: fmt.Errorf("duplicate key"), wantStatus: http.StatusConflict},
+		{name: "text-only not found is no longer 404", err: fmt.Errorf("entity not found"), wantStatus: http.StatusInternalServerError},
+		{name: "text-only validation is no longer 400", err: fmt.Errorf("schema name is required"), wantStatus: http.StatusInternalServerError},
+		{name: "text-only conflict is no longer 409", err: fmt.Errorf("duplicate key"), wantStatus: http.StatusInternalServerError},
 		{name: "internal", err: fmt.Errorf("db timeout"), wantStatus: http.StatusInternalServerError},
 		// Sentinel error checks — wrapped errors must route via errors.Is.
 		{name: "sentinel not found", err: fmt.Errorf("wrap: %w", forma.ErrNotFound), wantStatus: http.StatusNotFound},
 		{name: "sentinel conflict", err: fmt.Errorf("wrap: %w", forma.ErrConflict), wantStatus: http.StatusConflict},
 		{name: "sentinel invalid input", err: fmt.Errorf("wrap: %w", forma.ErrInvalidInput), wantStatus: http.StatusBadRequest},
+		{name: "nil", err: nil, wantStatus: http.StatusInternalServerError},
 	}
 
 	for _, tt := range tests {
@@ -247,12 +253,15 @@ func TestClassifyManagerError(t *testing.T) {
 func TestHandleGetErrorMapping(t *testing.T) {
 	rowID := uuid.New()
 
+	// Since #301 only a sentinel earns the 404; "entity not found" as bare prose
+	// is an unclassifiable failure and answers 500.
 	tests := []struct {
 		name       string
 		err        error
 		wantStatus int
 	}{
-		{name: "not found", err: fmt.Errorf("entity not found"), wantStatus: http.StatusNotFound},
+		{name: "sentinel not found", err: fmt.Errorf("entity: %w", forma.ErrNotFound), wantStatus: http.StatusNotFound},
+		{name: "text-only not found", err: fmt.Errorf("entity not found"), wantStatus: http.StatusInternalServerError},
 		{name: "internal", err: fmt.Errorf("db timeout"), wantStatus: http.StatusInternalServerError},
 	}
 
@@ -273,10 +282,14 @@ func TestHandleGetErrorMapping(t *testing.T) {
 	}
 }
 
+// TestHandleQueryMapsValidationErrors uses the real post-#296 shape of the
+// unknown-sort-attribute error: internal/entity_query_sort.go now wraps
+// forma.ErrInvalidInput, which is what keeps it a 400 after #301 removed the
+// substring heuristic. The bare-text version it used to assert on is a 500.
 func TestHandleQueryMapsValidationErrors(t *testing.T) {
 	server := &Server{
 		manager: &mockEntityManager{
-			advancedErr: fmt.Errorf("cannot sort by unknown attribute 'x'"),
+			advancedErr: fmt.Errorf("cannot sort by unknown attribute 'x' in schema 'lead': %w", forma.ErrInvalidInput),
 		},
 	}
 
@@ -289,10 +302,13 @@ func TestHandleQueryMapsValidationErrors(t *testing.T) {
 	}
 }
 
+// TestHandleSearchMapsConflictErrors pins that a 409 still reaches the client —
+// but only via forma.ErrConflict. Since #301 the word "conflict" in the message
+// carries no classification weight.
 func TestHandleSearchMapsConflictErrors(t *testing.T) {
 	server := &Server{
 		manager: &mockEntityManager{
-			crossSchemaErr: fmt.Errorf("duplicate request conflict"),
+			crossSchemaErr: fmt.Errorf("duplicate request: %w", forma.ErrConflict),
 		},
 	}
 

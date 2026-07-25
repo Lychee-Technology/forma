@@ -4,20 +4,24 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/redact"
 	"go.uber.org/zap"
 )
 
-// Public error-class tokens surfaced on redacted bodies (#301) — redaction is
-// gated on sentinel evidence rather than on the status, so these appear on any
-// status that lacks it, 4xx included. They are the
-// only thing a client can discriminate on, because the body carries no error
-// text: operator-detail errors reach the HTTP boundary holding bucket-relative
-// S3 object keys and, when DuckDB fails to attach postgres_scan, the Postgres
-// password verbatim inside the driver's own message.
+// Public error-class tokens surfaced on redacted bodies (#301). They are the only
+// thing a client can discriminate on, because the body carries no error text:
+// operator-detail errors reach the HTTP boundary holding bucket-relative S3 object
+// keys and, when DuckDB fails to attach postgres_scan, the Postgres password
+// verbatim inside the driver's own message.
+//
+// Both redaction and classification key off the same sentinel evidence, so a
+// redacted body is a 500 on every live path: an error with no sentinel classifies
+// 500, and an error with one takes the verbatim branch. The two are still
+// separately decided — only respondErrorWithStatus's status argument could pair a
+// redacted body with a non-500 status, and no call site does.
 //
 // errorClassInternal deliberately absorbs ErrFederatedReadFailed,
 // ErrPostgresReadFailed, metadata drift, and transform failures. A client-facing
@@ -56,6 +60,33 @@ func publicErrorMessage(class string) string {
 	return "internal read error"
 }
 
+// redactCredentials removes credential values from a string before it is written
+// anywhere — response body or operator log.
+//
+// #301 redacted bodies but moved the full chain into zap.S().Errorw, and this
+// package logged no errors at all beforehand. That made the log a *new* exposure
+// surface for the Postgres password, because DuckDB quotes the whole postgres_scan
+// connection string back inside its own prose when an attach fails:
+//
+//	IO Error: Unable to connect to Postgres at "host=… user=… password=… dbname=…"
+//
+// The secret is driver-authored text, so it has to be scrubbed at the boundary
+// rather than at a Forma wrap site. Source-side scrubbing is tracked by #306; this
+// is the boundary backstop that protects deployments in the meantime.
+//
+// The matcher is internal/redact's, shared with the CDC logger rather than
+// reimplemented here. That is not tidiness: a naive `'[^']*'` branch mistakes
+// libpq's escaped `\'` for a closing quote and emits the password tail past the
+// placeholder, which is exactly the bug #290 fixed in the CDC copy.
+//
+// It is deliberately narrow. Everything else an operator needs — S3 object keys,
+// schema ids, endpoint URLs, driver prose — survives verbatim in the log, because
+// a blanket redaction would leave operators with an error_id and nothing to
+// correlate it against.
+func redactCredentials(s string) string {
+	return redact.ConnStringPassword(s)
+}
+
 // writeError writes an error response.
 func writeError(w http.ResponseWriter, statusCode int, message string) error {
 	return writeJSON(w, statusCode, APIResponse{
@@ -64,52 +95,44 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 	})
 }
 
-// classifyManagerError maps a manager-layer error to an HTTP status code.
-// It first checks for sentinel errors (preferred), then falls back to
-// heuristic string matching for errors that do not wrap the sentinels.
+// classifyManagerError maps a manager-layer error to an HTTP status code using
+// sentinel evidence alone. An error that wraps none of the client sentinels is a
+// 500.
+//
+// The substring heuristic this replaced (`not found` → 404, `duplicate` → 409,
+// `invalid`/`required`/`must be`/… → 400) matched on the whole chain, and driver
+// prose trips those words routinely: DuckDB renders a missing S3 object as
+// `HTTP Error: … 404 (Not Found).`, so an S3 or credential failure answered HTTP
+// 404. Redacting the body did not fix that — status is protocol semantics, and a
+// client, cache, or alerting rule reads 404 as "the resource is absent", stops
+// retrying, and may cache the negative result for what is really a storage
+// failure. #301 asked for read-path consistency errors to answer a generic 5xx,
+// and AGENTS.md classes them as operator-visible failures, not 4xx.
+//
+// Deleting the heuristic also removes the last site in the codebase that
+// classified an error by string comparison, which AGENTS.md forbids outright.
+//
+// The cost is that a genuine client error only earns its 4xx by wrapping a
+// sentinel. That is the correct direction of pressure: the one such site that
+// existed (`cannot sort by unknown attribute`, internal/entity_query_sort.go) was
+// fixed to wrap forma.ErrInvalidInput rather than shipped as a regression (#296).
 func classifyManagerError(err error) int {
-	if err == nil {
+	switch {
+	case err == nil:
+		return http.StatusInternalServerError
+	case errors.Is(err, forma.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, forma.ErrConflict):
+		return http.StatusConflict
+	case errors.Is(err, forma.ErrInvalidInput):
+		return http.StatusBadRequest
+	default:
 		return http.StatusInternalServerError
 	}
-
-	// Sentinel error checks — use errors.Is so wrapped errors are handled.
-	if errors.Is(err, forma.ErrNotFound) {
-		return http.StatusNotFound
-	}
-	if errors.Is(err, forma.ErrConflict) {
-		return http.StatusConflict
-	}
-	if errors.Is(err, forma.ErrInvalidInput) {
-		return http.StatusBadRequest
-	}
-
-	// Heuristic fallback for errors that do not wrap a sentinel.
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "not found") {
-		return http.StatusNotFound
-	}
-
-	if strings.Contains(msg, "duplicate") ||
-		strings.Contains(msg, "already exists") ||
-		strings.Contains(msg, "conflict") {
-		return http.StatusConflict
-	}
-
-	if strings.Contains(msg, "required") ||
-		strings.Contains(msg, "invalid") ||
-		strings.Contains(msg, "cannot sort") ||
-		strings.Contains(msg, "unknown attribute") ||
-		strings.Contains(msg, "must be") ||
-		strings.Contains(msg, "unsupported") ||
-		strings.Contains(msg, "empty") {
-		return http.StatusBadRequest
-	}
-
-	return http.StatusInternalServerError
 }
 
-// respondError classifies err, records the full chain for operators, and writes
-// a client-safe body.
+// respondError classifies err, records the chain for operators under
+// redactCredentials, and writes a client-safe body.
 //
 // A 4xx that carries positive sentinel evidence of caller fault (isClientError)
 // keeps the verbatim message: it describes caller-supplied input, the caller
@@ -129,12 +152,19 @@ func respondError(w http.ResponseWriter, op string, err error, logFields ...any)
 
 // isClientError reports whether err is provably the caller's fault.
 //
-// Disclosure cannot key off the classified status: classifyManagerError falls
-// back to substring matching over the whole chain, and driver text routinely
-// contains its trigger words — DuckDB reports a missing S3 object as
-// "404 (Not Found)" and an unresolvable column as "not found in FROM clause!".
-// Trusting that heuristic would hand the verbatim branch exactly the errors #301
-// exists to redact. Positive sentinel evidence is the only safe gate (#301).
+// Positive sentinel evidence is the only safe gate for disclosure (#301). It is
+// now also what classifyManagerError decides on, so for a respondError caller the
+// two agree by construction. The check stays separate because
+// respondErrorWithStatus also serves callers that pass their own status
+// (executeGet), and a status alone must never be able to open the verbatim branch.
+//
+// Residual (#301, Finding 3): errors.Is matches any leaf, so a multi-cause chain
+// such as errors.Join(forma.ErrInvalidInput, driverErr) — the `%w: %w` shape used
+// throughout internal/federated — takes the verbatim branch and discloses the
+// driver cause alongside the client one. redactCredentials keeps the password out
+// of that body, but a non-credential operator detail (an S3 object key) can still
+// surface in a 400. Closing it properly means giving client errors typed public
+// messages instead of echoing chain text, which is a larger change than #301.
 func isClientError(err error) bool {
 	return errors.Is(err, forma.ErrInvalidInput) ||
 		errors.Is(err, forma.ErrNotFound) ||
@@ -145,15 +175,16 @@ func isClientError(err error) bool {
 // classified in order to choose their message (executeGet's 404 wording).
 //
 // The gate on disclosure is positive sentinel evidence — isClientError — not the
-// status code. classifyManagerError reaches its 4xx verdicts partly by substring
-// matching over the whole error chain, and driver prose trips those words
-// routinely, so a status alone cannot distinguish "the caller mistyped an
-// attribute" from "DuckDB could not fetch an S3 object and said 404 (Not Found)".
-// The second must not be echoed back.
+// status code, so a caller-supplied 4xx cannot promote an operator error to
+// verbatim. The status conjunct only ever holds disclosure back.
 //
-// The status is deliberately left as classified in both branches: a misclassified
-// read-path error still answers 404, just with a redacted body. Disclosure and
-// status are separate concerns and only the former is a leak.
+// Every string that leaves this function passes through redactCredentials first,
+// body and log alike. The log needs it because DuckDB puts the postgres_scan
+// connection string, password included, into its own attach-failure prose, and
+// this package's Errorw line is where that would otherwise enter log collection
+// and retention. The verbatim body needs it because errors.Is matches any leaf of
+// a multi-cause chain, so a client sentinel joined to a driver error takes the
+// verbatim branch (see isClientError).
 //
 // Every redacted response logs at Errorw whatever its status, because a redacted
 // body is the operator's only remaining copy of the detail and the production
@@ -171,17 +202,18 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	if err == nil {
 		err = errors.New("nil error")
 	}
+	safe := redactCredentials(err.Error())
 
 	if status < http.StatusInternalServerError && isClientError(err) {
-		fields = append(fields, "error", err.Error())
+		fields = append(fields, "error", safe)
 		zap.S().Debugw(op, fields...)
-		_ = writeError(w, status, fmt.Sprintf("%s: %v", op, err))
+		_ = writeError(w, status, fmt.Sprintf("%s: %s", op, safe))
 		return
 	}
 
 	class := errorClass(err)
 	errorID := uuid.NewString()
-	fields = append(fields, "error_class", class, "error_id", errorID, "error", err.Error())
+	fields = append(fields, "error_class", class, "error_id", errorID, "error", safe)
 	zap.S().Errorw(op, fields...)
 
 	_ = writeJSON(w, status, APIResponse{

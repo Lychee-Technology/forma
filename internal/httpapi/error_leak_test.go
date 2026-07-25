@@ -72,8 +72,10 @@ func allEndpointCases(rowID uuid.UUID) []endpointCase {
 
 // TestNoEndpointLeaksOperatorDetail is the #301 acceptance test. Every HTTP
 // entry point is driven with the error chain the federated engine really
-// produces, and no response body may carry any part of it. The log must carry
-// all of it.
+// produces, and no response body may carry any part of it. The log must carry the
+// diagnosis — but not the credential: the log line this PR introduced is itself a
+// destination, so the password canary is asserted absent there and the object key
+// asserted present.
 func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 	rowID := uuid.New()
 
@@ -127,10 +129,13 @@ func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 				t.Fatalf("%s logged no ERROR entry, so the detail was destroyed rather than relocated", tc.name)
 			}
 			logged, _ := entries[len(entries)-1].ContextMap()["error"].(string)
-			for _, required := range []string{canaryPassword, canaryKey} {
+			for _, required := range []string{canaryKey, "password=***REDACTED***"} {
 				if !strings.Contains(logged, required) {
 					t.Fatalf("%s operator log lost %q; logged: %s", tc.name, required, logged)
 				}
+			}
+			if strings.Contains(logged, canaryPassword) {
+				t.Fatalf("%s operator log leaked the credential; logged: %s", tc.name, logged)
 			}
 		})
 	}
@@ -204,15 +209,15 @@ func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 }
 
 // TestReadPathErrorsClassifyAs5xx pins status accuracy for the three read-path
-// carriers: classifyManagerError falls back to substring matching, and
-// ManifestSchemaMismatchError already says "must resolve", one word away from
-// its "must be" probe. A misclassification here would return a misleading 4xx.
+// carriers. It is now structural rather than a near-miss check: classification
+// reads sentinels only, and none of these carriers wraps a client sentinel, so
+// each is a 500. It used to be delicate — the substring heuristic matched
+// "must be", and ManifestSchemaMismatchError says "must resolve", one word away
+// from a bogus 400. Removing the heuristic removed that hazard class entirely.
 //
-// It is NOT what keeps object keys out of the body — Task 3's revised gate makes
-// disclosure depend on positive sentinel evidence (isClientError), not on the
-// status, precisely because driver text trips these heuristics in practice
-// (DuckDB renders a missing object as "404 (Not Found)"). This test guards the
-// status; error_response_test.go guards the disclosure.
+// It is NOT what keeps object keys out of the body — disclosure depends on
+// positive sentinel evidence (isClientError). This test guards the status;
+// error_response_test.go guards the disclosure.
 func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 	errs := map[string]error{
 		"parquet set inconsistent": &forma.ParquetSetInconsistentError{
@@ -243,10 +248,11 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 //
 // It holds exactly the two constants live call sites use today. Deny-by-default
 // is the point: pre-admitting http.StatusNotFound would hand a future
-// `writeError(w, http.StatusNotFound, err.Error())` a free pass, which is the
-// very shape the disclosure gate was reversed to close — DuckDB renders a
-// missing S3 object as "404 (Not Found)". Adding an entry has to be a deliberate
-// act, because that is the moment its author reads the caveat below.
+// `writeError(w, http.StatusNotFound, err.Error())` a free pass — a hand-written
+// 404 body bypasses both the disclosure gate and classifyManagerError, so it can
+// echo a storage failure that DuckDB renders as "404 (Not Found)" no matter how
+// the classifier behaves. Adding an entry has to be a deliberate act, because
+// that is the moment its author reads the caveat below.
 var writeErrorAllowed4xx = map[string]bool{
 	"http.StatusBadRequest":       true,
 	"http.StatusMethodNotAllowed": true,

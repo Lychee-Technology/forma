@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,10 +100,12 @@ func operatorDetailError() error {
 }
 
 // TestRespondErrorRedacts5xxAndLogsFullChain is the load-bearing #301 test. The
-// body must carry no operator detail; the log must carry all of it, under an
-// error_id matching the body's, so redaction relocates detail instead of
-// destroying it. Before #301 there was no handler error logging at all, so the
-// log half is not incidental.
+// body must carry no operator detail; the log must carry all of it *except the
+// credential*, under an error_id matching the body's, so redaction relocates
+// detail instead of destroying it. Before #301 there was no handler error logging
+// at all, so the log half is not incidental — and for the same reason the log is a
+// new exposure surface, which is why the password canary is asserted absent from
+// it while the object key is asserted present.
 func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 	core, logs := observer.New(zap.ErrorLevel)
 	restore := zap.ReplaceGlobals(zap.New(core))
@@ -153,10 +156,20 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 
 	fields := entry.ContextMap()
 	logged, _ := fields["error"].(string)
-	for _, required := range []string{canaryPassword, canaryKey, "schema 22"} {
+	// Non-secret operator detail must survive: without the object key and schema id
+	// the error_id correlates to nothing actionable.
+	for _, required := range []string{canaryKey, "schema 22", "IO Error"} {
 		if !strings.Contains(logged, required) {
 			t.Fatalf("operator log lost %q; logged error was: %s", required, logged)
 		}
+	}
+	// The credential must not: this log line is written by every redacted response
+	// and flows into whatever collector and retention the deployment runs.
+	if strings.Contains(logged, canaryPassword) {
+		t.Fatalf("operator log leaked the credential; logged error was: %s", logged)
+	}
+	if !strings.Contains(logged, "password=***REDACTED***") {
+		t.Fatalf("expected the credential to be replaced in place; logged error was: %s", logged)
 	}
 	if fields["error_id"] != resp.ErrorID {
 		t.Fatalf("log error_id %v does not match body %q", fields["error_id"], resp.ErrorID)
@@ -221,31 +234,31 @@ func TestRespondErrorWithStatusHonoursCallerStatus(t *testing.T) {
 	}
 }
 
-// misclassifiedReadPathError reproduces the #301 leak that status-based gating
+// driverNotFoundTextError reproduces the #301 leak that status-based gating
 // missed. DuckDB reports a missing S3 object with the literal words "404 (Not
-// Found)", which classifyManagerError's substring fallback reads as a client
-// 404 — routing a read-path failure, S3 URL and connection string included,
-// straight at the verbatim branch.
-func misclassifiedReadPathError() error {
+// Found)", which the old substring heuristic read as a client 404 — routing a
+// read-path failure, S3 URL and connection string included, at the verbatim
+// branch, and answering a storage failure with the HTTP status for "the resource
+// does not exist".
+func driverNotFoundTextError() error {
 	return fmt.Errorf("execute duckdb query: %w: %w",
 		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}},
 		fmt.Errorf(`HTTP Error: Unable to connect to URL "https://b.s3.amazonaws.com/%s": 404 (Not Found). `+
 			`Also failed to attach postgres_scan with "host=h user=u %s"`, canaryKey, canaryPassword))
 }
 
-// TestRespondErrorRedactsMisclassified4xxReadPathError is the regression test for
-// the fix: disclosure is gated on positive sentinel evidence, not on the status,
-// so an error the heuristic mislabels 4xx is still redacted. The status stays 404
-// on purpose — only the body is a leak — and the log must still receive the chain,
-// because at 4xx the old code logged at Debug and production runs at Info.
-func TestRespondErrorRedactsMisclassified4xxReadPathError(t *testing.T) {
-	err := misclassifiedReadPathError()
-
-	// Prove the hazard is real rather than a strawman: the heuristic genuinely
-	// calls this read-path failure a client 404.
-	if got := classifyManagerError(err); got != http.StatusNotFound {
-		t.Fatalf("precondition failed: expected the heuristic to misclassify as 404, got %d", got)
-	}
+// TestReadPathDriverErrorIs500AndRedacted pins both halves of the fixed contract
+// for a read-path failure whose driver prose reads like a client error.
+//
+// It used to assert 404 with a redacted body, on the reasoning that only the body
+// was a leak. That was wrong: status is protocol semantics. A client, cache, or
+// alerting rule that receives 404 concludes the resource is absent, stops
+// retrying, and may cache the negative result — for what is actually an S3 or
+// credential failure. Classification now reads sentinels only, so this chain
+// (which wraps no client sentinel) is a 500. The log must still receive the
+// detail, minus the credential.
+func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
+	err := driverNotFoundTextError()
 
 	core, logs := observer.New(zap.ErrorLevel)
 	restore := zap.ReplaceGlobals(zap.New(core))
@@ -254,8 +267,8 @@ func TestRespondErrorRedactsMisclassified4xxReadPathError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	respondError(rec, "query failed", err, "schema", "orders")
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status must stay as classified (404), got %d", rec.Code)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("a read-path driver failure must answer 500, got %d", rec.Code)
 	}
 
 	body := rec.Body.String()
@@ -264,7 +277,7 @@ func TestRespondErrorRedactsMisclassified4xxReadPathError(t *testing.T) {
 		"404 (Not Found)", "HTTP Error", "postgres_scan",
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("misclassified 4xx body leaked %q; body: %s", forbidden, body)
+			t.Fatalf("read-path 500 body leaked %q; body: %s", forbidden, body)
 		}
 	}
 
@@ -279,40 +292,70 @@ func TestRespondErrorRedactsMisclassified4xxReadPathError(t *testing.T) {
 		t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, perr)
 	}
 
-	// A redacted 4xx must still reach operators at ERROR level.
+	// A redacted response must still reach operators at ERROR level, with the
+	// diagnosis intact and only the credential removed.
 	entries := logs.All()
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly 1 ERROR log entry for a redacted 404, got %d", len(entries))
+		t.Fatalf("expected exactly 1 ERROR log entry, got %d", len(entries))
 	}
 	fields := entries[0].ContextMap()
 	logged, _ := fields["error"].(string)
-	for _, required := range []string{canaryPassword, canaryKey, "404 (Not Found)"} {
+	for _, required := range []string{canaryKey, "404 (Not Found)", "postgres_scan"} {
 		if !strings.Contains(logged, required) {
 			t.Fatalf("operator log lost %q; logged error was: %s", required, logged)
 		}
+	}
+	if strings.Contains(logged, canaryPassword) {
+		t.Fatalf("operator log leaked the credential; logged error was: %s", logged)
 	}
 	if fields["error_id"] != resp.ErrorID {
 		t.Fatalf("log error_id %v does not match body %q", fields["error_id"], resp.ErrorID)
 	}
 }
 
-// TestRespondErrorRedactsHeuristicOnly4xx pins an accepted consequence of gating
-// on sentinels: a genuine client error that wraps no sentinel and is recognised
-// only by substring matching now gets a redacted body, so its guidance no longer
-// reaches the caller.
+// TestUnknownSortAttributeIs400AndVerbatim closes the loop between #301 and #296.
 //
-// This is human-approved. Such messages stay opaque until they are made to wrap
-// forma.ErrInvalidInput, which issue #296 tracks; the alternative — trusting the
-// heuristic — leaks S3 URLs and the Postgres password, which is strictly worse.
-// The status is still a correct 400, so clients keying on status are unaffected.
-func TestRespondErrorRedactsHeuristicOnly4xx(t *testing.T) {
+// Removing the substring heuristic would have regressed the one genuine client
+// error that relied on it — `cannot sort by unknown attribute` — from a 400 with
+// usable guidance to a 500 with an opaque body. internal/entity_query_sort.go now
+// wraps forma.ErrInvalidInput instead, so it reaches 400 through the sentinel
+// branch and keeps its verbatim message. This is the error shape that function
+// actually produces, prose unchanged.
+func TestUnknownSortAttributeIs400AndVerbatim(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
 
-	err := fmt.Errorf("cannot sort by unknown attribute %q", "nope")
-	if got := classifyManagerError(err); got != http.StatusBadRequest {
-		t.Fatalf("precondition failed: expected heuristic 400, got %d", got)
+	err := fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s': %w",
+		"nope", "lead", forma.ErrInvalidInput)
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "lead")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if !strings.Contains(resp.Error, "cannot sort by unknown attribute 'nope' in schema 'lead'") {
+		t.Fatalf("expected the guidance preserved verbatim, got %q", resp.Error)
+	}
+	if resp.ErrorClass != "" || resp.ErrorID != "" {
+		t.Fatalf("a sentinel-carrying 400 must not emit correlation fields, got class=%q id=%q",
+			resp.ErrorClass, resp.ErrorID)
+	}
+}
+
+// TestSentinelLessErrorIsRedacted500 keeps a redacted-non-sentinel case that does
+// not depend on any trigger word: an error with no sentinel evidence at all is a
+// 500 with an opaque body, whatever its prose.
+func TestSentinelLessErrorIsRedacted500(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := fmt.Errorf("connection reset by peer while streaming %s", canaryKey)
 	if isClientError(err) {
 		t.Fatalf("precondition failed: this error wraps no sentinel")
 	}
@@ -320,10 +363,10 @@ func TestRespondErrorRedactsHeuristicOnly4xx(t *testing.T) {
 	rec := httptest.NewRecorder()
 	respondError(rec, "query failed", err, "schema", "orders")
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status must stay 400, got %d", rec.Code)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
 	}
-	if strings.Contains(rec.Body.String(), "unknown attribute") {
+	if strings.Contains(rec.Body.String(), canaryKey) {
 		t.Fatalf("expected a redacted body for a sentinel-less error, got %s", rec.Body.String())
 	}
 
@@ -333,6 +376,64 @@ func TestRespondErrorRedactsHeuristicOnly4xx(t *testing.T) {
 	}
 	if resp.Error != "internal error" {
 		t.Fatalf("expected the generic internal message, got %q", resp.Error)
+	}
+}
+
+// TestMixedChainVerbatimBodyCarriesNoCredential is the Finding 3 canary.
+//
+// isClientError uses errors.Is, which matches any leaf, so a joined chain
+// carrying both a client sentinel and a driver cause takes the *verbatim* branch
+// and discloses the driver text. `fmt.Errorf("%w: %w", …)` of exactly this shape
+// is used throughout internal/federated, so the shape is not hypothetical.
+//
+// What this test guarantees is the credential half: redactCredentials runs on the
+// verbatim body too, so no chain shape can put the password in a response.
+//
+// RESIDUAL, deliberately asserted rather than fixed here: the same body still
+// discloses the *non-credential* operator cause — the S3 object key below reaches
+// the client in a 400. That follows from the verbatim branch echoing raw chain
+// text at all. Closing it means giving client errors typed public messages
+// instead of echoing the chain, which is a redesign of the 4xx surface and larger
+// than #301. Tracked as a follow-up.
+func TestMixedChainVerbatimBodyCarriesNoCredential(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	driver := fmt.Errorf(`IO Error: Unable to connect to Postgres at "host=h user=u %s dbname=d" reading %s`,
+		canaryPassword, canaryKey)
+	err := errors.Join(forma.ErrInvalidInput, driver)
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the sentinel leaf, got %d", rec.Code)
+	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if resp.ErrorClass != "" || resp.ErrorID != "" {
+		t.Fatalf("precondition failed: expected the verbatim branch, got class=%q id=%q",
+			resp.ErrorClass, resp.ErrorID)
+	}
+	if !strings.Contains(resp.Error, "IO Error") {
+		t.Fatalf("precondition failed: expected the verbatim branch to echo the driver cause, got %q", resp.Error)
+	}
+
+	if strings.Contains(resp.Error, canaryPassword) {
+		t.Fatalf("a mixed chain leaked the credential into a 400 body: %q", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "password=***REDACTED***") {
+		t.Fatalf("expected the credential replaced in place, got %q", resp.Error)
+	}
+
+	// The residual, pinned so it is a decision and not a surprise.
+	if !strings.Contains(resp.Error, canaryKey) {
+		t.Fatalf("expected the documented residual (non-credential operator detail "+
+			"reaching a mixed-chain 400 body) to still hold; if this now passes, the "+
+			"4xx surface was redesigned and this comment is stale: %q", resp.Error)
 	}
 }
 

@@ -186,7 +186,12 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	if len(missingRequired) > 0 {
 		zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
 		for missingAttrID, missingAttrName := range missingRequired {
-			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", missingAttrName, missingAttrID)
+			// Same contract as validateRequiredAttributesFromInput: reachable from the
+			// write path (ToAttributes calls FromEAVRecords after its own check, and the
+			// two use different missing-detection logic), so it needs the sentinel to
+			// stay a 400 at the HTTP boundary (#301).
+			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records: %w",
+				missingAttrName, missingAttrID, forma.ErrInvalidInput)
 		}
 	}
 

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -127,9 +128,16 @@ func TestBuildAttributeOrdersUnknownSortAttribute(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected unknown-attribute error, got nil")
 	}
-	// Same message contract as the legacy SortBy path (plain error, names attr + schema).
+	// Same message contract as the legacy SortBy path (names attr + schema), now
+	// carrying forma.ErrInvalidInput (#296). The sentinel is what earns this a 400
+	// with a verbatim body at the HTTP boundary: since #301, classifyManagerError
+	// reads sentinels only, so an unwrapped version of this error would answer 500
+	// with a redacted body. The prose is deliberately unchanged.
 	want := "cannot sort by unknown attribute 'ghost' in schema 'e2e_wide'"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+	}
+	if !errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("error %v does not wrap forma.ErrInvalidInput", err)
 	}
 }

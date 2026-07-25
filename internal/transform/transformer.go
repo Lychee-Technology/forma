@@ -377,7 +377,13 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 			missing = false
 		}
 		if missing {
-			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", attrName, meta.AttributeID)
+			// Wraps forma.ErrInvalidInput: a create/update body that omits a required
+			// attribute is caller fault, and since #301 the HTTP boundary classifies on
+			// sentinel evidence alone — without this the write path would answer 500
+			// with a redacted body instead of a 400 naming the attribute. The sibling
+			// null-rejection errors in this file already carry the sentinel.
+			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records: %w",
+				attrName, meta.AttributeID, forma.ErrInvalidInput)
 		}
 	}
 

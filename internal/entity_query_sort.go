@@ -81,7 +81,14 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 	for _, key := range keys {
 		meta, ok := schemaCache[key.attr]
 		if !ok {
-			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s'", key.attr, req.SchemaName)
+			// Wraps forma.ErrInvalidInput (#296): naming an attribute the schema
+			// does not define is caller fault, and the HTTP boundary now classifies
+			// on sentinel evidence alone (#301). Without the sentinel this would
+			// answer 500 with a redacted body instead of 400 with the guidance the
+			// caller needs. The message text is unchanged on purpose — it is what
+			// callers and tests already read.
+			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s': %w",
+				key.attr, req.SchemaName, forma.ErrInvalidInput)
 		}
 		order := model.AttributeOrder{
 			AttrID:    meta.AttributeID,
