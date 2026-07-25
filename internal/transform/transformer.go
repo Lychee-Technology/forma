@@ -74,11 +74,18 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		return nil, err
 	}
 
-	// First convert to EAVRecords internally
-	eavRecords := make([]model.EAVRecord, 0)
-	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &eavRecords); err != nil {
+	// First convert to EAVRecords internally, each tagged with the key spelling
+	// that produced it.
+	flattened := make([]taggedEAVRecord, 0)
+	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &flattened); err != nil {
 		return nil, err
 	}
+
+	// Dotted attribute names let one payload spell the same attribute twice, so
+	// resolve the duplicate spellings here — once the whole tree is flattened,
+	// not inside the recursion, which appends through a shared slice and runs
+	// per nested value. The last spelling wins, whole attribute at a time (#312).
+	eavRecords := dedupeEAVRecords(flattened)
 
 	// Convert EAVRecords to EntityAttributes
 	attributes, err := t.converter.FromEAVRecords(eavRecords)
@@ -272,7 +279,7 @@ func (t *transformer) flattenToAttributes(
 	data any,
 	indices []int,
 	cache forma.SchemaAttributeCache,
-	result *[]model.EAVRecord,
+	result *[]taggedEAVRecord,
 ) error {
 	switch v := data.(type) {
 	case map[string]any:
@@ -303,11 +310,14 @@ func (t *transformer) flattenToAttributes(
 			// semantics "tags": [] is the only way to clear a list (#204).
 			attrName := strings.Join(path, ".")
 			if meta, ok := cache[attrName]; ok && meta.ValueType == forma.ValueTypeList {
-				*result = append(*result, model.EAVRecord{
-					SchemaID:     schemaID,
-					RowID:        rowID,
-					AttrID:       meta.AttributeID,
-					ArrayIndices: "",
+				*result = append(*result, taggedEAVRecord{
+					record: model.EAVRecord{
+						SchemaID:     schemaID,
+						RowID:        rowID,
+						AttrID:       meta.AttributeID,
+						ArrayIndices: "",
+					},
+					spelling: spellingOf(path),
 				})
 			}
 			return nil
@@ -345,7 +355,7 @@ func (t *transformer) flattenToAttributes(
 		}
 
 		if set {
-			*result = append(*result, attr)
+			*result = append(*result, taggedEAVRecord{record: attr, spelling: spellingOf(path)})
 		}
 	}
 	return nil
@@ -377,7 +387,13 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 			missing = false
 		}
 		if missing {
-			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records", attrName, meta.AttributeID)
+			// Wraps forma.ErrInvalidInput: a create/update body that omits a required
+			// attribute is caller fault, and since #301 the HTTP boundary classifies on
+			// sentinel evidence alone — without this the write path would answer 500
+			// with a redacted body instead of a 400 naming the attribute. The sibling
+			// null-rejection errors in this file already carry the sentinel.
+			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records: %w",
+				attrName, meta.AttributeID, forma.ErrInvalidInput)
 		}
 	}
 

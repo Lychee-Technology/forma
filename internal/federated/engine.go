@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -469,25 +468,4 @@ func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLog
 		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
 	}
 	return ids, nil
-}
-
-// DuckDBPostgresConnStringFromPool derives the libpq-style connection string
-// DuckDB's postgres_scanner needs from an existing pgx pool. It returns ""
-// for a nil pool or pool config.
-func DuckDBPostgresConnStringFromPool(pool *pgxpool.Pool) string {
-	if pool == nil {
-		return ""
-	}
-	cfg := pool.Config()
-	if cfg == nil {
-		return ""
-	}
-	connCfg := cfg.ConnConfig
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s",
-		connCfg.Host,
-		connCfg.Port,
-		connCfg.User,
-		connCfg.Password,
-		connCfg.Database,
-	)
 }

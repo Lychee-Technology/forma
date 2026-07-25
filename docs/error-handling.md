@@ -32,8 +32,8 @@ deployment, and should be treated as operator-visible consistency failures.
 
 ### `ErrParquetSetInconsistent`
 
-`federated.ErrParquetSetInconsistent`, carried by
-`federated.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
+`forma.ErrParquetSetInconsistent`, carried by
+`forma.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
 federated read whose manifest lists parquet objects that do not exist in
 storage. The manifest is the authoritative record of the schema's cold/warm
 tier, so a listed-but-absent object means that tier **has lost data** — the
@@ -120,6 +120,513 @@ being read. It is raised before any path reaches a scan.
 - **Operator action.** The message names both schema IDs and the manifest key.
   Fix the template so each schema resolves a distinct object, then repair the
   affected manifests (`docs/manifest-reconcile.md`).
+
+## Public HTTP error surface
+
+`internal/httpapi` treats the response body as an untrusted destination. The
+split follows the two error classes above, and is enforced by
+`respondErrorWithStatus` in `internal/httpapi/error_response.go`. That is the
+only gate **for manager-layer errors**: `respondError` merely classifies and
+delegates to it, and `executeGet` (`internal/httpapi/server.go:175`) calls
+`respondErrorWithStatus` directly so it can choose its own 404 wording.
+
+Handlers also call `writeError` directly — 33 sites in `server.go` — and those
+bodies are verbatim without passing the gate. They are safe because every one of
+them reports a request-parsing failure (`parsePath`, `readEntityJSONBody`,
+`parseUUID`, `parseCreateObjects`, `parseSortParams`); none touches the manager,
+the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
+`TestWriteErrorAlwaysCarriesALiteral4xxStatus`
+(`internal/httpapi/error_leak_test.go`), which fails the build unless every
+direct site passes a literal 4xx constant from an allowlist — so a new handler
+cannot echo a runtime-classified status without going through `respondError`.
+
+**The status is decided by sentinel evidence and by nothing else.**
+`classifyManagerError` matches `errors.Is` against `forma.ErrNotFound` (404),
+`forma.ErrConflict` (409), and `forma.ErrInvalidInput` (400); everything else —
+including a `nil` error — is `500`.
+
+**Disclosure needs the same evidence plus an unambiguous chain.**
+`canDiscloseVerbatim` is `isClientError(err) && !hasMultipleCauses(err)`: a body
+is verbatim only when the error *provably* wraps one of those three sentinels
+*and* no node in its chain fans out to more than one cause. Everything else is
+redacted. See "Multi-cause chains are redacted" below for why the second
+conjunct exists.
+
+There is no substring heuristic. An earlier version classified on message text
+(`not found` → 404, `duplicate` → 409, `invalid`/`required`/`must be` → 400) for
+errors that wrapped no sentinel. It was removed for two reasons:
+
+- **It produced wrong statuses, and redaction did not fix that.** Driver prose
+  trips those words. DuckDB renders a missing S3 object as
+  `HTTP Error: … 404 (Not Found).`, so an S3 or credential failure answered HTTP
+  `404`. Hiding the body leaves the protocol lie in place: clients, caches, and
+  alerting read `404` as "the resource is absent", stop retrying, and may cache
+  the negative result. #301 asked for read-path consistency errors to answer a
+  generic 5xx, and `AGENTS.md` classes them as operator-visible failures, not
+  4xx.
+- **It was the last site classifying an error by string comparison**, which
+  `AGENTS.md` forbids.
+
+The consequence is that a genuine client error earns its 4xx only by wrapping a
+sentinel. Removing the heuristic therefore required a sweep of the sites that had
+been relying on it — every one of them now wraps `forma.ErrInvalidInput`, with
+message text unchanged:
+
+| site | caller mistake |
+| --- | --- |
+| `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
+| `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting a `required` attribute |
+| `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
+| `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
+| `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
+
+The write-path entry matters most: without it, a `POST` omitting a required
+attribute would answer `500` with an opaque body instead of naming the attribute.
+The `sqlgen`/`conditionexpr` group is reachable through `POST
+/api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+**The sweep also underreached once.** It missed
+`normalizePgEavPayload`'s operator whitelist — the two rejections that pair an
+operator with an attribute type it does not accept — so `starts_with` on a UUID
+column answered an opaque `500` while the "condition-DSL errors stay 400" claim
+below said otherwise. Both now wrap the sentinel, message text unchanged, and are
+pinned by the `clientError` column of
+`TestToDualClauses_Characterization_Errors` plus
+`TestAdvancedQueryOperatorWhitelistIs400AndVerbatim`.
+
+Two neighbouring errors in the same function deliberately stay plain, and they
+are the boundary worth remembering: `unsupported value_type '%s' for attribute
+'%s'` names the *schema's declared type*, and `unknown main table column` names a
+column resolved from `entity_main` descriptors or from a column binding — neither
+is anything the caller sent, so `500` is the truthful answer. The test for what
+gets a sentinel is provenance of the offending value, not which package raised
+it.
+
+**The sweep overreached once, and the overreach has been reverted.** It also
+wrapped the identical `missing required attribute …` message inside
+`AttributeConverter.FromEAVRecords`
+(`internal/transform/attribute_converter.go`). That converter is *not*
+write-only: `FromPersistentRecord`
+(`internal/transform/persistent_record.go`) rebuilds already-stored records
+through it on the read path, so a persisted row missing a required EAV row
+satisfied `errors.Is(err, forma.ErrInvalidInput)` and the boundary answered a
+verbatim `400` for state the caller cannot fix — exactly the inversion the two
+error classes above exist to prevent. That error is plain again. The write
+path's `400` never depended on it: `ToAttributes` runs
+`validateRequiredAttributesFromInput` against the caller's input *before*
+flattening, and that is the sentinel-carrying validator. A sentinel belongs on a
+validator that only the write path can reach; if a converter is shared, the
+check has to move rather than the sentinel be added.
+
+Errors the heuristic used to catch that were **not** given sentinels are either
+unreachable from a handler (registry load, `internal/postgres_health.go`, `cmd/`
+startup validation) or internal invariants — `schema id must be positive`,
+`duplicate attribute id`, `unsupported column %q`, metadata drift — for which
+`500` is the more truthful answer than the misleading 4xx they used to return.
+
+The full disclosure condition is `status < http.StatusInternalServerError &&
+canDiscloseVerbatim(err)`. The status conjunct can only hold disclosure back,
+never grant it: a caller that passes an explicit 5xx to `respondErrorWithStatus`
+gets a redacted body even if the error wraps a sentinel.
+
+On every live path today **a redacted body is a `500`** — no error in this repo
+joins a client sentinel to an operator cause, so an error without a sentinel
+classifies 500 and redacts, and one with a sentinel classifies 4xx and discloses.
+But status and disclosure are now separately decided in a way that a client must
+not read as coupled: a multi-cause chain carrying a client sentinel classifies
+`4xx` on that sentinel and **still redacts**, producing a `400` body with
+`error_class` and `error_id`. Clients must key on `error_class`/`error_id` being
+present, never on the status, to know whether a body is redacted.
+
+**Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
+an `error_id`, and — when the chain holds a typed read-path carrier — a
+`schema_id`. No error text crosses. There are exactly two fixed messages
+(`publicErrorMessage`): `internal read error` for the three typed read-path
+classes, and `internal error` for `errorClassInternal`. **`internal` is the
+common case in production** — it absorbs `ErrFederatedReadFailed`,
+`ErrPostgresReadFailed`, metadata drift, and transform failures — so a client
+asserting on the literal `internal read error` would break on the majority of
+redacted responses. Discriminate on `error_class`, never on `error`. The chain
+goes to `zap.S().Errorw`; the verbatim branch logs the same text at `Debugw`,
+where the caller already has it. An operator retrieves the detail from the
+`error_id` the caller quotes.
+
+#### `schema_id` on a redacted body — a reversed decision
+
+`errorSchemaID` (`internal/httpapi/error_response.go`) resolves the schema with
+`errors.As` against the three typed read-path carriers —
+`ParquetSetInconsistentError.SchemaID`, `NoParquetPathsError.SchemaID`, and
+`ManifestSchemaMismatchError.RequestedSchemaID`. Anything else resolves 0 and
+the field is omitted. `errors.As` rather than a type assertion, because the
+carriers reach the boundary wrapped several levels deep.
+
+For the mismatch carrier it is deliberately the *requested* id, not the
+`ManifestSchemaID` stamped on the object. That stamp belongs to whichever other
+schema misaddressed the manifest; returning it would answer a request about one
+schema with another schema's identity, and would name a schema the caller never
+asked about. Operators still see both ids — the full message is on the log line.
+
+**This reverses a decision recorded in this document.** Issue #301 asked for
+"error class + schema id"; the design settled on `error_class` + `error_id` and
+this section previously stated "no schema id" as a constraint on redacted bodies;
+the issue owner reinstated the schema id. The reasoning that justified excluding
+it is what now permits it — a schema ID is a low-value opaque integer, and one
+already crosses verbatim on the ID-keyed 404s recorded under the "Accepted
+disclosures inside the allowlist" section below. What it buys is a redacted body
+a client can correlate without an operator round-trip.
+
+`schema_id` is `omitempty` on `APIResponse`, and that encoding is lossless rather
+than lossy only because **schema IDs are always positive** — the same invariant
+that lets a manifest `schema_id` of zero read as *unstamped* rather than as
+schema 0 (see `ErrManifestSchemaMismatch` → Compatibility, above). A zero can
+therefore only mean "the error named no schema". Pinned on the serialized bytes,
+not the struct field, by `TestRedactedBodyOmitsSchemaIDWithoutACarrier`.
+
+The same value is logged as its **own structured field**, not folded into the
+message, so operator log queries filter on `schema_id` instead of parsing prose.
+It is omitted from the log line too when zero, so a log entry never asserts a
+schema the error did not name.
+
+Verbatim 4xx bodies are unaffected: population happens on the redacted branch
+only, so their serialization is byte-identical to pre-#301. Pinned by
+`TestVerbatim4xxBodyCarriesNoSchemaID`.
+
+### Credentials are scrubbed before anything is written
+
+`redactCredentials` (`internal/httpapi/error_response.go`) runs on every string
+this boundary emits — response body *and* log line — replacing the value of any
+`password=…` assignment with `***REDACTED***`.
+
+The log half is the point. Before #301 this package logged no errors at all, so
+routing the full chain to `Errorw` newly put the Postgres password — which DuckDB
+quotes back inside its own attach-failure prose — into whatever log collector and
+retention the deployment runs. Scrubbing at the source of those wraps is tracked
+by #306; this boundary scrub is what protects deployments in the meantime.
+
+**The matcher is not local to `httpapi`.** It lives in `internal/redact`
+(`ConnStringPassword`), shared with the CDC logger, which has needed the same
+scrub since #290. Sharing is a correctness requirement, not tidying: a naive
+`'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
+the password tail past the placeholder. That was a real bug fixed in #290, and
+its regression tests (`internal/cdc/redact_test.go`) exercise the shared matcher
+through `redactConnStr`, and `internal/redact/connstring_test.go` gates the
+pattern in the package that owns it. Three forms are covered — the
+`escapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
+the libpq-quoted `password='…'`, and the bare `password=value` of legacy or
+third-party text.
+
+**A scrubber alone was not enough, because it cannot see where an unquoted value
+ends.** The bare branch has to stop somewhere, and whatever it stops on truncates
+a password containing that character, leaving the tail in the log — which is the
+exposure this whole section exists to prevent. Two changes closed it:
+
+- The bare branch now terminates **only** on a quote or whitespace. It used to
+  also stop on `;`, `,` and `)`, none of which is a separator in a libpq
+  keyword/value DSN, so any password containing one leaked its tail. Pinned by
+  `TestConnStringPassword_UnquotedSeparators`.
+- `federated.DuckDBPostgresConnStringFromPool` now **quotes its values**, via the
+  shared `internal/pgdsn`, as `internal/cdc`'s builder already did since #290. It
+  previously emitted `host=%s … password=%s dbname=%s` raw. That was two bugs in
+  one: a password containing a space produced a DSN libpq cannot parse (so
+  `postgres_scan` could not attach at all), and it was unredactable. Quoting is
+  what makes the value's extent unambiguous.
+
+Because the DSN is interpolated into a single-quoted SQL literal
+(`postgres_scan('{{.PG_CONN}}', …)`), the renderer escapes it —
+`escapeSQLLiteral` in `internal/sqlgen/duckdb_template_renderer.go`, mirroring
+CDC's `escapeLiteral`. Without that, the newly-added quotes would terminate the
+literal early. It also closes a hole that predates the quoting: a Postgres
+password containing a single quote used to be interpolated raw into query
+structure.
+
+One shape is deliberately **not** matched, recorded in
+`TestRedactCredentialsKnownGaps` and `TestConnStringPassword_KnownGaps`:
+whitespace around the `=` (`password = secret`). No producer emits it. The
+residual beyond that is an *unquoted* value containing a space, which no pattern
+can match because nothing marks its end — fixed at the producer instead, so every
+password this repo generates now lands on a quoted branch.
+
+It is deliberately narrow, and **non-secret operator detail is kept on purpose**:
+S3 object keys, schema ids, endpoint URLs, and the driver's own diagnosis all
+survive verbatim in the log. A redacted response leaves the operator with an
+`error_id`, a `schema_id`, and that log line, and a blanket scrub would leave
+nothing to correlate the id against. Pinned by
+`TestRedactCredentialsKeepsOperatorDetail`.
+
+Of that list only the schema id also crosses to the client, as its own
+`schema_id` field (see above). Object keys, endpoint URLs and driver prose are
+log-only.
+
+### Multi-cause chains are redacted
+
+`isClientError` uses `errors.Is`, which matches any leaf. A multi-cause chain —
+`errors.Join(forma.ErrInvalidInput, driverErr)`, or the `fmt.Errorf("%w: %w", …)`
+shape used throughout `internal/federated` — used to take the **verbatim** branch
+on that leaf alone and echo the driver cause alongside the client one.
+`redactCredentials` covered the credential half, but a non-credential operator
+detail (an S3 object key) reached a public `400`.
+
+`hasMultipleCauses` closes it. Both `errors.Join` and multi-`%w` produce a node
+implementing `Unwrap() []error`; the walk descends the chain and reports any node
+that fans out. A fan-out means the sentinel proves only that *one* branch is
+caller fault, so provenance is ambiguous and the body is redacted regardless of
+sentinel evidence. Note that `errors.Unwrap` alone cannot detect this — it is
+defined for `Unwrap() error` and returns `nil` at a multi-cause node, so a walk
+built on it stops at the fan-out instead of seeing it.
+
+**Blast radius: nil.** Every error in this repo that wraps
+`ErrInvalidInput`/`ErrNotFound`/`ErrConflict` is built with a single `%w`, and
+every multi-cause site carries read-path sentinels that already redact —
+`internal/federated`'s `%w: %w` wraps (`ErrFederatedReadFailed`,
+`ErrPostgresReadFailed`), `internal/cdc`'s `ErrSchemaAttrCacheUnavailable` and
+its `errors.Join` of per-schema flush failures, and `internal/compaction`'s
+`ErrConcurrentModification`. None of those is a client sentinel, and the CDC and
+compaction paths do not reach the HTTP boundary at all. So no live response
+changes; what changes is that a future client error built multi-cause loses its
+verbatim body rather than keeps leaking.
+
+This is the narrower of the two options considered, and the one the issue owner
+endorsed. The alternative — giving client errors typed public messages instead of
+echoing chain text — is a redesign of the 4xx surface and remains a follow-up.
+Pinned by `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`,
+`TestSingleCauseClientErrorStaysVerbatim`, and `TestHasMultipleCauses`.
+
+```json
+{
+  "success": false,
+  "error": "internal read error",
+  "error_class": "parquet_set_inconsistent",
+  "error_id": "9f2c1a7e-…",
+  "schema_id": 22
+}
+```
+
+That example is the `parquet_set_inconsistent` shape; the far more frequent one
+pairs `"error_class": "internal"` with `"error": "internal error"` and carries
+**no** `schema_id` key at all, because an unclassified chain holds no typed
+carrier to read one from.
+
+Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
+`manifest_schema_mismatch`, and `internal` for everything else. They resolve via
+`errors.Is`, never message text.
+
+### Why an allowlist
+
+Redaction cannot be a blocklist of known-sensitive error types, because the
+sharpest leak does not come from one. The federated template interpolates
+`postgres_scan('{{.PG_CONN}}', …)`, and `PG_CONN` is built by
+`federated.DuckDBPostgresConnStringFromPool` as
+`host=… user=… password=… dbname=…`. When DuckDB cannot attach, its own message
+is:
+
+```
+IO Error: Unable to connect to Postgres at "host=… user=… password=… dbname=…": …
+```
+
+That text is driver-authored, so only a deny-by-default rule contains it. A
+missing parquet object likewise yields the full `s3://bucket/prefix/key` and the
+resolved endpoint URL.
+
+The success path has the matching rule: `toExecutionPlan`
+(`internal/entity_query_service.go:138`) allowlists plan fields and drops
+`src.SQL`, `src.Params`, `plan.Notes`, and `merge.Notes` for the same reason —
+the source SQL embeds the `postgres_scan` connection string, and notes can echo
+raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
+
+### Accepted disclosures inside the allowlist
+
+The allowlist is a gate on *provenance*, not on content: an error that wraps a
+client sentinel down a single-cause chain is disclosed verbatim. Two live cases
+put more than the caller's own input into a 4xx body. Both are accepted, not
+bugs — recorded here so the boundary is stated rather than discovered. Both are
+single-cause chains, so `hasMultipleCauses` does not reach them.
+
+- **Postgres driver prose on a 409.**
+  `internal/postgres_persistent_repository_main_table.go:25` wraps `pgErr.Detail`
+  with `forma.ErrConflict`, so a unique-violation body carries driver-authored
+  text naming physical columns, e.g.
+  `Key (schema_id, row_id)=(…) already exists.` No credentials or object keys
+  cross, but this is the one remaining case where driver text reaches a public
+  body. If the detail ever needs to stop leaking the physical column layout, the
+  fix is to summarise at the wrap site, not to widen the redaction gate.
+- **Schema identifiers on a 404.** The eleven `forma.ErrNotFound` chains in
+  `internal/schemameta/file_registry.go:199-299` split two ways. Four are
+  name-keyed (`:222`, `:227`, `:276`, `:281`) and echo only the schema name the
+  caller put in the URL — nothing is disclosed that the caller did not supply.
+  The other seven (`:199`, `:204`, `:209`, `:242`, `:247`, `:294`, `:299`) are
+  ID-keyed and render the internal `int16`, e.g. `schema not found for ID: 402`.
+  A caller never supplies that: the URL carries a schema *name* and the system
+  resolves the ID internally, so this genuinely exposes an internal identifier.
+  It is accepted because a schema ID is a low-value opaque integer — not a
+  credential, not a storage path, and not something an attacker can act on
+  without already holding the access the 404 just denied.
+
+  That judgement is no longer confined to the verbatim branch. "No schema id"
+  was originally a stated constraint on *redacted* bodies, and this bullet
+  existed to record where the constraint stopped applying. The constraint has
+  since been **lifted** — the issue owner reinstated the schema id on redacted
+  bodies, on exactly the reasoning above (see the "`schema_id` on a redacted
+  body" subsection above). Both branches now agree that a bare schema ID may
+  cross; the difference is that the redacted branch emits it as a structured
+  `schema_id` field rather than inside prose.
+
+### Status change: create errors are now classified
+
+`handleCreate` previously answered every `BatchCreate` failure with a hardcoded
+`500`. It now calls `respondError`, so create failures answer their *classified*
+status like every other handler. This is a public contract change, and it is
+independent of redaction.
+
+The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
+**`404` instead of `500`**, and its body is **verbatim, not redacted**:
+
+```json
+{
+  "success": false,
+  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema: not found"
+}
+```
+
+That follows from the gate rather than contradicting it. The chain built by
+`file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
+that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
+`canDiscloseVerbatim` is true — single `%w` at every level, so no fan-out — the
+verbatim branch, logged at `Debugw`, with no
+`error_class`, no `error_id` and no `schema_id`. Pinned by
+`TestCreateUnknownSchemaIs404AndVerbatim`.
+
+Clients keying on `500` to detect create failures must key on `success: false`
+plus the status instead.
+
+### Status change: an unknown filter attribute is now 400, not 404
+
+Baseline for this section is the **pre-#301** contract, the same baseline the
+create-error section above uses.
+
+`POST /api/v1/advanced_query` with a `condition` naming an attribute the schema
+does not define used to answer **`404`**. The error
+(`attribute not found in cache: …`, `internal/sqlgen/predicate_normalizer.go`)
+carried no sentinel, so the substring heuristic saw `not found` in its text and
+classified it as a missing *resource*. It now answers **`400`**, because that
+error wraps `forma.ErrInvalidInput` as part of the sweep above.
+
+| | before (pre-#301) | after |
+| --- | --- | --- |
+| status | `404` | `400` |
+| body | verbatim | verbatim |
+
+**Only the status changed.** The body was verbatim before and is verbatim now —
+this endpoint reached `writeError` directly with the full message, and redaction
+did not exist at all before #301. No `error_class`, `error_id` or `schema_id`
+appeared on this response before, and none appears now: it takes the verbatim
+branch, so its serialization is byte-identical to pre-#301. A client
+keying on `404` to detect a filter typo breaks silently, and that is the whole of
+the migration impact.
+
+**Most other condition-DSL errors did not change.** Unparseable filter values,
+unknown operators and malformed `"op:value"` all contain `invalid` or
+`unsupported`, so the heuristic already classified them `400` with a verbatim
+body, and they still answer `400` with a verbatim body. For those, wrapping the
+sentinel *preserved* the existing contract rather than altering it — without it,
+deleting the heuristic would have regressed them to a redacted `500`. That is what
+the sweep was for.
+
+### Status change: an operator the attribute's type rejects is now 400, not 500
+
+Baseline for this section is the **pre-#301** contract, as above.
+
+`normalizePgEavPayload`'s operator whitelist raises two messages —
+`operator '…' only supported for text attributes, not '…'` and
+`operator '…' not supported for boolean attributes`. Neither contains any of the
+heuristic's trigger substrings: `only supported` and `not supported` are not
+`unsupported`, and nothing else matched. So `POST /api/v1/advanced_query` with
+`starts_with` on a UUID column answered **`500`** before #301 too, with a
+verbatim body; after #301 removed the heuristic it answered `500` with a
+*redacted* body, which is when the claim above stopped being true of them.
+
+| | before (pre-#301) | after #307, before round 4 | now |
+| --- | --- | --- | --- |
+| status | `500` | `500` | **`400`** |
+| body | verbatim | redacted | verbatim |
+
+The sweep simply missed this function; the operator is caller-supplied and the
+message names exactly what to change, so `400` is what the DSL contract always
+intended. A client keying on `500` to detect a rejected operator must key on
+`400` plus `success: false` instead.
+
+### Status change: a duplicate-attribute payload now succeeds
+
+Baseline for this section is the **pre-#301** contract, as above.
+
+Attribute names in this system are dotted, so a single request body can spell one
+attribute two ways — nested (`{"contact":{"email":…}}`) and literal
+(`{"contact.email":…}`). `flattenToAttributes` reached both spellings and emitted
+two `eav_data` records sharing the primary key
+`(schema_id, row_id, attr_id, array_indices)`, and `insertEAVAttributes` sends
+them in one multi-row `INSERT` with no `ON CONFLICT`. The write failed on
+PostgreSQL `23505`.
+
+This is not an exotic payload. On update, `mergeMaps` is key-literal while
+`FromPersistentRecord` re-nests stored attributes, so an ordinary
+`PUT {"contact.email":"x"}` against an entity that already holds that attribute
+merges to *both* shapes — using the attribute name the schema advertises.
+
+| | before (pre-#301) | after #307 | now |
+| --- | --- | --- | --- |
+| status | `409` | `500` | **`200`** |
+| body | verbatim `duplicate key…` | redacted | the written entity |
+
+The write failed in both earlier columns; only its status moved, because #301
+removed the substring heuristic that had been matching `duplicate` in the driver
+text. The functional bug predates #307.
+
+`transform.dedupeEAVRecords` now resolves the duplicate spellings before the
+records leave `ToAttributes`, keeping the **last** spelling — the same
+duplicate-key rule `encoding/json` applies. This is deterministic rather than
+map-order dependent: `flattenToAttributes` sorts each map's keys, and for any
+dotted name the nested spelling's top-level key is a proper prefix of the literal
+one, so it sorts first and the literal key's records — the caller's explicit
+value — are emitted last.
+
+**The unit of replacement is the whole logical attribute, not the primary key.**
+When one spelling wins, every record the losing spellings produced for that
+attribute is discarded — all array indices, and the empty-list marker. Collapsing
+per `(schema_id, row_id, attr_id, array_indices)` would look right for scalars
+and be silently wrong for lists: a stored `["old0","old1"]` replaced by a literal
+`["new0"]` collides only at index 0, so `old1` would survive into a list the
+caller replaced; and a literal `[]` emits only the marker row (`array_indices`
+empty, both value columns `NULL`), which collides with no element index at all,
+so the clear would persist nothing. Both would answer `200` with stale rows —
+quietly wrong, where the duplicate-key failure was at least loud. To tell the two
+spellings apart, `flattenToAttributes` tags each record it emits with the
+concrete key path that produced it; `strings.Join(path, ".")` cannot serve as
+that tag, because collapsing `["contact","emails"]` and `["contact.emails"]` into
+one name is exactly the ambiguity the tag has to resolve. The tag is flatten-time
+provenance and never reaches `model.EAVRecord`.
+
+A residual primary-key collision *within* one spelling is still collapsed
+last-wins. That is a backstop that keeps the slice insertable, not a policy: one
+spelling cannot legitimately emit a key twice, since JSON objects have unique
+keys and array indices are unique per list.
+
+**This converts a failure into a success**, which is the widest kind of contract
+change in this document. A client that treated a duplicate-attribute write as
+rejected now gets an accepted write carrying the literal key's value — the whole
+of it, including a shortened or emptied list.
+
+`insertEAVAttributes` additionally routes its `tx.Exec` error through
+`classifyPgError`, matching the two `entity_main` sites. Any residual `23505` the
+dedupe cannot reach — a concurrent writer racing the same row, which could not be
+settled without a live database — therefore answers `409` with a verbatim body
+rather than a redacted `500`.
+
+### Known gap
+
+Credentials still reach error strings *inside* the process. `redactCredentials`
+scrubs them at the HTTP boundary, so nothing served or logged by
+`internal/httpapi` carries one — but a Go embedder using
+`factory.NewEntityManager*` receives the raw `error` and can capture the password
+in its own logs. Scrubbing at the engine's error wraps is tracked by #306.
 
 ## Message style
 

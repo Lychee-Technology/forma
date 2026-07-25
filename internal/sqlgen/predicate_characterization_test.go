@@ -323,53 +323,70 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 		name    string
 		cond    forma.Condition
 		wantErr string
+		// clientError marks the cases driven purely by the caller's condition
+		// payload. Since #301 the HTTP boundary classifies on sentinel evidence
+		// alone, so these must wrap forma.ErrInvalidInput or an advanced_query with a
+		// bad filter would answer 500 with a redacted body instead of a 400.
+		// The unmarked cases are schema/config or internal invariants.
+		clientError bool
 	}{
 		{
 			// classifyPredicate splits the raw value at the first colon, so a
 			// bare ISO timestamp reads as an unknown operator and vetoes the
 			// bound date column with an error (not a silent skip).
-			name:    "bare ISO on bound date errors in pg-main",
-			cond:    charKv("born", "2024-01-02T03:04:05Z"),
-			wantErr: "pg main generation: unsupported operator: equals",
+			name:        "bare ISO on bound date errors in pg-main",
+			cond:        charKv("born", "2024-01-02T03:04:05Z"),
+			wantErr:     "pg main generation: unsupported operator: equals",
+			clientError: true,
 		},
 		{
 			// neq is canonicalized by ToSQLOperator but NOT by
 			// classifyPredicate, so it is unpushable on a bound column.
-			name:    "neq alias on bound column errors in pg-main",
-			cond:    charKv("age", "neq:7"),
-			wantErr: "pg main generation: unsupported operator: neq",
+			name:        "neq alias on bound column errors in pg-main",
+			cond:        charKv("age", "neq:7"),
+			wantErr:     "pg main generation: unsupported operator: neq",
+			clientError: true,
 		},
 		{
 			// Strict parse splits at the colon: op "2024-01-02T03" passes the
 			// non-empty check, then the value "04:05Z" fails date parsing.
-			name:    "bare ISO on unbound datetime errors in EAV date parse",
-			cond:    charKv("seen", "2024-01-02T03:04:05Z"),
-			wantErr: "pg sql generation: invalid date value for 'seen': invalid date value: expected ISO 8601 format or unix milliseconds, got '04:05Z'",
+			name:        "bare ISO on unbound datetime errors in EAV date parse",
+			cond:        charKv("seen", "2024-01-02T03:04:05Z"),
+			wantErr:     "pg sql generation: invalid date value for 'seen': invalid date value: expected ISO 8601 format or unix milliseconds, got '04:05Z'",
+			clientError: true,
 		},
 		{
-			name:    "empty value after operator fails strict EAV parse",
-			cond:    charKv("tag", "equals:"),
-			wantErr: "pg sql generation: invalid KvCondition value format: equals:",
+			name:        "empty value after operator fails strict EAV parse",
+			cond:        charKv("tag", "equals:"),
+			wantErr:     "pg sql generation: invalid KvCondition value format: equals:",
+			clientError: true,
 		},
 		{
-			name:    "unknown attribute errors in EAV",
-			cond:    charKv("ghost", "equals:1"),
-			wantErr: "pg sql generation: attribute not found in cache: ghost",
+			name:        "unknown attribute errors in EAV",
+			cond:        charKv("ghost", "equals:1"),
+			wantErr:     "pg sql generation: attribute not found in cache: ghost",
+			clientError: true,
 		},
 		{
-			name:    "LIKE on uuid rejected by EAV whitelist",
-			cond:    charKv("ref", "starts_with:0b"),
-			wantErr: "pg sql generation: operator 'starts_with' only supported for text attributes, not 'uuid'",
+			// The operator is caller-supplied, so this is a fixable 400. The
+			// earlier #301 sweep missed normalizePgEavPayload's whitelist and
+			// left it an opaque 500 (#307 round-4 Finding 4).
+			name:        "LIKE on uuid rejected by EAV whitelist",
+			cond:        charKv("ref", "starts_with:0b"),
+			wantErr:     "pg sql generation: operator 'starts_with' only supported for text attributes, not 'uuid'",
+			clientError: true,
 		},
 		{
-			name:    "gt on unbound bool rejected by EAV whitelist",
-			cond:    charKv("flag", "gt:1"),
-			wantErr: "pg sql generation: operator 'gt' not supported for boolean attributes",
+			name:        "gt on unbound bool rejected by EAV whitelist",
+			cond:        charKv("flag", "gt:1"),
+			wantErr:     "pg sql generation: operator 'gt' not supported for boolean attributes",
+			clientError: true,
 		},
 		{
-			name:    "gt on bound bool rejected by pg-main",
-			cond:    charKv("active", "gt:1"),
-			wantErr: "pg main generation: unsupported operator: gt",
+			name:        "gt on bound bool rejected by pg-main",
+			cond:        charKv("active", "gt:1"),
+			wantErr:     "pg main generation: unsupported operator: gt",
+			clientError: true,
 		},
 		{
 			name:    "nil child in composite errors in EAV",
@@ -383,7 +400,12 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 			paramIndex := 0
 			_, err := ToDualClauses(tc.cond, "eav_table", 7, cache, &paramIndex)
 			require.Error(t, err)
-			require.Equal(t, tc.wantErr, err.Error())
+			// Contains, not Equal: a sentinel wrap appends ": invalid input", and the
+			// prose above is the part that is actually the contract.
+			require.Contains(t, err.Error(), tc.wantErr)
+			if tc.clientError {
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+			}
 		})
 	}
 }
@@ -464,6 +486,7 @@ func TestStandaloneBuilders_Characterization(t *testing.T) {
 		idx := 0
 		_, _, err := BuildPgMainClause(charKv("active", "gt:1"), cache, &idx)
 		require.Error(t, err)
-		require.Equal(t, "unsupported operator: gt", err.Error())
+		require.Contains(t, err.Error(), "unsupported operator: gt")
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
 	})
 }

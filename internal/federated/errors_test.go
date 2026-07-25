@@ -133,3 +133,19 @@ func TestParquetSetInconsistentError_Unwrap(t *testing.T) {
 	require.ErrorContains(t, err, "schema 22")
 	require.ErrorContains(t, err, "a.parquet")
 }
+
+// TestParquetSetInconsistentAliasIsIdentical pins that the #301 promotion is an
+// alias, not a copy: a value built through the federated name is matched by the
+// root sentinel, so internal/httpapi's classification sees the errors the engine
+// actually produces.
+func TestParquetSetInconsistentAliasIsIdentical(t *testing.T) {
+	err := fmt.Errorf("execute duckdb query: %w",
+		&ParquetSetInconsistentError{SchemaID: 9, MissingKeys: []string{"k.parquet"}})
+
+	require.ErrorIs(t, err, forma.ErrParquetSetInconsistent)
+	require.ErrorIs(t, err, ErrParquetSetInconsistent)
+
+	var typed *forma.ParquetSetInconsistentError
+	require.True(t, errors.As(err, &typed))
+	require.Equal(t, int16(9), typed.SchemaID)
+}

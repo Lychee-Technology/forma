@@ -231,7 +231,7 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 // operator whitelist.
 func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, hasMeta bool) PgEavLeafPayload {
 	if !hasMeta {
-		return PgEavLeafPayload{Err: fmt.Errorf("attribute not found in cache: %s", kv.Attr)}
+		return PgEavLeafPayload{Err: fmt.Errorf("attribute not found in cache: %s: %w", kv.Attr, forma.ErrInvalidInput)}
 	}
 
 	operator, err := conditionexpr.ParseOperatorValueStrict(kv.Value)
@@ -257,7 +257,7 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		case float64:
 			parsedValue = v
 		default:
-			return PgEavLeafPayload{Err: fmt.Errorf("invalid numeric value for '%s': %s", kv.Attr, valStr)}
+			return PgEavLeafPayload{Err: fmt.Errorf("invalid numeric value for '%s': %s: %w", kv.Attr, valStr, forma.ErrInvalidInput)}
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		valueColumn = "value_numeric"
@@ -270,7 +270,7 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		valueColumn = "value_numeric"
 		parsedInt, err := strconv.Atoi(valStr)
 		if err != nil {
-			return PgEavLeafPayload{Err: fmt.Errorf("invalid boolean value for '%s': %s", kv.Attr, valStr)}
+			return PgEavLeafPayload{Err: fmt.Errorf("invalid boolean value for '%s': %s: %w", kv.Attr, valStr, forma.ErrInvalidInput)}
 		}
 		if parsedInt > 0 {
 			parsedValue = float64(1)
@@ -290,11 +290,19 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		parsedValue = sqlOperator.Value
 	}
 
+	// Both operator-whitelist rejections wrap forma.ErrInvalidInput: the operator
+	// is caller-supplied in the advanced_query condition DSL, and since #301 the
+	// HTTP boundary classifies on sentinel evidence alone. Without the sentinel,
+	// starts_with on a UUID column answered an opaque 500 instead of a 400 naming
+	// the operator and the type (#307 round-4 Finding 4).
+	//
+	// The `unsupported value_type` default above deliberately stays plain: that
+	// names the schema's declared type, not anything the caller sent.
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)}
+		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s': %w", opStr, meta.ValueType, forma.ErrInvalidInput)}
 	}
 	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)}
+		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' not supported for boolean attributes: %w", opStr, forma.ErrInvalidInput)}
 	}
 
 	return PgEavLeafPayload{
@@ -325,7 +333,7 @@ func normalizePgMainPayload(
 		if meta.ColumnBinding == nil {
 			return PgMainLeafPayload{Skip: true}
 		}
-		return PgMainLeafPayload{Err: fmt.Errorf("unsupported operator: %s", lenient.Operator)}
+		return PgMainLeafPayload{Err: fmt.Errorf("unsupported operator: %s: %w", lenient.Operator, forma.ErrInvalidInput)}
 	}
 	if lenientSQLErr != nil {
 		return PgMainLeafPayload{Err: lenientSQLErr}

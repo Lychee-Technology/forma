@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -109,7 +108,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchCreate(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch create failed: %v", err))
+		respondError(w, "batch create failed", err, "schema", schemaName)
 		return
 	}
 	zap.S().Infow("create request completed", "schema", schemaName, "successful", len(result.Successful), "failed", len(result.Failed))
@@ -173,7 +172,7 @@ func (s *Server) executeGet(w http.ResponseWriter, r *http.Request, schemaName s
 		if status == http.StatusNotFound {
 			msg = "record not found"
 		}
-		_ = writeError(w, status, fmt.Sprintf("%s: %v", msg, err))
+		respondErrorWithStatus(w, status, msg, err, "schema", schemaName, "rowID", rowID.String())
 		return
 	}
 	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowID.String(), "attrs", attrs)
@@ -233,7 +232,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), queryReq)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("query failed: %v", err))
+		respondError(w, "query failed", err, "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage)
 		return
 	}
 	zap.S().Infow("query request completed", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
@@ -284,7 +283,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	record, err := s.manager.Update(r.Context(), operation)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("update failed: %v", err))
+		respondError(w, "update failed", err, "schema", schemaName, "rowID", rowIDStr)
 		return
 	}
 	zap.S().Infow("update request completed", "schema", schemaName, "rowID", rowIDStr)
@@ -309,7 +308,7 @@ func (s *Server) handleSingleDelete(w http.ResponseWriter, r *http.Request, sche
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("delete failed: %v", err))
+		respondError(w, "delete failed", err, "schema", schemaName, "rowID", rowID.String())
 		return
 	}
 	zap.S().Infow("delete request completed", "schema", schemaName, "rowID", rowID.String())
@@ -366,7 +365,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("batch delete failed: %v", err))
+		respondError(w, "batch delete failed", err, "schema", schemaName, "requested", len(rowIDStrs))
 		return
 	}
 	zap.S().Infow("batch delete request completed", "schema", schemaName, "requested", len(rowIDStrs))
@@ -409,7 +408,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("cross-schema search failed: %v", err))
+		respondError(w, "cross-schema search failed", err, "schemas", schemaNames, "page", page)
 		return
 	}
 	zap.S().Infow("search request completed", "schemas", schemaNames, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
@@ -450,7 +449,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("advanced query failed: %v", err))
+		respondError(w, "advanced query failed", err, "schema", payload.SchemaName, "page", payload.Page)
 		return
 	}
 	zap.S().Infow("advanced query request completed", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
@@ -586,6 +585,21 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// ErrorClass and ErrorID are populated on every redacted response (#301):
+	// a stable machine token for client discrimination, and a correlation id
+	// echoed on the operator log line that holds the error chain. Redaction and
+	// classification both key off sentinel evidence, so on every live path this
+	// pair means a 500 — an error with no sentinel classifies 500, and one with
+	// a sentinel takes the verbatim branch. Both are omitempty, so success
+	// bodies and verbatim 4xx bodies are unchanged.
+	ErrorClass string `json:"error_class,omitempty"`
+	ErrorID    string `json:"error_id,omitempty"`
+	// SchemaID names the schema a redacted read failure was addressed to (#301,
+	// reinstated by the issue owner after the design excluded it — see
+	// errorSchemaID and docs/error-handling.md). omitempty is a lossless "absent"
+	// encoding because schema IDs are always positive here, the same invariant
+	// that makes a manifest schema_id of zero mean unstamped rather than schema 0.
+	SchemaID int16 `json:"schema_id,omitempty"`
 }
 
 // writeJSON writes JSON response to http.ResponseWriter.
@@ -593,14 +607,6 @@ func writeJSON(w http.ResponseWriter, statusCode int, data any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	return json.NewEncoder(w).Encode(data)
-}
-
-// writeError writes an error response.
-func writeError(w http.ResponseWriter, statusCode int, message string) error {
-	return writeJSON(w, statusCode, APIResponse{
-		Success: false,
-		Error:   message,
-	})
 }
 
 // writeSuccess writes a success response.
@@ -700,48 +706,4 @@ func parseAttrs(queryParams url.Values) []string {
 	}
 
 	return attrs
-}
-
-// classifyManagerError maps a manager-layer error to an HTTP status code.
-// It first checks for sentinel errors (preferred), then falls back to
-// heuristic string matching for errors that do not wrap the sentinels.
-func classifyManagerError(err error) int {
-	if err == nil {
-		return http.StatusInternalServerError
-	}
-
-	// Sentinel error checks — use errors.Is so wrapped errors are handled.
-	if errors.Is(err, forma.ErrNotFound) {
-		return http.StatusNotFound
-	}
-	if errors.Is(err, forma.ErrConflict) {
-		return http.StatusConflict
-	}
-	if errors.Is(err, forma.ErrInvalidInput) {
-		return http.StatusBadRequest
-	}
-
-	// Heuristic fallback for errors that do not wrap a sentinel.
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "not found") {
-		return http.StatusNotFound
-	}
-
-	if strings.Contains(msg, "duplicate") ||
-		strings.Contains(msg, "already exists") ||
-		strings.Contains(msg, "conflict") {
-		return http.StatusConflict
-	}
-
-	if strings.Contains(msg, "required") ||
-		strings.Contains(msg, "invalid") ||
-		strings.Contains(msg, "cannot sort") ||
-		strings.Contains(msg, "unknown attribute") ||
-		strings.Contains(msg, "must be") ||
-		strings.Contains(msg, "unsupported") ||
-		strings.Contains(msg, "empty") {
-		return http.StatusBadRequest
-	}
-
-	return http.StatusInternalServerError
 }
