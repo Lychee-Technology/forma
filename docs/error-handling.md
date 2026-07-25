@@ -126,9 +126,19 @@ being read. It is raised before any path reaches a scan.
 `internal/httpapi` treats the response body as an untrusted destination. The
 split follows the two error classes above, and is enforced by
 `respondErrorWithStatus` in `internal/httpapi/error_response.go`. That is the
-only gate: `respondError` merely classifies and delegates to it, and
-`executeGet` (`internal/httpapi/server.go:175`) calls
+only gate **for manager-layer errors**: `respondError` merely classifies and
+delegates to it, and `executeGet` (`internal/httpapi/server.go:175`) calls
 `respondErrorWithStatus` directly so it can choose its own 404 wording.
+
+Handlers also call `writeError` directly — 33 sites in `server.go` — and those
+bodies are verbatim without passing the gate. They are safe because every one of
+them reports a request-parsing failure (`parsePath`, `readEntityJSONBody`,
+`parseUUID`, `parseCreateObjects`, `parseSortParams`); none touches the manager,
+the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
+`TestWriteErrorAlwaysCarriesALiteral4xxStatus`
+(`internal/httpapi/error_leak_test.go`), which fails the build unless every
+direct site passes a literal 4xx constant from an allowlist — so a new handler
+cannot echo a runtime-classified status without going through `respondError`.
 
 **Disclosure is decided by the error, not by the status.** A body is verbatim
 only when the error *provably* wraps a client sentinel — `errors.Is` against
@@ -167,10 +177,15 @@ from the `error_id` the caller quotes.
 
 **Accepted cost — the redacted 4xx.** An error that classifies 4xx by heuristic
 alone and wraps no sentinel now gets an opaque body. The known instance is #296:
-`cannot sort by unknown attribute "nope"` wraps nothing, so it keeps its correct
+`cannot sort by unknown attribute 'nope' in schema 'lead'`
+(`internal/entity_query_sort.go:84`) wraps nothing, so it keeps its correct
 `400` but answers `{"error": "internal error", "error_class": "internal",
-"error_id": …}` — the guidance no longer reaches the caller. This is the one
-case where a 4xx body carries `error_class` and `error_id`; it is pinned by
+"error_id": …}` — the guidance no longer reaches the caller. This is the most
+common case where a 4xx body carries `error_class` and `error_id`, not the only
+one: *every* heuristic-classified status that wraps no sentinel carries both,
+including the DuckDB `404 (Not Found)` case above. `error_class` on a 4xx
+therefore does not identify an unknown sort attribute — do not build retry or UX
+logic on that inference. It is pinned by
 `TestRespondErrorRedactsHeuristicOnly4xx`. `classifyManagerError`'s trigger-word
 list is the worklist of call sites that should start wrapping
 `forma.ErrInvalidInput`. An opaque validation message is strictly better than a

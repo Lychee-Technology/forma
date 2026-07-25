@@ -399,10 +399,13 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
-	// ErrorClass and ErrorID are populated only on redacted 5xx responses
-	// (#301): a stable machine token for client discrimination, and a
-	// correlation id echoed on the operator log line that holds the full error
-	// chain. Both are omitempty, so success and 4xx bodies are unchanged.
+	// ErrorClass and ErrorID are populated on every redacted response (#301):
+	// a stable machine token for client discrimination, and a correlation id
+	// echoed on the operator log line that holds the full error chain. Not a
+	// 5xx-only pair — redaction is gated on sentinel evidence rather than on
+	// the status, so a 4xx classified by substring heuristic alone carries both
+	// fields too. Both are omitempty, so success bodies and verbatim 4xx bodies
+	// are unchanged.
 	ErrorClass string `json:"error_class,omitempty"`
 	ErrorID    string `json:"error_id,omitempty"`
 }
@@ -1210,7 +1213,7 @@ func TestZZDumpRedactedBody(t *testing.T) {
 git add docs/error-handling.md
 git commit -m "docs(errors): #301 document the public HTTP error surface boundary
 
-Records the 4xx-verbatim / 5xx-redacted split, the error_class vocabulary, and
+Records the sentinel-gated verbatim / redacted split, the error_class vocabulary, and
 why redaction has to be an allowlist: the worst leak is DuckDB's own
 attach-failure message, which quotes the Postgres password.
 
