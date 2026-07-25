@@ -2,8 +2,10 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -60,6 +62,15 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 	}
 	resolved, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
+		// Resolution failures are transient infrastructure by default (S3
+		// unreachable, manifest unreadable) and classify as degradable. But a
+		// source that reports a read-path *consistency* problem has already
+		// classified itself, and relabelling it ErrFederatedReadFailed would
+		// hand it to the degraded fallback — silencing exactly the state it
+		// exists to report.
+		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
+			return nil, false, fmt.Errorf("manifest parquet source: %w", err)
+		}
 		return nil, false, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
 	return resolved, true, nil

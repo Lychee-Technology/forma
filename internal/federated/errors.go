@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma"
 )
 
 // Sentinel errors classifying federated read-path failures by code branch —
@@ -40,41 +42,22 @@ var ErrPostgresReadFailed = errors.New("postgres read failed")
 // this classification exists to make loud (#187 scenario 2).
 var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manifest")
 
-// ErrNoParquetPaths marks a DuckDB-routed federated read whose parquet path
-// set resolved empty: no per-request render hint, and either no configured
-// parquet source or a source whose manifest lists no files while the fallback
-// glob is disabled. Every query reaching the DuckDB engine wants warm and/or
-// cold data (the hot-only cases short-circuit to Postgres first), so an empty
-// path set means the read surface cannot serve what was asked for.
-//
-// This is a read-path configuration error, not transient infrastructure, and
-// it is NOT degradable (see degradableFederatedError): the pre-#299 behavior
-// rendered read_parquet(<no value>), classified it as ErrFederatedReadFailed,
-// and let AllowPartialDegradedMode answer a misconfigured deployment from
-// Postgres alone — silently short exactly when the cold tier was requested.
-var ErrNoParquetPaths = errors.New("no parquet paths resolved")
+// ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public
+// root package and re-exported here for internal call sites. They must be
+// matchable by embedders that reach the engine through factory.NewEntityManager*
+// and cannot import an internal package — the whole point of #299 was a
+// discriminator callers can act on, which a package-private sentinel is not.
+// These are aliases, not copies: errors.Is/errors.As behave identically whether
+// a caller reaches for the forma.* or federated.* name.
+var (
+	ErrNoParquetPaths         = forma.ErrNoParquetPaths
+	ErrManifestSchemaMismatch = forma.ErrManifestSchemaMismatch
+)
 
-// NoParquetPathsError names the schema whose path set came back empty and
-// which resolution level was in play, because the two states have different
-// remedies: a consulted-but-empty source needs its manifest repaired (or the
-// fallback prefix set), while an absent source needs configuring at all.
-type NoParquetPathsError struct {
-	SchemaID int16
-	// SourceConfigured reports whether a ParquetSource was consulted and
-	// returned nothing, as opposed to no source existing to consult.
-	SourceConfigured bool
-}
-
-func (e *NoParquetPathsError) Error() string {
-	if e.SourceConfigured {
-		return fmt.Sprintf("schema %d resolved no parquet paths: its manifest lists no files and the fallback glob is disabled; "+
-			"repair the manifest (forma-tools manifest-reconcile) or set duckdb.s3DataPrefix", e.SchemaID)
-	}
-	return fmt.Sprintf("schema %d resolved no parquet paths: no per-request path hint and no manifest parquet source is configured; "+
-		"set duckdb.manifestTemplate with duckdb.s3Bucket, or pass federated.s3_parquet_path_template", e.SchemaID)
-}
-
-func (e *NoParquetPathsError) Unwrap() error { return ErrNoParquetPaths }
+type (
+	NoParquetPathsError         = forma.NoParquetPathsError
+	ManifestSchemaMismatchError = forma.ManifestSchemaMismatchError
+)
 
 // ParquetSetInconsistentError carries the schema and the missing object keys
 // so the message names the offending state, per the read-path error style.

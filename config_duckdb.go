@@ -200,23 +200,29 @@ func probeManifestTemplate(tmpl *template.Template) error {
 		return buf.String(), nil
 	}
 
-	first, err := render(probeA)
-	if err != nil {
-		return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
-	}
-	if first == "" {
-		return reject("must render a non-empty manifest path")
-	}
-	if strings.Contains(first, "<no value>") {
-		return reject("renders \"<no value>\"; the only available field is .SchemaID (check spelling and case)")
+	// Every probe output is screened, not just the first: a template can render
+	// a usable path for one schema and an empty one — or "<no value>" — for
+	// another (`{{if eq .SchemaID 1}}manifest/1.json{{end}}`, or an `index`
+	// lookup that sidesteps missingkey=error). Those outputs differ, so an
+	// equality-only second check would pass them and leave the other schemas
+	// resolving nothing at runtime.
+	rendered := make([]string, 0, 2)
+	for _, schemaID := range []int16{probeA, probeB} {
+		out, err := render(schemaID)
+		if err != nil {
+			return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
+		}
+		if out == "" {
+			return reject(fmt.Sprintf("must render a non-empty manifest path for every schema; rendered nothing for schema %d", schemaID))
+		}
+		if strings.Contains(out, "<no value>") {
+			return reject(fmt.Sprintf("renders \"<no value>\" for schema %d; the only available field is .SchemaID (check spelling and case)", schemaID))
+		}
+		rendered = append(rendered, out)
 	}
 
-	second, err := render(probeB)
-	if err != nil {
-		return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
-	}
-	if first == second {
-		return reject("must vary by schema: it rendered " + first +
+	if rendered[0] == rendered[1] {
+		return reject("must vary by schema: it rendered " + rendered[0] +
 			" for two different schema IDs, so every schema would share one manifest object (use .SchemaID)")
 	}
 

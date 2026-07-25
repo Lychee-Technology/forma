@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma"
 )
 
 // QuerySource resolves a schema's parquet object set for federated reads
@@ -42,6 +44,25 @@ func (s *QuerySource) load(ctx context.Context, schemaID int16) (*Manifest, erro
 	m, _, err := LoadOrCreate(ctx, s.Store, path, schemaID)
 	if err != nil {
 		return nil, fmt.Errorf("load manifest for schema %d: %w", schemaID, err)
+	}
+	// The stamp inside the manifest must agree with the schema being read.
+	// Reaching a manifest that belongs to another schema means the path
+	// template collided, and the consequence is worse than missing rows: the
+	// parquet scan does not filter by schema (files are per-schema by path) and
+	// the projection stamps whatever it scans as the requested schema, so the
+	// collision would serve another schema's rows under this identity. Config
+	// validation samples two schema IDs, which catches a collapsed template but
+	// cannot prove injectivity over the whole domain — this is the enforcement.
+	//
+	// A zero stamp is treated as unstamped rather than as schema 0: schema IDs
+	// are always positive, and rejecting zero would break reads for any
+	// deployment still holding manifests written before the field existed.
+	if m.SchemaID != 0 && m.SchemaID != schemaID {
+		return nil, &forma.ManifestSchemaMismatchError{
+			RequestedSchemaID: schemaID,
+			ManifestSchemaID:  m.SchemaID,
+			Path:              path,
+		}
 	}
 	return m, nil
 }

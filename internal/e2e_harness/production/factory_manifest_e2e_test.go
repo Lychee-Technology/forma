@@ -195,8 +195,23 @@ func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema
 	if err == nil {
 		t.Fatal("manifest-off, hint-less query succeeded: with no parquet source and no hint there is no path set to scan")
 	}
-	if !errors.Is(err, fedengine.ErrNoParquetPaths) {
-		t.Fatalf("manifest-off, hint-less query must classify as ErrNoParquetPaths (#299), got: %v", err)
+	// Matched through the PUBLIC package, not internal/federated: an embedder
+	// building its manager via factory.NewEntityManagerWithConfig* cannot import
+	// an internal package, so a sentinel only reachable there would leave them
+	// comparing error text. Asserting the public name here is what proves the
+	// discriminator #299 promised is actually usable (review P2).
+	if !errors.Is(err, forma.ErrNoParquetPaths) {
+		t.Fatalf("manifest-off, hint-less query must classify as forma.ErrNoParquetPaths (#299), got: %v", err)
+	}
+	var noPaths *forma.NoParquetPathsError
+	if !errors.As(err, &noPaths) {
+		t.Fatalf("error must carry the public detail type, got: %v", err)
+	}
+	if noPaths.SchemaID != schema.ID {
+		t.Fatalf("detail names schema %d, want %d", noPaths.SchemaID, schema.ID)
+	}
+	if noPaths.SourceConfigured {
+		t.Fatal("manifest reads are off here, so no source was consulted; the remedy differs and the flag must say so")
 	}
 	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
 		t.Fatalf("manifest-off manager reported a manifest inconsistency; Phase 3's classification is environment noise, not wiring: %v", err)
@@ -209,7 +224,7 @@ func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema
 	// tier the request asked for.
 	if _, derr := factoryQuery(ctx, manager, schema, factoryQueryOpts{degraded: true}); derr == nil {
 		t.Fatal("degraded mode absorbed the empty path set; a misconfigured read surface must stay loud (#299)")
-	} else if !errors.Is(derr, fedengine.ErrNoParquetPaths) {
+	} else if !errors.Is(derr, forma.ErrNoParquetPaths) {
 		t.Fatalf("degraded-mode failure lost its classification: %v", derr)
 	}
 

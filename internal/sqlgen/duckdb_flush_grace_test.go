@@ -103,7 +103,7 @@ func TestFlushGraceCutoffDefaultsToDisabled(t *testing.T) {
 func TestFlushGraceCompiledSkeletonIsCutoffIndependent(t *testing.T) {
 	cache := dualPlanTestCache()
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
-		SchemaID: 7,
+		SchemaID:  7,
 		Condition: &forma.KvCondition{Attr: "age", Value: "gt:10"},
 	}}
 	idx := 0

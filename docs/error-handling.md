@@ -61,8 +61,8 @@ rows in that object are simply gone from the result set.
 
 ### `ErrNoParquetPaths`
 
-`federated.ErrNoParquetPaths`, carried by
-`federated.NoParquetPathsError{SchemaID, SourceConfigured}`, marks a
+`forma.ErrNoParquetPaths`, carried by
+`forma.NoParquetPathsError{SchemaID, SourceConfigured}`, marks a
 DuckDB-routed federated read whose parquet path set resolved **empty**: no
 per-request render hint, and either no configured parquet source or a source
 whose manifest lists no files while the fallback glob is disabled (see
@@ -90,6 +90,36 @@ whose manifest lists no files while the fallback glob is disabled (see
   causes: configure the read surface (`duckdb.manifestTemplate` +
   `duckdb.s3Bucket`), set `duckdb.s3DataPrefix` to re-enable the fallback
   glob, or repair the schema's manifest (`docs/manifest-reconcile.md`).
+
+### `ErrManifestSchemaMismatch`
+
+`forma.ErrManifestSchemaMismatch`, carried by
+`forma.ManifestSchemaMismatchError{RequestedSchemaID, ManifestSchemaID, Path}`,
+marks a manifest object whose recorded `schema_id` disagrees with the schema
+being read. It is raised before any path reaches a scan.
+
+- **Why it is loud rather than a short read.** A manifest addresses one schema
+  by path convention alone. Nothing downstream re-checks it: the parquet scan
+  does not filter rows by schema (files are per-schema by path) and the
+  projection stamps whatever it scans as the *requested* schema. So a path
+  collision between two schemas would not merely under-read — it would serve
+  another schema's rows under this schema's identity.
+- **Not degradable.** Cross-schema contamination is the opposite of a partial
+  answer, so `allow_partial_degraded_mode` does not absorb it. It is also not
+  relabelled as `ErrFederatedReadFailed` on the way out of path resolution,
+  which would have handed it to the degraded fallback.
+- **Relationship to config validation.** `duckdb.manifestTemplate` is
+  probe-validated at startup against two schema IDs, which catches a collapsed
+  template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
+  injectivity over the whole schema domain. This error is the runtime
+  enforcement of what that check can only sample.
+- **Compatibility.** A manifest whose `schema_id` is zero is treated as
+  unstamped rather than as schema 0 — schema IDs are always positive, and
+  rejecting zero would break reads for deployments still holding objects
+  written before the field existed.
+- **Operator action.** The message names both schema IDs and the manifest key.
+  Fix the template so each schema resolves a distinct object, then repair the
+  affected manifests (`docs/manifest-reconcile.md`).
 
 ## Message style
 

@@ -17,10 +17,10 @@ import (
 // mid-stream fault (e.g. truncated parquet discovered after planning).
 type erroringRowsIterator struct{ err error }
 
-func (r *erroringRowsIterator) Next() bool           { return false }
+func (r *erroringRowsIterator) Next() bool             { return false }
 func (r *erroringRowsIterator) Scan(dest ...any) error { return nil }
-func (r *erroringRowsIterator) Err() error           { return r.err }
-func (r *erroringRowsIterator) Close() error         { return nil }
+func (r *erroringRowsIterator) Err() error             { return r.err }
+func (r *erroringRowsIterator) Close() error           { return nil }
 
 // coldTierQuery returns a query shape that routes through the DuckDB
 // federated path (non-hot-only tiers; hot-only would short-circuit to

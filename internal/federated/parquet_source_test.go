@@ -256,6 +256,37 @@ func TestParquetSource_NoSourceNoHintIsNoParquetPaths(t *testing.T) {
 	require.Equal(t, 0, pg.queryCalls)
 }
 
+// TestParquetSource_ManifestSchemaMismatchIsNotDegradable pins the review's
+// cross-schema finding at the engine seam: a manifest stamped for another
+// schema is a misaddressed read surface, not a transient outage. Degrading it
+// to Postgres-only would hide a state that can serve another schema's rows
+// under this schema's identity, so it must surface — and it must not be
+// relabelled as a plain read failure on the way out.
+func TestParquetSource_ManifestSchemaMismatchIsNotDegradable(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	src := &fakeParquetSource{pathsErr: &forma.ManifestSchemaMismatchError{
+		RequestedSchemaID: 7,
+		ManifestSchemaID:  9,
+		Path:              "manifest/7.json",
+	}}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	require.NotErrorIs(t, err, ErrFederatedReadFailed,
+		"a misaddressed manifest is a consistency error, not transient infrastructure")
+	require.Equal(t, 0, pg.queryCalls, "degraded mode must not absorb cross-schema contamination")
+	require.Equal(t, 0, duck.calls)
+}
+
 // TestParquetSource_ZeroPathsNeverRendersNoValue is the regression pin for the
 // literal symptom in #299: whatever else changes, the SQL handed to DuckDB
 // must never contain Go's unbound-parameter rendering.
