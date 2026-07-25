@@ -78,6 +78,32 @@ func (cb *CircuitBreaker) Allow() bool {
 	return true
 }
 
+// ReleaseProbe relinquishes a half-open probe reservation without recording
+// evidence either way, freeing the slot for the next caller. It is for callers
+// admitted by Allow that then failed BEFORE touching the dependency — a
+// misconfiguration caught during path resolution, invalid caller input — so
+// they learned nothing about its health and must not consume the probe.
+//
+// Without this, such a caller abandons the reservation: the slot stays occupied
+// until it lapses (openDuration), and every request in that window is rejected
+// with ErrDuckDBUnavailable. That matters because ErrDuckDBUnavailable IS
+// degradable while the pre-execution errors are deliberately not, so a
+// misconfiguration that must always be loud would be answered from Postgres
+// alone on the very next request (#299 review P1).
+//
+// Neutral by design: the breaker stays open, so a real outage still gates
+// traffic; only the probe slot returns. Recording success here would close the
+// breaker on no evidence, and recording failure would extend the outage for a
+// dependency that was never consulted.
+func (cb *CircuitBreaker) ReleaseProbe() {
+	if cb == nil {
+		return
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.probing = false
+}
+
 // RecordFailure records a failure occurrence. A probe failure re-opens the
 // breaker directly; otherwise failures accumulate in the sliding window and
 // open the breaker at threshold.

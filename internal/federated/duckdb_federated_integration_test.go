@@ -146,6 +146,9 @@ func TestBuildDuckDBQuery_AdvancedTemplate(t *testing.T) {
 	params["EAVPivotAttrs"] = sp.EAVPivotAttrs
 	params["HasEAVPivot"] = sp.EAVPivotAttrs != ""
 	params["OuterSelect"] = sp.OuterSelect
+	// And a resolved parquet path set (#299): an unbound S3_PATHS is rejected
+	// instead of rendering read_parquet(<no value>).
+	params["DuckDBS3Paths"] = []string{"s3://bucket/1/a.parquet"}
 	sql, args, err := sqlgen.BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{}, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, sql)

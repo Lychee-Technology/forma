@@ -2,8 +2,10 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -15,8 +17,11 @@ import (
 // storage fails the scan and classifies via MissingIn.
 type ParquetSource interface {
 	// Paths returns the schema's parquet objects as full s3:// URIs (or a
-	// fallback glob for schemas with no manifest yet). Empty means the
-	// source has nothing to contribute and the query renders no S3 paths.
+	// fallback glob for schemas with no manifest yet). Returning empty fails
+	// the read with ErrNoParquetPaths (#299): there is nothing to scan, and
+	// every query reaching the DuckDB engine wants warm and/or cold data, so
+	// an empty set cannot be answered honestly. A schema with no data yet
+	// should yield its fallback glob rather than nothing.
 	Paths(ctx context.Context, schemaID int16) ([]string, error)
 	// MissingIn probes the given scanned path set (full s3:// URIs; glob
 	// and foreign-bucket entries are skipped as unprovable) and returns the
@@ -57,6 +62,15 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 	}
 	resolved, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
+		// Resolution failures are transient infrastructure by default (S3
+		// unreachable, manifest unreadable) and classify as degradable. But a
+		// source that reports a read-path *consistency* problem has already
+		// classified itself, and relabelling it ErrFederatedReadFailed would
+		// hand it to the degraded fallback — silencing exactly the state it
+		// exists to report.
+		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
+			return nil, false, fmt.Errorf("manifest parquet source: %w", err)
+		}
 		return nil, false, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
 	return resolved, true, nil

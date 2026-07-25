@@ -68,7 +68,7 @@ func newEmptyPageTestEngine(t *testing.T, pg *fakePostgresFederatedSource, duck 
 	t.Helper()
 	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "")
+		testMetadataCacheSchema7(t), "", withTestParquetPath())
 	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
 		*builtQueries = append(*builtQueries, *q)
 		return "SELECT fake", nil, nil

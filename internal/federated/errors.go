@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma"
 )
 
 // Sentinel errors classifying federated read-path failures by code branch —
@@ -39,6 +41,23 @@ var ErrPostgresReadFailed = errors.New("postgres read failed")
 // degrading to Postgres-only would re-silence exactly the silent row loss
 // this classification exists to make loud (#187 scenario 2).
 var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manifest")
+
+// ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public
+// root package and re-exported here for internal call sites. They must be
+// matchable by embedders that reach the engine through factory.NewEntityManager*
+// and cannot import an internal package — the whole point of #299 was a
+// discriminator callers can act on, which a package-private sentinel is not.
+// These are aliases, not copies: errors.Is/errors.As behave identically whether
+// a caller reaches for the forma.* or federated.* name.
+var (
+	ErrNoParquetPaths         = forma.ErrNoParquetPaths
+	ErrManifestSchemaMismatch = forma.ErrManifestSchemaMismatch
+)
+
+type (
+	NoParquetPathsError         = forma.NoParquetPathsError
+	ManifestSchemaMismatchError = forma.ManifestSchemaMismatchError
+)
 
 // ParquetSetInconsistentError carries the schema and the missing object keys
 // so the message names the offending state, per the read-path error style.

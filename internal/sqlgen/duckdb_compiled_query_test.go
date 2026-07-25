@@ -12,7 +12,7 @@ import (
 
 func compiledParityParams(t *testing.T) map[string]any {
 	t.Helper()
-	return injectTestProjection(t, map[string]any{
+	return injectTestRenderParams(t, map[string]any{
 		"EAVTable":       "eav_t",
 		"MainTable":      "main_t",
 		"ChangeLogTable": "cl_t",

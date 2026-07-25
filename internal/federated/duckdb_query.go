@@ -99,6 +99,23 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
+	// Everything between admission and duck.Query can fail without consulting
+	// DuckDB or S3 at all — a misconfigured path set, invalid caller input,
+	// missing schema metadata. Such a caller learned nothing about the
+	// dependency's health, so it must hand the half-open probe slot back
+	// instead of abandoning it: an abandoned reservation rejects the next
+	// caller with the DEGRADABLE ErrDuckDBUnavailable, which under
+	// AllowPartialDegradedMode answers a misconfiguration from Postgres alone
+	// — silently, one request after the same misconfiguration was correctly
+	// loud (#299 review P1). Once duck.Query returns, every path below resolves
+	// the probe through RecordFailure or RecordSuccess.
+	probeResolved := false
+	defer func() {
+		if !probeResolved {
+			e.breaker.ReleaseProbe()
+		}
+	}()
+
 	parquetPaths, pathsFromSource, graceCutoffMs, err := e.resolveScanSources(ctx, q)
 	if err != nil {
 		return 0, err
@@ -119,47 +136,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// Record translation in plan
 	planCtx.recordTranslation(sqlStr, args, translateMs, q)
 
-	// Execute query
-	planCtx.recordQueryStart()
-	rows, err := e.duck.Query(ctx, sqlStr, args...)
-	if err != nil {
-		planCtx.recordQueryFailure(err)
-		// Record failure in circuit breaker
-		if e.breaker != nil {
-			e.breaker.RecordFailure()
-		}
-		return 0, fmt.Errorf("execute duckdb query: %w: %w", e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource), err)
-	}
-	defer rows.Close()
-
-	// Stream and process rows
-	totalRecords, rowCount, err := e.streamDuckDBRows(ctx, rows, rowHandler)
-	if err != nil {
-		// Record failure in circuit breaker
-		if e.breaker != nil {
-			e.breaker.RecordFailure()
-		}
-		// A mid-stream read failure classifies like an execute failure:
-		// DuckDB opens listed objects lazily, so a missing object can
-		// surface here instead of at Query. Handler errors are not read
-		// failures and pass through unclassified.
-		if errors.Is(err, ErrFederatedReadFailed) {
-			if classified := e.classifyDuckDBReadError(ctx, q, parquetPaths, pathsFromSource); classified != ErrFederatedReadFailed {
-				return 0, fmt.Errorf("%w: %w", classified, err)
-			}
-		}
-		return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
-	}
-
-	// Record success in circuit breaker
-	if e.breaker != nil {
-		e.breaker.RecordSuccess()
-	}
-
-	// Finalize execution plan
-	e.finalizeDuckDBExecutionPlan(ctx, planCtx, dirtyIDs, totalRecords, rowCount)
-
-	return totalRecords, nil
+	// From here the dependency is consulted, so the breaker gets real evidence
+	// on every path and the helper below owns resolving the probe.
+	probeResolved = true
+	return e.executeAndStreamDuckDB(ctx, q, sqlStr, args, scan{
+		parquetPaths:    parquetPaths,
+		pathsFromSource: pathsFromSource,
+		dirtyIDs:        dirtyIDs,
+	}, rowHandler, planCtx)
 }
 
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
@@ -178,6 +162,20 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	paths, fromSource, err = e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("resolve parquet paths: %w", err)
+	}
+
+	// An empty path set cannot answer this query (#299). Only warm/cold-wanting
+	// queries reach here — hot-only and PreferHot short-circuit to Postgres in
+	// Query — so there is nothing to scan and no honest partial answer. Failing
+	// here keeps the misconfiguration distinguishable from a transient S3
+	// outage, which the previous read_parquet(<no value>) parser error was not.
+	// It must precede the validator: that walks the path set and so reports
+	// nothing at all on an empty one.
+	if len(paths) == 0 {
+		return nil, false, 0, &NoParquetPathsError{
+			SchemaID:         q.SchemaID,
+			SourceConfigured: e.parquetSource != nil,
+		}
 	}
 
 	// Pre-read schema-invariant validation (#189): the scan's union_by_name
@@ -317,60 +315,6 @@ func duckDBPostgresScanLocation(name string) (string, string) {
 		return "public", clean[0]
 	}
 	return "public", ""
-}
-
-// streamDuckDBRows iterates through DuckDB rows and invokes the handler.
-func (e *DBFederatedQueryEngine) streamDuckDBRows(
-	ctx context.Context,
-	rows duckDBRowsIterator,
-	rowHandler func(context.Context, *model.PersistentRecord) error,
-) (int64, int64, error) {
-	buffers := newDuckDBScanBuffers()
-
-	var totalRecords int64
-	totalSet := false
-	rowCount := int64(0)
-
-	for rows.Next() {
-		scanArgs, attrsJSON, totalRec, _, _ := buffers.buildScanArgs()
-
-		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, 0, fmt.Errorf("scan duckdb row: %w: %w", ErrFederatedReadFailed, err)
-		}
-
-		// Build record from buffers
-		record := buffers.buildRecordFromBuffers()
-
-		// Parse attributes JSON
-		if attrsJSON.Valid {
-			if err := parseDuckDBAttributesJSON(attrsJSON.String, record); err != nil {
-				return 0, 0, err
-			}
-		}
-
-		// Clean up empty maps
-		model.CleanupEmptyMaps(record)
-
-		if !totalSet && totalRec.Valid {
-			totalRecords = totalRec.Int64
-			totalSet = true
-		}
-
-		// Invoke handler
-		if rowHandler != nil {
-			if err := rowHandler(ctx, record); err != nil {
-				return 0, 0, err
-			}
-		}
-
-		rowCount++
-	}
-
-	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("iterate duckdb rows: %w: %w", ErrFederatedReadFailed, err)
-	}
-
-	return totalRecords, rowCount, nil
 }
 
 // finalizeDuckDBExecutionPlan completes the execution plan with timing and metrics.

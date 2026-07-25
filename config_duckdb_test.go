@@ -64,11 +64,7 @@ func TestDefaultDuckDBConfig_ManifestReadOff(t *testing.T) {
 func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		duckDB     DuckDBConfig
-		errorField string
-	}{
+	tests := []manifestReadCase{
 		{
 			name: "template with bucket and data prefix is valid",
 			duckDB: DuckDBConfig{
@@ -122,6 +118,70 @@ func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
 			errorField: "",
 		},
 		{
+			name: "complete manifest config is valid while duckdb is disabled",
+			duckDB: DuckDBConfig{
+				Enabled:          false,
+				S3Bucket:         "forma-lake",
+				S3DataPrefix:     "forma",
+				ManifestPrefix:   "forma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "",
+		},
+	}
+
+	runManifestReadCases(t, tests)
+}
+
+// manifestReadCase is one ValidateManifestRead expectation: an empty
+// errorField means the combination must validate.
+type manifestReadCase struct {
+	name       string
+	duckDB     DuckDBConfig
+	errorField string
+}
+
+// runManifestReadCases asserts each case and checks the ConfigError field, so a
+// rejection is attributed to the offending setting rather than merely counted.
+func runManifestReadCases(t *testing.T, cases []manifestReadCase) {
+	t.Helper()
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.duckDB.ValidateManifestRead()
+			if tt.errorField == "" {
+				if err != nil {
+					t.Fatalf("Expected no validation error, got %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Expected validation error, got nil")
+			}
+			configErr, ok := err.(*ConfigError)
+			if !ok {
+				t.Fatalf("Expected ConfigError, got %T", err)
+			}
+			if configErr.Field != tt.errorField {
+				t.Errorf("Expected error field %s, got %s", tt.errorField, configErr.Field)
+			}
+		})
+	}
+}
+
+// TestValidateDuckDBConfig_ManifestReadWhitespace covers the byte-parity rule:
+// the four manifest read fields are shared with the CDC/compaction write side,
+// which never trims them, so a padded value would resolve a different object key
+// on each side and surface only as a silently empty cold tier. Split from
+// TestValidateDuckDBConfig_ManifestRead for the 100-line function cap
+// (coding-standard.md).
+func TestValidateDuckDBConfig_ManifestReadWhitespace(t *testing.T) {
+	t.Parallel()
+
+	runManifestReadCases(t, []manifestReadCase{
+		{
 			// Padded values are rejected rather than trimmed at the reader: the
 			// CDC/compaction write side never trims, so a shared value carrying
 			// a stray newline (a YAML quoting slip, a mounted secret file) would
@@ -172,43 +232,91 @@ func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
 			},
 			errorField: "duckdb.s3DataPrefix",
 		},
+	})
+}
+
+// TestValidateDuckDBConfig_ManifestTemplateProbe covers the #300 Execute-probe:
+// parsing a template is not enough, because the resolver executes it against a
+// map, so a template can parse cleanly and still address the wrong object — or
+// the same object — for every schema. Split from
+// TestValidateDuckDBConfig_ManifestRead, which was over the 100-line function
+// cap (coding-standard.md).
+func TestValidateDuckDBConfig_ManifestTemplateProbe(t *testing.T) {
+	t.Parallel()
+
+	runManifestReadCases(t, []manifestReadCase{
 		{
-			name: "complete manifest config is valid while duckdb is disabled",
+			// #300: a case-typo field name parses fine but renders "<no value>"
+			// against the resolver's map, so every schema resolves to the same
+			// bogus manifest key, every manifest loads empty, and reads degrade
+			// silently — the exact loss shape manifest reads exist to prevent,
+			// one typo away.
+			name: "template with a misspelled field renders no value",
 			duckDB: DuckDBConfig{
-				Enabled:          false,
 				S3Bucket:         "forma-lake",
-				S3DataPrefix:     "forma",
-				ManifestPrefix:   "forma",
-				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+				ManifestTemplate: "manifest/{{.SchemaId}}.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Same collapse, different cause: a template that ignores the schema
+			// entirely points every schema at one object.
+			name: "template that does not vary by schema",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/all.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "template rendering to nothing",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "{{if false}}manifest/{{.SchemaID}}.json{{end}}",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Printf-style verbs are a plausible slip for someone who has not
+			// used text/template: they render literally and never vary.
+			name: "printf style placeholder instead of template action",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/%d.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Review P1: only the first probe output was screened, so a template
+			// that renders for schema 1 and nothing for schema 2 passed — the two
+			// outputs differ, and the empty one was never checked. Those schemas
+			// would resolve an empty manifest path at runtime.
+			name: "template rendering empty for only some schemas",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "{{if eq .SchemaID 1}}manifest/1.json{{end}}",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Same gap, reached differently: index bypasses missingkey=error, so
+			// only an output check catches the "<no value>" it renders.
+			name: "template rendering no value for only some schemas",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: `{{if eq .SchemaID 1}}{{.SchemaID}}{{else}}{{index . "SchemaId"}}{{end}}`,
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "schema id embedded in a longer path is valid",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "lake/v2/schema-{{.SchemaID}}/manifest.json",
 			},
 			errorField: "",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := tt.duckDB.ValidateManifestRead()
-			if tt.errorField == "" {
-				if err != nil {
-					t.Fatalf("Expected no validation error, got %v", err)
-				}
-				return
-			}
-
-			if err == nil {
-				t.Fatal("Expected validation error, got nil")
-			}
-			configErr, ok := err.(*ConfigError)
-			if !ok {
-				t.Fatalf("Expected ConfigError, got %T", err)
-			}
-			if configErr.Field != tt.errorField {
-				t.Errorf("Expected error field %s, got %s", tt.errorField, configErr.Field)
-			}
-		})
-	}
+	})
 }
 
 func TestValidateDuckDBConfig_ManifestReadWiredIntoValidate(t *testing.T) {
