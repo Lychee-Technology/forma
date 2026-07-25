@@ -585,10 +585,13 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
-	// ErrorClass and ErrorID are populated only on redacted 5xx responses
-	// (#301): a stable machine token for client discrimination, and a
-	// correlation id echoed on the operator log line that holds the full error
-	// chain. Both are omitempty, so success and 4xx bodies are unchanged.
+	// ErrorClass and ErrorID are populated on every redacted response (#301):
+	// a stable machine token for client discrimination, and a correlation id
+	// echoed on the operator log line that holds the full error chain. Not a
+	// 5xx-only pair — redaction is gated on sentinel evidence rather than on
+	// the status, so a 4xx classified by substring heuristic alone carries both
+	// fields too (TestRespondErrorRedactsHeuristicOnly4xx). Both are omitempty,
+	// so success bodies and verbatim 4xx bodies are unchanged.
 	ErrorClass string `json:"error_class,omitempty"`
 	ErrorID    string `json:"error_id,omitempty"`
 }

@@ -125,12 +125,21 @@ being read. It is raised before any path reaches a scan.
 
 `internal/httpapi` treats the response body as an untrusted destination. The
 split follows the two error classes above, and is enforced by
-`respondError` in `internal/httpapi/error_response.go`.
+`respondErrorWithStatus` in `internal/httpapi/error_response.go`. That is the
+only gate: `respondError` merely classifies and delegates to it, and
+`executeGet` (`internal/httpapi/server.go:175`) calls
+`respondErrorWithStatus` directly so it can choose its own 404 wording.
 
 **Disclosure is decided by the error, not by the status.** A body is verbatim
 only when the error *provably* wraps a client sentinel — `errors.Is` against
 `forma.ErrInvalidInput`, `forma.ErrNotFound`, or `forma.ErrConflict`
 (`isClientError`). Everything else is redacted, whatever status it carries.
+
+The full condition is `status < http.StatusInternalServerError &&
+isClientError(err)`. The status conjunct is belt-and-braces, not the decision:
+it cannot promote anything to verbatim, only hold it back. A caller that passes
+an explicit 5xx to `respondErrorWithStatus` gets a redacted body even if the
+error wraps a sentinel.
 
 This is deliberate, and the naive version was wrong. `classifyManagerError`
 derives the HTTP status by substring-matching the whole error chain, and driver
@@ -144,17 +153,28 @@ the password — straight back to the client.
 still returns its classified status, just with an opaque body.
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
-and an `error_id`. No error text crosses. The full chain goes to
+and an `error_id`. No error text crosses. There are exactly two fixed messages
+(`publicErrorMessage`): `internal read error` for the three typed read-path
+classes, and `internal error` for `errorClassInternal`. **`internal` is the
+common case in production** — it absorbs `ErrFederatedReadFailed`,
+`ErrPostgresReadFailed`, metadata drift, and transform failures — so a client
+asserting on the literal `internal read error` would break on the majority of
+redacted responses. Discriminate on `error_class`, never on `error`. The full chain goes to
 `zap.S().Errorw` — *always*, whatever the status, because `cmd/server` runs
 `zap.NewProduction()` at Info level and routing a redacted 4xx to `Debugw` would
 have leaked nothing but recorded nothing either. An operator retrieves the detail
 from the `error_id` the caller quotes.
 
-**Accepted cost.** An error that classifies 4xx by heuristic alone and wraps no
-sentinel now gets an opaque body. The known instance is #296 (unknown sort
-attribute); `classifyManagerError`'s trigger-word list is the worklist of call
-sites that should start wrapping `forma.ErrInvalidInput`. An opaque validation
-message is strictly better than a leaked credential.
+**Accepted cost — the redacted 4xx.** An error that classifies 4xx by heuristic
+alone and wraps no sentinel now gets an opaque body. The known instance is #296:
+`cannot sort by unknown attribute "nope"` wraps nothing, so it keeps its correct
+`400` but answers `{"error": "internal error", "error_class": "internal",
+"error_id": …}` — the guidance no longer reaches the caller. This is the one
+case where a 4xx body carries `error_class` and `error_id`; it is pinned by
+`TestRespondErrorRedactsHeuristicOnly4xx`. `classifyManagerError`'s trigger-word
+list is the worklist of call sites that should start wrapping
+`forma.ErrInvalidInput`. An opaque validation message is strictly better than a
+leaked credential.
 
 ```json
 {
@@ -164,6 +184,9 @@ message is strictly better than a leaked credential.
   "error_id": "9f2c1a7e-…"
 }
 ```
+
+That example is the `parquet_set_inconsistent` shape; the far more frequent one
+pairs `"error_class": "internal"` with `"error": "internal error"`.
 
 Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
 `manifest_schema_mismatch`, and `internal` for everything else. They resolve via
@@ -187,9 +210,10 @@ missing parquet object likewise yields the full `s3://bucket/prefix/key` and the
 resolved endpoint URL.
 
 The success path has the matching rule: `toExecutionPlan`
-(`internal/entity_query_service.go`) allowlists plan fields and drops
-`DataSourcePlan.SQL`, `Params`, and `Notes` for the same reason, pinned by
-`TestToExecutionPlan_DoesNotLeakCredentials`.
+(`internal/entity_query_service.go:138`) allowlists plan fields and drops
+`src.SQL`, `src.Params`, `plan.Notes`, and `merge.Notes` for the same reason —
+the source SQL embeds the `postgres_scan` connection string, and notes can echo
+raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
 
 ### Accepted disclosures inside the allowlist
 
@@ -206,22 +230,46 @@ boundary is stated rather than discovered.
   cross, but this is the one remaining case where driver text reaches a public
   body. If the detail ever needs to stop leaking the physical column layout, the
   fix is to summarise at the wrap site, not to widen the redaction gate.
-- **Internal schema IDs on a 404.** The `forma.ErrNotFound` chains in
-  `internal/schemameta/file_registry.go:199-299` name the schema ID or schema
-  name verbatim (`schema not found for ID: 402`). Every such value is derivable
-  from the caller's own request, so nothing is disclosed that the caller did not
-  supply — but "no schema id" is a stated constraint for *redacted* bodies, and
-  this is the boundary where that constraint stops applying.
+- **Schema identifiers on a 404.** The eleven `forma.ErrNotFound` chains in
+  `internal/schemameta/file_registry.go:199-299` split two ways. Four are
+  name-keyed (`:222`, `:227`, `:276`, `:281`) and echo only the schema name the
+  caller put in the URL — nothing is disclosed that the caller did not supply.
+  The other seven (`:199`, `:204`, `:209`, `:242`, `:247`, `:294`, `:299`) are
+  ID-keyed and render the internal `int16`, e.g. `schema not found for ID: 402`.
+  A caller never supplies that: the URL carries a schema *name* and the system
+  resolves the ID internally, so this genuinely exposes an internal identifier.
+  It is accepted because a schema ID is a low-value opaque integer — not a
+  credential, not a storage path, and not something an attacker can act on
+  without already holding the access the 404 just denied. Worth naming because
+  "no schema id" is a stated constraint for *redacted* bodies, and this is
+  exactly where that constraint stops applying.
 
 ### Status change: create errors are now classified
 
-Converting `handleCreate` from a hardcoded `500` to `respondError` means create
-failures now answer their *classified* status. Errors that wrap a sentinel
-already behaved this way through other handlers; the visible change is for
-errors that only trip `classifyManagerError`'s substring fallback. Concretely,
-`POST /api/v1/nosuchschema` now returns `404` where it previously returned
-`500`, with a redacted body. This is a public contract change: clients keying on
-`500` for create failures must key on the response shape instead.
+`handleCreate` previously answered every `BatchCreate` failure with a hardcoded
+`500`. It now calls `respondError`, so create failures answer their *classified*
+status like every other handler. This is a public contract change, and it is
+independent of redaction.
+
+The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
+**`404` instead of `500`**, and its body is **verbatim, not redacted**:
+
+```json
+{
+  "success": false,
+  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema: not found"
+}
+```
+
+That follows from the gate rather than contradicting it. The chain built by
+`file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
+that in turn, so `classifyManagerError` returns `404` from its **sentinel**
+branch and `isClientError` is true — the verbatim branch, logged at `Debugw`,
+with no `error_class` and no `error_id`. The substring fallback is never
+consulted.
+
+Clients keying on `500` to detect create failures must key on `success: false`
+plus the status instead.
 
 ### Known gap
 
