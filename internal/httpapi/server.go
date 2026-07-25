@@ -108,7 +108,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchCreate(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch create failed: %v", err))
+		respondError(w, "batch create failed", err, "schema", schemaName)
 		return
 	}
 	zap.S().Infow("create request completed", "schema", schemaName, "successful", len(result.Successful), "failed", len(result.Failed))
@@ -172,7 +172,7 @@ func (s *Server) executeGet(w http.ResponseWriter, r *http.Request, schemaName s
 		if status == http.StatusNotFound {
 			msg = "record not found"
 		}
-		_ = writeError(w, status, fmt.Sprintf("%s: %v", msg, err))
+		respondErrorWithStatus(w, status, msg, err, "schema", schemaName, "rowID", rowID.String())
 		return
 	}
 	zap.S().Infow("get request completed", "schema", schemaName, "rowID", rowID.String(), "attrs", attrs)
@@ -232,7 +232,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), queryReq)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("query failed: %v", err))
+		respondError(w, "query failed", err, "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage)
 		return
 	}
 	zap.S().Infow("query request completed", "schema", schemaName, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
@@ -283,7 +283,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	record, err := s.manager.Update(r.Context(), operation)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("update failed: %v", err))
+		respondError(w, "update failed", err, "schema", schemaName, "rowID", rowIDStr)
 		return
 	}
 	zap.S().Infow("update request completed", "schema", schemaName, "rowID", rowIDStr)
@@ -308,7 +308,7 @@ func (s *Server) handleSingleDelete(w http.ResponseWriter, r *http.Request, sche
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("delete failed: %v", err))
+		respondError(w, "delete failed", err, "schema", schemaName, "rowID", rowID.String())
 		return
 	}
 	zap.S().Infow("delete request completed", "schema", schemaName, "rowID", rowID.String())
@@ -365,7 +365,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.BatchDelete(r.Context(), batchOp)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("batch delete failed: %v", err))
+		respondError(w, "batch delete failed", err, "schema", schemaName, "requested", len(rowIDStrs))
 		return
 	}
 	zap.S().Infow("batch delete request completed", "schema", schemaName, "requested", len(rowIDStrs))
@@ -408,7 +408,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.CrossSchemaSearch(r.Context(), crossSchemaReq)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("cross-schema search failed: %v", err))
+		respondError(w, "cross-schema search failed", err, "schemas", schemaNames, "page", page)
 		return
 	}
 	zap.S().Infow("search request completed", "schemas", schemaNames, "page", page, "itemsPerPage", itemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)
@@ -449,7 +449,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.manager.Query(r.Context(), &payload)
 	if err != nil {
-		_ = writeError(w, classifyManagerError(err), fmt.Sprintf("advanced query failed: %v", err))
+		respondError(w, "advanced query failed", err, "schema", payload.SchemaName, "page", payload.Page)
 		return
 	}
 	zap.S().Infow("advanced query request completed", "schema", payload.SchemaName, "page", payload.Page, "itemsPerPage", payload.ItemsPerPage, "returned", len(result.Data), "total", result.TotalRecords)

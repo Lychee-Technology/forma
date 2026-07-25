@@ -29,6 +29,8 @@ type mockEntityManager struct {
 	crossSchemaResult *forma.QueryResult
 	crossSchemaErr    error
 	crossSchemaReq    *forma.CrossSchemaRequest
+	batchDeleteResult *forma.BatchResult
+	batchDeleteErr    error
 }
 
 func (m *mockEntityManager) Create(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
@@ -89,6 +91,9 @@ func (m *mockEntityManager) BatchUpdate(ctx context.Context, req *forma.BatchOpe
 }
 
 func (m *mockEntityManager) BatchDelete(ctx context.Context, req *forma.BatchOperation) (*forma.BatchResult, error) {
+	if m.batchDeleteResult != nil || m.batchDeleteErr != nil {
+		return m.batchDeleteResult, m.batchDeleteErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
