@@ -140,12 +140,17 @@ the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
 direct site passes a literal 4xx constant from an allowlist — so a new handler
 cannot echo a runtime-classified status without going through `respondError`.
 
-**Both the status and the disclosure are decided by sentinel evidence, and by
-nothing else.** `classifyManagerError` matches `errors.Is` against
-`forma.ErrNotFound` (404), `forma.ErrConflict` (409), and
-`forma.ErrInvalidInput` (400); everything else — including a `nil` error — is
-`500`. `isClientError` gates disclosure on the same three sentinels: a body is
-verbatim only when the error *provably* wraps one, and is redacted otherwise.
+**The status is decided by sentinel evidence and by nothing else.**
+`classifyManagerError` matches `errors.Is` against `forma.ErrNotFound` (404),
+`forma.ErrConflict` (409), and `forma.ErrInvalidInput` (400); everything else —
+including a `nil` error — is `500`.
+
+**Disclosure needs the same evidence plus an unambiguous chain.**
+`canDiscloseVerbatim` is `isClientError(err) && !hasMultipleCauses(err)`: a body
+is verbatim only when the error *provably* wraps one of those three sentinels
+*and* no node in its chain fans out to more than one cause. Everything else is
+redacted. See "Multi-cause chains are redacted" below for why the second
+conjunct exists.
 
 There is no substring heuristic. An earlier version classified on message text
 (`not found` → 404, `duplicate` → 409, `invalid`/`required`/`must be` → 400) for
@@ -203,11 +208,18 @@ startup validation) or internal invariants — `schema id must be positive`,
 `500` is the more truthful answer than the misleading 4xx they used to return.
 
 The full disclosure condition is `status < http.StatusInternalServerError &&
-isClientError(err)`. The status conjunct can only hold disclosure back, never
-grant it: a caller that passes an explicit 5xx to `respondErrorWithStatus` gets a
-redacted body even if the error wraps a sentinel. On every live path the two
-agree, so **a redacted body is a `500`** — an error without a sentinel classifies
-500, and one with a sentinel takes the verbatim branch.
+canDiscloseVerbatim(err)`. The status conjunct can only hold disclosure back,
+never grant it: a caller that passes an explicit 5xx to `respondErrorWithStatus`
+gets a redacted body even if the error wraps a sentinel.
+
+On every live path today **a redacted body is a `500`** — no error in this repo
+joins a client sentinel to an operator cause, so an error without a sentinel
+classifies 500 and redacts, and one with a sentinel classifies 4xx and discloses.
+But status and disclosure are now separately decided in a way that a client must
+not read as coupled: a multi-cause chain carrying a client sentinel classifies
+`4xx` on that sentinel and **still redacts**, producing a `400` body with
+`error_class` and `error_id`. Clients must key on `error_class`/`error_id` being
+present, never on the status, to know whether a body is redacted.
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 an `error_id`, and — when the chain holds a typed read-path carrier — a
@@ -328,19 +340,39 @@ Of that list only the schema id also crosses to the client, as its own
 `schema_id` field (see above). Object keys, endpoint URLs and driver prose are
 log-only.
 
-### Residual: a mixed chain discloses its non-credential causes
+### Multi-cause chains are redacted
 
 `isClientError` uses `errors.Is`, which matches any leaf. A multi-cause chain —
 `errors.Join(forma.ErrInvalidInput, driverErr)`, or the `fmt.Errorf("%w: %w", …)`
-shape used throughout `internal/federated` — therefore takes the **verbatim**
-branch and echoes the driver cause alongside the client one.
+shape used throughout `internal/federated` — used to take the **verbatim** branch
+on that leaf alone and echo the driver cause alongside the client one.
+`redactCredentials` covered the credential half, but a non-credential operator
+detail (an S3 object key) reached a public `400`.
 
-`redactCredentials` covers the credential half, so no chain shape can put the
-password in a body. What remains is that a non-credential operator detail (an S3
-object key, say) can reach a `400` body. Pinned, residual included, by
-`TestMixedChainVerbatimBodyCarriesNoCredential`. Closing it properly means giving
-client errors typed public messages rather than echoing raw chain text — a
-redesign of the 4xx surface, tracked separately.
+`hasMultipleCauses` closes it. Both `errors.Join` and multi-`%w` produce a node
+implementing `Unwrap() []error`; the walk descends the chain and reports any node
+that fans out. A fan-out means the sentinel proves only that *one* branch is
+caller fault, so provenance is ambiguous and the body is redacted regardless of
+sentinel evidence. Note that `errors.Unwrap` alone cannot detect this — it is
+defined for `Unwrap() error` and returns `nil` at a multi-cause node, so a walk
+built on it stops at the fan-out instead of seeing it.
+
+**Blast radius: nil.** Every error in this repo that wraps
+`ErrInvalidInput`/`ErrNotFound`/`ErrConflict` is built with a single `%w`, and
+every multi-cause site carries read-path sentinels that already redact —
+`internal/federated`'s `%w: %w` wraps (`ErrFederatedReadFailed`,
+`ErrPostgresReadFailed`), `internal/cdc`'s `ErrSchemaAttrCacheUnavailable` and
+its `errors.Join` of per-schema flush failures, and `internal/compaction`'s
+`ErrConcurrentModification`. None of those is a client sentinel, and the CDC and
+compaction paths do not reach the HTTP boundary at all. So no live response
+changes; what changes is that a future client error built multi-cause loses its
+verbatim body rather than keeps leaking.
+
+This is the narrower of the two options considered, and the one the issue owner
+endorsed. The alternative — giving client errors typed public messages instead of
+echoing chain text — is a redesign of the 4xx surface and remains a follow-up.
+Pinned by `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`,
+`TestSingleCauseClientErrorStaysVerbatim`, and `TestHasMultipleCauses`.
 
 ```json
 {
@@ -387,9 +419,10 @@ raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
 ### Accepted disclosures inside the allowlist
 
 The allowlist is a gate on *provenance*, not on content: an error that wraps a
-client sentinel is disclosed verbatim. Two live cases put more than the caller's
-own input into a 4xx body. Both are accepted, not bugs — recorded here so the
-boundary is stated rather than discovered.
+client sentinel down a single-cause chain is disclosed verbatim. Two live cases
+put more than the caller's own input into a 4xx body. Both are accepted, not
+bugs — recorded here so the boundary is stated rather than discovered. Both are
+single-cause chains, so `hasMultipleCauses` does not reach them.
 
 - **Postgres driver prose on a 409.**
   `internal/postgres_persistent_repository_main_table.go:25` wraps `pgErr.Detail`
@@ -440,7 +473,8 @@ The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
 That follows from the gate rather than contradicting it. The chain built by
 `file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
 that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
-`isClientError` is true — the verbatim branch, logged at `Debugw`, with no
+`canDiscloseVerbatim` is true — single `%w` at every level, so no fan-out — the
+verbatim branch, logged at `Debugw`, with no
 `error_class`, no `error_id` and no `schema_id`. Pinned by
 `TestCreateUnknownSchemaIs404AndVerbatim`.
 

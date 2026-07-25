@@ -267,7 +267,7 @@ var writeErrorAllowed4xx = map[string]bool{
 // The invariant: every writeError call in a non-test file passes a literal 4xx
 // http.Status* constant from writeErrorAllowed4xx, with exactly one sanctioned
 // exception — respondErrorWithStatus in error_response.go, which passes the
-// variable `status` under a runtime gate (isClientError) that is what actually
+// variable `status` under a runtime gate (canDiscloseVerbatim) that is what actually
 // constrains it. That exception is exempted by asserting it is unique, so if it
 // moves, multiplies, or reappears in another file the guard fails.
 //
@@ -287,7 +287,7 @@ var writeErrorAllowed4xx = map[string]bool{
 //
 // NOTE: the other unchecked axis is the message. This guard reads only the
 // *status* expression; it cannot tell whether the third argument is safe to
-// disclose. That judgement belongs to isClientError inside
+// disclose. That judgement belongs to canDiscloseVerbatim inside
 // respondErrorWithStatus, and the direct call sites stay safe only because their
 // messages come from request parsing (parsePath, readEntityJSONBody, parseUUID,
 // parseCreateObjects, parseSortParams), never from the manager, the engine, S3,
