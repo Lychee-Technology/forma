@@ -1098,14 +1098,34 @@ Insert into `docs/error-handling.md`, immediately before the `## Message style` 
 split follows the two error classes above, and is enforced by
 `respondError` in `internal/httpapi/error_response.go`.
 
-**4xx — verbatim.** These describe caller-supplied input, the caller needs to
-know what to fix, and the write path touches neither S3 nor the `postgres_scan`
-connection string.
+**Disclosure is decided by the error, not by the status.** A body is verbatim
+only when the error *provably* wraps a client sentinel — `errors.Is` against
+`forma.ErrInvalidInput`, `forma.ErrNotFound`, or `forma.ErrConflict`
+(`isClientError`). Everything else is redacted, whatever status it carries.
 
-**5xx — redacted (#301).** The body carries a fixed message, a stable
-`error_class` token, and an `error_id`. No error text crosses. The full chain
-goes to `zap.S().Errorw` under the same `error_id`, so an operator can retrieve
-it from a token the caller quotes.
+This is deliberate, and the naive version was wrong. `classifyManagerError`
+derives the HTTP status by substring-matching the whole error chain, and driver
+text trips those probes: DuckDB reports a missing S3 object as
+`HTTP Error: … 404 (Not Found).`, which contains `not found`. Gating disclosure
+on the status would therefore have classified the single most likely #301
+scenario as 4xx and echoed the S3 URL — and, on a `postgres_scan` attach failure,
+the password — straight back to the client.
+
+**The HTTP status is unchanged** by redaction: a misclassified read-path error
+still returns its classified status, just with an opaque body.
+
+**Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
+and an `error_id`. No error text crosses. The full chain goes to
+`zap.S().Errorw` — *always*, whatever the status, because `cmd/server` runs
+`zap.NewProduction()` at Info level and routing a redacted 4xx to `Debugw` would
+have leaked nothing but recorded nothing either. An operator retrieves the detail
+from the `error_id` the caller quotes.
+
+**Accepted cost.** An error that classifies 4xx by heuristic alone and wraps no
+sentinel now gets an opaque body. The known instance is #296 (unknown sort
+attribute); `classifyManagerError`'s trigger-word list is the worklist of call
+sites that should start wrapping `forma.ErrInvalidInput`. An opaque validation
+message is strictly better than a leaked credential.
 
 ```json
 {
