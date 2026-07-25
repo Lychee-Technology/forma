@@ -377,26 +377,35 @@ plus the status instead.
 
 ### Status change: an unknown filter attribute is now 400, not 404
 
+Baseline for this section is the **pre-#301** contract, the same baseline the
+create-error section above uses.
+
 `POST /api/v1/advanced_query` with a `condition` naming an attribute the schema
-does not define used to answer **`404` with a redacted body**. The error
+does not define used to answer **`404`**. The error
 (`attribute not found in cache: …`, `internal/sqlgen/predicate_normalizer.go`)
-carried no sentinel, so the substring heuristic saw `not found` and classified it
-as a missing *resource*.
+carried no sentinel, so the substring heuristic saw `not found` in its text and
+classified it as a missing *resource*. It now answers **`400`**, because that
+error wraps `forma.ErrInvalidInput` as part of the sweep above.
 
-It now answers **`400` with a verbatim body**, because that error wraps
-`forma.ErrInvalidInput` as part of the sweep above. Both halves changed:
-
-| | before | after |
+| | before (pre-#301) | after |
 | --- | --- | --- |
 | status | `404` | `400` |
-| body | redacted (`error_class`, `error_id`) | verbatim, names the attribute |
+| body | verbatim | verbatim |
 
-`400` is the correct answer — the filter is malformed, no resource is absent —
-but a client keying on `404` to detect a filter typo breaks silently, and one
-keying on `error_class` being present on that response will now find it empty.
-The same shift applies to the other condition-DSL validation errors in the sweep
-(unparseable filter values, unknown operators, malformed `"op:value"`), which
-moved from a redacted `400`/`500` to a verbatim `400`.
+**Only the status changed.** The body was verbatim before and is verbatim now —
+this endpoint reached `writeError` directly with the full message, and redaction
+did not exist at all before #301. No `error_class` or `error_id` appeared on this
+response before, and none appears now: it takes the verbatim branch. A client
+keying on `404` to detect a filter typo breaks silently, and that is the whole of
+the migration impact.
+
+**The other condition-DSL errors in the sweep did not change.** Unparseable filter
+values, unknown operators and malformed `"op:value"` all contain `invalid` or
+`unsupported`, so the heuristic already classified them `400` with a verbatim
+body, and they still answer `400` with a verbatim body. For those, wrapping the
+sentinel *preserved* the existing contract rather than altering it — without it,
+deleting the heuristic would have regressed them to a redacted `500`. That is what
+the sweep was for.
 
 ### Known gap
 
