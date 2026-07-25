@@ -24,7 +24,7 @@ func TestAdvancedTemplate_KeysetAppliedAfterDedup(t *testing.T) {
 	}
 	dual := &DualClauses{DuckClause: "1=1"}
 
-	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestProjection(t, map[string]any{}, 1), q, nil, dual)
+	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1), q, nil, dual)
 	require.NoError(t, err)
 
 	rankedStart := strings.Index(sql, "ranked AS")

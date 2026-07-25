@@ -487,7 +487,7 @@ func TestBuildDuckDBQuery_NonKeysetSort_RespectsAttributeOrders(t *testing.T) {
 		DuckArgs:   nil,
 	}
 
-	params := injectTestProjection(t, map[string]any{}, 1)
+	params := injectTestRenderParams(t, map[string]any{}, 1)
 	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
 
@@ -514,7 +514,7 @@ func TestBuildDuckDBQuery_NonKeysetSort_FallbackWhenNoOrders(t *testing.T) {
 		DuckArgs:   nil,
 	}
 
-	params := injectTestProjection(t, map[string]any{}, 1)
+	params := injectTestRenderParams(t, map[string]any{}, 1)
 	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
 

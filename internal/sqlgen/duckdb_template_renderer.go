@@ -90,6 +90,9 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 			if err := requireProjectionParams(m); err != nil {
 				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
 			}
+			if err := requireS3Paths(m); err != nil {
+				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+			}
 		}
 		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
 			whereArgs = append(whereArgs, dual.PgMainArgs...)
@@ -133,6 +136,9 @@ func buildDuckDBQueryLegacy(tpl *template.Template, m map[string]any, anchor map
 		if err := requireProjectionParams(m); err != nil {
 			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
 		}
+		if err := requireS3Paths(m); err != nil {
+			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+		}
 	}
 	whereArgs = appendKeysetArgs(m, whereArgs)
 
@@ -172,6 +178,23 @@ func requireProjectionParams(params map[string]any) error {
 		return nil
 	}
 	return fmt.Errorf("advanced DuckDB template render is missing schema projection params [%s]; derive them via BuildSchemaProjection or BuildBenchmarkProjections — the toy-schema defaults were retired (#222)", strings.Join(missing, ", "))
+}
+
+// requireS3Paths fails an advanced-template render whose S3_PATHS is unbound.
+// The template renders read_parquet({{.S3_PATHS}}, union_by_name=true) with no
+// guard of its own, so an absent binding used to reach DuckDB as the literal
+// "<no value>" — a parser error that classified as a degradable read failure,
+// indistinguishable from a transient S3 outage (#299). The engine now rejects
+// an empty resolved path set before it gets here (ErrNoParquetPaths); this
+// keeps the bad render unreachable from every other caller too, the same way
+// requireProjectionParams closed the retired toy-projection hole (#222).
+func requireS3Paths(params map[string]any) error {
+	if paths, ok := params["S3_PATHS"].(string); ok && paths != "" {
+		return nil
+	}
+	return fmt.Errorf("advanced DuckDB template render is missing S3_PATHS; " +
+		"resolve a non-empty parquet path set first (render hint or manifest source) — " +
+		"an unbound value renders read_parquet(<no value>) (#299)")
 }
 
 func defaultIfEmpty(s, fallback string) string {

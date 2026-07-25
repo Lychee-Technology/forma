@@ -35,7 +35,7 @@ func flushGraceParams(t *testing.T, cutoff any) map[string]any {
 	if cutoff != nil {
 		m["FlushGraceCutoffMs"] = cutoff
 	}
-	return injectTestProjection(t, m, 1)
+	return injectTestRenderParams(t, m, 1)
 }
 
 func flushGraceQuery() *model.FederatedAttributeQuery {
@@ -112,7 +112,7 @@ func TestFlushGraceCompiledSkeletonIsCutoffIndependent(t *testing.T) {
 
 	// The engine's per-request param map carries a real cutoff; Compile must
 	// still bake the sentinel, not the value.
-	params := injectTestProjection(t, map[string]any{
+	params := injectTestRenderParams(t, map[string]any{
 		"EAVTable":           "eav_t",
 		"MainTable":          "main_t",
 		"ChangeLogTable":     "cl_t",

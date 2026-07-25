@@ -127,6 +127,11 @@ func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T)
 	params["EAVPivotAttrs"] = sp.EAVPivotAttrs
 	params["HasEAVPivot"] = sp.EAVPivotAttrs != ""
 	params["OuterSelect"] = sp.OuterSelect
+	// A resolved parquet path set is required too (#299): the renderer rejects an
+	// unbound S3_PATHS rather than emitting read_parquet(<no value>). The query's
+	// DuckDBHints template is resolved by the engine, not by the renderer, so a
+	// direct renderer call must bind the paths itself.
+	params["DuckDBS3Paths"] = []string{"s3://bucket/prefix/42/base/a.parquet"}
 
 	sql, _, err := sqlgen.BuildDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)

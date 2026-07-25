@@ -90,6 +90,9 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	if err := requireProjectionParams(m); err != nil {
 		return nil, fmt.Errorf("compile DuckDB query: %w", err)
 	}
+	if err := requireS3Paths(m); err != nil {
+		return nil, fmt.Errorf("compile DuckDB query: %w", err)
+	}
 	// Compile-time keyset arg values are discarded; Bind re-derives them from
 	// the request cursor.
 	delete(m, "KEYSET_ARGS")
