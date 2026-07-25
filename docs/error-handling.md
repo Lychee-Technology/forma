@@ -32,8 +32,8 @@ deployment, and should be treated as operator-visible consistency failures.
 
 ### `ErrParquetSetInconsistent`
 
-`federated.ErrParquetSetInconsistent`, carried by
-`federated.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
+`forma.ErrParquetSetInconsistent`, carried by
+`forma.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
 federated read whose manifest lists parquet objects that do not exist in
 storage. The manifest is the authoritative record of the schema's cold/warm
 tier, so a listed-but-absent object means that tier **has lost data** — the
@@ -120,6 +120,114 @@ being read. It is raised before any path reaches a scan.
 - **Operator action.** The message names both schema IDs and the manifest key.
   Fix the template so each schema resolves a distinct object, then repair the
   affected manifests (`docs/manifest-reconcile.md`).
+
+## Public HTTP error surface
+
+`internal/httpapi` treats the response body as an untrusted destination. The
+split follows the two error classes above, and is enforced by
+`respondError` in `internal/httpapi/error_response.go`.
+
+**Disclosure is decided by the error, not by the status.** A body is verbatim
+only when the error *provably* wraps a client sentinel — `errors.Is` against
+`forma.ErrInvalidInput`, `forma.ErrNotFound`, or `forma.ErrConflict`
+(`isClientError`). Everything else is redacted, whatever status it carries.
+
+This is deliberate, and the naive version was wrong. `classifyManagerError`
+derives the HTTP status by substring-matching the whole error chain, and driver
+text trips those probes: DuckDB reports a missing S3 object as
+`HTTP Error: … 404 (Not Found).`, which contains `not found`. Gating disclosure
+on the status would therefore have classified the single most likely #301
+scenario as 4xx and echoed the S3 URL — and, on a `postgres_scan` attach failure,
+the password — straight back to the client.
+
+**The HTTP status is unchanged** by redaction: a misclassified read-path error
+still returns its classified status, just with an opaque body.
+
+**Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
+and an `error_id`. No error text crosses. The full chain goes to
+`zap.S().Errorw` — *always*, whatever the status, because `cmd/server` runs
+`zap.NewProduction()` at Info level and routing a redacted 4xx to `Debugw` would
+have leaked nothing but recorded nothing either. An operator retrieves the detail
+from the `error_id` the caller quotes.
+
+**Accepted cost.** An error that classifies 4xx by heuristic alone and wraps no
+sentinel now gets an opaque body. The known instance is #296 (unknown sort
+attribute); `classifyManagerError`'s trigger-word list is the worklist of call
+sites that should start wrapping `forma.ErrInvalidInput`. An opaque validation
+message is strictly better than a leaked credential.
+
+```json
+{
+  "success": false,
+  "error": "internal read error",
+  "error_class": "parquet_set_inconsistent",
+  "error_id": "9f2c1a7e-…"
+}
+```
+
+Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
+`manifest_schema_mismatch`, and `internal` for everything else. They resolve via
+`errors.Is`, never message text.
+
+### Why an allowlist
+
+Redaction cannot be a blocklist of known-sensitive error types, because the
+sharpest leak does not come from one. The federated template interpolates
+`postgres_scan('{{.PG_CONN}}', …)`, and `PG_CONN` is built by
+`federated.DuckDBPostgresConnStringFromPool` as
+`host=… user=… password=… dbname=…`. When DuckDB cannot attach, its own message
+is:
+
+```
+IO Error: Unable to connect to Postgres at "host=… user=… password=… dbname=…": …
+```
+
+That text is driver-authored, so only a deny-by-default rule contains it. A
+missing parquet object likewise yields the full `s3://bucket/prefix/key` and the
+resolved endpoint URL.
+
+The success path has the matching rule: `toExecutionPlan`
+(`internal/entity_query_service.go`) allowlists plan fields and drops
+`DataSourcePlan.SQL`, `Params`, and `Notes` for the same reason, pinned by
+`TestToExecutionPlan_DoesNotLeakCredentials`.
+
+### Accepted disclosures inside the allowlist
+
+The allowlist is a gate on *provenance*, not on content: an error that wraps a
+client sentinel is disclosed verbatim. Two live cases put more than the caller's
+own input into a 4xx body. Both are accepted, not bugs — recorded here so the
+boundary is stated rather than discovered.
+
+- **Postgres driver prose on a 409.**
+  `internal/postgres_persistent_repository_main_table.go:25` wraps `pgErr.Detail`
+  with `forma.ErrConflict`, so a unique-violation body carries driver-authored
+  text naming physical columns, e.g.
+  `Key (schema_id, row_id)=(…) already exists.` No credentials or object keys
+  cross, but this is the one remaining case where driver text reaches a public
+  body. If the detail ever needs to stop leaking the physical column layout, the
+  fix is to summarise at the wrap site, not to widen the redaction gate.
+- **Internal schema IDs on a 404.** The `forma.ErrNotFound` chains in
+  `internal/schemameta/file_registry.go:199-299` name the schema ID or schema
+  name verbatim (`schema not found for ID: 402`). Every such value is derivable
+  from the caller's own request, so nothing is disclosed that the caller did not
+  supply — but "no schema id" is a stated constraint for *redacted* bodies, and
+  this is the boundary where that constraint stops applying.
+
+### Status change: create errors are now classified
+
+Converting `handleCreate` from a hardcoded `500` to `respondError` means create
+failures now answer their *classified* status. Errors that wrap a sentinel
+already behaved this way through other handlers; the visible change is for
+errors that only trip `classifyManagerError`'s substring fallback. Concretely,
+`POST /api/v1/nosuchschema` now returns `404` where it previously returned
+`500`, with a redacted body. This is a public contract change: clients keying on
+`500` for create failures must key on the response shape instead.
+
+### Known gap
+
+Credentials still reach error strings *inside* the process, so a Go embedder
+using `factory.NewEntityManager*` can capture them in its own logs. Scrubbing at
+the engine's error wraps is tracked separately.
 
 ## Message style
 
