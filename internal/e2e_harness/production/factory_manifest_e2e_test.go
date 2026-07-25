@@ -65,7 +65,7 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 		factoryPhaseInconsistency(ctx, t, manager, simple, ghostKey)
 	})
 	t.Run("Phase4_NegativeControlManifestOff", func(t *testing.T) {
-		factoryPhaseManifestOff(ctx, t, env, simple)
+		factoryPhaseManifestOff(ctx, t, env, simple, keys)
 	})
 }
 
@@ -173,23 +173,60 @@ func factoryPhaseInconsistency(ctx context.Context, t *testing.T, manager forma.
 // rejects a ManifestPrefix/S3DataPrefix set without a template, so "manifest
 // off" is all-or-nothing by construction.
 //
-// Row counts are deliberately not asserted, and the error is tolerated: with
-// no source and no hint the engine resolves an empty path set, which the
-// advanced DuckDB template renders as `read_parquet(<no value>, ...)` — a
-// parser error, classified ErrFederatedReadFailed. That is the pre-#250 state
-// of a manifest-off deployment whose caller supplies no hint (unrelated to
-// this wiring, and worth its own follow-up); the only thing this control pins
-// is that such a manager can never produce the Phase 3 classification.
-func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+// Three assertions, in increasing strength:
+//
+//  1. The hint-less query fails with ErrNoParquetPaths (#299). With no source
+//     and no hint nothing authors a path set, and since #299 that is its own
+//     non-degradable classification rather than the degradable read failure a
+//     `read_parquet(<no value>)` parser error used to produce.
+//  2. That failure is not the Phase 3 classification, and degraded mode does
+//     not absorb it.
+//  3. The SAME manager, given an explicit hint, reads every seeded row. This
+//     is what gives the control discriminating power: it proves the objects are
+//     healthy and this manager's engine works, so Phase 3's error can only have
+//     come from the manifest wiring — not from a broken environment that would
+//     fail every query regardless. Before #299 the hint-less query died at
+//     parse time and no positive assertion was possible here at all.
+func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, keys []string) {
 	t.Helper()
 	manager := newFactoryManager(ctx, t, env, false)
+
 	_, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{})
+	if err == nil {
+		t.Fatal("manifest-off, hint-less query succeeded: with no parquet source and no hint there is no path set to scan")
+	}
+	if !errors.Is(err, fedengine.ErrNoParquetPaths) {
+		t.Fatalf("manifest-off, hint-less query must classify as ErrNoParquetPaths (#299), got: %v", err)
+	}
 	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
 		t.Fatalf("manifest-off manager reported a manifest inconsistency; Phase 3's classification is environment noise, not wiring: %v", err)
 	}
-	if err != nil {
-		t.Logf("manifest-off, hint-less query failed with a non-inconsistency error (characterization: no parquet source and no hint renders no path set): %v", err)
+	if errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("an unresolvable path set must not look like a transient read failure — that conflation is the #299 bug: %v", err)
 	}
+
+	// Non-degradable: a Postgres-only answer here would silently omit the cold
+	// tier the request asked for.
+	if _, derr := factoryQuery(ctx, manager, schema, factoryQueryOpts{degraded: true}); derr == nil {
+		t.Fatal("degraded mode absorbed the empty path set; a misconfigured read surface must stay loud (#299)")
+	} else if !errors.Is(derr, fedengine.ErrNoParquetPaths) {
+		t.Fatalf("degraded-mode failure lost its classification: %v", derr)
+	}
+
+	// Positive control on the same manager: the objects are fine and the engine
+	// reads them when told where to look.
+	uris := make([]string, 0, len(keys))
+	for _, key := range keys {
+		uris = append(uris, fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, key))
+	}
+	res, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{hint: strings.Join(uris, ",")})
+	if err != nil {
+		t.Fatalf("manifest-off manager could not read the seeded objects even with an explicit hint, so Phase 3 proves nothing about wiring: %v", err)
+	}
+	if len(res.Data) != factorySeedRows {
+		t.Fatalf("hinted manifest-off query returned %d rows, want %d", len(res.Data), factorySeedRows)
+	}
+	assertFactoryUsedDuckDB(t, res)
 }
 
 // newFactoryManager builds an EntityManager exactly the way a server does:
