@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // Public error-class tokens surfaced on redacted 5xx bodies (#301). They are the
@@ -101,4 +104,49 @@ func classifyManagerError(err error) int {
 	}
 
 	return http.StatusInternalServerError
+}
+
+// respondError classifies err, records the full chain for operators, and writes
+// a client-safe body.
+//
+// 4xx keeps the verbatim message: it describes caller-supplied input, the caller
+// needs to know what to fix, and nothing on the write path touches S3 or the
+// postgres_scan connection string.
+//
+// 5xx carries no error text at all (#301). Errors reaching this point hold
+// bucket-relative S3 object keys and — when DuckDB fails to attach
+// postgres_scan — the Postgres password verbatim inside the driver's own
+// message. Redaction is an allowlist rather than a blocklist of known-sensitive
+// types precisely because that password originates in driver text, not in a
+// Forma error type. The detail is not discarded: it goes to the log under an
+// error_id the client can quote back.
+func respondError(w http.ResponseWriter, op string, err error, logFields ...any) {
+	respondErrorWithStatus(w, classifyManagerError(err), op, err, logFields...)
+}
+
+// respondErrorWithStatus is respondError for callers that have already
+// classified in order to choose their message (executeGet's 404 wording).
+func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
+	fields := make([]any, 0, len(logFields)+8)
+	fields = append(fields, logFields...)
+	fields = append(fields, "status", status)
+
+	if status < http.StatusInternalServerError {
+		fields = append(fields, "error", err.Error())
+		zap.S().Debugw(op, fields...)
+		_ = writeError(w, status, fmt.Sprintf("%s: %v", op, err))
+		return
+	}
+
+	class := errorClass(err)
+	errorID := uuid.NewString()
+	fields = append(fields, "error_class", class, "error_id", errorID, "error", err.Error())
+	zap.S().Errorw(op, fields...)
+
+	_ = writeJSON(w, status, APIResponse{
+		Success:    false,
+		Error:      publicErrorMessage(class),
+		ErrorClass: class,
+		ErrorID:    errorID,
+	})
 }
