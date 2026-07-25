@@ -93,7 +93,7 @@ These were settled during design. Do not re-litigate during implementation.
 ## Contract
 
 **Revised during implementation.** This section originally said redaction keys
-off the classified status. That was wrong, and the review caught it: 
+off the classified status. That was wrong, and the review caught it:
 `classifyManagerError` derives the status by substring-matching the whole chain,
 and driver text trips those probes in practice. DuckDB renders a missing object as
 `HTTP Error: … 404 (Not Found).` — which contains `not found`, classifies **404**,

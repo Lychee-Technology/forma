@@ -140,27 +140,58 @@ the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
 direct site passes a literal 4xx constant from an allowlist — so a new handler
 cannot echo a runtime-classified status without going through `respondError`.
 
-**Disclosure is decided by the error, not by the status.** A body is verbatim
-only when the error *provably* wraps a client sentinel — `errors.Is` against
-`forma.ErrInvalidInput`, `forma.ErrNotFound`, or `forma.ErrConflict`
-(`isClientError`). Everything else is redacted, whatever status it carries.
+**Both the status and the disclosure are decided by sentinel evidence, and by
+nothing else.** `classifyManagerError` matches `errors.Is` against
+`forma.ErrNotFound` (404), `forma.ErrConflict` (409), and
+`forma.ErrInvalidInput` (400); everything else — including a `nil` error — is
+`500`. `isClientError` gates disclosure on the same three sentinels: a body is
+verbatim only when the error *provably* wraps one, and is redacted otherwise.
 
-The full condition is `status < http.StatusInternalServerError &&
-isClientError(err)`. The status conjunct is belt-and-braces, not the decision:
-it cannot promote anything to verbatim, only hold it back. A caller that passes
-an explicit 5xx to `respondErrorWithStatus` gets a redacted body even if the
-error wraps a sentinel.
+There is no substring heuristic. An earlier version classified on message text
+(`not found` → 404, `duplicate` → 409, `invalid`/`required`/`must be` → 400) for
+errors that wrapped no sentinel. It was removed for two reasons:
 
-This is deliberate, and the naive version was wrong. `classifyManagerError`
-derives the HTTP status by substring-matching the whole error chain, and driver
-text trips those probes: DuckDB reports a missing S3 object as
-`HTTP Error: … 404 (Not Found).`, which contains `not found`. Gating disclosure
-on the status would therefore have classified the single most likely #301
-scenario as 4xx and echoed the S3 URL — and, on a `postgres_scan` attach failure,
-the password — straight back to the client.
+- **It produced wrong statuses, and redaction did not fix that.** Driver prose
+  trips those words. DuckDB renders a missing S3 object as
+  `HTTP Error: … 404 (Not Found).`, so an S3 or credential failure answered HTTP
+  `404`. Hiding the body leaves the protocol lie in place: clients, caches, and
+  alerting read `404` as "the resource is absent", stop retrying, and may cache
+  the negative result. #301 asked for read-path consistency errors to answer a
+  generic 5xx, and `AGENTS.md` classes them as operator-visible failures, not
+  4xx.
+- **It was the last site classifying an error by string comparison**, which
+  `AGENTS.md` forbids.
 
-**The HTTP status is unchanged** by redaction: a misclassified read-path error
-still returns its classified status, just with an opaque body.
+The consequence is that a genuine client error earns its 4xx only by wrapping a
+sentinel. Removing the heuristic therefore required a sweep of the sites that had
+been relying on it — every one of them now wraps `forma.ErrInvalidInput`, with
+message text unchanged:
+
+| site | caller mistake |
+| --- | --- |
+| `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
+| `internal/transform/transformer.go`, `internal/transform/attribute_converter.go` | create/update body omitting a `required` attribute |
+| `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator |
+| `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
+| `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
+
+The write-path pair matters most: without it, a `POST` omitting a required
+attribute would answer `500` with an opaque body instead of naming the attribute.
+The `sqlgen`/`conditionexpr` group is reachable through `POST
+/api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+Errors the heuristic used to catch that were **not** given sentinels are either
+unreachable from a handler (registry load, `internal/postgres_health.go`, `cmd/`
+startup validation) or internal invariants — `schema id must be positive`,
+`duplicate attribute id`, `unsupported column %q`, metadata drift — for which
+`500` is the more truthful answer than the misleading 4xx they used to return.
+
+The full disclosure condition is `status < http.StatusInternalServerError &&
+isClientError(err)`. The status conjunct can only hold disclosure back, never
+grant it: a caller that passes an explicit 5xx to `respondErrorWithStatus` gets a
+redacted body even if the error wraps a sentinel. On every live path the two
+agree, so **a redacted body is a `500`** — an error without a sentinel classifies
+500, and one with a sentinel takes the verbatim branch.
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 and an `error_id`. No error text crosses. There are exactly two fixed messages
@@ -169,27 +200,61 @@ classes, and `internal error` for `errorClassInternal`. **`internal` is the
 common case in production** — it absorbs `ErrFederatedReadFailed`,
 `ErrPostgresReadFailed`, metadata drift, and transform failures — so a client
 asserting on the literal `internal read error` would break on the majority of
-redacted responses. Discriminate on `error_class`, never on `error`. The full chain goes to
-`zap.S().Errorw` — *always*, whatever the status, because `cmd/server` runs
-`zap.NewProduction()` at Info level and routing a redacted 4xx to `Debugw` would
-have leaked nothing but recorded nothing either. An operator retrieves the detail
-from the `error_id` the caller quotes.
+redacted responses. Discriminate on `error_class`, never on `error`. The chain
+goes to `zap.S().Errorw`; the verbatim branch logs the same text at `Debugw`,
+where the caller already has it. An operator retrieves the detail from the
+`error_id` the caller quotes.
 
-**Accepted cost — the redacted 4xx.** An error that classifies 4xx by heuristic
-alone and wraps no sentinel now gets an opaque body. The known instance is #296:
-`cannot sort by unknown attribute 'nope' in schema 'lead'`
-(`internal/entity_query_sort.go:84`) wraps nothing, so it keeps its correct
-`400` but answers `{"error": "internal error", "error_class": "internal",
-"error_id": …}` — the guidance no longer reaches the caller. This is the most
-common case where a 4xx body carries `error_class` and `error_id`, not the only
-one: *every* heuristic-classified status that wraps no sentinel carries both,
-including the DuckDB `404 (Not Found)` case above. `error_class` on a 4xx
-therefore does not identify an unknown sort attribute — do not build retry or UX
-logic on that inference. It is pinned by
-`TestRespondErrorRedactsHeuristicOnly4xx`. `classifyManagerError`'s trigger-word
-list is the worklist of call sites that should start wrapping
-`forma.ErrInvalidInput`. An opaque validation message is strictly better than a
-leaked credential.
+### Credentials are scrubbed before anything is written
+
+`redactCredentials` (`internal/httpapi/error_response.go`) runs on every string
+this boundary emits — response body *and* log line — replacing the value of any
+`password=…` assignment with `***REDACTED***`.
+
+The log half is the point. Before #301 this package logged no errors at all, so
+routing the full chain to `Errorw` newly put the Postgres password — which DuckDB
+quotes back inside its own attach-failure prose — into whatever log collector and
+retention the deployment runs. Scrubbing at the source of those wraps is tracked
+by #306; this boundary scrub is what protects deployments in the meantime.
+
+**The matcher is not local to `httpapi`.** It lives in `internal/redact`
+(`ConnStringPassword`), shared with the CDC logger, which has needed the same
+scrub since #290. Sharing is a correctness requirement, not tidying: a naive
+`'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
+the password tail past the placeholder. That was a real bug fixed in #290, and
+its regression tests (`internal/cdc/redact_test.go`) now exercise the shared
+matcher through `redactConnStr`. Three forms are covered — the
+`escapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
+the libpq-quoted `password='…'`, and the bare `password=value` that
+`internal/federated/engine.go` builds for `postgres_scan`.
+
+Two shapes are deliberately **not** matched, recorded in
+`TestRedactCredentialsKnownGaps`: whitespace around the `=` (`password = secret`)
+and double-quoted values (`password="…"`). Neither is produced here — both DSN
+builders emit `password=` unspaced and quote with single quotes, and DuckDB
+echoes back what it was given. The pattern is kept byte-identical to the one #290
+hardened rather than widened on speculation; widen it in that one place if a
+producer ever appears.
+
+It is deliberately narrow, and **non-secret operator detail is kept on purpose**:
+S3 object keys, schema ids, endpoint URLs, and the driver's own diagnosis all
+survive verbatim in the log. A redacted response leaves the operator with an
+`error_id` and that log line, and a blanket scrub would leave nothing to
+correlate the id against. Pinned by `TestRedactCredentialsKeepsOperatorDetail`.
+
+### Residual: a mixed chain discloses its non-credential causes
+
+`isClientError` uses `errors.Is`, which matches any leaf. A multi-cause chain —
+`errors.Join(forma.ErrInvalidInput, driverErr)`, or the `fmt.Errorf("%w: %w", …)`
+shape used throughout `internal/federated` — therefore takes the **verbatim**
+branch and echoes the driver cause alongside the client one.
+
+`redactCredentials` covers the credential half, so no chain shape can put the
+password in a body. What remains is that a non-credential operator detail (an S3
+object key, say) can reach a `400` body. Pinned, residual included, by
+`TestMixedChainVerbatimBodyCarriesNoCredential`. Closing it properly means giving
+client errors typed public messages rather than echoing raw chain text — a
+redesign of the 4xx surface, tracked separately.
 
 ```json
 {
@@ -278,19 +343,21 @@ The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
 
 That follows from the gate rather than contradicting it. The chain built by
 `file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
-that in turn, so `classifyManagerError` returns `404` from its **sentinel**
-branch and `isClientError` is true — the verbatim branch, logged at `Debugw`,
-with no `error_class` and no `error_id`. The substring fallback is never
-consulted.
+that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
+`isClientError` is true — the verbatim branch, logged at `Debugw`, with no
+`error_class` and no `error_id`. Pinned by
+`TestCreateUnknownSchemaIs404AndVerbatim`.
 
 Clients keying on `500` to detect create failures must key on `success: false`
 plus the status instead.
 
 ### Known gap
 
-Credentials still reach error strings *inside* the process, so a Go embedder
-using `factory.NewEntityManager*` can capture them in its own logs. Scrubbing at
-the engine's error wraps is tracked separately.
+Credentials still reach error strings *inside* the process. `redactCredentials`
+scrubs them at the HTTP boundary, so nothing served or logged by
+`internal/httpapi` carries one — but a Go embedder using
+`factory.NewEntityManager*` receives the raw `error` and can capture the password
+in its own logs. Scrubbing at the engine's error wraps is tracked by #306.
 
 ## Message style
 
