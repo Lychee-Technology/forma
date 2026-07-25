@@ -79,12 +79,17 @@ func TestRedactCredentialsRemovesPasswordValues(t *testing.T) {
 // TestRedactCredentialsKnownGaps records the shapes the matcher does NOT cover,
 // so the boundary of the control is written down rather than discovered.
 //
-// Neither is produced by this repo: internal/federated/engine.go and the CDC
-// BuildPGDSN both emit `password=` with no surrounding spaces and quote values
-// with single quotes, and DuckDB echoes back whatever it was given. The pattern is
-// kept byte-identical to the one #290 hardened rather than widened on
-// speculation — widening it would have to be justified by a real producer and
-// re-verified against internal/cdc/redact_test.go.
+// An earlier version of this test named double-quoting as the residual. That was
+// wrong on both halves: `password="SECRET"` is fully redacted (the bare branch
+// consumes the quotes along with the value), and the shape that actually survives
+// is an *unquoted value containing a space* — which no pattern can match, because
+// nothing marks where such a value ends.
+//
+// That residual is closed at the producer rather than here. Both DSN builders in
+// this repo now quote their values — internal/cdc's since #290,
+// federated.DuckDBPostgresConnStringFromPool since #301 — so every password this
+// repo generates lands on a quoted branch and is matched whole. What remains
+// uncovered is third-party or legacy unquoted text.
 func TestRedactCredentialsKnownGaps(t *testing.T) {
 	t.Run("whitespace around the equals is not matched", func(t *testing.T) {
 		in := "password = s3cr3t dbname=d"
@@ -93,12 +98,24 @@ func TestRedactCredentialsKnownGaps(t *testing.T) {
 		}
 	})
 
-	t.Run("double-quoted values are not a conninfo shape", func(t *testing.T) {
-		// The bare-value branch stops at the space, so the second word survives.
-		// libpq quotes with single quotes; nothing emits this form.
-		got := redactCredentials(`host=h password="two words" dbname=d`)
-		if !strings.Contains(got, "***REDACTED***") {
-			t.Fatalf("the first token should still be redacted, got %q", got)
+	t.Run("an unquoted value containing a space keeps its tail", func(t *testing.T) {
+		got := redactCredentials("host=h password=my secret dbname=d")
+		if !strings.Contains(got, "secret") {
+			t.Fatalf("residual closed — update this test and the redact package docs: %q", got)
+		}
+	})
+
+	t.Run("quoting at the producer is what closes it", func(t *testing.T) {
+		got := redactCredentials(`host='h' password='my secret' dbname='d'`)
+		if strings.Contains(got, "secret") {
+			t.Fatalf("a quoted value must be redacted whole, got %q", got)
+		}
+	})
+
+	t.Run("double-quoted values are in fact covered", func(t *testing.T) {
+		got := redactCredentials(`host=h password="SECRET" dbname=d`)
+		if strings.Contains(got, "SECRET") {
+			t.Fatalf("expected the bare branch to consume the quotes too, got %q", got)
 		}
 	})
 }
