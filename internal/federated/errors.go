@@ -2,8 +2,6 @@ package federated
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma"
 )
@@ -34,14 +32,6 @@ var ErrFederatedReadFailed = errors.New("federated read failed")
 // here.
 var ErrPostgresReadFailed = errors.New("postgres read failed")
 
-// ErrParquetSetInconsistent marks a federated read whose manifest lists
-// parquet objects that do not exist in storage. This is a read-path
-// consistency error (docs/error-handling.md): the cold tier has lost data,
-// so it must surface to operators even under AllowPartialDegradedMode —
-// degrading to Postgres-only would re-silence exactly the silent row loss
-// this classification exists to make loud (#187 scenario 2).
-var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manifest")
-
 // ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public
 // root package and re-exported here for internal call sites. They must be
 // matchable by embedders that reach the engine through factory.NewEntityManager*
@@ -52,23 +42,15 @@ var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manife
 var (
 	ErrNoParquetPaths         = forma.ErrNoParquetPaths
 	ErrManifestSchemaMismatch = forma.ErrManifestSchemaMismatch
+	// ErrParquetSetInconsistent joined them for #301: internal/httpapi
+	// classifies it to redact the object keys it carries out of public 5xx
+	// bodies, and cannot import this package without pulling DuckDB CGO into a
+	// pure-Go test build.
+	ErrParquetSetInconsistent = forma.ErrParquetSetInconsistent
 )
 
 type (
 	NoParquetPathsError         = forma.NoParquetPathsError
 	ManifestSchemaMismatchError = forma.ManifestSchemaMismatchError
+	ParquetSetInconsistentError = forma.ParquetSetInconsistentError
 )
-
-// ParquetSetInconsistentError carries the schema and the missing object keys
-// so the message names the offending state, per the read-path error style.
-type ParquetSetInconsistentError struct {
-	SchemaID    int16
-	MissingKeys []string
-}
-
-func (e *ParquetSetInconsistentError) Error() string {
-	return fmt.Sprintf("schema %d manifest lists %d parquet object(s) missing from storage: %s",
-		e.SchemaID, len(e.MissingKeys), strings.Join(e.MissingKeys, ", "))
-}
-
-func (e *ParquetSetInconsistentError) Unwrap() error { return ErrParquetSetInconsistent }

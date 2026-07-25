@@ -3,6 +3,7 @@ package forma
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Sentinel errors returned by the entity manager layer.
@@ -86,3 +87,35 @@ func (e *ManifestSchemaMismatchError) Error() string {
 }
 
 func (e *ManifestSchemaMismatchError) Unwrap() error { return ErrManifestSchemaMismatch }
+
+// ErrParquetSetInconsistent marks a federated read whose manifest lists parquet
+// objects that do not exist in storage. The manifest is the authoritative record
+// of the schema's cold/warm tier, so a listed-but-absent object means that tier
+// has lost data. Not degradable: surfacing it even under
+// AllowPartialDegradedMode is the whole point — degrading here would return
+// exactly the silently short answer this classification exists to make loud
+// (#187 scenario 2).
+//
+// It lives here rather than in internal/federated for the same reason as the two
+// errors above, plus one specific to #301: internal/httpapi must classify it to
+// redact its object keys, and cannot import internal/federated without pulling
+// DuckDB CGO into a pure-Go test build.
+var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manifest")
+
+// ParquetSetInconsistentError carries the schema and the missing object keys so
+// the message names the offending state, per the read-path error style.
+//
+// MissingKeys holds bucket-relative S3 object keys — operator detail that must
+// not cross a public transport. internal/httpapi redacts it from 5xx bodies
+// (#301); any new transport owes the same treatment.
+type ParquetSetInconsistentError struct {
+	SchemaID    int16
+	MissingKeys []string
+}
+
+func (e *ParquetSetInconsistentError) Error() string {
+	return fmt.Sprintf("schema %d manifest lists %d parquet object(s) missing from storage: %s",
+		e.SchemaID, len(e.MissingKeys), strings.Join(e.MissingKeys, ", "))
+}
+
+func (e *ParquetSetInconsistentError) Unwrap() error { return ErrParquetSetInconsistent }
