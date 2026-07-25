@@ -490,17 +490,39 @@ The write failed in both earlier columns; only its status moved, because #301
 removed the substring heuristic that had been matching `duplicate` in the driver
 text. The functional bug predates #307.
 
-`transform.dedupeEAVRecords` now collapses records colliding on that primary key
-before they leave `ToAttributes`, keeping the **last** one — the same
+`transform.dedupeEAVRecords` now resolves the duplicate spellings before the
+records leave `ToAttributes`, keeping the **last** spelling — the same
 duplicate-key rule `encoding/json` applies. This is deterministic rather than
 map-order dependent: `flattenToAttributes` sorts each map's keys, and for any
 dotted name the nested spelling's top-level key is a proper prefix of the literal
-one, so it sorts first and the literal key's record — the caller's explicit
-value — is emitted last.
+one, so it sorts first and the literal key's records — the caller's explicit
+value — are emitted last.
+
+**The unit of replacement is the whole logical attribute, not the primary key.**
+When one spelling wins, every record the losing spellings produced for that
+attribute is discarded — all array indices, and the empty-list marker. Collapsing
+per `(schema_id, row_id, attr_id, array_indices)` would look right for scalars
+and be silently wrong for lists: a stored `["old0","old1"]` replaced by a literal
+`["new0"]` collides only at index 0, so `old1` would survive into a list the
+caller replaced; and a literal `[]` emits only the marker row (`array_indices`
+empty, both value columns `NULL`), which collides with no element index at all,
+so the clear would persist nothing. Both would answer `200` with stale rows —
+quietly wrong, where the duplicate-key failure was at least loud. To tell the two
+spellings apart, `flattenToAttributes` tags each record it emits with the
+concrete key path that produced it; `strings.Join(path, ".")` cannot serve as
+that tag, because collapsing `["contact","emails"]` and `["contact.emails"]` into
+one name is exactly the ambiguity the tag has to resolve. The tag is flatten-time
+provenance and never reaches `model.EAVRecord`.
+
+A residual primary-key collision *within* one spelling is still collapsed
+last-wins. That is a backstop that keeps the slice insertable, not a policy: one
+spelling cannot legitimately emit a key twice, since JSON objects have unique
+keys and array indices are unique per list.
 
 **This converts a failure into a success**, which is the widest kind of contract
 change in this document. A client that treated a duplicate-attribute write as
-rejected now gets an accepted write carrying the literal key's value.
+rejected now gets an accepted write carrying the literal key's value — the whole
+of it, including a shortened or emptied list.
 
 `insertEAVAttributes` additionally routes its `tx.Exec` error through
 `classifyPgError`, matching the two `entity_main` sites. Any residual `23505` the
