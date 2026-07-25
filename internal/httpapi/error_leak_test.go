@@ -193,24 +193,54 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 	}
 }
 
-// TestWriteErrorIsNeverReachedWithAServerError is a source-level guard. The
-// canary tests above only cover handlers that exist today; this one fails the
-// build when a new handler reintroduces the #301 leak by copying an old call
-// site or writing writeError(w, http.StatusInternalServerError, err.Error()).
+// writeErrorAllowed4xx is the set of statuses a writeError call site may name
+// literally. It is deliberately an allowlist: writeError echoes its message
+// straight into the client body, so the safe statuses have to be enumerated
+// rather than the unsafe ones excluded. Extend it only when a real call site
+// needs another 4xx constant.
+var writeErrorAllowed4xx = map[string]bool{
+	"http.StatusBadRequest":       true,
+	"http.StatusNotFound":         true,
+	"http.StatusConflict":         true,
+	"http.StatusMethodNotAllowed": true,
+}
+
+// TestWriteErrorAlwaysCarriesALiteral4xxStatus is a source-level guard. The
+// canary tests above only cover the handlers that exist today; this one fails
+// the build when a new handler reintroduces the #301 leak.
 //
-// After #301, writeError is reachable only with literal 4xx statuses. Anything
-// that pairs it with classifyManagerError or a 500 must go through
-// respondError instead. Grep-gate precedent: #260.
-func TestWriteErrorIsNeverReachedWithAServerError(t *testing.T) {
-	forbidden := regexp.MustCompile(
-		`writeError\(\s*w\s*,\s*(classifyManagerError\(|http\.StatusInternalServerError)`)
+// The invariant: every writeError call in a non-test file passes a literal 4xx
+// http.Status* constant from writeErrorAllowed4xx, with exactly one sanctioned
+// exception — respondErrorWithStatus in error_response.go, which passes the
+// variable `status` under a runtime gate (isClientError) that is what actually
+// constrains it. That exception is exempted by asserting it is unique, so if it
+// moves, multiplies, or reappears in another file the guard fails.
+//
+// It is an allowlist rather than a blocklist of bad statuses because a blocklist
+// can be spelled around, and the most likely regression shape spells around it
+// for free: copying error_response.go's own `writeError(w, status, ...)` line
+// into a handler yields a 500 body full of S3 keys that no pattern for
+// `http.StatusInternalServerError` would ever see. Deny-by-default also covers
+// non-500 5xx constants (503 on the degraded-mode path), bare numerics, and any
+// receiver name. Grep-gate precedent: #260.
+//
+// NOTE: this guard only sees writeError. A handler that bypasses it — calling
+// writeJSON(w, 500, APIResponse{Error: err.Error()}) directly, or reaching for
+// http.Error — leaks identically and is invisible here. Widening it to every
+// body-writing path was judged out of scope for #301; the boundary is recorded
+// so the next author trusts the guard for exactly what it checks.
+func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
+	// Captures the status expression of each call. `\w+` for the receiver so a
+	// name other than `w` cannot slip through.
+	callSite := regexp.MustCompile(`writeError\(\s*\w+\s*,\s*([^,]+?)\s*,`)
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
 
-	scanned := 0
+	scanned, calls := 0, 0
+	var unlisted []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -222,14 +252,36 @@ func TestWriteErrorIsNeverReachedWithAServerError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if loc := forbidden.FindIndex(src); loc != nil {
+		// FindAll, not Find: every offending site must be reported, not just the
+		// first one in each file.
+		for _, loc := range callSite.FindAllSubmatchIndex(src, -1) {
+			calls++
+			status := strings.TrimSpace(string(src[loc[2]:loc[3]]))
+			if writeErrorAllowed4xx[status] {
+				continue
+			}
 			line := 1 + strings.Count(string(src[:loc[0]]), "\n")
-			t.Errorf("%s:%d formats a server error into a client body; use respondError instead (#301): %q",
-				name, line, string(src[loc[0]:loc[1]]))
+			unlisted = append(unlisted, fmt.Sprintf("%s:%d (status %q)", name, line, status))
 		}
 	}
 
 	if scanned == 0 {
 		t.Fatalf("guard scanned no source files — it would pass vacuously")
+	}
+	if calls == 0 {
+		t.Fatalf("guard matched no writeError call sites — it would pass vacuously")
+	}
+
+	if len(unlisted) != 1 {
+		t.Errorf("expected exactly 1 writeError site with a non-literal status "+
+			"(respondErrorWithStatus in error_response.go), found %d: %v\n"+
+			"every other site must pass a literal 4xx constant from writeErrorAllowed4xx; "+
+			"anything classified at runtime must go through respondError instead (#301)",
+			len(unlisted), unlisted)
+		return
+	}
+	if !strings.HasPrefix(unlisted[0], "error_response.go:") {
+		t.Errorf("the sanctioned non-literal writeError status moved out of error_response.go to %s; "+
+			"only respondErrorWithStatus may pass a runtime-classified status (#301)", unlisted[0])
 	}
 }
