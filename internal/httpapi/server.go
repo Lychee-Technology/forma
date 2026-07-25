@@ -587,11 +587,11 @@ type APIResponse struct {
 	Error   string `json:"error,omitempty"`
 	// ErrorClass and ErrorID are populated on every redacted response (#301):
 	// a stable machine token for client discrimination, and a correlation id
-	// echoed on the operator log line that holds the full error chain. Not a
-	// 5xx-only pair — redaction is gated on sentinel evidence rather than on
-	// the status, so a 4xx classified by substring heuristic alone carries both
-	// fields too (TestRespondErrorRedactsHeuristicOnly4xx). Both are omitempty,
-	// so success bodies and verbatim 4xx bodies are unchanged.
+	// echoed on the operator log line that holds the error chain. Redaction and
+	// classification both key off sentinel evidence, so on every live path this
+	// pair means a 500 — an error with no sentinel classifies 500, and one with
+	// a sentinel takes the verbatim branch. Both are omitempty, so success
+	// bodies and verbatim 4xx bodies are unchanged.
 	ErrorClass string `json:"error_class,omitempty"`
 	ErrorID    string `json:"error_id,omitempty"`
 }

@@ -173,10 +173,10 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 //
 // It also pins that this 404 takes the *verbatim* branch. The chain is the real
 // one — internal/schemameta/file_registry.go:222 wraps forma.ErrNotFound — so
-// classifyManagerError reaches 404 through its sentinel branch and isClientError
-// is true. That combination must leave the body unredacted and free of
-// error_class/error_id, which is what distinguishes it from a heuristic-only 4xx
-// (TestRespondErrorRedactsHeuristicOnly4xx).
+// classifyManagerError reaches 404 on sentinel evidence and isClientError is
+// true. That combination must leave the body unredacted and free of
+// error_class/error_id, which is what distinguishes it from an error carrying no
+// sentinel at all (TestSentinelLessErrorIsRedacted500).
 func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
