@@ -143,6 +143,56 @@ func TestParquetSource_InvalidHintTemplateErrs(t *testing.T) {
 	require.Equal(t, 0, pg.queryCalls, "invalid input must not be absorbed by degraded mode")
 }
 
+// TestParquetSource_EmptyHintErrs pins the other half of the precedence
+// contract (#250 PR review): a hint that renders successfully but yields no
+// usable path — "," or whitespace-only segments — is still an explicit hint.
+// Treating its empty result as "no hint" would fall through to the manifest
+// source and answer the query from a different path set than requested, the
+// exact silent provenance switch the invalid-template rule exists to prevent.
+func TestParquetSource_EmptyHintErrs(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+
+	q := coldTierQuery()
+	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: " , "}
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		q, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Equal(t, 0, src.pathsCalls, "a degenerate hint must not fall through to the parquet source")
+	require.Equal(t, 0, duck.calls, "a degenerate hint must fail before execution")
+	require.Equal(t, 0, pg.queryCalls, "invalid input must not be absorbed by degraded mode")
+}
+
+// TestDuckDBParquetPathsForQuery_DegenerateHint covers the resolver directly:
+// absent hint stays (nil, nil); a present hint that renders to zero usable
+// paths is invalid input.
+func TestDuckDBParquetPathsForQuery_DegenerateHint(t *testing.T) {
+	noHint, err := duckDBParquetPathsForQuery(&model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7},
+	})
+	require.NoError(t, err)
+	require.Nil(t, noHint)
+
+	for _, tmpl := range []string{",", " , ", "   "} {
+		q := &model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7},
+			DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: tmpl},
+		}
+		paths, err := duckDBParquetPathsForQuery(q)
+		require.Nil(t, paths)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
+		require.ErrorContains(t, err, tmpl)
+	}
+}
+
 // TestSentinel_DirtyFetchFailureIsPostgresReadFailed pins the #249 review P1
 // for scenario 9: the Postgres side of a federated read (here the dirty-ID
 // consistency fetch) classifies as ErrPostgresReadFailed.

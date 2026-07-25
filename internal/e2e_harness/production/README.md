@@ -228,3 +228,4 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #181 failure injection | `ExecSQL` |
 | #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB` |
 | #186 multi-schema isolation | `e2e_simple`/`e2e_second` + `FaultInjectingS3`/`PausingS3` (`multi_schema_isolation_e2e_test.go`, `concurrent_flush_multi_schema_e2e_test.go`) |
+| #250 factory/server manifest wiring | `forma.DefaultConfig` + `factory.NewEntityManagerWithConfigContext` over `Env.Pool`/`Tables`/`Registry`/`DuckCfg`/`CDC` + `RegisterParquetInManifest` (`factory_manifest_e2e_test.go`) |

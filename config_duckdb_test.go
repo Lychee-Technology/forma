@@ -1,6 +1,8 @@
 package forma
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,6 +36,216 @@ func TestDuckDBResourceConfigDefaults(t *testing.T) {
 	}
 	if cfg.MemoryLimitMB != 4096 {
 		t.Errorf("Expected memory limit to default to 4096MB (parity with the removed template PRAGMA memory_limit='4GB'), got %d", cfg.MemoryLimitMB)
+	}
+}
+
+func TestDefaultDuckDBConfig_ManifestReadOff(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig(nil)
+
+	if cfg.DuckDB.ManifestReadEnabled() {
+		t.Error("Expected manifest read to be disabled by default; a non-empty default template would silently switch existing deployments to manifest-driven reads")
+	}
+	if cfg.DuckDB.ManifestTemplate != "" {
+		t.Errorf("Expected default manifest template to be empty, got %q", cfg.DuckDB.ManifestTemplate)
+	}
+	if cfg.DuckDB.ManifestPrefix != "" {
+		t.Errorf("Expected default manifest prefix to be empty, got %q", cfg.DuckDB.ManifestPrefix)
+	}
+	if cfg.DuckDB.S3Bucket != "" {
+		t.Errorf("Expected default s3 bucket to be empty, got %q", cfg.DuckDB.S3Bucket)
+	}
+	if cfg.DuckDB.S3DataPrefix != "" {
+		t.Errorf("Expected default s3 data prefix to be empty, got %q", cfg.DuckDB.S3DataPrefix)
+	}
+}
+
+func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		duckDB     DuckDBConfig
+		errorField string
+	}{
+		{
+			name: "template with bucket and data prefix is valid",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				S3DataPrefix:     "forma",
+				ManifestPrefix:   "forma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "",
+		},
+		{
+			name: "template without bucket",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "   ",
+				ManifestPrefix:   "forma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.s3Bucket",
+		},
+		{
+			name: "template that fails to parse",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/{{.SchemaID}.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "inert manifest prefix without template",
+			duckDB: DuckDBConfig{
+				S3Bucket:       "forma-lake",
+				ManifestPrefix: "forma",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "inert s3 data prefix without template",
+			duckDB: DuckDBConfig{
+				S3Bucket:     "forma-lake",
+				S3DataPrefix: "forma",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "template without data prefix is valid (fallback glob disabled)",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestPrefix:   "forma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "",
+		},
+		{
+			// Padded values are rejected rather than trimmed at the reader: the
+			// CDC/compaction write side never trims, so a shared value carrying
+			// a stray newline (a YAML quoting slip, a mounted secret file) would
+			// resolve one key on the write side and a different one on the read
+			// side. Byte parity is the contract; the config surface enforces it.
+			name: "padded manifest template",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: " manifest/{{.SchemaID}}.json\n",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// A whitespace-only template escapes both gates today:
+			// ManifestReadEnabled() trims it to "" (reads stay off) while the
+			// inert-prefix check sees a non-empty string. The whitespace rule
+			// closes that hole.
+			name: "whitespace-only manifest template",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "   ",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "padded s3 bucket",
+			duckDB: DuckDBConfig{
+				S3Bucket:         " forma-lake",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.s3Bucket",
+		},
+		{
+			name: "padded manifest prefix",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestPrefix:   "forma ",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.manifestPrefix",
+		},
+		{
+			name: "padded s3 data prefix",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				S3DataPrefix:     "\tforma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "duckdb.s3DataPrefix",
+		},
+		{
+			name: "complete manifest config is valid while duckdb is disabled",
+			duckDB: DuckDBConfig{
+				Enabled:          false,
+				S3Bucket:         "forma-lake",
+				S3DataPrefix:     "forma",
+				ManifestPrefix:   "forma",
+				ManifestTemplate: "manifest/{{.SchemaID}}.json",
+			},
+			errorField: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.duckDB.ValidateManifestRead()
+			if tt.errorField == "" {
+				if err != nil {
+					t.Fatalf("Expected no validation error, got %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Expected validation error, got nil")
+			}
+			configErr, ok := err.(*ConfigError)
+			if !ok {
+				t.Fatalf("Expected ConfigError, got %T", err)
+			}
+			if configErr.Field != tt.errorField {
+				t.Errorf("Expected error field %s, got %s", tt.errorField, configErr.Field)
+			}
+		})
+	}
+}
+
+func TestValidateDuckDBConfig_ManifestReadWiredIntoValidate(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig(NewMockSchemaRegistry())
+	config.DuckDB.ManifestPrefix = "forma"
+
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("Expected Validate to reject inert manifest config, got nil")
+	}
+	// Validate() wraps the delegated manifest error with context, so callers
+	// must unwrap: a bare type assertion would break on the wrapper.
+	var configErr *ConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("Expected ConfigError, got %T (%v)", err, err)
+	}
+	if configErr.Field != "duckdb.manifestTemplate" {
+		t.Errorf("Expected error field duckdb.manifestTemplate, got %s", configErr.Field)
+	}
+	if !strings.Contains(err.Error(), "invalid duckdb manifest read configuration") {
+		t.Errorf("Expected the delegated error to be wrapped with context, got %q", err.Error())
+	}
+}
+
+func TestDuckDBConfig_ManifestReadEnabled(t *testing.T) {
+	t.Parallel()
+
+	if (DuckDBConfig{}).ManifestReadEnabled() {
+		t.Error("Expected zero-value DuckDBConfig to have manifest read disabled")
+	}
+	if (DuckDBConfig{ManifestTemplate: "  "}).ManifestReadEnabled() {
+		t.Error("Expected whitespace-only manifest template to be treated as disabled")
+	}
+	if !(DuckDBConfig{ManifestTemplate: "manifest/{{.SchemaID}}.json"}).ManifestReadEnabled() {
+		t.Error("Expected non-empty manifest template to enable manifest read")
 	}
 }
 

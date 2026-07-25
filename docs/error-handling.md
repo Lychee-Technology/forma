@@ -30,6 +30,35 @@ Examples:
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.
 
+### `ErrParquetSetInconsistent`
+
+`federated.ErrParquetSetInconsistent`, carried by
+`federated.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
+federated read whose manifest lists parquet objects that do not exist in
+storage. The manifest is the authoritative record of the schema's cold/warm
+tier, so a listed-but-absent object means that tier **has lost data** — the
+rows in that object are simply gone from the result set.
+
+- **Plain error, not `ErrInvalidInput`.** Nothing about the request is wrong;
+  persisted data and the metadata indexing it disagree. It is an
+  operator-visible consistency failure, not a user-facing `4xx`.
+- **Not degradable.** It surfaces even under
+  `federated.allow_partial_degraded_mode`, unlike the transient DuckDB/S3
+  failures that fall back to Postgres-only. Degrading here would return
+  exactly the silently short answer this classification exists to make loud.
+- **Trigger precondition.** Only reachable when the server resolves parquet
+  paths from the manifest source (`duckdb.manifestTemplate` configured — see
+  `docs/federated-query/design.md` §4.3.1). With per-request path hints, or
+  with glob paths, the classification is skipped: a hinted path set whose
+  object is missing still fails the scan, but as a plain
+  `ErrFederatedReadFailed`, while a glob quietly expands to whatever objects
+  survive and returns a shorter result set with no error at all.
+- **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
+  Extra unlisted objects are tolerated and invisible to reads.
+- **Operator action.** The message names the schema and the missing
+  bucket-relative keys. Run the reconciliation tool to diagnose and repair:
+  see `docs/manifest-reconcile.md`.
+
 ## Message style
 
 Use explicit messages that name:

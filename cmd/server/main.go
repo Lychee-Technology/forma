@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,10 +57,27 @@ func main() {
 }
 
 // duckDBConfigFromEnv turns on the federated DuckDB engine when DUCKDB_ENABLED
-// is set, wiring its S3/httpfs settings from the environment. It reuses the
-// S3_* vars the CDC tooling already uses (with DUCKDB_S3_* overrides) so a
-// single stack configuration drives both. When disabled it returns base
-// unchanged (DuckDB off — the production default).
+// is set, wiring its S3/httpfs and manifest settings from the environment. When
+// disabled it returns base unchanged (DuckDB off — the production default).
+//
+// Each field reads its DUCKDB_-prefixed name first, then a shared name reserved
+// as the single-stack configuration point (future CDC runners may read the same
+// names), then the base value. The two prefix fields — S3DataPrefix and
+// ManifestPrefix — deviate: a prefix set without a manifest template is inert
+// and ValidateManifestRead rejects it, so adopting a shared prefix on its own
+// would stop an existing deployment from booting after an upgrade. Therefore:
+//
+//   - DUCKDB_S3_PREFIX / DUCKDB_MANIFEST_PREFIX are always adopted. An
+//     explicitly-named inert value is a misconfiguration the operator should
+//     hear about, so the factory's startup rejection is the intended outcome.
+//   - S3_PREFIX / MANIFEST_PREFIX are adopted only when the effective manifest
+//     template (resolved first, from DUCKDB_MANIFEST_TEMPLATE, then
+//     MANIFEST_TEMPLATE, then base) is non-empty — all-or-nothing with the
+//     template that gives them meaning.
+//
+// S3_BUCKET has no such condition: a bucket alone never makes the config inert.
+// DUCKDB_MANIFEST_TEMPLATE is the switch for manifest-driven reads; if set
+// without a bucket, the server fails at startup (factory fail-fast).
 func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	if !bootstrap.EnvBool("DUCKDB_ENABLED", false) {
 		return base
@@ -71,7 +89,26 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	base.S3AccessKey = bootstrap.Env("DUCKDB_S3_ACCESS_KEY", bootstrap.Env("S3_ACCESS_KEY", base.S3AccessKey))
 	base.S3SecretKey = bootstrap.Env("DUCKDB_S3_SECRET_KEY", bootstrap.Env("S3_SECRET_KEY", base.S3SecretKey))
 	base.S3Region = bootstrap.Env("DUCKDB_S3_REGION", "us-east-1")
+	base.S3Bucket = bootstrap.Env("DUCKDB_S3_BUCKET", bootstrap.Env("S3_BUCKET", base.S3Bucket))
+
+	base.ManifestTemplate = bootstrap.Env("DUCKDB_MANIFEST_TEMPLATE", bootstrap.Env("MANIFEST_TEMPLATE", base.ManifestTemplate))
+	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
+	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
+	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
 	return base
+}
+
+// prefixFromEnv resolves one of the two inert-when-alone prefix fields. The
+// DUCKDB_-prefixed name always wins; the shared name is consulted only when a
+// manifest template is in effect. See duckDBConfigFromEnv for why.
+func prefixFromEnv(duckDBName, sharedName, baseValue string, manifestOn bool) string {
+	if explicit := bootstrap.Env(duckDBName, ""); explicit != "" {
+		return explicit
+	}
+	if manifestOn {
+		return bootstrap.Env(sharedName, baseValue)
+	}
+	return baseValue
 }
 
 func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRuntime, error) {
@@ -102,6 +139,17 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 		EntityMain:     "entity_main_dev",
 		ChangeLog:      "change_log_dev",
 	})
+
+	// Invariant: the DuckDB manifest read surface is resolved and validated
+	// before the server opens any connection. The factory validates it too, but
+	// only after it has already queried the database — so doing it here is what
+	// makes the documented "invalid configuration fails at startup, before any
+	// I/O" contract (docs/federated-query/design.md §4.3.1) literally true for
+	// the server. Keep this block above NewPostgresPoolFromConfigContext.
+	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
+	if err := duckCfg.ValidateManifestRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
 
 	startupTimeout := dbConfig.Timeout
 	if startupTimeout <= 0 {
@@ -135,8 +183,10 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 
 	// Enable the federated DuckDB engine when configured (disabled by default).
 	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
-	// suite turns it on so its federated checks are genuinely federated.
-	config.DuckDB = duckDBConfigFromEnv(config.DuckDB)
+	// suite turns it on so its federated checks are genuinely federated. The
+	// value was resolved and validated above, before any I/O; re-resolving it
+	// here would risk the two copies drifting apart.
+	config.DuckDB = duckCfg
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)

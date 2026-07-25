@@ -268,5 +268,17 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, err
 			paths = append(paths, trimmed)
 		}
 	}
+	if len(paths) == 0 {
+		// The hint was present (we are past the early return), so an empty
+		// result is a degenerate template — "," or whitespace-only segments —
+		// not an absent hint. Returning zero paths here would let
+		// resolveParquetPaths read it as "no hint" and consult the manifest
+		// source instead, silently answering from a different path set than
+		// the caller explicitly requested. Same rule as an unrenderable
+		// template: explicit hints always win, including when they fail
+		// (#250 PR review).
+		return nil, fmt.Errorf("s3 parquet path template %q rendered no usable paths: %w",
+			q.DuckDBHints.S3ParquetPathTemplate, forma.ErrInvalidInput)
+	}
 	return paths, nil
 }

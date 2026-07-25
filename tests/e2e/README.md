@@ -247,7 +247,22 @@ See `.env.example` for all available configuration options:
 | `TOOL_TIMEOUT_MS` | `300000` | Timeout for each CDC tool subprocess (killed on expiry) |
 | `DUCKDB_ENABLED` | `false` | Server: enable the federated DuckDB engine (reads warm/cold S3 parquet) |
 | `DUCKDB_S3_ENDPOINT` | `$S3_ENDPOINT` | Server: S3 endpoint for the DuckDB engine (falls back to `S3_ENDPOINT`) |
+| `DUCKDB_S3_BUCKET` | `$S3_BUCKET` | Server: S3 bucket for DuckDB (falls back to `S3_BUCKET`) |
+| `DUCKDB_S3_PREFIX` | _(unset)_ | Server: S3 data prefix for DuckDB. Falls back to `S3_PREFIX`, but **only when a manifest template is also set** (see below) |
+| `DUCKDB_MANIFEST_PREFIX` | _(unset)_ | Server: manifest prefix for DuckDB. Falls back to `MANIFEST_PREFIX`, but **only when a manifest template is also set** |
+| `DUCKDB_MANIFEST_TEMPLATE` | _(unset)_ | Server: manifest template (switch for manifest-driven reads; fails at startup if set without bucket). Falls back to `MANIFEST_TEMPLATE` |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
+
+`MANIFEST_PREFIX` and `MANIFEST_TEMPLATE` are **reserved shared names**, not
+variables this harness or the CDC tooling sets today (the CDC tools take
+`--manifest-prefix` / `--manifest-template` flags); they exist so a future
+single-stack configuration can drive writer and reader from one place. The two
+prefix fallbacks are all-or-nothing with the template: with no template in
+effect, `S3_PREFIX` / `MANIFEST_PREFIX` are ignored rather than adopted,
+because a prefix without a template is an inert configuration the server
+rejects at startup — that rule keeps a plain `DUCKDB_ENABLED=1` upgrade
+bootable on a stack that already exports `S3_PREFIX`. Explicit `DUCKDB_*`
+names bypass the condition and are always adopted.
 
 ## Reports
 
