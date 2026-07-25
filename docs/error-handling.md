@@ -464,6 +464,50 @@ sentinel *preserved* the existing contract rather than altering it — without i
 deleting the heuristic would have regressed them to a redacted `500`. That is what
 the sweep was for.
 
+### Status change: a duplicate-attribute payload now succeeds
+
+Baseline for this section is the **pre-#301** contract, as above.
+
+Attribute names in this system are dotted, so a single request body can spell one
+attribute two ways — nested (`{"contact":{"email":…}}`) and literal
+(`{"contact.email":…}`). `flattenToAttributes` reached both spellings and emitted
+two `eav_data` records sharing the primary key
+`(schema_id, row_id, attr_id, array_indices)`, and `insertEAVAttributes` sends
+them in one multi-row `INSERT` with no `ON CONFLICT`. The write failed on
+PostgreSQL `23505`.
+
+This is not an exotic payload. On update, `mergeMaps` is key-literal while
+`FromPersistentRecord` re-nests stored attributes, so an ordinary
+`PUT {"contact.email":"x"}` against an entity that already holds that attribute
+merges to *both* shapes — using the attribute name the schema advertises.
+
+| | before (pre-#301) | after #307 | now |
+| --- | --- | --- | --- |
+| status | `409` | `500` | **`200`** |
+| body | verbatim `duplicate key…` | redacted | the written entity |
+
+The write failed in both earlier columns; only its status moved, because #301
+removed the substring heuristic that had been matching `duplicate` in the driver
+text. The functional bug predates #307.
+
+`transform.dedupeEAVRecords` now collapses records colliding on that primary key
+before they leave `ToAttributes`, keeping the **last** one — the same
+duplicate-key rule `encoding/json` applies. This is deterministic rather than
+map-order dependent: `flattenToAttributes` sorts each map's keys, and for any
+dotted name the nested spelling's top-level key is a proper prefix of the literal
+one, so it sorts first and the literal key's record — the caller's explicit
+value — is emitted last.
+
+**This converts a failure into a success**, which is the widest kind of contract
+change in this document. A client that treated a duplicate-attribute write as
+rejected now gets an accepted write carrying the literal key's value.
+
+`insertEAVAttributes` additionally routes its `tx.Exec` error through
+`classifyPgError`, matching the two `entity_main` sites. Any residual `23505` the
+dedupe cannot reach — a concurrent writer racing the same row, which could not be
+settled without a live database — therefore answers `409` with a verbatim body
+rather than a redacted `500`.
+
 ### Known gap
 
 Credentials still reach error strings *inside* the process. `redactCredentials`
