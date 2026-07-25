@@ -176,7 +176,7 @@ message text unchanged:
 | --- | --- |
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
 | `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting a `required` attribute |
-| `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator |
+| `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 
@@ -184,6 +184,23 @@ The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+**The sweep also underreached once.** It missed
+`normalizePgEavPayload`'s operator whitelist — the two rejections that pair an
+operator with an attribute type it does not accept — so `starts_with` on a UUID
+column answered an opaque `500` while the "condition-DSL errors stay 400" claim
+below said otherwise. Both now wrap the sentinel, message text unchanged, and are
+pinned by the `clientError` column of
+`TestToDualClauses_Characterization_Errors` plus
+`TestAdvancedQueryOperatorWhitelistIs400AndVerbatim`.
+
+Two neighbouring errors in the same function deliberately stay plain, and they
+are the boundary worth remembering: `unsupported value_type '%s' for attribute
+'%s'` names the *schema's declared type*, and `unknown main table column` names a
+column resolved from `entity_main` descriptors or from a column binding — neither
+is anything the caller sent, so `500` is the truthful answer. The test for what
+gets a sentinel is provenance of the offending value, not which package raised
+it.
 
 **The sweep overreached once, and the overreach has been reverted.** It also
 wrapped the identical `missing required attribute …` message inside
@@ -506,13 +523,36 @@ branch, so its serialization is byte-identical to pre-#301. A client
 keying on `404` to detect a filter typo breaks silently, and that is the whole of
 the migration impact.
 
-**The other condition-DSL errors in the sweep did not change.** Unparseable filter
-values, unknown operators and malformed `"op:value"` all contain `invalid` or
+**Most other condition-DSL errors did not change.** Unparseable filter values,
+unknown operators and malformed `"op:value"` all contain `invalid` or
 `unsupported`, so the heuristic already classified them `400` with a verbatim
 body, and they still answer `400` with a verbatim body. For those, wrapping the
 sentinel *preserved* the existing contract rather than altering it — without it,
 deleting the heuristic would have regressed them to a redacted `500`. That is what
 the sweep was for.
+
+### Status change: an operator the attribute's type rejects is now 400, not 500
+
+Baseline for this section is the **pre-#301** contract, as above.
+
+`normalizePgEavPayload`'s operator whitelist raises two messages —
+`operator '…' only supported for text attributes, not '…'` and
+`operator '…' not supported for boolean attributes`. Neither contains any of the
+heuristic's trigger substrings: `only supported` and `not supported` are not
+`unsupported`, and nothing else matched. So `POST /api/v1/advanced_query` with
+`starts_with` on a UUID column answered **`500`** before #301 too, with a
+verbatim body; after #301 removed the heuristic it answered `500` with a
+*redacted* body, which is when the claim above stopped being true of them.
+
+| | before (pre-#301) | after #307, before round 4 | now |
+| --- | --- | --- | --- |
+| status | `500` | `500` | **`400`** |
+| body | verbatim | redacted | verbatim |
+
+The sweep simply missed this function; the operator is caller-supplied and the
+message names exactly what to change, so `400` is what the DSL contract always
+intended. A client keying on `500` to detect a rejected operator must key on
+`400` plus `success: false` instead.
 
 ### Status change: a duplicate-attribute payload now succeeds
 

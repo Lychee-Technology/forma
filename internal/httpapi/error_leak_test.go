@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/transform"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -447,6 +448,61 @@ func TestCreateMissingRequiredAttributeIs400AndVerbatim(t *testing.T) {
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
 		t.Fatalf("a write-validation error took the redacted branch: error_class=%q error_id=%q",
+			resp.ErrorClass, resp.ErrorID)
+	}
+}
+
+// TestAdvancedQueryOperatorWhitelistIs400AndVerbatim is Finding 4's HTTP half.
+//
+// The condition DSL is entirely caller-supplied, so `starts_with` on a UUID
+// column is a fixable client mistake. The earlier #301 sentinel sweep missed
+// normalizePgEavPayload's operator whitelist, so it answered an opaque 500 with
+// a redacted body while docs/error-handling.md claimed condition-DSL errors stay
+// 400.
+//
+// The error is the real one — produced by running sqlgen over the rejected
+// condition — rather than a hand-written chain, so this fails if the sentinel is
+// removed again.
+func TestAdvancedQueryOperatorWhitelistIs400AndVerbatim(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	cache := forma.SchemaAttributeCache{
+		"ref": {AttributeName: "ref", AttributeID: 1, ValueType: forma.ValueTypeUUID},
+	}
+	paramIndex := 0
+	_, genErr := sqlgen.ToDualClauses(
+		&forma.KvCondition{Attr: "ref", Value: "starts_with:0b"}, "eav_data", 7, cache, &paramIndex)
+	if genErr == nil {
+		t.Fatal("precondition failed: starts_with on a uuid attribute was accepted")
+	}
+	if !strings.Contains(genErr.Error(), "only supported for text attributes") {
+		t.Fatalf("precondition failed: unexpected generator error %v", genErr)
+	}
+
+	manager := &mockEntityManager{advancedErr: fmt.Errorf("advanced query: %w", genErr)}
+	srv := NewServer(manager, Options{})
+
+	body := `{"schema_name":"lead",` +
+		`"condition":{"l":"and","c":[{"a":"ref","v":"starts_with:0b"}]},` +
+		`"page":1,"items_per_page":10}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a rejected filter operator, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if !strings.Contains(resp.Error, "only supported for text attributes") {
+		t.Fatalf("expected the verbatim message naming the operator constraint, got %q", resp.Error)
+	}
+	if resp.ErrorClass != "" || resp.ErrorID != "" {
+		t.Fatalf("a condition-DSL error took the redacted branch: error_class=%q error_id=%q",
 			resp.ErrorClass, resp.ErrorID)
 	}
 }

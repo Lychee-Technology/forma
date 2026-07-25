@@ -290,11 +290,19 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		parsedValue = sqlOperator.Value
 	}
 
+	// Both operator-whitelist rejections wrap forma.ErrInvalidInput: the operator
+	// is caller-supplied in the advanced_query condition DSL, and since #301 the
+	// HTTP boundary classifies on sentinel evidence alone. Without the sentinel,
+	// starts_with on a UUID column answered an opaque 500 instead of a 400 naming
+	// the operator and the type (#307 round-4 Finding 4).
+	//
+	// The `unsupported value_type` default above deliberately stays plain: that
+	// names the schema's declared type, not anything the caller sent.
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)}
+		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s': %w", opStr, meta.ValueType, forma.ErrInvalidInput)}
 	}
 	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' not supported for boolean attributes", opStr)}
+		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' not supported for boolean attributes: %w", opStr, forma.ErrInvalidInput)}
 	}
 
 	return PgEavLeafPayload{

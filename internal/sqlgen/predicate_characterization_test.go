@@ -368,14 +368,19 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 			clientError: true,
 		},
 		{
-			name:    "LIKE on uuid rejected by EAV whitelist",
-			cond:    charKv("ref", "starts_with:0b"),
-			wantErr: "pg sql generation: operator 'starts_with' only supported for text attributes, not 'uuid'",
+			// The operator is caller-supplied, so this is a fixable 400. The
+			// earlier #301 sweep missed normalizePgEavPayload's whitelist and
+			// left it an opaque 500 (#307 round-4 Finding 4).
+			name:        "LIKE on uuid rejected by EAV whitelist",
+			cond:        charKv("ref", "starts_with:0b"),
+			wantErr:     "pg sql generation: operator 'starts_with' only supported for text attributes, not 'uuid'",
+			clientError: true,
 		},
 		{
-			name:    "gt on unbound bool rejected by EAV whitelist",
-			cond:    charKv("flag", "gt:1"),
-			wantErr: "pg sql generation: operator 'gt' not supported for boolean attributes",
+			name:        "gt on unbound bool rejected by EAV whitelist",
+			cond:        charKv("flag", "gt:1"),
+			wantErr:     "pg sql generation: operator 'gt' not supported for boolean attributes",
+			clientError: true,
 		},
 		{
 			name:        "gt on bound bool rejected by pg-main",
