@@ -161,3 +161,87 @@ func TestBuildDuckDBQuery_PropagatesRenderError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid SQL identifier")
 }
+
+// ============================================================================
+// Tests for PG_CONN SQL-literal escaping (#301)
+// ============================================================================
+
+// TestPGConnIsEscapedForSQLLiteral pins the half of the #301 producer fix that
+// lives in the renderer.
+//
+// The templates interpolate the DSN inside a single-quoted literal —
+// postgres_scan('{{.PG_CONN}}', …) — so once
+// federated.DuckDBPostgresConnStringFromPool started quoting its values, the raw
+// string carried single quotes that would terminate that literal early and break
+// every federated query. It also closes a hole that predates the quoting: a
+// Postgres password containing a single quote was interpolated raw, putting
+// deployment-controlled text into SQL structure.
+func TestPGConnIsEscapedForSQLLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		conn string
+		want string
+	}{
+		{
+			name: "quoted DSN has its quotes doubled",
+			conn: `host='h' port=5432 user='u' password='s3cr3t' dbname='d'`,
+			want: `host=''h'' port=5432 user=''u'' password=''s3cr3t'' dbname=''d''`,
+		},
+		{
+			name: "password containing a quote cannot break out of the literal",
+			conn: `host='h' password='p\'w' dbname='d'`,
+			want: `host=''h'' password=''p\''w'' dbname=''d''`,
+		},
+		{
+			name: "unquoted legacy DSN is unchanged",
+			conn: "host=h port=5432 dbname=d",
+			want: "host=h port=5432 dbname=d",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]any{"DuckDBPGConnString": tt.conn}
+			injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil)
+
+			got, ok := params["PG_CONN"].(string)
+			require.True(t, ok, "PG_CONN was not populated")
+			require.Equal(t, tt.want, got)
+
+			// Every single quote in the rendered value must be part of a doubled
+			// pair, or the enclosing literal ends early.
+			require.Equal(t, 0, countUnpairedQuotes(got),
+				"PG_CONN carries an unpaired quote and would terminate the SQL literal: %s", got)
+		})
+	}
+}
+
+// TestPGConnExplicitOverrideIsNotDoubleEscaped pins that a caller who sets
+// PG_CONN directly owns its escaping — the renderer only escapes the value it
+// derives itself, so test fixtures and callers passing pre-rendered SQL are not
+// mangled.
+func TestPGConnExplicitOverrideIsNotDoubleEscaped(t *testing.T) {
+	params := map[string]any{
+		"PG_CONN":            "host=already port=1",
+		"DuckDBPGConnString": `host='ignored'`,
+	}
+	injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil)
+	require.Equal(t, "host=already port=1", params["PG_CONN"])
+}
+
+// countUnpairedQuotes returns the number of single quotes not part of a doubled
+// pair, scanning left to right.
+func countUnpairedQuotes(s string) int {
+	unpaired := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\'' {
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '\'' {
+			i++
+			continue
+		}
+		unpaired++
+	}
+	return unpaired
+}
