@@ -11,7 +11,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// Public error-class tokens surfaced on redacted 5xx bodies (#301). They are the
+// Public error-class tokens surfaced on redacted bodies (#301) — redaction is
+// gated on sentinel evidence rather than on the status, so these appear on any
+// status that lacks it, 4xx included. They are the
 // only thing a client can discriminate on, because the body carries no error
 // text: operator-detail errors reach the HTTP boundary holding bucket-relative
 // S3 object keys and, when DuckDB fails to attach postgres_scan, the Postgres
@@ -161,6 +163,14 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	fields := make([]any, 0, len(logFields)+8)
 	fields = append(fields, logFields...)
 	fields = append(fields, "status", status)
+
+	// classifyManagerError treats a nil error as 500; the two functions share this
+	// file and must not disagree about the same contract. Unreachable from the
+	// current call sites, all of which are inside `if err != nil`, but a nil here
+	// must yield the redacted path rather than panic in err.Error() below.
+	if err == nil {
+		err = errors.New("nil error")
+	}
 
 	if status < http.StatusInternalServerError && isClientError(err) {
 		fields = append(fields, "error", err.Error())

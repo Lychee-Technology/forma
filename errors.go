@@ -106,8 +106,11 @@ var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manife
 // the message names the offending state, per the read-path error style.
 //
 // MissingKeys holds bucket-relative S3 object keys — operator detail that must
-// not cross a public transport. internal/httpapi redacts it from 5xx bodies
-// (#301); any new transport owes the same treatment.
+// not cross a public transport. internal/httpapi redacts it from response bodies
+// (#301). That redaction is gated on sentinel evidence, not on the status: this
+// error wraps no client sentinel, so it is redacted whatever status it is
+// classified as — including a 4xx, since DuckDB renders a missing object as
+// "404 (Not Found)". Any new transport owes the same treatment.
 type ParquetSetInconsistentError struct {
 	SchemaID    int16
 	MissingKeys []string

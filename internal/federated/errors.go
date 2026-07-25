@@ -43,9 +43,11 @@ var (
 	ErrNoParquetPaths         = forma.ErrNoParquetPaths
 	ErrManifestSchemaMismatch = forma.ErrManifestSchemaMismatch
 	// ErrParquetSetInconsistent joined them for #301: internal/httpapi
-	// classifies it to redact the object keys it carries out of public 5xx
+	// classifies it to redact the object keys it carries out of public response
 	// bodies, and cannot import this package without pulling DuckDB CGO into a
-	// pure-Go test build.
+	// pure-Go test build. Redaction is gated on sentinel evidence rather than on
+	// the status, so this holds on any status the error is classified as, not
+	// only 5xx.
 	ErrParquetSetInconsistent = forma.ErrParquetSetInconsistent
 )
 
