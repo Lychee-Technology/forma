@@ -173,6 +173,55 @@ func TestValidateDuckDBConfig_ManifestRead(t *testing.T) {
 			errorField: "duckdb.s3DataPrefix",
 		},
 		{
+			// #300: a case-typo field name parses fine but renders "<no value>"
+			// against the resolver's map, so every schema resolves to the same
+			// bogus manifest key, every manifest loads empty, and reads degrade
+			// silently — the exact loss shape manifest reads exist to prevent,
+			// one typo away.
+			name: "template with a misspelled field renders no value",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/{{.SchemaId}}.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Same collapse, different cause: a template that ignores the schema
+			// entirely points every schema at one object.
+			name: "template that does not vary by schema",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/all.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "template rendering to nothing",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "{{if false}}manifest/{{.SchemaID}}.json{{end}}",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			// Printf-style verbs are a plausible slip for someone who has not
+			// used text/template: they render literally and never vary.
+			name: "printf style placeholder instead of template action",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "manifest/%d.json",
+			},
+			errorField: "duckdb.manifestTemplate",
+		},
+		{
+			name: "schema id embedded in a longer path is valid",
+			duckDB: DuckDBConfig{
+				S3Bucket:         "forma-lake",
+				ManifestTemplate: "lake/v2/schema-{{.SchemaID}}/manifest.json",
+			},
+			errorField: "",
+		},
+		{
 			name: "complete manifest config is valid while duckdb is disabled",
 			duckDB: DuckDBConfig{
 				Enabled:          false,

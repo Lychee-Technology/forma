@@ -160,11 +160,66 @@ func (d DuckDBConfig) ValidateManifestRead() error {
 	// Parsed with text/template directly (not internal/manifest) to keep the
 	// public config package free of internal dependencies; the manifest
 	// resolver uses the same parser, so a template accepted here renders there.
-	if _, err := template.New("manifest").Parse(d.ManifestTemplate); err != nil {
+	tmpl, err := template.New("manifest").Parse(d.ManifestTemplate)
+	if err != nil {
 		return &ConfigError{
 			Field:   "duckdb.manifestTemplate",
 			Message: "must be a valid text/template path template: " + err.Error(),
 		}
+	}
+	return probeManifestTemplate(tmpl)
+}
+
+// probeManifestTemplate renders the parsed template against two probe schema
+// IDs and rejects anything that cannot address a per-schema manifest object.
+// Parsing alone is not enough (#300): a case-typo field like {{.SchemaId}}
+// parses fine and renders "<no value>", so every schema would resolve to the
+// same bogus key, every manifest would load empty, and reads would fall back
+// or come up short with no error anywhere — the silent loss manifest-driven
+// reads exist to eliminate.
+//
+// Two probes rather than one, because a single render cannot tell a collapsed
+// template from a working one: {{.SchemaId}}, a constant path, and a
+// printf-style "%d" all render *something*, and what condemns them is that
+// they render the SAME something for different schemas.
+//
+// The probe data shape mirrors manifest.PathResolver.Resolve exactly — a
+// map[string]any keyed "SchemaID", not a struct — so a template accepted here
+// renders identically in production. missingkey=error turns the map miss into
+// a precise error naming the offending field; the "<no value>" check stays as
+// a backstop for the shapes that option does not cover (e.g. an explicit nil).
+func probeManifestTemplate(tmpl *template.Template) error {
+	const probeA, probeB = int16(1), int16(2)
+	reject := func(msg string) error {
+		return &ConfigError{Field: "duckdb.manifestTemplate", Message: msg}
+	}
+
+	render := func(schemaID int16) (string, error) {
+		var buf strings.Builder
+		if err := tmpl.Option("missingkey=error").Execute(&buf, map[string]any{"SchemaID": schemaID}); err != nil {
+			return "", err
+		}
+		return buf.String(), nil
+	}
+
+	first, err := render(probeA)
+	if err != nil {
+		return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
+	}
+	if first == "" {
+		return reject("must render a non-empty manifest path")
+	}
+	if strings.Contains(first, "<no value>") {
+		return reject("renders \"<no value>\"; the only available field is .SchemaID (check spelling and case)")
+	}
+
+	second, err := render(probeB)
+	if err != nil {
+		return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
+	}
+	if first == second {
+		return reject("must vary by schema: it rendered " + first +
+			" for two different schema IDs, so every schema would share one manifest object (use .SchemaID)")
 	}
 
 	return nil
