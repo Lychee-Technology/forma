@@ -167,9 +167,14 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 // message text unchanged:
 //
 //   - internal/entity_query_sort.go — unknown sort attribute (#296)
-//   - internal/transform/transformer.go and attribute_converter.go — create or
-//     update body omitting a required attribute (the write path; without the
-//     sentinel this would answer an opaque 500)
+//   - internal/transform/transformer.go — create or update body omitting a
+//     required attribute (validateRequiredAttributesFromInput, the write-only
+//     validator; without the sentinel this would answer an opaque 500). The
+//     sweep also wrapped the same message in transform's shared
+//     attribute_converter.go, and that was a mistake: FromEAVRecords also runs
+//     on the read path, so the sentinel there turned persisted drift into a
+//     verbatim 400. It has been removed; the write path keeps its 400 from the
+//     validator above.
 //   - internal/sqlgen/predicate_normalizer.go and dualpath_sql_helpers.go —
 //     unknown filter attribute, unparseable filter value, unsupported operator
 //   - internal/conditionexpr/parser.go — malformed "op:value", unknown operator,

@@ -186,12 +186,22 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	if len(missingRequired) > 0 {
 		zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
 		for missingAttrID, missingAttrName := range missingRequired {
-			// Same contract as validateRequiredAttributesFromInput: reachable from the
-			// write path (ToAttributes calls FromEAVRecords after its own check, and the
-			// two use different missing-detection logic), so it needs the sentinel to
-			// stay a 400 at the HTTP boundary (#301).
-			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records: %w",
-				missingAttrName, missingAttrID, forma.ErrInvalidInput)
+			// Plain error, deliberately. FromEAVRecords is not write-only: the read
+			// path rebuilds already-stored records through it
+			// (persistent_record.go's FromPersistentRecord), so a persisted row
+			// missing a required EAV row reaches here too. Wrapping
+			// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
+			// HTTP boundary answer that persisted-drift case with a verbatim 400,
+			// inverting the split AGENTS.md and this repo's error-handling doc
+			// draw: write validation carries the sentinel, read-path consistency
+			// failures stay plain and operator-visible.
+			//
+			// The write path's 400 does not depend on this wrap. It has its own
+			// write-only validator, validateRequiredAttributesFromInput
+			// (transformer.go), which ToAttributes runs against the caller's input
+			// before flattening and which does carry the sentinel.
+			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
+				missingAttrName, missingAttrID)
 		}
 	}
 

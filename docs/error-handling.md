@@ -170,15 +170,31 @@ message text unchanged:
 | site | caller mistake |
 | --- | --- |
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
-| `internal/transform/transformer.go`, `internal/transform/attribute_converter.go` | create/update body omitting a `required` attribute |
+| `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting a `required` attribute |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 
-The write-path pair matters most: without it, a `POST` omitting a required
+The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+**The sweep overreached once, and the overreach has been reverted.** It also
+wrapped the identical `missing required attribute …` message inside
+`AttributeConverter.FromEAVRecords`
+(`internal/transform/attribute_converter.go`). That converter is *not*
+write-only: `FromPersistentRecord`
+(`internal/transform/persistent_record.go`) rebuilds already-stored records
+through it on the read path, so a persisted row missing a required EAV row
+satisfied `errors.Is(err, forma.ErrInvalidInput)` and the boundary answered a
+verbatim `400` for state the caller cannot fix — exactly the inversion the two
+error classes above exist to prevent. That error is plain again. The write
+path's `400` never depended on it: `ToAttributes` runs
+`validateRequiredAttributesFromInput` against the caller's input *before*
+flattening, and that is the sentinel-carrying validator. A sentinel belongs on a
+validator that only the write path can reach; if a converter is shared, the
+check has to move rather than the sentinel be added.
 
 Errors the heuristic used to catch that were **not** given sentinels are either
 unreachable from a handler (registry load, `internal/postgres_health.go`, `cmd/`
