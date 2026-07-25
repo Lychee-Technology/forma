@@ -52,7 +52,7 @@ func newBreakerTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *Circu
 	t.Helper()
 	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "")
+		testMetadataCacheSchema7(t), "", withTestParquetPath())
 	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
 		return "SELECT fake", nil, nil
 	}

@@ -350,15 +350,19 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 
 // degradableFederatedError reports whether a DuckDB-path failure may be
 // absorbed by the Postgres-only fallback under AllowPartialDegradedMode.
-// Three classes must surface instead: a missing schema metadata cache is a
+// Four classes must surface instead: a missing schema metadata cache is a
 // configuration/data-contract error whose masking #151 made loud; manifest
 // inconsistency (#187) exists to make cold-tier loss loud, and a fallback
-// would return exactly the silent-loss answer it prevents; and invalid
-// caller input (e.g. an unrenderable path template) is the caller's error to
-// see, not infrastructure to degrade around.
+// would return exactly the silent-loss answer it prevents; an empty parquet
+// path set (#299) is the same bargain one level earlier — the read surface is
+// misconfigured for a query that asked for warm/cold, so a Postgres-only
+// answer would be silently short precisely where the cold tier was wanted;
+// and invalid caller input (e.g. an unrenderable path template) is the
+// caller's error to see, not infrastructure to degrade around.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
+		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, forma.ErrInvalidInput)
 }
 

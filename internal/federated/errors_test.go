@@ -32,11 +32,15 @@ func coldTierQuery() *model.FederatedAttributeQuery {
 	}
 }
 
+// newSentinelTestEngine wires a parquet source that resolves one path. These
+// tests classify failures at the DuckDB execute/stream stages, so the query
+// has to get that far: since #299 an empty path set fails at resolution with
+// ErrNoParquetPaths and never reaches the sites under test.
 func newSentinelTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *CircuitBreaker) *DBFederatedQueryEngine {
 	t.Helper()
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "host=x")
+		testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
 }
 
 // TestSentinel_ExecuteFailureIsFederatedReadFailed pins the #187 branch

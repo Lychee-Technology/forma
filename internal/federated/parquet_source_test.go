@@ -193,6 +193,88 @@ func TestDuckDBParquetPathsForQuery_DegenerateHint(t *testing.T) {
 	}
 }
 
+// TestParquetSource_SourceResolvesZeroPathsIsNoParquetPaths pins #299: a
+// configured source whose manifest lists nothing and whose fallback glob is
+// disabled resolves an empty path set. That used to render
+// read_parquet(<no value>) and classify as the degradable
+// ErrFederatedReadFailed — indistinguishable from a transient S3 outage, so
+// degraded mode silently answered a misconfiguration from Postgres alone.
+// It must now carry its own classification and survive degraded mode.
+func TestParquetSource_SourceResolvesZeroPathsIsNoParquetPaths(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	src := &fakeParquetSource{paths: nil}
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, ErrNoParquetPaths)
+	// The whole point of #299: not confusable with a transient read failure.
+	require.NotErrorIs(t, err, ErrFederatedReadFailed)
+
+	var typed *NoParquetPathsError
+	require.True(t, errors.As(err, &typed))
+	require.Equal(t, int16(7), typed.SchemaID)
+	require.True(t, typed.SourceConfigured)
+
+	require.Equal(t, 0, duck.calls, "an empty path set must fail before DuckDB executes")
+	require.Equal(t, 0, pg.queryCalls,
+		"a misconfigured read surface must not be absorbed into a Postgres-only answer")
+}
+
+// TestParquetSource_NoSourceNoHintIsNoParquetPaths covers the other zero-path
+// state (#299): manifest reads off and the caller supplied no render hint, so
+// nothing ever authors a path set. Same classification, different remedy —
+// the message must distinguish them.
+func TestParquetSource_NoSourceNoHintIsNoParquetPaths(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x")
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.ErrorIs(t, err, ErrNoParquetPaths)
+	require.NotErrorIs(t, err, ErrFederatedReadFailed)
+
+	var typed *NoParquetPathsError
+	require.True(t, errors.As(err, &typed))
+	require.False(t, typed.SourceConfigured,
+		"no source was consulted; the remedy is to configure one, not to repair a manifest")
+	require.Equal(t, 0, duck.calls)
+	require.Equal(t, 0, pg.queryCalls)
+}
+
+// TestParquetSource_ZeroPathsNeverRendersNoValue is the regression pin for the
+// literal symptom in #299: whatever else changes, the SQL handed to DuckDB
+// must never contain Go's unbound-parameter rendering.
+func TestParquetSource_ZeroPathsNeverRendersNoValue(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	engine := newParquetSourceTestEngine(t, duck, &fakeParquetSource{paths: nil})
+
+	_, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), nil)
+
+	require.Error(t, err)
+	require.NotContains(t, duck.lastSQL, "<no value>")
+	require.NotContains(t, err.Error(), "<no value>")
+}
+
 // TestSentinel_DirtyFetchFailureIsPostgresReadFailed pins the #249 review P1
 // for scenario 9: the Postgres side of a federated read (here the dirty-ID
 // consistency fetch) classifies as ErrPostgresReadFailed.
@@ -202,8 +284,10 @@ func TestSentinel_DirtyFetchFailureIsPostgresReadFailed(t *testing.T) {
 
 	dirty := &fakeDirtyIDFetcher{err: fmt.Errorf("connection refused")}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+	// A resolvable path set is required to reach the dirty fetch: path
+	// resolution runs first and, since #299, fails an empty set outright.
 	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x")
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},

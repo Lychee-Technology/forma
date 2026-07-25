@@ -180,6 +180,20 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		return nil, false, 0, fmt.Errorf("resolve parquet paths: %w", err)
 	}
 
+	// An empty path set cannot answer this query (#299). Only warm/cold-wanting
+	// queries reach here — hot-only and PreferHot short-circuit to Postgres in
+	// Query — so there is nothing to scan and no honest partial answer. Failing
+	// here keeps the misconfiguration distinguishable from a transient S3
+	// outage, which the previous read_parquet(<no value>) parser error was not.
+	// It must precede the validator: that walks the path set and so reports
+	// nothing at all on an empty one.
+	if len(paths) == 0 {
+		return nil, false, 0, &NoParquetPathsError{
+			SchemaID:         q.SchemaID,
+			SourceConfigured: e.parquetSource != nil,
+		}
+	}
+
 	// Pre-read schema-invariant validation (#189): the scan's union_by_name
 	// tolerates attribute-column drift across parquet generations, which
 	// would let a wrong-schema object's rows silently vanish (NULL row_id
