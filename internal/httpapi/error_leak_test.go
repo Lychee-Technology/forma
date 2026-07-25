@@ -105,7 +105,7 @@ func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 
 			body := rec.Body.String()
 			for _, forbidden := range []string{
-				canaryPassword, canarySecret, canaryKey, "password=", "s3://", "IO Error",
+				canaryPassword, canarySecret, canarySecretHead, canarySecretTail, canaryKey, "password=", "s3://", "IO Error",
 				"manifest lists", "schema 22", "postgres_scan",
 			} {
 				if strings.Contains(body, forbidden) {
@@ -134,7 +134,7 @@ func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 					t.Fatalf("%s operator log lost %q; logged: %s", tc.name, required, logged)
 				}
 			}
-			if strings.Contains(logged, canaryPassword) || strings.Contains(logged, canarySecret) {
+			if leaksCanarySecret(logged) {
 				t.Fatalf("%s operator log leaked the credential; logged: %s", tc.name, logged)
 			}
 		})
