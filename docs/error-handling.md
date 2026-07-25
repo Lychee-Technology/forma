@@ -59,6 +59,38 @@ rows in that object are simply gone from the result set.
   bucket-relative keys. Run the reconciliation tool to diagnose and repair:
   see `docs/manifest-reconcile.md`.
 
+### `ErrNoParquetPaths`
+
+`federated.ErrNoParquetPaths`, carried by
+`federated.NoParquetPathsError{SchemaID, SourceConfigured}`, marks a
+DuckDB-routed federated read whose parquet path set resolved **empty**: no
+per-request render hint, and either no configured parquet source or a source
+whose manifest lists no files while the fallback glob is disabled (see
+`docs/federated-query/design.md` §4.3.1).
+
+- **Plain error, not `ErrInvalidInput`.** With a per-request hint the caller
+  can be at fault and the error wraps `ErrInvalidInput` instead (an
+  unrenderable or degenerate `s3_parquet_path_template`). Reaching *this*
+  error means no hint was supplied, so the read surface — server
+  configuration, or manifest state — is what cannot answer the query.
+- **Not degradable.** Like `ErrParquetSetInconsistent`, it surfaces even under
+  `federated.allow_partial_degraded_mode`. Every query that reaches the DuckDB
+  engine wants warm and/or cold data (hot-only and `prefer_hot` requests
+  short-circuit to Postgres before this point), so a Postgres-only fallback
+  would be silently short precisely where the cold tier was requested.
+- **Why it is not a read failure.** Before #299 the empty set rendered
+  `read_parquet(<no value>)`, and the resulting DuckDB parser error classified
+  as the degradable `ErrFederatedReadFailed` — loud, but indistinguishable
+  from a transient S3 outage to any programmatic discriminator, so degraded
+  mode turned a configuration mistake into a quietly incomplete answer.
+- **Not a normal empty state.** A never-flushed schema resolves the level-3
+  fallback glob, not an empty set; reaching this error means the fallback is
+  disabled too (`duckdb.s3DataPrefix` empty).
+- **Operator action.** The message names the schema and distinguishes the two
+  causes: configure the read surface (`duckdb.manifestTemplate` +
+  `duckdb.s3Bucket`), set `duckdb.s3DataPrefix` to re-enable the fallback
+  glob, or repair the schema's manifest (`docs/manifest-reconcile.md`).
+
 ## Message style
 
 Use explicit messages that name:
