@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // TestNewEntityManagerAcceptsNilValidator pins that validation is opt-in at the
@@ -109,21 +111,15 @@ func (w *writeSpy) FromPersistentRecord(ctx context.Context, record *model.Persi
 	return w.inner.FromPersistentRecord(ctx, record)
 }
 
-// newValidationHarness builds a manager over validationRegistry. When validate
-// is false the manager gets no validator at all, which is the baseline the
-// stored-rows comparison needs.
+// newValidationHarness builds a validating manager over validationRegistry.
 func newValidationHarness(
-	t *testing.T, strict, validate bool,
+	t *testing.T, strict bool,
 ) (forma.EntityManager, *mockPersistentRecordRepository, *writeSpy) {
 	t.Helper()
 	registry := validationRegistry{}
 
-	var validator *schemavalidate.Validator
-	if validate {
-		built, err := schemavalidate.New(registry, t.TempDir())
-		require.NoError(t, err)
-		validator = built
-	}
+	validator, err := schemavalidate.New(registry, t.TempDir())
+	require.NoError(t, err)
 
 	config := createTestConfig()
 	config.Entity.ValidateUpdatesStrict = strict
@@ -136,7 +132,7 @@ func newValidationHarness(
 
 func newValidatingManager(t *testing.T, strict bool) (forma.EntityManager, *mockPersistentRecordRepository) {
 	t.Helper()
-	manager, repo, _ := newValidationHarness(t, strict, true)
+	manager, repo, _ := newValidationHarness(t, strict)
 	return manager, repo
 }
 
@@ -220,6 +216,35 @@ func TestUpdateReportOnlyAcceptsViolation(t *testing.T) {
 	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
 
 	require.NoError(t, err)
+}
+
+// TestReportOnlyUpdateLogsSchemaNameAndRowID pins what report-only mode is *for*.
+//
+// It is the shipped default and exists so an operator can find and repair
+// violating rows before flipping VALIDATE_UPDATES_STRICT. A numeric schema id
+// and no row id makes that impossible: nothing in the line names the entity or
+// the row, and the payload is deliberately not logged.
+func TestReportOnlyUpdateLogsSchemaNameAndRowID(t *testing.T) {
+	manager, _ := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
+	require.NoError(t, err)
+
+	entries := logs.FilterMessage(
+		"write payload violates the entity JSON schema; accepted because strict update validation is off").All()
+	require.Len(t, entries, 1, "an accepted violation must be logged exactly once")
+
+	fields := entries[0].ContextMap()
+	require.Equal(t, "test", fields["schemaName"],
+		"the log must name the schema, not only its numeric id")
+	require.Equal(t, created.RowID.String(), fmt.Sprint(fields["rowID"]),
+		"the log must name the offending row so the operator can repair it")
 }
 
 // TestUpdateStrictRejectsViolation pins the other half of the flag.

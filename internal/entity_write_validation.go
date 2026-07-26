@@ -7,6 +7,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
@@ -14,8 +15,9 @@ import (
 // writeValidation is one write's worth of input to validateWritePayload.
 //
 // It is a struct rather than a parameter list because the four write sites must
-// fill in every field deliberately, and a positional list of this length invites
-// getting two same-typed arguments the wrong way round.
+// fill in every field deliberately: schemaName and rowID are needed only by the
+// report-only log line, and passing them positionally alongside schemaID is how
+// they would silently be got wrong.
 //
 // data is typed map[string]any rather than any so that "the normalized document
 // does not reach the writer" is checked by the compiler at the boundary: there is
@@ -25,7 +27,11 @@ import (
 type writeValidation struct {
 	validator *schemavalidate.Validator
 	schemaID  int16
-	cache     forma.SchemaAttributeCache
+	// schemaName and rowID identify the offending row in the report-only log.
+	// They are not used for validation itself.
+	schemaName string
+	rowID      uuid.UUID
+	cache      forma.SchemaAttributeCache
 	// relations is the set of relation roots StripComputedFields removed from
 	// data, which normalization must not rebuild (see NormalizeDottedKeys).
 	relations transform.RelationRoots
@@ -79,7 +85,11 @@ func validateWritePayload(v writeValidation) error {
 		return fmt.Errorf("failed to validate payload against schema %d: %w", v.schemaID, err)
 	}
 
+	// Report-only mode exists so an operator can find and repair violating rows
+	// before flipping VALIDATE_UPDATES_STRICT, which is impossible without the
+	// schema name and the row id. The payload itself is deliberately not logged:
+	// entity data is caller content and may be sensitive.
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
-		"schemaID", v.schemaID, "error", err.Error())
+		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "error", err.Error())
 	return nil
 }

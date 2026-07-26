@@ -42,7 +42,7 @@ func mapPointer(m map[string]any) uintptr {
 // assertion would then fail against a correct implementation — so do not re-point
 // this test at a schema like "visit".
 func TestCreateWritesTheCallersOwnMap(t *testing.T) {
-	manager, _, spy := newValidationHarness(t, false, true)
+	manager, _, spy := newValidationHarness(t, false)
 
 	data := map[string]any{"name": "open", "person.name": "ada"}
 	_, err := manager.Create(context.Background(), createOp(data))
@@ -57,7 +57,7 @@ func TestCreateWritesTheCallersOwnMap(t *testing.T) {
 // traffic actually uses. The same caveat about schema "test" having no relations
 // applies.
 func TestBatchCreateAtomicWritesTheCallersOwnMap(t *testing.T) {
-	manager, _, spy := newValidationHarness(t, false, true)
+	manager, _, spy := newValidationHarness(t, false)
 
 	data := map[string]any{"name": "open", "person.name": "ada"}
 	_, err := manager.BatchCreate(context.Background(), &forma.BatchOperation{
@@ -78,7 +78,7 @@ func TestBatchCreateAtomicWritesTheCallersOwnMap(t *testing.T) {
 // key-literal, so a dotted update key is still spelled "person.name" there, while
 // the normalized document has expanded it into a nested "person" object.
 func TestUpdateWritesTheUnnormalizedMerge(t *testing.T) {
-	manager, _, spy := newValidationHarness(t, true, true)
+	manager, _, spy := newValidationHarness(t, true)
 
 	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
 	require.NoError(t, err)
@@ -92,7 +92,7 @@ func TestUpdateWritesTheUnnormalizedMerge(t *testing.T) {
 
 // TestBatchUpdateAtomicWritesTheUnnormalizedMerge covers the fourth seam.
 func TestBatchUpdateAtomicWritesTheUnnormalizedMerge(t *testing.T) {
-	manager, _, spy := newValidationHarness(t, true, true)
+	manager, _, spy := newValidationHarness(t, true)
 
 	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestCreateLeavesTheCallersMapUntouched(t *testing.T) {
 
 	for _, seam := range seams {
 		t.Run(seam.name, func(t *testing.T) {
-			manager, _, _ := newValidationHarness(t, false, true)
+			manager, _, _ := newValidationHarness(t, false)
 			data := map[string]any{
 				"name":        "open",
 				"person.name": "ada",

@@ -92,12 +92,14 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// required), but a new one that did would reject every create and update to
 	// it. Validate before stripping if that ever happens.
 	if err := validateWritePayload(writeValidation{
-		validator: s.validator,
-		schemaID:  schemaID,
-		cache:     schemaCache,
-		relations: s.relations.RelationRoots(req.SchemaName),
-		data:      inputData,
-		enforce:   true,
+		validator:  s.validator,
+		schemaID:   schemaID,
+		schemaName: req.SchemaName,
+		rowID:      rowID,
+		cache:      schemaCache,
+		relations:  s.relations.RelationRoots(req.SchemaName),
+		data:       inputData,
+		enforce:    true,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
@@ -219,12 +221,14 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	// not mention a required attribute must still succeed. The relation-root
 	// hazard noted in Create applies here too.
 	if err := validateWritePayload(writeValidation{
-		validator: s.validator,
-		schemaID:  schemaID,
-		cache:     schemaCache,
-		relations: s.relations.RelationRoots(req.SchemaName),
-		data:      mergedData,
-		enforce:   s.validateUpdatesStrict,
+		validator:  s.validator,
+		schemaID:   schemaID,
+		schemaName: req.SchemaName,
+		rowID:      req.RowID,
+		cache:      schemaCache,
+		relations:  s.relations.RelationRoots(req.SchemaName),
+		data:       mergedData,
+		enforce:    s.validateUpdatesStrict,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}
