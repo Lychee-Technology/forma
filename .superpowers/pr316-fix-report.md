@@ -237,7 +237,7 @@ No e2e fixture failed.
 
 # Final round — accepted over-approximation at arrays
 
-Commit `PLACEHOLDER_SHA`.
+Commit `3f8c824`.
 
 ## The finding is real and is now documented rather than denied
 
