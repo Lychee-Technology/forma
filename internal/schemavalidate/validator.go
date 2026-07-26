@@ -163,6 +163,9 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 		if err := json.Unmarshal([]byte(js.Schema), &s); err != nil {
 			return nil, fmt.Errorf("failed to parse schema %q (id %d): %w", name, id, err)
 		}
+		if err := checkSchemaSupported(&s); err != nil {
+			return nil, fmt.Errorf("failed to accept schema %q (id %d) for validation: %w", name, id, err)
+		}
 		resolved, err := s.Resolve(opts)
 		if err != nil {
 			return nil, fmt.Errorf(
@@ -183,7 +186,14 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 // types: time.Time presents as an object and fails a "type":"string" property
 // until round-tripped, and two production call sites assign time.Now() to
 // string-typed properties.
+//
+// A nil receiver is treated as "no schema resolved" rather than panicking:
+// callers may hold a *Validator that is nil when validation is unconfigured.
 func (v *Validator) Validate(schemaID int16, doc any) error {
+	if v == nil {
+		return fmt.Errorf("no resolved JSON schema for schema id %d: validator is not configured", schemaID)
+	}
+
 	resolved, ok := v.resolved[schemaID]
 	if !ok {
 		return fmt.Errorf("no resolved JSON schema for schema id %d", schemaID)

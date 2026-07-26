@@ -240,17 +240,158 @@ func TestValidateUnknownSchemaIDIsNotClientError(t *testing.T) {
 	require.NotErrorIs(t, err, forma.ErrInvalidInput)
 }
 
-// TestValidateResolvesOnceIsCached pins that Validate does not re-resolve.
-// Resolving is ~250x the cost of validating, so a regression here is a
+// TestValidateDoesNotReResolve pins that Validate reuses the schema resolved by
+// New. Resolving is ~250x the cost of validating, so a regression here is a
 // throughput cliff rather than a correctness bug.
-func TestValidateResolvesOnceIsCached(t *testing.T) {
+//
+// The mechanism matters: an earlier version of this test compared
+// v.resolved[id] before and after, which can only fail if something *writes*
+// the map — nothing ever does, so a Validate that re-resolved on every call
+// still passed. This version removes the file the schema's $ref needs once New
+// has returned. A correct Validate is unaffected because resolution is already
+// complete; a Validate that re-resolves must invoke the loader, which can no
+// longer read the file.
+func TestValidateDoesNotReResolve(t *testing.T) {
 	dir := t.TempDir()
-	v, err := New(registryWith(t, "ev", `{"type":"object"}`, 3), dir)
+	writeSchemaFile(t, dir, "target.json", `{"type":"string","maxLength":3}`)
+	const root = `{"type":"object","properties":{"x":{"$ref":"target.json"}}}`
+	writeSchemaFile(t, dir, "root.json", root)
+
+	v, err := New(registryWith(t, "ev", root, 3), dir)
 	require.NoError(t, err)
 
-	before := v.resolved[3]
+	require.NoError(t, os.Remove(filepath.Join(dir, "target.json")))
+
+	// Prove the removal is load-bearing: resolving this schema now genuinely
+	// fails, so the assertions below would catch a re-resolving Validate.
+	_, err = resolveSchemaFile(dir, "root.json")
+	require.Error(t, err, "removing the $ref target must make resolution fail")
+
+	require.NoError(t, v.Validate(3, map[string]any{"x": "ok"}))
+	// The ref target's own constraint is still enforced, so the cached schema is
+	// the fully resolved one rather than a degraded copy that skipped the $ref.
+	require.ErrorIs(t, v.Validate(3, map[string]any{"x": "far too long"}), forma.ErrInvalidInput)
+}
+
+// TestValidateOnNilValidatorIsOperatorError pins that a nil *Validator returns
+// the plain operator error rather than panicking. Task 4 threads a *Validator
+// that is nil when validation is unconfigured; Task 5 nil-checks before
+// calling, so this is insurance against a future caller that does not.
+func TestValidateOnNilValidatorIsOperatorError(t *testing.T) {
+	var v *Validator
+	err := v.Validate(3, map[string]any{})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestNewRejectsUnsupportedSchemaVersion pins that an unsupported $schema is
+// caught at construction. jsonschema-go's detectDraft silently falls through to
+// draft 2020-12 for anything it does not recognise, so resolution succeeds and
+// the failure only appears inside Validate — where it would be wrapped as
+// ErrInvalidInput and answer 400 to every write, blaming a caller mistake that
+// does not exist. It is a schema-configuration fault and belongs at startup.
+func TestNewRejectsUnsupportedSchemaVersion(t *testing.T) {
+	for _, tc := range []struct{ name, version string }{
+		{"draft_2019_09", "https://json-schema.org/draft/2019-09/schema"},
+		{"draft_06", "http://json-schema.org/draft-06/schema#"},
+		{"typo_in_url", "https://json-schema.org/draft/2020-12/schemaX"},
+		{"not_a_url", "2020-12"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := fmt.Sprintf(`{"$schema":%q,"type":"object"}`, tc.version)
+			_, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
+			require.Error(t, err)
+			require.NotErrorIs(t, err, forma.ErrInvalidInput,
+				"a schema-configuration fault must not be a client error")
+			require.Contains(t, err.Error(), "ev", "error must name the schema")
+			require.Contains(t, err.Error(), tc.version, "error must name the version")
+		})
+	}
+}
+
+// TestNewAcceptsSupportedSchemaVersions is the positive counterpart: the guard
+// above must not refuse to boot on a version the library can actually validate.
+// An over-strict startup gate is worse than the bug it replaces.
+func TestNewAcceptsSupportedSchemaVersions(t *testing.T) {
+	for _, tc := range []struct{ name, version string }{
+		{"draft_2020_12", "https://json-schema.org/draft/2020-12/schema"},
+		{"draft_07_http", "http://json-schema.org/draft-07/schema#"},
+		{"draft_07_https", "https://json-schema.org/draft-07/schema#"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := fmt.Sprintf(`{"$schema":%q,"type":"object"}`, tc.version)
+			v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
+			require.NoError(t, err)
+			require.NoError(t, v.Validate(3, map[string]any{}))
+		})
+	}
+}
+
+// TestNewAcceptsAbsentSchemaVersion pins that omitting $schema stays legal: the
+// library treats an empty version as supported and defaults to draft 2020-12.
+func TestNewAcceptsAbsentSchemaVersion(t *testing.T) {
+	v, err := New(registryWith(t, "ev", `{"type":"object"}`, 3), t.TempDir())
+	require.NoError(t, err)
 	require.NoError(t, v.Validate(3, map[string]any{}))
-	require.Same(t, before, v.resolved[3], "Validate must reuse the resolved schema")
+}
+
+// TestNewRejectsUnknownTypeKeyword pins the same error-class fix for a "type"
+// value outside the JSON Schema vocabulary. Resolution accepts it, and then
+// every document fails the type check, so a typo'd type 400s every write with
+// a message the caller cannot act on. The nested and $defs cases matter most:
+// entity schemas declare types on properties, not on the root.
+func TestNewRejectsUnknownTypeKeyword(t *testing.T) {
+	for _, tc := range []struct{ name, schema, bad string }{
+		{"root", `{"type":"nosuchtype"}`, "nosuchtype"},
+		{"property", `{"type":"object","properties":{"x":{"type":"strig"}}}`, "strig"},
+		{"defs", `{"type":"object","$defs":{"d":{"type":"bogus"}}}`, "bogus"},
+		{"items", `{"type":"array","items":{"type":"nummber"}}`, "nummber"},
+		{"type_array", `{"type":"object","properties":{"x":{"type":["string","nil"]}}}`, "nil"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(registryWith(t, "ev", tc.schema, 3), t.TempDir())
+			require.Error(t, err)
+			require.NotErrorIs(t, err, forma.ErrInvalidInput,
+				"a schema-configuration fault must not be a client error")
+			require.Contains(t, err.Error(), "ev", "error must name the schema")
+			require.Contains(t, err.Error(), tc.bad, "error must name the offending type")
+		})
+	}
+}
+
+// TestNewAcceptsEveryJSONSchemaType is the positive counterpart, covering the
+// whole vocabulary in both the single-type and multi-type spellings so the
+// guard cannot pass by rejecting broadly.
+func TestNewAcceptsEveryJSONSchemaType(t *testing.T) {
+	for _, typeName := range []string{"null", "boolean", "object", "array", "number", "string", "integer"} {
+		t.Run(typeName, func(t *testing.T) {
+			single := fmt.Sprintf(`{"type":"object","properties":{"x":{"type":%q}}}`, typeName)
+			_, err := New(registryWith(t, "ev", single, 3), t.TempDir())
+			require.NoError(t, err, "type %q must be accepted", typeName)
+
+			multi := fmt.Sprintf(`{"type":"object","properties":{"x":{"type":[%q,"null"]}}}`, typeName)
+			_, err = New(registryWith(t, "ev", multi, 3), t.TempDir())
+			require.NoError(t, err, "type [%q, null] must be accepted", typeName)
+		})
+	}
+}
+
+// TestShippedSchemasPassConstructionGuards is the anti-regression for the two
+// guards above: every schema the server actually ships must still construct.
+// A guard that rejects a production schema turns a latent 400 into a refusal to
+// boot, which is a worse failure than the one being fixed.
+func TestShippedSchemasPassConstructionGuards(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	for _, fileName := range shippedSchemaNames(t, dir) {
+		t.Run(strings.TrimSuffix(fileName, ".json"), func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(dir, fileName))
+			require.NoError(t, err)
+
+			name := strings.TrimSuffix(fileName, ".json")
+			_, err = New(registryWith(t, name, string(body), 3), dir)
+			require.NoError(t, err, "shipped schema %s must pass construction guards", fileName)
+		})
+	}
 }
 
 func writeSchemaFile(t *testing.T, dir, name, body string) {
