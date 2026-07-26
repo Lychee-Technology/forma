@@ -235,25 +235,70 @@ func setNestedValue(dst map[string]any, parts []string, value any) {
 	mergeValue(current, parts[len(parts)-1], value)
 }
 
-// mergeValue assigns key, merging recursively where both sides are objects so
+// mergeValue assigns key, merging recursively where both sides are containers so
 // that a subtree already built by an earlier spelling keeps its siblings.
 //
 // Sibling attributes can diverge at any depth: {"contact":{"snapshot":{"a":1}}}
 // plus {"contact.snapshot":{"b":2}} names two different attributes and the
 // writer stores both, so both values must stay visible or one is stored without
-// ever being validated. Everything else — two arrays included — is replaced,
-// because the later spelling replaces the whole attribute the writer stores.
+// ever being validated.
 //
 // Iteration order over an object's keys is irrelevant to the outcome: each key
 // is merged independently, so no key's result depends on another's.
 func mergeValue(dst map[string]any, key string, value any) {
-	existing, haveMap := dst[key].(map[string]any)
-	incoming, incomingMap := value.(map[string]any)
-	if haveMap && incomingMap {
-		for k, v := range incoming {
-			mergeValue(existing, k, v)
+	dst[key] = mergeAny(dst[key], value)
+}
+
+// mergeAny merges incoming onto existing, which is nil when nothing is there yet.
+// Anything that is not a pair of like containers is replaced, which is where the
+// later spelling wins.
+func mergeAny(existing, incoming any) any {
+	if target, ok := existing.(map[string]any); ok {
+		if source, ok := incoming.(map[string]any); ok {
+			for key, value := range source {
+				target[key] = mergeAny(target[key], value)
+			}
+			return target
 		}
-		return
 	}
-	dst[key] = value
+	if target, ok := existing.([]any); ok {
+		if source, ok := incoming.([]any); ok {
+			return mergeSlices(target, source)
+		}
+	}
+	return incoming
+}
+
+// mergeSlices merges two arrays element-wise by index, extending to the longer
+// one and replacing any element that is not an object on both sides.
+//
+// Two spellings meeting at an array can name different attributes, exactly as
+// they can at an object: {"requirement":{"areas":[{"note":…}]}} plus a literal
+// "requirement.areas":[{"city":…}] names requirement.areas.note and
+// requirement.areas.city, and the writer stores both. Replacing would leave one
+// of them persisted without the validator ever seeing it, which is the whole
+// property this document exists to provide.
+//
+// Index alignment is what the flattener already does — an array index is part of
+// the EAV primary key, so .note at index 0 and .city at index 0 are different
+// rows and both survive.
+//
+// Merging here cannot produce a wrong record. This document reaches the
+// validator only; the writer still receives the caller's original map, so a
+// merge can only add values to what is inspected.
+func mergeSlices(existing, incoming []any) []any {
+	length := max(len(existing), len(incoming))
+
+	merged := make([]any, length)
+	for i := range merged {
+		switch {
+		case i >= len(incoming):
+			merged[i] = existing[i]
+		case i >= len(existing):
+			merged[i] = incoming[i]
+		default:
+			merged[i] = mergeAny(existing[i], incoming[i])
+		}
+	}
+	return merged
 }

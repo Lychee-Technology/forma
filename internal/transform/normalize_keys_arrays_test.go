@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/stretchr/testify/require"
@@ -246,6 +247,67 @@ func TestNormalizeExpandsDottedKeyInsideArrayElement(t *testing.T) {
 	bad := NormalizeDottedKeys(payload(12345), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
 		"nesting inside the element is what lets the schema see the value")
+}
+
+// TestNormalizeMergesArrayElementsAcrossSpellings pins the completeness standard
+// the whole split rests on: the validator's view must contain every value the
+// writer will persist. Two spellings meeting at an array name *different*
+// attributes — requirement.areas.note nested, requirement.areas.city literal —
+// and the writer flattens both, so replacing one array with the other hides a
+// value that reaches storage. requirement.areas.note is declared "string", so
+// the numeric one must be rejected.
+//
+// The two arrays are merged element-wise rather than replaced. That is safe in a
+// way it was not before the writer stopped reading this document: nothing here
+// can change a stored record any more, so merging more in can only mean
+// validating more.
+func TestNormalizeMergesArrayElementsAcrossSpellings(t *testing.T) {
+	validator, schemaID := newLeadFullValidator(t)
+
+	out := NormalizeDottedKeys(leadFullPayload(
+		map[string]any{"areas": []any{map[string]any{"note": 123}}},
+		map[string]any{"requirement.areas": []any{map[string]any{"city": "Tokyo"}}},
+	), areasCache(), validator.ArrayPaths(schemaID), nil)
+
+	require.ErrorIs(t, validator.Validate(schemaID, out), forma.ErrInvalidInput,
+		"a value the writer persists must not be invisible to the validator")
+}
+
+// TestWriterPersistsBothArraySpellings is the other half of the finding above,
+// and the reason it is a defect rather than a preference: the writer really does
+// store both spellings as two different attributes. Without it the test above
+// only asserts that normalization merges, not that merging is required.
+func TestWriterPersistsBothArraySpellings(t *testing.T) {
+	registry := &stubSchemaRegistry{schemaID: 100, schemaName: "lead_full", cache: areasCache()}
+	records := toEAV(t, registry, uuid.Must(uuid.NewV7()), map[string]any{
+		"requirement":       map[string]any{"areas": []any{map[string]any{"note": 123}}},
+		"requirement.areas": []any{map[string]any{"city": "Tokyo"}},
+	})
+
+	stored := make(map[int16]struct{}, len(records))
+	for _, record := range records {
+		stored[record.AttrID] = struct{}{}
+	}
+	require.Contains(t, stored, int16(81), "requirement.areas.note is persisted")
+	require.Contains(t, stored, int16(80), "requirement.areas.city is persisted")
+}
+
+// TestNormalizeArrayMergeKeepsLastSpellingAtSameIndex is the guard against the
+// element-wise merge above widening into "both spellings survive". Where the two
+// name the *same* attribute at the same index there is one stored record, and
+// the last spelling owns it — the literal, which sorts after the nested one.
+func TestNormalizeArrayMergeKeepsLastSpellingAtSameIndex(t *testing.T) {
+	validator, schemaID := newLeadFullValidator(t)
+
+	out := NormalizeDottedKeys(leadFullPayload(
+		map[string]any{"areas": []any{map[string]any{"city": "OLD"}}},
+		map[string]any{"requirement.areas": []any{map[string]any{"city": "NEW"}}},
+	), areasCache(), validator.ArrayPaths(schemaID), nil)
+
+	require.Equal(t, map[string]any{"city": "NEW"},
+		requireFirstElement(t, requireChildMap(t, out, "requirement"), "areas"),
+		"the later spelling still owns an attribute both spell")
+	require.NoError(t, validator.Validate(schemaID, out))
 }
 
 func requireFirstElement(t *testing.T, doc map[string]any, key string) map[string]any {
