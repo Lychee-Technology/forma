@@ -148,9 +148,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	// Resolve every registered schema before opening any read surface. This fails
 	// closed, so a schema that cannot resolve aborts startup rather than silently
-	// losing validation at runtime (#314). It is deliberately a pre-I/O gate, for
-	// the same reason as the manifest check above: it owns no resources yet, so it
-	// cannot leak any on the way out.
+	// losing validation at runtime (#314).
+	//
+	// The position is load-bearing: nothing above owns a closable resource, so this
+	// failure return has nothing to leak. Queries have already run (collectTables,
+	// LoadMetadata) — this is pre-read-surface, not pre-I/O. Never move a step that
+	// opens a client, pool, or handle above this line.
 	schemaValidator, err := schemavalidate.New(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build schema validator: %w", err)

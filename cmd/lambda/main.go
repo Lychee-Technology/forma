@@ -105,6 +105,12 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	// Load configuration with schema registry
 	formaConfig := forma.DefaultConfig(registry)
 
+	// Set entity options from the environment, then the schema directory. This
+	// entry point serves the same write routes as cmd/server, so it must honour
+	// VALIDATE_UPDATES_STRICT too or the #314 staged rollout is unavailable on
+	// Lambda. The overlay runs first so it cannot clobber the directory below.
+	formaConfig.Entity = bootstrap.EntityConfigFromEnv(formaConfig.Entity)
+
 	// Set schema directory
 	formaConfig.Entity.SchemaDirectory = schemaDir
 
