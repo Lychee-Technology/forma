@@ -10,7 +10,7 @@ func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int1
 		return h.buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 	}
 	return fmt.Sprintf(`
-		SELECT 
+		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
 			cl.changed_at,
@@ -19,7 +19,7 @@ func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int1
 			0 as version,
 			'hot' as tier
 		FROM postgres_scan('%s', 'public', 'change_log') cl
-		WHERE cl.flushed_at = 0 
+		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
 			%s
 			%s`, pgConnStr, schemaID, rowIDFilter, timeWindowFilter)
@@ -32,7 +32,7 @@ func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeF
 func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string) string {
 	tradeTimeAttrID := h.benchmarkAttributeID(schemaID, "tradeTime")
 	return fmt.Sprintf(`
-		SELECT 
+		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
 			cl.changed_at,
@@ -55,7 +55,7 @@ func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, sche
 			WHERE attr_id = %d
 			GROUP BY schema_id, row_id
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
-		WHERE cl.flushed_at = 0 
+		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
 			%s`, pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
 }
@@ -152,7 +152,7 @@ func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
 func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
 	m := h.hotTierEAVMappingForSchema(schemaID)
 	return fmt.Sprintf(`
-		SELECT 
+		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
 			cl.changed_at,
@@ -171,7 +171,7 @@ func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schem
 			WHERE attr_id IN (%s)
 			GROUP BY schema_id, row_id
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
-		WHERE cl.flushed_at = 0 
+		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
 			%s
 			%s
