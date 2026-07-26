@@ -87,7 +87,7 @@ func normalizeMap(
 		value := normalizeValue(src[key], name, cache, arrays)
 
 		parts := strings.Split(key, ".")
-		if shouldExpand(dst, parts, name, cache, arrays) {
+		if shouldExpand(dst, parts, prefix, name, cache, arrays) {
 			setNestedValue(dst, parts, value)
 			continue
 		}
@@ -134,8 +134,14 @@ func joinName(prefix, key string) string {
 // one predicate and nothing else:
 //
 //   - is the key dotted at all, and does the schema know the name;
-//   - does the schema declare an array above it (arrays.Crosses);
+//   - does the schema declare an array between this node and the key's leaf
+//     (arrays.CrossesBelow);
 //   - does the payload itself already hold an array above it (arrayOnPath).
+//
+// Both array questions are asked about the key's own position, not the absolute
+// attribute name. Inside an element of a schema array the surrounding array is
+// already behind us, and a dotted key there nests legally — asking about the
+// absolute name would refuse every dotted key in every array element.
 //
 // The last two overlap but neither subsumes the other. The schema set is the only
 // way to know about an array the payload does not happen to contain, and the
@@ -145,23 +151,26 @@ func joinName(prefix, key string) string {
 func shouldExpand(
 	dst map[string]any,
 	parts []string,
+	prefix string,
 	name string,
 	cache forma.SchemaAttributeCache,
 	arrays schemavalidate.ArrayPaths,
 ) bool {
 	return len(parts) > 1 &&
 		isKnownAttributeOrParent(name, cache) &&
-		!arrays.Crosses(name) &&
+		!arrays.CrossesBelow(prefix, name) &&
 		!arrayOnPath(dst, parts)
 }
 
-// arrayOnPath reports whether an array already sits on the expansion path.
+// arrayOnPath reports whether an array already sits on the expansion path,
+// according to the payload.
 //
-// Expanding would put an object where the array is, and a schema that declares
-// that path "type": "array" — lead_full.json does, for requirement.areas —
-// would then reject the validator's document for a type the caller never sent.
-// A false 400 on a working payload is worse than an unvalidated value, so the
-// key is left literal instead.
+// The schema's array paths catch the declared cases first, so what is left to
+// this check is the arrays the derivation cannot see: one declared behind a $ref,
+// whose target the library keeps in an unexported side table, and one the caller
+// sent at a path the schema types as an object. In both, expanding would put an
+// object where an array is and either produce a rejection for a type the caller
+// never sent or erase their array from the document, hiding their own type error.
 //
 // Only interior segments are checked. An array at the final segment is the
 // value the caller wrote there, and validating it is exactly right.

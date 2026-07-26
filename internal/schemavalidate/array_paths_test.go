@@ -48,23 +48,23 @@ func TestArrayPathsCrossesOnlyProperPrefixes(t *testing.T) {
 		"tags":              {},
 	}
 
-	require.True(t, paths.Crosses("requirement.areas.city"))
-	require.True(t, paths.Crosses("requirement.areas.deep.nested"))
-	require.True(t, paths.Crosses("tags.anything"))
+	require.True(t, paths.CrossesBelow("", "requirement.areas.city"))
+	require.True(t, paths.CrossesBelow("", "requirement.areas.deep.nested"))
+	require.True(t, paths.CrossesBelow("", "tags.anything"))
 
-	require.False(t, paths.Crosses("requirement.areas"), "the array path itself does not cross")
-	require.False(t, paths.Crosses("tags"))
-	require.False(t, paths.Crosses("requirement.budget.max"))
-	require.False(t, paths.Crosses("contact.email"))
-	require.False(t, paths.Crosses("requirement.areasX.city"), "prefixes must end at a dot")
+	require.False(t, paths.CrossesBelow("", "requirement.areas"), "the array path itself does not cross")
+	require.False(t, paths.CrossesBelow("", "tags"))
+	require.False(t, paths.CrossesBelow("", "requirement.budget.max"))
+	require.False(t, paths.CrossesBelow("", "contact.email"))
+	require.False(t, paths.CrossesBelow("", "requirement.areasX.city"), "prefixes must end at a dot")
 }
 
 // TestArrayPathsNilIsSafe pins that absent knowledge reads as "nothing is an
 // array", which leaves callers with pre-#314 behaviour instead of panicking.
 func TestArrayPathsNilIsSafe(t *testing.T) {
 	var absent ArrayPaths
-	require.False(t, absent.Crosses("requirement.areas.city"))
-	require.False(t, ArrayPaths{}.Crosses("requirement.areas.city"))
+	require.False(t, absent.CrossesBelow("", "requirement.areas.city"))
+	require.False(t, ArrayPaths{}.CrossesBelow("", "requirement.areas.city"))
 
 	var nilValidator *Validator
 	require.Nil(t, nilValidator.ArrayPaths(100))
@@ -99,7 +99,7 @@ func TestArrayPathsFindsArraysUnderCombinators(t *testing.T) {
 	paths := v.ArrayPaths(8)
 	require.Contains(t, paths, "outer.inner")
 	require.Contains(t, paths, "either")
-	require.True(t, paths.Crosses("outer.inner.leaf"))
+	require.True(t, paths.CrossesBelow("", "outer.inner.leaf"))
 }
 
 // TestArrayPathsKeepsParentPathForItems pins the attribute-name convention: an
@@ -121,4 +121,28 @@ func TestArrayPathsKeepsParentPathForItems(t *testing.T) {
 	paths := v.ArrayPaths(9)
 	require.Contains(t, paths, "areas")
 	require.Contains(t, paths, "areas.sub", "the inner array keeps its parent's path, not an index")
+}
+
+// TestArrayPathsCrossesBelowIsRelativeToPosition pins the position argument. A
+// caller normalizing inside an element of propertyInterests is already past that
+// array, so "snapshot.code" nests legally there even though the absolute name
+// crosses an array. Asking about the absolute name refuses every dotted key in
+// every array element.
+func TestArrayPathsCrossesBelowIsRelativeToPosition(t *testing.T) {
+	paths := ArrayPaths{
+		"propertyInterests":               {},
+		"propertyInterests.snapshot.tags": {},
+	}
+
+	require.True(t, paths.CrossesBelow("", "propertyInterests.snapshot.code"),
+		"from the root, the array is between the root and the leaf")
+	require.False(t, paths.CrossesBelow("propertyInterests", "propertyInterests.snapshot.code"),
+		"inside an element, the surrounding array is already behind us")
+
+	// An array *below* the position still counts, wherever the position is.
+	require.True(t, paths.CrossesBelow("propertyInterests", "propertyInterests.snapshot.tags.label"))
+	require.True(t, paths.CrossesBelow("", "propertyInterests.snapshot.tags.label"))
+
+	// The array at exactly the position never counts, at any depth.
+	require.False(t, paths.CrossesBelow("propertyInterests.snapshot.tags", "propertyInterests.snapshot.tags.label"))
 }

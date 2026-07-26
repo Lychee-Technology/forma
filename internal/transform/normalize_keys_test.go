@@ -6,8 +6,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/stretchr/testify/require"
 )
+
+// A nil ArrayPaths below means "this schema declares no arrays", which is the
+// accurate set for a fixture that contains none. Fixtures that do contain an
+// array pass one explicitly, so the array rules are live wherever they could
+// change the outcome; the derived-from-schema cases live in
+// normalize_keys_arrays_test.go.
 
 func dottedCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
@@ -63,8 +70,12 @@ func TestNormalizeExpandsInsideArrayElements(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"tags.a.b": {AttributeID: 30, ValueType: forma.ValueTypeNumeric},
 	}
+	// "tags" is declared an array, which is the whole point: being inside one of
+	// its elements must not disable expansion. Passing nil here would make the
+	// test blind to that, since nil means "nothing is an array".
+	arrays := schemavalidate.ArrayPaths{"tags": {}}
 
-	out := NormalizeDottedKeys(map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, nil)
+	out := NormalizeDottedKeys(map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, arrays)
 
 	require.Equal(t, map[string]any{
 		"tags": []any{map[string]any{"a": map[string]any{"b": 1}}},
@@ -207,10 +218,14 @@ func TestNormalizeNormalizingIsPure(t *testing.T) {
 		}
 	}
 
+	// The fixture's own arrays, so purity is asserted with the array rules live
+	// rather than switched off.
+	arrays := schemavalidate.ArrayPaths{"contact.tags": {}, "contact.snapshot": {}}
+
 	before := toEAV(t, registry, rowID, payload())
 
 	shared := payload()
-	NormalizeDottedKeys(shared, cache, nil)
+	NormalizeDottedKeys(shared, cache, arrays)
 	after := toEAV(t, registry, rowID, shared)
 
 	require.ElementsMatch(t, before, after,
@@ -246,7 +261,9 @@ func TestNormalizeDoesNotMutateInput(t *testing.T) {
 		"contact.snapshot.code": {AttributeID: 2, ValueType: forma.ValueTypeText},
 		"contact.phones.kind":   {AttributeID: 3, ValueType: forma.ValueTypeText},
 	}
-	out := NormalizeDottedKeys(in, cache, nil)
+	// contact.phones is an array, but it is not on contact.snapshot.code's path:
+	// an unrelated array must not suppress expansion.
+	out := NormalizeDottedKeys(in, cache, schemavalidate.ArrayPaths{"contact.phones": {}})
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{

@@ -209,3 +209,52 @@ func TestNormalizeStillExpandsAttributeNotUnderArray(t *testing.T) {
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
 		"expansion is what puts the value in the schema's reach")
 }
+
+// TestNormalizeExpandsDottedKeyInsideArrayElement pins that being inside an
+// array element does not disable expansion.
+//
+// propertyInterests is a schema array, so every attribute name below it crosses
+// an array — but a dotted key written *inside* an element is already past that
+// array, and nesting it there is legal and is what the write path stores. Asking
+// the array paths about the absolute name refuses it anyway, which silently
+// stopped validating the five propertyInterests.snapshot.* attributes.
+func TestNormalizeExpandsDottedKeyInsideArrayElement(t *testing.T) {
+	validator, schemaID := newLeadFullValidator(t)
+	arrays := validator.ArrayPaths(schemaID)
+	require.Contains(t, arrays, "propertyInterests", "the fixture must sit inside a real array")
+
+	cache := forma.SchemaAttributeCache{
+		"propertyInterests.snapshot.code": {AttributeID: 37, ValueType: forma.ValueTypeText},
+	}
+	payload := func(code any) map[string]any {
+		return leadFullPayload(nil, map[string]any{
+			"propertyInterests": []any{map[string]any{
+				"propertyId":    "P1",
+				"status":        "viewed",
+				"snapshot.code": code,
+			}},
+		})
+	}
+
+	out := NormalizeDottedKeys(payload("C1"), cache, arrays)
+
+	element := requireFirstElement(t, out, "propertyInterests")
+	require.NotContains(t, element, "snapshot.code", "the dotted key must be nested inside the element")
+	require.Equal(t, map[string]any{"code": "C1"}, element["snapshot"])
+	require.NoError(t, validator.Validate(schemaID, out))
+
+	bad := NormalizeDottedKeys(payload(12345), cache, arrays)
+	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
+		"nesting inside the element is what lets the schema see the value")
+}
+
+func requireFirstElement(t *testing.T, doc map[string]any, key string) map[string]any {
+	t.Helper()
+
+	items, ok := doc[key].([]any)
+	require.Truef(t, ok, "expected %q to be an array", key)
+	require.NotEmpty(t, items)
+	element, ok := items[0].(map[string]any)
+	require.Truef(t, ok, "expected %q[0] to be an object", key)
+	return element
+}

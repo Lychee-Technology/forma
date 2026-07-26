@@ -21,18 +21,26 @@ import (
 // the attribute name requirement.areas.city.
 type ArrayPaths map[string]struct{}
 
-// Crosses reports whether name lies beneath a path declared as an array.
+// CrossesBelow reports whether name lies beneath an array declared *below*
+// prefix, where prefix is the document position the caller is already at. Pass
+// "" to ask about the whole name.
 //
-// Only proper prefixes count. A name that *is* an array path — a literal
-// "contact.phones" holding the array itself — describes the array rather than
-// something under it, and nesting it is both correct and necessary for the value
-// to be validated.
-func (p ArrayPaths) Crosses(name string) bool {
+// The position matters because a dotted key inside an array element is already
+// past that array: within an element of propertyInterests, "snapshot.code" nests
+// legally, even though the absolute name propertyInterests.snapshot.code does
+// cross an array. Only arrays strictly between prefix and the name's own leaf can
+// make nesting impossible, so paths at or above prefix are skipped.
+//
+// Only proper prefixes count at the other end too. A name that *is* an array
+// path — a literal "contact.phones" holding the array itself — describes the
+// array rather than something under it, and nesting it is both correct and
+// necessary for the value to be validated.
+func (p ArrayPaths) CrossesBelow(prefix, name string) bool {
 	if len(p) == 0 {
 		return false
 	}
 	for i, char := range name {
-		if char != '.' {
+		if char != '.' || i <= len(prefix) {
 			continue
 		}
 		if _, ok := p[name[:i]]; ok {
