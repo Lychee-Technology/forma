@@ -6,7 +6,9 @@
 //     in-process per test Env
 //   - real writes: events are applied through internal.NewEntityManager,
 //     which maintains entity_main, eav_data, and change_log exactly like
-//     production (no harness-simulated inserts)
+//     production (no harness-simulated inserts), and carries a real
+//     schemavalidate.Validator over the Env's schema directory so fixture
+//     payloads face the same JSON Schema enforcement production applies (#314)
 //   - real CDC: RunFlush wraps cdc.Runner.RunOnce and RunInit wraps
 //     cdc.RunInit (delta/base parquet export + S3 manifest)
 //   - real reads: Query assembles internal/federated.DBFederatedQueryEngine
