@@ -23,7 +23,9 @@ type entityBatchService struct {
 	updateOp      func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
 	deleteOp      func(context.Context, *forma.EntityOperation) error
 
-	// A nil validator means schema validation is disabled.
+	// validator is nil when schema validation is unconfigured. Callers must skip
+	// validation entirely in that case: Validate on a nil validator returns an
+	// error, not a no-op.
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
 }

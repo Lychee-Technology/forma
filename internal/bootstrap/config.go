@@ -67,6 +67,18 @@ func DatabaseConfigFromEnv(defaults DBDefaults) forma.DatabaseConfig {
 	}
 }
 
+// EntityConfigFromEnv overlays operator-settable entity options onto defaults.
+//
+// This exists because #314's rollout is staged: creates are always enforced, but
+// updates start report-only so that rows written before enforcement stay
+// updatable. Flipping to enforcing is an operational decision, so it has to be
+// reachable from the environment and not only by library embedders.
+func EntityConfigFromEnv(defaults forma.EntityConfig) forma.EntityConfig {
+	cfg := defaults
+	cfg.ValidateUpdatesStrict = EnvBool("VALIDATE_UPDATES_STRICT", defaults.ValidateUpdatesStrict)
+	return cfg
+}
+
 func TableNamesFromEnv(defaults forma.TableNames) forma.TableNames {
 	return forma.TableNames{
 		SchemaRegistry: Env("SCHEMA_TABLE", defaults.SchemaRegistry),

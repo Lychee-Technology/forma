@@ -173,7 +173,9 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	// Load configuration with schema registry
 	config := forma.DefaultConfig(registry)
 
-	// Set schema directory
+	// Set entity options from the environment, then the schema directory. The
+	// overlay runs first so it cannot clobber the directory resolved above.
+	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
 	config.Entity.SchemaDirectory = schemaDir
 
 	// Set database configuration

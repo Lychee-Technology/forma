@@ -146,32 +146,19 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Initialize transformer
 	transformer := transform.NewPersistentRecordTransformer(registry)
 
-	// Initialize PostgreSQL persistent repository with metadata cache
-	var duckClient *federated.DuckDBClient = nil
-
-	// Initialize DuckDB client if enabled in config
-	if effectiveConfig.DuckDB.Enabled {
-		zap.S().Infow("initializing DuckDB client", "dbPath", effectiveConfig.DuckDB.DBPath)
-		duckClient, err = deps.newDuckDBClient(ctx, effectiveConfig.DuckDB)
-		if err != nil {
-			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
-		} else {
-			zap.S().Infow("duckdb client initialized")
-		}
-	}
-	// Unlike the DuckDB client above, this failure is fatal: a manifest read
-	// surface that cannot be built would silently drop the cold tier.
-	parquetSource, err := deps.newParquetSource(ctx, effectiveConfig.DuckDB)
+	// Resolve every registered schema before opening any read surface. This fails
+	// closed, so a schema that cannot resolve aborts startup rather than silently
+	// losing validation at runtime (#314). It is deliberately a pre-I/O gate, for
+	// the same reason as the manifest check above: it owns no resources yet, so it
+	// cannot leak any on the way out.
+	schemaValidator, err := schemavalidate.New(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
-		// The DuckDB client above is already open on this path; nothing else
-		// will ever hold it, so release its handle and pool before the fatal
-		// return rather than leaking them for the process lifetime.
-		// (*DuckDBClient).Close is nil-receiver safe, covering the DuckDB-off
-		// and client-construction-failed cases.
-		if closeErr := duckClient.Close(); closeErr != nil {
-			zap.S().Warnw("failed to close duckdb client after parquet source failure", "err", closeErr)
-		}
-		return nil, fmt.Errorf("failed to build manifest parquet source: %w", err)
+		return nil, fmt.Errorf("failed to build schema validator: %w", err)
+	}
+
+	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
+	if err != nil {
+		return nil, err
 	}
 
 	// One plan cache shared by the repository and the federated engine (#142):
@@ -194,17 +181,46 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		federated.DuckDBPostgresConnStringFromPool(pool),
 		engineOpts...,
 	)
-	// Resolve every registered schema up front: this fails closed, so a schema
-	// that cannot resolve aborts startup instead of silently losing validation
-	// at runtime (#314).
-	schemaValidator, err := schemavalidate.New(registry, effectiveConfig.Entity.SchemaDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build schema validator: %w", err)
-	}
-
 	// Create and return entity manager
 	return internal.NewEntityManager(
 		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator), nil
+}
+
+// newFederatedReadSurface opens the DuckDB client and the manifest parquet source
+// together, because their failure modes are coupled and only make sense as a pair.
+//
+// A DuckDB client that fails to open is non-fatal: the engine degrades to
+// Postgres-only. A parquet source that fails to build is fatal, because it would
+// silently drop the cold tier. On that fatal path the already-open DuckDB client
+// has no other owner, so its handle and pool are released here rather than leaked
+// for the process lifetime. (*DuckDBClient).Close is nil-receiver safe, covering
+// the DuckDB-off and client-construction-failed cases.
+func newFederatedReadSurface(
+	ctx context.Context,
+	cfg forma.DuckDBConfig,
+	deps entityManagerDependencies,
+) (*federated.DuckDBClient, federated.ParquetSource, error) {
+	var duckClient *federated.DuckDBClient = nil
+	var err error
+
+	if cfg.Enabled {
+		zap.S().Infow("initializing DuckDB client", "dbPath", cfg.DBPath)
+		duckClient, err = deps.newDuckDBClient(ctx, cfg)
+		if err != nil {
+			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
+		} else {
+			zap.S().Infow("duckdb client initialized")
+		}
+	}
+
+	parquetSource, err := deps.newParquetSource(ctx, cfg)
+	if err != nil {
+		if closeErr := duckClient.Close(); closeErr != nil {
+			zap.S().Warnw("failed to close duckdb client after parquet source failure", "err", closeErr)
+		}
+		return nil, nil, fmt.Errorf("failed to build manifest parquet source: %w", err)
+	}
+	return duckClient, parquetSource, nil
 }
 
 func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *federated.CircuitBreaker {

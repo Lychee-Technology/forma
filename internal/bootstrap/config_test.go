@@ -107,3 +107,42 @@ func TestTableNamesFromEnv(t *testing.T) {
 		t.Fatalf("expected change table change_tbl, got %s", tables.ChangeLog)
 	}
 }
+
+// TestEntityConfigFromEnvValidateUpdatesStrict pins that the #314 update-strictness
+// flag is operator-settable. The staged rollout depends on an operator being able
+// to flip it without rebuilding, so an unread env var would make the flag
+// decorative.
+func TestEntityConfigFromEnvValidateUpdatesStrict(t *testing.T) {
+	t.Setenv("VALIDATE_UPDATES_STRICT", "true")
+
+	cfg := EntityConfigFromEnv(forma.EntityConfig{})
+	if !cfg.ValidateUpdatesStrict {
+		t.Fatalf("expected VALIDATE_UPDATES_STRICT=true to enable strict updates")
+	}
+}
+
+// TestEntityConfigFromEnvPreservesUnrelatedFields guards the overlay shape: it
+// must return the defaults it was given with only the env-backed field replaced,
+// never a zero-valued struct that silently drops caller settings.
+func TestEntityConfigFromEnvPreservesUnrelatedFields(t *testing.T) {
+	defaults := forma.EntityConfig{
+		BatchSize:       500,
+		SchemaDirectory: "/schemas",
+		MaxEntitySize:   1024,
+	}
+
+	cfg := EntityConfigFromEnv(defaults)
+
+	if cfg.ValidateUpdatesStrict {
+		t.Fatalf("expected strict updates to default to false when the env var is unset")
+	}
+	if cfg.BatchSize != 500 {
+		t.Fatalf("expected batch size 500 to be preserved, got %d", cfg.BatchSize)
+	}
+	if cfg.SchemaDirectory != "/schemas" {
+		t.Fatalf("expected schema directory to be preserved, got %s", cfg.SchemaDirectory)
+	}
+	if cfg.MaxEntitySize != 1024 {
+		t.Fatalf("expected max entity size 1024 to be preserved, got %d", cfg.MaxEntitySize)
+	}
+}

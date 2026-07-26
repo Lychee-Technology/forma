@@ -19,7 +19,10 @@ type entityManager struct {
 	config               *forma.Config
 	relations            *RelationIndex
 
-	// A nil validator means schema validation is disabled for this manager.
+	// validator is nil when schema validation is unconfigured. Callers must skip
+	// validation entirely in that case: Validate on a nil validator returns an
+	// error, not a no-op, and a plain one that would surface as an operator-facing
+	// 500 on every write rather than being ignored.
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
 
