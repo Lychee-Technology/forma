@@ -38,9 +38,14 @@ var jsonSchemaTypes = map[string]bool{
 // and neither is caught by Resolve. Left to Validate they would be wrapped as
 // forma.ErrInvalidInput and answer 400 to every write, blaming a caller error
 // that does not exist and hiding the real fault from the operator. Catching
-// them at construction converts a permanent 400 into a startup failure, and
-// keeps Validate's blanket ErrInvalidInput wrap honest by ensuring only genuine
-// violations can reach it.
+// them at construction converts a permanent 400 into a startup failure, and so
+// keeps Validate's blanket ErrInvalidInput wrap honest for the faults it can
+// see.
+//
+// It is not a complete guard. The walk covers the parsed document only, and $ref
+// targets live in the library's unexported side table — so a bad "type" behind a
+// $ref to a file that is not itself a registered schema still reaches Validate
+// and is still mislabelled as caller input.
 func checkSchemaSupported(s *jsonschema.Schema) error {
 	if err := checkSchemaVersion(s); err != nil {
 		return err

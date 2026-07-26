@@ -110,8 +110,12 @@ func resolveOptions(dir string) (*jsonschema.ResolveOptions, error) {
 	}, nil
 }
 
-// resolveSchemaFile resolves one schema file from dir. Used by construction and
-// by tests that assert the shipped schemas are resolvable.
+// resolveSchemaFile resolves one schema file from dir, straight off disk.
+//
+// New does not call it: New resolves the document the registry holds, not the
+// file, so it inlines the same steps against that document. This is the
+// file-based counterpart, used by the tests that assert the shipped schemas on
+// disk are resolvable.
 func resolveSchemaFile(dir, fileName string) (*jsonschema.Resolved, error) {
 	s, err := loadSchemaFile(filepath.Join(dir, fileName))
 	if err != nil {
