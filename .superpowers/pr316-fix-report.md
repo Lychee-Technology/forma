@@ -62,16 +62,26 @@ Red first:
 ```
 
 Fix: `fileLoader` now runs `checkSchemaSupported` on every document it loads, via
-`checkLoadedSchema`, which memoises the verdict under the resolved path. That
-bounds a diamond reference to one walk and makes a reference cycle terminate.
+`checkLoadedSchema`, which memoises the verdict under the resolved path.
 
 Two deliberate choices worth flagging:
 
-- **The cache holds the verdict, not the parsed schema.** Caching the
-  `*jsonschema.Schema` would hand the same pointer to two different `Resolve`
-  calls; the library annotates resolved schemas, so sharing them across resolves
-  is a risk with no upside here. Caching `map[string]error` gives the same
-  once-per-path and cycle-termination properties with no sharing.
+- **The cache holds the verdict, not the parsed schema.** *(Reasoning corrected in
+  the final review round — the conclusion stands, the mechanism I gave did not.)*
+  I wrote that "the library annotates resolved schemas". It does not: in v0.4.2
+  annotations live in `Resolved.resolvedInfos`, a per-`Resolved` side table, so
+  sharing a `*jsonschema.Schema` across resolves would not collide there. The real
+  hazard is `resolve.go:550` — `if ls.Schema == "" { ls.Schema = s.Schema }` writes
+  the *referring* schema's `$schema` into the loaded document. A pointer shared
+  across two `Resolve` calls would therefore carry the first resolve's draft into
+  the second and change its detected version. Caching `map[string]error` avoids
+  that genuine hazard.
+- **What the memo is actually worth.** I claimed it "makes a reference cycle
+  terminate". Also corrected: the library's own `r.loaded` cache already calls the
+  loader at most once per URI within a single `Resolve`, so cycle termination and
+  diamond dedupe are defence-in-depth, not load-bearing. The memo's real value is
+  across the several `Resolve` calls that share one loader built by `New` — one
+  walk per file for the whole registry rather than one per referring root.
 - **The check includes `checkSchemaVersion`,** as instructed, even though
   `checkSchemaVersion`'s own doc argues only the root's `$schema` affects
   validation. Verified safe before shipping: every one of the 12 shipped schema
@@ -222,3 +232,119 @@ changed files are pre-existing in `benchmark/execute.go` as noted above.
 `config.go` untouched (495).
 
 No e2e fixture failed.
+
+---
+
+# Final round — accepted over-approximation at arrays
+
+Commit `PLACEHOLDER_SHA`.
+
+## The finding is real and is now documented rather than denied
+
+The reviewer's reproducer holds exactly as stated. The writer's dedupe replaces
+the whole *logical attribute* — every index — for a losing spelling; `mergeSlices`
+replaces per *index*. When the nested spelling is the longer one, its surplus
+elements survive into the validator's view and never into storage:
+
+```json
+{"requirement": {"areas": [{"city":"A"},{"city":12345}]},
+ "requirement.areas": [{"city":"NEW"}]}
+```
+
+Confirmed both halves in one test: the writer emits exactly one EAV record
+(`require.Len(t, records, 1)`), and the view carries the discarded index 1, whose
+integer fails the declared `string`.
+
+Per the human partner's ruling the over-approximation is kept, and the exact
+per-leaf-key rule was **not** attempted.
+
+## What changed
+
+1. **`normalize_keys.go` `mergeSlices` doc** no longer claims a merge "can only
+   add values to what is inspected". It now separates the two claims: merging
+   cannot produce a wrong *record*, and does produce a wrong *verdict*. It states
+   the over-approximation, the shape that triggers it, why replacing is the worse
+   error, and that the exact rule is deliberately not attempted.
+2. **`normalize_keys.go` package doc (the stale passage)** no longer says the
+   literal wins "matching the writer's own last-spelling-wins rule". It now says
+   plainly that this is *not* the writer's rule and does not claim to reproduce
+   it — the losing spelling's siblings are merged in on purpose — and that at an
+   array the two rules diverge outright.
+3. **New test `TestNormalizeArrayMergeOverApproximatesShrinkingList`** pins the
+   400 and carries the full reasoning for why it is accepted rather than fixed,
+   so the decision is findable at the site.
+4. **Spec**: a new "Accepted deviation: the view over-approximates at arrays"
+   block in the deviations section, alongside the array-above and relation-root
+   exemptions, and the "Merging more into that view is always safe" sentence
+   corrected to distinguish records from verdicts.
+5. **`docs/error-handling.md`**: a new operator-facing section, "False rejection:
+   a shrinking list over already-invalid data", placed with the other gaps and
+   explicitly marked *live, not latent* to distinguish it from the section below
+   it. It states what an operator sees (report-only `Warn` by default, `400` only
+   under `ValidateUpdatesStrict`) and what to do about it. The gap summary near
+   the top now points at it, so a reader who starts there is not left believing
+   normalization only ever under-checks.
+
+## Proof the pinning test is not vacuous
+
+Red-first is not meaningful for a test that pins current behaviour, so instead
+`mergeSlices`' merge was replaced with a return of the incoming slice. Both
+array tests died:
+
+```
+=== RUN   TestNormalizeMergesArrayElementsAcrossSpellings
+    normalize_keys_arrays_test.go:272:
+        Error:      Expected error with "invalid input" in chain but got nil.
+        Messages:   a value the writer persists must not be invisible to the validator
+--- FAIL: TestNormalizeMergesArrayElementsAcrossSpellings (0.00s)
+=== RUN   TestNormalizeArrayMergeOverApproximatesShrinkingList
+    normalize_keys_arrays_test.go:352:
+        Error:      Expected error with "invalid input" in chain but got nil.
+        Messages:   accepted over-approximation: the view validates an index the writer discards
+--- FAIL: TestNormalizeArrayMergeOverApproximatesShrinkingList (0.00s)
+```
+
+Restored from a byte copy taken before the mutation; `git diff --stat` on the
+file reported no change, and both tests pass again:
+
+```
+=== RUN   TestNormalizeMergesArrayElementsAcrossSpellings
+--- PASS: TestNormalizeMergesArrayElementsAcrossSpellings (0.00s)
+=== RUN   TestNormalizeArrayMergeOverApproximatesShrinkingList
+--- PASS: TestNormalizeArrayMergeOverApproximatesShrinkingList (0.00s)
+```
+
+## Both corrections to my third disclosure verified against the dependency
+
+Not taken on trust — read out of `jsonschema-go@v0.4.2`:
+
+- `resolve.go:30` / `:45` — `resolvedInfos map[*Schema]*resolvedInfo` is a field
+  of `Resolved`, i.e. per-`Resolved`. My "the library annotates resolved schemas"
+  was wrong.
+- `resolve.go:550-552` — `if ls.Schema == "" { ls.Schema = s.Schema }`. This is
+  the genuine hazard: a shared `*jsonschema.Schema` would carry the first
+  resolve's `$schema` into the second and change its detected draft. The
+  conclusion (cache the verdict, not the schema) stands on this instead.
+- `resolve.go:224-225` — `r.loaded[...] = rs`, set before `resolveRefs`, with the
+  library's own comment *"We must set the map before calling resolveRefs, or ref
+  cycles will cause unbounded recursion."* So within one `Resolve` the loader is
+  called at most once per URI, and my memo's cycle-termination claim was
+  defence-in-depth, not load-bearing. Its real value is across the several
+  `Resolve` calls that share one loader from `New`.
+
+Both corrections are now in the code comments (`fileLoader`, `checkLoadedSchema`)
+as well as here, so the next reader meets the accurate mechanism at the site.
+
+## Verification
+
+| Command | Result |
+| --- | --- |
+| mutant kill check on `mergeSlices` | both array tests fail, then pass after restore (above) |
+| `make lint` | pass (exit 0, no findings) |
+| `make test` | pass, all packages |
+| `go test -count=1 ./internal/... .` | pass, no failures |
+| `git diff --check f4017db...HEAD` | clean (exit 0) |
+
+Docker e2e suite not re-run, as directed: this round touches comments, docs and
+one test. `normalize_keys.go` 347 lines, `normalize_keys_arrays_test.go` 400 —
+both under the cap; no function grew.

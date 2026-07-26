@@ -310,6 +310,49 @@ func TestNormalizeArrayMergeKeepsLastSpellingAtSameIndex(t *testing.T) {
 	require.NoError(t, validator.Validate(schemaID, out))
 }
 
+// TestNormalizeArrayMergeOverApproximatesShrinkingList pins an accepted false
+// rejection, so a future reader finds the decision instead of rediscovering the
+// asymmetry behind it.
+//
+// The writer's dedupe replaces the whole *logical attribute* — every index — for
+// a losing spelling. mergeSlices replaces per *index*. So when the nested
+// spelling is the longer one, its surplus elements survive into the validator's
+// view and never into storage. Here the writer persists exactly one record,
+// requirement.areas.city[0] = "NEW", while the view still carries the discarded
+// index 1 and its integer fails the declared "string".
+//
+// This is kept rather than fixed. The two errors available are not symmetric:
+// replacing under-approximates, leaving a *persisted* value unvalidated, which
+// is the bypass #314 exists to close; merging over-approximates, validating a
+// value that is discarded. Over-approximating is the safer direction, and this
+// rejection additionally requires the surplus stored data to violate the schema
+// already — under the default report-only update mode that is a log line, and it
+// rejects only under strict mode, which is exactly the pre-existing violation the
+// staged rollout is meant to surface.
+//
+// The exact per-leaf-key rule is the right answer in the abstract. It is not
+// attempted: every previous refinement of this merge introduced a new defect, and
+// that one would be the most intricate yet.
+func TestNormalizeArrayMergeOverApproximatesShrinkingList(t *testing.T) {
+	payload := map[string]any{
+		"requirement":       map[string]any{"areas": []any{map[string]any{"city": "A"}, map[string]any{"city": 12345}}},
+		"requirement.areas": []any{map[string]any{"city": "NEW"}},
+	}
+
+	// The writer keeps one record: the literal spelling replaces the whole
+	// attribute, so index 1 never reaches storage.
+	registry := &stubSchemaRegistry{schemaID: 100, schemaName: "lead_full", cache: areasCache()}
+	records := toEAV(t, registry, uuid.Must(uuid.NewV7()), payload)
+	require.Len(t, records, 1, "the losing spelling's surplus index is not persisted")
+
+	validator, schemaID := newLeadFullValidator(t)
+	out := NormalizeDottedKeys(
+		leadFullPayload(nil, payload), areasCache(), validator.ArrayPaths(schemaID), nil)
+
+	require.ErrorIs(t, validator.Validate(schemaID, out), forma.ErrInvalidInput,
+		"accepted over-approximation: the view validates an index the writer discards")
+}
+
 // TestNormalizeTypedNilObjectStaysRejected is Finding 3 against the shipped
 // schema. A Go embedder sending `var requirement map[string]any` sends a
 // non-nil any wrapping a nil map; materialising it into {} let the validator

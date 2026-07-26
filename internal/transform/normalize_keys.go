@@ -68,9 +68,16 @@ import (
 // means "nothing known to be an array" / "no relation roots".
 //
 // When both spellings are present the literal wins, matching encoding/json's
-// duplicate-key semantics and the writer's own last-spelling-wins rule. Keys are
-// applied in sorted order, and for any dotted name X.Y the shorter spelling X
-// sorts before X.Y, so the longer, more specific one is applied last.
+// duplicate-key semantics. Keys are applied in sorted order, and for any dotted
+// name X.Y the shorter spelling X sorts before X.Y, so the longer, more specific
+// one is applied last.
+//
+// That is not the writer's rule, and this document does not claim to reproduce
+// it. The writer's dedupe drops the losing spelling's records for the whole
+// logical attribute; here the losing spelling's *siblings* are merged in, which
+// is what keeps every persisted value visible to the validator. At an array the
+// two rules diverge outright — see mergeSlices for the false rejection that
+// follows and why it is accepted.
 //
 // The input is never mutated: maps and slices are rebuilt rather than shared.
 func NormalizeDottedKeys(
@@ -304,9 +311,24 @@ func mergeAny(existing, incoming any) any {
 // the EAV primary key, so .note at index 0 and .city at index 0 are different
 // rows and both survive.
 //
-// Merging here cannot produce a wrong record. This document reaches the
-// validator only; the writer still receives the caller's original map, so a
-// merge can only add values to what is inspected.
+// Merging here cannot produce a wrong record: this document reaches the
+// validator only, and the writer still receives the caller's original map. It
+// can produce a wrong *verdict*, and does.
+//
+// The writer's dedupe replaces the whole logical attribute — every index — for a
+// losing spelling, while this replaces per index. When the nested spelling is the
+// longer one its surplus elements survive into the view and never into storage,
+// so the view over-approximates: it may validate a value the writer discards. A
+// shrinking-list patch over already-invalid stored data is therefore rejected on
+// a value that will not exist after the write.
+//
+// Kept deliberately. Replacing under-approximates instead, leaving a persisted
+// value unvalidated — the bypass #314 exists to close — and over-approximating is
+// the safer of the two errors. The exact per-leaf-key rule is the right answer in
+// the abstract and is not attempted: every previous refinement of this merge
+// introduced a new defect. Pinned by
+// TestNormalizeArrayMergeOverApproximatesShrinkingList, which carries the full
+// reasoning; also in docs/error-handling.md, because it is operator-facing.
 func mergeSlices(existing, incoming []any) []any {
 	length := max(len(existing), len(incoming))
 

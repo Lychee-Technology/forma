@@ -155,7 +155,24 @@ Two consequences follow, and they are the shape of the whole thing:
 - **`eav_dedupe.go` is not a safety net.** The "Out of scope" note below calls it one, on the grounds that normalization makes duplicate spellings unreachable. Under the shipped design the writer still sees both spellings, so the dedupe is load-bearing and removing it would reintroduce duplicate primary keys. Decision 4's "subsumes #312" is wrong as written.
 - **The validator's view has one correctness standard: it must contain every value the writer will persist.** If the writer stores an attribute the validator never saw, enforcement is a lie for that attribute. This is why the view merges objects *and arrays* element-wise rather than replacing — two spellings meeting at an array can name different attributes, and the writer stores both — and why a typed nil container is preserved rather than materialised into `{}`, which would pass a `type` the writer stores nothing for.
 
-Merging more into that view is always safe now in a way it was not while the writer read it: nothing in the normalizer can change a stored record, so a merge can only add values to what is inspected.
+Merging more into that view can no longer produce a wrong *record*, in a way it could while the writer read it: nothing in the normalizer changes what is stored. It can produce a wrong *verdict*, and one case does — see below.
+
+**Accepted deviation: the view over-approximates at arrays.**
+
+The writer's dedupe replaces the whole logical attribute — every index — for a losing spelling. `mergeSlices` replaces per index. When the nested spelling is the longer one, its surplus elements survive into the view and never into storage:
+
+```json
+{"requirement": {"areas": [{"city":"A"},{"city":12345}]},
+ "requirement.areas": [{"city":"NEW"}]}
+```
+
+The writer persists exactly one record, `requirement.areas.city[0] = "NEW"`. The view is `[{"city":"NEW"},{"city":12345}]`, and `requirement.areas.city` is declared `string`, so the write is **rejected on a value it would not have stored**.
+
+Kept rather than fixed, because the two available errors are not symmetric. Replacing under-approximates — a persisted value goes unvalidated, which is the bypass #314 exists to close. Merging over-approximates — a discarded value gets validated. Over-approximating is the safer direction, and this rejection additionally requires the surplus stored data to violate the schema *already*: under the default report-only update mode that is a log line, and it rejects only under strict mode, which is precisely the pre-existing violation the staged rollout is meant to surface.
+
+The exact per-leaf-key rule is the right answer in the abstract and is deliberately not attempted: every previous refinement of this merge introduced a new defect, and that one would be the most intricate yet.
+
+Pinned by `TestNormalizeArrayMergeOverApproximatesShrinkingList`. Unlike the two exemptions under decision 4, this one is operator-facing — it is a rejection, not a silent gap — so it is documented in `docs/error-handling.md` as well.
 
 ### Write-path hook
 

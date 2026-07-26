@@ -41,11 +41,15 @@ import (
 // answers 400 to every create, while report-only updates absorb it and write
 // anyway. A configuration fault belongs at startup, whichever file holds it.
 //
-// The check runs once per resolved path. That bounds a diamond reference to one
-// check and makes a reference cycle terminate: the library calls the loader
-// again for a file already being resolved, and a cached verdict answers without
-// re-walking. The map needs no lock — loaders run inside Resolve, which New
-// drives sequentially, and a fresh loader is built per resolveOptions call.
+// The check runs once per resolved path. Within one Resolve the library's own
+// r.loaded cache already calls a loader at most once per URI, so cycle
+// termination and diamond dedupe are defence-in-depth here rather than
+// load-bearing. What the memo actually buys is reuse across the several Resolve
+// calls that share the loader New builds: one walk per file for the whole
+// registry, not one per referring root.
+//
+// The map needs no lock — loaders run inside Resolve, which New drives
+// sequentially, and a fresh loader is built per resolveOptions call.
 func fileLoader(absDir string) jsonschema.Loader {
 	checked := make(map[string]error)
 	return func(u *url.URL) (*jsonschema.Schema, error) {
@@ -65,8 +69,15 @@ func fileLoader(absDir string) jsonschema.Loader {
 }
 
 // checkLoadedSchema applies the construction guard to a referenced document,
-// memoising the verdict under its resolved path so repeated and cyclic
-// references cost one walk and cannot recurse.
+// memoising the verdict under its resolved path so a file referenced from
+// several roots is walked once (see fileLoader for what that is and is not
+// worth).
+//
+// The verdict is cached, not the *jsonschema.Schema. Handing one parsed document
+// to two Resolve calls would be unsafe for a reason that is easy to miss:
+// resolve.go:550 writes the *referring* schema's $schema into the loaded
+// document when the loaded one has none, so the second resolve would inherit the
+// first's draft and detect a different version.
 //
 // The error names the file: the operator otherwise sees only the registered root
 // that referenced it, which may be several hops away from the typo.

@@ -88,6 +88,11 @@ paths before validating, so their values *are* checked — except in the two
 documented gaps below (a dotted key written above a schema array, and anything
 beneath a relation root).
 
+Normalization errs in the other direction in one case: at an array it can check
+slightly *more* than the writer stores, and so reject a value the write would
+have discarded. See "False rejection: a shrinking list over already-invalid
+data".
+
 ### Creates reject, updates report
 
 A create that violates its schema is rejected. An update that violates its
@@ -176,6 +181,48 @@ all in `lead.json` (and its `lead_full.json` twin, which repeats them):
 The "inside an element is fine" half holds unconditionally only because **no
 shipped schema nests an array inside an array**; a dotted key inside an outer
 element that crossed an inner array would fall back into the gap.
+
+### False rejection: a shrinking list over already-invalid data
+
+The gap above is a value going unchecked. This is the opposite error, and it is
+**live, not latent**: one shape is checked more strictly than it is stored, and
+can be rejected on a value the write would have thrown away.
+
+The cause is a rule mismatch between the two halves of the write path.
+`NormalizeDottedKeys` builds the document the validator sees; the writer receives
+the caller's original map, and `transform`'s dedupe resolves duplicate spellings
+there. The dedupe drops a losing spelling's records for the **whole logical
+attribute** — every array index. The validator's view merges two arrays **per
+index**. So when the nested spelling is the longer one, its surplus elements
+survive into the view and never into storage:
+
+```json
+{"requirement": {"areas": [{"city": "A"}, {"city": 12345}]},
+ "requirement.areas": [{"city": "NEW"}]}
+```
+
+The writer persists exactly one record, `requirement.areas.city[0] = "NEW"`. The
+view is `[{"city":"NEW"},{"city":12345}]`, and `requirement.areas.city` is
+declared `string`, so validation reports
+`type: 12345 has type "integer", want "string"` — about an index that will not
+exist after the write.
+
+**What an operator sees.** The rejection needs the surplus stored data to violate
+the schema *already*. On the default update path that surfaces as a report-only
+`Warn` naming the schema and row and the write proceeds; it becomes a `400` only
+under `Entity.ValidateUpdatesStrict`, which is exactly the mode meant to surface
+pre-existing violations. On create there is no stored surplus to inherit, so the
+only way to hit it is to send both spellings with a longer nested one in the same
+body. If it appears in strict mode, the fix is the same as for any pre-existing
+violation: correct the stored data, or send the list under one spelling.
+
+**Why it is not fixed.** Making the view replace instead of merge trades this for
+the worse error — a *persisted* value going unvalidated, which is the bypass #314
+exists to close. Over-approximating is the safer direction: the failure mode is a
+visible rejection rather than silent non-enforcement. Reproducing the writer's
+rule exactly is possible in principle and deliberately not attempted; every
+previous refinement of that merge introduced a new defect. Pinned by
+`TestNormalizeArrayMergeOverApproximatesShrinkingList`.
 
 ### Latent, not currently reachable
 
