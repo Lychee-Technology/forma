@@ -28,7 +28,30 @@ func dottedCache() forma.SchemaAttributeCache {
 // well-formed document and actually checks the value. Left flat, the key is an
 // unknown property and its value is never examined at all (#314).
 func TestNormalizeExpandsDottedKey(t *testing.T) {
-	out := NormalizeDottedKeys(map[string]any{"contact.email": "x"}, dottedCache(), nil)
+	out := NormalizeDottedKeys(map[string]any{"contact.email": "x"}, dottedCache(), nil, nil)
+	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
+}
+
+// TestNormalizeSkipsExpansionUnderRelationRoot is the predicate behind the
+// relation seam. StripComputedFields has already deleted "contact" from the
+// document by the time this runs, matching by exact key, so expanding
+// contact.email would rebuild that root as a partial object and validate a
+// document no row will ever hold.
+func TestNormalizeSkipsExpansionUnderRelationRoot(t *testing.T) {
+	in := map[string]any{"contact.email": "x", "name": "Ada"}
+
+	out := NormalizeDottedKeys(in, dottedCache(), nil, RelationRoots{"contact": {}})
+
+	require.Equal(t, in, out, "a dotted key under a relation root must be left literal")
+}
+
+// TestNormalizeStillExpandsOutsideRelationRoots is the guard against that skip
+// widening. Only names *beneath* a declared relation root are exempt; every
+// other dotted key is expanded and therefore validated as before.
+func TestNormalizeStillExpandsOutsideRelationRoots(t *testing.T) {
+	out := NormalizeDottedKeys(
+		map[string]any{"contact.email": "x"}, dottedCache(), nil, RelationRoots{"other": {}})
+
 	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 }
 
@@ -43,7 +66,7 @@ func TestNormalizeExpandsDottedKeyNamingParentPath(t *testing.T) {
 
 	out := NormalizeDottedKeys(map[string]any{
 		"contact.snapshot": map[string]any{"code": 99999},
-	}, cache, nil)
+	}, cache, nil, nil)
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{"snapshot": map[string]any{"code": 99999}},
@@ -56,7 +79,7 @@ func TestNormalizeExpandsNestedDottedKey(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"a.b.c": {AttributeID: 4, ValueType: forma.ValueTypeText},
 	}
-	out := NormalizeDottedKeys(map[string]any{"a": map[string]any{"b.c": "v"}}, cache, nil)
+	out := NormalizeDottedKeys(map[string]any{"a": map[string]any{"b.c": "v"}}, cache, nil, nil)
 	require.Equal(t, map[string]any{
 		"a": map[string]any{"b": map[string]any{"c": "v"}},
 	}, out)
@@ -75,7 +98,7 @@ func TestNormalizeExpandsInsideArrayElements(t *testing.T) {
 	// test blind to that, since nil means "nothing is an array".
 	arrays := schemavalidate.ArrayPaths{"tags": {}}
 
-	out := NormalizeDottedKeys(map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, arrays)
+	out := NormalizeDottedKeys(map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, arrays, nil)
 
 	require.Equal(t, map[string]any{
 		"tags": []any{map[string]any{"a": map[string]any{"b": 1}}},
@@ -91,7 +114,7 @@ func TestNormalizeLiteralWinsOverNested(t *testing.T) {
 		"contact":       map[string]any{"email": "old"},
 		"contact.email": "x",
 	}
-	out := NormalizeDottedKeys(in, dottedCache(), nil)
+	out := NormalizeDottedKeys(in, dottedCache(), nil, nil)
 	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 }
 
@@ -107,7 +130,7 @@ func TestNormalizeThreeSegmentLiteralWins(t *testing.T) {
 	out := NormalizeDottedKeys(map[string]any{
 		"contact.snapshot":      map[string]any{"code": "MIDDLE"},
 		"contact.snapshot.code": "LITERAL",
-	}, cache, nil)
+	}, cache, nil, nil)
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{"snapshot": map[string]any{"code": "LITERAL"}},
@@ -124,7 +147,7 @@ func TestNormalizePreservesSiblings(t *testing.T) {
 	out := NormalizeDottedKeys(map[string]any{
 		"contact":       map[string]any{"phone": "555", "email": "old"},
 		"contact.email": "x",
-	}, cache, nil)
+	}, cache, nil, nil)
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{"phone": "555", "email": "x"},
@@ -149,7 +172,7 @@ func TestNormalizeMergesSiblingsAtDepth(t *testing.T) {
 	out := NormalizeDottedKeys(map[string]any{
 		"contact":          map[string]any{"snapshot": map[string]any{"deep": map[string]any{"a": "A"}}},
 		"contact.snapshot": map[string]any{"deep": map[string]any{"b": "B"}},
-	}, cache, nil)
+	}, cache, nil, nil)
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{
@@ -162,7 +185,7 @@ func TestNormalizeMergesSiblingsAtDepth(t *testing.T) {
 // cache knows are expanded. An unknown dotted key stays put so the writer's
 // "attribute is not defined for schema" error still fires with its own message.
 func TestNormalizeLeavesUnknownDottedKeyAlone(t *testing.T) {
-	out := NormalizeDottedKeys(map[string]any{"nope.missing": 1}, dottedCache(), nil)
+	out := NormalizeDottedKeys(map[string]any{"nope.missing": 1}, dottedCache(), nil, nil)
 	require.Equal(t, map[string]any{"nope.missing": 1}, out)
 }
 
@@ -176,7 +199,7 @@ func TestNormalizeIsDeterministic(t *testing.T) {
 		"contact.email": "x",
 	}
 	for i := 0; i < 200; i++ {
-		out := NormalizeDottedKeys(in, dottedCache(), nil)
+		out := NormalizeDottedKeys(in, dottedCache(), nil, nil)
 		require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 	}
 }
@@ -225,7 +248,7 @@ func TestNormalizeNormalizingIsPure(t *testing.T) {
 	before := toEAV(t, registry, rowID, payload())
 
 	shared := payload()
-	NormalizeDottedKeys(shared, cache, arrays)
+	NormalizeDottedKeys(shared, cache, arrays, nil)
 	after := toEAV(t, registry, rowID, shared)
 
 	require.ElementsMatch(t, before, after,
@@ -263,7 +286,7 @@ func TestNormalizeDoesNotMutateInput(t *testing.T) {
 	}
 	// contact.phones is an array, but it is not on contact.snapshot.code's path:
 	// an unrelated array must not suppress expansion.
-	out := NormalizeDottedKeys(in, cache, schemavalidate.ArrayPaths{"contact.phones": {}})
+	out := NormalizeDottedKeys(in, cache, schemavalidate.ArrayPaths{"contact.phones": {}}, nil)
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/transform"
 )
 
 // RelationDescriptor captures how a child schema derives fields from a parent schema.
@@ -160,6 +162,26 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 		result[k] = v
 	}
 	return result
+}
+
+// RelationRoots returns the property names StripComputedFields removes for
+// schema, as the set transform.NormalizeDottedKeys consults so it does not
+// rebuild a stripped root out of a surviving dotted descendant. A nil receiver
+// or a schema with no relations answers nil, which that set reads as "no
+// relation roots".
+func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {
+	if idx == nil {
+		return nil
+	}
+	rels := idx.bySchema[schema]
+	if len(rels) == 0 {
+		return nil
+	}
+	roots := make(transform.RelationRoots, len(rels))
+	for _, rel := range rels {
+		roots[rel.ChildPath] = struct{}{}
+	}
+	return roots
 }
 
 func (idx *RelationIndex) isRelationRoot(schema, key string) bool {

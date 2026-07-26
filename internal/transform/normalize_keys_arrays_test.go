@@ -96,7 +96,7 @@ func TestNormalizeKeepsArrayOnPathValidatable(t *testing.T) {
 	)
 
 	validator, schemaID := newLeadFullValidator(t)
-	out := NormalizeDottedKeys(in, areasCache(), validator.ArrayPaths(schemaID))
+	out := NormalizeDottedKeys(in, areasCache(), validator.ArrayPaths(schemaID), nil)
 	require.Equal(t, in, out, "the array must survive; the literal stays flat")
 
 	require.NoError(t, validator.Validate(schemaID, out),
@@ -114,7 +114,7 @@ func TestNormalizeLeavesArrayOnPathValueUnvalidated(t *testing.T) {
 	out := NormalizeDottedKeys(leadFullPayload(
 		map[string]any{"areas": []any{map[string]any{"city": "OLD"}}},
 		map[string]any{"requirement.areas.city": 12345},
-	), areasCache(), validator.ArrayPaths(schemaID))
+	), areasCache(), validator.ArrayPaths(schemaID), nil)
 
 	require.Equal(t, 12345, out["requirement.areas.city"], "the literal is left unexpanded")
 
@@ -142,7 +142,7 @@ func TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray(t *testing.T) {
 	out := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
 		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
 		"contact.phones": []any{"090-1111-2222"},
-	}), cache, arrays)
+	}), cache, arrays, nil)
 
 	require.NotContains(t, out, "contact.phones", "the literal must be expanded, not left flat")
 	require.Equal(t, []any{"090-1111-2222"}, requireChildMap(t, out, "contact")["phones"])
@@ -152,7 +152,7 @@ func TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray(t *testing.T) {
 	bad := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
 		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
 		"contact.phones": []any{12345},
-	}), cache, arrays)
+	}), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
 		"a wrongly typed element must be caught once the literal is expanded")
 }
@@ -174,7 +174,7 @@ func TestNormalizeSkipsExpansionUnderSchemaArrayWhenAbsent(t *testing.T) {
 	require.Contains(t, arrays, "requirement.areas")
 
 	in := leadFullPayload(nil, map[string]any{"requirement.areas.city": 12345})
-	out := NormalizeDottedKeys(in, areasCache(), arrays)
+	out := NormalizeDottedKeys(in, areasCache(), arrays, nil)
 
 	require.Equal(t, in, out, "nothing to expand: the schema says this path crosses an array")
 	require.NoError(t, validator.Validate(schemaID, out),
@@ -196,7 +196,7 @@ func TestNormalizeStillExpandsAttributeNotUnderArray(t *testing.T) {
 	out := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
 		"contact":       map[string]any{"name": "Ada"},
 		"contact.email": "ada@example.com",
-	}), cache, arrays)
+	}), cache, arrays, nil)
 
 	require.NotContains(t, out, "contact.email", "an attribute not under an array must expand")
 	require.Equal(t, "ada@example.com", requireChildMap(t, out, "contact")["email"])
@@ -205,7 +205,7 @@ func TestNormalizeStillExpandsAttributeNotUnderArray(t *testing.T) {
 	bad := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
 		"contact":       map[string]any{"name": "Ada"},
 		"contact.email": 12345,
-	}), cache, arrays)
+	}), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
 		"expansion is what puts the value in the schema's reach")
 }
@@ -236,14 +236,14 @@ func TestNormalizeExpandsDottedKeyInsideArrayElement(t *testing.T) {
 		})
 	}
 
-	out := NormalizeDottedKeys(payload("C1"), cache, arrays)
+	out := NormalizeDottedKeys(payload("C1"), cache, arrays, nil)
 
 	element := requireFirstElement(t, out, "propertyInterests")
 	require.NotContains(t, element, "snapshot.code", "the dotted key must be nested inside the element")
 	require.Equal(t, map[string]any{"code": "C1"}, element["snapshot"])
 	require.NoError(t, validator.Validate(schemaID, out))
 
-	bad := NormalizeDottedKeys(payload(12345), cache, arrays)
+	bad := NormalizeDottedKeys(payload(12345), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
 		"nesting inside the element is what lets the schema see the value")
 }

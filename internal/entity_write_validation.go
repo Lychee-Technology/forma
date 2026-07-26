@@ -11,8 +11,30 @@ import (
 	"go.uber.org/zap"
 )
 
+// writeValidation is one write's worth of input to validateWritePayload.
+//
+// It is a struct rather than a parameter list because the four write sites must
+// fill in every field deliberately, and a positional list of this length invites
+// getting two same-typed arguments the wrong way round.
+//
+// data is typed map[string]any rather than any so that "the normalized document
+// does not reach the writer" is checked by the compiler at the boundary: there is
+// no untyped value here to be silently passed over. All four write paths hold a
+// map already — EntityOperation.Data and .Updates are map[string]any, and both
+// StripComputedFields and mergeMaps return one.
+type writeValidation struct {
+	validator *schemavalidate.Validator
+	schemaID  int16
+	cache     forma.SchemaAttributeCache
+	// relations is the set of relation roots StripComputedFields removed from
+	// data, which normalization must not rebuild (see NormalizeDottedKeys).
+	relations transform.RelationRoots
+	data      map[string]any
+	enforce   bool
+}
+
 // validateWritePayload validates a write payload against the JSON Schema
-// registered for schemaID. Before #314 enum, pattern and min/max were declared
+// registered for the schema. Before #314 enum, pattern and min/max were declared
 // in every shipped schema and enforced nowhere.
 //
 // It returns an error and nothing else, on purpose. Dotted keys are normalized
@@ -21,12 +43,6 @@ import (
 // *spelling* that produced it (#312), and merging the spellings beforehand
 // destroys that provenance. Every call site keeps handing the writer exactly the
 // map it built.
-//
-// data is typed map[string]any rather than any so that "the normalized document
-// does not reach the writer" is checked by the compiler at the boundary: there is
-// no untyped value here to be silently passed over. All four write paths hold a
-// map already — EntityOperation.Data and .Updates are map[string]any, and both
-// StripComputedFields and mergeMaps return one.
 //
 // enforce is true on create and follows Entity.ValidateUpdatesStrict on update.
 // It governs *violations only*. With enforcement off a violation is logged and
@@ -49,27 +65,21 @@ import (
 //
 // It is a package-level function rather than a method so the CRUD and batch
 // services cannot drift apart on any of the above.
-func validateWritePayload(
-	validator *schemavalidate.Validator,
-	schemaID int16,
-	cache forma.SchemaAttributeCache,
-	data map[string]any,
-	enforce bool,
-) error {
-	if validator == nil {
+func validateWritePayload(v writeValidation) error {
+	if v.validator == nil {
 		return nil
 	}
 
-	normalized := transform.NormalizeDottedKeys(data, cache, validator.ArrayPaths(schemaID))
-	err := validator.Validate(schemaID, normalized)
+	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID), v.relations)
+	err := v.validator.Validate(v.schemaID, normalized)
 	if err == nil {
 		return nil
 	}
-	if enforce || !errors.Is(err, forma.ErrInvalidInput) {
-		return fmt.Errorf("failed to validate payload against schema %d: %w", schemaID, err)
+	if v.enforce || !errors.Is(err, forma.ErrInvalidInput) {
+		return fmt.Errorf("failed to validate payload against schema %d: %w", v.schemaID, err)
 	}
 
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
-		"schemaID", schemaID, "error", err.Error())
+		"schemaID", v.schemaID, "error", err.Error())
 	return nil
 }

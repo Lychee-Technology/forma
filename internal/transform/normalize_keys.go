@@ -49,10 +49,23 @@ import (
 // holds unconditionally on the shipped schemas only because none of them nests
 // an array inside an array.
 //
+// A dotted key is not expanded when it lies beneath a relation root either, for
+// a different reason: the caller's payload has already had relation roots
+// removed by RelationIndex.StripComputedFields, which matches by *exact* key and
+// so leaves registered dotted descendants like contactSnapshot.name behind.
+// Expanding one rebuilds the root that was just removed, as a partial object —
+// and visit.json resolves contactSnapshot to lead.json#/properties/contact,
+// which requires isAnonymous, so the rebuild fails validation on a payload that
+// was accepted and persisted before #314. Sending the whole nested object does
+// not help: the strip removes it and the dotted key rebuilds it anyway. Such a
+// value is therefore not validated, exactly like the array case above; the
+// writer still persists it unchanged.
+//
 // arrays comes from schemavalidate, the only place that knows which paths are
 // arrays; the metadata cache records requirement.areas.city and contact.email
-// identically. Passing a nil set is safe and means "nothing known to be an
-// array".
+// identically. relations comes from RelationIndex, the only place that knows
+// which properties carry x-relation. Passing a nil set is safe for either and
+// means "nothing known to be an array" / "no relation roots".
 //
 // When both spellings are present the literal wins, matching encoding/json's
 // duplicate-key semantics and the writer's own last-spelling-wins rule. Keys are
@@ -64,6 +77,7 @@ func NormalizeDottedKeys(
 	data map[string]any,
 	cache forma.SchemaAttributeCache,
 	arrays schemavalidate.ArrayPaths,
+	relations RelationRoots,
 ) map[string]any {
 	if data == nil {
 		// A nil document is returned unchanged rather than as an empty map, so
@@ -76,17 +90,21 @@ func NormalizeDottedKeys(
 		// which one passes and the other does not.
 		return nil
 	}
-	return normalizeMap(data, "", cache, arrays)
+	return normalizeMap(data, "", schemaView{cache: cache, arrays: arrays, relations: relations})
+}
+
+// schemaView bundles the three schema-derived inputs the walk consults. All
+// three are fixed for a whole document, so grouping them keeps the recursion's
+// parameters about position in the document rather than about configuration.
+type schemaView struct {
+	cache     forma.SchemaAttributeCache
+	arrays    schemavalidate.ArrayPaths
+	relations RelationRoots
 }
 
 // normalizeMap rebuilds src with dotted keys expanded, where prefix is the
 // dotted attribute-name prefix of src's own position in the document.
-func normalizeMap(
-	src map[string]any,
-	prefix string,
-	cache forma.SchemaAttributeCache,
-	arrays schemavalidate.ArrayPaths,
-) map[string]any {
+func normalizeMap(src map[string]any, prefix string, view schemaView) map[string]any {
 	dst := make(map[string]any, len(src))
 
 	keys := make([]string, 0, len(src))
@@ -97,10 +115,10 @@ func normalizeMap(
 
 	for _, key := range keys {
 		name := joinName(prefix, key)
-		value := normalizeValue(src[key], name, cache, arrays)
+		value := normalizeValue(src[key], name, view)
 
 		parts := strings.Split(key, ".")
-		if shouldExpand(dst, parts, prefix, name, cache, arrays) {
+		if shouldExpand(dst, parts, prefix, name, view) {
 			setNestedValue(dst, parts, value)
 			continue
 		}
@@ -113,12 +131,12 @@ func normalizeMap(
 // Rebuilding both maps and slices is what keeps the caller's document unmutated:
 // merging writes into the result, and the result must share nothing with the map
 // the writer will still be handed.
-func normalizeValue(value any, name string, cache forma.SchemaAttributeCache, arrays schemavalidate.ArrayPaths) any {
+func normalizeValue(value any, name string, view schemaView) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		return normalizeMap(typed, name, cache, arrays)
+		return normalizeMap(typed, name, view)
 	case []any:
-		return normalizeSlice(typed, name, cache, arrays)
+		return normalizeSlice(typed, name, view)
 	default:
 		return value
 	}
@@ -128,10 +146,10 @@ func normalizeValue(value any, name string, cache forma.SchemaAttributeCache, ar
 // name because an index is not part of an attribute name — flattenToAttributes
 // carries indices separately and recurses into elements with the path unchanged
 // — so {"tags":[{"a.b":1}]} must expand the same as {"tags":{"a.b":1}} would.
-func normalizeSlice(src []any, prefix string, cache forma.SchemaAttributeCache, arrays schemavalidate.ArrayPaths) []any {
+func normalizeSlice(src []any, prefix string, view schemaView) []any {
 	dst := make([]any, len(src))
 	for i, item := range src {
-		dst[i] = normalizeValue(item, prefix, cache, arrays)
+		dst[i] = normalizeValue(item, prefix, view)
 	}
 	return dst
 }
@@ -143,35 +161,34 @@ func joinName(prefix, key string) string {
 	return prefix + "." + key
 }
 
-// shouldExpand gates expansion on three independent questions, each answered by
+// shouldExpand gates expansion on four independent questions, each answered by
 // one predicate and nothing else:
 //
 //   - is the key dotted at all, and does the schema know the name;
 //   - does the schema declare an array between this node and the key's leaf
 //     (arrays.CrossesBelow);
-//   - does the payload itself already hold an array above it (arrayOnPath).
+//   - does the payload itself already hold an array above it (arrayOnPath);
+//   - does the name lie beneath a relation root (relations.Covers).
 //
 // Both array questions are asked about the key's own position, not the absolute
 // attribute name. Inside an element of a schema array the surrounding array is
 // already behind us, and a dotted key there nests legally — asking about the
 // absolute name would refuse every dotted key in every array element.
 //
-// The last two overlap but neither subsumes the other. The schema set is the only
-// way to know about an array the payload does not happen to contain, and the
-// payload check is the only way to catch an array the derivation cannot see —
-// one declared behind a $ref, or one the caller sent where the schema says
+// The two array checks overlap but neither subsumes the other. The schema set is
+// the only way to know about an array the payload does not happen to contain,
+// and the payload check is the only way to catch an array the derivation cannot
+// see — one declared behind a $ref, or one the caller sent where the schema says
 // object.
-func shouldExpand(
-	dst map[string]any,
-	parts []string,
-	prefix string,
-	name string,
-	cache forma.SchemaAttributeCache,
-	arrays schemavalidate.ArrayPaths,
-) bool {
+//
+// The relation check is the odd one out and is deliberately absolute: relation
+// roots are top-level properties, and the reason to skip is that the root has
+// already been deleted from this very document (see NormalizeDottedKeys).
+func shouldExpand(dst map[string]any, parts []string, prefix, name string, view schemaView) bool {
 	return len(parts) > 1 &&
-		isKnownAttributeOrParent(name, cache) &&
-		!arrays.CrossesBelow(prefix, name) &&
+		isKnownAttributeOrParent(name, view.cache) &&
+		!view.arrays.CrossesBelow(prefix, name) &&
+		!view.relations.Covers(name) &&
 		!arrayOnPath(dst, parts)
 }
 
