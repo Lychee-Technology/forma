@@ -72,3 +72,7 @@ __pycache__/
 
 /docs/__ref__
 .artifacts/
+
+# Agent review/planning scratch (SDD ledgers, briefs, reports, review diffs).
+# Never part of a deliverable; two commits on #314 swept it in before this existed.
+.superpowers/
