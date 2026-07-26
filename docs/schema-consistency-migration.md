@@ -202,7 +202,7 @@ The same check covers an unparseable document and a `$ref` that points outside
 are now enforced on create, in addition to the metadata's `required_policy`.
 `format` is **not** enforced. Updates only log violations unless
 `VALIDATE_UPDATES_STRICT=true`. Full contract, including the shipped-schema
-behaviour changes and the remaining gap, is in
+behaviour changes and the remaining gaps, is in
 [`error-handling.md`](./error-handling.md#json-schema-enforcement-on-write).
 
 ## Suggested SQL Fix Workflow
