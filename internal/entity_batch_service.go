@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -21,6 +22,10 @@ type entityBatchService struct {
 	createOp      func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
 	updateOp      func(context.Context, *forma.EntityOperation) (*forma.DataRecord, error)
 	deleteOp      func(context.Context, *forma.EntityOperation) error
+
+	// A nil validator means schema validation is disabled.
+	validator             *schemavalidate.Validator
+	validateUpdatesStrict bool
 }
 
 // newEntityBatchService takes the CRUD service as an explicit parameter so the
@@ -47,6 +52,9 @@ func newEntityBatchService(em *entityManager, crud *entityCRUDService) *entityBa
 		createOp:      createOp,
 		updateOp:      updateOp,
 		deleteOp:      deleteOp,
+
+		validator:             em.validator,
+		validateUpdatesStrict: em.validateUpdatesStrict,
 	}
 }
 

@@ -123,6 +123,6 @@ func (e *Env) EntityManager() forma.EntityManager {
 
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
 	transformer := transform.NewPersistentRecordTransformer(e.Registry)
-	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config)
+	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, nil)
 	return e.manager
 }

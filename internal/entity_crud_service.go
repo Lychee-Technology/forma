@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -19,6 +20,10 @@ type entityCRUDService struct {
 	toDataRecord      dataRecordConverter
 	enrichDataRecords dataRecordEnricher
 	storageTables     storageTablesResolver
+
+	// A nil validator means schema validation is disabled.
+	validator             *schemavalidate.Validator
+	validateUpdatesStrict bool
 }
 
 func newEntityCRUDService(em *entityManager) *entityCRUDService {
@@ -33,6 +38,9 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 		toDataRecord:      em.toDataRecord,
 		enrichDataRecords: em.enrichDataRecords,
 		storageTables:     em.storageTables,
+
+		validator:             em.validator,
+		validateUpdatesStrict: em.validateUpdatesStrict,
 	}
 }
 

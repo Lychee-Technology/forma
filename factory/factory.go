@@ -9,6 +9,7 @@ import (
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/jackc/pgx/v5"
@@ -193,8 +194,17 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		federated.DuckDBPostgresConnStringFromPool(pool),
 		engineOpts...,
 	)
+	// Resolve every registered schema up front: this fails closed, so a schema
+	// that cannot resolve aborts startup instead of silently losing validation
+	// at runtime (#314).
+	schemaValidator, err := schemavalidate.New(registry, effectiveConfig.Entity.SchemaDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build schema validator: %w", err)
+	}
+
 	// Create and return entity manager
-	return internal.NewEntityManager(transformer, repository, federatedEngine, registry, effectiveConfig), nil
+	return internal.NewEntityManager(
+		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator), nil
 }
 
 func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *federated.CircuitBreaker {

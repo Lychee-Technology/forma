@@ -31,6 +31,12 @@ type mockSchemaRegistry struct {
 	schemas  map[string]forma.SchemaAttributeCache
 }
 
+// mockSchemaBody is the JSON Schema document the mock registry serves. It has to
+// be a parseable, resolvable schema because schemavalidate.New fails closed on
+// any schema it cannot resolve (#314), and the factory builds the validator over
+// every registered schema.
+const mockSchemaBody = `{"type":"object","properties":{"id":{"type":"string"}}}`
+
 func newMockSchemaRegistry() *mockSchemaRegistry {
 	return &mockSchemaRegistry{
 		nameToID: map[string]int16{"test": 1},
@@ -70,7 +76,7 @@ func (m *mockSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSche
 	if !ok {
 		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)
 	}
-	return id, forma.JSONSchema{ID: id, Name: name}, nil
+	return id, forma.JSONSchema{ID: id, Name: name, Schema: mockSchemaBody}, nil
 }
 
 func (m *mockSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
@@ -78,7 +84,7 @@ func (m *mockSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 	if !ok {
 		return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d", id)
 	}
-	return name, forma.JSONSchema{ID: id, Name: name}, nil
+	return name, forma.JSONSchema{ID: id, Name: name, Schema: mockSchemaBody}, nil
 }
 
 func (m *mockSchemaRegistry) ListSchemas() []string {
