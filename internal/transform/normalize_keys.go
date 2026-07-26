@@ -33,13 +33,26 @@ import (
 // defines something beneath it. An unknown dotted key is left alone; the writer
 // still rejects it with "attribute is not defined".
 //
-// A name under a schema array is never expanded, because it cannot be: nesting
-// requirement.areas.city puts an object where the schema declares an array, and
-// the caller gets a 400 naming a type they never sent. Such values are therefore
-// not validated at all — the documented limit of this function. arrays comes from
-// schemavalidate, the only place that knows which paths are arrays; the metadata
-// cache records requirement.areas.city and contact.email identically. Passing a
-// nil set is safe and means "nothing known to be an array".
+// A dotted key is not expanded when the schema declares an array between the
+// key's own position and its leaf, because it cannot be: nesting
+// requirement.areas.city at the top level puts an object where the schema
+// declares an array, and the caller gets a 400 naming a type they never sent.
+// Such a value is therefore not validated at all — the documented limit of this
+// function.
+//
+// The discriminator is where the caller writes the key, not which attribute it
+// names. The same name is expanded and validated when it is written inside an
+// element of the array it lies under: within an element of requirement.areas the
+// array is already behind us, so "city" lands in the right place, and a dotted
+// "snapshot.code" inside a propertyInterests element nests legally. That is
+// ArrayPaths.CrossesBelow asking the question relative to the current node. It
+// holds unconditionally on the shipped schemas only because none of them nests
+// an array inside an array.
+//
+// arrays comes from schemavalidate, the only place that knows which paths are
+// arrays; the metadata cache records requirement.areas.city and contact.email
+// identically. Passing a nil set is safe and means "nothing known to be an
+// array".
 //
 // When both spellings are present the literal wins, matching encoding/json's
 // duplicate-key semantics and the writer's own last-spelling-wins rule. Keys are

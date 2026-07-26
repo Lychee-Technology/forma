@@ -14,8 +14,203 @@ Examples:
 - unknown write attribute names in `transformer.flattenToAttributes`
 - invalid value conversion in `populateTypedValue`
 - explicit `null` writes to schema-defined fields
+- a payload that violates the entity's JSON Schema (`internal/schemavalidate`) —
+  see "JSON Schema enforcement on write" below
 
 These errors are intended to surface as user-facing `4xx` responses.
+
+## JSON Schema enforcement on write
+
+Until #314 the JSON Schema documents in `SCHEMA_DIR` drove metadata generation
+and read-path shaping only. `enum`, `pattern`, `type` and `minimum`/`maximum`
+were declared across the shipped schemas and enforced **nowhere**.
+`internal/schemavalidate` now resolves each entity schema once at startup, and
+all four write paths (`Create`, `Update`, `BatchCreate`, `BatchUpdate`) validate
+against it through `internal/entity_write_validation.go`.
+
+### What is enforced
+
+The validator is `github.com/google/jsonschema-go`, so every assertion keyword
+that library implements applies. The ones the shipped schemas actually use:
+
+| keyword | shipped example |
+| --- | --- |
+| `type` | `lead.json` `contact.annualIncome` must be a number |
+| `enum` | `lead.json` `pipeline` ∈ `buy`/`rent`/`sell`/`landlord` |
+| `pattern` | `contact.json` `email`; `lead.json` `contact.primaryPhone` |
+| `minimum`/`maximum` | `lead.json` `contact.employmentYear` 1900–2100 |
+| `required` | the schema's own `required` list, at the root and at any nested object (`lead.json` `contact.isAnonymous`) |
+
+Cross-file `$ref` is resolved, restricted to plain siblings inside
+`SCHEMA_DIR`, so `visit.json`'s `contactSnapshot`
+(`lead.json#/properties/contact`) really is validated against lead's contact
+object, patterns included.
+
+**This is in addition to `required_policy`, which is a separate mechanism and
+still applies independently.** `required_policy` lives in
+`<name>_attributes.json` (`forma.AttributeMetadata.RequiredPolicy`) and is
+checked by `validateRequiredAttributesFromInput` in `internal/transform`. It is
+per *attribute* and understands `required_if_parent_present`; the schema's
+`required` is per *object* and understands nothing else. Neither subsumes the
+other, and a write must satisfy both.
+
+### What is not enforced, and why
+
+**`format` is inert — every one of them.** `format` is annotation-only in
+`github.com/google/jsonschema-go`: the keyword is parsed into `Schema.Format`
+and never read by the validator, and `Resolved.Validate(instance any) error`
+takes no options, so there is no switch to assert it. Every `date-time`,
+`uuid`, `date` and `email` format across the shipped schemas therefore
+constrains nothing.
+
+The trap this sets is `email`. `lead.json` declares `contact.email` with
+`"format": "email"` — inert. `contact.json` declares its `email` with a
+`"pattern"` — enforced. Same logical field, two schemas, one real constraint. An
+author who wants a format asserted must write it as a `pattern`.
+
+**Unknown properties are accepted**, because no shipped schema sets
+`additionalProperties`. A key the schema does not define passes validation. That
+is not a hole for unknown *attributes* — `flattenToAttributes` still rejects
+those with `attribute is not defined`, so they answer `400` by a different route.
+What passes unchecked is a key the attribute metadata defines and the JSON
+Schema does not describe at that position.
+
+Literal dotted keys are why that distinction matters. Attribute names in this
+system are dotted, so a caller may spell `contact.email` either nested or as one
+literal key, and a literal key is an unknown property to JSON Schema.
+`transform.NormalizeDottedKeys` expands literal dotted keys into their nested
+paths before validating, so their values *are* checked — except in the one case
+below.
+
+### Creates reject, updates report
+
+A create that violates its schema is rejected. An update that violates its
+schema is **logged and written** unless `Entity.ValidateUpdatesStrict` (env
+`VALIDATE_UPDATES_STRICT`, honoured by both `cmd/server` and `cmd/lambda`) is
+set, which flips updates to enforcing.
+
+Report-only is the default because rows written before enforcement existed may
+already violate their schema, and rejecting on update would make them
+**un-updatable**: a caller touching one unrelated field would be refused for a
+pre-existing violation elsewhere, with no way to repair the row through the API.
+Creates have no legacy data and so always enforce.
+
+**Do not flip strict mode before an e2e pass on real data.** The update path
+validates the *merged* document — `FromPersistentRecord` reconstructs the stored
+entity out of EAV rows and `mergeMaps` overlays the caller's fragment — so what
+is judged is the EAV round-trip, not what the caller sent. Shipped schemas put a
+`pattern` — plus an inert `format: uuid` — on required identifiers (`lead.json`
+`$defs/lead_id`, `visit.json` `$defs/visit_id`), and the pattern is the half that
+bites, so any reconstruction that is lossy for such a field turns a legitimate
+partial update into a rejection the caller cannot diagnose from their own
+payload.
+
+### Which errors are which class
+
+`validateWritePayload` splits on sentinel evidence, not on the enforce flag:
+
+- A genuine violation wraps `forma.ErrInvalidInput` → `400`. Report-only mode
+  absorbs exactly this case, logging it at `Warn` and proceeding.
+- **Everything else is returned regardless of enforcement** — a missing resolved
+  schema, or a payload that will not marshal (`NaN`/`Inf`). Those are plain
+  errors, therefore `500`, therefore operator-visible. Absorbing them into
+  report-only would write the document with *zero* validation while a log line
+  claimed it had merely failed a check, and would blame the caller for a server
+  fault.
+
+### Startup fails closed
+
+Construction resolves **every** schema name `registry.ListSchemas()` returns.
+Any name that will not resolve — an unparseable document, a `$ref` outside the
+schema directory, a missing file — aborts `factory.NewEntityManagerWithConfig*`
+and the server does not start. A broken `$ref` is a deploy-time failure rather
+than a silent loss of validation at runtime.
+
+**Upgrade risk, precisely:** a `schema_registry` row whose name has a
+`<name>_attributes.json` on disk but **no `<name>.json`** will now refuse server
+startup. `internal/schemameta`'s file registry deliberately tolerates that
+today — `loadSchemaArtifacts` treats a missing schema document as "no JSON
+Schema" and registers the attribute cache alone — so such a deployment is
+currently running and healthy. Validator construction calls
+`GetSchemaByName` for every listed name, which answers
+`schema data not found: <name>` for exactly that shape.
+
+The operator preflight is one sentence: **every schema name registered in
+`schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR`.** No database
+column is involved — `schema_registry` holds only `schema_id`, `schema_name` and
+`created_at`; the document lives on disk.
+
+### The one remaining validation gap
+
+A literal dotted key naming an attribute that lies **under a schema array** is
+not validated when it is written at a level *above* that array. Nesting it would
+put an object where the schema declares an array, so the caller would get a
+`400` naming a type they never sent; `NormalizeDottedKeys` leaves the key literal
+instead, JSON Schema treats it as an unknown property, and its value is never
+examined. This happens **identically whether or not the array itself appears in
+the payload** — the decision is derived from the schema, not from the document's
+shape.
+
+The discriminator is *where the caller writes the key*, not which attribute it
+names. Written **inside** an array element the same name is expanded and
+validated normally: `{"propertyInterests": [{"snapshot.price": "x"}]}` is
+rejected with `.../snapshot/properties/price: type: x has type "string", want
+"number"`, while `{"propertyInterests.snapshot.price": "x"}` at the root raises no
+complaint about that value at all — the writer stores it, and the schema never
+sees it.
+
+On the shipped schemas the exposed surface is exactly **15 attribute names**,
+all in `lead.json` (and its `lead_full.json` twin, which repeats them):
+
+- `requirement.areas.` `city`, `note`, `prefecture`, `ward`
+- `propertyInterests.` `propertyId`, `status`, `isPrimary`, `notes`,
+  `firstSeenAt`, `lastActivityAt`
+- `propertyInterests.snapshot.` `address`, `code`, `price`, `rent`, `title`
+
+The "inside an element is fine" half holds unconditionally only because **no
+shipped schema nests an array inside an array**; a dotted key inside an outer
+element that crossed an inner array would fall back into the gap.
+
+### Latent, not currently reachable
+
+An array declared behind a `$ref` or inside `$defs` is invisible to the array-path
+derivation (`schemavalidate.deriveArrayPaths` does not follow `$ref`, because the
+library keeps resolved targets in an unexported side table). A dotted key under
+such an array would therefore be expanded, placing an object where the schema
+says array, and the caller would receive a **false `400` naming a type they never
+sent**. The same applies to arrays reached through `if`/`then`, `prefixItems`,
+`patternProperties`, `dependentSchemas` or `contains`, none of which the
+derivation walks.
+
+No shipped schema reaches this. None uses `if`/`then`, `prefixItems`,
+`patternProperties`, `dependentSchemas` or `contains` at all. The one `$ref` that
+does hide an array — `visit.json`'s `contactSnapshot` → `lead.json`'s `contact`,
+which contains `phones` — has no attribute registered beneath that array in
+`visit_attributes.json`, so no dotted key can name one. `NormalizeDottedKeys`
+also carries a payload-shape backstop (`arrayOnPath`) that catches the case where
+the caller does send the array.
+
+### Behaviour change: `watch` payloads now need `id`, `name` and `brand`
+
+`cmd/sample/schemas/watch.json` declares `"required": ["id", "name", "brand"]`
+while `watch_attributes.json` marks nothing required. Before #314 the schema's
+`required` was decorative, so a `watch` payload omitting any of the three was
+accepted; it is now rejected on create. The bundled CSV importer supplies all
+three, so nothing shipped breaks.
+
+### Hazard for schema authors: never mark a relation root `required`
+
+Creates and updates validate **after** `StripComputedFields` removes
+`x-relation` properties, so that what is checked is what is stored — computed
+relation fields are derived on read and never persisted. The consequence is that
+a schema listing a relation root in `required` makes that entity **unwritable,
+and unfixably so**: every create and update fails with a missing-required error,
+and sending the field does not help because it is stripped before the validator
+sees it.
+
+Only `visit.json`'s `contactSnapshot` carries `x-relation` today, and it is not
+required. A schema that did this would need the validation moved to before the
+strip.
 
 ## Read-path consistency errors
 
@@ -175,7 +370,7 @@ message text unchanged:
 | site | caller mistake |
 | --- | --- |
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
-| `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting a `required` attribute |
+| `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting an attribute whose metadata `required_policy` demands it |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
@@ -184,6 +379,14 @@ The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+Since #314 there is a **second** write-path validator on the same footing,
+`internal/schemavalidate`'s `Validator.Validate`, which wraps
+`forma.ErrInvalidInput` for a JSON Schema violation — `enum`, `pattern`, `type`,
+`minimum`/`maximum`, and the schema's own `required`. It is independent of the
+`required_policy` row above: the two check different things and both run. Its
+*non*-violation errors deliberately stay plain, so a `500`; see "JSON Schema
+enforcement on write" for the split.
 
 **The sweep also underreached once.** It missed
 `normalizePgEavPayload`'s operator whitelist — the two rejections that pair an
@@ -579,6 +782,15 @@ merges to *both* shapes — using the attribute name the schema advertises.
 The write failed in both earlier columns; only its status moved, because #301
 removed the substring heuristic that had been matching `duplicate` in the driver
 text. The functional bug predates #307.
+
+Since #314 that `200` is conditional on the payload satisfying the entity's JSON
+Schema. `transform.NormalizeDottedKeys` merges the two spellings into one
+document for the validator, applying keys in sorted order so the literal spelling
+lands last — the same last-wins rule the writer applies — and the winning value is
+type- and constraint-checked like any other. A create carrying a duplicate
+spelling whose surviving value violates the schema now answers `400`. The update
+case in the paragraph above is unaffected by default, since updates are
+report-only unless `VALIDATE_UPDATES_STRICT` is set.
 
 `transform.dedupeEAVRecords` now resolves the duplicate spellings before the
 records leave `ToAttributes`, keeping the **last** spelling — the same
