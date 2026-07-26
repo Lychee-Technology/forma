@@ -1,11 +1,15 @@
 package transform
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -170,21 +174,21 @@ func TestNormalizeIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestNormalizeLeavesWriterInputUntouched is the property the validator-only
-// split rests on: the writer keeps receiving the caller's original map, so the
-// records it produces must be identical before and after normalization.
+// TestNormalizeNormalizingIsPure states the guarantee this package can actually
+// make: calling NormalizeDottedKeys on a payload leaves that payload producing
+// exactly the records it produced before, at the level of stored records rather
+// than map equality.
 //
-// If this holds, no rule in normalize_keys.go can change what is written —
-// precedence stays with flattenToAttributes and #312's dedupe, which resolve it
-// by spelling tags that a merged document no longer carries.
+// It does not — and cannot — detect the writer being handed the normalized
+// document instead. Both sides here are computed from the caller's own map and
+// the return value is discarded, so nothing in this package observes what a
+// service chooses to pass along. That miswiring is a service-layer concern and
+// belongs to Task 5's tests.
 //
-// The fixture deliberately includes the shape where the normalized document and
-// the stored records genuinely disagree: an array on the expansion path whose
-// element carries a second attribute. Normalization replaces that array, so
-// contact.snapshot.b exists only in the caller's map — which makes this test
-// fail if the writer is ever handed the normalized document instead. Shapes
-// where both agree (a shrunk list, a superseded scalar) cannot detect that.
-func TestNormalizeLeavesWriterInputUntouched(t *testing.T) {
+// The fixture uses the shapes normalization rewrites most aggressively — both
+// spellings of one attribute, a shrunk list, an array on an expansion path —
+// because purity is only interesting where the rewriting is real.
+func TestNormalizeNormalizingIsPure(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"contact.email":      {AttributeName: "contact.email", AttributeID: 10, ValueType: forma.ValueTypeText},
 		"contact.tags":       {AttributeName: "contact.tags", AttributeID: 11, ValueType: forma.ValueTypeList},
@@ -292,4 +296,109 @@ func requireNotAliased(t *testing.T, label string, input, output map[string]any)
 		reflect.ValueOf(input).Pointer(),
 		reflect.ValueOf(output).Pointer(),
 		"output map at %s must not alias the input's", label)
+}
+
+// leadFullRegistry serves the shipped lead_full schema to the validator. The
+// schema body is read from disk rather than inlined so this test cannot drift
+// away from what production actually validates against.
+type leadFullRegistry struct {
+	*stubSchemaRegistry
+	schema string
+}
+
+func (r *leadFullRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+	if name != r.schemaName {
+		return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
+	}
+	return r.schemaID, forma.JSONSchema{ID: r.schemaID, Name: r.schemaName, Schema: r.schema}, nil
+}
+
+// newLeadFullValidator builds the production validator over the shipped schema
+// directory. requirement.areas is declared "type": "array" there, with
+// requirement.areas.city defined in lead_full_attributes.json — the exact shape
+// this test needs, in the form callers really send.
+func newLeadFullValidator(t *testing.T) (*schemavalidate.Validator, int16) {
+	t.Helper()
+
+	const dir = "../../cmd/server/schemas"
+	body, err := os.ReadFile(filepath.Join(dir, "lead_full.json"))
+	require.NoError(t, err, "shipped schema must be readable; update the path if it moved")
+
+	registry := &leadFullRegistry{
+		stubSchemaRegistry: &stubSchemaRegistry{schemaID: 100, schemaName: "lead_full"},
+		schema:             string(body),
+	}
+	validator, err := schemavalidate.New(registry, dir)
+	require.NoError(t, err)
+	return validator, 100
+}
+
+func areasCache() forma.SchemaAttributeCache {
+	return forma.SchemaAttributeCache{
+		"requirement.areas.city": {AttributeID: 80, ValueType: forma.ValueTypeText},
+		"requirement.areas.note": {AttributeID: 81, ValueType: forma.ValueTypeText},
+	}
+}
+
+// leadFullPayload returns a document satisfying lead_full.json's required root
+// properties, so a validation failure in these tests can only come from the part
+// under test. requirement is optional and is supplied by each caller.
+func leadFullPayload(requirement map[string]any, extra map[string]any) map[string]any {
+	doc := map[string]any{
+		"id":          "0199c9e0-0000-7000-8000-000000000000",
+		"tenantId":    "t1",
+		"ownerUserId": "u1",
+		"pipeline":    "buy",
+		"stage":       "new",
+		"status":      "open",
+		"contact":     map[string]any{"name": "Ada"},
+		"createdAt":   "2026-07-25T00:00:00Z",
+		"updatedAt":   "2026-07-25T00:00:00Z",
+		"requirement": requirement,
+	}
+	for key, value := range extra {
+		doc[key] = value
+	}
+	return doc
+}
+
+// TestNormalizeKeepsArrayOnPathValidatable pins that an array on the expansion
+// path stops expansion.
+//
+// requirement.areas is declared "type": "array". Replacing it with an object to
+// place requirement.areas.city would make the validator's document contradict
+// the schema, and the caller would get a 400 naming a type they never sent —
+// undiagnosable from the response. This is the shape mergeMaps builds on every
+// update: a key-literal patch over storage that FromPersistentRecord re-nested.
+func TestNormalizeKeepsArrayOnPathValidatable(t *testing.T) {
+	in := leadFullPayload(
+		map[string]any{"areas": []any{map[string]any{"city": "OLD", "note": "N"}}},
+		map[string]any{"requirement.areas.city": "NEW"},
+	)
+
+	out := NormalizeDottedKeys(in, areasCache())
+	require.Equal(t, in, out, "the array must survive; the literal stays flat")
+
+	validator, schemaID := newLeadFullValidator(t)
+	require.NoError(t, validator.Validate(schemaID, out),
+		"the validator must accept a document that keeps requirement.areas an array")
+}
+
+// TestNormalizeLeavesArrayOnPathValueUnvalidated pins the cost of the rule
+// above, so the gap is a recorded decision rather than something discovered
+// later. The literal stays flat, so it is an unknown property to JSON Schema and
+// its value is never examined: requirement.areas.city is declared a string, and
+// a number passes. A false 400 on a working payload is worse than an
+// unvalidated value, so this is the deliberate side the trade-off falls on.
+func TestNormalizeLeavesArrayOnPathValueUnvalidated(t *testing.T) {
+	out := NormalizeDottedKeys(leadFullPayload(
+		map[string]any{"areas": []any{map[string]any{"city": "OLD"}}},
+		map[string]any{"requirement.areas.city": 12345},
+	), areasCache())
+
+	require.Equal(t, 12345, out["requirement.areas.city"], "the literal is left unexpanded")
+
+	validator, schemaID := newLeadFullValidator(t)
+	require.NoError(t, validator.Validate(schemaID, out),
+		"a wrongly typed value behind an array on the path is not seen by validation")
 }

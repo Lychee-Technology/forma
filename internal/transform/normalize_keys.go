@@ -40,9 +40,11 @@ import (
 // The input is never mutated: maps and slices are rebuilt rather than shared.
 func NormalizeDottedKeys(data map[string]any, cache forma.SchemaAttributeCache) map[string]any {
 	if data == nil {
-		// Preserved rather than turned into an empty map: ToAttributes treats a
-		// nil document as "no attributes" and returns before required-attribute
-		// validation, so materializing a map here would change that path.
+		// Preserved rather than turned into an empty map because the two are not
+		// the same document: Validator.Validate marshals what it is given, and a
+		// nil map marshals to JSON null while an empty one marshals to {}. A
+		// schema with required properties rejects {} and says nothing about null,
+		// so materializing here would change the verdict.
 		return nil
 	}
 	return normalizeMap(data, "", cache)
@@ -64,7 +66,7 @@ func normalizeMap(src map[string]any, prefix string, cache forma.SchemaAttribute
 		value := normalizeValue(src[key], name, cache)
 
 		parts := strings.Split(key, ".")
-		if len(parts) > 1 && isKnownAttributeOrParent(name, cache) {
+		if len(parts) > 1 && isKnownAttributeOrParent(name, cache) && !arrayOnPath(dst, parts) {
 			setNestedValue(dst, parts, value)
 			continue
 		}
@@ -105,6 +107,31 @@ func joinName(prefix, key string) string {
 		return key
 	}
 	return prefix + "." + key
+}
+
+// arrayOnPath reports whether an array already sits on the expansion path.
+//
+// Expanding would put an object where the array is, and a schema that declares
+// that path "type": "array" — lead_full.json does, for requirement.areas —
+// would then reject the validator's document for a type the caller never sent.
+// A false 400 on a working payload is worse than an unvalidated value, so the
+// key is left literal instead.
+//
+// Only interior segments are checked. An array at the final segment is the
+// value the caller wrote there, and validating it is exactly right.
+func arrayOnPath(dst map[string]any, parts []string) bool {
+	current := dst
+	for _, part := range parts[:len(parts)-1] {
+		switch existing := current[part].(type) {
+		case map[string]any:
+			current = existing
+		case []any:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // setNestedValue walks parts, creating intermediate maps, and merges the leaf.
