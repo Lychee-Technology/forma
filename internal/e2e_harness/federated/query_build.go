@@ -8,6 +8,7 @@ package federated
 // targeted-EAV machinery they depend on.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -182,4 +183,269 @@ func buildFederatedDeduplicatedCTE(combinedQuery string) string {
 			FROM combined
 		)
 	`, combinedQuery)
+}
+
+func usesBenchmarkProjectionForSelect(opts *QueryOptions) bool {
+	if opts == nil {
+		return false
+	}
+	if requiresBenchmarkProjectedFilters(opts) {
+		return true
+	}
+	if opts.SortBy != "" && opts.SortBy != "row_id" {
+		return true
+	}
+	return false
+}
+
+func usesBenchmarkProjectionForCount(opts *QueryOptions) bool {
+	if requiresBenchmarkProjectedFilters(opts) {
+		return true
+	}
+	if opts == nil {
+		return false
+	}
+	if opts.Offset <= 0 {
+		return usesBenchmarkProjectionForSelect(opts)
+	}
+	return false
+}
+
+func usesTradeTimeOnlyBenchmarkProjectionForSelect(opts *QueryOptions) bool {
+	if !usesBenchmarkProjectionForSelect(opts) || opts == nil {
+		return false
+	}
+	if opts.SortBy != "tradeTime" || opts.Filter != nil {
+		return false
+	}
+	return opts.TradeTimeStart == 0 && opts.TradeTimeEnd == 0
+}
+
+func needsBenchmarkDuckDBMacros(opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) bool {
+	return false
+}
+
+func requiresBenchmarkProjectedFilters(opts *QueryOptions) bool {
+	if opts == nil {
+		return false
+	}
+	if opts.TradeTimeStart > 0 || opts.TradeTimeEnd > 0 {
+		return true
+	}
+	if opts.Filter == nil {
+		return false
+	}
+	for key := range opts.Filter.Conditions {
+		if benchmarkQueryColumn(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// buildDirtyExclusion builds the dirty ID exclusion clause.
+func buildDirtyExclusion(dirtyIDs []uuid.UUID) string {
+	if len(dirtyIDs) == 0 {
+		return ""
+	}
+	ids := make([]string, len(dirtyIDs))
+	for i, id := range dirtyIDs {
+		ids[i] = fmt.Sprintf("'%s'", id.String())
+	}
+	return fmt.Sprintf("AND row_id NOT IN (%s)", strings.Join(ids, ","))
+}
+
+// buildRowIDFilter builds the row ID filter clause.
+func buildRowIDFilter(opts *QueryOptions) string {
+	if opts.Filter != nil && opts.Filter.RowID != uuid.Nil {
+		return fmt.Sprintf("AND row_id = '%s'", opts.Filter.RowID.String())
+	}
+	return ""
+}
+
+func buildHotRowIDFilter(opts *QueryOptions) string {
+	if opts.Filter != nil && opts.Filter.RowID != uuid.Nil {
+		return fmt.Sprintf("AND cl.row_id = '%s'", opts.Filter.RowID.String())
+	}
+	return ""
+}
+
+func buildAttributeFilterClause(opts *QueryOptions) string {
+	if opts == nil || opts.Filter == nil || len(opts.Filter.Conditions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(opts.Filter.Conditions))
+	for key, value := range opts.Filter.Conditions {
+		column := benchmarkQueryColumn(key)
+		if column == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("AND %s = %s", column, benchmarkSQLLiteral(value)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func buildTradeTimeFilterClause(opts *QueryOptions) string {
+	if opts == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	expression := parquetTradeTimeFilterExpression()
+	if opts.TradeTimeStart > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s >= %d", expression, opts.TradeTimeStart))
+	}
+	if opts.TradeTimeEnd > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s <= %d", expression, opts.TradeTimeEnd))
+	}
+	return strings.Join(parts, " ")
+}
+
+func parquetTradeTimeFilterExpression() string {
+	return "tradeTime"
+}
+
+func buildHotTradeTimeFilterClauseTargeted(opts *QueryOptions) string {
+	if opts == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	expression := targetedHotFilterExpression("tradeTime")
+	if opts.TradeTimeStart > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s >= %d", expression, opts.TradeTimeStart))
+	}
+	if opts.TradeTimeEnd > 0 {
+		parts = append(parts, fmt.Sprintf("AND %s <= %d", expression, opts.TradeTimeEnd))
+	}
+	return strings.Join(parts, " ")
+}
+
+func benchmarkQueryColumn(attribute string) string {
+	switch attribute {
+	case "symbol":
+		return "symbol"
+	case "exchange":
+		return "exchange"
+	case "region":
+		return "region"
+	case "tradeType":
+		return "tradeType"
+	case "tradeTime":
+		return "tradeTime"
+	default:
+		return ""
+	}
+}
+
+func benchmarkSQLLiteral(value any) string {
+	switch v := value.(type) {
+	case string:
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%v", v)
+	default:
+		return fmt.Sprintf("'%v'", v)
+	}
+}
+
+func (h *FederatedTestHarness) benchmarkAttrNameSQLCase() string {
+	type attrKey struct {
+		schemaID int16
+		name     string
+	}
+	mapping := map[attrKey]int{
+		{benchmarkSchemaIDTrade, "symbol"}:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "symbol"),
+		{benchmarkSchemaIDTrade, "exchange"}:  h.benchmarkAttributeID(benchmarkSchemaIDTrade, "exchange"),
+		{benchmarkSchemaIDTrade, "region"}:    h.benchmarkAttributeID(benchmarkSchemaIDTrade, "region"),
+		{benchmarkSchemaIDTrade, "tradeType"}: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeType"),
+		{benchmarkSchemaIDTrade, "tradeTime"}: h.benchmarkAttributeID(benchmarkSchemaIDTrade, "tradeTime"),
+		{benchmarkSchemaIDCustomer, "region"}: h.benchmarkAttributeID(benchmarkSchemaIDCustomer, "region"),
+		{benchmarkSchemaIDCustomer, "name"}:   h.benchmarkAttributeID(benchmarkSchemaIDCustomer, "name"),
+		{benchmarkSchemaIDSecurity, "symbol"}: h.benchmarkAttributeID(benchmarkSchemaIDSecurity, "symbol"),
+		{benchmarkSchemaIDSecurity, "name"}:   h.benchmarkAttributeID(benchmarkSchemaIDSecurity, "companyName"),
+	}
+	parts := make([]string, 0, len(mapping))
+	for key, attrID := range mapping {
+		parts = append(parts, fmt.Sprintf("WHEN schema_id = %d AND attr_id = %d THEN '%s'", key.schemaID, attrID, key.name))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (h *FederatedTestHarness) benchmarkFunctionsSQL() string {
+	return fmt.Sprintf(`
+		CREATE OR REPLACE MACRO benchmark_attr_name(schema_id, attr_id) AS (
+			CASE %s ELSE '' END
+		);
+		CREATE OR REPLACE MACRO benchmark_text(attr_map, attr_name, fallback_value) AS (
+			COALESCE(CAST(element_at(attr_map, attr_name) AS VARCHAR), fallback_value)
+		);
+		CREATE OR REPLACE MACRO benchmark_name(attr_map) AS (
+			COALESCE(CAST(element_at(attr_map, 'name') AS VARCHAR), CAST(element_at(attr_map, 'symbol') AS VARCHAR), '')
+		);
+		CREATE OR REPLACE MACRO benchmark_int(attr_map, attr_name, fallback_value) AS (
+			COALESCE(TRY_CAST(element_at(attr_map, attr_name) AS INTEGER), fallback_value)
+		);
+		CREATE OR REPLACE MACRO benchmark_bigint(attr_map, attr_name, fallback_value) AS (
+			COALESCE(TRY_CAST(element_at(attr_map, attr_name) AS BIGINT), fallback_value)
+		);
+	`, h.benchmarkAttrNameSQLCase())
+}
+
+func prepareBenchmarkDuckDBMacros(ctx context.Context, h *FederatedTestHarness) error {
+	_, err := h.Duck.DB.ExecContext(ctx, h.benchmarkFunctionsSQL())
+	if err != nil {
+		return fmt.Errorf("prepare benchmark duckdb macros: %w", err)
+	}
+	return nil
+}
+
+func buildHotAttributeFilterClauseTargeted(opts *QueryOptions) string {
+	if opts == nil || opts.Filter == nil || len(opts.Filter.Conditions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(opts.Filter.Conditions))
+	for key, value := range opts.Filter.Conditions {
+		expression := targetedHotFilterExpression(key)
+		if expression == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("AND %s = %s", expression, benchmarkSQLLiteral(value)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func targetedHotFilterExpression(attribute string) string {
+	switch attribute {
+	case "symbol":
+		return "COALESCE(hot_vals.symbol, em.text_01)"
+	case "exchange":
+		return "COALESCE(hot_vals.exchange, '')"
+	case "region":
+		return "COALESCE(hot_vals.region, em.text_02)"
+	case "tradeType":
+		return "COALESCE(hot_vals.tradeType, em.smallint_01)"
+	case "tradeTime":
+		return "COALESCE(hot_vals.tradeTime, em.bigint_02)"
+	default:
+		return ""
+	}
+}
+
+func buildOrderByClause(opts *QueryOptions) string {
+	prefix := ""
+	if opts == nil {
+		return prefix + "row_id ASC"
+	}
+	column := benchmarkQueryColumn(opts.SortBy)
+	if column == "" {
+		column = "row_id"
+	}
+	direction := "ASC"
+	if opts.SortDesc {
+		direction = "DESC"
+	}
+	return fmt.Sprintf("%s%s %s, %srow_id ASC", prefix, column, direction, prefix)
 }
