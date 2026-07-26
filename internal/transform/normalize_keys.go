@@ -131,11 +131,25 @@ func normalizeMap(src map[string]any, prefix string, view schemaView) map[string
 // Rebuilding both maps and slices is what keeps the caller's document unmutated:
 // merging writes into the result, and the result must share nothing with the map
 // the writer will still be handed.
+//
+// A typed nil container is copied through rather than descended into. A Go
+// embedder holding `var contact map[string]any` sends a non-nil any wrapping a
+// nil map; recursing produced {} — or [] for a slice — which satisfies
+// "type":"object" and everything beneath it, while the writer walked the same
+// nil and emitted no attributes. Preserved as nil, the round-trip in Validate
+// presents it as null and the schema's own "type" decides, which is the answer
+// that matches what gets stored.
 func normalizeValue(value any, name string, view schemaView) any {
 	switch typed := value.(type) {
 	case map[string]any:
+		if typed == nil {
+			return value
+		}
 		return normalizeMap(typed, name, view)
 	case []any:
+		if typed == nil {
+			return value
+		}
 		return normalizeSlice(typed, name, view)
 	default:
 		return value
@@ -222,11 +236,15 @@ func arrayOnPath(dst map[string]any, parts []string) bool {
 // setNestedValue walks parts, creating intermediate maps, and merges the leaf.
 // A non-map already on the path is replaced: the dotted spelling is the later
 // one, and only the validator's view is at stake.
+//
+// A typed nil map counts as a non-map here. It is preserved rather than
+// materialised (see normalizeValue), so it can genuinely sit on the path — and
+// writing into one panics rather than replacing it.
 func setNestedValue(dst map[string]any, parts []string, value any) {
 	current := dst
 	for _, part := range parts[:len(parts)-1] {
 		next, ok := current[part].(map[string]any)
-		if !ok {
+		if !ok || next == nil {
 			next = make(map[string]any)
 			current[part] = next
 		}
@@ -252,8 +270,11 @@ func mergeValue(dst map[string]any, key string, value any) {
 // mergeAny merges incoming onto existing, which is nil when nothing is there yet.
 // Anything that is not a pair of like containers is replaced, which is where the
 // later spelling wins.
+//
+// A typed nil map on the existing side is replaced rather than merged into:
+// writing into one panics, and it holds nothing the merge could preserve.
 func mergeAny(existing, incoming any) any {
-	if target, ok := existing.(map[string]any); ok {
+	if target, ok := existing.(map[string]any); ok && target != nil {
 		if source, ok := incoming.(map[string]any); ok {
 			for key, value := range source {
 				target[key] = mergeAny(target[key], value)

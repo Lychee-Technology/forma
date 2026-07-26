@@ -315,6 +315,65 @@ func TestNormalizeDoesNotMutateInput(t *testing.T) {
 	require.Equal(t, "mobile", element["kind"], "writes through the output must not reach input array elements")
 }
 
+// TestNormalizePreservesTypedNilContainers pins that a typed nil container is
+// not materialised into an empty one.
+//
+// A Go embedder holding var contact map[string]any and assigning it into the
+// payload sends a non-nil `any` wrapping a nil map. Recursing into it produced
+// {}, which satisfies "type":"object" and every required property beneath it,
+// while the writer walked the same nil and emitted no attributes at all — the
+// validator passing a document the writer does not store. Left nil, the JSON
+// round-trip presents null and the schema's own "type" decides.
+func TestNormalizePreservesTypedNilContainers(t *testing.T) {
+	var nilMap map[string]any
+	var nilSlice []any
+
+	out := NormalizeDottedKeys(map[string]any{
+		"contact": nilMap,
+		"tags":    nilSlice,
+	}, dottedCache(), nil, nil)
+
+	require.Nil(t, out["contact"], "a typed nil map must stay nil, not become {}")
+	require.Nil(t, out["tags"], "a typed nil slice must stay nil, not become []")
+}
+
+// TestNormalizeExpandsOverTypedNilContainer is the hazard preserving typed nils
+// creates: a nil map is a legal expansion target for the walk and a legal merge
+// target for mergeAny, but writing into one panics. Materialising it earlier hid
+// that, so the guards only exist because the typed nil now survives.
+//
+// The literal is the later spelling and wins, exactly as it does over a nil the
+// caller never sent.
+func TestNormalizeExpandsOverTypedNilContainer(t *testing.T) {
+	var nilMap map[string]any
+
+	out := NormalizeDottedKeys(map[string]any{
+		"contact":       nilMap,
+		"contact.email": "x",
+	}, dottedCache(), nil, nil)
+
+	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
+}
+
+// TestNormalizeMergesObjectOverTypedNilContainer covers the other write into a
+// nil map: the merge at the leaf rather than the walk through an interior
+// segment.
+func TestNormalizeMergesObjectOverTypedNilContainer(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.snapshot.code": {AttributeID: 20, ValueType: forma.ValueTypeText},
+	}
+	var nilMap map[string]any
+
+	out := NormalizeDottedKeys(map[string]any{
+		"contact":          map[string]any{"snapshot": nilMap},
+		"contact.snapshot": map[string]any{"code": "C"},
+	}, cache, nil, nil)
+
+	require.Equal(t, map[string]any{
+		"contact": map[string]any{"snapshot": map[string]any{"code": "C"}},
+	}, out)
+}
+
 func requireChildMap(t *testing.T, parent map[string]any, key string) map[string]any {
 	t.Helper()
 

@@ -310,6 +310,41 @@ func TestNormalizeArrayMergeKeepsLastSpellingAtSameIndex(t *testing.T) {
 	require.NoError(t, validator.Validate(schemaID, out))
 }
 
+// TestNormalizeTypedNilObjectStaysRejected is Finding 3 against the shipped
+// schema. A Go embedder sending `var requirement map[string]any` sends a
+// non-nil any wrapping a nil map; materialising it into {} let the validator
+// accept a document the writer stores nothing for.
+//
+// requirement is the discriminating property, not contact. contact declares its
+// own required ["name"], so {} is rejected there whether or not the typed nil is
+// preserved — the test would pass against the bug. requirement declares
+// "type":"object" and nothing required beneath it, so {} passes and null does
+// not, and the assertion can only be satisfied by the fix.
+func TestNormalizeTypedNilObjectStaysRejected(t *testing.T) {
+	validator, schemaID := newLeadFullValidator(t)
+
+	var nilRequirement map[string]any
+	out := NormalizeDottedKeys(
+		leadFullPayload(nil, map[string]any{"requirement": nilRequirement}),
+		areasCache(), validator.ArrayPaths(schemaID), nil)
+
+	require.ErrorIs(t, validator.Validate(schemaID, out), forma.ErrInvalidInput,
+		"a typed nil must not pass an object-typed property as {}")
+}
+
+// TestWriterStoresNothingForTypedNilObject is the other half of the finding: the
+// writer emits no attribute at all for that value, so the validator accepting it
+// was acceptance of something nothing persists.
+func TestWriterStoresNothingForTypedNilObject(t *testing.T) {
+	registry := &stubSchemaRegistry{schemaID: 100, schemaName: "lead_full", cache: areasCache()}
+
+	var nilRequirement map[string]any
+	records := toEAV(t, registry, uuid.Must(uuid.NewV7()),
+		map[string]any{"requirement": nilRequirement})
+
+	require.Empty(t, records, "a typed nil object stores no attributes")
+}
+
 func requireFirstElement(t *testing.T, doc map[string]any, key string) map[string]any {
 	t.Helper()
 
