@@ -105,6 +105,13 @@ Settled with the issue owner. Do not re-litigate during implementation.
 3. **Fail closed at startup.** Every registered schema resolves at registry construction; a failure refuses the boot and names the schema and the unresolvable ref. A schema that cannot resolve must never silently stop validating.
 4. **Normalize dotted keys to nested before validating.** Closes the bypass, keeps dotted keys working, and subsumes #312.
 
+   **Qualified during implementation.** "Closes the bypass" holds for ordinary dotted attributes. Two shapes are exempt, each because closing the bypass there costs more than the bypass does:
+
+   - **A dotted attribute written *above* a schema array** — `{"requirement.areas.city": …}` at the top level. Nesting it puts an object where the schema declares an array, and the caller gets a 400 naming a type they never sent. The value is therefore not validated at all. Pinned, as a recorded decision rather than an accident, by `TestNormalizeLeavesArrayOnPathValueUnvalidated` and `TestNormalizeSkipsExpansionUnderSchemaArrayWhenAbsent`. The same name written *inside* an element of that array is expanded and validated normally — the array is already behind it.
+   - **Anything beneath a relation root.** `RelationIndex.StripComputedFields` has already deleted the root from the payload, matching by exact key, so expanding a registered dotted descendant such as `contactSnapshot.name` rebuilds that root as a partial object — and `visit.json` resolves `contactSnapshot` to `lead.json#/properties/contact`, which requires `isAnonymous`. That would reject a payload accepted and persisted before #314. Pinned by `TestNormalizeSkipsExpansionUnderRelationRoot`.
+
+   It also does not subsume #312 — see the deviation recorded under "Dotted-key normalization" below.
+
 ## Design
 
 ### Prerequisite: repair the schemas — its own commit
@@ -135,6 +142,21 @@ Determinism comes from the same property #312 relies on: `flattenToAttributes` s
 
 **Known edge:** a schema property literally named `a.b` at top level is ambiguous with the nested path `a -> b`. No shipped schema has one. Document it; do not build machinery for it.
 
+#### Deviation: the normalized document is for the validator only
+
+The design above reads as though normalization produces *the* document — one merged map that both validates and gets written. It does not, and four data-loss bugs were found trying to make it.
+
+**Shipped rule: `NormalizeDottedKeys` builds a document for the validator only. The writer receives the caller's original map, unchanged.**
+
+The reason is ownership. `flattenToAttributes` and #312's dedupe (`internal/transform/eav_dedupe.go`) resolve duplicate spellings *by spelling*: records carry the spelling that produced them, and the last spelling replaces the whole logical attribute. A merged document has already thrown those tags away, so no merge rule written inside the normalizer can re-derive that precedence in every case — which is exactly what each of the four bugs was. Handing the normalizer's output to the writer means handing it a document from which the real rule can no longer be computed.
+
+Two consequences follow, and they are the shape of the whole thing:
+
+- **`eav_dedupe.go` is not a safety net.** The "Out of scope" note below calls it one, on the grounds that normalization makes duplicate spellings unreachable. Under the shipped design the writer still sees both spellings, so the dedupe is load-bearing and removing it would reintroduce duplicate primary keys. Decision 4's "subsumes #312" is wrong as written.
+- **The validator's view has one correctness standard: it must contain every value the writer will persist.** If the writer stores an attribute the validator never saw, enforcement is a lie for that attribute. This is why the view merges objects *and arrays* element-wise rather than replacing — two spellings meeting at an array can name different attributes, and the writer stores both — and why a typed nil container is preserved rather than materialised into `{}`, which would pass a `type` the writer stores nothing for.
+
+Merging more into that view is always safe now in a way it was not while the writer read it: nothing in the normalizer can change a stored record, so a merge can only add values to what is inspected.
+
 ### Write-path hook
 
 Four call sites, already symmetric:
@@ -149,6 +171,18 @@ Four call sites, already symmetric:
 Order at each site: **normalize → JSON round-trip → validate → transform**.
 
 The round-trip is required, not cosmetic — see the native-map measurement above.
+
+**Superseded during implementation.** The order above is right; what it implies about the data flowing along it is not. It reads as a pipeline in which each stage hands its output to the next, so `transform` receives the normalized document. The shipped sites instead fork:
+
+```
+                 ┌─ NormalizeDottedKeys ─→ Validate   (round-trip lives inside Validate)
+caller's map ────┤
+                 └─ ToPersistentRecord / ToAttributes  (the caller's map, unchanged)
+```
+
+The normalized document is passed to `Validate` and then discarded; the writer is handed the same map the caller sent. See the deviation under "Dotted-key normalization" for why — `eav_dedupe.go` owns spelling precedence and a merged document cannot express it.
+
+The JSON round-trip moved too: it is inside `Validate` rather than at the call sites, because it is the validator's requirement (native Go values do not carry their JSON types) and not the writer's.
 
 Validation sits at the service layer rather than inside `ToPersistentRecord` because that is where create and update are distinguishable, and the two modes differ. `transform` stays free of mode knowledge.
 
@@ -171,12 +205,12 @@ Startup resolution failures are operator-facing plain errors, not `ErrInvalidInp
 ## Testing
 
 - **The enum case from the issue:** `POST` with `"status": "banana"` against `lead` is rejected 400, naming `status` and `enum`. Red first.
-- **`watch` gains rejections:** a payload without `[id, name, brand]` now fails; the CSV importer's own payloads still pass.
-- **Dotted normalization:** `{"contact":{"email":"old"}, "contact.email":"x"}` validates as `x`, and `{"contact.email": 99999}` is now **rejected** on type — the bypass measured above is closed.
+- **`watch` gains rejections:** a payload without `[id, name, brand]` now fails; the CSV importer's own payloads still pass. **Not written, deliberately:** the behaviour change is documented in `docs/error-handling.md`, the bundled CSV importer supplies all three required fields, and construction is covered for every shipped schema by `TestShippedSchemasPassConstructionGuards`. A `watch`-specific test would restate the generic `required` case against one more fixture.
+- **Dotted normalization:** `{"contact":{"email":"old"}, "contact.email":"x"}` validates as `x`, and `{"contact.email": 99999}` is now **rejected** on type — the bypass measured above is closed. Added during implementation, once the validator-only split was settled: `TestNormalizeNormalizingIsPure`, which asserts the property the split rests on — the records the writer produces are identical with and without normalization — plus the completeness cases the split makes necessary (element-wise array merge across spellings, typed nil containers).
 - **Merged-document `required`:** a partial update omitting a required property succeeds, because the merged document carries it from storage. This is the explicit test for the concern that whole-document `required` would false-positive on every update.
 - **Update report-only:** a merged document violating a constraint is accepted and logged; flipping the flag rejects it.
-- **Startup fail-closed:** a deliberately dangling `$ref` in a test fixture fails registry construction with the schema name and ref in the message.
-- **`format` stays inert:** a malformed `date-time` is accepted, pinning the documented behaviour so a library upgrade that starts asserting formats is caught.
+- **Startup fail-closed:** a deliberately dangling `$ref` in a test fixture fails registry construction with the schema name and ref in the message. **Widened during review:** the construction guards run on every document the loader pulls in, not only the registered roots — a root referencing a file with a typo'd `type` otherwise constructed cleanly and surfaced the operator fault as a 400. The check is memoised per resolved path so a diamond reference costs one walk and a reference cycle terminates.
+- **`format` stays inert:** a malformed `date-time` is accepted, pinning the documented behaviour so a library upgrade that starts asserting formats is caught. Shipped as `internal/schemavalidate/format_inertness_test.go`, with a companion asserting shipped schemas actually declare formats so the tripwire cannot quietly stop guarding anything.
 - **Cost:** a benchmark asserting the resolved schema is cached — a second validate must not re-resolve.
 - **#312 regression suite stays green**, proving normalization did not reintroduce duplicate primary keys.
 
@@ -194,7 +228,7 @@ Startup resolution failures are operator-facing plain errors, not `ErrInvalidInp
 - Setting `additionalProperties: false`. It would reject any unknown key — a far wider behaviour change than this issue, and it belongs to a schema-authoring decision, not a validation-wiring one.
 - Making `format` assertive. The library cannot, and swapping libraries is its own project.
 - Unifying schema `required` with metadata `required_policy` (decision 2 keeps both).
-- Removing #312's dedupe. Normalization makes duplicate spellings unreachable, but the dedupe stays as a safety net with its comment updated to say so — it has already caught one real bug and costs nothing.
+- Removing #312's dedupe. Normalization makes duplicate spellings unreachable, but the dedupe stays as a safety net with its comment updated to say so — it has already caught one real bug and costs nothing. **Superseded:** the premise is false under the shipped design. The writer receives the caller's original map, so duplicate spellings remain fully reachable and the dedupe is the authority on precedence, not a net. Its comment says so.
 - Retrofitting validation to `cmd/sample`'s nil-emitting mapper (`mapper.go:152`). Pre-existing, already rejected by the write path, tracked separately if desired.
 
 ## Verification
