@@ -354,7 +354,9 @@ func leadFullPayload(requirement map[string]any, extra map[string]any) map[strin
 		"contact":     map[string]any{"name": "Ada"},
 		"createdAt":   "2026-07-25T00:00:00Z",
 		"updatedAt":   "2026-07-25T00:00:00Z",
-		"requirement": requirement,
+	}
+	if requirement != nil {
+		doc["requirement"] = requirement
 	}
 	for key, value := range extra {
 		doc[key] = value
@@ -401,4 +403,37 @@ func TestNormalizeLeavesArrayOnPathValueUnvalidated(t *testing.T) {
 	validator, schemaID := newLeadFullValidator(t)
 	require.NoError(t, validator.Validate(schemaID, out),
 		"a wrongly typed value behind an array on the path is not seen by validation")
+}
+
+// TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray pins that arrayOnPath
+// checks interior segments only.
+//
+// An array at the final segment is the value the caller wrote at that path, so
+// expansion is what puts it where the schema can see it: contact.phones is
+// declared an array of strings, and after expansion a numeric element is
+// rejected. Refusing there instead would leave the whole list an unknown
+// property and unvalidated — a mutant widening the walk to every segment is
+// otherwise invisible to the whole suite.
+func TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.phones": {AttributeID: 19, ValueType: forma.ValueTypeText},
+	}
+	validator, schemaID := newLeadFullValidator(t)
+
+	out := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
+		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
+		"contact.phones": []any{"090-1111-2222"},
+	}), cache)
+
+	require.NotContains(t, out, "contact.phones", "the literal must be expanded, not left flat")
+	require.Equal(t, []any{"090-1111-2222"}, requireChildMap(t, out, "contact")["phones"])
+	require.NoError(t, validator.Validate(schemaID, out))
+
+	// The point of expanding: the value is now inside the schema's reach.
+	bad := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
+		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
+		"contact.phones": []any{12345},
+	}), cache)
+	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
+		"a wrongly typed element must be caught once the literal is expanded")
 }

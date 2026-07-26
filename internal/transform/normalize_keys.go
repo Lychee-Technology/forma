@@ -40,11 +40,14 @@ import (
 // The input is never mutated: maps and slices are rebuilt rather than shared.
 func NormalizeDottedKeys(data map[string]any, cache forma.SchemaAttributeCache) map[string]any {
 	if data == nil {
-		// Preserved rather than turned into an empty map because the two are not
-		// the same document: Validator.Validate marshals what it is given, and a
-		// nil map marshals to JSON null while an empty one marshals to {}. A
-		// schema with required properties rejects {} and says nothing about null,
-		// so materializing here would change the verdict.
+		// A nil document is returned unchanged rather than as an empty map, so
+		// this function never fabricates a document the caller did not send.
+		//
+		// It does not change the verdict. Measured against lead_full.json, both
+		// are rejected and only the message differs: nil marshals to JSON null and
+		// fails the root `"type": "object"`, while {} fails `required`. Every
+		// shipped schema declares that root type, so there is no schema here for
+		// which one passes and the other does not.
 		return nil
 	}
 	return normalizeMap(data, "", cache)
