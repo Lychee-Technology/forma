@@ -219,6 +219,34 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 6: Repair the dangling `$ref` — its own commit**
 
+> **SUPERSEDED — do not follow the hoist described below.** The hoist was
+> implemented, found to be harmful, and reverted. `cmd/tools/generate_attributes.go`
+> does not follow `$ref`: a `$ref`-only node has no `properties`, so
+> `traverseSchemaWithRequiredState` falls through to the `text` default. That is
+> harmless for a `$ref` to a *scalar* (which is why `properties.id` looked fine),
+> but hoisting the **object** `contact` made its 24 child attributes vanish on the
+> next `generate-attributes` run and shifted every later `attributeID`
+> (82 keys → 59). Since attribute IDs are physical EAV keys, regenerating against
+> a populated database would corrupt data. Tracked as #315.
+>
+> **Approved repair — one line, in `visit.json` not `lead.json`:**
+>
+> ```diff
+> -      "$ref": "lead.json#/$defs/contact",
+> +      "$ref": "lead.json#/properties/contact",
+> ```
+>
+> A JSON Pointer addresses any subschema, so this resolves identically while
+> leaving `lead.json` byte-identical to `main` and generator output unchanged.
+> `log.json` needs no change — it has no `contact` reference and failed only
+> transitively through `visit.json`.
+>
+> Until #315 is fixed, treat this as a standing constraint: **no shipped schema
+> may replace an object-valued `properties.*` node with a `$ref`.**
+
+<details>
+<summary>Original (rejected) instruction, kept for provenance</summary>
+
 `visit.json:30` references `lead.json#/$defs/contact`, but `lead.json` defines `contact` **inline** at `properties.contact` and its `$defs` holds only `lead_id`.
 
 In `cmd/server/schemas/lead.json`: move the entire object currently at `properties.contact` into `$defs.contact`, and replace `properties.contact` with:
@@ -229,6 +257,8 @@ In `cmd/server/schemas/lead.json`: move the entire object currently at `properti
 
 Do not change any constraint while moving it — the object must be byte-identical apart from its location. Verify with `git diff` that the only textual change is the relocation plus the new `$ref`.
 
+</details>
+
 - [ ] **Step 7: Run the test to verify it passes**
 
 Run: `GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false go test ./internal/schemavalidate -v`
@@ -236,6 +266,13 @@ Run: `GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false go test ./internal/schemaval
 Expected: all subtests PASS, including `visit` and `log`, plus `TestValidateRejectsEnumViolation`.
 
 - [ ] **Step 8: Commit the repair separately**
+
+> **SUPERSEDED** along with Step 6 — the commit below stages `lead.json`, which
+> the approved repair does not touch. Stage `cmd/server/schemas/visit.json`
+> instead; see the shipped commit `990ef45` for the message actually used.
+
+<details>
+<summary>Original (rejected) instruction, kept for provenance</summary>
 
 ```bash
 git add cmd/server/schemas/lead.json
@@ -248,6 +285,8 @@ now referencing it; no constraint changed.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
+
+</details>
 
 ---
 
