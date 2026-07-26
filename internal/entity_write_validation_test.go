@@ -62,6 +62,18 @@ func (validationRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error)
 	return "test", forma.JSONSchema{ID: 100, Name: "test", Schema: validationSchemaJSON}, nil
 }
 
+// driftedRegistry serves the write path a schema id one higher than the one the
+// validator resolved, which is the only way to reach Validate's plain-error
+// branch from a service: a schema the validator has no resolved document for.
+// That is a server configuration fault, not caller input, and report-only mode
+// must not absorb it.
+type driftedRegistry struct{ validationRegistry }
+
+func (driftedRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
+	id, cache, err := validationRegistry{}.GetSchemaAttributeCacheByName(name)
+	return id + 1, cache, err
+}
+
 // writeSpy wraps the real transformer and records what the write path handed to
 // ToPersistentRecord: the map header pointer, and the map's own key set.
 //
@@ -233,6 +245,42 @@ func TestBatchUpdateAtomicStrictRejectsViolation(t *testing.T) {
 	})
 
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestReportOnlyUpdateRefusesToAbsorbConfigurationFault pins the boundary of
+// report-only mode: it forgives *violations*, not everything Validate can return.
+//
+// A schema the validator holds no resolved document for is an operator fault. If
+// report-only mode swallowed it, the document would be written with zero
+// validation while a Warn line claimed it had been checked and merely failed —
+// and the line would blame a caller violation that does not exist.
+func TestReportOnlyUpdateRefusesToAbsorbConfigurationFault(t *testing.T) {
+	registry := driftedRegistry{}
+	validator, err := schemavalidate.New(registry, t.TempDir())
+	require.NoError(t, err)
+
+	config := createTestConfig()
+	config.Entity.ValidateUpdatesStrict = false
+
+	transformer := transform.NewPersistentRecordTransformer(registry)
+	repo := newMockPersistentRecordRepository()
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
+	require.NoError(t, err)
+
+	rowID := uuid.New()
+	repo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{"name": "open"}))
+
+	manager := NewEntityManager(transformer, repo, nil, registry, config, validator)
+
+	_, err = manager.Update(context.Background(), updateOp(rowID, map[string]any{"name": "won"}))
+
+	require.Error(t, err, "report-only mode must not absorb a missing resolved schema")
+	require.NotErrorIs(t, err, forma.ErrInvalidInput,
+		"a configuration fault must stay operator-facing, not surface as 4xx")
+
+	stored, err := transformer.FromPersistentRecord(context.Background(), repo.records[schemaID][rowID])
+	require.NoError(t, err)
+	require.Equal(t, "open", stored["name"], "the unvalidated update must not have been written")
 }
 
 // TestUpdateOfUnrelatedFieldKeepsRequiredSatisfied is the load-bearing update

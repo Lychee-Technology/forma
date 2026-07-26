@@ -79,8 +79,15 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// Creates always enforce. Validated after stripping so that what is checked
 	// is what is stored: computed relation fields are derived on read and never
 	// persisted, so validating them would judge a document no row will hold.
+	//
+	// Hazard: a schema that lists a relation root in "required" becomes
+	// unwritable, and unfixably so — the field is stripped before the validator
+	// sees it, so sending it does not help. No shipped schema does this
+	// (x-relation occurs once, visit.json's contactSnapshot, and is not
+	// required), but a new one that did would reject every create and update to
+	// it. Validate before stripping if that ever happens.
 	if err := validateWritePayload(s.validator, schemaID, schemaCache, inputData, true); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
 
 	zap.S().Debugw("Creating entity", "schemaName", req.SchemaName, "schemaID", schemaID, "rowID", rowID)
@@ -197,9 +204,10 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	}
 
 	// The *merged* document is what gets validated: a partial update that does
-	// not mention a required attribute must still succeed.
+	// not mention a required attribute must still succeed. The relation-root
+	// hazard noted in Create applies here too.
 	if err := validateWritePayload(s.validator, schemaID, schemaCache, mergedData, s.validateUpdatesStrict); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}
 
 	updatedRecord, err := s.transformer.ToPersistentRecord(ctx, schemaID, req.RowID, mergedData)

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/schemavalidate"
@@ -21,14 +22,25 @@ import (
 // destroys that provenance. Every call site keeps handing the writer exactly the
 // map it built.
 //
-// enforce is true on create and follows Entity.ValidateUpdatesStrict on update.
-// With enforcement off a violation is logged and the write proceeds: rows
-// written before #314 may already violate their schema, and rejecting on update
-// would leave them un-updatable over an unrelated field.
+// data is typed map[string]any rather than any so that "the normalized document
+// does not reach the writer" is checked by the compiler at the boundary: there is
+// no untyped value here to be silently passed over. All four write paths hold a
+// map already — EntityOperation.Data and .Updates are map[string]any, and both
+// StripComputedFields and mergeMaps return one.
 //
-// A violation arrives already wrapping forma.ErrInvalidInput and so surfaces as
-// 4xx; a missing resolved schema arrives as a plain error and stays an
-// operator-facing failure (docs/error-handling.md). Wrapping preserves both.
+// enforce is true on create and follows Entity.ValidateUpdatesStrict on update.
+// It governs *violations only*. With enforcement off a violation is logged and
+// the write proceeds: rows written before #314 may already violate their schema,
+// and rejecting on update would leave them un-updatable over an unrelated field.
+//
+// Anything that is not a violation is returned regardless of enforce. Validate
+// distinguishes the two by wrapping forma.ErrInvalidInput for a genuine
+// violation (→4xx) and returning a plain error otherwise — a missing resolved
+// schema, or a payload that will not marshal (NaN/Inf). Those must not be
+// absorbed by report-only mode: the document would be written with *zero*
+// validation while a log line claimed it had been checked and merely failed, and
+// the message would blame a caller violation for what is an operator fault
+// (docs/error-handling.md).
 //
 // A nil validator means validation is unconfigured and both steps are skipped.
 // Validate on a nil validator returns an error rather than doing nothing, so
@@ -41,25 +53,19 @@ func validateWritePayload(
 	validator *schemavalidate.Validator,
 	schemaID int16,
 	cache forma.SchemaAttributeCache,
-	data any,
+	data map[string]any,
 	enforce bool,
 ) error {
 	if validator == nil {
 		return nil
 	}
-	doc, ok := data.(map[string]any)
-	if !ok {
-		// Only an object payload has dotted keys to normalize, and every write
-		// path builds one. Anything else is left to the writer to reject.
-		return nil
-	}
 
-	normalized := transform.NormalizeDottedKeys(doc, cache, validator.ArrayPaths(schemaID))
+	normalized := transform.NormalizeDottedKeys(data, cache, validator.ArrayPaths(schemaID))
 	err := validator.Validate(schemaID, normalized)
 	if err == nil {
 		return nil
 	}
-	if enforce {
+	if enforce || !errors.Is(err, forma.ErrInvalidInput) {
 		return fmt.Errorf("failed to validate payload against schema %d: %w", schemaID, err)
 	}
 
