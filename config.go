@@ -57,6 +57,15 @@ type EntityConfig struct {
 	MaxEntitySize             int           `json:"maxEntitySize"`
 	EnableVersioning          bool          `json:"enableVersioning"`
 	SchemaDirectory           string        `json:"schemaDirectory"`
+
+	// ValidateUpdatesStrict makes update payloads that violate the entity's
+	// JSON Schema fail with 4xx instead of only being logged (#314).
+	//
+	// Default false: rows written before schema enforcement may already violate
+	// their schema, and rejecting on update would make them un-updatable — a
+	// caller touching one unrelated field would be refused for a pre-existing
+	// violation elsewhere. Creates are always enforced; they have no legacy data.
+	ValidateUpdatesStrict bool `json:"validateUpdatesStrict"`
 }
 
 // TransactionConfig contains transaction settings

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -19,6 +20,12 @@ type entityCRUDService struct {
 	toDataRecord      dataRecordConverter
 	enrichDataRecords dataRecordEnricher
 	storageTables     storageTablesResolver
+
+	// validator is nil when schema validation is unconfigured. Callers must skip
+	// validation entirely in that case: Validate on a nil validator returns an
+	// error, not a no-op.
+	validator             *schemavalidate.Validator
+	validateUpdatesStrict bool
 }
 
 func newEntityCRUDService(em *entityManager) *entityCRUDService {
@@ -33,6 +40,9 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 		toDataRecord:      em.toDataRecord,
 		enrichDataRecords: em.enrichDataRecords,
 		storageTables:     em.storageTables,
+
+		validator:             em.validator,
+		validateUpdatesStrict: em.validateUpdatesStrict,
 	}
 }
 
@@ -53,8 +63,9 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("data is required for create operation: %w", forma.ErrInvalidInput)
 	}
 
-	// Get schema by name to obtain schema ID.
-	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
+	// Get schema by name to obtain schema ID and the attribute cache the
+	// validator needs to recognise literal dotted keys.
+	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -64,6 +75,35 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	if s.relations != nil {
 		inputData = s.relations.StripComputedFields(req.SchemaName, req.Data)
 	}
+
+	// Creates always enforce. Validated after stripping so that what is checked
+	// is what is stored: computed relation fields are derived on read and never
+	// persisted, so validating them would judge a document no row will hold.
+	//
+	// The relation roots go to the validation step as well, because the strip
+	// matches by exact key and leaves registered dotted descendants like
+	// contactSnapshot.name behind: expanding one would rebuild the very root that
+	// was just removed. See NormalizeDottedKeys and docs/error-handling.md.
+	//
+	// Hazard: a schema that lists a relation root in "required" becomes
+	// unwritable, and unfixably so — the field is stripped before the validator
+	// sees it, so sending it does not help. No shipped schema does this
+	// (x-relation occurs once, visit.json's contactSnapshot, and is not
+	// required), but a new one that did would reject every create and update to
+	// it. Validate before stripping if that ever happens.
+	if err := validateWritePayload(writeValidation{
+		validator:  s.validator,
+		schemaID:   schemaID,
+		schemaName: req.SchemaName,
+		rowID:      rowID,
+		cache:      schemaCache,
+		relations:  s.relations.RelationRoots(req.SchemaName),
+		data:       inputData,
+		enforce:    true,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to validate create payload: %w", err)
+	}
+
 	zap.S().Debugw("Creating entity", "schemaName", req.SchemaName, "schemaID", schemaID, "rowID", rowID)
 	record, err := s.transformer.ToPersistentRecord(ctx, schemaID, rowID, inputData)
 	if err != nil {
@@ -153,7 +193,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	}
 
 	// Get schema by name.
-	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
+	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -175,6 +215,22 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	mergedData := mergeMaps(existingData, req.Updates)
 	if s.relations != nil {
 		mergedData = s.relations.StripComputedFields(req.SchemaName, mergedData)
+	}
+
+	// The *merged* document is what gets validated: a partial update that does
+	// not mention a required attribute must still succeed. The relation-root
+	// hazard noted in Create applies here too.
+	if err := validateWritePayload(writeValidation{
+		validator:  s.validator,
+		schemaID:   schemaID,
+		schemaName: req.SchemaName,
+		rowID:      req.RowID,
+		cache:      schemaCache,
+		relations:  s.relations.RelationRoots(req.SchemaName),
+		data:       mergedData,
+		enforce:    s.validateUpdatesStrict,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}
 
 	updatedRecord, err := s.transformer.ToPersistentRecord(ctx, schemaID, req.RowID, mergedData)

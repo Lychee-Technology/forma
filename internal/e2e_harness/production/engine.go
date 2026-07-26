@@ -12,6 +12,7 @@ import (
 	"github.com/lychee-technology/forma/internal"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
@@ -93,6 +94,18 @@ func (e *Env) parquetSource() fedengine.ParquetSource {
 // EntityManager returns the Env's real production EntityManager, assembling
 // it on first use over the same repository, engine, and registry the
 // production stack wires together.
+//
+// The JSON Schema validator is built here rather than passed as nil (#314).
+// A nil validator switches write-path validation off entirely, so every
+// fixture payload this harness writes would be vacuously valid and the suite
+// would assert nothing about the constraints production now enforces. It is
+// built from e.Registry and the Env's current schema directory, which is what
+// factory.NewEntityManagerWithConfigContext does, and it fails closed on an
+// unresolvable schema for the same reason production refuses to start.
+//
+// It is built alongside the manager, not at provision time, so EvolveSchema —
+// which drops the memoized manager and repoints the schema directory —
+// re-derives it from the new generation, mirroring the restart it models.
 func (e *Env) EntityManager() forma.EntityManager {
 	if e.manager != nil {
 		return e.manager
@@ -123,6 +136,10 @@ func (e *Env) EntityManager() forma.EntityManager {
 
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
 	transformer := transform.NewPersistentRecordTransformer(e.Registry)
-	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config)
+	validator, err := schemavalidate.New(e.Registry, schemaDir)
+	if err != nil {
+		e.T.Fatalf("build schema validator over %s: %v", schemaDir, err)
+	}
+	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator)
 	return e.manager
 }

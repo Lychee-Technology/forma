@@ -27,7 +27,7 @@
       "$ref": "lead.json#/$defs/lead_id"
     },
     "contactSnapshot": {
-      "$ref": "lead.json#/$defs/contact",
+      "$ref": "lead.json#/properties/contact",
       "x-relation": {
         "key_property": "leadId"
       }

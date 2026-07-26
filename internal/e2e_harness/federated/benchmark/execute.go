@@ -331,7 +331,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		DuckDB: duckCfg,
 	}
 	transformer := transform.NewPersistentRecordTransformer(registry)
-	manager := internal.NewEntityManager(transformer, repo, engine, registry, config)
+	manager := internal.NewEntityManager(transformer, repo, engine, registry, config, nil)
 	if req != nil && req.Federated != nil && req.Federated.Enabled {
 		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
 	}

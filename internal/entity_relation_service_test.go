@@ -146,7 +146,7 @@ func TestEntityManager_QueryEnrichesRelationsWithSingleBatchedParentLookup(t *te
 	mockRepo := newMockPersistentRecordRepository()
 	leadSchemaID, leadIDs, visitLeads := seedVisitEnrichmentFixture(t, transformer, mockRepo, registry)
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config)
+	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
 
 	result, err := em.Query(ctx, &forma.QueryRequest{SchemaName: "visit", Page: 1, ItemsPerPage: 10})
 	if err != nil {

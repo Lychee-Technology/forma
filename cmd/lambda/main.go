@@ -102,17 +102,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
 
-	// Load configuration with schema registry
-	formaConfig := forma.DefaultConfig(registry)
-
-	// Set schema directory
-	formaConfig.Entity.SchemaDirectory = schemaDir
-
-	// Set database schema used by factory table discovery.
-	formaConfig.Database.Schema = bootstrap.Env("DB_SCHEMA", formaConfig.Database.Schema)
-
-	// Set database configuration
-	formaConfig.Database.TableNames = tableNames
+	formaConfig := lambdaFormaConfig(registry, schemaDir, tableNames)
 
 	// Initialize EntityManager using factory
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, formaConfig, dbPool)
@@ -132,6 +122,24 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	return &lambdaRuntime{
 		adapter: httpAdapter,
 	}, nil
+}
+
+// lambdaFormaConfig assembles the forma.Config this entry point starts with.
+// Extracted from bootstrapLambda to keep that function inside the 100-line cap.
+func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNames forma.TableNames) *forma.Config {
+	config := forma.DefaultConfig(registry)
+
+	// Set entity options from the environment, then the schema directory. This
+	// entry point serves the same write routes as cmd/server, so it must honour
+	// VALIDATE_UPDATES_STRICT too or the #314 staged rollout is unavailable on
+	// Lambda. The overlay runs first so it cannot clobber the directory below.
+	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	config.Entity.SchemaDirectory = schemaDir
+
+	// Database schema used by factory table discovery.
+	config.Database.Schema = bootstrap.Env("DB_SCHEMA", config.Database.Schema)
+	config.Database.TableNames = tableNames
+	return config
 }
 
 // handler is the Lambda handler function

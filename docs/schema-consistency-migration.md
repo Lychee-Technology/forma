@@ -15,6 +15,13 @@ The new checks fail on:
 - EAV rows whose value is stored in the wrong physical column (`value_text` vs `value_numeric`)
 - writes that reference attributes not defined in schema metadata
 
+A later release (`#314`) adds one more startup check and one more request-time check:
+
+- any schema registered in `schema_registry` whose `<schema>.json` cannot be loaded and resolved fails **server startup**
+- create payloads that violate their entity's JSON Schema are rejected with `400`
+
+Both are covered below.
+
 ## Recommended Migration Flow
 
 1. Stop writes to the target environment.
@@ -163,6 +170,41 @@ This means the row uses the wrong physical value column for the declared `valueT
 
 Fix by rewriting the bad rows into the correct column and clearing the wrong one.
 
+### Registered schema with no `<schema>.json` (`#314`)
+
+Symptom: the server refuses to start with `failed to build schema validator:
+failed to load schema "<name>" for validation: schema data not found: <name>`.
+
+The file registry deliberately tolerates a schema whose `<name>_attributes.json`
+exists while `<name>.json` does not — it registers the attribute cache and
+records no JSON Schema. Such a deployment runs fine on earlier releases. Since
+`#314` the validator resolves **every** name `schema_registry` lists, so that
+shape now aborts startup.
+
+Preflight, and it is the whole check: **every schema name registered in
+`schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR`.**
+
+```sql
+SELECT schema_name FROM schema_registry ORDER BY schema_name;
+```
+
+Compare that list against `ls $SCHEMA_DIR/*.json`. No database column carries the
+schema document — `schema_registry` holds only `schema_id` and `schema_name` —
+so the repair is always on disk: add the missing `<name>.json`, or
+delete the `schema_registry` row if the schema is dead.
+
+The same check covers an unparseable document and a `$ref` that points outside
+`SCHEMA_DIR`; both fail startup with the offending schema named.
+
+### Create payloads violating their JSON Schema (`#314`)
+
+`enum`, `pattern`, `type`, `minimum`/`maximum` and the schema's own `required`
+are now enforced on create, in addition to the metadata's `required_policy`.
+`format` is **not** enforced. Updates only log violations unless
+`VALIDATE_UPDATES_STRICT=true`. Full contract, including the shipped-schema
+behaviour changes and the remaining gaps, is in
+[`error-handling.md`](./error-handling.md#json-schema-enforcement-on-write).
+
 ## Suggested SQL Fix Workflow
 
 Inspect a bad attribute:
@@ -195,6 +237,7 @@ LIMIT 50;
 - database backup taken
 - `scripts/validate_schema_consistency.sql` returns no duplicate schema IDs
 - `make validate-schema-consistency` returns success
+- every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

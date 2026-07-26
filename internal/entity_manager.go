@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
@@ -17,6 +18,13 @@ type entityManager struct {
 	registry             forma.SchemaRegistry
 	config               *forma.Config
 	relations            *RelationIndex
+
+	// validator is nil when schema validation is unconfigured. Callers must skip
+	// validation entirely in that case: Validate on a nil validator returns an
+	// error, not a no-op, and a plain one that would surface as an operator-facing
+	// 500 on every write rather than being ignored.
+	validator             *schemavalidate.Validator
+	validateUpdatesStrict bool
 
 	crud     *entityCRUDService
 	query    *entityQueryService
@@ -33,6 +41,7 @@ func NewEntityManager(
 	federatedQueryEngine model.FederatedQueryEngine,
 	registry forma.SchemaRegistry,
 	config *forma.Config,
+	validator *schemavalidate.Validator,
 ) forma.EntityManager {
 	if config == nil {
 		config = forma.DefaultConfig(registry)
@@ -55,6 +64,9 @@ func NewEntityManager(
 		registry:             registry,
 		config:               config,
 		relations:            relationIdx,
+
+		validator:             validator,
+		validateUpdatesStrict: config.Entity.ValidateUpdatesStrict,
 	}
 	em.relation = newEntityRelationService(em)
 	em.crud = newEntityCRUDService(em)
