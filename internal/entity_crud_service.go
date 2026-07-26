@@ -63,8 +63,9 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("data is required for create operation: %w", forma.ErrInvalidInput)
 	}
 
-	// Get schema by name to obtain schema ID.
-	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
+	// Get schema by name to obtain schema ID and the attribute cache the
+	// validator needs to recognise literal dotted keys.
+	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -74,6 +75,14 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	if s.relations != nil {
 		inputData = s.relations.StripComputedFields(req.SchemaName, req.Data)
 	}
+
+	// Creates always enforce. Validated after stripping so that what is checked
+	// is what is stored: computed relation fields are derived on read and never
+	// persisted, so validating them would judge a document no row will hold.
+	if err := validateWritePayload(s.validator, schemaID, schemaCache, inputData, true); err != nil {
+		return nil, err
+	}
+
 	zap.S().Debugw("Creating entity", "schemaName", req.SchemaName, "schemaID", schemaID, "rowID", rowID)
 	record, err := s.transformer.ToPersistentRecord(ctx, schemaID, rowID, inputData)
 	if err != nil {
@@ -163,7 +172,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	}
 
 	// Get schema by name.
-	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
+	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
@@ -185,6 +194,12 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	mergedData := mergeMaps(existingData, req.Updates)
 	if s.relations != nil {
 		mergedData = s.relations.StripComputedFields(req.SchemaName, mergedData)
+	}
+
+	// The *merged* document is what gets validated: a partial update that does
+	// not mention a required attribute must still succeed.
+	if err := validateWritePayload(s.validator, schemaID, schemaCache, mergedData, s.validateUpdatesStrict); err != nil {
+		return nil, err
 	}
 
 	updatedRecord, err := s.transformer.ToPersistentRecord(ctx, schemaID, req.RowID, mergedData)

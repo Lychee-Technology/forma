@@ -205,7 +205,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			return nil, fmt.Errorf("operation[%d]: data is required for create operation: %w", i, forma.ErrInvalidInput)
 		}
 
-		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
+		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
 			return nil, fmt.Errorf("operation[%d]: failed to get schema: %w", i, err)
 		}
@@ -214,6 +214,12 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 		inputData := op.Data
 		if s.relations != nil {
 			inputData = s.relations.StripComputedFields(op.SchemaName, op.Data)
+		}
+
+		// Creates always enforce, and this batch is atomic: one violation fails
+		// the whole request before anything is written.
+		if err := validateWritePayload(s.validator, schemaID, schemaCache, inputData, true); err != nil {
+			return nil, fmt.Errorf("operation[%d]: %w", i, err)
 		}
 
 		record, err := s.transformer.ToPersistentRecord(ctx, schemaID, rowID, inputData)
@@ -268,7 +274,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			return nil, fmt.Errorf("operation[%d]: updates are required for update operation: %w", i, forma.ErrInvalidInput)
 		}
 
-		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
+		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
 			return nil, fmt.Errorf("operation[%d]: failed to get schema: %w", i, err)
 		}
@@ -289,6 +295,12 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		mergedData := mergeMaps(existingData, op.Updates)
 		if s.relations != nil {
 			mergedData = s.relations.StripComputedFields(op.SchemaName, mergedData)
+		}
+
+		// The *merged* document is what gets validated, so a partial update that
+		// does not mention a required attribute still succeeds.
+		if err := validateWritePayload(s.validator, schemaID, schemaCache, mergedData, s.validateUpdatesStrict); err != nil {
+			return nil, fmt.Errorf("operation[%d]: %w", i, err)
 		}
 
 		updatedRecord, err := s.transformer.ToPersistentRecord(ctx, schemaID, op.RowID, mergedData)
