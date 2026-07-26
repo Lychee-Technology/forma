@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
 
@@ -152,6 +154,103 @@ func TestValidateRejectsEnumViolation(t *testing.T) {
 	err = resolved.Validate(map[string]any{"status": "banana"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "banana")
+}
+
+// stubRegistry is the smallest forma.SchemaRegistry that New needs.
+type stubRegistry struct {
+	names   []string
+	byName  map[string]forma.JSONSchema
+	idsByNm map[string]int16
+}
+
+func (r *stubRegistry) ListSchemas() []string { return r.names }
+func (r *stubRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+	js, ok := r.byName[name]
+	if !ok {
+		return 0, forma.JSONSchema{}, fmt.Errorf("no schema %q", name)
+	}
+	return r.idsByNm[name], js, nil
+}
+func (r *stubRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error) {
+	return "", forma.JSONSchema{}, fmt.Errorf("not used")
+}
+func (r *stubRegistry) GetSchemaAttributeCacheByName(string) (int16, forma.SchemaAttributeCache, error) {
+	return 0, nil, fmt.Errorf("not used")
+}
+func (r *stubRegistry) GetSchemaAttributeCacheByID(int16) (string, forma.SchemaAttributeCache, error) {
+	return "", nil, fmt.Errorf("not used")
+}
+
+func registryWith(t *testing.T, name string, schemaJSON string, id int16) *stubRegistry {
+	t.Helper()
+	return &stubRegistry{
+		names:   []string{name},
+		byName:  map[string]forma.JSONSchema{name: {ID: id, Name: name, Schema: schemaJSON}},
+		idsByNm: map[string]int16{name: id},
+	}
+}
+
+// TestNewFailsClosedOnUnresolvableSchema pins the #314 decision: a schema that
+// cannot resolve must stop the process at construction, naming the schema. A
+// schema that silently stops validating is the failure this issue exists to fix.
+func TestNewFailsClosedOnUnresolvableSchema(t *testing.T) {
+	dir := t.TempDir()
+	broken := `{"type":"object","properties":{"x":{"$ref":"missing.json#/$defs/nope"}}}`
+	_, err := New(registryWith(t, "broken", broken, 7), dir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "broken")
+}
+
+// TestValidateRoundTripsNativeValues pins that Validate marshals before
+// validating. time.Time in a native map has Go type "object" to the validator
+// and fails a "type":"string" property until it is round-tripped; two real
+// call sites pass time.Now() for string-typed properties.
+func TestValidateRoundTripsNativeValues(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"at":{"type":"string"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	require.NoError(t, v.Validate(3, map[string]any{"at": time.Now()}))
+}
+
+// TestValidateWrapsErrInvalidInput pins the error class: a schema violation is
+// caller input, so it must surface as 4xx rather than a redacted 500 (#307).
+func TestValidateWrapsErrInvalidInput(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"status":{"enum":["open","won"]}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	err = v.Validate(3, map[string]any{"status": "banana"})
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Contains(t, err.Error(), "banana")
+}
+
+// TestValidateUnknownSchemaIDIsNotClientError pins that a missing resolved
+// schema is an operator problem, not the caller's: it must NOT wrap
+// ErrInvalidInput, or a server misconfiguration would answer 400.
+func TestValidateUnknownSchemaIDIsNotClientError(t *testing.T) {
+	dir := t.TempDir()
+	v, err := New(registryWith(t, "ev", `{"type":"object"}`, 3), dir)
+	require.NoError(t, err)
+
+	err = v.Validate(99, map[string]any{})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestValidateResolvesOnceIsCached pins that Validate does not re-resolve.
+// Resolving is ~250x the cost of validating, so a regression here is a
+// throughput cliff rather than a correctness bug.
+func TestValidateResolvesOnceIsCached(t *testing.T) {
+	dir := t.TempDir()
+	v, err := New(registryWith(t, "ev", `{"type":"object"}`, 3), dir)
+	require.NoError(t, err)
+
+	before := v.resolved[3]
+	require.NoError(t, v.Validate(3, map[string]any{}))
+	require.Same(t, before, v.resolved[3], "Validate must reuse the resolved schema")
 }
 
 func writeSchemaFile(t *testing.T, dir, name, body string) {

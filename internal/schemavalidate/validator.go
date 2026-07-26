@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/lychee-technology/forma"
 )
 
 // fileLoader resolves cross-file $refs such as "lead.json#/$defs/lead_id" by
@@ -125,4 +126,80 @@ func resolveSchemaFile(dir, fileName string) (*jsonschema.Resolved, error) {
 		return nil, fmt.Errorf("failed to resolve schema %s: %w", fileName, err)
 	}
 	return resolved, nil
+}
+
+// Validator holds one resolved schema per schema ID. It is built once at
+// startup and is safe for concurrent use: the map is never written after New
+// returns, and jsonschema.Resolved is read-only during Validate.
+type Validator struct {
+	resolved map[int16]*jsonschema.Resolved
+}
+
+// New resolves every schema the registry knows about. It fails closed: any
+// schema that cannot be resolved aborts construction and names the schema, so
+// a broken $ref is a deploy-time error rather than a silent loss of validation
+// at runtime (#314).
+//
+// The resolve options are built once for the whole registry: they carry only
+// the base URI and the sibling-restricted loader, both fixed by schemaDir.
+func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
+	dir, err := filepath.Abs(schemaDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve schema directory %s: %w", schemaDir, err)
+	}
+	opts, err := resolveOptions(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build resolve options for schema directory %s: %w", dir, err)
+	}
+
+	v := &Validator{resolved: make(map[int16]*jsonschema.Resolved)}
+	for _, name := range registry.ListSchemas() {
+		id, js, err := registry.GetSchemaByName(name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load schema %q for validation: %w", name, err)
+		}
+
+		var s jsonschema.Schema
+		if err := json.Unmarshal([]byte(js.Schema), &s); err != nil {
+			return nil, fmt.Errorf("failed to parse schema %q (id %d): %w", name, id, err)
+		}
+		resolved, err := s.Resolve(opts)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to resolve schema %q (id %d) against schema directory %s: %w", name, id, dir, err)
+		}
+		v.resolved[id] = resolved
+	}
+	return v, nil
+}
+
+// Validate checks doc against the schema registered for schemaID.
+//
+// A violation wraps forma.ErrInvalidInput: it is caller input and must surface
+// as 4xx. A missing resolved schema does not — that is a server configuration
+// fault and must stay operator-visible (docs/error-handling.md).
+//
+// doc is marshalled before validating. Native Go values do not carry their JSON
+// types: time.Time presents as an object and fails a "type":"string" property
+// until round-tripped, and two production call sites assign time.Now() to
+// string-typed properties.
+func (v *Validator) Validate(schemaID int16, doc any) error {
+	resolved, ok := v.resolved[schemaID]
+	if !ok {
+		return fmt.Errorf("no resolved JSON schema for schema id %d", schemaID)
+	}
+
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload for schema %d: %w", schemaID, err)
+	}
+	var instance any
+	if err := json.Unmarshal(raw, &instance); err != nil {
+		return fmt.Errorf("failed to decode payload for schema %d: %w", schemaID, err)
+	}
+
+	if err := resolved.Validate(instance); err != nil {
+		return fmt.Errorf("schema validation failed: %v: %w", err, forma.ErrInvalidInput)
+	}
+	return nil
 }
