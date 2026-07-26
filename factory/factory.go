@@ -161,7 +161,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
 	}
 
 	// One plan cache shared by the repository and the federated engine (#142):

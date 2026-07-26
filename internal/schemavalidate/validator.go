@@ -33,14 +33,54 @@ import (
 // absDir must be absolute and cleaned; the sibling check compares against it
 // directly. The URL arriving here has already been resolved against BaseURI, so
 // a sibling ref presents as an absolute file path inside absDir.
+//
+// Every loaded document gets the same construction guard the registered roots
+// get. New checks only what the registry holds, so without this a root
+// referencing a file with a typo'd "type" constructs cleanly and the fault
+// surfaces inside Validate — where the blanket wrap calls it caller input and
+// answers 400 to every create, while report-only updates absorb it and write
+// anyway. A configuration fault belongs at startup, whichever file holds it.
+//
+// The check runs once per resolved path. That bounds a diamond reference to one
+// check and makes a reference cycle terminate: the library calls the loader
+// again for a file already being resolved, and a cached verdict answers without
+// re-walking. The map needs no lock — loaders run inside Resolve, which New
+// drives sequentially, and a fresh loader is built per resolveOptions call.
 func fileLoader(absDir string) jsonschema.Loader {
+	checked := make(map[string]error)
 	return func(u *url.URL) (*jsonschema.Schema, error) {
 		target, err := siblingPath(absDir, u)
 		if err != nil {
+			return nil, fmt.Errorf("failed to load cross-file schema reference: %w", err)
+		}
+		s, err := loadSchemaFile(target)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load cross-file schema reference: %w", err)
+		}
+		if err := checkLoadedSchema(checked, target, s); err != nil {
 			return nil, err
 		}
-		return loadSchemaFile(target)
+		return s, nil
 	}
+}
+
+// checkLoadedSchema applies the construction guard to a referenced document,
+// memoising the verdict under its resolved path so repeated and cyclic
+// references cost one walk and cannot recurse.
+//
+// The error names the file: the operator otherwise sees only the registered root
+// that referenced it, which may be several hops away from the typo.
+func checkLoadedSchema(checked map[string]error, path string, s *jsonschema.Schema) error {
+	if err, seen := checked[path]; seen {
+		return err
+	}
+
+	var err error
+	if checkErr := checkSchemaSupported(s); checkErr != nil {
+		err = fmt.Errorf("failed to accept referenced schema file %s for validation: %w", path, checkErr)
+	}
+	checked[path] = err
+	return err
 }
 
 // siblingPath maps a resolved reference URL to a file in absDir, rejecting any

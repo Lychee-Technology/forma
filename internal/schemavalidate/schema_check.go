@@ -5,6 +5,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -48,9 +49,12 @@ var jsonSchemaTypes = map[string]bool{
 // and is still mislabelled as caller input.
 func checkSchemaSupported(s *jsonschema.Schema) error {
 	if err := checkSchemaVersion(s); err != nil {
-		return err
+		return fmt.Errorf("failed to accept the schema's declared version: %w", err)
 	}
-	return walkSubschemas(s, checkTypeKeyword)
+	if err := walkSubschemas(s, "", checkTypeKeyword); err != nil {
+		return fmt.Errorf("failed to accept the schema's type keywords: %w", err)
+	}
+	return nil
 }
 
 // checkSchemaVersion rejects a $schema the library cannot validate against.
@@ -74,22 +78,35 @@ func checkSchemaVersion(s *jsonschema.Schema) error {
 // checkTypeKeyword rejects a "type" value outside the JSON Schema vocabulary.
 // Unlike $schema this must be checked on every subschema: entity schemas
 // declare types on properties and in $defs, not on the root.
-func checkTypeKeyword(s *jsonschema.Schema) error {
+//
+// path is the subschema's position, which the operator needs to find the typo —
+// a schema declares dozens of types and the offending value alone does not say
+// which property carries it.
+func checkTypeKeyword(path string, s *jsonschema.Schema) error {
 	if s.Type != "" && !jsonSchemaTypes[s.Type] {
-		return unknownTypeError(s.Type)
+		return unknownTypeError(path, s.Type)
 	}
 	for _, t := range s.Types {
 		if !jsonSchemaTypes[t] {
-			return unknownTypeError(t)
+			return unknownTypeError(path, t)
 		}
 	}
 	return nil
 }
 
-func unknownTypeError(got string) error {
+func unknownTypeError(path, got string) error {
 	return fmt.Errorf(
-		"unknown \"type\" value %q: must be one of null, boolean, object, array, number, string, integer",
-		got)
+		"unknown \"type\" value %q at %s: must be one of null, boolean, object, array, number, string, integer",
+		got, describePath(path))
+}
+
+// describePath renders a subschema position for an operator. The root has no
+// path of its own, and "at " followed by nothing reads as a truncated message.
+func describePath(path string) string {
+	if path == "" {
+		return "the schema root"
+	}
+	return path
 }
 
 var (
@@ -99,7 +116,7 @@ var (
 )
 
 // walkSubschemas calls fn for s and every subschema reachable from it, stopping
-// at the first error.
+// at the first error. path is s's own position, "" at the root.
 //
 // Subschemas are found by field *type* rather than by name, mirroring how
 // jsonschema-go's own unexported everyChild walks the tree. That means a
@@ -109,11 +126,11 @@ var (
 // The tree cannot contain cycles: it comes from json.Unmarshal, and $ref is a
 // plain string whose resolved target the library keeps in a side table rather
 // than in an exported field.
-func walkSubschemas(s *jsonschema.Schema, fn func(*jsonschema.Schema) error) error {
+func walkSubschemas(s *jsonschema.Schema, path string, fn subschemaFunc) error {
 	if s == nil {
 		return nil
 	}
-	if err := fn(s); err != nil {
+	if err := fn(path, s); err != nil {
 		return err
 	}
 
@@ -123,26 +140,30 @@ func walkSubschemas(s *jsonschema.Schema, fn func(*jsonschema.Schema) error) err
 		if !field.CanInterface() {
 			continue // unexported: not part of the parsed schema tree
 		}
-		if err := walkField(field, fn); err != nil {
+		if err := walkField(field, keywordPath(path, v.Type().Field(i)), fn); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// walkField descends one struct field if it holds subschemas. Map keys are
-// visited in sorted order so that a schema with several faults always reports
-// the same one.
-func walkField(field reflect.Value, fn func(*jsonschema.Schema) error) error {
+// subschemaFunc is applied to one subschema and its position in the tree.
+type subschemaFunc func(path string, s *jsonschema.Schema) error
+
+// walkField descends one struct field if it holds subschemas, where path is the
+// field's own position. Map keys are visited in sorted order so that a schema
+// with several faults always reports the same one; slice elements carry their
+// index, since allOf/anyOf branches are distinguishable only by position.
+func walkField(field reflect.Value, path string, fn subschemaFunc) error {
 	switch field.Type() {
 	case schemaPtrType:
 		child, _ := field.Interface().(*jsonschema.Schema)
-		return walkSubschemas(child, fn)
+		return walkSubschemas(child, path, fn)
 
 	case schemaSliceType:
 		children, _ := field.Interface().([]*jsonschema.Schema)
-		for _, child := range children {
-			if err := walkSubschemas(child, fn); err != nil {
+		for i, child := range children {
+			if err := walkSubschemas(child, fmt.Sprintf("%s/%d", path, i), fn); err != nil {
 				return err
 			}
 		}
@@ -150,10 +171,25 @@ func walkField(field reflect.Value, fn func(*jsonschema.Schema) error) error {
 	case schemaMapType:
 		children, _ := field.Interface().(map[string]*jsonschema.Schema)
 		for _, key := range slices.Sorted(maps.Keys(children)) {
-			if err := walkSubschemas(children[key], fn); err != nil {
+			if err := walkSubschemas(children[key], path+"/"+key, fn); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// keywordPath extends path with the JSON Schema keyword a struct field carries.
+//
+// The keyword comes from the json tag so the path reads as the schema author
+// wrote it. Some fields are tagged "-" because the library marshals them by hand
+// — Items is the one that matters, since it is on every array — so those fall
+// back to the field name with a lowercased initial, which is the same spelling
+// in every case the library currently has.
+func keywordPath(path string, field reflect.StructField) string {
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+	if name == "" || name == "-" {
+		name = strings.ToLower(field.Name[:1]) + field.Name[1:]
+	}
+	return path + "/" + name
 }

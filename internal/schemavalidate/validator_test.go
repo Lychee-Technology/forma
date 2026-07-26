@@ -340,13 +340,22 @@ func TestNewAcceptsAbsentSchemaVersion(t *testing.T) {
 // every document fails the type check, so a typo'd type 400s every write with
 // a message the caller cannot act on. The nested and $defs cases matter most:
 // entity schemas declare types on properties, not on the root.
+// The path assertion is the operator's only route to the typo: a shipped schema
+// declares dozens of types, and the offending value alone does not say which
+// property carries it.
 func TestNewRejectsUnknownTypeKeyword(t *testing.T) {
-	for _, tc := range []struct{ name, schema, bad string }{
-		{"root", `{"type":"nosuchtype"}`, "nosuchtype"},
-		{"property", `{"type":"object","properties":{"x":{"type":"strig"}}}`, "strig"},
-		{"defs", `{"type":"object","$defs":{"d":{"type":"bogus"}}}`, "bogus"},
-		{"items", `{"type":"array","items":{"type":"nummber"}}`, "nummber"},
-		{"type_array", `{"type":"object","properties":{"x":{"type":["string","nil"]}}}`, "nil"},
+	for _, tc := range []struct{ name, schema, bad, path string }{
+		{"root", `{"type":"nosuchtype"}`, "nosuchtype", "the schema root"},
+		{"property", `{"type":"object","properties":{"x":{"type":"strig"}}}`, "strig", "/properties/x"},
+		{"defs", `{"type":"object","$defs":{"d":{"type":"bogus"}}}`, "bogus", "/$defs/d"},
+		{"items", `{"type":"array","items":{"type":"nummber"}}`, "nummber", "/items"},
+		{"nested", `{"properties":{"a":{"properties":{"b":{"type":"strin"}}}}}`, "strin", "/properties/a/properties/b"},
+		{"allof", `{"allOf":[{"type":"object"},{"type":"objct"}]}`, "objct", "/allOf/1"},
+		{
+			"type_array",
+			`{"type":"object","properties":{"x":{"type":["string","nil"]}}}`,
+			"nil", "/properties/x",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := New(registryWith(t, "ev", tc.schema, 3), t.TempDir())
@@ -355,6 +364,7 @@ func TestNewRejectsUnknownTypeKeyword(t *testing.T) {
 				"a schema-configuration fault must not be a client error")
 			require.Contains(t, err.Error(), "ev", "error must name the schema")
 			require.Contains(t, err.Error(), tc.bad, "error must name the offending type")
+			require.Contains(t, err.Error(), tc.path, "error must name the subschema holding it")
 		})
 	}
 }
@@ -374,6 +384,66 @@ func TestNewAcceptsEveryJSONSchemaType(t *testing.T) {
 			require.NoError(t, err, "type [%q, null] must be accepted", typeName)
 		})
 	}
+}
+
+// TestNewRejectsUnknownTypeInReferencedSchema extends the construction guards to
+// the documents the loader pulls in.
+//
+// New checked only the registry roots, so a root referencing common.json with a
+// typo'd "type" constructed cleanly and the fault surfaced inside Validate —
+// where the blanket wrap turns it into ErrInvalidInput. That answers 400 to
+// every create for an operator fault, and report-only updates absorb it and
+// write anyway. The error must name the file, or the operator is left hunting
+// through the root that merely references it.
+func TestNewRejectsUnknownTypeInReferencedSchema(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaFile(t, dir, "common.json", `{"type":"strig"}`)
+	root := `{"type":"object","properties":{"x":{"$ref":"common.json"}}}`
+
+	_, err := New(registryWith(t, "ev", root, 3), dir)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, forma.ErrInvalidInput,
+		"a schema-configuration fault must not be a client error")
+	require.Contains(t, err.Error(), "common.json", "error must name the offending file")
+	require.Contains(t, err.Error(), "strig", "error must name the offending type")
+}
+
+// TestNewRejectsUnknownTypeInNestedReference pins that the check follows the
+// reference chain rather than stopping one file out: root -> middle -> leaf.
+func TestNewRejectsUnknownTypeInNestedReference(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaFile(t, dir, "leaf.json", `{"type":"nummber"}`)
+	writeSchemaFile(t, dir, "middle.json", `{"properties":{"y":{"$ref":"leaf.json"}}}`)
+	root := `{"type":"object","properties":{"x":{"$ref":"middle.json"}}}`
+
+	_, err := New(registryWith(t, "ev", root, 3), dir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "leaf.json")
+	require.Contains(t, err.Error(), "nummber")
+}
+
+// TestNewAcceptsCyclicAndRepeatedReferences is the termination and cost guard on
+// the check above. A cycle must not recurse forever, and a diamond must not make
+// construction quadratic in the reference graph — both are why the checked set
+// is cached by resolved path.
+//
+// The test would hang rather than fail on a runaway recursion, which is the
+// honest signal: there is no partial answer to assert.
+func TestNewAcceptsCyclicAndRepeatedReferences(t *testing.T) {
+	dir := t.TempDir()
+	// a <-> b is a genuine cycle; both arms of the diamond reach shared.json.
+	writeSchemaFile(t, dir, "shared.json", `{"type":"string"}`)
+	writeSchemaFile(t, dir, "a.json",
+		`{"properties":{"toB":{"$ref":"b.json"},"s":{"$ref":"shared.json"}}}`)
+	writeSchemaFile(t, dir, "b.json",
+		`{"properties":{"toA":{"$ref":"a.json"},"s":{"$ref":"shared.json"}}}`)
+	root := `{"type":"object","properties":{"x":{"$ref":"a.json"}}}`
+
+	v, err := New(registryWith(t, "ev", root, 3), dir)
+	require.NoError(t, err)
+	// Prove the refs really loaded rather than resolving to empty schemas.
+	require.ErrorIs(t, v.Validate(3, map[string]any{"x": map[string]any{"s": 12345}}),
+		forma.ErrInvalidInput)
 }
 
 // TestShippedSchemasPassConstructionGuards is the anti-regression for the two
