@@ -66,7 +66,7 @@ func normalizeMap(src map[string]any, prefix string, cache forma.SchemaAttribute
 		value := normalizeValue(src[key], name, cache)
 
 		parts := strings.Split(key, ".")
-		if len(parts) > 1 && isKnownAttributeOrParent(name, cache) && canSetNestedValue(dst, parts) {
+		if len(parts) > 1 && isKnownAttributeOrParent(name, cache) && canExpand(dst, parts, value) {
 			setNestedValue(dst, parts, value)
 			continue
 		}
@@ -108,29 +108,88 @@ func joinName(prefix, key string) string {
 	return prefix + "." + key
 }
 
-// canSetNestedValue reports whether parts can be expanded without overwriting a
-// non-map value already sitting on the path.
-//
-// {"contact":"SCALAR","contact.email":"x"} is rejected today, because "contact"
-// is not a defined attribute. Expanding the literal over the scalar would make
-// both checks pass and silently drop the caller's "SCALAR": a type error would
-// become a 200 with missing data. Leaving the literal unexpanded keeps the
-// existing rejection. Checked before any writing, so a conflict discovered
+// canExpand reports whether parts can be expanded without destroying something
+// already sitting on the path. Checked before any writing, so a conflict found
 // mid-path cannot leave half-built maps behind.
-func canSetNestedValue(dst map[string]any, parts []string) bool {
+//
+// A scalar on the path is a type error the flattener rejects — "contact" is not
+// a defined attribute in {"contact":"SCALAR","contact.email":"x"}. Expanding
+// over it would make both checks pass and silently drop the caller's "SCALAR",
+// turning a 400 into a 200 with missing data, so the literal is left flat and
+// the existing rejection still fires.
+//
+// An array on the path is different: the flattener accepts a flat dotted key, so
+// there is no 400 to preserve and leaving it flat means the value reaches
+// storage unvalidated (#314). Expansion therefore proceeds where replacing the
+// array loses nothing.
+func canExpand(dst map[string]any, parts []string, value any) bool {
 	current := dst
-	for _, part := range parts[:len(parts)-1] {
+	for i, part := range parts[:len(parts)-1] {
 		existing, present := current[part]
 		if !present {
 			return true
 		}
-		next, isMap := existing.(map[string]any)
-		if !isMap {
+		if next, isMap := existing.(map[string]any); isMap {
+			current = next
+			continue
+		}
+		if items, isSlice := existing.([]any); isSlice {
+			return sliceReplacementIsLossless(items, parts[i+1])
+		}
+		return false
+	}
+	return leafExpansionIsSafe(current, parts[len(parts)-1], value)
+}
+
+// leafExpansionIsSafe applies the same scalar rule to the final segment, where
+// the merge — not the walk — does the overwriting.
+//
+// Only a container arriving over an existing scalar is refused. No payload of
+// that shape is accepted today: a scalar under a list attribute is rejected as
+// "requires an array value", and a map over a scalar attribute recurses to an
+// undefined name. Scalar over scalar is ordinary last-spelling-wins, and a
+// container already present is merged rather than replaced.
+func leafExpansionIsSafe(dst map[string]any, key string, value any) bool {
+	existing, present := dst[key]
+	return !present || isContainer(existing) || !isContainer(value)
+}
+
+// sliceReplacementIsLossless reports whether replacing items with a nested map
+// would discard nothing: every element must be an object whose only key is the
+// one the expansion overwrites anyway.
+//
+// JSON cannot hold both an array and an object at one key, so when an element
+// carries anything else the two spellings are irreconcilable by reshaping. The
+// caller's data wins over closing the bypass there, and the flattener's own
+// dedupe still resolves the payload as it does today.
+//
+// An empty array is not replaced: for a list attribute it is the explicit
+// clear-the-list marker (#204), which reshaping must not swallow.
+func sliceReplacementIsLossless(items []any, segment string) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		element, ok := item.(map[string]any)
+		if !ok {
 			return false
 		}
-		current = next
+		for key := range element {
+			if key != segment {
+				return false
+			}
+		}
 	}
 	return true
+}
+
+func isContainer(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
 }
 
 // setNestedValue walks parts, creating intermediate maps, and merges the leaf.
@@ -147,24 +206,63 @@ func setNestedValue(dst map[string]any, parts []string, value any) {
 	mergeValue(current, parts[len(parts)-1], value)
 }
 
-// mergeValue assigns key, merging recursively where both sides are objects so
+// mergeValue assigns key, merging recursively where both sides are containers so
 // that a subtree already built by an earlier spelling keeps its siblings.
 //
 // Recursive rather than one level deep because sibling attributes can diverge at
 // any depth: {"contact":{"snapshot":{"a":1}}} plus {"contact.snapshot":{"b":2}}
 // names two different attributes, and the flattener would write both. Only a
 // scalar leaf is overwritten, which is where the later spelling wins.
-//
-// Iteration order over incoming is irrelevant to the outcome: each key is merged
-// independently, so no key's result depends on another's.
 func mergeValue(dst map[string]any, key string, value any) {
-	existing, haveMap := dst[key].(map[string]any)
-	incoming, incomingMap := value.(map[string]any)
-	if haveMap && incomingMap {
-		for k, v := range incoming {
-			mergeValue(existing, k, v)
+	dst[key] = mergeAny(dst[key], value)
+}
+
+// mergeAny merges incoming onto existing, which is nil when nothing is there yet.
+//
+// Iteration order over an object's keys is irrelevant to the outcome: each key
+// is merged independently, so no key's result depends on another's.
+func mergeAny(existing, incoming any) any {
+	if target, ok := existing.(map[string]any); ok {
+		if source, ok := incoming.(map[string]any); ok {
+			for key, value := range source {
+				target[key] = mergeAny(target[key], value)
+			}
+			return target
 		}
-		return
 	}
-	dst[key] = value
+	if target, ok := existing.([]any); ok {
+		if source, ok := incoming.([]any); ok {
+			return mergeSlices(target, source)
+		}
+	}
+	return incoming
+}
+
+// mergeSlices merges two arrays element-wise by index, extending to the longer
+// one.
+//
+// Replacing would drop sibling attributes: given {"contact":{"items":[{"a":…}]}}
+// and a literal "contact.items":[{"b":…}], the literal names contact.items.b
+// only, and contact.items.a would be wiped. Index alignment is what the
+// flattener already does — array indices are part of the EAV primary key, so
+// contact.items.a at index 0 and contact.items.b at index 0 are different rows
+// and both survive.
+func mergeSlices(existing, incoming []any) []any {
+	length := len(existing)
+	if len(incoming) > length {
+		length = len(incoming)
+	}
+
+	merged := make([]any, length)
+	for i := range merged {
+		switch {
+		case i >= len(incoming):
+			merged[i] = existing[i]
+		case i >= len(existing):
+			merged[i] = incoming[i]
+		default:
+			merged[i] = mergeAny(existing[i], incoming[i])
+		}
+	}
+	return merged
 }

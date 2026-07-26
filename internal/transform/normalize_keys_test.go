@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,38 +83,81 @@ func TestNormalizeIsDeterministic(t *testing.T) {
 // the way down. The update path reuses the merged map, and mutating it would
 // corrupt the caller.
 //
-// The input must contain a nested map: a flat-only input cannot fail, because
-// the only writes the implementation could make to the caller's data are into
-// nested maps it did not copy. The aliasing assertion is what makes that
-// provable — equality alone still passes when the nested map is shared and
-// happens not to have been written to yet.
+// A flat-only input cannot fail this test at all, because the only writes the
+// implementation could make to the caller's data are into containers it did not
+// copy. So the fixture is three levels deep and includes an array element: every
+// container the implementation walks is a place it could hand back the caller's
+// own map. Each depth is asserted separately — an aliasing mutant confined to
+// array elements passes a depth-1 assertion.
+//
+// Equality alone is also not enough: a shared map that simply has not been
+// written to yet still compares equal. The pointer assertions are what make the
+// copying provable.
 func TestNormalizeDoesNotMutateInput(t *testing.T) {
-	nested := map[string]any{"phone": "555", "email": "old"}
+	element := map[string]any{"kind": "mobile"}
+	snapshot := map[string]any{"code": "old"}
+	nested := map[string]any{
+		"phone":    "555",
+		"snapshot": snapshot,
+		"phones":   []any{element},
+	}
 	in := map[string]any{
-		"contact":       nested,
-		"contact.email": "x",
+		"contact":               nested,
+		"contact.snapshot.code": "x",
 	}
 
-	cache := dottedCache()
-	cache["contact.phone"] = forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeText}
+	cache := forma.SchemaAttributeCache{
+		"contact.phone":         {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"contact.snapshot.code": {AttributeID: 2, ValueType: forma.ValueTypeText},
+		"contact.phones.kind":   {AttributeID: 3, ValueType: forma.ValueTypeText},
+	}
 	out := NormalizeDottedKeys(in, cache)
 
 	require.Equal(t, map[string]any{
-		"contact":       map[string]any{"phone": "555", "email": "old"},
-		"contact.email": "x",
-	}, in, "caller's map must be unchanged, including its nested maps")
-	// Aliasing assertion: maps are references, so writing through the output must
+		"contact": map[string]any{
+			"phone":    "555",
+			"snapshot": map[string]any{"code": "old"},
+			"phones":   []any{map[string]any{"kind": "mobile"}},
+		},
+		"contact.snapshot.code": "x",
+	}, in, "caller's map must be unchanged, all the way down")
+
+	// Aliasing assertions: maps are references, so writing through the output must
 	// not be visible in the input. reflect gives the map headers directly; testify's
 	// NotSame only accepts pointers.
-	outContact, ok := out["contact"].(map[string]any)
+	outContact := requireChildMap(t, out, "contact")
+	outSnapshot := requireChildMap(t, outContact, "snapshot")
+	outPhones, ok := outContact["phones"].([]any)
 	require.True(t, ok)
-	require.NotEqual(t,
-		reflect.ValueOf(nested).Pointer(),
-		reflect.ValueOf(outContact).Pointer(),
-		"output's nested map must not alias the input's")
+	require.Len(t, outPhones, 1)
+	outElement, ok := outPhones[0].(map[string]any)
+	require.True(t, ok)
 
-	outContact["email"] = "mutated through the output"
-	require.Equal(t, "old", nested["email"], "writes through the output must not reach the input")
+	requireNotAliased(t, "contact", nested, outContact)
+	requireNotAliased(t, "contact.snapshot", snapshot, outSnapshot)
+	requireNotAliased(t, "contact.phones[0]", element, outElement)
+
+	outSnapshot["code"] = "mutated through the output"
+	outElement["kind"] = "mutated through the output"
+	require.Equal(t, "old", snapshot["code"], "writes through the output must not reach the input")
+	require.Equal(t, "mobile", element["kind"], "writes through the output must not reach input array elements")
+}
+
+func requireChildMap(t *testing.T, parent map[string]any, key string) map[string]any {
+	t.Helper()
+
+	child, ok := parent[key].(map[string]any)
+	require.Truef(t, ok, "expected %q to be an object", key)
+	return child
+}
+
+func requireNotAliased(t *testing.T, label string, input, output map[string]any) {
+	t.Helper()
+
+	require.NotEqualf(t,
+		reflect.ValueOf(input).Pointer(),
+		reflect.ValueOf(output).Pointer(),
+		"output map at %s must not alias the input's", label)
 }
 
 // TestNormalizeExpandsNestedDottedKey pins that a dotted key is expanded even
@@ -140,8 +184,38 @@ func snapshotCache() forma.SchemaAttributeCache {
 	}
 }
 
+func stubRegistryFor(cache forma.SchemaAttributeCache) forma.SchemaRegistry {
+	return &stubSchemaRegistry{schemaID: 100, schemaName: "test", cache: cache}
+}
+
 func newSnapshotStubRegistry() forma.SchemaRegistry {
-	return &stubSchemaRegistry{schemaID: 100, schemaName: "test", cache: snapshotCache()}
+	return stubRegistryFor(snapshotCache())
+}
+
+// requireNormalizationParity asserts that normalizing before the write path
+// produces exactly the records the write path produces without it.
+//
+// The un-normalized run is the behaviour shipping today — flattenToAttributes
+// handles both spellings and #312's dedupe resolves the collisions — so it is
+// the baseline any reshaping must reproduce. Asserting the normalizer's output
+// shape alone cannot catch a reshaping that quietly drops an attribute, because
+// the shape it produces is the shape the assertion was written from.
+func requireNormalizationParity(
+	t *testing.T,
+	cache forma.SchemaAttributeCache,
+	data map[string]any,
+) []model.EAVRecord {
+	t.Helper()
+
+	registry := stubRegistryFor(cache)
+	rowID := uuid.Must(uuid.NewV7())
+
+	baseline := toEAV(t, registry, rowID, data)
+	normalized := toEAV(t, registry, rowID, NormalizeDottedKeys(data, cache))
+
+	require.ElementsMatch(t, baseline, normalized,
+		"normalizing must not change which records reach storage")
+	return normalized
 }
 
 // TestNormalizeThreeSegmentLiteralWinsThroughToAttributes pins last-spelling-wins
@@ -219,4 +293,160 @@ func TestNormalizeKeepsScalarParentRejectable(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 	require.True(t, errors.Is(err, forma.ErrInvalidInput))
+}
+
+// itemsCache has two sub-attributes under one array-valued interior path, the
+// shape where an array must merge rather than replace: array indices are part
+// of the EAV primary key, so contact.items.a at indices 0 and 1 and
+// contact.items.b at index 0 are three distinct rows.
+func itemsCache() forma.SchemaAttributeCache {
+	return forma.SchemaAttributeCache{
+		"contact.items.a": {AttributeName: "contact.items.a", AttributeID: 40, ValueType: forma.ValueTypeText},
+		"contact.items.b": {AttributeName: "contact.items.b", AttributeID: 41, ValueType: forma.ValueTypeText},
+	}
+}
+
+// TestNormalizeArrayValuedInteriorPathKeepsSiblingAttributes pins that two
+// arrays merge element-wise instead of one replacing the other.
+//
+// The literal names only contact.items.b, so replacing would wipe
+// contact.items.a — a 200 with the caller's other attribute gone. This is the
+// merge-update shape: storage rebuilds contact.items nested and the caller
+// PATCHes a literal naming one sub-attribute. Merging by index reproduces the
+// flattener exactly, because an index is part of the row identity.
+func TestNormalizeArrayValuedInteriorPathKeepsSiblingAttributes(t *testing.T) {
+	records := requireNormalizationParity(t, itemsCache(), map[string]any{
+		"contact":       map[string]any{"items": []any{map[string]any{"a": "A0"}, map[string]any{"a": "A1"}}},
+		"contact.items": []any{map[string]any{"b": "B0"}},
+	})
+
+	requireNoDuplicatePK(t, records)
+	require.Len(t, records, 3)
+	require.Equal(t, "A0", *findRecord(t, records, 40, "0").ValueText)
+	require.Equal(t, "A1", *findRecord(t, records, 40, "1").ValueText)
+	require.Equal(t, "B0", *findRecord(t, records, 41, "0").ValueText)
+}
+
+// TestNormalizeDeepRecursiveMergeKeepsBothAttributes pins that merging is
+// recursive, not one level deep. Two spellings can diverge below the depth where
+// they meet: here both hold an object at "deep", and only under it do they name
+// different attributes — both of which the flattener writes. A shallow merge
+// assigns the incoming "deep" wholesale and loses contact.snapshot.deep.a.
+//
+// Four segments are required to show it: with three, the two spellings meet at
+// the object whose keys are the attributes themselves, so assigning and merging
+// are indistinguishable. Verified — a shallow-merge mutant leaves the
+// three-segment version green.
+func TestNormalizeDeepRecursiveMergeKeepsBothAttributes(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.snapshot.deep.a": {AttributeName: "contact.snapshot.deep.a", AttributeID: 50, ValueType: forma.ValueTypeText},
+		"contact.snapshot.deep.b": {AttributeName: "contact.snapshot.deep.b", AttributeID: 51, ValueType: forma.ValueTypeText},
+	}
+
+	records := requireNormalizationParity(t, cache, map[string]any{
+		"contact":          map[string]any{"snapshot": map[string]any{"deep": map[string]any{"a": "A"}}},
+		"contact.snapshot": map[string]any{"deep": map[string]any{"b": "B"}},
+	})
+
+	require.Len(t, records, 2)
+	require.Equal(t, "A", *findRecord(t, records, 50, "").ValueText)
+	require.Equal(t, "B", *findRecord(t, records, 51, "").ValueText)
+}
+
+// TestNormalizeScalarLeafOnInteriorPathStaysRejectable is the scalar-parent rule
+// one level deeper: the non-map sits at the last segment of the expansion rather
+// than an intermediate one. "contact.snapshot" is an interior path — the schema
+// defines contact.snapshot.code, not contact.snapshot — so a scalar there is a
+// type error the flattener rejects. Expanding an object over it would turn that
+// 400 into a 200 with "SCALAR" silently dropped.
+func TestNormalizeScalarLeafOnInteriorPathStaysRejectable(t *testing.T) {
+	in := map[string]any{
+		"contact":          map[string]any{"snapshot": "SCALAR"},
+		"contact.snapshot": map[string]any{"code": "X"},
+	}
+
+	out := NormalizeDottedKeys(in, snapshotCache())
+	require.Equal(t, map[string]any{
+		"contact":          map[string]any{"snapshot": "SCALAR"},
+		"contact.snapshot": map[string]any{"code": "X"},
+	}, out)
+
+	transformer := NewTransformer(newSnapshotStubRegistry())
+	_, err := transformer.ToAttributes(context.Background(), 100, uuid.Must(uuid.NewV7()), out)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestNormalizeKeepsScalarUnderContainerLiteralRejectable pins the other half of
+// the scalar guard: the non-map is at the last segment and the expansion would
+// put a container over it. There is no payload this combination accepts today —
+// a scalar under a list attribute is rejected as "requires an array value", and
+// a map over a scalar attribute recurses to an undefined name — so expanding
+// would convert a 400 into a 200 that drops the scalar. The cache is not
+// consulted: whether the name is a defined attribute does not change that.
+func TestNormalizeKeepsScalarUnderContainerLiteralRejectable(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.email": {AttributeName: "contact.email", AttributeID: 60, ValueType: forma.ValueTypeList},
+	}
+
+	in := map[string]any{
+		"contact":       map[string]any{"email": "old"},
+		"contact.email": []any{"a", "b"},
+	}
+
+	out := NormalizeDottedKeys(in, cache)
+	require.Equal(t, in, out, "the literal must stay flat so the scalar is still flattened and rejected")
+
+	transformer := NewTransformer(stubRegistryFor(cache))
+	_, err := transformer.ToAttributes(context.Background(), 100, uuid.Must(uuid.NewV7()), out)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestNormalizeExpandsThroughArrayOnPath pins that an array sitting on the path
+// does not block expansion when replacing it loses nothing. Left flat, the
+// literal is an unknown property that the flattener still accepts — so unlike
+// the scalar cases there is no 400 backstop, and the value reaches storage
+// without JSON Schema ever inspecting it (#314).
+func TestNormalizeExpandsThroughArrayOnPath(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.snapshot.a": {AttributeName: "contact.snapshot.a", AttributeID: 70, ValueType: forma.ValueTypeText},
+	}
+
+	records := requireNormalizationParity(t, cache, map[string]any{
+		"contact":            map[string]any{"snapshot": []any{map[string]any{"a": "FROM-ARRAY"}}},
+		"contact.snapshot.a": "LITERAL",
+	})
+
+	require.Len(t, records, 1)
+	require.Equal(t, "LITERAL", *findRecord(t, records, 70, "").ValueText)
+
+	out := NormalizeDottedKeys(map[string]any{
+		"contact":            map[string]any{"snapshot": []any{map[string]any{"a": "FROM-ARRAY"}}},
+		"contact.snapshot.a": "LITERAL",
+	}, cache)
+	require.Equal(t, map[string]any{
+		"contact": map[string]any{"snapshot": map[string]any{"a": "LITERAL"}},
+	}, out)
+}
+
+// TestNormalizeKeepsArrayOnPathWhenExpansionWouldLoseData pins the deliberate
+// limit of the rule above. Here the array element also carries
+// contact.snapshot.b, which the flattener writes and which replacing the array
+// would destroy; JSON cannot hold both an array and an object at one key, so the
+// two spellings are irreconcilable by reshaping. Keeping the caller's data wins
+// over closing the bypass, and the flattener's own dedupe still resolves the
+// payload exactly as it does today.
+func TestNormalizeKeepsArrayOnPathWhenExpansionWouldLoseData(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.snapshot.a": {AttributeName: "contact.snapshot.a", AttributeID: 70, ValueType: forma.ValueTypeText},
+		"contact.snapshot.b": {AttributeName: "contact.snapshot.b", AttributeID: 71, ValueType: forma.ValueTypeText},
+	}
+
+	records := requireNormalizationParity(t, cache, map[string]any{
+		"contact":            map[string]any{"snapshot": []any{map[string]any{"a": "FROM-ARRAY", "b": "SIBLING"}}},
+		"contact.snapshot.a": "LITERAL",
+	})
+
+	require.Len(t, records, 2)
+	require.Equal(t, "LITERAL", *findRecord(t, records, 70, "").ValueText)
+	require.Equal(t, "SIBLING", *findRecord(t, records, 71, "0").ValueText)
 }
