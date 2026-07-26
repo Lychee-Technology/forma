@@ -2,6 +2,9 @@ package federated
 
 import "fmt"
 
+// Hot-tier SQL assembly for benchmark projections and targeted EAV filters.
+// Split from query.go to keep execution/scanning separate from postgres_scan
+// query construction (#220).
 func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
 	if benchmarkProjection {
 		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {

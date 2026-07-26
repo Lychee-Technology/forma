@@ -9,6 +9,9 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
+// PostgreSQL-only SQL assembly for the PreferHot and no-Parquet fallback paths.
+// Split from query.go to keep direct Postgres query construction independent of
+// execution and row scanning (#220).
 func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) (string, []any) {
 	args := []any{h.SchemaID}
 	attrIDs := h.benchmarkPostgresAttributeIDs()

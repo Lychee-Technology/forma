@@ -1,12 +1,5 @@
 package federated
 
-// Federated multi-tier SQL assembly: the dynamic entry points, the UNION ALL
-// combined query, the parquet tier queries with their row_id-semijoin
-// predicate pushdown, and the post-LWW-dedup final select/count. First slice
-// of the query.go split tracked by #220 (tier-query construction vs
-// execution/scan); the hot-tier builders stay in query.go with the
-// targeted-EAV machinery they depend on.
-
 import (
 	"context"
 	"fmt"
@@ -14,6 +7,12 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// Federated multi-tier SQL assembly: the dynamic entry points, the UNION ALL
+// combined query, parquet tier queries with row_id-semijoin predicate pushdown,
+// post-LWW-dedup final select/count, and shared projection/filter helpers.
+// query.go owns execution and scanning; query_hot.go owns hot-tier EAV SQL; and
+// query_postgres_build.go owns PostgreSQL-only SQL assembly (#220).
 
 // buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
