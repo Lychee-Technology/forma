@@ -41,10 +41,15 @@ that library implements applies. The ones the shipped schemas actually use:
 | `minimum`/`maximum` | `lead.json` `contact.employmentYear` 1900–2100 |
 | `required` | the schema's own `required` list, at the root and at any nested object (`lead.json` `contact.isAnonymous`) |
 
-Cross-file `$ref` is resolved, restricted to plain siblings inside
-`SCHEMA_DIR`, so `visit.json`'s `contactSnapshot`
-(`lead.json#/properties/contact`) really is validated against lead's contact
-object, patterns included.
+Cross-file `$ref` is resolved, restricted to plain siblings inside `SCHEMA_DIR`.
+That is what makes `visit.json`'s `leadId` (`lead.json#/$defs/lead_id`) carry
+lead's pattern at all: before #314 the reference could not be loaded, so
+`visit.json` and `log.json` were never validated against anything.
+
+It does **not** mean `visit.json`'s `contactSnapshot`
+(`lead.json#/properties/contact`) is checked against lead's contact object.
+`contactSnapshot` carries `x-relation`, and relation-backed properties are not
+validated in any spelling — see "Relation roots are never validated" below.
 
 **This is in addition to `required_policy`, which is a separate mechanism and
 still applies independently.** `required_policy` lives in
@@ -79,8 +84,9 @@ Literal dotted keys are why that distinction matters. Attribute names in this
 system are dotted, so a caller may spell `contact.email` either nested or as one
 literal key, and a literal key is an unknown property to JSON Schema.
 `transform.NormalizeDottedKeys` expands literal dotted keys into their nested
-paths before validating, so their values *are* checked — except in the one case
-below.
+paths before validating, so their values *are* checked — except in the two
+documented gaps below (a dotted key written above a schema array, and anything
+beneath a relation root).
 
 ### Creates reject, updates report
 
@@ -137,10 +143,10 @@ currently running and healthy. Validator construction calls
 
 The operator preflight is one sentence: **every schema name registered in
 `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR`.** No database
-column is involved — `schema_registry` holds only `schema_id`, `schema_name` and
-`created_at`; the document lives on disk.
+column is involved — `schema_registry` holds only `schema_id` and `schema_name`;
+the document lives on disk.
 
-### The one remaining validation gap
+### Validation gap: a dotted key written above a schema array
 
 A literal dotted key naming an attribute that lies **under a schema array** is
 not validated when it is written at a level *above* that array. Nesting it would
@@ -198,19 +204,42 @@ while `watch_attributes.json` marks nothing required. Before #314 the schema's
 accepted; it is now rejected on create. The bundled CSV importer supplies all
 three, so nothing shipped breaks.
 
-### Hazard for schema authors: never mark a relation root `required`
+### Relation roots are never validated
 
-Creates and updates validate **after** `StripComputedFields` removes
-`x-relation` properties, so that what is checked is what is stored — computed
-relation fields are derived on read and never persisted. The consequence is that
-a schema listing a relation root in `required` makes that entity **unwritable,
-and unfixably so**: every create and update fails with a missing-required error,
-and sending the field does not help because it is stripped before the validator
-sees it.
+**The rule: nothing at or beneath an `x-relation` property is schema-validated,
+in either spelling.**
+
+Creates and updates validate **after** `RelationIndex.StripComputedFields`
+removes `x-relation` properties, so that what is checked is what is stored —
+computed relation fields are derived on read and never persisted. So the nested
+spelling, `{"contactSnapshot": {...}}`, is gone before the validator runs.
+
+The dotted spelling is exempted deliberately, and this is the part that is easy
+to get wrong. The strip matches by **exact key**, so a registered dotted
+descendant such as `contactSnapshot.name`
+(`cmd/server/schemas/visit_attributes.json`) survives it. Expanding that key
+would *rebuild* the root the strip had just removed, as a partial object — and
+`visit.json` resolves `contactSnapshot` to `lead.json#/properties/contact`,
+which requires `isAnonymous`. The result would be a `400` on a payload that was
+accepted and persisted before #314, unfixably so: sending the whole nested
+object does not help, because the strip removes it and the dotted key rebuilds
+it. `transform.NormalizeDottedKeys` therefore takes the schema's relation roots
+(`RelationIndex.RelationRoots`) and leaves any dotted key beneath one literal.
+JSON Schema then sees an unknown property and never inspects the value — the
+same shape as the array gap above. The writer stores it unchanged.
+
+Two consequences for schema authors:
+
+- **Never mark a relation root `required`.** It makes the entity **unwritable,
+  and unfixably so**: every create and update fails with a missing-required
+  error, and sending the field does not help because it is stripped before the
+  validator sees it. A schema that needs this would have to move validation to
+  before the strip.
+- **Constraints declared under an `x-relation` `$ref` are decorative on the
+  child.** They still apply on the parent entity, where the data actually lives.
 
 Only `visit.json`'s `contactSnapshot` carries `x-relation` today, and it is not
-required. A schema that did this would need the validation moved to before the
-strip.
+required.
 
 ## Read-path consistency errors
 

@@ -189,8 +189,8 @@ SELECT schema_name FROM schema_registry ORDER BY schema_name;
 ```
 
 Compare that list against `ls $SCHEMA_DIR/*.json`. No database column carries the
-schema document — `schema_registry` holds only `schema_id`, `schema_name` and
-`created_at` — so the repair is always on disk: add the missing `<name>.json`, or
+schema document — `schema_registry` holds only `schema_id` and `schema_name` —
+so the repair is always on disk: add the missing `<name>.json`, or
 delete the `schema_registry` row if the schema is dead.
 
 The same check covers an unparseable document and a `$ref` that points outside
