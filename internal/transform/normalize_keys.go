@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 )
 
 // NormalizeDottedKeys rewrites literal dotted keys into their nested paths,
@@ -32,13 +33,25 @@ import (
 // defines something beneath it. An unknown dotted key is left alone; the writer
 // still rejects it with "attribute is not defined".
 //
+// A name under a schema array is never expanded, because it cannot be: nesting
+// requirement.areas.city puts an object where the schema declares an array, and
+// the caller gets a 400 naming a type they never sent. Such values are therefore
+// not validated at all — the documented limit of this function. arrays comes from
+// schemavalidate, the only place that knows which paths are arrays; the metadata
+// cache records requirement.areas.city and contact.email identically. Passing a
+// nil set is safe and means "nothing known to be an array".
+//
 // When both spellings are present the literal wins, matching encoding/json's
 // duplicate-key semantics and the writer's own last-spelling-wins rule. Keys are
 // applied in sorted order, and for any dotted name X.Y the shorter spelling X
 // sorts before X.Y, so the longer, more specific one is applied last.
 //
 // The input is never mutated: maps and slices are rebuilt rather than shared.
-func NormalizeDottedKeys(data map[string]any, cache forma.SchemaAttributeCache) map[string]any {
+func NormalizeDottedKeys(
+	data map[string]any,
+	cache forma.SchemaAttributeCache,
+	arrays schemavalidate.ArrayPaths,
+) map[string]any {
 	if data == nil {
 		// A nil document is returned unchanged rather than as an empty map, so
 		// this function never fabricates a document the caller did not send.
@@ -50,12 +63,17 @@ func NormalizeDottedKeys(data map[string]any, cache forma.SchemaAttributeCache) 
 		// which one passes and the other does not.
 		return nil
 	}
-	return normalizeMap(data, "", cache)
+	return normalizeMap(data, "", cache, arrays)
 }
 
 // normalizeMap rebuilds src with dotted keys expanded, where prefix is the
 // dotted attribute-name prefix of src's own position in the document.
-func normalizeMap(src map[string]any, prefix string, cache forma.SchemaAttributeCache) map[string]any {
+func normalizeMap(
+	src map[string]any,
+	prefix string,
+	cache forma.SchemaAttributeCache,
+	arrays schemavalidate.ArrayPaths,
+) map[string]any {
 	dst := make(map[string]any, len(src))
 
 	keys := make([]string, 0, len(src))
@@ -66,10 +84,10 @@ func normalizeMap(src map[string]any, prefix string, cache forma.SchemaAttribute
 
 	for _, key := range keys {
 		name := joinName(prefix, key)
-		value := normalizeValue(src[key], name, cache)
+		value := normalizeValue(src[key], name, cache, arrays)
 
 		parts := strings.Split(key, ".")
-		if len(parts) > 1 && isKnownAttributeOrParent(name, cache) && !arrayOnPath(dst, parts) {
+		if shouldExpand(dst, parts, name, cache, arrays) {
 			setNestedValue(dst, parts, value)
 			continue
 		}
@@ -82,12 +100,12 @@ func normalizeMap(src map[string]any, prefix string, cache forma.SchemaAttribute
 // Rebuilding both maps and slices is what keeps the caller's document unmutated:
 // merging writes into the result, and the result must share nothing with the map
 // the writer will still be handed.
-func normalizeValue(value any, name string, cache forma.SchemaAttributeCache) any {
+func normalizeValue(value any, name string, cache forma.SchemaAttributeCache, arrays schemavalidate.ArrayPaths) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		return normalizeMap(typed, name, cache)
+		return normalizeMap(typed, name, cache, arrays)
 	case []any:
-		return normalizeSlice(typed, name, cache)
+		return normalizeSlice(typed, name, cache, arrays)
 	default:
 		return value
 	}
@@ -97,10 +115,10 @@ func normalizeValue(value any, name string, cache forma.SchemaAttributeCache) an
 // name because an index is not part of an attribute name — flattenToAttributes
 // carries indices separately and recurses into elements with the path unchanged
 // — so {"tags":[{"a.b":1}]} must expand the same as {"tags":{"a.b":1}} would.
-func normalizeSlice(src []any, prefix string, cache forma.SchemaAttributeCache) []any {
+func normalizeSlice(src []any, prefix string, cache forma.SchemaAttributeCache, arrays schemavalidate.ArrayPaths) []any {
 	dst := make([]any, len(src))
 	for i, item := range src {
-		dst[i] = normalizeValue(item, prefix, cache)
+		dst[i] = normalizeValue(item, prefix, cache, arrays)
 	}
 	return dst
 }
@@ -110,6 +128,31 @@ func joinName(prefix, key string) string {
 		return key
 	}
 	return prefix + "." + key
+}
+
+// shouldExpand gates expansion on three independent questions, each answered by
+// one predicate and nothing else:
+//
+//   - is the key dotted at all, and does the schema know the name;
+//   - does the schema declare an array above it (arrays.Crosses);
+//   - does the payload itself already hold an array above it (arrayOnPath).
+//
+// The last two overlap but neither subsumes the other. The schema set is the only
+// way to know about an array the payload does not happen to contain, and the
+// payload check is the only way to catch an array the derivation cannot see —
+// one declared behind a $ref, or one the caller sent where the schema says
+// object.
+func shouldExpand(
+	dst map[string]any,
+	parts []string,
+	name string,
+	cache forma.SchemaAttributeCache,
+	arrays schemavalidate.ArrayPaths,
+) bool {
+	return len(parts) > 1 &&
+		isKnownAttributeOrParent(name, cache) &&
+		!arrays.Crosses(name) &&
+		!arrayOnPath(dst, parts)
 }
 
 // arrayOnPath reports whether an array already sits on the expansion path.

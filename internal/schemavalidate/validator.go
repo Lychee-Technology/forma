@@ -133,6 +133,9 @@ func resolveSchemaFile(dir, fileName string) (*jsonschema.Resolved, error) {
 // returns, and jsonschema.Resolved is read-only during Validate.
 type Validator struct {
 	resolved map[int16]*jsonschema.Resolved
+	// arrays is derived alongside resolution because the schema is the only
+	// loaded source of truth for which paths are arrays (see array_paths.go).
+	arrays map[int16]ArrayPaths
 }
 
 // New resolves every schema the registry knows about. It fails closed: any
@@ -152,7 +155,10 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 		return nil, fmt.Errorf("failed to build resolve options for schema directory %s: %w", dir, err)
 	}
 
-	v := &Validator{resolved: make(map[int16]*jsonschema.Resolved)}
+	v := &Validator{
+		resolved: make(map[int16]*jsonschema.Resolved),
+		arrays:   make(map[int16]ArrayPaths),
+	}
 	for _, name := range registry.ListSchemas() {
 		id, js, err := registry.GetSchemaByName(name)
 		if err != nil {
@@ -172,6 +178,9 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 				"failed to resolve schema %q (id %d) against schema directory %s: %w", name, id, dir, err)
 		}
 		v.resolved[id] = resolved
+		if paths := deriveArrayPaths(&s); paths != nil {
+			v.arrays[id] = paths
+		}
 	}
 	return v, nil
 }
