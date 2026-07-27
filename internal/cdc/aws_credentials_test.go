@@ -30,6 +30,8 @@ func TestResolveStaticS3Credentials(t *testing.T) {
 			wantKey: "ek", wantSecret: "es", wantToken: "et"},
 		{name: "env pair does not adopt the config token", cfgToken: "ct", envKey: "ek", envSecret: "es", envToken: "et",
 			wantKey: "ek", wantSecret: "es", wantToken: "et"},
+		{name: "env pair with no env token does not fall back to the config token", cfgToken: "ct", envKey: "ek", envSecret: "es",
+			wantKey: "ek", wantSecret: "es", wantToken: ""},
 		{name: "half env pair drops the env token too", envKey: "ek", envToken: "et",
 			wantKey: "", wantSecret: "", wantToken: ""},
 		{name: "config token alone is not a credential source", cfgToken: "ct",
