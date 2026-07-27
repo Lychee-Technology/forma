@@ -39,7 +39,7 @@ func TestNewEntityManagerWithConfig_Unit_UnparseableSchemaFailsClosed(t *testing
 	registry := newMockSchemaRegistry()
 	registry.schemaBody = `{`
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	em, err := newEntityManagerWithConfigContext(
 		context.Background(), validatorTestConfig(t, registry), nil, deps)
 
@@ -68,7 +68,7 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 	registry := newMockSchemaRegistry()
 	registry.schemaDocMissing = true
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	em, err := newEntityManagerWithConfigContext(
 		context.Background(), validatorTestConfig(t, registry), nil, deps)
 
@@ -95,7 +95,7 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 	registry.schemaBody = `{`
 
 	duckDBFactoryCalled := false
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	deps.newDuckDBClient = func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error) {
 		duckDBFactoryCalled = true
 		return nil, nil

@@ -245,7 +245,7 @@ func parquetSourceTestConfig(t *testing.T) *forma.Config {
 func TestNewEntityManagerWithConfig_Unit_NoParquetSourceWhenManifestOff(t *testing.T) {
 	t.Parallel()
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	called := false
 	deps.newParquetSource = func(_ context.Context, cfg forma.DuckDBConfig) (federated.ParquetSource, error) {
 		called = true
@@ -262,7 +262,7 @@ func TestNewEntityManagerWithConfig_Unit_NoParquetSourceWhenManifestOff(t *testi
 func TestNewEntityManagerWithConfig_Unit_ParquetSourceFromConfig(t *testing.T) {
 	t.Parallel()
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	var gotCfg forma.DuckDBConfig
 	deps.newParquetSource = func(_ context.Context, cfg forma.DuckDBConfig) (federated.ParquetSource, error) {
 		gotCfg = cfg
@@ -285,7 +285,7 @@ func TestNewEntityManagerWithConfig_Unit_ParquetSourceFromConfig(t *testing.T) {
 func TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorFailsFast(t *testing.T) {
 	t.Parallel()
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	deps.newParquetSource = func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error) {
 		return nil, errors.New("simulated s3 client failure")
 	}
@@ -313,7 +313,7 @@ func TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorClosesDuckDBClient(t 
 	t.Parallel()
 
 	var built *federated.DuckDBClient
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	deps.newDuckDBClient = func(ctx context.Context, cfg forma.DuckDBConfig) (*federated.DuckDBClient, error) {
 		client, err := federated.NewDuckDBClientContext(ctx, cfg)
 		if err != nil {
@@ -350,7 +350,7 @@ func TestNewEntityManagerWithConfig_Unit_ParquetSourceErrorClosesDuckDBClient(t 
 func TestNewEntityManagerWithConfig_Unit_InvalidManifestConfigFailsFast(t *testing.T) {
 	t.Parallel()
 
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	// Any I/O reached before configuration validation is a contract breach:
 	// a malformed config must be rejected before the factory touches the DB.
 	deps.collectTables = func(context.Context, queryPool, string) ([]string, error) {

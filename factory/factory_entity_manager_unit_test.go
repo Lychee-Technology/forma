@@ -30,7 +30,7 @@ func (m *mockMetadataLoader) LoadMetadata(ctx context.Context) (*schemameta.Meta
 	return m.cache, m.err
 }
 
-func unitEntityManagerDeps(cache *schemameta.MetadataCache) entityManagerDependencies {
+func buildUnitEntityManagerDeps(cache *schemameta.MetadataCache) entityManagerDependencies {
 	deps := defaultEntityManagerDependencies()
 	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
@@ -41,10 +41,10 @@ func unitEntityManagerDeps(cache *schemameta.MetadataCache) entityManagerDepende
 	return deps
 }
 
-// unitEntityManagerConfig is the config half of the successful-construction
-// fixture: the table names unitEntityManagerDeps' collector reports, plus an
+// newUnitEntityManagerConfig is the config half of the successful-construction
+// fixture: the table names buildUnitEntityManagerDeps' collector reports, plus an
 // empty schema directory.
-func unitEntityManagerConfig(t *testing.T) *forma.Config {
+func newUnitEntityManagerConfig(t *testing.T) *forma.Config {
 	t.Helper()
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{
@@ -121,7 +121,7 @@ func TestNewEntityManagerWithConfig_Unit_MetadataLoaderError(t *testing.T) {
 	t.Parallel()
 
 	cache := schemameta.NewMetadataCache()
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: fmt.Errorf("simulated loader error")}
 	}
@@ -145,7 +145,7 @@ func TestNewEntityManagerWithConfig_Unit_NilSchemaRegistry(t *testing.T) {
 	t.Parallel()
 
 	cache := schemameta.NewMetadataCache()
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 
 	config := forma.DefaultConfig(nil)
 	config.Database.TableNames = forma.TableNames{
@@ -166,9 +166,9 @@ func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	t.Parallel()
 
 	cache := schemameta.NewMetadataCache()
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 
-	config := unitEntityManagerConfig(t)
+	config := newUnitEntityManagerConfig(t)
 
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
@@ -180,7 +180,7 @@ func TestNewEntityManagerWithConfig_Unit_SchemaQualifiedTableNames(t *testing.T)
 	t.Parallel()
 
 	cache := schemameta.NewMetadataCache()
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
@@ -209,7 +209,7 @@ func TestNewEntityManagerWithConfig_Unit_SchemaParamQualifiesUnqualifiedTableNam
 	t.Parallel()
 
 	cache := schemameta.NewMetadataCache()
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.Equal(t, "tenant", schema)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
@@ -242,7 +242,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToTableCollecto
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 	deps.collectTables = func(ctx context.Context, pool queryPool, schema string) ([]string, error) {
 		assert.ErrorIs(t, ctx.Err(), context.Canceled)
 		return []string{"schema_registry", "eav_data", "entity_main"}, nil
@@ -269,7 +269,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	deps := unitEntityManagerDeps(cache)
+	deps := buildUnitEntityManagerDeps(cache)
 	deps.newDuckDBClient = func(ctx context.Context, cfg forma.DuckDBConfig) (*federated.DuckDBClient, error) {
 		assert.ErrorIs(t, ctx.Err(), context.Canceled)
 		return nil, context.Canceled
