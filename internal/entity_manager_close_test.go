@@ -2,6 +2,8 @@ package internal
 
 import (
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -70,8 +72,44 @@ func TestEntityManagerClose_JoinsResourceErrors(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected Close error to wrap the resource failure, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "close entity manager resource") {
+		t.Fatalf("close error must carry manager-level context (coding-standard §3), got %v", err)
+	}
 	if healthy.closed != 1 {
 		t.Fatalf("a sibling failure must not skip healthy closers, got %d", healthy.closed)
+	}
+}
+
+// TestEntityManagerClose_ConcurrentCallsCloseOnce pins that Close is safe for
+// concurrent use (#327 review round 2): the public EntityManager surface
+// invites concurrent teardown, teardown must run exactly once, and every
+// caller — including ones that lose the race after a failure — receives the
+// same cached result. Run under -race to catch unsynchronized teardown.
+func TestEntityManagerClose_ConcurrentCallsCloseOnce(t *testing.T) {
+	boom := errors.New("duckdb close failed")
+	failing := &recordingCloser{err: boom}
+	em := newTestEntityManagerForClose(t, WithCloser(failing))
+
+	const callers = 32
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- em.Close()
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	if failing.closed != 1 {
+		t.Fatalf("concurrent Close must run teardown exactly once, resource closed %d times", failing.closed)
+	}
+	for err := range results {
+		if !errors.Is(err, boom) {
+			t.Fatalf("every caller must receive the same cached close result, got %v", err)
+		}
 	}
 }
 

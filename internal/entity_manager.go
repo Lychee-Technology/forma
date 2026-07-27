@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
@@ -38,6 +39,13 @@ type entityManager struct {
 	// managers (the e2e harness) register nothing: their resources are owned
 	// by the Env.
 	closers []io.Closer
+	// closeOnce guards teardown: Close is public API surface, so concurrent
+	// callers must not double-close owned resources (#327 review). closeErr
+	// caches the joined result so every caller — first, repeated, or racing —
+	// observes the same outcome; sync.Once's happens-before edge makes the
+	// cached read safe.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ forma.EntityManager = (*entityManager)(nil)
@@ -56,17 +64,23 @@ func WithCloser(c io.Closer) EntityManagerOption {
 	}
 }
 
-// Close releases every registered resource. All closers run even when one
-// fails (errors.Join); a second Close is a no-op.
+// Close releases every registered resource exactly once. All closers run even
+// when one fails; each failure is wrapped with the resource's type before
+// joining (errors.Is still reaches the underlying error). Safe for concurrent
+// use: teardown is guarded by closeOnce and the joined result is cached, so
+// every call returns the same outcome.
 func (em *entityManager) Close() error {
-	var errs []error
-	for _, c := range em.closers {
-		if err := c.Close(); err != nil {
-			errs = append(errs, err)
+	em.closeOnce.Do(func() {
+		var errs []error
+		for _, c := range em.closers {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close entity manager resource %T: %w", c, err))
+			}
 		}
-	}
-	em.closers = nil
-	return errors.Join(errs...)
+		em.closers = nil
+		em.closeErr = errors.Join(errs...)
+	})
+	return em.closeErr
 }
 
 // NewEntityManager creates a new EntityManager instance
