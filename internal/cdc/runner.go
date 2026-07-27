@@ -121,13 +121,13 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	s3Runtime, err := r.getOrCreateS3Runtime(ctx, cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare s3 runtime: %w", err)
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
 	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve s3 clients: %w", err)
 	}
 
 	var manifestStore manifest.Store
@@ -145,16 +145,15 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	db, pgPassword, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
 	if err != nil {
-		return err
+		return fmt.Errorf("setup postgres connection: %w", err)
 	}
 	defer db.Close()
 
 	duck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
 	if err != nil {
-		// getOrCreateDuckExporter wraps its own error with "new duck exporter:";
-		// re-wrapping here would double the prefix. Same pass-through shape as
-		// the other already-wrapped callees above.
-		return err
+		// getOrCreateDuckExporter carries the "new duck exporter:" prefix; this
+		// layer adds the run-level step so the two never duplicate.
+		return fmt.Errorf("prepare duck exporter: %w", err)
 	}
 
 	tableName := cfg.ChangeLogTable
