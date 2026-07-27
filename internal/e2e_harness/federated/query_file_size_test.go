@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestSourceLineCountIncludesFinalUnterminatedLine(t *testing.T) {
+func TestCountSourceLinesIncludesFinalUnterminatedLine(t *testing.T) {
 	source := append(bytes.Repeat([]byte("x\n"), 500), 'x')
 	if got := countSourceLines(source); got != 501 {
 		t.Fatalf("countSourceLines = %d, want 501", got)
