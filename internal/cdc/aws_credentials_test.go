@@ -18,6 +18,7 @@ func TestResolveStaticS3Credentials(t *testing.T) {
 		{name: "full env pair becomes static", envKey: "ek", envSecret: "es", wantKey: "ek", wantSecret: "es"},
 		{name: "env half-pair falls to default chain", envKey: "ek", wantKey: "", wantSecret: ""},
 		{name: "env secret alone falls to default chain", envSecret: "es", wantKey: "", wantSecret: ""},
+		{name: "config secret without key falls to default chain", cfgSecret: "cs", wantKey: "", wantSecret: ""},
 		{name: "nothing set falls to default chain", wantKey: "", wantSecret: ""},
 	}
 	for _, tc := range cases {

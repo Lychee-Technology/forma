@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -22,9 +21,10 @@ import (
 )
 
 // loadAWSConfig is the seam for loading the ambient AWS configuration,
-// mirroring internal/bootstrap.loadAWSConfig so the two S3 client sites
-// keep credential and region parity (#302). Tests swap it; production
-// always resolves the real chain.
+// mirroring internal/bootstrap.loadAWSConfig. Every cdc S3 client site —
+// setupAWSClient and the Runner's getOrCreateS3Runtime — goes through this
+// one seam so credential and region parity holds (#302, #326). Tests swap
+// it; production always resolves the real chain.
 var loadAWSConfig = config.LoadDefaultConfig
 
 // generateIAMTokenFn is the function signature we use to generate IAM tokens.
@@ -92,16 +92,11 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer db.Close()
 
-	// Setup DuckDB exporter — credentials come from config fields; if not set,
-	// NewDuckExporter will use empty strings and DuckDB inherits the environment.
-	s3Key := cfg.S3AccessKeyID
-	s3Secret := cfg.S3SecretAccessKey
-	if s3Key == "" {
-		s3Key = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	if s3Secret == "" {
-		s3Secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
+	// DuckDB httpfs credentials follow the same both-halves rule as the SDK
+	// client (#326): with no fully-set static pair NewDuckExporter receives
+	// empty strings and DuckDB inherits its own environment chain, so the SDK
+	// client and httpfs never diverge under a half-set env pair.
+	s3Key, s3Secret := resolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, logger)
 	if err != nil {
 		return fmt.Errorf("new duck exporter: %w", err)
@@ -151,13 +146,11 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)
 	}
-	if cfg.S3AccessKeyID != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, "")
-	} else if envKey, envSecret := os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"); envKey != "" && envSecret != "" {
-		// Both env halves required: a lone key would build an empty-secret
-		// static provider whose only observable behavior is an opaque
-		// signing failure; the half-pair falls through to the default chain.
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(envKey, envSecret, "")
+	// Both-halves rule and config-wins precedence live in
+	// resolveStaticS3Credentials — the shared rule for every cdc credential
+	// site (#326). Empty pair leaves the default chain in place.
+	if staticKey, staticSecret := resolveStaticS3Credentials(cfg); staticKey != "" {
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, "")
 	}
 
 	// Build S3 client options
