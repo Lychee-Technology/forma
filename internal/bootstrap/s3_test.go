@@ -29,7 +29,16 @@ func stubLoadAWSConfig(
 // precedence logic.
 func stubBaseConfig(t *testing.T, region string) {
 	t.Helper()
-	stubLoadAWSConfig(t, func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+	stubLoadAWSConfig(t, func(ctx context.Context, optFns ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		lo := &awsconfig.LoadOptions{}
+		for _, fn := range optFns {
+			if err := fn(lo); err != nil {
+				return aws.Config{}, err
+			}
+		}
+		if lo.Region != "" {
+			return aws.Config{Region: lo.Region}, nil
+		}
 		return aws.Config{Region: region}, nil
 	})
 }
@@ -159,6 +168,53 @@ func TestNewS3Client_RegionOverride(t *testing.T) {
 	}
 	if got := inherited.Options().Region; got != "us-east-1" {
 		t.Errorf("expected loaded region to be preserved when S3Options.Region is empty, got %q", got)
+	}
+}
+
+// TestNewS3Client_EnvHalfPairPreservesDefaultChain pins the #302 fix: a
+// non-empty AWS_ACCESS_KEY_ID with an empty AWS_SECRET_ACCESS_KEY must NOT
+// build an empty-secret static provider (opaque signing failure); the
+// default chain's credentials stay in place.
+func TestNewS3Client_EnvHalfPairPreservesDefaultChain(t *testing.T) {
+	chainCreds := awscreds.NewStaticCredentialsProvider("chain-key", "chain-secret", "")
+	stubLoadAWSConfig(t, func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-east-1", Credentials: chainCreds}, nil
+	})
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	client, err := NewS3Client(context.Background(), S3Options{Region: "us-east-1"})
+	if err != nil {
+		t.Fatalf("NewS3Client: %v", err)
+	}
+	creds := retrieveCredentials(t, client.Options().Credentials)
+	if creds.AccessKeyID != "chain-key" || creds.SecretAccessKey != "chain-secret" {
+		t.Fatalf("half-set env pair must preserve the default chain, got %+v", creds)
+	}
+}
+
+// TestNewS3Client_RegionPassedAtLoad pins that Region reaches
+// LoadDefaultConfig as a WithRegion load option rather than a post-load
+// overwrite — the distinction is invisible in the final Config.Region but
+// governs region-sensitive default-chain resolution (STS/SSO).
+func TestNewS3Client_RegionPassedAtLoad(t *testing.T) {
+	var loadedRegion string
+	stubLoadAWSConfig(t, func(ctx context.Context, optFns ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		lo := &awsconfig.LoadOptions{}
+		for _, fn := range optFns {
+			if err := fn(lo); err != nil {
+				return aws.Config{}, err
+			}
+		}
+		loadedRegion = lo.Region
+		return aws.Config{Region: lo.Region}, nil
+	})
+
+	if _, err := NewS3Client(context.Background(), S3Options{Region: "eu-central-1"}); err != nil {
+		t.Fatalf("NewS3Client: %v", err)
+	}
+	if loadedRegion != "eu-central-1" {
+		t.Fatalf("expected region to arrive as a load option, got %q", loadedRegion)
 	}
 }
 

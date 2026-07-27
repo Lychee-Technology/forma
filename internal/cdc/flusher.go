@@ -21,6 +21,12 @@ import (
 	"go.uber.org/zap"
 )
 
+// loadAWSConfig is the seam for loading the ambient AWS configuration,
+// mirroring internal/bootstrap.loadAWSConfig so the two S3 client sites
+// keep credential and region parity (#302). Tests swap it; production
+// always resolves the real chain.
+var loadAWSConfig = config.LoadDefaultConfig
+
 // generateIAMTokenFn is the function signature we use to generate IAM tokens.
 // We wrap the upstream function to keep a stable signature for tests.
 var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, creds any) (string, error) {
@@ -131,20 +137,27 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	return flushCtx.processSchemas(ctx, schemaIDs)
 }
 
-// setupAWSClient initializes the AWS credentials and S3 client.
+// setupAWSClient initializes the AWS credentials and S3 client. Credential
+// precedence and region handling deliberately mirror
+// internal/bootstrap.NewS3Client — the two sites must stay in parity (#302).
 func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.CredentialsProvider, *s3.Client, error) {
-	awsCfg, err := config.LoadDefaultConfig(ctx)
+	var loadOpts []func(*config.LoadOptions) error
+	if cfg.S3Region != "" {
+		// WithRegion at load time so region-sensitive default-chain
+		// resolution (STS, SSO) sees the configured region.
+		loadOpts = append(loadOpts, config.WithRegion(cfg.S3Region))
+	}
+	awsCfg, err := loadAWSConfig(ctx, loadOpts...)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)
 	}
-	if cfg.S3Region != "" {
-		awsCfg.Region = cfg.S3Region
-	}
 	if cfg.S3AccessKeyID != "" {
 		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(cfg.S3AccessKeyID, cfg.S3SecretAccessKey, "")
-	} else if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
-		// Fall back to environment variables when not set in config.
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(envKey, os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
+	} else if envKey, envSecret := os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"); envKey != "" && envSecret != "" {
+		// Both env halves required: a lone key would build an empty-secret
+		// static provider whose only observable behavior is an opaque
+		// signing failure; the half-pair falls through to the default chain.
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(envKey, envSecret, "")
 	}
 
 	// Build S3 client options
