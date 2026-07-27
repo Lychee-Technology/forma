@@ -140,6 +140,54 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 	require.Equal(t, 1, createCalls)
 }
 
+// TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion pins that the
+// exporter cache key describes the exporter that was actually built. The
+// exporter is configured from the raw cfg — an empty cfg.S3Region suppresses
+// SET s3_region entirely — so two runs whose only difference is the region the
+// AWS default chain happened to resolve produce byte-identical exporters. Key
+// on the chain region and the cache claims a distinction the exporter never
+// made, building (and leaking) a second identical DuckDB instance (#329).
+func TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion(t *testing.T) {
+	origNewDuckExporterFn := newDuckExporterFn
+	defer func() {
+		newDuckExporterFn = origNewDuckExporterFn
+	}()
+
+	createCalls := 0
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+		createCalls++
+		return &DuckExporter{Logger: logger}, nil
+	}
+
+	runner := NewRunner(zap.NewNop())
+	// cfg.S3Region is empty: the exporter never issues SET s3_region, so both
+	// runtimes below configure the exact same exporter.
+	cfg := CDCConfig{
+		DuckDBPath:   ":memory:",
+		DuckThreads:  4,
+		DuckMemLimit: "4GB",
+		S3UseSSL:     true,
+	}
+	runtimeEast := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+	}
+	runtimeWest := &cachedS3Runtime{
+		region:          "eu-west-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+	}
+
+	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeEast)
+	require.NoError(t, err)
+	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeWest)
+	require.NoError(t, err)
+
+	require.Same(t, exporter1, exporter2)
+	require.Equal(t, 1, createCalls)
+}
+
 func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)

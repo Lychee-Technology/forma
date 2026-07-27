@@ -142,7 +142,10 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	duck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
 	if err != nil {
-		return fmt.Errorf("new duck exporter: %w", err)
+		// getOrCreateDuckExporter now wraps with "new duck exporter:" itself;
+		// re-wrapping here would double the prefix. Same pass-through shape as
+		// the other already-wrapped callees above.
+		return err
 	}
 
 	tableName := cfg.ChangeLogTable
@@ -235,10 +238,16 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 
 func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3Runtime *cachedS3Runtime) (*DuckExporter, error) {
 	key := duckExporterKey{
-		dbPath:          cfg.DuckDBPath,
-		threads:         cfg.DuckThreads,
-		memLimit:        cfg.DuckMemLimit,
-		region:          s3Runtime.region,
+		dbPath:   cfg.DuckDBPath,
+		threads:  cfg.DuckThreads,
+		memLimit: cfg.DuckMemLimit,
+		// The raw cfg region, not s3Runtime.region: the exporter is configured
+		// from cfg alone, and an empty cfg.S3Region suppresses SET s3_region
+		// entirely. Keying on the chain-resolved region claims a distinction
+		// the exporter never makes, so two runs producing byte-identical
+		// exporters would miss the cache (#329). The ambient region is stable
+		// within a process, so this is key honesty with no behavior change.
+		region:          cfg.S3Region,
 		endpoint:        cfg.S3Endpoint,
 		useSSL:          cfg.S3UseSSL,
 		usePath:         cfg.S3UsePath,
@@ -257,7 +266,7 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 	// provider and the DuckDB SET statements on the same credentials (#329).
 	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken, r.logger)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
 	r.mu.Lock()
