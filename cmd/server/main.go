@@ -22,8 +22,9 @@ import (
 )
 
 type serverRuntime struct {
-	pool   *pgxpool.Pool
-	server *httpapi.Server
+	pool    *pgxpool.Pool
+	manager forma.EntityManager
+	server  *httpapi.Server
 }
 
 func main() {
@@ -44,6 +45,13 @@ func main() {
 		sugar.Fatalf("failed to bootstrap server: %v", err)
 	}
 	defer runtime.pool.Close()
+	// Defers run LIFO, so the manager — whose DuckDB holds a Postgres
+	// attachment DSN — is released before the pool it points at (#302).
+	defer func() {
+		if err := runtime.manager.Close(); err != nil {
+			sugar.Warnw("failed to close entity manager", "err", err)
+		}
+	}()
 
 	port := bootstrap.Env("PORT", "8080")
 	zap.S().Infow("starting server", "port", port)
@@ -198,8 +206,9 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	}
 
 	return &serverRuntime{
-		pool:   pool,
-		server: httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
+		pool:    pool,
+		manager: manager,
+		server:  httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
 	}, nil
 }
 

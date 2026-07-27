@@ -222,6 +222,21 @@ func unitEntityManagerDeps(cache *schemameta.MetadataCache) entityManagerDepende
 	return deps
 }
 
+// unitEntityManagerConfig is the config half of the successful-construction
+// fixture: the table names unitEntityManagerDeps' collector reports, plus an
+// empty schema directory.
+func unitEntityManagerConfig(t *testing.T) *forma.Config {
+	t.Helper()
+	config := forma.DefaultConfig(newMockSchemaRegistry())
+	config.Database.TableNames = forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+	}
+	config.Entity.SchemaDirectory = t.TempDir()
+	return config
+}
+
 func TestNewEntityManagerWithConfig_Unit_TableCollectorError(t *testing.T) {
 	t.Parallel()
 
@@ -334,13 +349,7 @@ func TestNewEntityManagerWithConfig_Unit_Success(t *testing.T) {
 	cache := schemameta.NewMetadataCache()
 	deps := unitEntityManagerDeps(cache)
 
-	config := forma.DefaultConfig(newMockSchemaRegistry())
-	config.Database.TableNames = forma.TableNames{
-		SchemaRegistry: "schema_registry",
-		EAVData:        "eav_data",
-		EntityMain:     "entity_main",
-	}
-	config.Entity.SchemaDirectory = t.TempDir()
+	config := unitEntityManagerConfig(t)
 
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
