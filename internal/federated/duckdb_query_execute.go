@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/redact"
 )
 
 // Execute-and-stream half of the DuckDB federated read path: running the
@@ -42,6 +43,12 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	planCtx.recordQueryStart()
 	rows, err := e.duck.Query(ctx, sqlStr, args...)
 	if err != nil {
+		// #306: a postgres_scan attach failure echoes the whole conn string,
+		// password included, in DuckDB's own prose. Scrub before the text
+		// enters any chain or the execution-plan failure note — this is the
+		// source, so every consumer (embedder logs, future transports) is
+		// covered without repeating #301's boundary redaction.
+		err = redact.Error(err)
 		planCtx.recordQueryFailure(err)
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
@@ -53,6 +60,9 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 
 	totalRecords, rowCount, err := e.streamDuckDBRows(ctx, rows, rowHandler)
 	if err != nil {
+		// #306: lazy object opens mean the attach failure can surface here
+		// instead of at Query; same scrub, same reason as above.
+		err = redact.Error(err)
 		if e.breaker != nil {
 			e.breaker.RecordFailure()
 		}

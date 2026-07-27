@@ -141,10 +141,12 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 	}
 
 	// SECURITY: do not project src.SQL / src.Params or plan.Notes / merge.Notes.
-	// The DuckDB source SQL embeds the postgres_scan connection string (with the
-	// DB password) and notes can echo raw engine errors — surfacing them on the
-	// HTTP response would leak credentials to any advanced_query caller. Only
-	// safe routing/tier metadata crosses into the public projection.
+	// Since #306, the database password is redacted at the source (plan SQL and
+	// failure notes carry password=***REDACTED***), but the rendered DuckDB SQL
+	// still embeds host/user/dbname, table internals; Params carry query arguments;
+	// notes carry storage keys and engine internals — surfacing them on the HTTP
+	// response would leak internals to any advanced_query caller. Only safe
+	// routing/tier metadata crosses into the public projection.
 	out := &forma.ExecutionPlan{
 		Routing: forma.ExecutionRouting{
 			UsedDuckDB: plan.Routing.UseDuckDB,

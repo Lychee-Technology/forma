@@ -1,13 +1,18 @@
 // Package redact removes credential material from strings before they leave the
 // process — into a log sink, or into an HTTP response body.
 //
-// It exists because the same connection-string password has to be scrubbed in two
-// unrelated places, and the matcher is subtle enough that two copies would drift:
+// It exists because the same connection-string password has to be scrubbed in three
+// unrelated places, and the matcher is subtle enough that multiple copies would drift:
 //
 //   - internal/cdc logs DuckDB ATTACH statements and DSNs (#290).
 //   - internal/httpapi logs error chains, and DuckDB quotes the whole postgres_scan
 //     connection string back inside its own attach-failure prose, so the password
 //     arrives as driver-authored text no Forma wrap site can intercept (#301).
+//   - internal/federated scrubs driver errors at the source (#306): the engine
+//     scrubs DuckDB read failures at both emergence points (execute and
+//     mid-stream), the plan failure note built from them, and the plan's
+//     rendered SQL — so embedders that log the engine's errors or dump the
+//     internal plan never capture the credential.
 //
 // A weaker matcher is not a smaller version of this one, it is a leak: a naive
 // `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits

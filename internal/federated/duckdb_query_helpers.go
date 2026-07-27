@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/redact"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/sqlutil"
@@ -329,7 +330,11 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 	dp := model.DataSourcePlan{
 		Tier:   served[0],
 		Engine: "duckdb",
-		SQL:    sqlStr,
+		// #306: the rendered SQL embeds postgres_scan('…password=…'); the
+		// internal plan reaches Go embedders via attachExecutionPlan, so the
+		// credential is scrubbed here while the rest of the query shape stays
+		// diagnosable. The engine still executes the unscrubbed sqlStr.
+		SQL:    redact.ConnStringPassword(sqlStr),
 		Params: formatPlanParams(args),
 		// The anchor hint is a no-op in the advanced template, so it must not
 		// masquerade as actual pushdown here (#184); real pushdown facts live
