@@ -8,17 +8,12 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
 )
-
-var loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
-	return config.LoadDefaultConfig(ctx)
-}
 
 var newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
 	if endpoint != "" {
@@ -203,7 +198,7 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		return cached, nil
 	}
 
-	awsCfg, err := loadAWSConfigFn(ctx)
+	awsCfg, err := loadAWSConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}

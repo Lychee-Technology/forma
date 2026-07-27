@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -25,19 +26,17 @@ func TestRunnerRunOnce_RequiresSchemaRegistry(t *testing.T) {
 }
 
 func TestRunnerCachesS3Runtime(t *testing.T) {
-	origLoadAWSConfigFn := loadAWSConfigFn
 	origNewS3ClientFn := newS3ClientFn
 	defer func() {
-		loadAWSConfigFn = origLoadAWSConfigFn
 		newS3ClientFn = origNewS3ClientFn
 	}()
 
 	loadCalls := 0
 	clientCalls := 0
-	loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		loadCalls++
 		return aws.Config{}, nil
-	}
+	})
 	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
 		clientCalls++
 		return &s3.Client{}
@@ -57,19 +56,17 @@ func TestRunnerCachesS3Runtime(t *testing.T) {
 }
 
 func TestRunnerGetOrCreateS3Runtime_UsesDefaultRegionAndEnvCredentials(t *testing.T) {
-	origLoadAWSConfigFn := loadAWSConfigFn
 	origNewS3ClientFn := newS3ClientFn
 	defer func() {
-		loadAWSConfigFn = origLoadAWSConfigFn
 		newS3ClientFn = origNewS3ClientFn
 	}()
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
 
-	loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		return aws.Config{}, nil
-	}
+	})
 	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
 		return &s3.Client{}
 	}
