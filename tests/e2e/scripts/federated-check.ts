@@ -74,6 +74,14 @@ function parseArgs(): Args {
       manifestReads = true;
     }
   }
+  if (manifestReads && !requireDuckDB) {
+    // manifestReads only changes behavior on the forced-DuckDB route
+    // (queryFederated skips the s3_parquet_path_template hint there); without
+    // --require-duckdb this run exercises nothing manifest-driven.
+    console.warn(
+      'WARNING: --manifest-reads has no effect without --require-duckdb; the manifest-driven read path is not being exercised.',
+    );
+  }
   return { schema, sampleSize, seed, fullScan, requireDuckDB, manifestReads };
 }
 
