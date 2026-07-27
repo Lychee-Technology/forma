@@ -4,14 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
@@ -39,107 +39,33 @@ type exportSQLPlan struct {
 	eavQuery       string
 }
 
-// NewDuckExporter opens a DuckDB connection and configures pragmas and extensions.
+// NewDuckExporter opens a DuckDB pool whose every physical connection
+// self-configures (pragmas, extensions, S3 session settings) via a connector
+// init hook — session-scoped statements issued through the pool reach only
+// one arbitrary connection (#285, same class as #245). Init statement
+// failures are logged and skipped, never blocking the connection;
+// construction fails only on credential validation or ping.
 func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret string, logger *zap.Logger) (*DuckExporter, error) {
-	// Build DSN
-	dsn := cfg.DuckDBPath
-	db, err := sql.Open("duckdb", dsn)
+	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret)
 	if err != nil {
-		return nil, fmt.Errorf("open duckdb: %w", err)
+		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}
-	// configure pragmas and extensions
-	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if cfg.DuckMemLimit != "" {
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("PRAGMA memory_limit='%s';", cfg.DuckMemLimit)); err != nil {
-			logger.Sugar().Warnw("duckdb pragma failed", "pragma", "memory_limit", "err", err)
-		}
+	connector, err := duckdb.NewConnector(cfg.DuckDBPath, duckdbinit.MakeConnInit(steps, logger.Sugar()))
+	if err != nil {
+		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}
-	if cfg.DuckThreads > 0 {
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("PRAGMA threads=%d;", cfg.DuckThreads)); err != nil {
-			logger.Sugar().Warnw("duckdb pragma failed", "pragma", "threads", "err", err)
-		}
-	}
-	// attempt to install/load extensions (postgres_scanner first for postgres_query)
-	exts := []string{"postgres_scanner", "httpfs", "parquet"}
-	for _, e := range exts {
-		if _, err := db.ExecContext(ctx2, "INSTALL "+e+";"); err != nil {
-			logger.Sugar().Warnw("duckdb install extension failed", "ext", e, "err", err)
-		} else {
-			if _, err := db.ExecContext(ctx2, "LOAD "+e+";"); err != nil {
-				logger.Sugar().Warnw("duckdb load extension failed", "ext", e, "err", err)
-			}
-		}
-	}
-	// set S3 pragmas if provided
-	if s3AccessKey != "" {
-		if err := validateS3Credential("s3_access_key_id", s3AccessKey); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_access_key_id='%s';", s3AccessKey)); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_access_key_id failed", "err", err)
-		}
-	}
-	if s3Secret != "" {
-		if err := validateS3Credential("s3_secret_access_key", s3Secret); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_secret_access_key='%s';", s3Secret)); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_secret_access_key failed", "err", err)
-		}
-	}
-	// Temporary credentials (STS/assumed roles) are a key+secret+token
-	// triple; without the token httpfs signs requests the store rejects even
-	// though the SDK client on the same credentials works.
-	s3Token := cfg.S3SessionToken
-	if s3Token == "" {
-		s3Token = os.Getenv("AWS_SESSION_TOKEN")
-	}
-	if s3Token != "" {
-		if err := validateS3Credential("s3_session_token", s3Token); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_session_token='%s';", s3Token)); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_session_token failed", "err", err)
-		}
-	}
-	if cfg.S3Region != "" {
-		if err := validateS3Credential("s3_region", cfg.S3Region); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_region='%s';", cfg.S3Region)); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_region failed", "err", err)
-		}
-	}
-	if cfg.S3Endpoint != "" {
-		ep := strings.TrimPrefix(strings.TrimPrefix(cfg.S3Endpoint, "https://"), "http://")
-		if err := validateS3Credential("s3_endpoint", ep); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_endpoint='%s';", ep)); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_endpoint failed", "err", err)
-		}
-	}
-	// Configure SSL
-	sslVal := "true"
-	if !cfg.S3UseSSL {
-		sslVal = "false"
-	}
-	if _, err := db.ExecContext(ctx2, fmt.Sprintf("SET s3_use_ssl=%s;", sslVal)); err != nil {
-		logger.Sugar().Warnw("duckdb set s3_use_ssl failed", "err", err)
-	}
-	// Configure URL style (path vs virtual-hosted)
-	if cfg.S3UsePath {
-		if _, err := db.ExecContext(ctx2, "SET s3_url_style='path';"); err != nil {
-			logger.Sugar().Warnw("duckdb set s3_url_style failed", "err", err)
-		}
-	}
+	db := sql.OpenDB(connector)
+	// Exports run sequentially and file-backed DuckDB is effectively
+	// single-writer; per-connection init keeps a larger pool safe if ever
+	// needed, but nothing needs one today (#285).
+	db.SetMaxOpenConns(1)
 
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping duckdb: %w", err)
+	}
 	return &DuckExporter{DB: db, Logger: logger}, nil
 }
 

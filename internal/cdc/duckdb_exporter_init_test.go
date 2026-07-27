@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -59,4 +60,59 @@ func TestNewDuckExporter_InvalidCredentialFailsFast(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	_, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "bad'key", "testsecretvalue", zap.NewNop())
 	require.Error(t, err)
+}
+
+func TestBuildExporterInitSteps_FullConfigStatementSet(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	cfg := CDCConfig{
+		DuckMemLimit: "1GB", DuckThreads: 2,
+		S3Region: "us-test-1", S3Endpoint: "https://s3.example.com",
+		S3UseSSL: true, S3UsePath: true, S3SessionToken: "tok123",
+	}
+	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"PRAGMA memory_limit='1GB';",
+		"PRAGMA threads=2;",
+		"INSTALL postgres_scanner;", "LOAD postgres_scanner;",
+		"INSTALL httpfs;", "LOAD httpfs;",
+		"INSTALL parquet;", "LOAD parquet;",
+		"SET s3_access_key_id='AKID';",
+		"SET s3_secret_access_key='secretvalue';",
+		"SET s3_session_token='tok123';",
+		"SET s3_region='us-test-1';",
+		"SET s3_endpoint='s3.example.com';",
+		"SET s3_use_ssl=true;",
+		"SET s3_url_style='path';",
+	}, flattenStepSQL(steps))
+}
+
+func TestBuildExporterInitSteps_SessionTokenEnvFallback(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "envtok")
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue")
+	require.NoError(t, err)
+	require.Contains(t, flattenStepSQL(steps), "SET s3_session_token='envtok';")
+}
+
+func TestBuildExporterInitSteps_MinimalConfigOmitsOptionalStatements(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	steps, err := buildExporterInitSteps(CDCConfig{}, "", "")
+	require.NoError(t, err)
+	// no pragmas, no SETs except the unconditional s3_use_ssl
+	require.Equal(t, []string{
+		"INSTALL postgres_scanner;", "LOAD postgres_scanner;",
+		"INSTALL httpfs;", "LOAD httpfs;",
+		"INSTALL parquet;", "LOAD parquet;",
+		"SET s3_use_ssl=false;",
+	}, flattenStepSQL(steps))
+}
+
+func flattenStepSQL(steps []duckdbinit.Step) []string {
+	var sqls []string
+	for _, st := range steps {
+		for _, s := range st.Stmts {
+			sqls = append(sqls, s.SQL)
+		}
+	}
+	return sqls
 }
