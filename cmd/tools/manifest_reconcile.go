@@ -250,7 +250,6 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 	if err != nil {
 		return nil, fmt.Errorf("open stats duckdb: %w", err)
 	}
-	exporter.DB.SetMaxOpenConns(1)
 	return exporter, nil
 }
 
