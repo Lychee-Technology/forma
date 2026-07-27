@@ -13,8 +13,10 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestRenderS3ParquetPath(t *testing.T) {
@@ -263,7 +265,7 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 	require.NoError(t, err)
 
 	execer := &recordingExecer{failOn: "INSTALL bad_ext;"}
-	require.NoError(t, makeConnInit(steps)(execer))
+	require.NoError(t, duckdbinit.MakeConnInit(steps, zap.NewNop().Sugar())(execer))
 
 	require.Contains(t, execer.executed, "INSTALL bad_ext;")
 	require.NotContains(t, execer.executed, "LOAD bad_ext;")
