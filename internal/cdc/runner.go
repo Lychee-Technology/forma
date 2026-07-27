@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
@@ -177,13 +178,9 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
 	accessKeyID, secretAccessKey := resolveStaticS3Credentials(cfg)
-	region := cfg.S3Region
-	if region == "" {
-		region = "us-east-1"
-	}
 
 	key := s3RuntimeKey{
-		region:          region,
+		region:          cfg.S3Region,
 		endpoint:        cfg.S3Endpoint,
 		usePath:         cfg.S3UsePath,
 		accessKeyID:     accessKeyID,
@@ -197,11 +194,18 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		return cached, nil
 	}
 
-	awsCfg, err := loadAWSConfig(ctx)
+	var loadOpts []func(*config.LoadOptions) error
+	if cfg.S3Region != "" {
+		// WithRegion at load time (not a post-load overwrite) so
+		// region-sensitive default-chain resolution — STS, SSO — sees the
+		// configured region, and an unset region keeps whatever the chain
+		// resolved instead of a hardcoded default (#302 parity, #326).
+		loadOpts = append(loadOpts, config.WithRegion(cfg.S3Region))
+	}
+	awsCfg, err := loadAWSConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
-	awsCfg.Region = region
 	if accessKeyID != "" {
 		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
 	}
