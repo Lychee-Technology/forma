@@ -105,6 +105,42 @@ func TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken(t *testing.T) {
 	require.Equal(t, "env-token", creds.SessionToken)
 }
 
+// TestRunnerS3RuntimeCacheKeyIncludesSessionToken pins that the cached runtime
+// is keyed on the whole credential triple. The provider bakes the token in, so
+// a rotated AWS_SESSION_TOKEN under an unchanged access-key pair describes a
+// different signing identity — key on the pair alone and the Runner keeps
+// serving the expired token until the process restarts (#329).
+func TestRunnerS3RuntimeCacheKeyIncludesSessionToken(t *testing.T) {
+	loadCalls := 0
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		loadCalls++
+		return aws.Config{Region: "us-west-2"}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "token-1")
+
+	runner := NewRunner(zap.NewNop())
+	first, err := runner.getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Equal(t, "token-1", first.sessionToken)
+
+	// Same access-key pair, rotated token.
+	t.Setenv("AWS_SESSION_TOKEN", "token-2")
+
+	second, err := runner.getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Equal(t, 2, loadCalls)
+	require.Equal(t, "token-2", second.sessionToken)
+	creds := retrieveCreds(t, second.credProvider)
+	require.Equal(t, "token-2", creds.SessionToken)
+}
+
 func TestRunnerCachesDuckExporter(t *testing.T) {
 	origNewDuckExporterFn := newDuckExporterFn
 	defer func() {
@@ -186,6 +222,55 @@ func TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion(t *testing.T) {
 
 	require.Same(t, exporter1, exporter2)
 	require.Equal(t, 1, createCalls)
+}
+
+// TestRunnerDuckExporterCacheKeyIncludesSessionToken pins the other half of the
+// same rule: the exporter bakes the token into SET s3_session_token at
+// construction, so two runtimes differing only in their token configure
+// different exporters and must not share a cache slot (#329).
+func TestRunnerDuckExporterCacheKeyIncludesSessionToken(t *testing.T) {
+	origNewDuckExporterFn := newDuckExporterFn
+	defer func() {
+		newDuckExporterFn = origNewDuckExporterFn
+	}()
+
+	createCalls := 0
+	var seenTokens []string
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+		createCalls++
+		seenTokens = append(seenTokens, s3SessionToken)
+		return &DuckExporter{Logger: logger}, nil
+	}
+
+	runner := NewRunner(zap.NewNop())
+	cfg := CDCConfig{
+		DuckDBPath:   ":memory:",
+		DuckThreads:  4,
+		DuckMemLimit: "4GB",
+		S3Region:     "us-east-1",
+		S3UseSSL:     true,
+	}
+	runtimeOld := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+		sessionToken:    "token-1",
+	}
+	runtimeRotated := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+		sessionToken:    "token-2",
+	}
+
+	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeOld)
+	require.NoError(t, err)
+	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeRotated)
+	require.NoError(t, err)
+
+	require.NotSame(t, exporter1, exporter2)
+	require.Equal(t, 2, createCalls)
+	require.Equal(t, []string{"token-1", "token-2"}, seenTokens)
 }
 
 func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {

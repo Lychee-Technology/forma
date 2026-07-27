@@ -44,23 +44,32 @@ type cachedS3Runtime struct {
 }
 
 type s3RuntimeKey struct {
-	region          string
-	endpoint        string
-	usePath         bool
-	accessKeyID     string
+	region      string
+	endpoint    string
+	usePath     bool
+	accessKeyID string
+	// The token is part of the signing identity the cached provider bakes in,
+	// so it belongs in the key alongside the pair: omit it and a rotated
+	// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached
+	// runtime, handing every caller a stale-token artifact (#329).
 	secretAccessKey string
+	sessionToken    string
 }
 
 type duckExporterKey struct {
-	dbPath          string
-	threads         int
-	memLimit        string
-	region          string
-	endpoint        string
-	useSSL          bool
-	usePath         bool
-	accessKeyID     string
+	dbPath      string
+	threads     int
+	memLimit    string
+	region      string
+	endpoint    string
+	useSSL      bool
+	usePath     bool
+	accessKeyID string
+	// Same rule as s3RuntimeKey: the exporter bakes the token into
+	// SET s3_session_token at construction, so a key without it returns a
+	// stale-token exporter after a rotation (#329).
 	secretAccessKey string
+	sessionToken    string
 }
 
 func NewRunner(logger *zap.Logger) *Runner {
@@ -142,7 +151,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	duck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
 	if err != nil {
-		// getOrCreateDuckExporter now wraps with "new duck exporter:" itself;
+		// getOrCreateDuckExporter wraps its own error with "new duck exporter:";
 		// re-wrapping here would double the prefix. Same pass-through shape as
 		// the other already-wrapped callees above.
 		return err
@@ -189,6 +198,7 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		usePath:         cfg.S3UsePath,
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
+		sessionToken:    sessionToken,
 	}
 
 	r.mu.Lock()
@@ -245,14 +255,20 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 		// from cfg alone, and an empty cfg.S3Region suppresses SET s3_region
 		// entirely. Keying on the chain-resolved region claims a distinction
 		// the exporter never makes, so two runs producing byte-identical
-		// exporters would miss the cache (#329). The ambient region is stable
-		// within a process, so this is key honesty with no behavior change.
-		region:          cfg.S3Region,
-		endpoint:        cfg.S3Endpoint,
-		useSSL:          cfg.S3UseSSL,
-		usePath:         cfg.S3UsePath,
-		accessKeyID:     s3Runtime.accessKeyID,
+		// exporters would miss the cache (#329). It also cut the other way: an
+		// empty-region cfg whose chain resolved to some region could collide
+		// with an explicitly-configured cfg of that same region, two configs
+		// that build *different* exporters, so the second silently reused the
+		// first's — a latent wrong cache hit the raw cfg region rules out.
+		region:      cfg.S3Region,
+		endpoint:    cfg.S3Endpoint,
+		useSSL:      cfg.S3UseSSL,
+		usePath:     cfg.S3UsePath,
+		accessKeyID: s3Runtime.accessKeyID,
+		// The cached runtime's token, matching the triple handed to
+		// newDuckExporterFn below (#329).
 		secretAccessKey: s3Runtime.secretAccessKey,
+		sessionToken:    s3Runtime.sessionToken,
 	}
 
 	r.mu.Lock()
