@@ -246,7 +246,7 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 		S3UsePath:               opts.s3.usePath,
 		S3SessionToken:          token,
 	}
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, logger)
+	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open stats duckdb: %w", err)
 	}

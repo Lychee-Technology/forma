@@ -97,9 +97,11 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	// DuckDB httpfs credentials follow the same both-halves rule as every
 	// other cdc credential site (#326): with no fully-set static pair the
 	// exporter receives empty strings and DuckDB inherits its own
-	// environment chain.
-	s3Key, s3Secret, _ := ResolveStaticS3Credentials(cfg)
-	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, opts.Logger)
+	// environment chain. The session token rides the source that supplied the
+	// pair (#329), so it is resolved together with the pair and passed on
+	// rather than looked up again inside the exporter.
+	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
+	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, opts.Logger)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("new duck exporter: %w", err)

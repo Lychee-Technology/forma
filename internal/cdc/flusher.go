@@ -95,9 +95,12 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// DuckDB httpfs credentials follow the same both-halves rule as the SDK
 	// client (#326): with no fully-set static pair NewDuckExporter receives
 	// empty strings and DuckDB inherits its own environment chain, so the SDK
-	// client and httpfs never diverge under a half-set env pair.
-	s3Key, s3Secret, _ := ResolveStaticS3Credentials(cfg)
-	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, logger)
+	// client and httpfs never diverge under a half-set env pair. The session
+	// token rides the source that supplied the pair (#329) — resolved once
+	// here and handed to the exporter, so httpfs signs with the same triple
+	// the SDK client does.
+	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
+	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, logger)
 	if err != nil {
 		return fmt.Errorf("new duck exporter: %w", err)
 	}

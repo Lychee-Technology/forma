@@ -253,7 +253,9 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 		return cached, nil
 	}
 
-	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, r.logger)
+	// The cached triple, not a fresh resolve: one resolution keeps the SDK
+	// provider and the DuckDB SET statements on the same credentials (#329).
+	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken, r.logger)
 	if err != nil {
 		return nil, err
 	}

@@ -120,7 +120,7 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 		S3UsePath:               opts.s3.usePath,
 		S3SessionToken:          token,
 	}
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, logger)
+	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open merge duckdb: %w", err)
 	}

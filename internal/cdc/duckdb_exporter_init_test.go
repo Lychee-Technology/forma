@@ -28,7 +28,7 @@ func newExporterInitTestConfig() CDCConfig {
 func TestNewDuckExporter_FreshConnectionsConfigured(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	ctx := context.Background()
-	exp, err := NewDuckExporter(ctx, newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", zap.NewNop())
+	exp, err := NewDuckExporter(ctx, newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zap.NewNop())
 	require.NoError(t, err)
 	defer exp.DB.Close()
 
@@ -48,7 +48,7 @@ func TestNewDuckExporter_FreshConnectionsConfigured(t *testing.T) {
 // The exporter pool must be bounded (#285: sql.Open default is unlimited).
 func TestNewDuckExporter_PoolBoundedToSingleConnection(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	exp, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", zap.NewNop())
+	exp, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zap.NewNop())
 	require.NoError(t, err)
 	defer exp.DB.Close()
 	require.Equal(t, 1, exp.DB.Stats().MaxOpenConnections)
@@ -58,7 +58,7 @@ func TestNewDuckExporter_PoolBoundedToSingleConnection(t *testing.T) {
 // holds pre-fix; post-fix it fails before any connection is opened).
 func TestNewDuckExporter_InvalidCredentialFailsFast(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	_, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "bad'key", "testsecretvalue", zap.NewNop())
+	_, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "bad'key", "testsecretvalue", "", zap.NewNop())
 	require.Error(t, err)
 }
 
@@ -67,9 +67,9 @@ func TestBuildExporterInitSteps_FullConfigStatementSet(t *testing.T) {
 	cfg := CDCConfig{
 		DuckMemLimit: "1GB", DuckThreads: 2,
 		S3Region: "us-test-1", S3Endpoint: "https://s3.example.com",
-		S3UseSSL: true, S3UsePath: true, S3SessionToken: "tok123",
+		S3UseSSL: true, S3UsePath: true,
 	}
-	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue")
+	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue", "tok123")
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"PRAGMA memory_limit='1GB';",
@@ -87,16 +87,30 @@ func TestBuildExporterInitSteps_FullConfigStatementSet(t *testing.T) {
 	}, flattenStepSQL(steps))
 }
 
-func TestBuildExporterInitSteps_SessionTokenEnvFallback(t *testing.T) {
+// The exporter must never reach for an ambient AWS_SESSION_TOKEN of its own:
+// the token is resolved once by the caller alongside the key/secret pair, so a
+// caller that supplies no token means no token applies (#329).
+func TestBuildExporterInitSteps_IgnoresAmbientEnvSessionToken(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "envtok")
-	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue")
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "")
 	require.NoError(t, err)
-	require.Contains(t, flattenStepSQL(steps), "SET s3_session_token='envtok';")
+	for _, sql := range flattenStepSQL(steps) {
+		require.NotContains(t, sql, "s3_session_token")
+	}
+}
+
+// The caller-resolved token is what reaches DuckDB, even when the environment
+// offers a competing one (#329).
+func TestBuildExporterInitSteps_EmitsCallerResolvedSessionToken(t *testing.T) {
+	t.Setenv("AWS_SESSION_TOKEN", "envtok")
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "callertok")
+	require.NoError(t, err)
+	require.Contains(t, flattenStepSQL(steps), "SET s3_session_token='callertok';")
 }
 
 func TestBuildExporterInitSteps_MinimalConfigOmitsOptionalStatements(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	steps, err := buildExporterInitSteps(CDCConfig{}, "", "")
+	steps, err := buildExporterInitSteps(CDCConfig{}, "", "", "")
 	require.NoError(t, err)
 	// no pragmas, no SETs except the unconditional s3_use_ssl
 	require.Equal(t, []string{

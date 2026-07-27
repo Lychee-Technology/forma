@@ -196,7 +196,8 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 		PathTemplate: e.CDC.ManifestTemplate,
 	}, s3Client)
 
-	exporter, err := cdc.NewDuckExporter(ctx, e.CDC, e.CDC.S3AccessKeyID, e.CDC.S3SecretAccessKey, e.logger)
+	s3Key, s3Secret, s3Token := cdc.ResolveStaticS3Credentials(e.CDC)
+	exporter, err := cdc.NewDuckExporter(ctx, e.CDC, s3Key, s3Secret, s3Token, e.logger)
 	if err != nil {
 		return compaction.CompactionResult{}, fmt.Errorf("open merge duckdb: %w", err)
 	}

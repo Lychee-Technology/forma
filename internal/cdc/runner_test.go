@@ -112,7 +112,7 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 	}()
 
 	createCalls := 0
-	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret string, logger *zap.Logger) (*DuckExporter, error) {
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
 		createCalls++
 		return &DuckExporter{Logger: logger}, nil
 	}

@@ -53,7 +53,8 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 
 	cleanup := func() { _ = db.Close() }
 	if withStats {
-		exporter, err := cdc.NewDuckExporter(ctx, env.CDC, env.CDC.S3AccessKeyID, env.CDC.S3SecretAccessKey, env.logger)
+		s3Key, s3Secret, s3Token := cdc.ResolveStaticS3Credentials(env.CDC)
+		exporter, err := cdc.NewDuckExporter(ctx, env.CDC, s3Key, s3Secret, s3Token, env.logger)
 		if err != nil {
 			_ = db.Close()
 			t.Fatalf("open stats duckdb: %v", err)
