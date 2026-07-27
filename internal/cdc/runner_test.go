@@ -3,9 +3,12 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -25,19 +28,17 @@ func TestRunnerRunOnce_RequiresSchemaRegistry(t *testing.T) {
 }
 
 func TestRunnerCachesS3Runtime(t *testing.T) {
-	origLoadAWSConfigFn := loadAWSConfigFn
 	origNewS3ClientFn := newS3ClientFn
 	defer func() {
-		loadAWSConfigFn = origLoadAWSConfigFn
 		newS3ClientFn = origNewS3ClientFn
 	}()
 
 	loadCalls := 0
 	clientCalls := 0
-	loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		loadCalls++
 		return aws.Config{}, nil
-	}
+	})
 	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
 		clientCalls++
 		return &s3.Client{}
@@ -56,30 +57,27 @@ func TestRunnerCachesS3Runtime(t *testing.T) {
 	require.Equal(t, 1, clientCalls)
 }
 
-func TestRunnerGetOrCreateS3Runtime_UsesDefaultRegionAndEnvCredentials(t *testing.T) {
-	origLoadAWSConfigFn := loadAWSConfigFn
+// TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider pins that a
+// fully-set env pair still becomes a static provider (#302 rule unchanged).
+func TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-west-2"}, nil
+	})
 	origNewS3ClientFn := newS3ClientFn
-	defer func() {
-		loadAWSConfigFn = origLoadAWSConfigFn
-		newS3ClientFn = origNewS3ClientFn
-	}()
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
 
-	loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
-		return aws.Config{}, nil
-	}
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
-		return &s3.Client{}
-	}
-
-	runner := NewRunner(zap.NewNop())
-	runtime, err := runner.getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
 	require.NoError(t, err)
-	require.Equal(t, "us-east-1", runtime.region)
+	require.Equal(t, "us-west-2", runtime.region)
 	require.Equal(t, "env-key", runtime.accessKeyID)
 	require.Equal(t, "env-secret", runtime.secretAccessKey)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "env-key", creds.AccessKeyID)
+	require.Equal(t, "env-secret", creds.SecretAccessKey)
 }
 
 func TestRunnerCachesDuckExporter(t *testing.T) {
@@ -133,4 +131,70 @@ func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
 	require.Empty(t, runner.duckExporters)
 	require.Error(t, db.PingContext(context.Background()))
 	require.NoError(t, runner.Close())
+}
+
+// TestRunnerGetOrCreateS3Runtime_EnvHalfPairPreservesDefaultChain mirrors
+// setupAWSClient and internal/bootstrap: a lone AWS_ACCESS_KEY_ID must fall
+// through to the default chain, never build an empty-secret static provider
+// (#302 rule, third site #326).
+func TestRunnerGetOrCreateS3Runtime_EnvHalfPairPreservesDefaultChain(t *testing.T) {
+	chain := awsCreds.NewStaticCredentialsProvider("chain-key", "chain-secret", "")
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-east-1", Credentials: chain}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Empty(t, runtime.accessKeyID)
+	require.Empty(t, runtime.secretAccessKey)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "chain-key", creds.AccessKeyID)
+	require.Equal(t, "chain-secret", creds.SecretAccessKey)
+}
+
+// TestRunnerGetOrCreateS3Runtime_RegionPassedAtLoad pins WithRegion at load
+// (not a post-load overwrite), mirroring setupAWSClient and
+// internal/bootstrap (#302, third site #326).
+func TestRunnerGetOrCreateS3Runtime_RegionPassedAtLoad(t *testing.T) {
+	var loadedRegion string
+	stubLoadAWSConfig(t, func(ctx context.Context, optFns ...func(*config.LoadOptions) error) (aws.Config, error) {
+		lo := &config.LoadOptions{}
+		for _, fn := range optFns {
+			if err := fn(lo); err != nil {
+				return aws.Config{}, fmt.Errorf("apply AWS load option: %w", err)
+			}
+		}
+		loadedRegion = lo.Region
+		return aws.Config{Region: lo.Region}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{S3Region: "eu-central-1"})
+	require.NoError(t, err)
+	require.Equal(t, "eu-central-1", loadedRegion)
+	require.Equal(t, "eu-central-1", runtime.region)
+}
+
+// TestRunnerGetOrCreateS3Runtime_UnconfiguredRegionPreservesChainRegion pins
+// that an unset cfg.S3Region keeps whatever the default chain resolved,
+// instead of the former unconditional "us-east-1" clobber (#326).
+func TestRunnerGetOrCreateS3Runtime_UnconfiguredRegionPreservesChainRegion(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "ap-southeast-2"}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Equal(t, "ap-southeast-2", runtime.region)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,10 +14,6 @@ import (
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
 )
-
-var loadAWSConfigFn = func(ctx context.Context) (aws.Config, error) {
-	return config.LoadDefaultConfig(ctx)
-}
 
 var newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
 	if endpoint != "" {
@@ -182,14 +177,10 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
-	accessKeyID, secretAccessKey := resolveS3Credentials(cfg)
-	region := cfg.S3Region
-	if region == "" {
-		region = "us-east-1"
-	}
+	accessKeyID, secretAccessKey := resolveStaticS3Credentials(cfg)
 
 	key := s3RuntimeKey{
-		region:          region,
+		region:          cfg.S3Region,
 		endpoint:        cfg.S3Endpoint,
 		usePath:         cfg.S3UsePath,
 		accessKeyID:     accessKeyID,
@@ -203,11 +194,18 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		return cached, nil
 	}
 
-	awsCfg, err := loadAWSConfigFn(ctx)
+	var loadOpts []func(*config.LoadOptions) error
+	if cfg.S3Region != "" {
+		// WithRegion at load time (not a post-load overwrite) so
+		// region-sensitive default-chain resolution — STS, SSO — sees the
+		// configured region, and an unset region keeps whatever the chain
+		// resolved instead of a hardcoded default (#302 parity, #326).
+		loadOpts = append(loadOpts, config.WithRegion(cfg.S3Region))
+	}
+	awsCfg, err := loadAWSConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
-	awsCfg.Region = region
 	if accessKeyID != "" {
 		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
 	}
@@ -268,16 +266,4 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 	r.mu.Unlock()
 
 	return exporter, nil
-}
-
-func resolveS3Credentials(cfg CDCConfig) (string, string) {
-	accessKeyID := cfg.S3AccessKeyID
-	secretAccessKey := cfg.S3SecretAccessKey
-	if accessKeyID == "" {
-		accessKeyID = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	if secretAccessKey == "" {
-		secretAccessKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
-	return accessKeyID, secretAccessKey
 }
