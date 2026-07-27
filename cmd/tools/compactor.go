@@ -5,10 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"go.uber.org/zap"
@@ -85,27 +83,28 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	return opts, nil
 }
 
-// resolveMergeCredentials resolves the FULL default AWS credential chain
-// (env, shared profiles, assumed roles, web identity, IMDS) so DuckDB signs
-// with the same identity as the SDK S3 client — including the session token
-// temporary credentials require. Falls back to raw env vars when the chain
-// yields nothing (e.g. anonymous local object stores).
-func resolveMergeCredentials(ctx context.Context, region string, logger *zap.Logger) (key, secret, token string) {
-	awsCfg, err := toolLoadAWSConfigFn(ctx, awsconfig.WithRegion(region))
-	if err == nil {
-		if creds, retrieveErr := awsCfg.Credentials.Retrieve(ctx); retrieveErr == nil {
-			return creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken
-		} else {
-			err = retrieveErr
-		}
-	}
-	logger.Warn("could not resolve AWS credential chain for the merge engine; falling back to env vars", zap.Error(err))
-	return os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN")
-}
-
 // openMergeEngine builds the CDC DuckDB exporter the rewrite merges through.
+// Credentials come from the single shared rule cdc.ResolveStaticS3Credentials
+// (#329): explicit config wins, otherwise the AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY pair, with AWS_SESSION_TOKEN riding whichever source
+// supplied that pair.
+//
+// WARNING — this is a deliberate narrowing. The merge engine previously
+// resolved the FULL AWS default credential chain, so chain-only sources
+// (shared profiles, assumed roles, web identity, IMDS/container roles) reached
+// the DuckDB httpfs SET statements. They no longer do: an operator whose
+// credentials live only in ~/.aws/config or an instance role now gets an
+// engine with no S3 credentials at all, and DuckDB falls back to whatever its
+// own environment chain provides. The compactor exposes no credential flags,
+// so in practice the contract is env-pair-or-nothing.
+//
+// Lambda and container deployments that already export the environment triple
+// are unaffected — the environment is exactly what the shared rule reads. The
+// correct way to restore chain support is to add explicit credential flags
+// feeding cdc.CDCConfig.S3AccessKeyID/S3SecretAccessKey/S3SessionToken, not to
+// reintroduce a second private resolver: two credential rules signing the same
+// bucket differently is the failure mode #329 retires.
 func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Logger) (*cdc.DuckExporter, error) {
-	key, secret, token := resolveMergeCredentials(ctx, opts.s3.region, logger)
 	duckCfg := cdc.CDCConfig{
 		DuckDBPath:              opts.duck.duckDBPath,
 		DuckThreads:             opts.duck.duckThreads,
@@ -118,8 +117,8 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 		S3Region:                opts.s3.region,
 		S3UseSSL:                opts.s3.useSSL,
 		S3UsePath:               opts.s3.usePath,
-		S3SessionToken:          token,
 	}
+	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
 	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open merge duckdb: %w", err)
