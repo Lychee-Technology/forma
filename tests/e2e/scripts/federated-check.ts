@@ -45,6 +45,7 @@ interface Args {
   seed: string;
   fullScan: boolean;
   requireDuckDB: boolean;
+  manifestReads: boolean;
 }
 
 function parseArgs(): Args {
@@ -55,6 +56,8 @@ function parseArgs(): Args {
   let fullScan = false;
   // Also honor an env flag so CI can require the DuckDB route without args.
   let requireDuckDB = process.env.REQUIRE_DUCKDB === '1' || process.env.REQUIRE_DUCKDB === 'true';
+  // Same idea for the manifest-driven read mode (see queryFederated).
+  let manifestReads = process.env.MANIFEST_READS === '1' || process.env.MANIFEST_READS === 'true';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schema' && args[i + 1]) {
@@ -67,9 +70,11 @@ function parseArgs(): Args {
       fullScan = true;
     } else if (args[i] === '--require-duckdb') {
       requireDuckDB = true;
+    } else if (args[i] === '--manifest-reads') {
+      manifestReads = true;
     }
   }
-  return { schema, sampleSize, seed, fullScan, requireDuckDB };
+  return { schema, sampleSize, seed, fullScan, requireDuckDB, manifestReads };
 }
 
 interface DataRecord {
@@ -115,14 +120,20 @@ async function queryFederated(
   page: number,
   itemsPerPage: number,
   forceDuckDB: boolean,
+  manifestReads: boolean,
 ): Promise<FederatedQueryResult | null> {
   const federated: Record<string, unknown> = { enabled: true, include_execution_plan: true };
   if (forceDuckDB) {
     federated.preferred_tiers = ['warm', 'cold'];
-    // The DuckDB read needs to know where the parquet lives. Point read_parquet
-    // at the flushed delta layout (s3://<bucket>/<prefix>/<schemaID>/*.parquet),
-    // mirroring how the Go production harness supplies its glob.
-    federated.s3_parquet_path_template = `s3://${config.s3.bucket}/${config.s3.prefix}/{{.SchemaID}}/*.parquet`;
+    if (!manifestReads) {
+      // The DuckDB read needs to know where the parquet lives. Point read_parquet
+      // at the flushed delta layout (s3://<bucket>/<prefix>/<schemaID>/*.parquet),
+      // mirroring how the Go production harness supplies its glob. Skipped under
+      // --manifest-reads: an explicit hint always wins over the server's manifest
+      // source (duckdb_query_build.go), so sending it would leave the
+      // manifest-driven path untested (#302).
+      federated.s3_parquet_path_template = `s3://${config.s3.bucket}/${config.s3.prefix}/{{.SchemaID}}/*.parquet`;
+    }
   }
   const response = await post<FederatedQueryResult>('/api/v1/advanced_query', {
     schema_name: schemaName,
@@ -154,13 +165,14 @@ async function collectFederatedRowIds(
   targetSet: Set<string>,
   formaCount: number,
   forceDuckDB: boolean,
+  manifestReads: boolean,
 ): Promise<{ found: Set<string>; route: string }> {
   const found = new Set<string>();
   let route = 'unknown';
   const maxPages = Math.ceil(formaCount / API_PAGE_SIZE) + 2;
 
   for (let page = 1; page <= maxPages && found.size < targetSet.size; page++) {
-    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE, forceDuckDB);
+    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE, forceDuckDB, manifestReads);
     if (!pageResult) break;
     if (page === 1) route = routeLabel(pageResult.execution_plan);
     if (pageResult.data.length === 0) break;
@@ -199,7 +211,7 @@ async function compareSchema(
   }
 
   result.postgresCount = await getPostgresCount(sql, schemaId);
-  const countProbe = await queryFederated(schemaName, 1, 1, args.requireDuckDB);
+  const countProbe = await queryFederated(schemaName, 1, 1, args.requireDuckDB, args.manifestReads);
   if (countProbe) {
     result.formaCount = countProbe.total_records;
     result.route = routeLabel(countProbe.execution_plan);
@@ -222,7 +234,13 @@ async function compareSchema(
     return result;
   }
 
-  const { found, route } = await collectFederatedRowIds(schemaName, targetSet, result.formaCount, args.requireDuckDB);
+  const { found, route } = await collectFederatedRowIds(
+    schemaName,
+    targetSet,
+    result.formaCount,
+    args.requireDuckDB,
+    args.manifestReads,
+  );
   if (route !== 'unknown') result.route = route;
 
   for (const rowId of targetIds) {
