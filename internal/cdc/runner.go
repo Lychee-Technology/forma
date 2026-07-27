@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -177,7 +176,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
-	accessKeyID, secretAccessKey := resolveS3Credentials(cfg)
+	accessKeyID, secretAccessKey := resolveStaticS3Credentials(cfg)
 	region := cfg.S3Region
 	if region == "" {
 		region = "us-east-1"
@@ -263,16 +262,4 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 	r.mu.Unlock()
 
 	return exporter, nil
-}
-
-func resolveS3Credentials(cfg CDCConfig) (string, string) {
-	accessKeyID := cfg.S3AccessKeyID
-	secretAccessKey := cfg.S3SecretAccessKey
-	if accessKeyID == "" {
-		accessKeyID = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	if secretAccessKey == "" {
-		secretAccessKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
-	return accessKeyID, secretAccessKey
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -130,4 +131,29 @@ func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
 	require.Empty(t, runner.duckExporters)
 	require.Error(t, db.PingContext(context.Background()))
 	require.NoError(t, runner.Close())
+}
+
+// TestRunnerGetOrCreateS3Runtime_EnvHalfPairPreservesDefaultChain mirrors
+// setupAWSClient and internal/bootstrap: a lone AWS_ACCESS_KEY_ID must fall
+// through to the default chain, never build an empty-secret static provider
+// (#302 rule, third site #326).
+func TestRunnerGetOrCreateS3Runtime_EnvHalfPairPreservesDefaultChain(t *testing.T) {
+	chain := awsCreds.NewStaticCredentialsProvider("chain-key", "chain-secret", "")
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-east-1", Credentials: chain}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Empty(t, runtime.accessKeyID)
+	require.Empty(t, runtime.secretAccessKey)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "chain-key", creds.AccessKeyID)
+	require.Equal(t, "chain-secret", creds.SecretAccessKey)
 }
