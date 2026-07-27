@@ -74,6 +74,9 @@ func TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider(t *testing.T) {
 	require.Equal(t, "us-west-2", runtime.region)
 	require.Equal(t, "env-key", runtime.accessKeyID)
 	require.Equal(t, "env-secret", runtime.secretAccessKey)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "env-key", creds.AccessKeyID)
+	require.Equal(t, "env-secret", creds.SecretAccessKey)
 }
 
 func TestRunnerCachesDuckExporter(t *testing.T) {

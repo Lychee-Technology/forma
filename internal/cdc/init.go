@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -95,14 +94,11 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		return nil, fmt.Errorf("open pg: %w", err)
 	}
 
-	s3Key := cfg.S3AccessKeyID
-	s3Secret := cfg.S3SecretAccessKey
-	if s3Key == "" {
-		s3Key = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	if s3Secret == "" {
-		s3Secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
+	// DuckDB httpfs credentials follow the same both-halves rule as every
+	// other cdc credential site (#326): with no fully-set static pair the
+	// exporter receives empty strings and DuckDB inherits its own
+	// environment chain.
+	s3Key, s3Secret := resolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, opts.Logger)
 	if err != nil {
 		_ = db.Close()
