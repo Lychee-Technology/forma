@@ -32,17 +32,21 @@ type S3Options struct {
 //
 // Credential precedence mirrors internal/cdc/flusher.go setupAWSClient:
 // static credentials from opts win, then AWS_ACCESS_KEY_ID /
-// AWS_SECRET_ACCESS_KEY from the environment as a static provider, then
-// whatever the default chain resolved.
+// AWS_SECRET_ACCESS_KEY from the environment as a static provider (only when
+// both are non-empty), then whatever the default chain resolved.
 func NewS3Client(ctx context.Context, opts S3Options) (*s3.Client, error) {
-	awsCfg, err := loadAWSConfig(ctx)
+	var loadOpts []func(*awsconfig.LoadOptions) error
+	if opts.Region != "" {
+		// WithRegion at load time (not a post-load overwrite) so
+		// region-sensitive default-chain resolution — STS, SSO — runs
+		// against the configured region (#302).
+		loadOpts = append(loadOpts, awsconfig.WithRegion(opts.Region))
+	}
+	awsCfg, err := loadAWSConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load aws config for s3 client (region %q): %w", opts.Region, err)
 	}
 
-	if opts.Region != "" {
-		awsCfg.Region = opts.Region
-	}
 	applyCredentials(&awsCfg, opts)
 
 	if opts.Endpoint == "" {
@@ -69,7 +73,12 @@ func applyCredentials(awsCfg *aws.Config, opts S3Options) {
 		awsCfg.Credentials = awscreds.NewStaticCredentialsProvider(opts.AccessKey, opts.SecretKey, "")
 		return
 	}
-	if envKey := os.Getenv("AWS_ACCESS_KEY_ID"); envKey != "" {
-		awsCfg.Credentials = awscreds.NewStaticCredentialsProvider(envKey, os.Getenv("AWS_SECRET_ACCESS_KEY"), "")
+	// Both env halves are required: a lone AWS_ACCESS_KEY_ID would build an
+	// empty-secret static provider whose only observable behavior is an
+	// opaque signing failure. Half-set pairs fall through to whatever the
+	// default chain resolved (#302).
+	envKey, envSecret := os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if envKey != "" && envSecret != "" {
+		awsCfg.Credentials = awscreds.NewStaticCredentialsProvider(envKey, envSecret, "")
 	}
 }

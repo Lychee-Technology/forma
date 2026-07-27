@@ -260,6 +260,9 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn b
 	}
 
 	duck := env.DuckCfg
+	// Pins #245: DuckDB session S3 settings land on a single pooled connection,
+	// so MaxConn > 1 against an in-memory database yields flaky 404s in
+	// concurrent reads. Not a leak mitigation — the managers are closed below.
 	duck.MaxConnections = 1
 	if manifestOn {
 		duck.S3Bucket = env.Cluster.Bucket
@@ -273,6 +276,11 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn b
 	if err != nil {
 		t.Fatalf("build entity manager via factory (manifest=%t): %v", manifestOn, err)
 	}
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close factory-built manager (manifest=%t): %v", manifestOn, err)
+		}
+	})
 	return manager
 }
 

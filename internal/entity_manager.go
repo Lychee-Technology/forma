@@ -2,7 +2,10 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
@@ -30,9 +33,55 @@ type entityManager struct {
 	query    *entityQueryService
 	batch    *entityBatchService
 	relation *entityRelationService
+
+	// closers holds resources the manager owns and must release on Close,
+	// registered at construction via WithCloser (#302). Directly-constructed
+	// managers (the e2e harness) register nothing: their resources are owned
+	// by the Env.
+	closers []io.Closer
+	// closeOnce guards teardown: Close is public API surface, so concurrent
+	// callers must not double-close owned resources (#327 review). closeErr
+	// caches the joined result so every caller — first, repeated, or racing —
+	// observes the same outcome; sync.Once's happens-before edge makes the
+	// cached read safe.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ forma.EntityManager = (*entityManager)(nil)
+
+// EntityManagerOption customizes NewEntityManager construction.
+type EntityManagerOption func(*entityManager)
+
+// WithCloser registers a resource the manager owns and must release on Close.
+// Callers pass only non-nil resources; a typed-nil pointer boxed in io.Closer
+// would not compare equal to nil here, so the guard lives at the call site.
+func WithCloser(c io.Closer) EntityManagerOption {
+	return func(em *entityManager) {
+		if c != nil {
+			em.closers = append(em.closers, c)
+		}
+	}
+}
+
+// Close releases every registered resource exactly once. All closers run even
+// when one fails; each failure is wrapped with the resource's type before
+// joining (errors.Is still reaches the underlying error). Safe for concurrent
+// use: teardown is guarded by closeOnce and the joined result is cached, so
+// every call returns the same outcome.
+func (em *entityManager) Close() error {
+	em.closeOnce.Do(func() {
+		var errs []error
+		for _, c := range em.closers {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close entity manager resource %T: %w", c, err))
+			}
+		}
+		em.closers = nil
+		em.closeErr = errors.Join(errs...)
+	})
+	return em.closeErr
+}
 
 // NewEntityManager creates a new EntityManager instance
 func NewEntityManager(
@@ -42,6 +91,7 @@ func NewEntityManager(
 	registry forma.SchemaRegistry,
 	config *forma.Config,
 	validator *schemavalidate.Validator,
+	opts ...EntityManagerOption,
 ) forma.EntityManager {
 	if config == nil {
 		config = forma.DefaultConfig(registry)
@@ -67,6 +117,9 @@ func NewEntityManager(
 
 		validator:             validator,
 		validateUpdatesStrict: config.Entity.ValidateUpdatesStrict,
+	}
+	for _, opt := range opts {
+		opt(em)
 	}
 	em.relation = newEntityRelationService(em)
 	em.crud = newEntityCRUDService(em)

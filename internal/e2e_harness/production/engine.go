@@ -2,12 +2,8 @@ package production
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
@@ -55,40 +51,43 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	return e.engine
 }
 
-// parquetSource builds the manifest-driven parquet path resolver matching
-// the Env's CDC manifest wiring (#187): reads scan exactly the listed
+// clusterS3Client forwards every S3 call to the Cluster's *current* client at
+// call time, so a client rebuilt by RestartS3 (the host-mapped port can change)
+// is picked up without re-wiring. This is what lets parquetSource dedup onto
+// manifest.NewS3QuerySource without freezing the client at construction —
+// the naive dedup #250 plan decision D2 rejected (#302).
+type clusterS3Client struct{ cluster *Cluster }
+
+var _ manifest.S3ProbeClient = clusterS3Client{}
+
+func (f clusterS3Client) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	return f.cluster.S3.GetObject(ctx, params, optFns...)
+}
+
+func (f clusterS3Client) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	return f.cluster.S3.PutObject(ctx, params, optFns...)
+}
+
+func (f clusterS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	return f.cluster.S3.HeadObject(ctx, params, optFns...)
+}
+
+// parquetSource builds the manifest-driven parquet path resolver matching the
+// Env's CDC manifest wiring (#187) through the shared production assembly
+// (manifest.NewS3QuerySource, #250/#302). Reads scan exactly the listed
 // objects, missing listed keys classify as ErrParquetSetInconsistent, and
-// never-flushed schemas fall back to the legacy glob. Nil when the Env
-// opted out of manifests (WithoutManifest) — those Envs keep glob reads.
-// The closures read Cluster fields at call time, so an S3 client rebuilt by
-// RestartS3 is picked up without re-wiring.
+// never-flushed schemas fall back to the legacy glob. Nil when the Env opted
+// out of manifests (WithoutManifest) — those Envs keep glob reads.
 func (e *Env) parquetSource() fedengine.ParquetSource {
 	if e.CDC.ManifestTemplate == "" {
 		return nil
 	}
-	c := e.Cluster
-	return &manifest.QuerySource{
-		Store:    &manifest.S3Store{Client: c.S3, Bucket: c.Bucket},
-		Resolver: manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate},
-		Bucket:   c.Bucket,
-		Exists: func(ctx context.Context, key string) (bool, error) {
-			_, err := c.S3.HeadObject(ctx, &s3.HeadObjectInput{
-				Bucket: aws.String(c.Bucket),
-				Key:    aws.String(key),
-			})
-			if err != nil {
-				var notFound *types.NotFound
-				if errors.As(err, &notFound) {
-					return false, nil
-				}
-				return false, err
-			}
-			return true, nil
-		},
-		Fallback: func(schemaID int16) string {
-			return fmt.Sprintf("s3://%s/%s/%d/*.parquet", c.Bucket, e.S3Prefix, schemaID)
-		},
-	}
+	return manifest.NewS3QuerySource(clusterS3Client{e.Cluster}, manifest.S3QuerySourceConfig{
+		Bucket:           e.Cluster.Bucket,
+		ManifestPrefix:   e.CDC.ManifestPrefix,
+		ManifestTemplate: e.CDC.ManifestTemplate,
+		DataPrefix:       e.S3Prefix,
+	})
 }
 
 // EntityManager returns the Env's real production EntityManager, assembling

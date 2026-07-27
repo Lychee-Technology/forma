@@ -184,9 +184,17 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		federated.DuckDBPostgresConnStringFromPool(pool),
 		engineOpts...,
 	)
+	// The DuckDB client has no owner other than the manager being built:
+	// register it so EntityManager.Close releases it (#302). Guarded on nil
+	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
+	// WithCloser's nil check.
+	var managerOpts []internal.EntityManagerOption
+	if duckClient != nil {
+		managerOpts = append(managerOpts, internal.WithCloser(duckClient))
+	}
 	// Create and return entity manager
 	return internal.NewEntityManager(
-		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator), nil
+		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...), nil
 }
 
 // newFederatedReadSurface opens the DuckDB client and the manifest parquet source

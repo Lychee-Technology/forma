@@ -156,6 +156,14 @@ jobs:
           S3_ENDPOINT: http://localhost:9000
           S3_ACCESS_KEY: minio
           S3_SECRET_KEY: minio_password
+          # Manifest-driven reads (#302): the flush step below writes
+          # manifests (cdc-flush passes --manifest-template); these vars make
+          # the server resolve parquet paths from them instead of relying on
+          # per-request hints. S3_BUCKET/S3_PREFIX mirror the tests/e2e
+          # defaults (forma-cdc / delta) the writers use.
+          DUCKDB_MANIFEST_TEMPLATE: "manifest/{{.SchemaID}}.json"
+          S3_BUCKET: forma-cdc
+          S3_PREFIX: delta
         run: |
           ./build/server &
           for i in $(seq 1 30); do
@@ -177,6 +185,10 @@ jobs:
           # flat schema; lead/visit have nested dotted attributes that currently
           # hit a federated-projection binder bug (tracked separately).
           bun run federated-check -- --schema log --require-duckdb
+          # Same route proof without the client-side path hint: an explicit
+          # hint always wins over the manifest source, so only a hint-free
+          # request exercises the server's manifest-driven read path (#302).
+          bun run federated-check -- --schema log --require-duckdb --manifest-reads
 
       # OLTP-path load smoke. The DuckDB route is proven above by
       # federated-check --require-duckdb; the k6 latency SLA deliberately does

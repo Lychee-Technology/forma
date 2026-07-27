@@ -104,7 +104,12 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 
 	formaConfig := lambdaFormaConfig(registry, schemaDir, tableNames)
 
-	// Initialize EntityManager using factory
+	// Initialize EntityManager using factory. Deliberately never Closed (#302):
+	// the manager is process-lifetime — bootstrapLambda runs once per execution
+	// environment — and the Go Lambda runtime has no shutdown hook to run
+	// cleanup from (SIGTERM reaches the function process only when an external
+	// extension is registered; otherwise the frozen sandbox is reclaimed with
+	// the process, DuckDB instance included).
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, formaConfig, dbPool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create entity manager: %w", err)

@@ -136,6 +136,12 @@ func main() {
 	if err != nil {
 		sugar.Fatalf("Failed to create entity manager: %v", err)
 	}
+	// Defers run LIFO, so the manager is released before the pool (#302).
+	defer func() {
+		if err := entityManager.Close(); err != nil {
+			sugar.Warnf("Failed to close entity manager: %v", err)
+		}
+	}()
 
 	// Create importer
 	importer := NewCSVImporter(entityManager, mapper, *batchSize)
