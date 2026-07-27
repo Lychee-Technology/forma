@@ -10,9 +10,15 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
+
+// DefaultInitTimeout bounds one hook run (all init statements of a single new
+// physical connection). It matches the 5s ping bound both constructors use,
+// and the pre-#285 exporter's construction-time init deadline.
+const DefaultInitTimeout = 5 * time.Second
 
 // Stmt is a single statement executed on every new physical DuckDB connection.
 type Stmt struct {
@@ -60,13 +66,24 @@ func ValidateS3Credential(name, value string) error {
 // physical connection. Failed statements are logged and skipped so a degraded
 // init never blocks the connection; construction-time errors are limited to
 // the credential validation done by the statement builders.
-func MakeConnInit(steps []Step, log *zap.SugaredLogger) func(driver.ExecerContext) error {
+//
+// Each hook run executes its statements under one shared initTimeout deadline:
+// driver cancellation rides on the context passed to ExecContext, so an
+// unbounded context would let a stalled INSTALL/LOAD block connection
+// establishment (and thereby constructors) indefinitely. A non-positive
+// initTimeout disables the bound.
+func MakeConnInit(steps []Step, log *zap.SugaredLogger, initTimeout time.Duration) func(driver.ExecerContext) error {
 	return func(execer driver.ExecerContext) error {
+		ctx := context.Background()
+		if initTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, initTimeout)
+			defer cancel()
+		}
 		for _, step := range steps {
 			for _, s := range step.Stmts {
-				// The driver binds the Connect context to the connection while
-				// this hook runs; statements are literal SQL, no NamedValue args.
-				if _, err := execer.ExecContext(context.Background(), s.SQL, nil); err != nil {
+				// Statements are literal SQL, no NamedValue args.
+				if _, err := execer.ExecContext(ctx, s.SQL, nil); err != nil {
 					log.Warnw("duckdb: connection init step failed", "step", s.Label, "err", err)
 					break
 				}

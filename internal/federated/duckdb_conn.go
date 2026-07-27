@@ -75,7 +75,7 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// connection; PingContext below opens and thereby initializes the first one.
 	// Failed init statements are logged and skipped, never blocking the
 	// connection — construction fails only on credential validation or ping.
-	connector, err := duckdb.NewConnector(dsn, duckdbinit.MakeConnInit(steps, zap.S()))
+	connector, err := duckdb.NewConnector(dsn, duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}

@@ -50,7 +50,7 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret s
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}
-	connector, err := duckdb.NewConnector(cfg.DuckDBPath, duckdbinit.MakeConnInit(steps, logger.Sugar()))
+	connector, err := duckdb.NewConnector(cfg.DuckDBPath, duckdbinit.MakeConnInit(steps, logger.Sugar(), duckdbinit.DefaultInitTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}

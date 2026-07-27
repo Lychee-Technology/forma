@@ -265,7 +265,7 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 	require.NoError(t, err)
 
 	execer := &recordingExecer{failOn: "INSTALL bad_ext;"}
-	require.NoError(t, duckdbinit.MakeConnInit(steps, zap.NewNop().Sugar())(execer))
+	require.NoError(t, duckdbinit.MakeConnInit(steps, zap.NewNop().Sugar(), duckdbinit.DefaultInitTimeout)(execer))
 
 	require.Contains(t, execer.executed, "INSTALL bad_ext;")
 	require.NotContains(t, execer.executed, "LOAD bad_ext;")
