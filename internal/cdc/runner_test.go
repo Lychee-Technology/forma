@@ -3,6 +3,7 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -166,7 +167,7 @@ func TestRunnerGetOrCreateS3Runtime_RegionPassedAtLoad(t *testing.T) {
 		lo := &config.LoadOptions{}
 		for _, fn := range optFns {
 			if err := fn(lo); err != nil {
-				return aws.Config{}, err
+				return aws.Config{}, fmt.Errorf("apply AWS load option: %w", err)
 			}
 		}
 		loadedRegion = lo.Region
