@@ -91,12 +91,14 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 //
 // WARNING — this is a deliberate narrowing. The merge engine previously
 // resolved the FULL AWS default credential chain, so chain-only sources
-// (shared profiles, assumed roles, web identity, IMDS/container roles) reached
-// the DuckDB httpfs SET statements. They no longer do: an operator whose
-// credentials live only in ~/.aws/config or an instance role now gets an
-// engine with no S3 credentials at all, and DuckDB falls back to whatever its
-// own environment chain provides. The compactor exposes no credential flags,
-// so in practice the contract is env-pair-or-nothing.
+// (IMDS/instance and container roles, SSO, assumed roles, web identity, shared
+// profiles) reached the DuckDB httpfs SET statements. They no longer do: an
+// operator whose credentials live only in an SSO session, ~/.aws/config, or an
+// instance role now gets an engine with no S3 credentials at all, and DuckDB
+// falls back to whatever its own environment chain provides — the warn log
+// below is the only early signal before an opaque httpfs 403. The compactor
+// exposes no credential flags, so in practice the contract is
+// env-pair-or-nothing.
 //
 // Lambda and container deployments that already export the environment triple
 // are unaffected — the environment is exactly what the shared rule reads. The
@@ -119,6 +121,9 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 		S3UsePath:               opts.s3.usePath,
 	}
 	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
+	if key == "" {
+		logger.Warn("no static S3 credentials resolved for the DuckDB engine; httpfs will read s3:// unsigned (#329)")
+	}
 	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open merge duckdb: %w", err)

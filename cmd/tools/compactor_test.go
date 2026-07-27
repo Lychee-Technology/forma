@@ -80,3 +80,30 @@ func TestOpenReconcileStatsEngine_DoesNotConsultCredentialChain(t *testing.T) {
 		t.Fatal("reconcile stats engine must not load the AWS default credential chain (#329)")
 	}
 }
+
+// TestOpenMergeEngine_EnvCredentialsReachEngineValidation is the positive
+// counterpart to the chain assertions above: those alone stay green if the
+// cdc.ResolveStaticS3Credentials call is deleted and empty strings are passed
+// through. Here the environment pair carries an access key containing a space,
+// which duckdbinit.ValidateS3Credential rejects while building the httpfs SET
+// statements — so a non-nil construction error is only possible if the
+// resolved environment credentials genuinely reach that builder.
+func TestOpenMergeEngine_EnvCredentialsReachEngineValidation(t *testing.T) {
+	called := false
+	stubToolAWSChainLoader(t, &called)
+	t.Setenv("AWS_ACCESS_KEY_ID", "bad key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+
+	opts := &compactorOptions{s3: s3Flags{region: "us-east-1"}}
+	exporter, err := openMergeEngine(context.Background(), opts, zap.NewNop())
+	if err == nil {
+		_ = exporter.DB.Close()
+		t.Fatal("expected the env access key to reach httpfs credential validation and be rejected (#329)")
+	}
+	if exporter != nil {
+		t.Fatal("expected a nil exporter alongside the construction error")
+	}
+	if called {
+		t.Fatal("merge engine must not load the AWS default credential chain (#329)")
+	}
+}

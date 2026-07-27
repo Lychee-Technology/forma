@@ -250,6 +250,9 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 		S3UsePath:               opts.s3.usePath,
 	}
 	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
+	if key == "" {
+		logger.Warn("no static S3 credentials resolved for the DuckDB engine; httpfs will read s3:// unsigned (#329)")
+	}
 	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open stats duckdb: %w", err)
