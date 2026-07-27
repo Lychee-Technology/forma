@@ -67,7 +67,8 @@ func NewS3Client(ctx context.Context, opts S3Options) (*s3.Client, error) {
 
 // applyCredentials overlays static credentials onto the loaded config,
 // preferring explicit options over environment variables and leaving the
-// default chain in place when neither is set.
+// default chain in place when no fully-set pair is available (explicit
+// options unset and the env pair not fully set).
 func applyCredentials(awsCfg *aws.Config, opts S3Options) {
 	if opts.AccessKey != "" {
 		awsCfg.Credentials = awscreds.NewStaticCredentialsProvider(opts.AccessKey, opts.SecretKey, "")
