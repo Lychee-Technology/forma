@@ -40,6 +40,7 @@ type cachedS3Runtime struct {
 	client          *s3.Client
 	accessKeyID     string
 	secretAccessKey string
+	sessionToken    string
 }
 
 type s3RuntimeKey struct {
@@ -177,7 +178,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
-	accessKeyID, secretAccessKey, _ := ResolveStaticS3Credentials(cfg)
+	accessKeyID, secretAccessKey, sessionToken := ResolveStaticS3Credentials(cfg)
 
 	key := s3RuntimeKey{
 		region:          cfg.S3Region,
@@ -207,7 +208,9 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 	if accessKeyID != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
+		// The session token rides the source that supplied the pair (#329) —
+		// dropping it signed temporary STS credentials as long-lived keys.
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
 	}
 
 	runtime := &cachedS3Runtime{
@@ -216,6 +219,7 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		client:          newS3ClientFn(awsCfg, cfg.S3Endpoint, cfg.S3UsePath),
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
+		sessionToken:    sessionToken,
 	}
 
 	r.mu.Lock()

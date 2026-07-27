@@ -80,6 +80,31 @@ func TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider(t *testing.T) {
 	require.Equal(t, "env-secret", creds.SecretAccessKey)
 }
 
+// TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken pins the third
+// credential site: the cached runtime must both remember the resolved session
+// token and hand it to the static provider, or every long-lived Runner signs
+// temporary credentials as if they were permanent keys (#329).
+func TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-west-2"}, nil
+	})
+	origNewS3ClientFn := newS3ClientFn
+	defer func() { newS3ClientFn = origNewS3ClientFn }()
+	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-token")
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Equal(t, "env-token", runtime.sessionToken)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "env-key", creds.AccessKeyID)
+	require.Equal(t, "env-secret", creds.SecretAccessKey)
+	require.Equal(t, "env-token", creds.SessionToken)
+}
+
 func TestRunnerCachesDuckExporter(t *testing.T) {
 	origNewDuckExporterFn := newDuckExporterFn
 	defer func() {

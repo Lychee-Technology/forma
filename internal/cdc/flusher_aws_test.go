@@ -98,3 +98,53 @@ func TestSetupAWSClient_ConfigCredentialsStillWin(t *testing.T) {
 		t.Fatalf("config credentials must win over env, got %+v", creds)
 	}
 }
+
+// TestSetupAWSClient_EnvTripleCarriesSessionToken pins that a fully-set
+// environment triple reaches the SDK static provider with its token: without
+// it, temporary STS credentials sign every request as if they were long-lived
+// keys and the endpoint can only report an opaque signing failure (#329).
+func TestSetupAWSClient_EnvTripleCarriesSessionToken(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-east-1"}, nil
+	})
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-token")
+
+	_, credProvider, _, err := setupAWSClient(context.Background(), CDCConfig{})
+	if err != nil {
+		t.Fatalf("setupAWSClient: %v", err)
+	}
+	creds := retrieveCreds(t, credProvider)
+	if creds.AccessKeyID != "env-key" || creds.SecretAccessKey != "env-secret" {
+		t.Fatalf("env triple must become the static provider, got %+v", creds)
+	}
+	if creds.SessionToken != "env-token" {
+		t.Fatalf("expected session token %q, got %q", "env-token", creds.SessionToken)
+	}
+}
+
+// TestSetupAWSClient_ConfigPairRejectsAmbientEnvToken pins that the token
+// never crosses sources: a config pair carries only the config token, so an
+// ambient AWS_SESSION_TOKEN left over from an unrelated session must not be
+// stapled onto explicitly configured long-lived keys (#329).
+func TestSetupAWSClient_ConfigPairRejectsAmbientEnvToken(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-east-1"}, nil
+	})
+	t.Setenv("AWS_SESSION_TOKEN", "env-token")
+
+	_, credProvider, _, err := setupAWSClient(context.Background(), CDCConfig{
+		S3AccessKeyID: "cfg-key", S3SecretAccessKey: "cfg-secret",
+	})
+	if err != nil {
+		t.Fatalf("setupAWSClient: %v", err)
+	}
+	creds := retrieveCreds(t, credProvider)
+	if creds.AccessKeyID != "cfg-key" || creds.SecretAccessKey != "cfg-secret" {
+		t.Fatalf("config credentials must win over env, got %+v", creds)
+	}
+	if creds.SessionToken != "" {
+		t.Fatalf("config pair must not adopt the ambient env token, got %q", creds.SessionToken)
+	}
+}

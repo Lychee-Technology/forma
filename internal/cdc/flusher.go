@@ -148,9 +148,12 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	}
 	// Both-halves rule and config-wins precedence live in
 	// ResolveStaticS3Credentials — the shared rule for every cdc credential
-	// site (#326). Empty pair leaves the default chain in place.
-	if staticKey, staticSecret, _ := ResolveStaticS3Credentials(cfg); staticKey != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, "")
+	// site (#326). Empty pair leaves the default chain in place. The session
+	// token rides the source that supplied the pair (#329): dropping it here
+	// signed temporary STS credentials as if they were long-lived keys, which
+	// the storage endpoint can only report as an opaque signing failure.
+	if staticKey, staticSecret, staticToken := ResolveStaticS3Credentials(cfg); staticKey != "" {
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, staticToken)
 	}
 
 	// Build S3 client options
