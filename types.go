@@ -285,11 +285,13 @@ type QueryResult struct {
 // metadata an external caller needs to understand the route.
 //
 // SECURITY: the internal plan's SQL, bind params, and free-text notes are
-// deliberately NOT projected here. The rendered DuckDB SQL embeds the
-// postgres_scan(...) connection string — including the database password — and
-// notes can echo raw engine errors, so exposing them on the HTTP API would leak
-// credentials to any caller of advanced_query. Only enum/numeric/static-string
-// fields are surfaced. It also imports nothing so it can live in the public API.
+// deliberately NOT projected here. Since #306, the database password is
+// redacted at the source (plan SQL and failure notes carry password=***REDACTED***),
+// but the rendered DuckDB SQL still embeds host/user/dbname and table internals;
+// Params carry query arguments, and notes carry storage keys and engine internals.
+// Exposing them on the HTTP API would leak internals to any caller of
+// advanced_query. Only enum/numeric/static-string fields are surfaced. It also
+// imports nothing so it can live in the public API.
 type ExecutionPlan struct {
 	Routing ExecutionRouting  `json:"routing"`
 	Sources []ExecutionSource `json:"sources,omitempty"`
