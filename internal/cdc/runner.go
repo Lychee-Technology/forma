@@ -177,7 +177,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
-	accessKeyID, secretAccessKey := resolveStaticS3Credentials(cfg)
+	accessKeyID, secretAccessKey, _ := ResolveStaticS3Credentials(cfg)
 
 	key := s3RuntimeKey{
 		region:          cfg.S3Region,

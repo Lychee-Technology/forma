@@ -96,7 +96,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// client (#326): with no fully-set static pair NewDuckExporter receives
 	// empty strings and DuckDB inherits its own environment chain, so the SDK
 	// client and httpfs never diverge under a half-set env pair.
-	s3Key, s3Secret := resolveStaticS3Credentials(cfg)
+	s3Key, s3Secret, _ := ResolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, logger)
 	if err != nil {
 		return fmt.Errorf("new duck exporter: %w", err)
@@ -147,9 +147,9 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)
 	}
 	// Both-halves rule and config-wins precedence live in
-	// resolveStaticS3Credentials — the shared rule for every cdc credential
+	// ResolveStaticS3Credentials — the shared rule for every cdc credential
 	// site (#326). Empty pair leaves the default chain in place.
-	if staticKey, staticSecret := resolveStaticS3Credentials(cfg); staticKey != "" {
+	if staticKey, staticSecret, _ := ResolveStaticS3Credentials(cfg); staticKey != "" {
 		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, "")
 	}
 

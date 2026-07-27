@@ -53,7 +53,7 @@ type CDCConfig struct {
 	S3UsePath         bool   // path style addressing
 	S3AccessKeyID     string // AWS access key ID; overrides environment variable AWS_ACCESS_KEY_ID
 	S3SecretAccessKey string // AWS secret access key; overrides environment variable AWS_SECRET_ACCESS_KEY
-	S3SessionToken    string // AWS session token for temporary credentials (STS/roles); overrides environment variable AWS_SESSION_TOKEN
+	S3SessionToken    string // AWS session token for temporary credentials (STS/roles); effective only with same-source S3AccessKeyID/S3SecretAccessKey, see ResolveStaticS3Credentials (#329)
 
 	// Manifest (optional - when set, flush updates manifest after export)
 	ManifestPrefix   string // root prefix for manifests in S3

@@ -98,7 +98,7 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	// other cdc credential site (#326): with no fully-set static pair the
 	// exporter receives empty strings and DuckDB inherits its own
 	// environment chain.
-	s3Key, s3Secret := resolveStaticS3Credentials(cfg)
+	s3Key, s3Secret, _ := ResolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, opts.Logger)
 	if err != nil {
 		_ = db.Close()
