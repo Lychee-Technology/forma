@@ -97,6 +97,8 @@ func (m *mockEntityManager) BatchDelete(ctx context.Context, req *forma.BatchOpe
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (m *mockEntityManager) Close() error { return nil }
+
 func TestHandleCreateRejectsNonObjectArrayElements(t *testing.T) {
 	server := &Server{
 		manager: &mockEntityManager{},

@@ -26,9 +26,16 @@ type EntityBatchCreator interface {
 	BatchCreate(ctx context.Context, req *BatchOperation) (*BatchResult, error)
 }
 
-// EntityManager provides comprehensive entity and query operations
+// EntityManager provides comprehensive entity and query operations.
+//
+// Close releases resources the manager owns — for factory-built managers
+// that is the embedded DuckDB client (#302). It is safe to call more than
+// once; managers constructed without owned resources return nil. Embedders
+// must Close the manager when done with it or the DuckDB instance lives
+// until process exit.
 type EntityManager interface {
 	EntityWriter
 	EntityReader
 	EntityBatchOperator
+	Close() error
 }
