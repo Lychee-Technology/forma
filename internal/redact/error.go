@@ -2,7 +2,9 @@ package redact
 
 // Error returns err with any connection-string password in its message replaced
 // by Placeholder. A nil error, or one whose message carries no credential, is
-// returned unchanged — the scrub allocates only when it actually matched.
+// returned unchanged — the no-match path returns the error unchanged with no
+// wrapper allocated, preserving the caller's error identity (the regex scan
+// itself may still allocate).
 //
 // The wrapper rewrites only the composed message. It Unwraps to the original
 // error, so errors.Is/errors.As classification (sentinels, typed carriers,
@@ -23,6 +25,8 @@ func Error(err error) error {
 	return &redactedError{msg: scrubbed, err: err}
 }
 
+// redactedError stores the rewritten message alongside the original error so
+// composed messages are scrubbed while errors.Is/errors.As still walk the real chain.
 type redactedError struct {
 	msg string
 	err error

@@ -8,6 +8,10 @@
 //   - internal/httpapi logs error chains, and DuckDB quotes the whole postgres_scan
 //     connection string back inside its own attach-failure prose, so the password
 //     arrives as driver-authored text no Forma wrap site can intercept (#301).
+//   - internal/federated scrubs driver errors at the source (#306): the engine
+//     wraps duck.Query failures through redact.Error before the text enters an
+//     error chain or the internal execution plan, so embedders that log the
+//     engine's errors never capture the credential.
 //
 // A weaker matcher is not a smaller version of this one, it is a leak: a naive
 // `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits

@@ -9,7 +9,7 @@ import (
 
 // The canary follows #301's construction (internal/httpapi/canaries_test.go):
 // the value carries a ';' so a truncation regression leaves a distinct tail,
-// and every fragment — assignment, value, head, tail — is asserted separately.
+// and the value, head, and tail are asserted separately.
 const (
 	errCanaryHead = "SUPERSECRET"
 	errCanaryTail = "CANARY-TAIL"
