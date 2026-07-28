@@ -20,13 +20,13 @@ func TestNewEntityManagerWithConfig_CloseReleasesDuckDBClient(t *testing.T) {
 	// TestNewEntityManagerWithConfig_Unit_Success, with DuckDB enabled and
 	// the client constructor capturing the real client it builds.
 	var captured *federated.DuckDBClient
-	deps := unitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	deps.newDuckDBClient = func(ctx context.Context, cfg forma.DuckDBConfig) (*federated.DuckDBClient, error) {
 		c, err := federated.NewDuckDBClientContext(ctx, cfg)
 		captured = c
 		return c, err
 	}
-	config := unitEntityManagerConfig(t)
+	config := newUnitEntityManagerConfig(t)
 	config.DuckDB.Enabled = true
 	config.DuckDB.MaxConnections = 1
 

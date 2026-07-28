@@ -14,6 +14,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// stubNewS3Client swaps the package seam for one test, the t.Cleanup twin of
+// stubLoadAWSConfig in flusher_aws_test.go. No t.Parallel: the seam is
+// process-global (same pattern as internal/bootstrap).
+func stubNewS3Client(t *testing.T, fn func(aws.Config, string, bool) *s3.Client) {
+	t.Helper()
+	previous := newS3ClientFn
+	newS3ClientFn = fn
+	t.Cleanup(func() { newS3ClientFn = previous })
+}
+
 func TestNewRunner_UsesNopLoggerWhenNil(t *testing.T) {
 	runner := NewRunner(nil)
 	require.NotNil(t, runner)
@@ -28,21 +38,16 @@ func TestRunnerRunOnce_RequiresSchemaRegistry(t *testing.T) {
 }
 
 func TestRunnerCachesS3Runtime(t *testing.T) {
-	origNewS3ClientFn := newS3ClientFn
-	defer func() {
-		newS3ClientFn = origNewS3ClientFn
-	}()
-
 	loadCalls := 0
 	clientCalls := 0
 	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		loadCalls++
 		return aws.Config{}, nil
 	})
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client {
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client {
 		clientCalls++
 		return &s3.Client{}
-	}
+	})
 
 	runner := NewRunner(zap.NewNop())
 	cfg := CDCConfig{S3Region: "us-east-1"}
@@ -63,9 +68,7 @@ func TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider(t *testing.T) {
 	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		return aws.Config{Region: "us-west-2"}, nil
 	})
-	origNewS3ClientFn := newS3ClientFn
-	defer func() { newS3ClientFn = origNewS3ClientFn }()
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
@@ -80,6 +83,63 @@ func TestRunnerGetOrCreateS3Runtime_EnvPairBecomesStaticProvider(t *testing.T) {
 	require.Equal(t, "env-secret", creds.SecretAccessKey)
 }
 
+// TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken pins the third
+// credential site: the cached runtime must both remember the resolved session
+// token and hand it to the static provider, or every long-lived Runner signs
+// temporary credentials as if they were permanent keys (#329).
+func TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken(t *testing.T) {
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-west-2"}, nil
+	})
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "env-token")
+
+	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Equal(t, "env-token", runtime.sessionToken)
+	creds := retrieveCreds(t, runtime.credProvider)
+	require.Equal(t, "env-key", creds.AccessKeyID)
+	require.Equal(t, "env-secret", creds.SecretAccessKey)
+	require.Equal(t, "env-token", creds.SessionToken)
+}
+
+// TestRunnerS3RuntimeCacheKeyIncludesSessionToken pins that the cached runtime
+// is keyed on the whole credential triple. The provider bakes the token in, so
+// a rotated AWS_SESSION_TOKEN under an unchanged access-key pair describes a
+// different signing identity — key on the pair alone and the Runner keeps
+// serving the expired token until the process restarts (#329).
+func TestRunnerS3RuntimeCacheKeyIncludesSessionToken(t *testing.T) {
+	loadCalls := 0
+	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
+		loadCalls++
+		return aws.Config{Region: "us-west-2"}, nil
+	})
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "token-1")
+
+	runner := NewRunner(zap.NewNop())
+	first, err := runner.getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.Equal(t, "token-1", first.sessionToken)
+
+	// Same access-key pair, rotated token.
+	t.Setenv("AWS_SESSION_TOKEN", "token-2")
+
+	second, err := runner.getOrCreateS3Runtime(context.Background(), CDCConfig{})
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Equal(t, 2, loadCalls)
+	require.Equal(t, "token-2", second.sessionToken)
+	creds := retrieveCreds(t, second.credProvider)
+	require.Equal(t, "token-2", creds.SessionToken)
+}
+
 func TestRunnerCachesDuckExporter(t *testing.T) {
 	origNewDuckExporterFn := newDuckExporterFn
 	defer func() {
@@ -87,7 +147,7 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 	}()
 
 	createCalls := 0
-	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret string, logger *zap.Logger) (*DuckExporter, error) {
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
 		createCalls++
 		return &DuckExporter{Logger: logger}, nil
 	}
@@ -113,6 +173,103 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 
 	require.Same(t, exporter1, exporter2)
 	require.Equal(t, 1, createCalls)
+}
+
+// TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion pins that the
+// exporter cache key describes the exporter that was actually built. The
+// exporter is configured from the raw cfg — an empty cfg.S3Region suppresses
+// SET s3_region entirely — so two runs whose only difference is the region the
+// AWS default chain happened to resolve produce byte-identical exporters. Key
+// on the chain region and the cache claims a distinction the exporter never
+// made, building (and leaking) a second identical DuckDB instance (#329).
+func TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion(t *testing.T) {
+	origNewDuckExporterFn := newDuckExporterFn
+	defer func() {
+		newDuckExporterFn = origNewDuckExporterFn
+	}()
+
+	createCalls := 0
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+		createCalls++
+		return &DuckExporter{Logger: logger}, nil
+	}
+
+	runner := NewRunner(zap.NewNop())
+	// cfg.S3Region is empty: the exporter never issues SET s3_region, so both
+	// runtimes below configure the exact same exporter.
+	cfg := CDCConfig{
+		DuckDBPath:   ":memory:",
+		DuckThreads:  4,
+		DuckMemLimit: "4GB",
+		S3UseSSL:     true,
+	}
+	runtimeEast := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+	}
+	runtimeWest := &cachedS3Runtime{
+		region:          "eu-west-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+	}
+
+	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeEast)
+	require.NoError(t, err)
+	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeWest)
+	require.NoError(t, err)
+
+	require.Same(t, exporter1, exporter2)
+	require.Equal(t, 1, createCalls)
+}
+
+// TestRunnerDuckExporterCacheKeyIncludesSessionToken pins the other half of the
+// same rule: the exporter bakes the token into SET s3_session_token at
+// construction, so two runtimes differing only in their token configure
+// different exporters and must not share a cache slot (#329).
+func TestRunnerDuckExporterCacheKeyIncludesSessionToken(t *testing.T) {
+	origNewDuckExporterFn := newDuckExporterFn
+	defer func() {
+		newDuckExporterFn = origNewDuckExporterFn
+	}()
+
+	createCalls := 0
+	var seenTokens []string
+	newDuckExporterFn = func(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+		createCalls++
+		seenTokens = append(seenTokens, s3SessionToken)
+		return &DuckExporter{Logger: logger}, nil
+	}
+
+	runner := NewRunner(zap.NewNop())
+	cfg := CDCConfig{
+		DuckDBPath:   ":memory:",
+		DuckThreads:  4,
+		DuckMemLimit: "4GB",
+		S3Region:     "us-east-1",
+		S3UseSSL:     true,
+	}
+	runtimeOld := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+		sessionToken:    "token-1",
+	}
+	runtimeRotated := &cachedS3Runtime{
+		region:          "us-east-1",
+		accessKeyID:     "key",
+		secretAccessKey: "secret",
+		sessionToken:    "token-2",
+	}
+
+	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeOld)
+	require.NoError(t, err)
+	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeRotated)
+	require.NoError(t, err)
+
+	require.NotSame(t, exporter1, exporter2)
+	require.Equal(t, 2, createCalls)
+	require.Equal(t, []string{"token-1", "token-2"}, seenTokens)
 }
 
 func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
@@ -142,9 +299,7 @@ func TestRunnerGetOrCreateS3Runtime_EnvHalfPairPreservesDefaultChain(t *testing.
 	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		return aws.Config{Region: "us-east-1", Credentials: chain}, nil
 	})
-	origNewS3ClientFn := newS3ClientFn
-	defer func() { newS3ClientFn = origNewS3ClientFn }()
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
 
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
@@ -173,9 +328,7 @@ func TestRunnerGetOrCreateS3Runtime_RegionPassedAtLoad(t *testing.T) {
 		loadedRegion = lo.Region
 		return aws.Config{Region: lo.Region}, nil
 	})
-	origNewS3ClientFn := newS3ClientFn
-	defer func() { newS3ClientFn = origNewS3ClientFn }()
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
 
 	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{S3Region: "eu-central-1"})
 	require.NoError(t, err)
@@ -190,9 +343,7 @@ func TestRunnerGetOrCreateS3Runtime_UnconfiguredRegionPreservesChainRegion(t *te
 	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		return aws.Config{Region: "ap-southeast-2"}, nil
 	})
-	origNewS3ClientFn := newS3ClientFn
-	defer func() { newS3ClientFn = origNewS3ClientFn }()
-	newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Client { return &s3.Client{} }
+	stubNewS3Client(t, func(aws.Config, string, bool) *s3.Client { return &s3.Client{} })
 
 	runtime, err := NewRunner(zap.NewNop()).getOrCreateS3Runtime(context.Background(), CDCConfig{})
 	require.NoError(t, err)

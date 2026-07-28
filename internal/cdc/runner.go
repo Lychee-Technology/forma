@@ -40,26 +40,36 @@ type cachedS3Runtime struct {
 	client          *s3.Client
 	accessKeyID     string
 	secretAccessKey string
+	sessionToken    string
 }
 
 type s3RuntimeKey struct {
-	region          string
-	endpoint        string
-	usePath         bool
-	accessKeyID     string
+	region      string
+	endpoint    string
+	usePath     bool
+	accessKeyID string
+	// The token is part of the signing identity the cached provider bakes in,
+	// so it belongs in the key alongside the pair: omit it and a rotated
+	// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached
+	// runtime, handing every caller a stale-token artifact (#329).
 	secretAccessKey string
+	sessionToken    string
 }
 
 type duckExporterKey struct {
-	dbPath          string
-	threads         int
-	memLimit        string
-	region          string
-	endpoint        string
-	useSSL          bool
-	usePath         bool
-	accessKeyID     string
+	dbPath      string
+	threads     int
+	memLimit    string
+	region      string
+	endpoint    string
+	useSSL      bool
+	usePath     bool
+	accessKeyID string
+	// Same rule as s3RuntimeKey: the exporter bakes the token into
+	// SET s3_session_token at construction, so a key without it returns a
+	// stale-token exporter after a rotation (#329).
 	secretAccessKey string
+	sessionToken    string
 }
 
 func NewRunner(logger *zap.Logger) *Runner {
@@ -111,13 +121,13 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	s3Runtime, err := r.getOrCreateS3Runtime(ctx, cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare s3 runtime: %w", err)
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
 	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve s3 clients: %w", err)
 	}
 
 	var manifestStore manifest.Store
@@ -135,13 +145,15 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	db, pgPassword, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
 	if err != nil {
-		return err
+		return fmt.Errorf("setup postgres connection: %w", err)
 	}
 	defer db.Close()
 
 	duck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
 	if err != nil {
-		return fmt.Errorf("new duck exporter: %w", err)
+		// getOrCreateDuckExporter carries the "new duck exporter:" prefix; this
+		// layer adds the run-level step so the two never duplicate.
+		return fmt.Errorf("prepare duck exporter: %w", err)
 	}
 
 	tableName := cfg.ChangeLogTable
@@ -177,7 +189,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
-	accessKeyID, secretAccessKey := resolveStaticS3Credentials(cfg)
+	accessKeyID, secretAccessKey, sessionToken := ResolveStaticS3Credentials(cfg)
 
 	key := s3RuntimeKey{
 		region:          cfg.S3Region,
@@ -185,6 +197,7 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		usePath:         cfg.S3UsePath,
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
+		sessionToken:    sessionToken,
 	}
 
 	r.mu.Lock()
@@ -207,7 +220,9 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 	if accessKeyID != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
+		// The session token rides the source that supplied the pair (#329) —
+		// dropping it signed temporary STS credentials as long-lived keys.
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
 	}
 
 	runtime := &cachedS3Runtime{
@@ -216,6 +231,7 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 		client:          newS3ClientFn(awsCfg, cfg.S3Endpoint, cfg.S3UsePath),
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
+		sessionToken:    sessionToken,
 	}
 
 	r.mu.Lock()
@@ -231,15 +247,27 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 
 func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3Runtime *cachedS3Runtime) (*DuckExporter, error) {
 	key := duckExporterKey{
-		dbPath:          cfg.DuckDBPath,
-		threads:         cfg.DuckThreads,
-		memLimit:        cfg.DuckMemLimit,
-		region:          s3Runtime.region,
-		endpoint:        cfg.S3Endpoint,
-		useSSL:          cfg.S3UseSSL,
-		usePath:         cfg.S3UsePath,
-		accessKeyID:     s3Runtime.accessKeyID,
+		dbPath:   cfg.DuckDBPath,
+		threads:  cfg.DuckThreads,
+		memLimit: cfg.DuckMemLimit,
+		// The raw cfg region, not s3Runtime.region: the exporter is configured
+		// from cfg alone, and an empty cfg.S3Region suppresses SET s3_region
+		// entirely. Keying on the chain-resolved region claims a distinction
+		// the exporter never makes, so two runs producing byte-identical
+		// exporters would miss the cache (#329). It also cut the other way: an
+		// empty-region cfg whose chain resolved to some region could collide
+		// with an explicitly-configured cfg of that same region, two configs
+		// that build *different* exporters, so the second silently reused the
+		// first's — a latent wrong cache hit the raw cfg region rules out.
+		region:      cfg.S3Region,
+		endpoint:    cfg.S3Endpoint,
+		useSSL:      cfg.S3UseSSL,
+		usePath:     cfg.S3UsePath,
+		accessKeyID: s3Runtime.accessKeyID,
+		// The cached runtime's token, matching the triple handed to
+		// newDuckExporterFn below (#329).
 		secretAccessKey: s3Runtime.secretAccessKey,
+		sessionToken:    s3Runtime.sessionToken,
 	}
 
 	r.mu.Lock()
@@ -249,9 +277,11 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 		return cached, nil
 	}
 
-	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, r.logger)
+	// The cached triple, not a fresh resolve: one resolution keeps the SDK
+	// provider and the DuckDB SET statements on the same credentials (#329).
+	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken, r.logger)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
 	r.mu.Lock()

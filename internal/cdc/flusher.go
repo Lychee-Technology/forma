@@ -95,9 +95,12 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// DuckDB httpfs credentials follow the same both-halves rule as the SDK
 	// client (#326): with no fully-set static pair NewDuckExporter receives
 	// empty strings and DuckDB inherits its own environment chain, so the SDK
-	// client and httpfs never diverge under a half-set env pair.
-	s3Key, s3Secret := resolveStaticS3Credentials(cfg)
-	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, logger)
+	// client and httpfs never diverge under a half-set env pair. The session
+	// token rides the source that supplied the pair (#329) — resolved once
+	// here and handed to the exporter, so httpfs signs with the same triple
+	// the SDK client does.
+	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
+	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, logger)
 	if err != nil {
 		return fmt.Errorf("new duck exporter: %w", err)
 	}
@@ -147,10 +150,13 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 		return "", nil, nil, fmt.Errorf("load aws config: %w", err)
 	}
 	// Both-halves rule and config-wins precedence live in
-	// resolveStaticS3Credentials — the shared rule for every cdc credential
-	// site (#326). Empty pair leaves the default chain in place.
-	if staticKey, staticSecret := resolveStaticS3Credentials(cfg); staticKey != "" {
-		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, "")
+	// ResolveStaticS3Credentials — the shared rule for every cdc credential
+	// site (#326). Empty pair leaves the default chain in place. The session
+	// token rides the source that supplied the pair (#329): dropping it here
+	// signed temporary STS credentials as if they were long-lived keys, which
+	// the storage endpoint can only report as an opaque signing failure.
+	if staticKey, staticSecret, staticToken := ResolveStaticS3Credentials(cfg); staticKey != "" {
+		awsCfg.Credentials = awsCreds.NewStaticCredentialsProvider(staticKey, staticSecret, staticToken)
 	}
 
 	// Build S3 client options

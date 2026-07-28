@@ -45,8 +45,13 @@ type exportSQLPlan struct {
 // one arbitrary connection (#285, same class as #245). Init statement
 // failures are logged and skipped, never blocking the connection;
 // construction fails only on credential validation or ping.
-func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret string, logger *zap.Logger) (*DuckExporter, error) {
-	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret)
+//
+// The caller passes the whole key/secret/token triple because a session token
+// is only valid with the pair it was issued alongside; resolving it here would
+// let a token from one source pair with a key from another (#329, see
+// ResolveStaticS3Credentials).
+func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret, s3SessionToken)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}

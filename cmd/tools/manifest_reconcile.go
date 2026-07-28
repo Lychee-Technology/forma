@@ -230,8 +230,12 @@ func reconcileExitError(report reconcile.Report) error {
 // compactor's merge engine uses. The pool is pinned to one connection: the
 // exporter's S3 session settings apply per connection, and a second pooled
 // connection would read s3:// without credentials (#285).
+//
+// Credentials come from the same shared rule the merge engine uses,
+// cdc.ResolveStaticS3Credentials (#329). See the WARNING on openMergeEngine
+// for the deliberate narrowing that rule implies: chain-only credential
+// sources no longer reach the DuckDB httpfs session.
 func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logger *zap.Logger) (*cdc.DuckExporter, error) {
-	key, secret, token := resolveMergeCredentials(ctx, opts.s3.region, logger)
 	duckCfg := cdc.CDCConfig{
 		DuckDBPath:              opts.duck.duckDBPath,
 		DuckThreads:             opts.duck.duckThreads,
@@ -244,9 +248,12 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 		S3Region:                opts.s3.region,
 		S3UseSSL:                opts.s3.useSSL,
 		S3UsePath:               opts.s3.usePath,
-		S3SessionToken:          token,
 	}
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, logger)
+	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
+	if key == "" {
+		logger.Warn("no static S3 credentials resolved for the DuckDB engine; httpfs will read s3:// unsigned (#329)")
+	}
+	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open stats duckdb: %w", err)
 	}
