@@ -85,8 +85,9 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 			// does not define is caller fault, and the HTTP boundary now classifies
 			// on sentinel evidence alone (#301). Without the sentinel this would
 			// answer 500 with a redacted body instead of 400 with the guidance the
-			// caller needs. The message text is unchanged on purpose — it is what
-			// callers and tests already read.
+			// caller needs. The human-authored prefix is unchanged on purpose — it
+			// is what callers and tests match on — while the %w rendering appends
+			// ": invalid input" to the full string (#309).
 			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s': %w",
 				key.attr, req.SchemaName, forma.ErrInvalidInput)
 		}

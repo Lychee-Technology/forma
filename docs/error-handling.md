@@ -441,7 +441,8 @@ errors that wrapped no sentinel. It was removed for two reasons:
 The consequence is that a genuine client error earns its 4xx only by wrapping a
 sentinel. Removing the heuristic therefore required a sweep of the sites that had
 been relying on it — every one of them now wraps `forma.ErrInvalidInput`, with
-message text unchanged:
+the human-authored message prefix unchanged (the rendered string gains a
+sentinel suffix — see below):
 
 | site | caller mistake |
 | --- | --- |
@@ -456,6 +457,19 @@ attribute would answer `500` with an opaque body instead of naming the attribute
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
 
+**The rendered body is the prefix plus a sentinel suffix, and the suffix is
+deliberate (#309).** Wrapping with `%w` renders the sentinel's own text, so a
+verbatim 4xx body ends in `: invalid input` (likewise `: not found` and
+`: conflict` for the other two sentinels) — e.g.
+`unsupported operator: equals: invalid input`, or the
+`…: schema not found: nosuchschema: not found` body in the worked example under
+"Accepted disclosures inside the allowlist" below. What the sweep preserved is
+the human-authored prefix, not the exact full string. The suffix is kept as part
+of the body contract: clients must not assert on the exact full message — match
+the prefix (this repo's tests use `Contains`) or, better, key on the status
+code. Stripping the suffix would be a message-construction change to every wrap
+site, and #309 decided against it.
+
 Since #314 there is a **second** write-path validator on the same footing,
 `internal/schemavalidate`'s `Validator.Validate`, which wraps
 `forma.ErrInvalidInput` for a JSON Schema violation — `enum`, `pattern`, `type`,
@@ -468,8 +482,8 @@ enforcement on write" for the split.
 `normalizePgEavPayload`'s operator whitelist — the two rejections that pair an
 operator with an attribute type it does not accept — so `starts_with` on a UUID
 column answered an opaque `500` while the "condition-DSL errors stay 400" claim
-below said otherwise. Both now wrap the sentinel, message text unchanged, and are
-pinned by the `clientError` column of
+below said otherwise. Both now wrap the sentinel — prefix unchanged, same
+appended suffix as the sweep above — and are pinned by the `clientError` column of
 `TestToDualClauses_Characterization_Errors` plus
 `TestAdvancedQueryOperatorWhitelistIs400AndVerbatim`.
 

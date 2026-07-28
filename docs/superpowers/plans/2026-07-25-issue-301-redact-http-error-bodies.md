@@ -24,7 +24,8 @@
 >    that #296 was the only affected site was disproved — six sites across four
 >    packages depended on the heuristic, including the write-path
 >    `missing required attribute` check. All now wrap `forma.ErrInvalidInput`
->    with their message text unchanged.
+>    with the human-authored message prefix unchanged; the `%w` rendering
+>    appends `: invalid input` to the full string (#309).
 >
 > A third change has no counterpart here at all: credentials are scrubbed
 > (`internal/redact`) before anything is logged or returned, and

@@ -165,8 +165,10 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 //
 // The cost is that a genuine client error only earns its 4xx by wrapping a
 // sentinel, and removing the heuristic therefore required a sweep. Six sites
-// across four packages had been relying on it and now wrap forma.ErrInvalidInput,
-// message text unchanged:
+// across four packages had been relying on it and now wrap forma.ErrInvalidInput.
+// The human-authored message prefix is unchanged; the %w rendering appends
+// ": invalid input" to the full string, and that suffix is a kept part of the
+// body contract (#309):
 //
 //   - internal/entity_query_sort.go — unknown sort attribute (#296)
 //   - internal/transform/transformer.go — create or update body omitting a
