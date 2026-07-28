@@ -626,10 +626,12 @@ exposure this whole section exists to prevent. Two changes closed it:
 
 Because the DSN is interpolated into a single-quoted SQL literal
 (`postgres_scan('{{.PG_CONN}}', …)`), the renderer escapes it —
-`sqlutil.EscapeLiteral`, called from `internal/sqlgen/duckdb_template_renderer.go` — the same shared helper `internal/cdc` uses, consolidated in #310. Without that, the newly-added quotes would terminate the
-literal early. It also closes a hole that predates the quoting: a Postgres
-password containing a single quote used to be interpolated raw into query
-structure.
+`sqlutil.EscapeLiteral`, called from
+`internal/sqlgen/duckdb_template_renderer.go` — the same shared helper
+`internal/cdc` uses, consolidated in #310. Without that, the newly-added
+quotes would terminate the literal early. It also closes a hole that
+predates the quoting: a Postgres password containing a single quote used to
+be interpolated raw into query structure.
 
 One shape is deliberately **not** matched, recorded in
 `TestRedactCredentialsKnownGaps` and `TestConnStringPassword_KnownGaps`:
