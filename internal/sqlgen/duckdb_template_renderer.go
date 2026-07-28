@@ -359,9 +359,12 @@ func appendKeysetArgs(params map[string]any, args []any) []any {
 //
 // It also closes the pre-existing hole that made quoting unsafe to add: before
 // #301 a Postgres password containing a single quote was interpolated raw, which
-// broke the query and put caller-influenced text into SQL structure. The
-// mechanism mirrors internal/cdc's escapeLiteral, which has done the same for the
-// ATTACH path since #290.
+// broke the query and put deployment-configured text into SQL structure. PG_CONN
+// comes from the pgx pool configuration, not from any HTTP caller, so this was
+// never a caller-reachable injection vector — but escaping is still required so
+// credential characters can never alter the rendered SQL. The mechanism mirrors
+// internal/cdc's escapeLiteral, which has done the same for the ATTACH path
+// since #290.
 func escapeSQLLiteral(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
