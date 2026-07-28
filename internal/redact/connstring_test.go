@@ -38,7 +38,7 @@ func TestConnStringPassword_Forms(t *testing.T) {
 			want: "host='h' password=***REDACTED*** dbname='d'",
 		},
 		{
-			name: "escapeLiteral doubled-quote form inside a SQL literal",
+			name: "EscapeLiteral doubled-quote form inside a SQL literal",
 			in:   `ATTACH 'host=''h'' password=''s3cr3t'' dbname=''d''' AS pg`,
 			want: `ATTACH 'host=''h'' password=***REDACTED*** dbname=''d''' AS pg`,
 		},

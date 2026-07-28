@@ -44,9 +44,9 @@ func TestRedactCredentialsRemovesPasswordValues(t *testing.T) {
 			want: "host=h password=***REDACTED*** dbname=forma",
 		},
 		{
-			// escapeLiteral doubles every quote when a DSN is embedded in a DuckDB
+			// sqlutil.EscapeLiteral doubles every quote when a DSN is embedded in a DuckDB
 			// SQL literal.
-			name: "escapeLiteral doubled-quote form",
+			name: "EscapeLiteral doubled-quote form",
 			in:   `ATTACH 'host=h password=''s3cr3t'' dbname=forma'`,
 			want: `ATTACH 'host=h password=***REDACTED*** dbname=forma'`,
 		},

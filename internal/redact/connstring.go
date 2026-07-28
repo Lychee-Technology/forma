@@ -32,7 +32,7 @@ const Placeholder = "***REDACTED***"
 // placeholder.
 //
 // libpq quoting escapes both a single quote and a backslash with a backslash
-// (pgdsn.Quote), and escapeLiteral additionally doubles every single quote when the
+// (pgdsn.Quote), and sqlutil.EscapeLiteral additionally doubles every single quote when the
 // DSN is embedded in a DuckDB SQL literal — so the matcher must understand
 // backslash escapes, not just balanced quotes.
 //
@@ -40,7 +40,7 @@ const Placeholder = "***REDACTED***"
 // bare pair of single quotes in comment prose into a typographic quote, which
 // would silently corrupt the very sequences being described.
 //
-//	Branch 1  password=''VALUE''   the escapeLiteral'd doubled form, tried first.
+//	Branch 1  password=''VALUE''   the EscapeLiteral'd doubled form, tried first.
 //	          content atoms:  \''  a libpq escaped quote whose ' was doubled
 //	                          \[^'] any other backslash escape, incl. \\
 //	                          [^'\] a plain character
