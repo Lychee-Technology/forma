@@ -92,19 +92,28 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 	}
 }
 
-// TestExportSQLEscapesQuotedPGConn pins the CDC half of the #310 consolidation.
+// TestExportSQLEscapesQuotedLiterals pins the CDC half of the #310 consolidation.
 //
-// Both export builders embed the Postgres DSN inside a single-quoted SQL literal
-// — ATTACH IF NOT EXISTS '<dsn>' AS pg_db (…) — so the DSN must pass through
-// sqlutil.EscapeLiteral first. Without that, a quoted DSN (the form
-// federated.DuckDBPostgresConnStringFromPool emits, and any password containing
-// a quote) terminates the literal early and turns deployment-controlled text
-// into SQL structure. No other cdc test passes a DSN containing a quote, so
-// nothing else would catch a regression here.
-func TestExportSQLEscapesQuotedPGConn(t *testing.T) {
+// Both export builders embed two deployment-controlled strings inside
+// single-quoted SQL literals: the Postgres DSN — ATTACH IF NOT EXISTS '<dsn>'
+// AS pg_db (…) — and the S3 tmp path — COPY (…) TO '<path>' (…). Both must
+// pass through sqlutil.EscapeLiteral first. Without that, a quoted DSN (the
+// form federated.DuckDBPostgresConnStringFromPool emits, and any password
+// containing a quote) or a quoted S3 prefix terminates the literal early and
+// turns deployment-controlled text into SQL structure. No other cdc test
+// passes a DSN or S3 path containing a quote, so nothing else would catch a
+// regression here.
+func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
 	const hostileDSN = `host='h' password='p''w' dbname=forma`
 	const wantDSNLiteralBody = `host=''h'' password=''p''''w'' dbname=forma`
 	const wantAttach = `ATTACH IF NOT EXISTS '` + wantDSNLiteralBody + `' AS pg_db (TYPE postgres, READ_ONLY);`
+
+	const hostileS3TmpPath = `s3://bucket/pre'fix/1/_tmp/tmp.parquet`
+	const wantS3LiteralBody = `s3://bucket/pre''fix/1/_tmp/tmp.parquet`
+	// The trailing "' (" anchors the literal's closing quote to the start of
+	// the COPY options list, so a malformed target that merely contains the
+	// escaped path (e.g. an unterminated or doubled-quote tail) cannot match.
+	const wantCopyTarget = `TO '` + wantS3LiteralBody + `' (`
 
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
@@ -115,14 +124,14 @@ func TestExportSQLEscapesQuotedPGConn(t *testing.T) {
 		{
 			name: "snapshot export",
 			build: func() (string, error) {
-				sql, _, _, _, err := buildExportSQL(hostileDSN, "s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+				sql, _, _, _, err := buildExportSQL(hostileDSN, hostileS3TmpPath, CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
 				return sql, err
 			},
 		},
 		{
 			name: "base export",
 			build: func() (string, error) {
-				sql, _, _, err := buildBaseExportSQL(hostileDSN, "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
+				sql, _, _, err := buildBaseExportSQL(hostileDSN, hostileS3TmpPath, CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
 				return sql, err
 			},
 		},
@@ -138,6 +147,11 @@ func TestExportSQLEscapesQuotedPGConn(t *testing.T) {
 			// would close the outer literal early.
 			require.NotContains(t, sql, "ATTACH IF NOT EXISTS '"+hostileDSN+"'")
 
+			// The COPY target is the second deployment-controlled literal.
+			// The raw path's bare quote would close it early.
+			require.Contains(t, sql, wantCopyTarget)
+			require.NotContains(t, sql, "TO '"+hostileS3TmpPath+"'")
+
 			// Structural check: the ATTACH literal is delimited by exactly one
 			// outer quote pair, and undoubling its body round-trips back to the
 			// original DSN.
@@ -152,6 +166,21 @@ func TestExportSQLEscapesQuotedPGConn(t *testing.T) {
 
 			require.Equal(t, wantDSNLiteralBody, body)
 			require.Equal(t, hostileDSN, strings.ReplaceAll(body, "''", "'"))
+
+			// Same structural check for the COPY target: exactly one outer
+			// quote pair, and undoubling its body round-trips back to the raw
+			// S3 path.
+			const copyOpenMarker = ") TO '"
+			const copyCloseMarker = "' ("
+			copyStart := strings.Index(sql, copyOpenMarker)
+			require.NotEqual(t, -1, copyStart, "COPY target not found: %s", sql)
+			copyBody := sql[copyStart+len(copyOpenMarker):]
+			copyEnd := strings.Index(copyBody, copyCloseMarker)
+			require.NotEqual(t, -1, copyEnd, "COPY literal not terminated: %s", sql)
+			copyBody = copyBody[:copyEnd]
+
+			require.Equal(t, wantS3LiteralBody, copyBody)
+			require.Equal(t, hostileS3TmpPath, strings.ReplaceAll(copyBody, "''", "'"))
 		})
 	}
 }
