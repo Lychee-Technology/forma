@@ -30,7 +30,8 @@ import (
 //
 // The result is embedded in a single-quoted DuckDB SQL literal
 // (postgres_scan('{{.PG_CONN}}', …)), so the renderer escapes it with
-// sqlutil.EscapeLiteral (internal/sqlgen/duckdb_template_renderer.go).
+// sqlutil.EscapeLiteral (internal/sqlutil/literal.go), called from the
+// DuckDB renderer.
 func DuckDBPostgresConnStringFromPool(pool *pgxpool.Pool) string {
 	if pool == nil {
 		return ""
