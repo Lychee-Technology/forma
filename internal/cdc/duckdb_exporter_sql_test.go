@@ -92,6 +92,70 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 	}
 }
 
+// TestExportSQLEscapesQuotedPGConn pins the CDC half of the #310 consolidation.
+//
+// Both export builders embed the Postgres DSN inside a single-quoted SQL literal
+// — ATTACH IF NOT EXISTS '<dsn>' AS pg_db (…) — so the DSN must pass through
+// sqlutil.EscapeLiteral first. Without that, a quoted DSN (the form
+// federated.DuckDBPostgresConnStringFromPool emits, and any password containing
+// a quote) terminates the literal early and turns deployment-controlled text
+// into SQL structure. No other cdc test passes a DSN containing a quote, so
+// nothing else would catch a regression here.
+func TestExportSQLEscapesQuotedPGConn(t *testing.T) {
+	const hostileDSN = `host='h' password='p''w' dbname=forma`
+	const wantDSNLiteralBody = `host=''h'' password=''p''''w'' dbname=forma`
+	const wantAttach = `ATTACH IF NOT EXISTS '` + wantDSNLiteralBody + `' AS pg_db (TYPE postgres, READ_ONLY);`
+
+	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
+
+	builders := []struct {
+		name  string
+		build func() (string, error)
+	}{
+		{
+			name: "snapshot export",
+			build: func() (string, error) {
+				sql, _, _, _, err := buildExportSQL(hostileDSN, "s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+				return sql, err
+			},
+		},
+		{
+			name: "base export",
+			build: func() (string, error) {
+				sql, _, _, err := buildBaseExportSQL(hostileDSN, "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
+				return sql, err
+			},
+		},
+	}
+
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			sql, err := b.build()
+			require.NoError(t, err)
+			require.Contains(t, sql, wantAttach)
+
+			// The raw DSN must never be embedded verbatim: its bare quotes
+			// would close the outer literal early.
+			require.NotContains(t, sql, "ATTACH IF NOT EXISTS '"+hostileDSN+"'")
+
+			// Structural check: the ATTACH literal is delimited by exactly one
+			// outer quote pair, and undoubling its body round-trips back to the
+			// original DSN.
+			const openMarker = "ATTACH IF NOT EXISTS '"
+			const closeMarker = "' AS pg_db"
+			start := strings.Index(sql, openMarker)
+			require.NotEqual(t, -1, start, "ATTACH statement not found: %s", sql)
+			body := sql[start+len(openMarker):]
+			end := strings.Index(body, closeMarker)
+			require.NotEqual(t, -1, end, "ATTACH literal not terminated: %s", sql)
+			body = body[:end]
+
+			require.Equal(t, wantDSNLiteralBody, body)
+			require.Equal(t, hostileDSN, strings.ReplaceAll(body, "''", "'"))
+		})
+	}
+}
+
 func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
 	cfg := CDCConfig{
 		ChangeLogTable:  "change_log_dev",

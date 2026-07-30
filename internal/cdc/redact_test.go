@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,9 +58,9 @@ func TestRedactConnStr_HostilePasswordRawQuoted(t *testing.T) {
 }
 
 // TestRedactConnStr_HostilePasswordEscapedQuoted feeds the same hostile password
-// through the escapeLiteral'd (doubled-quote) form embedded in a DuckDB literal.
+// through the sqlutil.EscapeLiteral'd (doubled-quote) form embedded in a DuckDB literal.
 func TestRedactConnStr_HostilePasswordEscapedQuoted(t *testing.T) {
-	sqlLiteral := escapeLiteral(BuildPGDSN(redactHostileParams()))
+	sqlLiteral := sqlutil.EscapeLiteral(BuildPGDSN(redactHostileParams()))
 	redacted := redactConnStr(sqlLiteral)
 	t.Logf("escaped literal:  %q", sqlLiteral)
 	t.Logf("escaped redacted: %q", redacted)
@@ -88,19 +89,19 @@ func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
 func TestRedactConnStr_EmptyPasswordEscapedQuoted(t *testing.T) {
 	p := redactTestParams()
 	p.Password = ""
-	redacted := redactConnStr(escapeLiteral(BuildPGDSN(p)))
+	redacted := redactConnStr(sqlutil.EscapeLiteral(BuildPGDSN(p)))
 	require.Contains(t, redacted, "***REDACTED***")
 	require.Contains(t, redacted, "dbname=''")
 	require.Contains(t, redacted, "sslmode=''")
 }
 
 // TestRedactConnStr_EscapedQuotedDSN pins the #290 regression: the flusher/init
-// feed BuildPGDSN's quoted DSN through escapeLiteral (doubling single quotes)
+// feed BuildPGDSN's quoted DSN through sqlutil.EscapeLiteral (doubling single quotes)
 // into a DuckDB ATTACH literal, then log it via redactConnStr. The doubled-quote
 // form (password=''secret'') must still be fully redacted — the old regex
 // matched the empty string between the doubled quotes and leaked the password.
 func TestRedactConnStr_EscapedQuotedDSN(t *testing.T) {
-	sqlLiteral := escapeLiteral(BuildPGDSN(redactTestParams()))
+	sqlLiteral := sqlutil.EscapeLiteral(BuildPGDSN(redactTestParams()))
 	require.Contains(t, sqlLiteral, "password=''"+redactSecret+"''",
 		"precondition: escaped DSN must carry the doubled-quote form")
 

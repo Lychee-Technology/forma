@@ -6,6 +6,7 @@ import (
 	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -256,9 +257,23 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 		}
 	}
 
+	// PG_CONN is escaped because the templates interpolate it as
+	// postgres_scan('{{.PG_CONN}}', …). Since #301 the DSN produced by
+	// federated.DuckDBPostgresConnStringFromPool quotes its values, so it
+	// legitimately contains single quotes; without escaping the rendered SQL
+	// would terminate the literal early and fail to parse.
+	//
+	// Escaping also closes the pre-existing hole that made quoting unsafe to
+	// add: before #301 a Postgres password containing a single quote was
+	// interpolated raw, which broke the query and put deployment-configured
+	// text into SQL structure. PG_CONN comes from the pgx pool configuration,
+	// not from any HTTP caller, so this was never a caller-reachable injection
+	// vector — but escaping is still required so credential characters can
+	// never alter the rendered SQL. The same rule guards the CDC ATTACH path
+	// (#290); both sites consume sqlutil.EscapeLiteral (#310).
 	if _, ok := params["PG_CONN"]; !ok {
 		if raw, ok := params["DuckDBPGConnString"].(string); ok && raw != "" {
-			params["PG_CONN"] = escapeSQLLiteral(raw)
+			params["PG_CONN"] = sqlutil.EscapeLiteral(raw)
 		}
 	}
 
@@ -346,25 +361,4 @@ func appendKeysetArgs(params map[string]any, args []any) []any {
 	}
 	delete(params, "KEYSET_ARGS")
 	return append(args, keysetArgs...)
-}
-
-// escapeSQLLiteral doubles single quotes so a value can be embedded inside a
-// single-quoted DuckDB SQL literal.
-//
-// It exists for PG_CONN, which the templates interpolate as
-// postgres_scan('{{.PG_CONN}}', …). Since #301 the DSN produced by
-// federated.DuckDBPostgresConnStringFromPool quotes its values, so it now
-// legitimately contains single quotes; without this the rendered SQL would
-// terminate the literal early and fail to parse.
-//
-// It also closes the pre-existing hole that made quoting unsafe to add: before
-// #301 a Postgres password containing a single quote was interpolated raw, which
-// broke the query and put deployment-configured text into SQL structure. PG_CONN
-// comes from the pgx pool configuration, not from any HTTP caller, so this was
-// never a caller-reachable injection vector — but escaping is still required so
-// credential characters can never alter the rendered SQL. The mechanism mirrors
-// internal/cdc's escapeLiteral, which has done the same for the ATTACH path
-// since #290.
-func escapeSQLLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
 }

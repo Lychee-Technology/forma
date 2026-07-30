@@ -604,7 +604,7 @@ the password tail past the placeholder. That was a real bug fixed in #290, and
 its regression tests (`internal/cdc/redact_test.go`) exercise the shared matcher
 through `redactConnStr`, and `internal/redact/connstring_test.go` gates the
 pattern in the package that owns it. Three forms are covered — the
-`escapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
+`sqlutil.EscapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
 the libpq-quoted `password='…'`, and the bare `password=value` of legacy or
 third-party text.
 
@@ -626,11 +626,12 @@ exposure this whole section exists to prevent. Two changes closed it:
 
 Because the DSN is interpolated into a single-quoted SQL literal
 (`postgres_scan('{{.PG_CONN}}', …)`), the renderer escapes it —
-`escapeSQLLiteral` in `internal/sqlgen/duckdb_template_renderer.go`, mirroring
-CDC's `escapeLiteral`. Without that, the newly-added quotes would terminate the
-literal early. It also closes a hole that predates the quoting: a Postgres
-password containing a single quote used to be interpolated raw into query
-structure.
+`sqlutil.EscapeLiteral`, called from
+`internal/sqlgen/duckdb_template_renderer.go` — the same shared helper
+`internal/cdc` uses, consolidated in #310. Without that, the newly-added
+quotes would terminate the literal early. It also closes a hole that
+predates the quoting: a Postgres password containing a single quote used to
+be interpolated raw into query structure.
 
 One shape is deliberately **not** matched, recorded in
 `TestRedactCredentialsKnownGaps` and `TestConnStringPassword_KnownGaps`:

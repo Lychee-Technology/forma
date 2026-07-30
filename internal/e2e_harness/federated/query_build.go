@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // Federated multi-tier SQL assembly: the dynamic entry points, the UNION ALL
@@ -338,7 +340,7 @@ func benchmarkQueryColumn(attribute string) string {
 func benchmarkSQLLiteral(value any) string {
 	switch v := value.(type) {
 	case string:
-		return fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+		return fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(v))
 	case int:
 		return fmt.Sprintf("%d", v)
 	case int64:

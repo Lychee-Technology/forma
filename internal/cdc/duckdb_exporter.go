@@ -13,6 +13,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
 
@@ -85,11 +86,6 @@ func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, p
 	return e.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", sql, clQuery, mQuery, eQuery)
 }
 
-// escapeLiteral doubles single quotes for safe embedding in SQL string literals.
-func escapeLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
-
 func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, string, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "4GB",
@@ -130,8 +126,8 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 		return exportSQLPlan{}, fmt.Errorf("export %s: no row ids provided", modeName)
 	}
 
-	pgEsc := escapeLiteral(pgConnStr)
-	s3Esc := escapeLiteral(s3TmpPath)
+	pgEsc := sqlutil.EscapeLiteral(pgConnStr)
+	s3Esc := sqlutil.EscapeLiteral(s3TmpPath)
 	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
 	rowList := quoteUUIDList(rowIDs)
 	mFilter := fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
@@ -189,14 +185,14 @@ func (spec exportModeSpec) baseSelectColumns() []string {
 }
 
 func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols, eavAgg []string) string {
-	mQueryEsc := escapeLiteral(mQuery)
-	eQueryEsc := escapeLiteral(eQuery)
+	mQueryEsc := sqlutil.EscapeLiteral(mQuery)
+	eQueryEsc := sqlutil.EscapeLiteral(eQuery)
 	eAggSQL := buildEAVAggregationSQL(eQueryEsc, eavAgg)
 
 	if spec.useChangeLog {
 		// LEFT JOIN to entity_main so change_log tombstones of hard-deleted
 		// rows are exported instead of silently dropped (#173).
-		clQueryEsc := escapeLiteral(clQuery)
+		clQueryEsc := sqlutil.EscapeLiteral(clQuery)
 		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
