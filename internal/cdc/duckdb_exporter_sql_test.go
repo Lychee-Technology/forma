@@ -109,7 +109,11 @@ func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
 	const wantAttach = `ATTACH IF NOT EXISTS '` + wantDSNLiteralBody + `' AS pg_db (TYPE postgres, READ_ONLY);`
 
 	const hostileS3TmpPath = `s3://bucket/pre'fix/1/_tmp/tmp.parquet`
-	const wantCopyTarget = `TO 's3://bucket/pre''fix/1/_tmp/tmp.parquet'`
+	const wantS3LiteralBody = `s3://bucket/pre''fix/1/_tmp/tmp.parquet`
+	// The trailing "' (" anchors the literal's closing quote to the start of
+	// the COPY options list, so a malformed target that merely contains the
+	// escaped path (e.g. an unterminated or doubled-quote tail) cannot match.
+	const wantCopyTarget = `TO '` + wantS3LiteralBody + `' (`
 
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
@@ -162,6 +166,21 @@ func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
 
 			require.Equal(t, wantDSNLiteralBody, body)
 			require.Equal(t, hostileDSN, strings.ReplaceAll(body, "''", "'"))
+
+			// Same structural check for the COPY target: exactly one outer
+			// quote pair, and undoubling its body round-trips back to the raw
+			// S3 path.
+			const copyOpenMarker = ") TO '"
+			const copyCloseMarker = "' ("
+			copyStart := strings.Index(sql, copyOpenMarker)
+			require.NotEqual(t, -1, copyStart, "COPY target not found: %s", sql)
+			copyBody := sql[copyStart+len(copyOpenMarker):]
+			copyEnd := strings.Index(copyBody, copyCloseMarker)
+			require.NotEqual(t, -1, copyEnd, "COPY literal not terminated: %s", sql)
+			copyBody = copyBody[:copyEnd]
+
+			require.Equal(t, wantS3LiteralBody, copyBody)
+			require.Equal(t, hostileS3TmpPath, strings.ReplaceAll(copyBody, "''", "'"))
 		})
 	}
 }
