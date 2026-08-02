@@ -105,13 +105,12 @@ type evolutionSeed struct {
 // against v1 base rows plus 4 new rows flushed as ONE delta (dirty ratio
 // 3/5 = 60% > the 5% rewrite trigger), and 3 hot rows left unflushed.
 //
-// #294 detour: the OLTP update path transforms every existing EAV record
-// under CURRENT metadata (entity_crud_service.go Update →
-// FromPersistentRecord) and hard-errors on the dropped old_col's attrID, so
-// the two update targets get the documented stale-EAV cleanup migration
-// first. Their old_col values are already exported in the base parquet — the
-// merged winner dropping them is the row-level-LWW proof — while delete does
-// no transform, so the tombstoned row needs no cleanup.
+// #294 (fixed): the update path tolerates the dropped old_col's attrID and
+// preserves its EAV rows untouched, so the two update targets are updated
+// directly — no stale-EAV cleanup migration. The preserved rows stay in
+// Postgres but the v2 flush projection never exports old_col, so the merged
+// winner's old_col-is-NULL assertion below is unchanged: base (v1) carries
+// the non-NULL value, the winning delta row does not.
 func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, v2Dir string) *evolutionSeed {
 	t.Helper()
 	s := &evolutionSeed{}
@@ -119,10 +118,6 @@ func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schem
 	s.baseKey = runInitBase(ctx, t, env, schema)
 	if err := env.EvolveSchema(ctx, v2Dir); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
-	}
-	for _, target := range []*Event{s.creates[3], s.creates[4]} {
-		env.ExecSQL(ctx, "DELETE FROM eav_data WHERE schema_id = $1 AND attr_id = 3 AND row_id = $2",
-			schema.ID, target.RowID)
 	}
 	s.updates = []*Event{
 		UpdateEvent(schema, s.creates[3].RowID, map[string]any{"score": 1000.5, "new_col": float64(400)}),
