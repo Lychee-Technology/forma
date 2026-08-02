@@ -153,10 +153,18 @@ Example validator output:
 - unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=12
 ```
 
-That means the table contains rows that current metadata cannot decode. Fix by either:
+That means the table contains rows that current metadata cannot decode. There are two very different reasons this can happen, and they call for opposite actions. **Determine which case you are in before touching any row**: check whether that `attr_id` was ever a legitimate attribute in an earlier generation of the schema's `<schema>_attributes.json` (version control on the schema files is the record) and was later removed.
+
+**Case (i) — never legitimate.** The rows came from a bad deployment, a mis-mapped import, or leftover test data: no schema generation ever defined that `attr_id`. Fix by either:
 
 1. restoring the missing attribute metadata if the data is legitimate, or
-2. deleting the orphaned EAV rows if they were produced by a bad deployment or test data.
+2. deleting the orphaned EAV rows.
+
+**Case (ii) — preserved by attribute removal (`#294`).** The attribute did exist and was removed from the schema. Since `#294` (tolerate-and-preserve) these rows are the **expected** state: the read path skips them and the write path preserves them untouched, so removing an attribute is non-destructive and re-adding it (same `attributeID`) restores the stored values. **Do not delete them.** Deletion is destructive and irreversible — it permanently forfeits the re-add restore path — and nothing else in the system is asking you to do it. Leave the rows in place and treat the validator finding as informational.
+
+If you cannot establish which case applies, treat the rows as case (ii) and leave them alone; keeping undecodable rows costs storage, deleting recoverable ones costs the data.
+
+Whichever case applies, an `attributeID` freed by removing an attribute must never be reused for a different attribute: the preserved rows would silently bind to the new attribute's name, or make the row unreadable with a storage type mismatch.
 
 ### Storage-column mismatches
 
@@ -223,6 +231,12 @@ DELETE FROM eav_data_dev
 WHERE schema_id = 100 AND attr_id = 99;
 ```
 
+**This statement is only for case (i)** — an `attr_id` no schema generation ever
+defined. It must **not** be run against rows preserved by attribute removal
+(`#294`); those are the expected state, and deleting them permanently forfeits
+the restore-on-re-add path. See
+[Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav) before running it.
+
 Inspect value-column mismatches:
 
 ```sql
@@ -236,7 +250,12 @@ LIMIT 50;
 
 - database backup taken
 - `scripts/validate_schema_consistency.sql` returns no duplicate schema IDs
-- `make validate-schema-consistency` returns success
+- `make validate-schema-consistency` returns success — except that on deployments
+  whose schemas have had attributes removed, unknown-attrID findings for exactly
+  those attributes are **expected** (`#294` tolerate-and-preserve) and are **not**
+  a deployment blocker. The tool does not yet classify preserved rows separately
+  from genuinely orphaned ones, so confirm the reported `attr_id`s against the
+  removed attributes and proceed (follow-up tracked on the PR).
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - hardened release deployed
 - validator re-run after deploy

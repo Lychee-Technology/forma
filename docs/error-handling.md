@@ -294,17 +294,20 @@ Read operations return plain errors when persisted data and metadata disagree.
 
 Examples:
 
-- unknown attribute IDs encountered while rebuilding entities from EAV rows
 - duplicate schema IDs or duplicate attribute IDs during metadata loading
 - storage column mismatches such as a text attribute stored in `value_numeric`
+
+These errors indicate metadata drift, corrupted state, or an incomplete
+deployment, and should be treated as operator-visible consistency failures.
 
 EAV records whose attribute id is no longer present in the schema metadata are
 not an error: they are skipped on read and preserved on update (#294
 tolerate-and-preserve), so removing an attribute from a schema is
-non-destructive and re-adding it restores the stored values.
-
-These errors indicate metadata drift, corrupted state, or an incomplete
-deployment, and should be treated as operator-visible consistency failures.
+non-destructive and re-adding it restores the stored values. An attributeID
+freed by removing an attribute must never be reused for a different attribute:
+preserved EAV rows would silently bind to the new attribute's name (same value
+type) or make the row unreadable with a storage type mismatch (different value
+type).
 
 ### `ErrParquetSetInconsistent`
 
