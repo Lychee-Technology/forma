@@ -3,6 +3,7 @@ package transform
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -142,11 +143,18 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
 
 	attributes := make([]model.EntityAttribute, 0, len(records))
+	skippedAttrIDs := make(map[int16]struct{})
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
-			// Read-path unknown attribute IDs indicate metadata drift, not invalid user input.
-			return nil, fmt.Errorf("unknown attribute id %d for schema %d (attribute not in metadata cache)", record.AttrID, record.SchemaID)
+			// #294 tolerate-and-preserve: this attrID was removed by schema
+			// evolution. Skip it on read — the schema can no longer address
+			// it — but never treat it as an error: the row must stay readable
+			// and updatable, and the stored EAV rows are preserved untouched
+			// (replaceEAVAttributes scopes its delete to current-schema
+			// attrIDs) so re-adding the attribute restores the values.
+			skippedAttrIDs[record.AttrID] = struct{}{}
+			continue
 		}
 		indexSet := presentAttrIndices[attrName]
 		if indexSet == nil {
@@ -168,6 +176,15 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
 		attributes = append(attributes, attr)
+	}
+	if len(skippedAttrIDs) > 0 {
+		ids := make([]int16, 0, len(skippedAttrIDs))
+		for id := range skippedAttrIDs {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		zap.S().Warnw("skipped EAV records for attribute ids not in metadata cache (removed by schema evolution; rows preserved, #294)",
+			"schemaID", schemaID, "rowID", records[0].RowID, "attrIDs", ids)
 	}
 
 	missingRequired := make(map[int16]string)

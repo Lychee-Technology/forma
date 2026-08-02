@@ -153,7 +153,7 @@ func TestAttributeConverterFromEAVRecords_NestedRequiredDependsOnParentPresence(
 	}
 }
 
-func TestAttributeConverterFromEAVRecords_UnknownAttributeIDReturnsError(t *testing.T) {
+func TestAttributeConverterFromEAVRecords_SkipsUnknownAttributeIDs(t *testing.T) {
 	registry := &stubSchemaRegistry{
 		schemaID:   402,
 		schemaName: "unknown_attr_schema",
@@ -164,18 +164,21 @@ func TestAttributeConverterFromEAVRecords_UnknownAttributeIDReturnsError(t *test
 
 	converter := NewAttributeConverter(registry)
 	rowID := uuid.Must(uuid.NewV7())
-	value := "mystery"
-	_, err := converter.FromEAVRecords([]model.EAVRecord{{
-		SchemaID:  402,
-		RowID:     rowID,
-		AttrID:    999,
-		ValueText: &value,
-	}})
-	if err == nil {
-		t.Fatal("expected unknown attr id error")
+	known := "alive"
+	stale := "mystery"
+	attrs, err := converter.FromEAVRecords([]model.EAVRecord{
+		{SchemaID: 402, RowID: rowID, AttrID: 1, ValueText: &known},
+		// #294: attrID 999 was removed by schema evolution — tolerated, not an error.
+		{SchemaID: 402, RowID: rowID, AttrID: 999, ValueText: &stale},
+	})
+	if err != nil {
+		t.Fatalf("FromEAVRecords with a stale attrID must not error (#294 tolerate-and-preserve): %v", err)
 	}
-	if !strings.Contains(err.Error(), "unknown attribute id") {
-		t.Fatalf("unexpected error: %v", err)
+	if len(attrs) != 1 {
+		t.Fatalf("got %d attributes, want 1 (the known attr only): %+v", len(attrs), attrs)
+	}
+	if attrs[0].AttrID != 1 {
+		t.Fatalf("surviving attrID = %d, want 1", attrs[0].AttrID)
 	}
 }
 
@@ -356,6 +359,31 @@ func TestAttributeConverterFromEAVRecords_RequiredAlwaysIgnoresParentPresence(t 
 		t.Fatalf("expected error for required_always attribute when parent path is absent")
 	}
 	if !strings.Contains(err.Error(), "missing required attribute 'contact.email'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAttributeConverterFromEAVRecords_SkippedUnknownDoesNotSatisfyRequired(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   404,
+		schemaName: "required_attr_schema",
+		cache: forma.SchemaAttributeCache{
+			"id": {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	stale := "ghost"
+	// Only a stale record is present; the required attr 'id' has no EAV row.
+	// The skip must not mask the missing-required consistency error.
+	_, err := converter.FromEAVRecords([]model.EAVRecord{
+		{SchemaID: 404, RowID: rowID, AttrID: 999, ValueText: &stale},
+	})
+	if err == nil {
+		t.Fatal("expected missing-required error; stale rows must not satisfy required checks")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'id'") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
