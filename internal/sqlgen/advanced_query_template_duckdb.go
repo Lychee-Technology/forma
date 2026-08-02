@@ -54,7 +54,9 @@ s3_source AS (
   -- (which silently corrupted values on integer→double evolution). The
   -- corruption loudness this relaxes is restored by the pre-read
   -- system-column invariant validator (parquet_schema_validation.go).
-  FROM read_parquet({{.S3_PATHS}}, union_by_name=true)
+  -- A column absent from EVERY file is projected as a typed NULL by the
+  -- scan source instead (#255, never-flushed attributes).
+  FROM {{.S3_SCAN_SOURCE}}
   WHERE
     CAST(row_id AS UUID) NOT IN (SELECT row_id FROM dirty_ids)
     -- Predicate pushdown as a row_id semijoin: a row qualifies when ANY of
@@ -64,7 +66,7 @@ s3_source AS (
     -- versions pre-dedup and resurrected stale base rows whose old values
     -- still matched (#173).
     AND row_id IN (
-      SELECT row_id FROM read_parquet({{.S3_PATHS}}, union_by_name=true)
+      SELECT row_id FROM {{.S3_SCAN_SOURCE}}
       WHERE ({{.LOGICAL_WHERE_CLAUSE}})
     )
 ),
