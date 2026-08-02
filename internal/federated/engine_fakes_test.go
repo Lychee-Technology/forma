@@ -56,6 +56,15 @@ type fakeDuckDBExecutor struct {
 	lastArgs      []any
 	err           error
 	rows          duckDBRowsIterator
+
+	// globFiles, when non-nil, is the expansion every glob probe returns
+	// instead of the default "listing not faked" error. describeCols, when
+	// non-nil, answers DESCRIBE probes per path: the first map key that is a
+	// substring of the probe SQL wins (like scriptedDescribeExecutor).
+	// Both nil — the default — keeps the behavior every other engine-seam
+	// test relies on: fixed system columns, unlistable globs.
+	globFiles    []string
+	describeCols map[string][][2]string
 }
 
 func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
@@ -66,6 +75,14 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 		// without the probe consuming the canned rows or lastSQL. Probes are
 		// counted separately so breaker tests can assert none reach storage.
 		f.describeCalls++
+		if f.describeCols != nil {
+			for path, cols := range f.describeCols {
+				if strings.Contains(sql, path) {
+					return &fakeDescribeRows{cols: cols}, nil
+				}
+			}
+			return nil, fmt.Errorf("unexpected describe probe: %s", sql)
+		}
 		return &fakeDescribeRows{cols: [][2]string{
 			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
 		}}, nil
@@ -75,6 +92,9 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 		// mirroring an unreachable store; the validator defers to the main
 		// read.
 		f.describeCalls++
+		if f.globFiles != nil {
+			return &fakeStringRows{vals: f.globFiles}, nil
+		}
 		return nil, fmt.Errorf("glob listing not faked")
 	}
 	f.calls++

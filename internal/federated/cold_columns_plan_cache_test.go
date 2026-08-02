@@ -50,12 +50,26 @@ func coldPlanCacheMetadata(t *testing.T) *schemameta.MetadataCache {
 // plan_cache=miss).
 func runColdPlanCacheQuery(t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor) (string, []string) {
 	t.Helper()
+	return runColdPlanCacheQueryWithHint(t, e, duck, "")
+}
+
+// runColdPlanCacheQueryWithHint is the same request with an optional explicit
+// S3ParquetPathTemplate hint (which always wins over the parquet source), so
+// the glob variant below can drive the identical query shape over a glob path
+// set.
+func runColdPlanCacheQueryWithHint(
+	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, pathHint string,
+) (string, []string) {
+	t.Helper()
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
 		SchemaID:  7,
 		Condition: &forma.KvCondition{Attr: "score", Value: "gt:50"},
 		Limit:     2000,
 	}}
 	q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
+	if pathHint != "" {
+		q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: pathHint}
+	}
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
@@ -104,9 +118,14 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 		"same shape, same paths, same missing set: the skeleton must be reused — this is the reuse that could poison")
 	require.Contains(t, sql2, "NULL::INTEGER AS score")
 
-	// The first flush lands `score`. markValidated overwrites the entry, so the
-	// union the next request computes carries the column; the path set, query
-	// shape, tables, limit and fingerprint are all unchanged.
+	// The first flush lands `score`. Overwriting the cached footer is a TEST
+	// STAND-IN for "a new file's columns joined the union": production parquet
+	// objects are write-once, so a validated path's footer never actually
+	// changes under the validator's cache. The realistic production trigger —
+	// a glob expansion that gained a file — is the sibling test below; this
+	// one isolates the re-key with the path set held provably constant.
+	// Either way the union the next request computes carries the column, and
+	// the path set, query shape, tables, limit and fingerprint are unchanged.
 	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(true))
 
 	sql3, notes3 := runColdPlanCacheQuery(t, e, duck)
@@ -115,5 +134,74 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	require.NotContains(t, sql3, "NULL::INTEGER AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
 	require.NotContains(t, sql3, "AS cold_scan",
+		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
+}
+
+// coldPlanCacheGlob is a glob path hint: it is the ENTIRE scan-set string the
+// plan-cache scope key sees, and — unlike a concrete manifest listing — it is
+// byte-identical before and after a flush lands a new object. That is what
+// makes it the production-realistic form of the #255 hazard.
+const coldPlanCacheGlob = "s3://b/7/*.parquet"
+
+// coldPlanCacheDescribeRows renders a footer in the DESCRIBE row shape the
+// validator scans. The system columns must be present or parquetcheck fails
+// the invariant before any of this is reached.
+func coldPlanCacheDescribeRows(withScore bool) [][2]string {
+	rows := [][2]string{
+		{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
+		{"age", "INTEGER"},
+	}
+	if withScore {
+		rows = append(rows, [2]string{"score", "INTEGER"})
+	}
+	return rows
+}
+
+// TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion models the trigger
+// #255 actually fires on in production, which the sibling test above can only
+// stand in for: parquet objects are write-once, so an already-validated
+// footer never changes — the column union grows because the scan set's GLOB
+// EXPANSION GAINED A FILE (the first flush minting a new delta object).
+//
+// The glob string itself — the only path component the plan-cache scope key
+// sees — is byte-identical across both runs, and so are the query shape,
+// tables, limit, offset and fingerprint. Nothing but the cold-missing set can
+// therefore explain the run-2 miss: drop the missing set from
+// duckPlanScopeParts and run 2 becomes a hit that keeps projecting NULL over
+// the freshly flushed column.
+func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{
+		globFiles: []string{"s3://b/7/base.parquet"},
+		describeCols: map[string][][2]string{
+			"base.parquet": coldPlanCacheDescribeRows(false),
+		},
+	}
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		coldPlanCacheMetadata(t), "host=x",
+		WithPlanCache(queryplan.NewCache(64)))
+
+	// Run 1 — pre-flush: the glob expands to the single v1 base object, whose
+	// footer has no `score`.
+	sql1, notes1 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
+	require.Contains(t, sql1, "NULL::INTEGER AS score",
+		"cold-absent attribute must render as a typed NULL in the scan source")
+	require.Contains(t, notes1, "plan_cache=miss", "first request compiles")
+
+	// The first flush mints a NEW object carrying `score`. The already-probed
+	// base footer is untouched (write-once) and stays served from the
+	// validator's cache; only the expansion changed.
+	duck.globFiles = []string{"s3://b/7/base.parquet", "s3://b/7/delta1.parquet"}
+	duck.describeCols["delta1.parquet"] = coldPlanCacheDescribeRows(true)
+
+	sql2, notes2 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
+	require.Contains(t, notes2, "plan_cache=miss",
+		"the missing set ALONE must re-key the plan cache: the glob path string never changed (#255)")
+	require.NotContains(t, sql2, "NULL::INTEGER AS score",
+		"post-flush the real column must be scanned, not a cached NULL projection")
+	require.NotContains(t, sql2, "AS cold_scan",
 		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
 }

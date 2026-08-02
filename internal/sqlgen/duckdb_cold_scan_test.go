@@ -1,8 +1,11 @@
 package sqlgen
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
+
+	_ "github.com/duckdb/duckdb-go/v2"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -26,6 +29,11 @@ func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
 		got)
 }
 
+// TestDuckDBNullScanTypeMirrorsTierTypes documents the intended map as a
+// literal table. It cannot detect divergence from the other tiers on its own
+// (it validates the table against itself) — the cross-leg proof is
+// TestDuckDBNullScanTypeMatchesHotLegTypeof below (hot pivot) and
+// cdc.TestCastEAVValueMatchesNullScanTypeof (export leg).
 func TestDuckDBNullScanTypeMirrorsTierTypes(t *testing.T) {
 	cases := []struct {
 		vt, items forma.ValueType
@@ -101,4 +109,61 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	require.NoError(t, AdvancedQueryTemplateDuckDB.Execute(&b, minimalAdvancedParams(t, []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})))
 	require.Equal(t, 2, strings.Count(b.String(), "NULL::INTEGER AS score"))
 	require.Equal(t, 2, strings.Count(b.String(), "read_parquet("))
+}
+
+// eavFixtureSubquery mimics the eav_data columns the hot-leg pivot reads, at
+// the types they actually carry in the pivot: value_numeric is DOUBLE (the
+// numeric-family column every scalar cast starts from) and value_text is
+// VARCHAR.
+const eavFixtureSubquery = "(SELECT CAST(1 AS DOUBLE) AS value_numeric, CAST('x' AS VARCHAR) AS value_text)"
+
+// TestDuckDBNullScanTypeMatchesHotLegTypeof is the #255 type-lockstep proof
+// against a real DuckDB engine: for every value type, the type DuckDB gives
+// the hot-leg EAV cast (eavElementCastExpr) must equal the type DuckDB gives
+// NULL::DuckDBNullScanType(...). Divergence widens the UNION ALL between the
+// pg_source leg and the NULL-augmented parquet leg and re-opens #205.
+//
+// The comparison is on typeof() rather than on the rendered SQL text: bool
+// renders as `(value_numeric <> 0)` and text as a bare `value_text`, so
+// neither carries a type literal to extract — only the engine knows.
+func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	typeOf := func(t *testing.T, expr string) string {
+		t.Helper()
+		var typ string
+		require.NoError(t, db.QueryRow("SELECT typeof("+expr+")").Scan(&typ), "expr %q must evaluate", expr)
+		return typ
+	}
+
+	scalars := []forma.ValueType{
+		forma.ValueTypeBool, forma.ValueTypeBigInt, forma.ValueTypeDate,
+		forma.ValueTypeDateTime, forma.ValueTypeInteger, forma.ValueTypeSmallInt,
+		forma.ValueTypeNumeric, forma.ValueTypeText, forma.ValueTypeUUID,
+	}
+	for _, vt := range scalars {
+		t.Run(string(vt), func(t *testing.T) {
+			var hot string
+			hotExpr := "typeof((" + eavElementCastExpr(vt) + ")) FROM " + eavFixtureSubquery
+			require.NoError(t, db.QueryRow("SELECT "+hotExpr).Scan(&hot),
+				"hot-leg cast %q must evaluate", eavElementCastExpr(vt))
+
+			cold := typeOf(t, "NULL::"+DuckDBNullScanType(vt, ""))
+			require.Equal(t, hot, cold,
+				"cold NULL scan type must equal the hot-leg EAV cast type for %s (#205 no-widening)", vt)
+		})
+	}
+
+	// LIST: the elem+"[]" construction has to name the same type DuckDB gives
+	// an aggregated list of the element cast.
+	t.Run("list_bigint", func(t *testing.T) {
+		var hot string
+		require.NoError(t, db.QueryRow(
+			"SELECT typeof(list(x)) FROM (SELECT "+eavElementCastExpr(forma.ValueTypeBigInt)+
+				" AS x FROM "+eavFixtureSubquery+")").Scan(&hot))
+		cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.ValueTypeList, forma.ValueTypeBigInt))
+		require.Equal(t, hot, cold, "LIST element type must round-trip through the []-suffix construction")
+	})
 }
