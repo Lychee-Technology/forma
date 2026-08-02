@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"fmt"
 	"testing"
 	"text/template"
 
@@ -24,22 +25,40 @@ func compiledParityParams(t *testing.T) map[string]any {
 	}, 7)
 }
 
+// coldParityParams is compiledParityParams carrying a #255 cold-missing set,
+// so the scan-source augmentation participates in the parity contract.
+func coldParityParams(t *testing.T, missing []NullScanColumn) map[string]any {
+	t.Helper()
+	params := compiledParityParams(t)
+	if len(missing) > 0 {
+		params["ColdMissingColumns"] = missing
+	}
+	return params
+}
+
 // requireCompiledParity is the #142 phase-5 contract: Compile+Bind must
 // reproduce BuildDuckDBQuery byte-for-byte (SQL) and deep-equal (args) for
-// the production advanced+dual path.
-func requireCompiledParity(t *testing.T, q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID) {
+// the production advanced+dual path. missing carries the #255 cold-missing
+// set (nil for the unaugmented shapes).
+func requireCompiledParity(t *testing.T, q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID, missing []NullScanColumn) {
 	t.Helper()
 
-	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, dirtyIDs, &dual)
+	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, coldParityParams(t, missing), q, dirtyIDs, &dual)
 	require.NoError(t, err)
 
-	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), q, &dual, len(dirtyIDs) > 0)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, coldParityParams(t, missing), q, &dual, len(dirtyIDs) > 0)
 	require.NoError(t, err)
 	require.NotNil(t, compiled)
 
 	gotSQL, gotArgs := compiled.Bind(q, dual, dirtyIDs, FlushGraceCutoffDisabled)
 	require.Equal(t, wantSQL, gotSQL)
 	require.Equal(t, wantArgs, gotArgs)
+
+	// Non-vacuity: a cold-missing case must actually render the augmentation,
+	// otherwise the parity assertion above would hold trivially.
+	for _, mc := range missing {
+		require.Contains(t, gotSQL, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
+	}
 }
 
 func parityDual(t *testing.T, cond forma.Condition, cache forma.SchemaAttributeCache) DualClauses {
@@ -70,18 +89,41 @@ func TestCompiledQueryParity(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		q     *model.FederatedAttributeQuery
-		dirty []uuid.UUID
+		q       *model.FederatedAttributeQuery
+		dirty   []uuid.UUID
+		missing []NullScanColumn
 	}{
-		"plain":            {&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}, nil},
-		"with dirty ids":   {&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}, dirty},
-		"with keyset":      {keysetQ, nil},
-		"keyset and dirty": {keysetQ, dirty},
-		"cold only":        {coldOnlyQ, dirty},
+		"plain":            {&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}, nil, nil},
+		"with dirty ids":   {&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}, dirty, nil},
+		"with keyset":      {keysetQ, nil, nil},
+		"keyset and dirty": {keysetQ, dirty, nil},
+		"cold only":        {coldOnlyQ, dirty, nil},
+		// #255: the augmented scan source must render identically on the
+		// compiled skeleton and the direct build, or a cache-served request
+		// would scan a different shape than the one it compiled.
+		"cold missing columns": {
+			&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}},
+			dirty,
+			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}, {Name: "tags", DuckDBType: "BIGINT[]"}},
+		},
+		// The augmentation must survive the two shapes that rewrite the
+		// surrounding SQL: the keyset predicate (appended after the logical
+		// clause, so placeholder order is at stake) and the hot-excluded tier
+		// form (which drops the pg_source CTE and its PgMainArgs occurrence).
+		"keyset and cold missing": {
+			keysetQ,
+			dirty,
+			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}},
+		},
+		"cold only and cold missing": {
+			coldOnlyQ,
+			dirty,
+			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}, {Name: "tags", DuckDBType: "BIGINT[]"}},
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			requireCompiledParity(t, tc.q, parityDual(t, tc.q.Condition, cache), tc.dirty)
+			requireCompiledParity(t, tc.q, parityDual(t, tc.q.Condition, cache), tc.dirty, tc.missing)
 		})
 	}
 }

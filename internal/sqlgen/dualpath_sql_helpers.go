@@ -163,8 +163,10 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 //
 // Dotted attribute names fold through ParquetAttrColumn (#260): the CTEs
 // project every attribute under its parquet column alias, because the same
-// clause also runs against raw read_parquet output where only the physical
-// (folded) column exists.
+// clause also runs against the parquet scan source, which exposes the physical
+// (folded) columns. Since #255 that scan source may additionally project typed
+// NULLs (BuildParquetScanSource) for attributes absent from EVERY file in the
+// set — those aliases are folded names too, so the clause binds either way.
 func resolveDuckDBColumn(attr string) string {
 	return ParquetAttrColumn(attr)
 }

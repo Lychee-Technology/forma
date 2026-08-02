@@ -116,11 +116,13 @@ func TestParquetSchemaValidator_ValidPathsPassAndCache(t *testing.T) {
 	v := newParquetSchemaValidator()
 	paths := []string{"s3://b/1/a.parquet", "s3://b/1/b.parquet"}
 
-	require.NoError(t, v.Validate(context.Background(), duck, paths))
+	_, _, err := v.Validate(context.Background(), duck, paths)
+	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 
 	// Parquet objects are write-once: validated paths are never re-probed.
-	require.NoError(t, v.Validate(context.Background(), duck, paths))
+	_, _, err = v.Validate(context.Background(), duck, paths)
+	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
 
@@ -130,7 +132,7 @@ func TestParquetSchemaValidator_MissingSystemColumnFailsClassified(t *testing.T)
 	}}
 	v := newParquetSchemaValidator()
 
-	err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
@@ -144,7 +146,7 @@ func TestParquetSchemaValidator_WrongSystemColumnTypeFailsClassified(t *testing.
 	}}
 	v := newParquetSchemaValidator()
 
-	err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), `"row_id"`)
@@ -159,11 +161,13 @@ func TestParquetSchemaValidator_UnreadableFooterIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"corrupt.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	require.NoError(t, v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}))
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	require.NoError(t, err)
 	require.Len(t, duck.probes, 1)
 
 	// Inconclusive results are not cached: the next query re-probes.
-	require.NoError(t, v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}))
+	_, _, err = v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
 
@@ -181,7 +185,7 @@ func TestParquetSchemaValidator_GlobExpandsAndValidatesMatches(t *testing.T) {
 	}
 	v := newParquetSchemaValidator()
 
-	err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), "wrong.parquet")
@@ -191,15 +195,22 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"1/*.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	require.NoError(t, v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}))
+	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	require.NoError(t, err)
 	require.Len(t, duck.probes, 1, "the glob listing attempt is the only probe")
+	require.False(t, complete,
+		"a failed listing leaves the footer union unknown: it must not be reported complete, "+
+			"or #255 would augment columns the unlisted files may actually carry")
+	require.Empty(t, union, "nothing was probed, so nothing contributes to the union")
 }
 
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
 	duck := &scriptedDescribeExecutor{}
 	var nilValidator *parquetSchemaValidator
-	require.NoError(t, nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"}))
-	require.NoError(t, newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"}))
+	_, _, err := nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"})
+	require.NoError(t, err)
+	_, _, err = newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"})
+	require.NoError(t, err)
 	require.Empty(t, duck.probes)
 }
 
@@ -275,6 +286,55 @@ func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 	require.Equal(t, 0, duck.describeCalls, "open breaker must reject before schema probes reach storage")
 	require.Equal(t, 0, duck.calls, "open breaker must reject before the main scan")
 	require.Equal(t, 0, src.pathsCalls, "open breaker must reject before path resolution")
+}
+
+// #255: Validate reports the union of footer columns and whether it is
+// complete. The union drives NULL augmentation for never-flushed columns,
+// so an incomplete union must be reported as such — augmenting a column
+// that exists in an unprobed file would collide with the real column.
+func TestValidateReturnsCompleteColumnUnion(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"base.parquet":  append(buildValidSystemCols(), [2]string{"name", "VARCHAR"}),
+		"delta.parquet": append(buildValidSystemCols(), [2]string{"name", "VARCHAR"}, [2]string{"score", "INTEGER"}),
+	}}
+	v := newParquetSchemaValidator()
+	union, complete, err := v.Validate(context.Background(), exec,
+		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"})
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Contains(t, union, "name")
+	require.Contains(t, union, "score")
+	require.Contains(t, union, "row_id")
+}
+
+func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
+	exec := &scriptedDescribeExecutor{
+		cols:      map[string][][2]string{"good.parquet": buildValidSystemCols()},
+		failPaths: map[string]bool{"bad.parquet": true},
+	}
+	v := newParquetSchemaValidator()
+	union, complete, err := v.Validate(context.Background(), exec,
+		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"})
+	require.NoError(t, err, "unreadable footer stays inconclusive, not an error")
+	require.False(t, complete)
+	require.Contains(t, union, "row_id", "probed files still contribute")
+}
+
+// A cache hit must contribute its stored columns without a second probe.
+func TestValidateCachedPathContributesColumnsWithoutReprobe(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"a.parquet": append(buildValidSystemCols(), [2]string{"score", "INTEGER"}),
+	}}
+	v := newParquetSchemaValidator()
+	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	require.NoError(t, err)
+	probesAfterFirst := len(exec.probes)
+
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Contains(t, union, "score")
+	require.Len(t, exec.probes, probesAfterFirst, "cached path must not re-probe")
 }
 
 // describeOverridingExecutor overrides the DESCRIBE answer while delegating

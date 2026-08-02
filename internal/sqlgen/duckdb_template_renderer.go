@@ -181,21 +181,26 @@ func requireProjectionParams(params map[string]any) error {
 	return fmt.Errorf("advanced DuckDB template render is missing schema projection params [%s]; derive them via BuildSchemaProjection or BuildBenchmarkProjections — the toy-schema defaults were retired (#222)", strings.Join(missing, ", "))
 }
 
-// requireS3Paths fails an advanced-template render whose S3_PATHS is unbound.
-// The template renders read_parquet({{.S3_PATHS}}, union_by_name=true) with no
-// guard of its own, so an absent binding used to reach DuckDB as the literal
+// requireS3Paths fails an advanced-template render whose parquet scan source
+// is unbound. The template renders FROM {{.S3_SCAN_SOURCE}} with no guard of
+// its own, so an absent binding used to reach DuckDB as the literal
 // "<no value>" — a parser error that classified as a degradable read failure,
 // indistinguishable from a transient S3 outage (#299). The engine now rejects
 // an empty resolved path set before it gets here (ErrNoParquetPaths); this
 // keeps the bad render unreachable from every other caller too, the same way
 // requireProjectionParams closed the retired toy-projection hole (#222).
+// It checks S3_SCAN_SOURCE rather than S3_PATHS because that is what the
+// template actually consumes since #255 — the scan source is derived from the
+// path set in injectDuckDBTemplateParams, so an unresolved path set still
+// fails here, and a scan source injected directly is equally covered.
 func requireS3Paths(params map[string]any) error {
-	if paths, ok := params["S3_PATHS"].(string); ok && paths != "" {
+	if src, ok := params["S3_SCAN_SOURCE"].(string); ok && src != "" {
 		return nil
 	}
-	return fmt.Errorf("advanced DuckDB template render is missing S3_PATHS; " +
-		"resolve a non-empty parquet path set first (render hint or manifest source) — " +
-		"an unbound value renders read_parquet(<no value>) (#299)")
+	return fmt.Errorf("advanced DuckDB template render is missing S3_SCAN_SOURCE " +
+		"(derived from S3_PATHS); resolve a non-empty parquet path set first " +
+		"(render hint or manifest source) — an unbound value renders a " +
+		"FROM <no value> parser error (#299, #255)")
 }
 
 func defaultIfEmpty(s, fallback string) string {
@@ -233,6 +238,27 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	if _, ok := params["FlushGraceCutoffMs"]; !ok {
 		params["FlushGraceCutoffMs"] = FlushGraceCutoffDisabled
 	}
+
+	// The parquet path set and the scan source derived from it are set before
+	// the nil-q return too: the advanced template consumes S3_SCAN_SOURCE
+	// unconditionally, so every render path (dual, legacy, nil query) must be
+	// able to bind it.
+	if _, ok := params["S3_PATHS"]; !ok {
+		if paths, ok := params["DuckDBS3Paths"].([]string); ok && len(paths) > 0 {
+			params["S3_PATHS"] = formatDuckDBPathList(paths)
+		}
+	}
+	// The scan source folds the resolved path list with the cold-missing
+	// column set (#255). Derived here — the single point both the direct
+	// builder and CompileDuckDBQuery flow through — so the compiled skeleton
+	// and the direct render can never disagree.
+	if _, ok := params["S3_SCAN_SOURCE"]; !ok {
+		if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
+			missing, _ := params["ColdMissingColumns"].([]NullScanColumn)
+			params["S3_SCAN_SOURCE"] = BuildParquetScanSource(pathsSQL, missing)
+		}
+	}
+
 	if q == nil {
 		return
 	}
@@ -274,12 +300,6 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	if _, ok := params["PG_CONN"]; !ok {
 		if raw, ok := params["DuckDBPGConnString"].(string); ok && raw != "" {
 			params["PG_CONN"] = sqlutil.EscapeLiteral(raw)
-		}
-	}
-
-	if _, ok := params["S3_PATHS"]; !ok {
-		if paths, ok := params["DuckDBS3Paths"].([]string); ok && len(paths) > 0 {
-			params["S3_PATHS"] = formatDuckDBPathList(paths)
 		}
 	}
 

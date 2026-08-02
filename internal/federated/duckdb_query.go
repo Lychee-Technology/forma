@@ -116,7 +116,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		}
 	}()
 
-	parquetPaths, pathsFromSource, graceCutoffMs, err := e.resolveScanSources(ctx, q)
+	parquetPaths, pathsFromSource, graceCutoffMs, coldMissing, err := e.resolveScanSources(ctx, q)
 	if err != nil {
 		return 0, err
 	}
@@ -128,7 +128,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, coldMissing, planCtx)
 	if err != nil {
 		return 0, fmt.Errorf("build duckdb federated query: %w", err)
 	}
@@ -146,10 +146,20 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}, rowHandler, planCtx)
 }
 
+// schemaCacheByID is the nil-safe metadata-cache accessor shared by the
+// pre-flight (#255 cold-missing computation) and the SQL build.
+func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAttributeCache, bool) {
+	if e == nil || e.metadataCache == nil {
+		return nil, false
+	}
+	return e.metadataCache.GetSchemaCacheByID(schemaID)
+}
+
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
-// set, and validates the parquet system-column invariant.
-func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, graceCutoffMs int64, err error) {
+// set, validates the parquet system-column invariant, and computes the #255
+// cold-missing column set from the footer union the validation produced.
+func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, graceCutoffMs int64, missing []sqlgen.NullScanColumn, err error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
 	// marked flushed at or after this instant may belong to a delta this
 	// path set does not list yet, so the dirty barrier keeps it hot-readable
@@ -161,7 +171,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// gates the read-error classification.
 	paths, fromSource, err = e.resolveParquetPaths(ctx, q)
 	if err != nil {
-		return nil, false, 0, fmt.Errorf("resolve parquet paths: %w", err)
+		return nil, false, 0, nil, fmt.Errorf("resolve parquet paths: %w", err)
 	}
 
 	// An empty path set cannot answer this query (#299). Only warm/cold-wanting
@@ -172,7 +182,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// It must precede the validator: that walks the path set and so reports
 	// nothing at all on an empty one.
 	if len(paths) == 0 {
-		return nil, false, 0, &NoParquetPathsError{
+		return nil, false, 0, nil, &NoParquetPathsError{
 			SchemaID:         q.SchemaID,
 			SourceConfigured: e.parquetSource != nil,
 		}
@@ -191,11 +201,31 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// parquetcheck invariant codifies the PRODUCTION exporters, which never
 	// write those IDs (ValidateFixtureSchemaID reserves the range).
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		if err := e.schemaValidator.Validate(ctx, e.duck, paths); err != nil {
-			return nil, false, 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
+		unionCols, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths)
+		if err != nil {
+			return nil, false, 0, nil, fmt.Errorf("pre-read parquet schema validation: %w", err)
+		}
+		// Never-flushed column augmentation (#255): only a COMPLETE footer
+		// union may drive it — augmenting a column that exists in an
+		// unprobed file would collide with the real column. Incomplete
+		// unions fall back to the unaugmented scan, whose binder failure
+		// stays loud, classified, and degradable (today's contract).
+		//
+		// Accepted listing skew (adjudicated): for a GLOB path set the
+		// validator expands the glob itself while read_parquet re-lists at
+		// execution, so a flush landing between the two puts an unprobed
+		// file in the scan while complete=true. The augmented NULL alias
+		// then collides with that file's real column — a one-time loud,
+		// classified binder failure that self-heals on the next query,
+		// because the missing set is recomputed per query. This is
+		// accepted; do not widen the gate to avoid it.
+		if complete {
+			if cache, ok := e.schemaCacheByID(q.SchemaID); ok {
+				missing = coldMissingColumns(cache, unionCols)
+			}
 		}
 	}
-	return paths, fromSource, graceCutoffMs, nil
+	return paths, fromSource, graceCutoffMs, missing, nil
 }
 
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.
