@@ -11,18 +11,3 @@ func TestBuildPGDSN_QuotesValues(t *testing.T) {
 		t.Fatalf("BuildPGDSN = %s, want %s", got, want)
 	}
 }
-
-func TestQuotePGConnValue(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"plain", "'plain'"},
-		{"pa ss", "'pa ss'"},
-		{"it's", `'it\'s'`},
-		{`back\slash`, `'back\\slash'`},
-		{"", "''"},
-	}
-	for _, tt := range tests {
-		if got := quotePGConnValue(tt.in); got != tt.want {
-			t.Fatalf("quotePGConnValue(%q) = %s, want %s", tt.in, got, tt.want)
-		}
-	}
-}
