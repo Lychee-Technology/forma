@@ -157,13 +157,75 @@ func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
 	}
 
 	// LIST: the elem+"[]" construction has to name the same type DuckDB gives
-	// an aggregated list of the element cast.
-	t.Run("list_bigint", func(t *testing.T) {
-		var hot string
+	// an aggregated list of the element cast — for every items type, since each
+	// takes a different eavElementCastExpr arm.
+	for _, items := range scalars {
+		t.Run("list_"+string(items), func(t *testing.T) {
+			var hot string
+			require.NoError(t, db.QueryRow(
+				"SELECT typeof(list(x)) FROM (SELECT "+eavElementCastExpr(items)+
+					" AS x FROM "+eavFixtureSubquery+")").Scan(&hot))
+			cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.ValueTypeList, items))
+			require.Equal(t, hot, cold, "LIST element type must round-trip through the []-suffix construction for items=%s", items)
+		})
+	}
+}
+
+// eavPivotFixtureSubquery extends eavFixtureSubquery with the columns the full
+// pivot expression additionally reads: attr_id (matching the probe's attribute
+// ID 9) and array_indices (a non-empty element index, so the list branch's
+// FILTER keeps the row).
+const eavPivotFixtureSubquery = "(SELECT 9 AS attr_id, CAST(1 AS DOUBLE) AS value_numeric, " +
+	"CAST('x' AS VARCHAR) AS value_text, CAST('0' AS VARCHAR) AS array_indices)"
+
+// TestDuckDBNullScanTypeMatchesPivotLegTypeof asserts the SAME lockstep against
+// the full hot-leg pivot expression (buildEAVPivotExpr) rather than only the
+// element cast. The two are type-identical today because every pivot arm wraps
+// the element cast's type unchanged (MAX/list preserve it, the bool arm renders
+// BOOLEAN either way) — but nothing else enforces that, and it is the pivot,
+// not the bare element cast, that pg_source actually projects into the UNION
+// ALL. If a future pivot arm diverges from eavElementCastExpr for some scalar,
+// this test fails where the sibling above cannot (round-2 review observation).
+func TestDuckDBNullScanTypeMatchesPivotLegTypeof(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	pivotTypeof := func(t *testing.T, meta forma.AttributeMetadata) string {
+		t.Helper()
+		expr := buildEAVPivotExpr(attrProjectionInfo{attrID: 9, meta: meta})
+		var typ string
 		require.NoError(t, db.QueryRow(
-			"SELECT typeof(list(x)) FROM (SELECT "+eavElementCastExpr(forma.ValueTypeBigInt)+
-				" AS x FROM "+eavFixtureSubquery+")").Scan(&hot))
-		cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.ValueTypeList, forma.ValueTypeBigInt))
-		require.Equal(t, hot, cold, "LIST element type must round-trip through the []-suffix construction")
-	})
+			"SELECT typeof(("+expr+")) FROM "+eavPivotFixtureSubquery).Scan(&typ),
+			"pivot expr %q must evaluate", expr)
+		return typ
+	}
+	nullTypeof := func(t *testing.T, rendered string) string {
+		t.Helper()
+		var typ string
+		require.NoError(t, db.QueryRow("SELECT typeof(NULL::"+rendered+")").Scan(&typ))
+		return typ
+	}
+
+	scalars := []forma.ValueType{
+		forma.ValueTypeBool, forma.ValueTypeBigInt, forma.ValueTypeDate,
+		forma.ValueTypeDateTime, forma.ValueTypeInteger, forma.ValueTypeSmallInt,
+		forma.ValueTypeNumeric, forma.ValueTypeText, forma.ValueTypeUUID,
+	}
+	for _, vt := range scalars {
+		t.Run(string(vt), func(t *testing.T) {
+			hot := pivotTypeof(t, forma.AttributeMetadata{ValueType: vt})
+			cold := nullTypeof(t, DuckDBNullScanType(vt, ""))
+			require.Equal(t, hot, cold,
+				"cold NULL scan type must equal the hot-leg PIVOT type for %s (#205 no-widening)", vt)
+		})
+	}
+	for _, items := range scalars {
+		t.Run("list_"+string(items), func(t *testing.T) {
+			hot := pivotTypeof(t, forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: items})
+			cold := nullTypeof(t, DuckDBNullScanType(forma.ValueTypeList, items))
+			require.Equal(t, hot, cold,
+				"cold NULL scan type must equal the hot-leg LIST pivot type for items=%s", items)
+		})
+	}
 }
