@@ -17,7 +17,3 @@ type PGDSNParams = pgdsn.Params
 func BuildPGDSN(p PGDSNParams) string {
 	return pgdsn.Build(p)
 }
-
-func quotePGConnValue(v string) string {
-	return pgdsn.Quote(v)
-}

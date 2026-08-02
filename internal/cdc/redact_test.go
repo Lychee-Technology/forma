@@ -17,7 +17,7 @@ const redactSecret = "secret123"
 const redactHostileSecret = "p'w\\d"
 
 // redactHostileFragment is the leaking password tail as it appears *after*
-// quoting: quotePGConnValue doubles the backslash, so the tail that a naive
+// quoting: pgdsn.Quote doubles the backslash, so the tail that a naive
 // matcher leaks is w\\d (Go literal for w, backslash, backslash, d). This is
 // the exact material the buggy '[^']*' branch surfaced past ***REDACTED***; it
 // must never survive redaction in any DSN form.
