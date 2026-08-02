@@ -331,6 +331,24 @@ a strict inequality on that key at the boundary, which silently skips every row
 tied there; the trailing `row_id` gives the composite key a unique tiebreak so
 each boundary tie is resolvable (#183).
 
+**Never-flushed columns (#255).** `union_by_name` can only union columns that
+exist in *some* file. An attribute added to the schema before its first flush is
+absent from the entire scan set, so the scan source (both `s3_source` and the
+semijoin) is wrapped as
+`(SELECT *, NULL::<type> AS <col> … FROM read_parquet(…)) AS cold_scan`,
+projecting each such column as a typed NULL — computed per query from the
+pre-read validator's footer-column union, and only when that union is complete
+(an incomplete union falls back to the unaugmented scan and today's loud
+classified failure). The missing-column set participates in the compiled-plan
+scope hash, so a skeleton compiled while a column was cold-absent is re-keyed the
+moment the first flush lands it (the plan-cache poisoning hazard the issue
+mandates addressing). With no missing columns the rendered SQL is byte-identical
+to this document's §5 sketch. One residual race is accepted: for glob-hint path
+sets the validator's listing and the scan's listing are separate S3 LISTs, so a
+flush landing between them can collide the NULL alias with the newly-landed real
+column — a one-time loud classified failure that self-heals on the next query,
+since the missing set is recomputed per query.
+
 ## **6. Optimization Strategies**
 
 ### **6.1 Predicate Pushdown (Critical)**
