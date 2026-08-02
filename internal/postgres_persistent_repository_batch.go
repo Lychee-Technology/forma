@@ -68,6 +68,10 @@ func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
+	// Records in a batch usually share one schema; resolve the #294 delete
+	// scope once per schemaID instead of once per record.
+	scopeBySchema := make(map[int16][]int16)
+
 	for i, record := range records {
 		if record == nil {
 			return fmt.Errorf("record[%d] cannot be nil", i)
@@ -78,7 +82,16 @@ func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.
 		if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 			return fmt.Errorf("update main row for record[%d]: %w", i, err)
 		}
-		if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
+		knownIDs, ok := scopeBySchema[record.SchemaID]
+		if !ok {
+			var err error
+			knownIDs, err = r.knownAttrIDs(record.SchemaID)
+			if err != nil {
+				return fmt.Errorf("resolve replace scope for record[%d]: %w", i, err)
+			}
+			scopeBySchema[record.SchemaID] = knownIDs
+		}
+		if err := r.replaceEAVAttributesScoped(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes, knownIDs); err != nil {
 			return fmt.Errorf("replace eav attributes for record[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {

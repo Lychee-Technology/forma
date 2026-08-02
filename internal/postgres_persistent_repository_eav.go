@@ -88,8 +88,10 @@ func (r *DBPersistentRecordRepository) knownAttrIDs(schemaID int16) ([]int16, er
 	for _, meta := range cache {
 		ids = append(ids, meta.AttributeID)
 	}
-	// Map iteration order is random; sort for a deterministic bind value, then
-	// compact because distinct attribute names may share an attributeID.
+	// Map iteration order is random; sort for a deterministic bind value. The
+	// compact then drops duplicate IDs (distinct attribute names may share an
+	// attributeID) — Compact only removes consecutive duplicates, which the
+	// preceding sort guarantees are adjacent.
 	slices.Sort(ids)
 	return slices.Compact(ids), nil
 }
@@ -99,6 +101,13 @@ func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context,
 	if err != nil {
 		return fmt.Errorf("resolve replace scope: %w", err)
 	}
+	return r.replaceEAVAttributesScoped(ctx, tx, table, schemaID, rowID, attributes, knownIDs)
+}
+
+// replaceEAVAttributesScoped is replaceEAVAttributes with the delete scope
+// precomputed, so batch callers can resolve knownAttrIDs once per schema
+// instead of once per record.
+func (r *DBPersistentRecordRepository) replaceEAVAttributesScoped(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []model.EAVRecord, knownIDs []int16) error {
 	deleteQuery := fmt.Sprintf(
 		"DELETE FROM %s WHERE schema_id = $1 AND row_id = $2 AND attr_id = ANY($3)",
 		sanitizeIdentifier(table),
