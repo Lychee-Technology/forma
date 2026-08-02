@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,15 +63,83 @@ func TestReplaceEAVAttributes(t *testing.T) {
 		{SchemaID: 1, RowID: rowID, AttrID: 10, ArrayIndices: "", ValueText: &text},
 	}
 
-	mock.ExpectExec(`DELETE FROM "eav_table"`).
-		WithArgs(int16(1), rowID).
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("mock_schema", 1, forma.SchemaAttributeCache{
+		"a": {AttributeName: "a", AttributeID: 10, ValueType: forma.ValueTypeText},
+	}))
+
+	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
+		WithArgs(int16(1), rowID, []int16{10}).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec(`INSERT INTO "eav_table"`).
 		WithArgs(int16(1), rowID, int16(10), "", &text, (*float64)(nil)).
 		WillReturnResult(pgxmock.NewResult("INSERT", int64(len(attrs))))
 
-	repo := &DBPersistentRecordRepository{}
+	repo := &DBPersistentRecordRepository{metadataCache: mc}
 	require.NoError(t, repo.replaceEAVAttributes(ctx, mock, "eav_table", 1, rowID, attrs))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestReplaceEAVAttributes_DeleteScopedToCurrentSchemaAttrIDs is the #294
+// "preserve" half: attrID 99 was dropped by schema evolution, so it is absent
+// from the delete scope and its EAV rows survive the update untouched. The
+// scope is sorted (map iteration order is random) and deduplicated (two
+// attribute names may share an attributeID).
+func TestReplaceEAVAttributes_DeleteScopedToCurrentSchemaAttrIDs(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("evolved_schema", 4, forma.SchemaAttributeCache{
+		"zeta":        {AttributeName: "zeta", AttributeID: 21, ValueType: forma.ValueTypeText},
+		"alpha":       {AttributeName: "alpha", AttributeID: 3, ValueType: forma.ValueTypeNumeric},
+		"mid":         {AttributeName: "mid", AttributeID: 12, ValueType: forma.ValueTypeText},
+		"mid_aliased": {AttributeName: "mid_aliased", AttributeID: 12, ValueType: forma.ValueTypeText},
+	}))
+
+	// attrID 99 (dropped attribute) is deliberately NOT in the scope.
+	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
+		WithArgs(int16(4), rowID, []int16{3, 12, 21}).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+
+	repo := &DBPersistentRecordRepository{metadataCache: mc}
+	require.NoError(t, repo.replaceEAVAttributes(ctx, mock, "eav_table", 4, rowID, nil))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReplaceEAVAttributes_NilMetadataCache_SkipsDelete(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	// No DELETE and no INSERT expected — the scope cannot be resolved.
+	repo := &DBPersistentRecordRepository{}
+	err = repo.replaceEAVAttributes(ctx, mock, "eav_table", 3, rowID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no metadata cache configured")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReplaceEAVAttributes_MissingSchemaCache_SkipsDelete(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	// No DELETE and no INSERT expected — the scope cannot be resolved.
+	repo := &DBPersistentRecordRepository{metadataCache: schemameta.NewMetadataCache()}
+	err = repo.replaceEAVAttributes(ctx, mock, "eav_table", 9, rowID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no cache for schema id 9")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

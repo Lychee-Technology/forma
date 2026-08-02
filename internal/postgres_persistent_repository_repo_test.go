@@ -103,7 +103,13 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	defer mock.Close()
 	mock.MatchExpectationsInOrder(true)
 
-	repo := NewDBPersistentRecordRepository(mock, nil)
+	// The update path scopes its EAV delete to the attributeIDs the current
+	// schema can address (#294), so the repository needs a registered cache.
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("mock_schema", 1, forma.SchemaAttributeCache{
+		"a": {AttributeName: "a", AttributeID: 11, ValueType: forma.ValueTypeText},
+	}))
+	repo := NewDBPersistentRecordRepository(mock, mc)
 	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
 	repo.withClock(func() time.Time { return fixed })
 
@@ -135,8 +141,8 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`^DELETE FROM "eav_table"`).
-		WithArgs(int16(1), rowID).
+	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
+		WithArgs(int16(1), rowID, []int16{11}).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec(`^INSERT INTO "eav_table"`).
 		WithArgs(eavArgs...).
@@ -150,6 +156,45 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	err = repo.UpdatePersistentRecord(ctx, tables, record)
 	require.NoError(t, err)
 	assert.Equal(t, fixedMillis, record.UpdatedAt)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete pins the #294
+// read-path consistency class: without metadata the repository cannot know
+// which attrIDs the current schema addresses, so it must fail rather than fall
+// back to an unscoped delete that would purge dropped-attribute EAV rows.
+func TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	repo := NewDBPersistentRecordRepository(mock, schemameta.NewMetadataCache())
+	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
+	repo.withClock(func() time.Time { return fixed })
+
+	rowID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	record := &model.PersistentRecord{SchemaID: 7, RowID: rowID}
+	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
+
+	expected := *record
+	expected.UpdatedAt = fixed.UnixMilli()
+	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, &expected)
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+		WithArgs(updateArgs...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// No EAV delete, no EAV insert, no changelog upsert — transaction rolls back.
+	mock.ExpectRollback()
+
+	err = repo.UpdatePersistentRecord(ctx, tables, record)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no cache for schema id 7")
+	require.NotErrorIs(t, err, forma.ErrInvalidInput)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

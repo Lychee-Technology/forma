@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +95,14 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	pool := connectTestPostgres(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
-	repo := NewDBPersistentRecordRepository(pool, nil)
+	// The update path scopes its EAV delete to current-schema attributeIDs
+	// (#294), so this test's repository needs a registered schema cache.
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("integration_schema", 1, forma.SchemaAttributeCache{
+		"a": {AttributeName: "a", AttributeID: 10, ValueType: forma.ValueTypeText},
+		"b": {AttributeName: "b", AttributeID: 11, ValueType: forma.ValueTypeNumeric},
+	}))
+	repo := NewDBPersistentRecordRepository(pool, mc)
 	rowID := uuid.New()
 
 	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
