@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -71,9 +72,47 @@ func (r *DBPersistentRecordRepository) insertEAVAttributes(ctx context.Context, 
 	return nil
 }
 
+// knownAttrIDs returns the sorted attributeIDs the current schema metadata
+// can address. It is the #294 tolerate-and-preserve boundary: EAV rows whose
+// attrID is outside this set were removed by schema evolution and must
+// survive an update untouched, so a later schema re-add restores them.
+func (r *DBPersistentRecordRepository) knownAttrIDs(schemaID int16) ([]int16, error) {
+	if r.metadataCache == nil {
+		return nil, fmt.Errorf("no metadata cache configured: cannot scope eav delete for schema %d", schemaID)
+	}
+	cache, ok := r.metadataCache.GetSchemaCacheByID(schemaID)
+	if !ok {
+		return nil, fmt.Errorf("no cache for schema id %d: cannot scope eav delete", schemaID)
+	}
+	ids := make([]int16, 0, len(cache))
+	for _, meta := range cache {
+		ids = append(ids, meta.AttributeID)
+	}
+	// Map iteration order is random; sort for a deterministic bind value. The
+	// compact then drops duplicate IDs (distinct attribute names may share an
+	// attributeID) — Compact only removes consecutive duplicates, which the
+	// preceding sort guarantees are adjacent.
+	slices.Sort(ids)
+	return slices.Compact(ids), nil
+}
+
 func (r *DBPersistentRecordRepository) replaceEAVAttributes(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []model.EAVRecord) error {
-	deleteQuery := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(table))
-	if _, err := tx.Exec(ctx, deleteQuery, schemaID, rowID); err != nil {
+	knownIDs, err := r.knownAttrIDs(schemaID)
+	if err != nil {
+		return fmt.Errorf("resolve replace scope: %w", err)
+	}
+	return r.replaceEAVAttributesScoped(ctx, tx, table, schemaID, rowID, attributes, knownIDs)
+}
+
+// replaceEAVAttributesScoped is replaceEAVAttributes with the delete scope
+// precomputed, so batch callers can resolve knownAttrIDs once per schema
+// instead of once per record.
+func (r *DBPersistentRecordRepository) replaceEAVAttributesScoped(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, attributes []model.EAVRecord, knownIDs []int16) error {
+	deleteQuery := fmt.Sprintf(
+		"DELETE FROM %s WHERE schema_id = $1 AND row_id = $2 AND attr_id = ANY($3)",
+		sanitizeIdentifier(table),
+	)
+	if _, err := tx.Exec(ctx, deleteQuery, schemaID, rowID, knownIDs); err != nil {
 		return fmt.Errorf("delete existing eav attributes: %w", err)
 	}
 	return r.insertEAVAttributes(ctx, tx, table, attributes)

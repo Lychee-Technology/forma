@@ -3,6 +3,7 @@ package transform
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -142,11 +143,18 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
 
 	attributes := make([]model.EntityAttribute, 0, len(records))
+	skippedAttrIDs := make(map[int16]struct{})
 	for _, record := range records {
 		attrName, ok := idToName[record.AttrID]
 		if !ok {
-			// Read-path unknown attribute IDs indicate metadata drift, not invalid user input.
-			return nil, fmt.Errorf("unknown attribute id %d for schema %d (attribute not in metadata cache)", record.AttrID, record.SchemaID)
+			// #294 tolerate-and-preserve: this attrID was removed by schema
+			// evolution. Skip it on read — the schema can no longer address
+			// it — but never treat it as an error: the row must stay readable
+			// and updatable, and the stored EAV rows are preserved untouched
+			// (replaceEAVAttributes scopes its delete to current-schema
+			// attrIDs) so re-adding the attribute restores the values.
+			skippedAttrIDs[record.AttrID] = struct{}{}
+			continue
 		}
 		indexSet := presentAttrIndices[attrName]
 		if indexSet == nil {
@@ -168,6 +176,15 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
 		}
 		attributes = append(attributes, attr)
+	}
+	if len(skippedAttrIDs) > 0 {
+		ids := make([]int16, 0, len(skippedAttrIDs))
+		for id := range skippedAttrIDs {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		zap.S().Warnw("skipped EAV records for attribute ids not in metadata cache (removed by schema evolution; rows preserved, #294)",
+			"schemaID", schemaID, "rowID", records[0].RowID, "attrIDs", ids)
 	}
 
 	missingRequired := make(map[int16]string)
@@ -353,88 +370,6 @@ func parseTrimmedFloat64(value string) (float64, error) {
 		return 0, fmt.Errorf("parse float: %w", err)
 	}
 	return parsed, nil
-}
-
-// shouldEnforceRequiredAttribute applies RequiredPolicyIfParentPresent semantics
-// to an attribute using the observed EAV array-index context.
-func shouldEnforceRequiredAttribute(attrName string, presentAttrIndices map[string]map[string]struct{}) bool {
-	return isRequiredAttributeMissing(attrName, presentAttrIndices, false)
-}
-
-// isRequiredAttributeMissing reports whether a required attribute is missing.
-//
-// For nested attributes, the required check is contextual:
-//   - RequiredPolicyAlways enforces the attribute even when its parent path is absent.
-//   - RequiredPolicyIfParentPresent enforces the attribute only when its parent path
-//     is present in the observed EAV records.
-//   - Array-backed attributes must exist for every parent array index that is present.
-func isRequiredAttributeMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, enforceWhenParentMissing bool) bool {
-	if indices, ok := presentAttrIndices[attrName]; ok && len(indices) > 0 {
-		return parentIndexMissing(attrName, presentAttrIndices, indices, enforceWhenParentMissing)
-	}
-
-	parentPath, hasParent := attributeParentPath(attrName)
-	if !hasParent {
-		return true
-	}
-
-	parentIndices := collectParentIndices(parentPath, presentAttrIndices)
-	if len(parentIndices) == 0 {
-		return enforceWhenParentMissing
-	}
-	// The attribute is absent entirely while its parent context exists, so the
-	// required attribute is missing for every observed parent context.
-	return true
-}
-
-// parentIndexMissing verifies that a child attribute is present for every parent
-// context that appears in the EAV records.
-func parentIndexMissing(attrName string, presentAttrIndices map[string]map[string]struct{}, childIndices map[string]struct{}, enforceWhenParentMissing bool) bool {
-	parentPath, hasParent := attributeParentPath(attrName)
-	if !hasParent {
-		return len(childIndices) == 0
-	}
-
-	parentIndices := collectParentIndices(parentPath, presentAttrIndices)
-	if len(parentIndices) == 0 {
-		// No parent context exists, so only RequiredPolicyAlways should fail here.
-		return enforceWhenParentMissing && len(childIndices) == 0
-	}
-	if _, hasNonArrayChild := childIndices[""]; hasNonArrayChild {
-		_, hasNonArrayParent := parentIndices[""]
-		return !hasNonArrayParent
-	}
-	for idx := range parentIndices {
-		if _, ok := childIndices[idx]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
-// collectParentIndices gathers the array-index contexts that imply a parent path
-// exists in the current EAV row. Descendant attributes contribute their observed
-// indices so required children can be checked against the same contexts.
-func collectParentIndices(parentPath string, presentAttrIndices map[string]map[string]struct{}) map[string]struct{} {
-	parentIndices := make(map[string]struct{})
-	prefix := parentPath + "."
-	for presentAttrName, indexSet := range presentAttrIndices {
-		if presentAttrName != parentPath && !strings.HasPrefix(presentAttrName, prefix) {
-			continue
-		}
-		for idx := range indexSet {
-			parentIndices[idx] = struct{}{}
-		}
-	}
-	return parentIndices
-}
-
-func attributeParentPath(attrPath string) (string, bool) {
-	lastDot := strings.LastIndex(attrPath, ".")
-	if lastDot < 0 {
-		return "", false
-	}
-	return attrPath[:lastDot], true
 }
 
 func toTime(value any) (time.Time, error) {
