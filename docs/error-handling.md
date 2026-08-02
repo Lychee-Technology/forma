@@ -298,6 +298,11 @@ Examples:
 - duplicate schema IDs or duplicate attribute IDs during metadata loading
 - storage column mismatches such as a text attribute stored in `value_numeric`
 
+EAV records whose attribute id is no longer present in the schema metadata are
+not an error: they are skipped on read and preserved on update (#294
+tolerate-and-preserve), so removing an attribute from a schema is
+non-destructive and re-adding it restores the stored values.
+
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.
 
@@ -942,5 +947,5 @@ Use explicit messages that name:
 Examples:
 
 - `storage type mismatch for numeric: value_text should not be populated (expected value_numeric)`
-- `unknown attribute id 999 for schema 402 (attribute not in metadata cache)`
+- `missing required attribute 'name' (attrID=1) in EAV records`
 - `attribute 'age' (attrID=2): invalid value: invalid input: cannot convert string to float64`
