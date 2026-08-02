@@ -34,9 +34,8 @@ func queryTierRestricted(ctx context.Context, t *testing.T, env *Env, q Query, w
 // set and physically lacks the column — union_by_name (#189) cannot invent
 // it. Contract: cold-inclusive reads succeed with score as a typed NULL on
 // every parquet-tier row (exact SQL NULL semantics for filters and sorts),
-// hot rows serve real values, and the compiled-plan cache does not keep
-// projecting NULL after the first flush lands the column (the #255
-// plan-cache poisoning hazard).
+// hot rows serve real values, and the same query shape flips from the NULL
+// projection to the real column once the first flush lands it.
 func TestSchemaEvolutionNeverFlushedColumn(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -92,8 +91,20 @@ func TestSchemaEvolutionNeverFlushedColumn(t *testing.T) {
 	}, 5, "base rows; unflushed hot invisible")
 	assertUsesDuckDB(t, coldOnly)
 
-	// Plan-transition (cache-poisoning) regression: compile & cache the
-	// cold-only filter shape while score is cold-absent...
+	// Plan-transition regression: run the cold-only filter shape while score
+	// is cold-absent (the NULL projection excludes every base row)...
+	//
+	// Scope note: this pair proves end-to-end pre/post-flush CORRECTNESS —
+	// the missing set is recomputed per query, so the same shape answers from
+	// the augmented scan before the flush and from the real column after it.
+	// It is NOT a plan-cache proof: the harness engine (production/engine.go)
+	// is built without WithPlanCache, unlike factory.NewEntityManager, so
+	// serveFromPlanCache returns ok=false on every query here and no skeleton
+	// is ever reused. (The harness Env is also manifest-wired, so a flush
+	// changes the resolved path list, which would re-key the scope hash via
+	// parquetPaths regardless.) The genuine re-key proof — same shape, same
+	// paths, cache HIT in between, missing set alone forcing a recompile —
+	// lives in federated.TestEngineColdMissingSetRekeysPlanCache.
 	coldFilter := Query{
 		Schema: simple, PreferredTiers: coldTiers,
 		Filters: []Filter{{Attr: "score", Op: "gte", Value: "50"}},
@@ -102,13 +113,15 @@ func TestSchemaEvolutionNeverFlushedColumn(t *testing.T) {
 	queryTierRestricted(ctx, t, env, coldFilter, 0, "pre-flush cold-only score filter")
 
 	// ...then land the FIRST flush carrying score and re-run the same shape.
-	// A poisoned plan (cached NULL projection) would keep the flushed rows
-	// invisible and return 0. Post-flush nothing is hot, so the parquet-only
-	// read is the whole logical set again and the oracle is authoritative.
+	// A read still projecting NULL for score — because the missing set was
+	// computed once and reused rather than per query — would keep the flushed
+	// rows invisible and return 0. Post-flush nothing is hot, so the
+	// parquet-only read is the whole logical set again and the oracle is
+	// authoritative.
 	mustFlush(ctx, t, env)
 	postFlush := env.AssertQueryMatches(ctx, coldFilter)
 	assertUsesDuckDB(t, postFlush)
 	if postFlush != nil && postFlush.Total != 3 {
-		t.Fatalf("post-flush cold-only score filter total = %d, want 3 — plan-cache poisoning (#255): the skeleton compiled while score was cold-absent is still projecting NULL", postFlush.Total)
+		t.Fatalf("post-flush cold-only score filter total = %d, want 3 — stale NULL augmentation (#255): the read is still projecting NULL for score after the flush landed the real column", postFlush.Total)
 	}
 }

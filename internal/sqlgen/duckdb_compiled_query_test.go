@@ -106,6 +106,20 @@ func TestCompiledQueryParity(t *testing.T) {
 			dirty,
 			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}, {Name: "tags", DuckDBType: "BIGINT[]"}},
 		},
+		// The augmentation must survive the two shapes that rewrite the
+		// surrounding SQL: the keyset predicate (appended after the logical
+		// clause, so placeholder order is at stake) and the hot-excluded tier
+		// form (which drops the pg_source CTE and its PgMainArgs occurrence).
+		"keyset and cold missing": {
+			keysetQ,
+			dirty,
+			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}},
+		},
+		"cold only and cold missing": {
+			coldOnlyQ,
+			dirty,
+			[]NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}, {Name: "tags", DuckDBType: "BIGINT[]"}},
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

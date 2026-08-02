@@ -195,9 +195,13 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"1/*.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 1, "the glob listing attempt is the only probe")
+	require.False(t, complete,
+		"a failed listing leaves the footer union unknown: it must not be reported complete, "+
+			"or #255 would augment columns the unlisted files may actually carry")
+	require.Empty(t, union, "nothing was probed, so nothing contributes to the union")
 }
 
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
