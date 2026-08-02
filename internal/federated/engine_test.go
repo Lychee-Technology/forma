@@ -56,7 +56,8 @@ const testParquetPath = "s3://b/7/a.parquet"
 func withTestParquetPath() EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		WithParquetSource(&fakeParquetSource{paths: []string{testParquetPath}})(e)
-		e.schemaValidator.markValidated(testParquetPath)
+		e.schemaValidator.markValidated(testParquetPath,
+			map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"})
 	}
 }
 

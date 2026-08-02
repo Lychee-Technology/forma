@@ -191,7 +191,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// parquetcheck invariant codifies the PRODUCTION exporters, which never
 	// write those IDs (ValidateFixtureSchemaID reserves the range).
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		if err := e.schemaValidator.Validate(ctx, e.duck, paths); err != nil {
+		if _, _, err := e.schemaValidator.Validate(ctx, e.duck, paths); err != nil {
 			return nil, false, 0, fmt.Errorf("pre-read parquet schema validation: %w", err)
 		}
 	}
