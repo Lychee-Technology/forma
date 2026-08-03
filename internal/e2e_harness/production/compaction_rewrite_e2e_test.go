@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -253,6 +254,11 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, winners, nil)
 	assertManifestMatchesInventory(ctx, t, env, wide)
+	// #256: the merge writer stamps the new base entry from a DESCRIBE of the
+	// tmp object it merged into; tmp→final is a byte-identical copy, so the
+	// stamp must equal a DESCRIBE of the published object.
+	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (merged base)",
+		manifest.FilterByTier(loadSchemaManifest(ctx, t, env, wide), "base"))
 }
 
 // TestCompactionRewriteAllTombstones covers the schema-empties-out edge:
@@ -294,6 +300,10 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, nil, []uuid.UUID{creates[0].RowID, creates[1].RowID})
 	assertManifestMatchesInventory(ctx, t, env, wide)
+	// #256 edge: a zero-row merged base still describes to a full column set,
+	// so it must still carry a byte-truth stamp rather than fall back to nil.
+	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (zero-row merged base)",
+		manifest.FilterByTier(m, "base"))
 
 	empty := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
 	if empty != nil && empty.Total != 0 {

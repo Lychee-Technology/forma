@@ -349,6 +349,32 @@ flush landing between them can collide the NULL alias with the newly-landed real
 column — a one-time loud classified failure that self-heals on the next query,
 since the missing set is recomputed per query.
 
+**Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
+compaction merge) `DESCRIBE` each parquet object they publish and record its
+footer columns (name → DuckDB type) on the manifest entry
+(`FileEntry.columns`). The pre-read validator consults the stamp first: a stamp
+satisfying the system-column invariant short-circuits the footer probe and
+feeds the column union above; a stamp that is absent (an entry predating
+stamping) or fails the invariant falls back to the probe. On that invariant
+verdict a stamp may only short-circuit **success** — a rejected stamp costs one
+probe and never authors a failure, so byte truth (#187) alone decides whether a
+file is malformed, and corruption detection (unreadable footers, the #251
+verify-and-exclude pass in §7.3) is untouched because it never ran on `DESCRIBE`
+results to begin with. The column union is the one named exception to that
+guarantee: the invariant check inspects only the system columns, so a stamp
+that passes it while *under-reporting* the file's attribute columns yields a
+short union that still counts as complete, and the NULL alias then collides
+with a column the file really carries. Unlike the glob-listing race above,
+which self-heals on the next query, that failure **persists** — the entry is
+durable and the validator pins it for the process lifetime — until the manifest
+entry is corrected. Accepted, because a stamp is a write-time `DESCRIBE` of the
+bytes just written: under-reporting takes a corrupted or tampered manifest, and
+the outcome is a loud classified failure rather than silent data loss. Stamping
+is best-effort at write time — a failed self-describe leaves the entry
+unstamped at the cost of one probe on first read. There is no backfill and no
+manifest version bump: field presence is the format signal, and legacy entries
+get stamped as compaction rewrites them.
+
 ## **6. Optimization Strategies**
 
 ### **6.1 Predicate Pushdown (Critical)**

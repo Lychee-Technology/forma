@@ -62,6 +62,9 @@ func TestCDCFlushAndInit(t *testing.T) {
 	if n := countTier(m, "delta"); n == 0 {
 		t.Errorf("manifest has no delta entries: %+v", m.Files)
 	}
+	// #256: the flush writer stamps each delta entry from a DESCRIBE of the
+	// object it just published.
+	assertEntriesStampedToByteTruth(ctx, t, env, "cdc flush (delta)", manifest.FilterByTier(m, "delta"))
 
 	initReport, err := env.RunInit(ctx, simple)
 	if err != nil {
@@ -82,6 +85,12 @@ func TestCDCFlushAndInit(t *testing.T) {
 	if n := countTier(initReport.Manifest, "base"); n == 0 {
 		t.Errorf("manifest has no base entries after init: %+v", initReport.Manifest.Files)
 	}
+	// #256: the init writer stamps each base entry the same way, and the
+	// delta stamps written above survive the manifest round-trip.
+	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (base)",
+		manifest.FilterByTier(initReport.Manifest, "base"))
+	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (deltas preserved)",
+		manifest.FilterByTier(initReport.Manifest, "delta"))
 }
 
 func anyKeyMatches(keys []string, prefix, suffix string) bool {
