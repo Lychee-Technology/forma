@@ -196,9 +196,9 @@ func (s *inMemoryManifestStore) Save(_ context.Context, path string, data []byte
 	return etag, nil
 }
 
-// lastEntry decodes the last saved manifest and returns its final file entry.
+// readLastEntry decodes the last saved manifest and returns its final file entry.
 // Used by tests to inspect manifest stamping.
-func (s *inMemoryManifestStore) lastEntry(t *testing.T) *manifest.FileEntry {
+func (s *inMemoryManifestStore) readLastEntry(t *testing.T) *manifest.FileEntry {
 	t.Helper()
 	if len(s.data) == 0 {
 		t.Fatalf("no manifest was saved")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/parquetcheck"
+	"go.uber.org/zap"
 )
 
 // MergeStats carries what the rewrite orchestration needs to build the new
@@ -39,6 +40,23 @@ type DuckMerger struct {
 	// CopyOptions overrides the parquet COPY options (defaults to the CDC
 	// exporters' FORMAT PARQUET, V2, ZSTD level 3).
 	CopyOptions string
+	// Logger reports the best-effort manifest stamp probe (#256). Optional —
+	// nil is safe and silences it.
+	Logger *zap.Logger
+	// describeColumns is a test seam for the post-merge footer probe that
+	// stamps the manifest entry (#256), mirroring cdc's flush-side seam; nil
+	// uses parquetcheck over this merger's own connection. The probe is the
+	// one step whose failure must be observable without being reproducible
+	// through the connection that just succeeded at everything before it.
+	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
+}
+
+// log is the nil-safe accessor for the optional logger.
+func (d *DuckMerger) log() *zap.Logger {
+	if d == nil || d.Logger == nil {
+		return zap.NewNop()
+	}
+	return d.Logger
 }
 
 func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI string) (MergeStats, error) {
@@ -84,10 +102,22 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 		return MergeStats{}, fmt.Errorf("collect merged file stats from %s: %w", tmpURI, err)
 	}
 
-	cols, err := parquetcheck.DescribeColumns(ctx, d.DB, tmpURI)
+	describe := d.describeColumns
+	if describe == nil {
+		describe = func(ctx context.Context, uri string) (map[string]string, error) {
+			return parquetcheck.DescribeColumns(ctx, d.DB, uri)
+		}
+	}
+	cols, err := describe(ctx, tmpURI)
 	if err != nil {
 		// Best-effort (#256): an unstamped entry only costs the read path a
-		// footer probe. The merge itself already read and wrote these bytes.
+		// footer probe, so this must never fail a merge that already read and
+		// wrote these bytes. It is still worth saying out loud — a DESCRIBE
+		// failing on an object DuckDB just wrote is a signal about the store,
+		// and silently dropping it leaves the resulting probe traffic with no
+		// explanation anywhere.
+		d.log().Warn("failed to describe merged parquet; manifest entry stays unstamped",
+			zap.String("tmp_uri", tmpURI), zap.Error(err))
 		return stats, nil
 	}
 	stats.Columns = cols

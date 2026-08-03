@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stampedSystemCols is a write-time footer stamp that satisfies the
+// buildStampedSystemCols is a write-time footer stamp that satisfies the
 // parquetcheck invariant — what a #256 exporter records in the manifest.
-func stampedSystemCols() map[string]string {
+func buildStampedSystemCols() map[string]string {
 	return map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}
 }
 
@@ -46,12 +46,12 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 	paths := []string{"s3://b/7/a.parquet", "s3://b/7/b.parquet"}
 	// Only the second object's generation carries the "city" column; both
 	// stamps satisfy the system-column invariant.
-	secondCols := stampedSystemCols()
+	secondCols := buildStampedSystemCols()
 	secondCols["city"] = "BIGINT"
 	src := &fakeParquetSource{
 		paths: paths,
 		stamps: map[string]map[string]string{
-			paths[0]: stampedSystemCols(),
+			paths[0]: buildStampedSystemCols(),
 			paths[1]: secondCols,
 		},
 	}
@@ -84,7 +84,7 @@ func TestResolveScanSourcesHintPathsHaveNoStamps(t *testing.T) {
 	const hinted = "s3://hinted/x.parquet"
 	src := &fakeParquetSource{
 		paths:  []string{"s3://b/7/a.parquet"},
-		stamps: map[string]map[string]string{hinted: stampedSystemCols()},
+		stamps: map[string]map[string]string{hinted: buildStampedSystemCols()},
 	}
 	duck := &fakeDuckDBExecutor{}
 	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, forma.DuckDBConfig{},

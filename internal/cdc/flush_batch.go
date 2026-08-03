@@ -53,23 +53,8 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		}
 	}
 
-	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
-	exportSnapshot := e.exportSnapshot
-	if exportSnapshot == nil {
-		exportSnapshot = func(duck *DuckExporter, ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-			return duck.ExportSnapshotToTmp(ctx, cfg, pgConnStr, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
-		}
-	}
-
-	if err := exportSnapshot(e.duck, ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
-		// #226: DuckDB may have written the tmp object before failing and the
-		// retry uses a fresh UUID. Best-effort delete; an S3 delete of a
-		// missing key is a no-op, so this is safe even if nothing was written.
-		if delErr := DeleteObjectKey(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey); delErr != nil {
-			e.logger.Sugar().Warnw("failed to delete tmp object after export failure",
-				"schema_id", e.schemaID, "tmp_key", tmpKey, "err", delErr)
-		}
-		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
+	if err := e.exportBatchToTmp(ctx, batchIDs, tmpKey, batchKind); err != nil {
+		return err
 	}
 
 	if err := CopyTmpToFinal(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {
@@ -140,6 +125,30 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	}
 
 	e.logger.Sugar().Infow("flush batch completed", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs), "final_key", finalKey)
+	return nil
+}
+
+// exportBatchToTmp runs the DuckDB snapshot export into the batch's tmp
+// object. On failure it deletes that object in band (#226): DuckDB may have
+// written it before failing, and the retry mints a fresh UUID, so the orphan
+// would otherwise wait for manifest-reconcile --gc. An S3 delete of a missing
+// key is a no-op, so this is safe even when nothing was written.
+func (e *flushBatchExecutor) exportBatchToTmp(ctx context.Context, batchIDs []uuid.UUID, tmpKey, batchKind string) error {
+	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
+	exportSnapshot := e.exportSnapshot
+	if exportSnapshot == nil {
+		exportSnapshot = func(duck *DuckExporter, ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+			return duck.ExportSnapshotToTmp(ctx, cfg, pgConnStr, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
+		}
+	}
+
+	if err := exportSnapshot(e.duck, ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+		if delErr := DeleteObjectKey(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey); delErr != nil {
+			e.logger.Sugar().Warnw("failed to delete tmp object after export failure",
+				"schema_id", e.schemaID, "tmp_key", tmpKey, "err", delErr)
+		}
+		return fmt.Errorf("duck export snapshot (%s): %w", batchKind, err)
+	}
 	return nil
 }
 

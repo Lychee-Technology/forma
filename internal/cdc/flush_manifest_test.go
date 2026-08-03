@@ -177,7 +177,7 @@ func TestExecuteBatchStampsManifestColumns(t *testing.T) {
 	require.Equal(t, "s3://test-bucket/cdc/7/delta-file.parquet", seenURI)
 
 	// Verify columns are stamped in the manifest
-	entry := store.lastEntry(t)
+	entry := store.readLastEntry(t)
 	require.Equal(t, "UUID", entry.Columns["row_id"])
 	require.Equal(t, "BIGINT", entry.Columns["changed_at"])
 	require.Equal(t, "BIGINT", entry.Columns["deleted_at"])
@@ -273,6 +273,6 @@ func TestExecuteBatchDescribeFailureLeavesEntryUnstamped(t *testing.T) {
 	require.NoError(t, err)
 
 	// Entry must be saved but unstamped
-	entry := store.lastEntry(t)
+	entry := store.readLastEntry(t)
 	require.Nil(t, entry.Columns)
 }

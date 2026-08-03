@@ -190,7 +190,7 @@ func runCompactor(ctx context.Context, args []string) error {
 		Logger:     logger,
 		Config:     opts.compact,
 		Provider:   compaction.NewS3ManifestProvider(opts.manifest, s3Client),
-		Merger:     &compaction.DuckMerger{DB: exporter.DB},
+		Merger:     &compaction.DuckMerger{DB: exporter.DB, Logger: logger},
 		S3:         s3Client,
 		Bucket:     opts.s3.bucket,
 		DataPrefix: opts.dataPrefix,
