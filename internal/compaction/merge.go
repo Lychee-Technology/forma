@@ -17,6 +17,10 @@ type MergeStats struct {
 	RowIDMax   string
 	CreatedMin int64
 	CreatedMax int64
+	// Columns is the merged file's footer schema (name → DuckDB type),
+	// stamped into the manifest entry (#256). Nil when the self-describe
+	// failed; the entry then stays unstamped and reads fall back to probing.
+	Columns map[string]string
 }
 
 // Merger folds a schema's complete base+delta parquet set into one merged
@@ -79,6 +83,15 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 	); err != nil {
 		return MergeStats{}, fmt.Errorf("collect merged file stats from %s: %w", tmpURI, err)
 	}
+
+	cols, err := parquetcheck.DescribeColumns(ctx, d.DB, tmpURI)
+	if err != nil {
+		// Best-effort (#256): an unstamped entry only costs the read path a
+		// footer probe. The merge itself already read and wrote these bytes.
+		return stats, nil
+	}
+	stats.Columns = cols
+
 	return stats, nil
 }
 

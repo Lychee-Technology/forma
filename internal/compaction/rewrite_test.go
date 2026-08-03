@@ -141,6 +141,7 @@ func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
 	merger := &fakeMerger{stats: MergeStats{
 		RowsIn: 1100, RowsOut: 950,
 		RowIDMin: "aaa", RowIDMax: "zzz", CreatedMin: 100, CreatedMax: 900,
+		Columns: map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"},
 	}}
 	s3c := &fakeObjectS3{size: 4096}
 
@@ -175,6 +176,7 @@ func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
 	require.Equal(t, int64(100), newBase.CreatedMin)
 	require.Equal(t, int64(900), newBase.CreatedMax)
 	require.Equal(t, int64(4096), newBase.SizeBytes)
+	require.Equal(t, map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}, newBase.Columns)
 
 	// Sources deleted only AFTER the successful commit; staged key kept.
 	require.Equal(t, []string{"p/1/aaa_bbb.parquet", "p/1/ddd.parquet"}, nonTmpDeletes(s3c.deletes))

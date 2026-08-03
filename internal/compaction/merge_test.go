@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 	"github.com/stretchr/testify/require"
 )
 
@@ -115,6 +116,12 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 		rowC: {changedAt: 100, deletedAt: 0, title: "c-v1"},   // untouched base row
 		rowD: {changedAt: 150, deletedAt: 0, title: "d-base"}, // tie: base-wins preserved
 	}, got)
+
+	// Verify stats carry the merged file's stamp satisfying the system-column
+	// invariant.
+	if err := parquetcheck.Check("merged", stats.Columns); err != nil {
+		t.Fatalf("merged stats must carry a stamp satisfying the invariant: %v", err)
+	}
 }
 
 // TestDuckMerger_AllTombstones pins the schema-empties-out edge: the merge
@@ -136,7 +143,15 @@ func TestDuckMerger_AllTombstones(t *testing.T) {
 	merger := &DuckMerger{DB: db}
 	stats, err := merger.MergeToTmp(context.Background(), []string{basePath, deltaPath}, tmpPath)
 	require.NoError(t, err)
-	require.Equal(t, MergeStats{RowsIn: 2, RowsOut: 0, RowIDMin: "", RowIDMax: "", CreatedMin: 0, CreatedMax: 0}, stats)
+	// Verify basic stats; Columns will be populated by DescribeColumns
+	require.Equal(t, int64(2), stats.RowsIn)
+	require.Equal(t, int64(0), stats.RowsOut)
+	require.Equal(t, "", stats.RowIDMin)
+	require.Equal(t, "", stats.RowIDMax)
+	require.Equal(t, int64(0), stats.CreatedMin)
+	require.Equal(t, int64(0), stats.CreatedMax)
+	// Columns should be populated even for zero-row merges
+	require.NotNil(t, stats.Columns)
 
 	var n int
 	require.NoError(t, db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s')", tmpPath)).Scan(&n))
