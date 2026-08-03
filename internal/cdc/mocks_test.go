@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // mockObjectSizeBytes is the ContentLength every mock HeadObject reports, so
@@ -188,4 +189,26 @@ func (s *inMemoryManifestStore) Save(_ context.Context, path string, data []byte
 	s.data[path] = append([]byte(nil), data...)
 	s.etags[path] = etag
 	return etag, nil
+}
+
+// lastEntry decodes the last saved manifest and returns its final file entry.
+// Used by tests to inspect manifest stamping.
+func (s *inMemoryManifestStore) lastEntry(t interface{ Fatalf(string, ...interface{}) }) *manifest.FileEntry {
+	if len(s.data) == 0 {
+		t.Fatalf("no manifest was saved")
+	}
+	var lastPath string
+	var lastData []byte
+	for path, data := range s.data {
+		lastPath = path
+		lastData = data
+	}
+	m, err := manifest.Parse(lastData)
+	if err != nil {
+		t.Fatalf("failed to parse manifest from %s: %v", lastPath, err)
+	}
+	if len(m.Files) == 0 {
+		t.Fatalf("manifest has no files")
+	}
+	return &m.Files[len(m.Files)-1]
 }

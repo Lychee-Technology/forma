@@ -23,6 +23,7 @@ func TestUpdateManifest_NilStore(t *testing.T) {
 		[]uuid.UUID{rowID},
 		1700000000000,
 		0,
+		nil,
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -52,6 +53,7 @@ func TestUpdateManifest_AppendsEntryWithRowBounds(t *testing.T) {
 		rowIDs,
 		createdAt,
 		4096,
+		nil,
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -90,6 +92,7 @@ func TestUpdateManifest_ResolverError(t *testing.T) {
 		nil,
 		1700000000000,
 		0,
+		nil,
 		zap.NewNop(),
 	)
 	require.Error(t, err)
@@ -110,8 +113,85 @@ func TestUpdateManifest_AppendError(t *testing.T) {
 		nil,
 		1700000000000,
 		0,
+		nil,
 		zap.NewNop(),
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "append to manifest")
+}
+
+// The final delta's footer columns are stamped into the manifest entry so
+// federated reads can validate the #189 invariant without a probe (#256).
+func TestExecuteBatchStampsManifestColumns(t *testing.T) {
+	ctx := context.Background()
+	store := newInMemoryManifestStore()
+	resolver := manifest.PathResolver{
+		Prefix:       "cdc",
+		PathTemplate: "manifest/{{.SchemaID}}.json",
+	}
+
+	idOldest := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	idMiddle := uuid.MustParse("018f05c0-0001-7000-8000-000000000001")
+	idNewest := uuid.MustParse("018f05c0-0002-7000-8000-000000000001")
+	rowIDs := []uuid.UUID{idMiddle, idNewest, idOldest}
+	createdAt := int64(1700000000000)
+	stampCols := map[string]string{
+		"row_id":    "UUID",
+		"changed_at": "BIGINT",
+		"deleted_at": "BIGINT",
+	}
+
+	err := updateManifest(
+		ctx,
+		store,
+		resolver,
+		7,
+		"cdc/7/delta-file.parquet",
+		"delta",
+		rowIDs,
+		createdAt,
+		4096,
+		stampCols,
+		zap.NewNop(),
+	)
+	require.NoError(t, err)
+
+	entry := store.lastEntry(t)
+	require.Equal(t, "UUID", entry.Columns["row_id"])
+	require.Equal(t, "BIGINT", entry.Columns["changed_at"])
+	require.Equal(t, "BIGINT", entry.Columns["deleted_at"])
+	require.Len(t, entry.Columns, 3)
+}
+
+// A failed describe must not fail the flush and must leave the entry
+// unstamped — the read path falls back to footer probing (SizeBytes
+// precedent).
+func TestExecuteBatchDescribeFailureLeavesEntryUnstamped(t *testing.T) {
+	ctx := context.Background()
+	store := newInMemoryManifestStore()
+	resolver := manifest.PathResolver{
+		Prefix:       "cdc",
+		PathTemplate: "manifest/{{.SchemaID}}.json",
+	}
+
+	rowID := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
+	createdAt := int64(1700000000000)
+
+	err := updateManifest(
+		ctx,
+		store,
+		resolver,
+		7,
+		"cdc/7/delta-file.parquet",
+		"delta",
+		[]uuid.UUID{rowID},
+		createdAt,
+		4096,
+		nil,
+		zap.NewNop(),
+	)
+	require.NoError(t, err)
+
+	entry := store.lastEntry(t)
+	require.Nil(t, entry.Columns)
 }

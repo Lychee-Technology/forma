@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 	"go.uber.org/zap"
 )
 
@@ -30,6 +31,9 @@ type flushBatchExecutor struct {
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
 	markFlushed      func(context.Context, *sql.DB, string, int16, []uuid.UUID, int64, int64) ([]uuid.UUID, error)
+	// describeColumns is a test seam for the write-time footer probe that
+	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
+	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
 }
 
 func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.UUID, tmpKey string, finalKey string, batchKind string) error {
@@ -79,6 +83,8 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 			"schema_id", e.schemaID, "final_key", finalKey, "err", err)
 	}
 
+	stampCols := e.stampColumns(ctx, finalKey)
+
 	// Order (#252): manifest-append precedes mark-flushed, so no query ever
 	// lands in a state where the batch's rows are in neither tier. The middle
 	// state — delta listed but rows still flushed_at = 0 — is safe by
@@ -102,7 +108,7 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	// listed — accepted, never rolled back.
 	entryCreatedAt := time.Now().UnixMilli()
 	if e.manifestStore != nil {
-		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, entryCreatedAt, sizeBytes, e.logger); err != nil {
+		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, entryCreatedAt, sizeBytes, stampCols, e.logger); err != nil {
 			return fmt.Errorf("manifest update (%s) for %s: %w", batchKind, finalKey, err)
 		}
 	}
@@ -135,6 +141,31 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 
 	e.logger.Sugar().Infow("flush batch completed", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs), "final_key", finalKey)
 	return nil
+}
+
+// stampColumns best-effort probes the just-published final object's footer
+// for the manifest column stamp (#256). tmp→final is a byte-identical
+// CopyObject, so the final's footer is the export's footer. Failure leaves
+// the entry unstamped — readers fall back to probing — so stamping never
+// fails a flush.
+func (e *flushBatchExecutor) stampColumns(ctx context.Context, finalKey string) map[string]string {
+	describe := e.describeColumns
+	if describe == nil {
+		if e.duck == nil || e.duck.DB == nil {
+			return nil
+		}
+		describe = func(ctx context.Context, uri string) (map[string]string, error) {
+			return parquetcheck.DescribeColumns(ctx, e.duck.DB, uri)
+		}
+	}
+	uri := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, finalKey)
+	cols, err := describe(ctx, uri)
+	if err != nil {
+		e.logger.Sugar().Warnw("failed to describe final delta object; manifest entry stays unstamped",
+			"schema_id", e.schemaID, "final_key", finalKey, "err", err)
+		return nil
+	}
+	return cols
 }
 
 func buildFlushS3Keys(cfg CDCConfig, schemaID int16) (string, string) {
@@ -184,6 +215,7 @@ func updateManifest(
 	rowIDs []uuid.UUID,
 	createdAt int64,
 	sizeBytes int64,
+	columns map[string]string,
 	logger *zap.Logger,
 ) error {
 	if store == nil {
@@ -203,6 +235,7 @@ func updateManifest(
 		CreatedMin: createdAt,
 		CreatedMax: createdAt,
 		SizeBytes:  sizeBytes,
+		Columns:    columns,
 	}
 
 	// Set row ID bounds if available
