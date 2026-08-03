@@ -94,7 +94,7 @@ func validateMergeSourceSchemas(ctx context.Context, db *sql.DB, sourceURIs []st
 		if err := validateMergeURI(uri); err != nil {
 			return fmt.Errorf("validate merge source: %w", err)
 		}
-		cols, err := describeParquetColumns(ctx, db, uri)
+		cols, err := parquetcheck.DescribeColumns(ctx, db, uri)
 		if err != nil {
 			continue // inconclusive: the merge read will fail loudly on it
 		}
@@ -103,28 +103,4 @@ func validateMergeSourceSchemas(ctx context.Context, db *sql.DB, sourceURIs []st
 		}
 	}
 	return nil
-}
-
-// describeParquetColumns reads one parquet object's footer schema via the
-// merger's DuckDB session and returns column name → DuckDB type.
-func describeParquetColumns(ctx context.Context, db *sql.DB, uri string) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", uri))
-	if err != nil {
-		return nil, fmt.Errorf("describe parquet %s: %w", uri, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	cols := map[string]string{}
-	for rows.Next() {
-		var name, typ string
-		var null, key, def, extra sql.NullString
-		if err := rows.Scan(&name, &typ, &null, &key, &def, &extra); err != nil {
-			return nil, fmt.Errorf("scan describe row for %s: %w", uri, err)
-		}
-		cols[name] = typ
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate describe rows for %s: %w", uri, err)
-	}
-	return cols, nil
 }
