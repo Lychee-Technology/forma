@@ -77,10 +77,20 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 // readable remainder — partial, loud (plan note names the object), and
 // breaker-neutral (confirmed corruption is not engine sickness, so the
 // DuckDB route survives a permanently corrupt object).
+//
+// The breaker is armed at threshold 1 deliberately: a default Env builds no
+// breaker at all (engine.go only constructs one when breakerFailures > 0,
+// and every CircuitBreaker method is a nil-receiver no-op), so neutrality
+// would be unfalsifiable. At threshold 1 a single RecordFailure opens the
+// circuit, which makes the FIRST post-corruption query — the one that
+// actually eats the failed scan and the in-request retry — the real
+// discriminator, and turns the loop below into a no-stray-failures check.
+// The cooldown outlasts the rest of the test, so an opened breaker cannot
+// silently heal before the assertions run.
 func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster)
+	env := NewEnv(t, cluster, WithBreaker(1, time.Minute))
 	wide := DefaultSchemaFixtures()[1]
 
 	keys := seedMultiParquet(ctx, t, env, wide)
@@ -108,6 +118,12 @@ func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 	assertIDSetEqual(t, resultRowIDSet(t, res), want)
 	if !res.Plan.Routing.UseDuckDB {
 		t.Fatalf("partial read must stay duckdb-routed, got: %+v", res.Plan.Routing)
+	}
+	// The count must be partial too: a recount that still sees the excluded
+	// file would report the pre-corruption total while the page shows fewer
+	// rows (the #181 divergent-total class).
+	if res.Total != int64(len(want)) {
+		t.Errorf("partial read total = %d, want %d (page and count must agree)", res.Total, len(want))
 	}
 	assertCorruptExclusionNote(t, res, keys[1])
 
@@ -148,10 +164,20 @@ func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 // of OneGoodOneBadFile: truncation kills the footer, so the failure surfaces
 // at Query (bind) time rather than mid-stream. Same #251 contract, other
 // error branch.
+//
+// The mode ordering is deliberately inverted relative to OneGoodOneBadFile:
+// here the FIRST post-corruption query — the only one that pays a real
+// failed scan, before any exclusion cache exists — carries
+// AllowPartialDegradedMode. That pins the branch a cache-warm degraded query
+// cannot: on its first corrupt encounter degraded mode must NOT take the
+// Postgres-only fallback, because the partial parquet read succeeds. Between
+// the two tests, both error branches get first-query coverage in both modes.
+// The breaker is armed at threshold 1 for the reason documented on
+// OneGoodOneBadFile.
 func TestManifestConsistency_OneGoodOneTruncatedFile(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster)
+	env := NewEnv(t, cluster, WithBreaker(1, time.Minute))
 	wide := DefaultSchemaFixtures()[1]
 
 	keys := seedMultiParquet(ctx, t, env, wide)
@@ -166,15 +192,33 @@ func TestManifestConsistency_OneGoodOneTruncatedFile(t *testing.T) {
 
 	overwriteObjectBytes(ctx, t, env, keys[1], truncateHalf)
 
+	// First corrupt encounter, degraded mode ON: the fallback must stay
+	// unused — the answer is the partial DuckDB read, not the Postgres-only
+	// (oracle-complete) plan degraded mode used to produce here.
 	partialCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	res, err := env.Query(partialCtx, Query{Schema: wide, Limit: 20})
+	res, err := env.Query(partialCtx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
 	if err != nil {
 		t.Fatalf("truncated file: partial read must succeed with it excluded (#251), got: %v", err)
 	}
 	assertIDSetEqual(t, resultRowIDSet(t, res), want)
 	if !res.Plan.Routing.UseDuckDB {
-		t.Fatalf("partial read must stay duckdb-routed, got: %+v", res.Plan.Routing)
+		t.Fatalf("degraded mode fell back to postgres on the first corrupt encounter although the partial read succeeds: %+v", res.Plan.Routing)
+	}
+	if res.Total != int64(len(want)) {
+		t.Errorf("partial read total = %d, want %d (page and count must agree)", res.Total, len(want))
 	}
 	assertCorruptExclusionNote(t, res, keys[1])
+
+	// Same partial answer from the exclusion cache with degraded mode OFF:
+	// exclusion is a property of the read path, not of the degraded flag.
+	res2, err := env.Query(ctx, Query{Schema: wide, Limit: 20})
+	if err != nil {
+		t.Fatalf("cached-exclusion query (degraded off) failed: %v", err)
+	}
+	assertIDSetEqual(t, resultRowIDSet(t, res2), want)
+	if !res2.Plan.Routing.UseDuckDB {
+		t.Fatalf("cached-exclusion query must stay duckdb-routed, got: %+v", res2.Plan.Routing)
+	}
+	assertCorruptExclusionNote(t, res2, keys[1])
 }
