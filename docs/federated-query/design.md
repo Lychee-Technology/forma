@@ -374,15 +374,58 @@ guarantee: the invariant check inspects only the system columns, so a stamp
 that passes it while *under-reporting* the file's attribute columns yields a
 short union that still counts as complete, and the NULL alias then collides
 with a column the file really carries. Unlike the glob-listing race above,
-which self-heals on the next query, that failure **persists** — the entry is
-durable and the validator pins it for the process lifetime — until the manifest
-entry is corrected. Accepted, because a stamp is a write-time `DESCRIBE` of the
-bytes just written: under-reporting takes a corrupted or tampered manifest, and
-the outcome is a loud classified failure rather than silent data loss. Stamping
-is best-effort at write time — a failed self-describe leaves the entry
-unstamped at the cost of one probe on first read. There is no backfill and no
-manifest version bump: field presence is the format signal, and legacy entries
-get stamped as compaction rewrites them.
+which self-heals on the next query, that failure **persists until the manifest
+entry is corrected** — but correcting it is enough: the rewritten stamp is a
+new cache key (below), so the fix lands on the next query without a restart.
+Accepted, because a stamp is a write-time `DESCRIBE` of the bytes just written:
+under-reporting takes a corrupted or tampered manifest, and the outcome is a
+loud classified failure rather than silent data loss. Stamping is best-effort
+at write time — a failed self-describe leaves the entry unstamped at the cost
+of one probe on first read, and is logged rather than swallowed.
+
+**Scan-level `row_id` guard.** Trusting a stamp means not looking at the bytes,
+which opens one channel the probe path did not have: if the object behind a
+stamped key does not actually carry `row_id` — a rogue overwrite, a tampered
+manifest, the wrong file restored — `union_by_name` NULL-fills the column from
+the sibling objects' schema, those rows fall out of the dirty anti-join, and the
+query **succeeds while ignoring the file**. Silent data loss, the exact
+inversion of #187's contract. The scan source therefore rewrites `row_id` in
+place (`sqlgen.BuildParquetScanSource`, rendered at both scan sites in §5), so
+any scanned row with a NULL `row_id` fails the query outright, classified
+`ErrFederatedReadFailed` and degradable like every other read-side schema
+violation. The guard is untyped on purpose (`COALESCE(row_id, error(…))` with no
+cast): `error()` carries no type of its own, so `COALESCE` adopts the column's —
+UUID for production exports, VARCHAR for the benchmark shape — and nothing
+coerces `row_id` anywhere (#147). A scan set where *no* object carries `row_id`
+fails to bind instead; different message, same contract. Note that #251
+verification drains `SELECT *` without the guard, so a schema-wrong (as opposed
+to byte-corrupt) object is never confirmed corrupt and never excluded — correct:
+exclusion is for unreadable bytes, while an export-schema violation is an
+operator-visible consistency fault, not something to route around.
+
+**Cache invalidation.** The validator caches each path it validates, keyed by
+path **and by the stamp it was validated under** (nil for probe-validated). Path
+alone would be wrong: objects are write-once for flush and compaction, which
+mint fresh UUIDv7 keys, but **not for init** — `cdc.BuildBasePath` is
+deterministic (`{min}_{max}.parquet`), so an init rerun overwrites the object in
+place and rewrites its entry under the same key. A path-keyed cache would serve
+a warmed server the pre-rerun columns for the life of the process. The manifest
+rewrite is therefore the invalidation signal: same stamp, keep the entry; new
+stamp, re-validate. An unchanged stamp still costs zero probes, so the
+cold-start win is intact. When a probe *does* run on a stamped path — which
+happens only when the stamp failed the invariant — the two are cross-checked
+and any divergence is logged with the footer winning the union; that is a log
+and not an error because the read succeeds, so nothing in the caller's result
+would ever mention it.
+
+**Backfill contract: lazy fallback, no backfill.** There is no migration pass
+and no manifest version bump — field presence is the format signal. Legacy
+entries acquire stamps only when a writer rewrites them (compaction merging
+them into a new base, or an init rerun), and an entry that is never rewritten
+stays probe-based **indefinitely, by design**: an unstamped path costs exactly
+one footer probe per process lifetime, which is the pre-#256 steady state, so
+there is nothing to repair and no window in which correctness depends on the
+stamp existing.
 
 ## **6. Optimization Strategies**
 
