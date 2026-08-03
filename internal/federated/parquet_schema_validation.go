@@ -25,8 +25,13 @@ import (
 // paths are expanded per query (the match set changes as objects land) and
 // their concrete matches hit the same cache.
 //
-// The cache stores each validated path's footer columns so a repeat query can
-// contribute them to the column union (#255) without a second probe.
+// The cache stores each validated path's columns so a repeat query can
+// contribute them to the column union (#255) without a second probe. It has
+// two feeders, trusted equally once validated: manifest column stamps written
+// by the exporters (#256) and footer probes. Both are checked against the same
+// parquetcheck invariant before they land, and a stamp records the same
+// name → DuckDB type map a DESCRIBE would have produced, so a cache hit cannot
+// tell — and need not tell — which feeder filled it.
 type parquetSchemaValidator struct {
 	mu    sync.Mutex
 	valid map[string]map[string]string
@@ -48,11 +53,19 @@ func newParquetSchemaValidator() *parquetSchemaValidator {
 // It also returns the union of the probed footers' columns (name → DuckDB
 // type) and whether that union is complete. The union feeds #255 NULL
 // augmentation for columns that no scanned parquet generation carries yet;
-// complete is true only when every path in the set contributed its footer, so
+// complete is true only when every path in the set contributed its columns, so
 // an incomplete union must not drive augmentation — augmenting a column that
 // an unprobed file actually carries would collide with the real column.
+//
+// stamps carries manifest-recorded column maps keyed by the exact path strings
+// in paths (#256); it may be nil. A stamp that satisfies the invariant spares
+// that path its probe. A stamp that does not is ignored and the path is probed
+// as usual: a stamp may only short-circuit success, never author a failure, so
+// a stale or corrupt manifest can cost a probe but can never fail a healthy
+// object.
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
+	stamps map[string]map[string]string,
 ) (map[string]string, bool, error) {
 	if v == nil || duck == nil {
 		return nil, false, nil
@@ -71,14 +84,14 @@ func (v *parquetSchemaValidator) Validate(
 				complete = false // inconclusive: defer to the execution-path classifier
 				continue
 			}
-			ok, err := v.validateConcrete(ctx, duck, expanded, union)
+			ok, err := v.validateConcrete(ctx, duck, expanded, union, stamps)
 			if err != nil {
 				return nil, false, err
 			}
 			complete = complete && ok
 			continue
 		}
-		ok, err := v.validateConcrete(ctx, duck, []string{path}, union)
+		ok, err := v.validateConcrete(ctx, duck, []string{path}, union, stamps)
 		if err != nil {
 			return nil, false, err
 		}
@@ -88,10 +101,12 @@ func (v *parquetSchemaValidator) Validate(
 }
 
 // validateConcrete checks concrete (non-glob) paths against the invariant,
-// consulting and feeding the write-once cache. It merges every contributing
-// footer into union and reports whether all of the given paths contributed.
+// consulting and feeding the write-once cache from either feeder — a passing
+// manifest stamp (#256) or a footer probe. It merges every contributing column
+// map into union and reports whether all of the given paths contributed.
 func (v *parquetSchemaValidator) validateConcrete(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string, union map[string]string,
+	stamps map[string]map[string]string,
 ) (bool, error) {
 	complete := true
 	for _, path := range paths {
@@ -102,6 +117,17 @@ func (v *parquetSchemaValidator) validateConcrete(
 		if cols, ok := v.validatedCols(path); ok {
 			mergeColumnUnion(union, cols)
 			continue
+		}
+		if stamp, ok := stamps[path]; ok && len(stamp) > 0 {
+			if parquetcheck.Check(path, stamp) == nil {
+				v.markValidated(path, stamp)
+				mergeColumnUnion(union, stamp)
+				continue
+			}
+			// The stamp fails the invariant: fall through to the probe. A
+			// stamp may only short-circuit success, never author a failure —
+			// byte truth (#187) decides whether the file is malformed, and a
+			// corrupt manifest must not fail a healthy object (#256).
 		}
 		cols, err := describeParquetColumns(ctx, duck, path)
 		if err != nil {

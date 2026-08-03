@@ -116,12 +116,12 @@ func TestParquetSchemaValidator_ValidPathsPassAndCache(t *testing.T) {
 	v := newParquetSchemaValidator()
 	paths := []string{"s3://b/1/a.parquet", "s3://b/1/b.parquet"}
 
-	_, _, err := v.Validate(context.Background(), duck, paths)
+	_, _, err := v.Validate(context.Background(), duck, paths, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 
 	// Parquet objects are write-once: validated paths are never re-probed.
-	_, _, err = v.Validate(context.Background(), duck, paths)
+	_, _, err = v.Validate(context.Background(), duck, paths, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
@@ -132,7 +132,7 @@ func TestParquetSchemaValidator_MissingSystemColumnFailsClassified(t *testing.T)
 	}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
@@ -146,7 +146,7 @@ func TestParquetSchemaValidator_WrongSystemColumnTypeFailsClassified(t *testing.
 	}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), `"row_id"`)
@@ -161,12 +161,12 @@ func TestParquetSchemaValidator_UnreadableFooterIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"corrupt.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 1)
 
 	// Inconclusive results are not cached: the next query re-probes.
-	_, _, err = v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	_, _, err = v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
@@ -185,7 +185,7 @@ func TestParquetSchemaValidator_GlobExpandsAndValidatesMatches(t *testing.T) {
 	}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), "wrong.parquet")
@@ -195,7 +195,7 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"1/*.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 1, "the glob listing attempt is the only probe")
 	require.False(t, complete,
@@ -207,9 +207,9 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
 	duck := &scriptedDescribeExecutor{}
 	var nilValidator *parquetSchemaValidator
-	_, _, err := nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"})
+	_, _, err := nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"}, nil)
 	require.NoError(t, err)
-	_, _, err = newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"})
+	_, _, err = newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.Empty(t, duck.probes)
 }
@@ -299,7 +299,7 @@ func TestValidateReturnsCompleteColumnUnion(t *testing.T) {
 	}}
 	v := newParquetSchemaValidator()
 	union, complete, err := v.Validate(context.Background(), exec,
-		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"})
+		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Contains(t, union, "name")
@@ -314,7 +314,7 @@ func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
 	}
 	v := newParquetSchemaValidator()
 	union, complete, err := v.Validate(context.Background(), exec,
-		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"})
+		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"}, nil)
 	require.NoError(t, err, "unreadable footer stays inconclusive, not an error")
 	require.False(t, complete)
 	require.Contains(t, union, "row_id", "probed files still contribute")
@@ -326,15 +326,149 @@ func TestValidateCachedPathContributesColumnsWithoutReprobe(t *testing.T) {
 		"a.parquet": append(buildValidSystemCols(), [2]string{"score", "INTEGER"}),
 	}}
 	v := newParquetSchemaValidator()
-	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"}, nil)
 	require.NoError(t, err)
 	probesAfterFirst := len(exec.probes)
 
-	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Contains(t, union, "score")
 	require.Len(t, exec.probes, probesAfterFirst, "cached path must not re-probe")
+}
+
+// stampCols renders the fixture DESCRIBE pairs as a manifest column stamp
+// (name → DuckDB type), the shape FileEntry.Columns carries (#256).
+func stampCols(pairs [][2]string) map[string]string {
+	stamp := map[string]string{}
+	for _, p := range pairs {
+		stamp[p[0]] = p[1]
+	}
+	return stamp
+}
+
+// A stamped path that satisfies the invariant is validated with ZERO DuckDB
+// probes; its columns feed the union and complete stays true (#256).
+func TestValidateStampedPathSkipsProbe(t *testing.T) {
+	// The executor has no canned answer for this path, so any probe would both
+	// be counted and fail — a silent fallback cannot sneak past these asserts.
+	exec := &scriptedDescribeExecutor{}
+	v := newParquetSchemaValidator()
+	stamps := map[string]map[string]string{
+		"s3://b/1/a.parquet": stampCols(append(buildValidSystemCols(), [2]string{"score", "INTEGER"})),
+	}
+
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, stamps)
+	require.NoError(t, err)
+	require.Empty(t, exec.probes, "a valid stamp must answer the invariant with zero DuckDB probes")
+	require.True(t, complete, "a stamped path contributed its columns, so the union is complete")
+	require.Contains(t, union, "score")
+	require.Equal(t, "UUID", union["row_id"])
+
+	// The stamp feeds the same write-once cache a probe would: a later query
+	// that carries no stamp still costs nothing.
+	_, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, nil)
+	require.NoError(t, err)
+	require.Empty(t, exec.probes, "a stamp-validated path is cached like a probed one")
+}
+
+// A stamp violating the invariant must NOT fail the query by itself: the probe
+// runs, and a healthy footer wins. Stamps only short-circuit success.
+func TestValidateBadStampFallsBackToProbe(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"a.parquet": append(buildValidSystemCols(), [2]string{"probed_only", "VARCHAR"}),
+	}}
+	v := newParquetSchemaValidator()
+	stamps := map[string]map[string]string{ // stale/corrupt stamp: row_id missing
+		"s3://b/1/a.parquet": {"changed_at": "BIGINT", "deleted_at": "BIGINT", "stamp_only": "VARCHAR"},
+	}
+
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, stamps)
+	require.NoError(t, err, "a corrupt manifest stamp must not fail a healthy object")
+	require.Len(t, exec.probes, 1, "the rejected stamp falls through to exactly one footer probe")
+	require.True(t, complete)
+	require.Contains(t, union, "probed_only", "the union is built from the PROBED footer")
+	require.NotContains(t, union, "stamp_only", "the rejected stamp must not contribute columns")
+	require.Equal(t, "UUID", union["row_id"])
+}
+
+// Bad stamp + probe confirming the violation keeps today's loud failure.
+func TestValidateBadStampProbeConfirmsViolation(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"wrong.parquet": {{"wrong_col", "INTEGER"}},
+	}}
+	v := newParquetSchemaValidator()
+	stamps := map[string]map[string]string{"s3://b/1/wrong.parquet": {"wrong_col": "INTEGER"}}
+
+	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/1/wrong.parquet"}, stamps)
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
+	require.Contains(t, err.Error(), "wrong.parquet")
+	require.Contains(t, err.Error(), "row_id")
+	require.Len(t, exec.probes, 1, "byte truth authors the failure — the stamp only declined to skip it")
+}
+
+// Mixed set: stamped paths skip probing, unstamped paths probe as today.
+func TestValidateMixedStampedAndUnstamped(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"unstamped.parquet": append(buildValidSystemCols(), [2]string{"probed", "VARCHAR"}),
+	}}
+	v := newParquetSchemaValidator()
+	stamps := map[string]map[string]string{
+		"s3://b/1/stamped.parquet": stampCols(append(buildValidSystemCols(), [2]string{"stamped_col", "INTEGER"})),
+	}
+
+	union, complete, err := v.Validate(context.Background(), exec,
+		[]string{"s3://b/1/stamped.parquet", "s3://b/1/unstamped.parquet"}, stamps)
+	require.NoError(t, err)
+	require.Len(t, exec.probes, 1, "only the unstamped path reaches DuckDB")
+	require.Contains(t, exec.probes[0], "unstamped.parquet")
+	require.True(t, complete)
+	require.Contains(t, union, "stamped_col", "the stamped path contributes its columns")
+	require.Contains(t, union, "probed", "the probed path contributes its columns")
+}
+
+// nil stamps map preserves today's behavior byte-for-byte (regression pin for
+// every pre-#256 call site).
+func TestValidateNilStampsUnchanged(t *testing.T) {
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"good.parquet": append(buildValidSystemCols(), [2]string{"score", "INTEGER"}),
+	}}
+	v := newParquetSchemaValidator()
+
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/good.parquet"}, nil)
+	require.NoError(t, err)
+	require.Len(t, exec.probes, 1, "without a stamp the footer probe still runs")
+	require.True(t, complete)
+	require.Contains(t, union, "score")
+
+	_, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/good.parquet"}, nil)
+	require.NoError(t, err)
+	require.Len(t, exec.probes, 1, "the probe result is still cached")
+
+	bad := &scriptedDescribeExecutor{cols: map[string][][2]string{"wrong.parquet": {{"wrong_col", "INTEGER"}}}}
+	_, _, err = newParquetSchemaValidator().Validate(context.Background(), bad,
+		[]string{"s3://b/1/wrong.parquet"}, nil)
+	require.ErrorIs(t, err, ErrFederatedReadFailed, "violations stay loud when no stamp is supplied")
+}
+
+// The glob branch forwards stamps to its expanded matches: a stamped match
+// skips its probe while an unstamped sibling is probed as today (#256).
+func TestValidateGlobMatchesConsumeStamps(t *testing.T) {
+	exec := &scriptedDescribeExecutor{
+		globs: map[string][]string{"1/*.parquet": {"s3://b/1/stamped.parquet", "s3://b/1/plain.parquet"}},
+		cols:  map[string][][2]string{"plain.parquet": buildValidSystemCols()},
+	}
+	v := newParquetSchemaValidator()
+	stamps := map[string]map[string]string{
+		"s3://b/1/stamped.parquet": stampCols(append(buildValidSystemCols(), [2]string{"stamped_col", "INTEGER"})),
+	}
+
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/*.parquet"}, stamps)
+	require.NoError(t, err)
+	require.Len(t, exec.probes, 2, "the glob listing plus one DESCRIBE for the unstamped match only")
+	require.Contains(t, exec.probes[1], "plain.parquet")
+	require.True(t, complete)
+	require.Contains(t, union, "stamped_col")
 }
 
 // describeOverridingExecutor overrides the DESCRIBE answer while delegating
