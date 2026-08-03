@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/lychee-technology/forma/internal/parquetcheck"
+	"go.uber.org/zap"
 )
 
 // parquetSchemaValidator enforces the parquetcheck system-column invariant on
@@ -20,11 +21,19 @@ import (
 // restores the loud failure for schema violations while leaving byte
 // corruption (unreadable footer) to the execution-path classifier.
 //
-// Paths that pass are cached forever: parquet objects are write-once (flush,
-// init and compaction always mint new keys), so a validated path never
-// changes and steady-state cost is one footer probe per new object. Glob
-// paths are expanded per query (the match set changes as objects land) and
-// their concrete matches hit the same cache.
+// A validated path is cached so steady-state cost is one footer probe per new
+// object, and glob paths — expanded per query, since the match set changes as
+// objects land — hit the same cache through their concrete matches.
+//
+// The cache is keyed by path AND by the manifest stamp the entry was validated
+// under (nil for a probe-validated path). Path alone would be wrong: parquet
+// objects are write-once for flush and compaction, which always mint fresh
+// UUIDv7 keys, but NOT for init — cdc.BuildBasePath is deterministic
+// ({min}_{max}.parquet), so an init rerun overwrites the object in place and
+// rewrites its manifest entry under the same key. A path-keyed cache would
+// serve a warmed server the pre-rerun columns for the rest of its life. Adding
+// the stamp to the key makes the manifest rewrite the invalidation signal:
+// same stamp, same bytes, keep the entry; new stamp, re-validate.
 //
 // The cache stores each validated path's columns so a repeat query can
 // contribute them to the column union (#255) without a second probe. It has
@@ -35,11 +44,31 @@ import (
 // tell — and need not tell — which feeder filled it.
 type parquetSchemaValidator struct {
 	mu    sync.Mutex
-	valid map[string]map[string]string
+	valid map[string]validatedParquet
+	// logger reports the stamp/footer cross-check (#256). Optional; see
+	// WithLogger. Nil is safe — log() substitutes a nop.
+	logger *zap.Logger
+}
+
+// validatedParquet is one cache entry: the columns the path was validated
+// with, and the manifest stamp that validation happened under. A lookup only
+// hits while the current stamp still equals stamp — nil==nil for a path that
+// was probe-validated with no stamp in play.
+type validatedParquet struct {
+	cols  map[string]string
+	stamp map[string]string
 }
 
 func newParquetSchemaValidator() *parquetSchemaValidator {
-	return &parquetSchemaValidator{valid: map[string]map[string]string{}}
+	return &parquetSchemaValidator{valid: map[string]validatedParquet{}}
+}
+
+// log is the nil-safe accessor for the optional logger.
+func (v *parquetSchemaValidator) log() *zap.Logger {
+	if v == nil || v.logger == nil {
+		return zap.NewNop()
+	}
+	return v.logger
 }
 
 // Validate probes each scanned path's parquet schema and fails on a system
@@ -62,7 +91,9 @@ func newParquetSchemaValidator() *parquetSchemaValidator {
 // in paths (#256); it may be nil. A stamp that satisfies the invariant spares
 // that path its probe; one that does not is ignored and the path is probed as
 // usual. On the Check verdict a stamp may only short-circuit success, never
-// author a failure — a rejected stamp costs at most one extra probe.
+// author a failure — a rejected stamp costs at most one extra probe. The
+// current stamp is also part of the cache key, so a rewritten manifest entry
+// re-validates the path instead of being answered from a stale entry.
 //
 // The union is the one channel where a stamp can still fail a query. Check
 // inspects only the system columns, so a stamp that passes it while
@@ -70,11 +101,17 @@ func newParquetSchemaValidator() *parquetSchemaValidator {
 // complete still true, and #255 then augments a NULL alias for a column the
 // file really carries. Unlike the accepted glob skew, which self-heals on the
 // next query, that binder failure persists until the manifest entry is
-// corrected: the entry is durable and markValidated pins it for the process
-// lifetime. Accepted (plan decision 4) — stamps are written from a write-time
-// DESCRIBE of the actual bytes, so under-reporting takes a corrupted or
-// tampered manifest, and the outcome is a loud classified failure, never
-// silent data loss.
+// corrected — but correcting it now suffices: the rewritten stamp is a new
+// cache key, so the fix takes effect on the next query without a restart.
+// Accepted (plan decision 4) — stamps are written from a write-time DESCRIBE
+// of the actual bytes, so under-reporting takes a corrupted or tampered
+// manifest, and the outcome is a loud classified failure, never silent data
+// loss. The bytes themselves are guarded independently: any scanned row with a
+// NULL row_id fails the query outright (sqlgen.BuildParquetScanSource), so a
+// stamp can never license a silently ignored object.
+//
+// When a probe DOES run on a stamped path, the two are cross-checked and any
+// divergence is logged — see warnStampDivergence.
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
 	stamps map[string]map[string]string,
@@ -113,7 +150,7 @@ func (v *parquetSchemaValidator) Validate(
 }
 
 // validateConcrete checks concrete (non-glob) paths against the invariant,
-// consulting and feeding the write-once cache from either feeder — a passing
+// consulting and feeding the stamp-keyed cache from either feeder — a passing
 // manifest stamp (#256) or a footer probe. It merges every contributing column
 // map into union and reports whether all of the given paths contributed.
 func (v *parquetSchemaValidator) validateConcrete(
@@ -126,24 +163,23 @@ func (v *parquetSchemaValidator) validateConcrete(
 			complete = false
 			continue
 		}
-		if cols, ok := v.validatedCols(path); ok {
+		stamp := currentStamp(stamps, path)
+		if cols, ok := v.validatedCols(path, stamp); ok {
 			mergeColumnUnion(union, cols)
 			continue
 		}
-		if stamp, ok := stamps[path]; ok && len(stamp) > 0 {
-			if parquetcheck.Check(path, stamp) == nil {
-				// Clone: the cache outlives the call and must not alias a
-				// caller-owned map (a manifest entry in production), which
-				// would make it poisonable and racy.
-				v.markValidated(path, maps.Clone(stamp))
-				mergeColumnUnion(union, stamp)
-				continue
-			}
-			// The stamp fails the invariant: fall through to the probe. A
-			// stamp may only short-circuit success, never author a failure —
-			// byte truth (#187) decides whether the file is malformed, and a
-			// corrupt manifest must not fail a healthy object (#256).
+		if len(stamp) > 0 && parquetcheck.Check(path, stamp) == nil {
+			// Clone: the cache outlives the call and must not alias a
+			// caller-owned map (a manifest entry in production), which
+			// would make it poisonable and racy.
+			v.markValidated(path, maps.Clone(stamp), maps.Clone(stamp))
+			mergeColumnUnion(union, stamp)
+			continue
 		}
+		// Either there is no stamp, or the stamp fails the invariant. A stamp
+		// may only short-circuit success, never author a failure — byte truth
+		// (#187) decides whether the file is malformed, and a corrupt manifest
+		// must not fail a healthy object (#256). So: probe.
 		cols, err := describeParquetColumns(ctx, duck, path)
 		if err != nil {
 			complete = false // inconclusive: defer to the execution-path classifier
@@ -152,10 +188,49 @@ func (v *parquetSchemaValidator) validateConcrete(
 		if err := parquetcheck.Check(path, cols); err != nil {
 			return false, fmt.Errorf("%w: %w", ErrFederatedReadFailed, err)
 		}
-		v.markValidated(path, cols)
+		v.warnStampDivergence(path, stamp, cols)
+		// The footer wins, and the CURRENT stamp is recorded next to it: a
+		// stamp the invariant rejected would otherwise never match the entry
+		// it produced, and the path would re-probe on every single query.
+		v.markValidated(path, cols, maps.Clone(stamp))
 		mergeColumnUnion(union, cols)
 	}
 	return complete, nil
+}
+
+// currentStamp returns the manifest stamp in play for path, normalizing an
+// absent or empty stamp to nil so cache keying by maps.Equal is stable.
+func currentStamp(stamps map[string]map[string]string, path string) map[string]string {
+	if stamp := stamps[path]; len(stamp) > 0 {
+		return stamp
+	}
+	return nil
+}
+
+// warnStampDivergence reports a manifest stamp that disagrees with the bytes.
+// It can only fire on the probe fallthrough — a stamp the invariant accepts
+// short-circuits before any probe — so it names exactly the case where the
+// manifest claimed something the footer does not support. The footer wins:
+// the probed columns are what get cached and unioned, because a column only
+// the stamp claims would make #255 augment a NULL alias over a real one.
+//
+// It is a log rather than an error because the read SUCCEEDS: nothing in the
+// caller's result would ever mention it, and a stale or hand-edited manifest
+// entry is an operator's problem to fix, not a reason to fail a query the
+// bytes can answer. Warn carries the path and the two set sizes; the full
+// column maps are Debug — a manifest entry can list hundreds of columns.
+func (v *parquetSchemaValidator) warnStampDivergence(path string, stamp, probed map[string]string) {
+	if len(stamp) == 0 || maps.Equal(stamp, probed) {
+		return
+	}
+	v.log().Warn("manifest column stamp disagrees with the parquet footer; using the footer",
+		zap.String("path", path),
+		zap.Int("stamp_columns", len(stamp)),
+		zap.Int("footer_columns", len(probed)))
+	v.log().Debug("manifest column stamp divergence detail",
+		zap.String("path", path),
+		zap.Any("stamp_cols", stamp),
+		zap.Any("footer_cols", probed))
 }
 
 // mergeColumnUnion folds one footer's columns into the running union.
@@ -170,17 +245,26 @@ func mergeColumnUnion(union, cols map[string]string) {
 	}
 }
 
-func (v *parquetSchemaValidator) validatedCols(path string) (map[string]string, bool) {
+// validatedCols answers from the cache only while the entry's recorded stamp
+// still equals the one currently in play. A changed stamp (including one
+// appearing on, or disappearing from, a previously validated path) is a miss,
+// so the caller re-validates and overwrites the entry.
+func (v *parquetSchemaValidator) validatedCols(path string, stamp map[string]string) (map[string]string, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	cols, ok := v.valid[path]
-	return cols, ok
+	entry, ok := v.valid[path]
+	if !ok || !maps.Equal(entry.stamp, stamp) {
+		return nil, false
+	}
+	return entry.cols, true
 }
 
-func (v *parquetSchemaValidator) markValidated(path string, cols map[string]string) {
+// markValidated records cols for path together with the stamp they were
+// validated under. stamp must already be a clone the cache can own.
+func (v *parquetSchemaValidator) markValidated(path string, cols, stamp map[string]string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.valid[path] = cols
+	v.valid[path] = validatedParquet{cols: cols, stamp: stamp}
 }
 
 // globParquetPaths expands one glob pattern to its concrete matches via

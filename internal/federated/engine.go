@@ -16,6 +16,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
+	"go.uber.org/zap"
 )
 
 // PostgresFederatedSource is the Postgres-side seam the federated engine
@@ -89,6 +90,22 @@ type EngineOption func(*DBFederatedQueryEngine)
 // WithPlanCache injects a shared compiled-plan cache (#142).
 func WithPlanCache(c *queryplan.Cache) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.planCache = c }
+}
+
+// WithLogger gives the engine a logger; the default is zap.NewNop(). The
+// engine reports itself through returned errors and the execution plan, so
+// this is deliberately narrow: it carries the pre-read validator's
+// stamp-versus-footer cross-check (#256), which has no other outlet because
+// the read it observes SUCCEEDS. A manifest entry whose column stamp
+// contradicts the object's real footer is an operator's problem — no caller's
+// result would ever mention it.
+func WithLogger(l *zap.Logger) EngineOption {
+	return func(e *DBFederatedQueryEngine) {
+		if l == nil || e.schemaValidator == nil {
+			return
+		}
+		e.schemaValidator.logger = l
+	}
 }
 
 // defaultCorruptPathRetention bounds how long a confirmed-corrupt parquet

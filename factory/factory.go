@@ -168,7 +168,14 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// its lifetime is the manager's, so compiled plans survive across requests.
 	planCache := queryplan.NewCache(4096)
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
-	engineOpts := []federated.EngineOption{federated.WithPlanCache(planCache)}
+	// zap.L() is the same global the rest of this package logs through. It
+	// carries the federated validator's #256 stamp/footer cross-check, whose
+	// only surface is a log line: the read it observes succeeds, so no caller
+	// error and no execution plan would ever mention it.
+	engineOpts := []federated.EngineOption{
+		federated.WithPlanCache(planCache),
+		federated.WithLogger(zap.L()),
+	}
 	// Append only a real source, so the manifest-off path stays byte-identical
 	// to the pre-#250 engine construction.
 	if parquetSource != nil {

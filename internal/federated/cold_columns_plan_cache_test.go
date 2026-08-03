@@ -107,7 +107,7 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 
 	// Pre-flush: the validator's write-once cache holds the v1 footer, so the
 	// probe never reaches the fake executor and the union is complete.
-	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false))
+	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false), nil)
 
 	sql1, notes1 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, sql1, "NULL::INTEGER AS score",
@@ -120,14 +120,16 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	require.Contains(t, sql2, "NULL::INTEGER AS score")
 
 	// The first flush lands `score`. Overwriting the cached footer is a TEST
-	// STAND-IN for "a new file's columns joined the union": production parquet
-	// objects are write-once, so a validated path's footer never actually
-	// changes under the validator's cache. The realistic production trigger —
-	// a glob expansion that gained a file — is the sibling test below; this
-	// one isolates the re-key with the path set held provably constant.
+	// STAND-IN for "a new file's columns joined the union": flush and
+	// compaction always mint fresh keys, so their footers join the union
+	// through a NEW path rather than by changing this one. (An init rerun does
+	// overwrite in place — that case is re-keyed by the manifest stamp, see
+	// parquet_schema_validation_stamps_test.go.) The realistic production
+	// trigger — a glob expansion that gained a file — is the sibling test
+	// below; this one isolates the re-key with the path set held constant.
 	// Either way the union the next request computes carries the column, and
 	// the path set, query shape, tables, limit and fingerprint are unchanged.
-	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(true))
+	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(true), nil)
 
 	sql3, notes3 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, notes3, "plan_cache=miss",

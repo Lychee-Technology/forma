@@ -57,7 +57,7 @@ func withTestParquetPath() EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		WithParquetSource(&fakeParquetSource{paths: []string{testParquetPath}})(e)
 		e.schemaValidator.markValidated(testParquetPath,
-			map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"})
+			map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}, nil)
 	}
 }
 

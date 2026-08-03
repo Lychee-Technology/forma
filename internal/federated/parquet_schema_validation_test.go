@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,10 @@ func TestParquetSchemaValidator_ValidPathsPassAndCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 
-	// Parquet objects are write-once: validated paths are never re-probed.
+	// Nothing changed — same paths, still no stamps — so the cached entries
+	// answer and no path is re-probed. (An entry is only re-validated when the
+	// manifest stamp keying it moves; see
+	// parquet_schema_validation_stamps_test.go.)
 	_, _, err = v.Validate(context.Background(), duck, paths, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
@@ -365,12 +369,23 @@ func TestValidateStampedPathSkipsProbe(t *testing.T) {
 	require.Contains(t, union, "score")
 	require.Equal(t, "UUID", union["row_id"])
 
-	// The stamp feeds the same write-once cache a probe would, and the cache
-	// owns its copy: mutating the caller's map afterwards cannot reach it.
+	// The stamp feeds the same cache a probe would, and the cache owns its
+	// copy of BOTH halves of the entry: mutating the caller's map afterwards
+	// must reach neither the cached columns nor the cached cache key.
+	//
+	// The re-validation passes a fresh map holding the ORIGINAL stamp content,
+	// which is what makes this a proof rather than a coincidence. If the entry
+	// had aliased the caller's map, the delete below would have stripped
+	// "score" from the recorded stamp too, the stamp-keyed lookup would miss,
+	// and the fallback probe — which this executor cannot answer — would fail
+	// the assertions instead of quietly passing.
+	original := maps.Clone(stamps["s3://b/1/a.parquet"])
 	delete(stamps["s3://b/1/a.parquet"], "score")
-	union, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, nil)
+	union, complete, err = v.Validate(context.Background(), exec,
+		[]string{"s3://b/1/a.parquet"}, map[string]map[string]string{"s3://b/1/a.parquet": original})
 	require.NoError(t, err)
-	require.Empty(t, exec.probes, "a stamp-validated path is cached like a probed one")
+	require.Empty(t, exec.probes, "an unchanged stamp keeps the path cached")
+	require.True(t, complete)
 	require.Contains(t, union, "score", "the cache holds a clone, not the caller's map")
 }
 
