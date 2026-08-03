@@ -52,7 +52,36 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
-	// Backwards-compatible wrapper that uses the streaming iterator internally
+	recs, total, err := e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
+	var retry *corruptParquetRetryError
+	if errors.As(err, &retry) {
+		// The failed pass confirmed and cached the corrupt objects; path
+		// resolution now excludes them, so one retry answers from the
+		// readable remainder (#251). A second retryable failure surfaces:
+		// corruption appearing mid-flight is indistinguishable from a sick
+		// store and must not loop.
+		recs, total, err = e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
+		if err != nil {
+			return nil, 0, fmt.Errorf("retry after excluding corrupt parquet %v: %w", retry.Corrupt, err)
+		}
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return recs, total, nil
+}
+
+// collectDuckDBFederatedQuery is one buffered pass of the streaming path; the
+// fresh slice per pass is what makes the #251 retry safe after a mid-stream
+// failure already delivered partial rows.
+func (e *DBFederatedQueryEngine) collectDuckDBFederatedQuery(
+	ctx context.Context,
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
+	limit, offset int,
+	attributeOrders []model.AttributeOrder,
+	opts *model.FederatedQueryOptions,
+) ([]*model.PersistentRecord, int64, error) {
 	var recs []*model.PersistentRecord
 	total, err := e.StreamDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts, func(ctx context.Context, rp *model.PersistentRecord) error {
 		recs = append(recs, rp)
