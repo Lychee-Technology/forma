@@ -22,14 +22,26 @@ func newCorruptParquetCache(ttl time.Duration) *corruptParquetCache {
 	return &corruptParquetCache{ttl: ttl, now: time.Now, expires: map[string]time.Time{}}
 }
 
-// Add records paths as corrupt until ttl elapses.
+// Add records paths as corrupt until ttl elapses. It also sweeps every
+// expired entry from the map — Split evicts only paths it is asked about, so
+// an entry whose path is never rescanned (retired by compaction or dropped by
+// a manifest reconcile) would otherwise linger until process restart. Add
+// runs only on the rare failure path, so the full-map sweep is free in
+// practice and keeps the map bounded by live corrupt objects rather than by
+// every corrupt object ever seen.
 func (c *corruptParquetCache) Add(paths []string) {
 	if c == nil || len(paths) == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	exp := c.now().Add(c.ttl)
+	now := c.now()
+	for p, exp := range c.expires {
+		if !now.Before(exp) {
+			delete(c.expires, p)
+		}
+	}
+	exp := now.Add(c.ttl)
 	for _, p := range paths {
 		c.expires[p] = exp
 	}

@@ -82,7 +82,12 @@ func (cb *CircuitBreaker) Allow() bool {
 // evidence either way, freeing the slot for the next caller. It is for callers
 // admitted by Allow that then failed BEFORE touching the dependency — a
 // misconfiguration caught during path resolution, invalid caller input — so
-// they learned nothing about its health and must not consume the probe.
+// they learned nothing about its health and must not consume the probe. It is
+// also for the one post-execution caller whose failure indicts a specific
+// object rather than the dependency: the #251 corrupt-confirmed path, where
+// per-file verification has just drained every OTHER object through this same
+// engine and store — live proof of health that makes RecordFailure dishonest,
+// while the query as a whole still failed, making RecordSuccess equally so.
 //
 // Without this, such a caller abandons the reservation: the slot stays occupied
 // until it lapses (openDuration), and every request in that window is rejected
