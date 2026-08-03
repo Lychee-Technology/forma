@@ -30,6 +30,10 @@ import (
 // evidence the dependency is healthy. A stale RecordFailure landing while a
 // probe is in flight re-opens the breaker: conservative, and
 // indistinguishable from a probe failure without per-caller tokens.
+// ReleaseProbe, by contrast, IS token-scoped (#349 review R2-2): it can run
+// long after admission (the #251 post-verification path), by which time the
+// probe slot may belong to a newer caller — an unscoped release would free a
+// reservation its caller never held and admit a second concurrent probe.
 type CircuitBreaker struct {
 	mu           sync.Mutex
 	failures     []time.Time
@@ -39,7 +43,14 @@ type CircuitBreaker struct {
 	openDuration time.Duration
 	probing      bool
 	probeStarted time.Time
+	probeSeq     ProbeToken
+	probeToken   ProbeToken
 }
+
+// ProbeToken identifies one half-open probe reservation. The zero token means
+// "no probe held" — callers admitted while the breaker was closed carry it —
+// and releasing it is always a no-op.
+type ProbeToken uint64
 
 // NewCircuitBreaker creates a configured circuit breaker.
 func NewCircuitBreaker(threshold int, window, openDuration time.Duration) *CircuitBreaker {
@@ -53,29 +64,33 @@ func NewCircuitBreaker(threshold int, window, openDuration time.Duration) *Circu
 
 // Allow reports whether the caller may proceed. In half-open state it
 // atomically reserves the single probe slot: the one caller that receives
-// true while others are rejected MUST resolve the probe via RecordSuccess
-// or RecordFailure (or let the reservation lapse after openDuration).
-func (cb *CircuitBreaker) Allow() bool {
+// admitted=true with a non-zero token while others are rejected MUST resolve
+// the probe via RecordSuccess or RecordFailure (or let the reservation lapse
+// after openDuration). Callers admitted while the breaker is closed receive
+// the zero token: they hold no reservation, and their ReleaseProbe is a no-op.
+func (cb *CircuitBreaker) Allow() (admitted bool, probe ProbeToken) {
 	if cb == nil {
-		return true
+		return true, 0
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	now := time.Now()
 	if now.Before(cb.openUntil) {
-		return false
+		return false, 0
 	}
 	if cb.openUntil.IsZero() && !cb.probing {
-		return true // closed: nothing to recover from
+		return true, 0 // closed: nothing to recover from
 	}
 	if cb.probing && now.Sub(cb.probeStarted) < cb.openDuration {
-		return false // half-open with a live probe in flight
+		return false, 0 // half-open with a live probe in flight
 	}
 	// Half-open with a free (or lapsed) probe slot: this caller is the probe.
 	cb.probing = true
 	cb.probeStarted = now
-	return true
+	cb.probeSeq++
+	cb.probeToken = cb.probeSeq
+	return true, cb.probeToken
 }
 
 // ReleaseProbe relinquishes a half-open probe reservation without recording
@@ -100,13 +115,21 @@ func (cb *CircuitBreaker) Allow() bool {
 // traffic; only the probe slot returns. Recording success here would close the
 // breaker on no evidence, and recording failure would extend the outage for a
 // dependency that was never consulted.
-func (cb *CircuitBreaker) ReleaseProbe() {
-	if cb == nil {
+//
+// Release is scoped to the caller's own reservation (#349 review R2-2): only
+// the token Allow handed out frees the slot, so a caller admitted while the
+// breaker was closed (zero token) — or one whose lapsed reservation was
+// already reclaimed by a newer probe — cannot clear the probe another caller
+// is running.
+func (cb *CircuitBreaker) ReleaseProbe(probe ProbeToken) {
+	if cb == nil || probe == 0 {
 		return
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	cb.probing = false
+	if cb.probing && cb.probeToken == probe {
+		cb.probing = false
+	}
 }
 
 // RecordFailure records a failure occurrence. A probe failure re-opens the

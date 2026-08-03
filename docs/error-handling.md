@@ -334,6 +334,13 @@ rows in that object are simply gone from the result set.
   survive and returns a shorter result set with no error at all.
 - **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
   Extra unlisted objects are tolerated and invisible to reads.
+- **One bounded exception (#251).** An object confirmed corrupt by per-file
+  verification is excluded from path resolution for a retention window
+  (default 5 minutes), and an excluded object is not scanned — so if it is
+  *also deleted* from storage inside that window, the inconsistency
+  classification fires only after the cache entry expires and the object is
+  rescanned. Delay, not suppression: the loss still surfaces, up to one
+  retention window late. See `docs/federated-query/design.md` §7.3.
 - **Operator action.** The message names the schema and the missing
   bucket-relative keys. Run the reconciliation tool to diagnose and repair:
   see `docs/manifest-reconcile.md`.

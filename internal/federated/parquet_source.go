@@ -54,7 +54,7 @@ func WithParquetSource(src ParquetSource) EngineOption {
 func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, excludedCorrupt []string, err error) {
 	hinted, err := duckDBParquetPathsForQuery(q)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, nil, fmt.Errorf("render parquet path hint: %w", err)
 	}
 	if len(hinted) > 0 {
 		return hinted, false, nil, nil

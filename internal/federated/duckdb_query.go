@@ -74,7 +74,7 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 		}
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("federated read: %w", err)
 	}
 	return recs, total, nil
 }
@@ -142,7 +142,7 @@ func (e *DBFederatedQueryEngine) collectDuckDBFederatedQuery(
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("collect federated rows: %w", err)
 	}
 	return recs, total, nil
 }
@@ -177,7 +177,8 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// the half-open single probe (#246); early-error returns between here
 	// and duck.Query abandon the probe, whose reservation lapses after
 	// openDuration (see the CircuitBreaker type doc).
-	if !e.breaker.Allow() {
+	admitted, probe := e.breaker.Allow()
+	if !admitted {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
@@ -195,7 +196,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	probeResolved := false
 	defer func() {
 		if !probeResolved {
-			e.breaker.ReleaseProbe()
+			e.breaker.ReleaseProbe(probe)
 		}
 	}()
 
@@ -230,6 +231,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		parquetPaths:    src.paths,
 		pathsFromSource: src.fromSource,
 		dirtyIDs:        dirtyIDs,
+		probe:           probe,
 	}, rowHandler, planCtx)
 }
 

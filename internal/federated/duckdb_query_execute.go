@@ -24,6 +24,10 @@ type scan struct {
 	parquetPaths    []string
 	pathsFromSource bool
 	dirtyIDs        []uuid.UUID
+	// probe is this call's half-open reservation (zero when the breaker was
+	// closed at admission), so the corrupt-confirmed release below can only
+	// free a slot this caller actually holds (#349 review R2-2).
+	probe ProbeToken
 }
 
 // executeAndStreamDuckDB runs the compiled query, streams its rows through
@@ -107,7 +111,7 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	if corrupt := e.confirmCorruptPaths(ctx, sc); len(corrupt) > 0 {
 		e.corruptPaths.Add(corrupt)
 		if e.breaker != nil {
-			e.breaker.ReleaseProbe()
+			e.breaker.ReleaseProbe(sc.probe)
 		}
 		return &corruptParquetRetryError{Corrupt: corrupt, cause: fmt.Errorf("%s: %w: %w", op, classified, cause)}
 	}

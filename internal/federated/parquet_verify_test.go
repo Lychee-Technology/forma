@@ -28,15 +28,24 @@ func (r *verifyFakeRows) Close() error           { return nil }
 
 // verifyFakeDuck fails Query for any SQL mentioning a failPath; midStream
 // paths open fine and fail while iterating (the corruptMidFile class).
+// failOpenOnce paths fail the next n opens and then read clean — the
+// transient-blip class (#349 review R2-1).
 type verifyFakeDuck struct {
-	failOpen    map[string]bool
-	failStream  map[string]bool
-	queries     []string
-	healthyIter *verifyFakeRows // track the healthy path's iterator for assertion
+	failOpen     map[string]bool
+	failOpenOnce map[string]int
+	failStream   map[string]bool
+	queries      []string
+	healthyIter  *verifyFakeRows // track the healthy path's iterator for assertion
 }
 
 func (d *verifyFakeDuck) Query(ctx context.Context, sqlStr string, args ...any) (duckDBRowsIterator, error) {
 	d.queries = append(d.queries, sqlStr)
+	for p, n := range d.failOpenOnce {
+		if n > 0 && strings.Contains(sqlStr, p) {
+			d.failOpenOnce[p] = n - 1
+			return nil, fmt.Errorf("IO Error: transient timeout on %s", p)
+		}
+	}
 	for p := range d.failOpen {
 		if strings.Contains(sqlStr, p) {
 			return nil, fmt.Errorf("IO Error: cannot open %s", p)
@@ -91,6 +100,36 @@ func TestVerifyParquetPathsFlagsOpenAndStreamFailures(t *testing.T) {
 	}
 	if corruptSet["s3://b/good.parquet"] {
 		t.Fatalf("corrupt set must NOT contain good.parquet, got %v", corrupt)
+	}
+}
+
+// TestVerifyParquetPathsTransientSingleFailureNotConfirmed pins the #349
+// review R2-1 contract: one failed drain is inconclusive. A path whose first
+// drain fails but whose immediate re-drain reads clean must NOT be confirmed
+// corrupt — caching it would convert a transient object-level blip into a
+// retention window of unmarked short answers while bypassing the breaker.
+func TestVerifyParquetPathsTransientSingleFailureNotConfirmed(t *testing.T) {
+	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/flaky.parquet": 1}}
+	corrupt := verifyParquetPaths(context.Background(), duck,
+		[]string{"s3://b/good.parquet", "s3://b/flaky.parquet"})
+	if corrupt != nil {
+		t.Fatalf("single-failure path must stay unconfirmed, got %v", corrupt)
+	}
+	// One drain for the healthy path, two for the flaky one (fail + clean).
+	if len(duck.queries) != 3 {
+		t.Fatalf("expected 3 drains (1 good + 2 flaky), got %d: %v", len(duck.queries), duck.queries)
+	}
+}
+
+// TestVerifyParquetPathsPersistentFailureConfirmedOnSecondDrain pins the
+// other half: deterministic corruption fails both consecutive drains and IS
+// confirmed.
+func TestVerifyParquetPathsPersistentFailureConfirmedOnSecondDrain(t *testing.T) {
+	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/dead.parquet": 2}}
+	corrupt := verifyParquetPaths(context.Background(), duck,
+		[]string{"s3://b/good.parquet", "s3://b/dead.parquet"})
+	if len(corrupt) != 1 || corrupt[0] != "s3://b/dead.parquet" {
+		t.Fatalf("two consecutive failures must confirm, got %v", corrupt)
 	}
 }
 

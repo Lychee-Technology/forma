@@ -89,6 +89,34 @@ func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing
 	}
 }
 
+// TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath is the #349 review
+// R2-1 regression: a drain that fails once and reads clean on the re-drain is
+// a transient object fault, not corruption — it must take the ordinary
+// RecordFailure path (threshold-1 breaker opens), cache nothing, and return a
+// non-retryable error, exactly as before #251.
+func TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath(t *testing.T) {
+	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/flaky.parquet": 1}}
+	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
+	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
+		WithParquetSource(&execFakeSource{}))
+
+	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/flaky.parquet"}, pathsFromSource: true}
+	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
+		fmt.Errorf("scan: %w: read timeout", ErrFederatedReadFailed), "execute duckdb query")
+
+	var retry *corruptParquetRetryError
+	if errors.As(err, &retry) {
+		t.Fatal("a transient single-drain failure must not be confirmed as corruption")
+	}
+	if !breaker.IsOpen() {
+		t.Fatal("an unconfirmed failure must keep ordinary breaker accounting")
+	}
+	kept, excluded := e.corruptPaths.Split(sc.parquetPaths)
+	if len(excluded) != 0 || len(kept) != 2 {
+		t.Fatalf("nothing may be cached for a transient failure: kept=%v excluded=%v", kept, excluded)
+	}
+}
+
 func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{
 		"s3://b/a.parquet": true, "s3://b/b.parquet": true,
