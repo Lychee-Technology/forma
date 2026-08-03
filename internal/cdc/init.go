@@ -50,6 +50,9 @@ type initRunContext struct {
 	// tryLock and initSchemaFn are test seams (nil→real impl below), mirroring the flusher's processSchemaFn seam.
 	tryLock      func(ctx context.Context, db *sql.DB, schemaID int16) (bool, func(), error)
 	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error)
+	// describeColumns is a test seam for the write-time footer probe that
+	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
+	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
 }
 
 // normalizeInitOptions applies the same config defaults as Runner.RunOnce.
@@ -337,7 +340,7 @@ func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowI
 	}
 }
 
-func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64, sizeBytes int64) {
+func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64, sizeBytes int64, columns map[string]string) {
 	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
 		Tier:       "base",
 		Path:       batch.finalKey,
@@ -347,6 +350,7 @@ func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, cr
 		CreatedMin: createdAt,
 		CreatedMax: createdAt,
 		SizeBytes:  sizeBytes,
+		Columns:    columns,
 	})
 	state.rowsExported += int64(len(batch.rowIDs))
 	state.filesCreated++
@@ -386,7 +390,7 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 			zap.Error(err))
 	}
 
-	recordSchemaBatchResult(state, batch, time.Now().UnixMilli(), sizeBytes)
+	recordSchemaBatchResult(state, batch, time.Now().UnixMilli(), sizeBytes, initStampColumns(ctx, runCtx, state.schemaID, batch))
 
 	runCtx.logger.Info("batch completed",
 		zap.Int16("schema_id", state.schemaID),
