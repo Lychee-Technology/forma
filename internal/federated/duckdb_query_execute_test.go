@@ -59,8 +59,16 @@ func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndRetries(t *testing.T) {
 	}
 }
 
+// TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy pins the
+// ordering contract the brief marks "do not reorder": MissingIn classification
+// must run BEFORE the corruption probe. The fake makes the scenario physical —
+// an object deleted from storage cannot be opened, so verification WOULD call
+// it corrupt if it ran first. That is what makes this test bite: reorder the
+// two blocks in failDuckDBScan and a manifest-listed-but-deleted object gets
+// cached, excluded and answered with a silently short page instead of the
+// non-degradable ErrParquetSetInconsistent #187 scenario 2 exists to raise.
 func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing.T) {
-	duck := &verifyFakeDuck{}
+	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/7/x.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
 	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
 		WithParquetSource(&execFakeSource{missing: []string{"7/x.parquet"}}))

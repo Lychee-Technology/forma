@@ -44,6 +44,12 @@ type duckDBRowsIterator interface {
 //   - total_records (bigint)
 //   - total_pages (bigint)
 //   - current_page (int)
+//
+// A read failure attributed to specific corrupt parquet objects is retried
+// exactly once against the readable remainder (#251), so one call can issue two
+// scans plus a per-object verification drain — worth knowing when sizing the
+// caller's deadline. The execution plan describes only the pass that produced
+// the returned page.
 func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -52,6 +58,7 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
+	mark := markExecutionPlan(opts)
 	recs, total, err := e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 	var retry *corruptParquetRetryError
 	if errors.As(err, &retry) {
@@ -60,6 +67,7 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 		// readable remainder (#251). A second retryable failure surfaces:
 		// corruption appearing mid-flight is indistinguishable from a sick
 		// store and must not loop.
+		mark.rewind(opts)
 		recs, total, err = e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 		if err != nil {
 			return nil, 0, fmt.Errorf("retry after excluding corrupt parquet %v: %w", retry.Corrupt, err)
@@ -69,6 +77,48 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 		return nil, 0, err
 	}
 	return recs, total, nil
+}
+
+// executionPlanMark remembers how much of the caller's execution plan predates
+// the first DuckDB pass, so a retry can drop what the failed pass recorded.
+type executionPlanMark struct {
+	sources int
+	notes   int
+}
+
+// markExecutionPlan snapshots the plan's length before the first pass.
+func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
+	if opts == nil || opts.ExecutionPlan == nil {
+		return executionPlanMark{}
+	}
+	return executionPlanMark{
+		sources: len(opts.ExecutionPlan.Sources),
+		notes:   len(opts.ExecutionPlan.Notes),
+	}
+}
+
+// rewind drops everything the failed pass appended to the caller's execution
+// plan, so the plan attached to the returned page describes the pass that
+// actually produced it. Without it the retry reports both passes: two
+// identically-labelled "duckdb template rendered" scans — the failed one
+// carrying ActualRows=0, indistinguishable from a scan that legitimately
+// matched nothing — and a double-counted hot-tier RowEstimate. The Notes that
+// would explain the duplication never reach an API caller (toExecutionPlan
+// projects Sources only), so the plan must be truthful by construction rather
+// than by annotation. Everything recorded BEFORE the first pass survives —
+// the routing decision and its note are the caller's, not the failed pass's.
+// The retry re-records the corrupt-exclusion note itself, via path resolution.
+func (m executionPlanMark) rewind(opts *model.FederatedQueryOptions) {
+	if opts == nil || opts.ExecutionPlan == nil {
+		return
+	}
+	plan := opts.ExecutionPlan
+	if len(plan.Sources) > m.sources {
+		plan.Sources = plan.Sources[:m.sources]
+	}
+	if len(plan.Notes) > m.notes {
+		plan.Notes = plan.Notes[:m.notes]
+	}
 }
 
 // collectDuckDBFederatedQuery is one buffered pass of the streaming path; the
