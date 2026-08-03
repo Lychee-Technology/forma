@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
 // schemaParquetKeys lists the schema's final parquet objects currently in S3
@@ -132,4 +133,79 @@ func seedMultiParquet(ctx context.Context, t *testing.T, env *Env, schema Schema
 		t.Fatalf("expected exactly 2 parquet files after two flushes, got %v", keys)
 	}
 	return keys
+}
+
+// readParquetRowIDs reads one (still readable) parquet object's row_id set
+// directly via DuckDB. Cast to VARCHAR: go-duckdb surfaces UUID columns as
+// raw bytes otherwise (#147).
+func readParquetRowIDs(ctx context.Context, t *testing.T, env *Env, key string) map[string]struct{} {
+	t.Helper()
+	q := fmt.Sprintf("SELECT row_id::VARCHAR FROM read_parquet('s3://%s/%s')", env.Cluster.Bucket, key)
+	rows, err := env.Duck.DB.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("read parquet row_ids from %s: %v", key, err)
+	}
+	defer rows.Close()
+	ids := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan row_id from %s: %v", key, err)
+		}
+		ids[strings.ToLower(id)] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate row_ids from %s: %v", key, err)
+	}
+	if len(ids) == 0 {
+		t.Fatalf("parquet %s yielded no row_ids; expected a seeded batch", key)
+	}
+	return ids
+}
+
+// resultRowIDSet collects the lowercase row_id set of a query result.
+func resultRowIDSet(t *testing.T, res *QueryResult) map[string]struct{} {
+	t.Helper()
+	ids := map[string]struct{}{}
+	for _, rec := range res.Records {
+		ids[strings.ToLower(rec.RowID.String())] = struct{}{}
+	}
+	return ids
+}
+
+func setMinus(a, b map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	for k := range a {
+		if _, drop := b[k]; !drop {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
+
+func assertIDSetEqual(t *testing.T, got, want map[string]struct{}) {
+	t.Helper()
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("result missing expected row_id %s", k)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("result has unexpected row_id %s", k)
+		}
+	}
+}
+
+// assertCorruptExclusionNote requires the plan to loudly name the excluded
+// object. Notes are internal-plan-only (#301/#306) — this is exactly the
+// surface embedders and operators get.
+func assertCorruptExclusionNote(t *testing.T, res *QueryResult, key string) {
+	t.Helper()
+	for _, note := range res.Plan.Notes {
+		if strings.Contains(note, fedengine.NotePartialParquetExclusion) && strings.Contains(note, key) {
+			return
+		}
+	}
+	t.Errorf("plan notes lack the corrupt-exclusion marker for %s: %v", key, res.Plan.Notes)
 }

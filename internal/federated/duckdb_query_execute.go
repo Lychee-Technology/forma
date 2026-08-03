@@ -24,6 +24,10 @@ type scan struct {
 	parquetPaths    []string
 	pathsFromSource bool
 	dirtyIDs        []uuid.UUID
+	// probe is this call's half-open reservation (zero when the breaker was
+	// closed at admission), so the corrupt-confirmed release below can only
+	// free a slot this caller actually holds (#349 review R2-2).
+	probe ProbeToken
 }
 
 // executeAndStreamDuckDB runs the compiled query, streams its rows through
@@ -50,11 +54,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		// covered without repeating #301's boundary redaction.
 		err = redact.Error(err)
 		planCtx.recordQueryFailure(err)
-		if e.breaker != nil {
-			e.breaker.RecordFailure()
-		}
-		return 0, fmt.Errorf("execute duckdb query: %w: %w",
-			e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource), err)
+		return 0, e.failDuckDBScan(ctx, q, sc, err, "execute duckdb query")
 	}
 	defer rows.Close()
 
@@ -63,19 +63,24 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		// #306: lazy object opens mean the attach failure can surface here
 		// instead of at Query; same scrub, same reason as above.
 		err = redact.Error(err)
-		if e.breaker != nil {
-			e.breaker.RecordFailure()
+		if !errors.Is(err, ErrFederatedReadFailed) {
+			// Handler errors are not read failures: they report to the
+			// breaker as before and pass through unclassified.
+			if e.breaker != nil {
+				e.breaker.RecordFailure()
+			}
+			return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
 		}
 		// A mid-stream read failure classifies like an execute failure:
 		// DuckDB opens listed objects lazily, so a missing object can
-		// surface here instead of at Query. Handler errors are not read
-		// failures and pass through unclassified.
-		if errors.Is(err, ErrFederatedReadFailed) {
-			if classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource); classified != ErrFederatedReadFailed {
-				return 0, fmt.Errorf("%w: %w", classified, err)
-			}
-		}
-		return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
+		// surface here instead of at Query.
+		//
+		// Free the single pooled connection (#285 SetMaxOpenConns(1)) BEFORE
+		// verification issues its own DuckDB queries — the deferred Close
+		// runs too late and would deadlock the pool. sql.Rows.Close is
+		// idempotent, so the defer stays harmless.
+		_ = rows.Close()
+		return 0, e.failDuckDBScan(ctx, q, sc, err, "stream duckdb federated rows")
 	}
 
 	if e.breaker != nil {
@@ -84,6 +89,52 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	e.finalizeDuckDBExecutionPlan(ctx, planCtx, sc.dirtyIDs, totalRecords, rowCount)
 
 	return totalRecords, nil
+}
+
+// failDuckDBScan classifies a failed scan and reports it to the breaker.
+// Classification order is a contract: a manifest-listed object missing from
+// storage is inconsistency (#187 scenario 2) — non-degradable, breaker-worthy,
+// never retried — and must win over the corruption probe. Confirmed per-file
+// corruption (#251) is the one outcome that is NOT engine sickness: the
+// verification pass just read every other object through the same engine and
+// session, so it hands back the probe slot instead of recording a failure —
+// a permanently corrupt object must not hold the breaker open forever.
+func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
+	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
+	var inconsistent *ParquetSetInconsistentError
+	if errors.As(classified, &inconsistent) {
+		if e.breaker != nil {
+			e.breaker.RecordFailure()
+		}
+		return fmt.Errorf("%s: %w: %w", op, classified, cause)
+	}
+	if corrupt := e.confirmCorruptPaths(ctx, sc); len(corrupt) > 0 {
+		e.corruptPaths.Add(corrupt)
+		if e.breaker != nil {
+			e.breaker.ReleaseProbe(sc.probe)
+		}
+		return &corruptParquetRetryError{Corrupt: corrupt, cause: fmt.Errorf("%s: %w: %w", op, classified, cause)}
+	}
+	if e.breaker != nil {
+		e.breaker.RecordFailure()
+	}
+	return fmt.Errorf("%s: %w: %w", op, classified, cause)
+}
+
+// confirmCorruptPaths runs per-file verification when the failed scan ran
+// over a source-authored multi-object set. It confirms corruption only when
+// at least one object verified readable — if every object fails to read, the
+// store or engine is sick, not the files, and exclusion would be both wrong
+// and useless (an empty remainder cannot answer the query).
+func (e *DBFederatedQueryEngine) confirmCorruptPaths(ctx context.Context, sc scan) []string {
+	if !sc.pathsFromSource || len(sc.parquetPaths) < 2 || e == nil || e.duck == nil {
+		return nil
+	}
+	corrupt := verifyParquetPaths(ctx, e.duck, sc.parquetPaths)
+	if len(corrupt) == 0 || len(corrupt) >= len(sc.parquetPaths) {
+		return nil
+	}
+	return corrupt
 }
 
 // streamDuckDBRows iterates through DuckDB rows and invokes the handler.
