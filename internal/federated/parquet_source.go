@@ -48,17 +48,19 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // input and must not silently fall through to the manifest source. The
 // source is the default when no hint is present. fromSource reports whether
 // the paths came from the source, so read-error classification only probes
-// path sets the source authored.
-func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, err error) {
+// path sets the source authored. Only source-authored sets are filtered
+// against the verification-confirmed corrupt objects (#251); excludedCorrupt
+// names what was dropped so the execution plan can say the scan was partial.
+func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, excludedCorrupt []string, err error) {
 	hinted, err := duckDBParquetPathsForQuery(q)
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	if len(hinted) > 0 {
-		return hinted, false, nil
+		return hinted, false, nil, nil
 	}
 	if e == nil || e.parquetSource == nil || q == nil {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	resolved, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
@@ -69,11 +71,18 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 		// hand it to the degraded fallback — silencing exactly the state it
 		// exists to report.
 		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
-			return nil, false, fmt.Errorf("manifest parquet source: %w", err)
+			return nil, false, nil, fmt.Errorf("manifest parquet source: %w", err)
 		}
-		return nil, false, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
+		return nil, false, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
-	return resolved, true, nil
+	// Exclude verification-confirmed corrupt objects (#251). If that would
+	// empty the set, scan the full set instead: total corruption must fail
+	// loudly with its own classification, not as ErrNoParquetPaths.
+	kept, excluded := e.corruptPaths.Split(resolved)
+	if len(kept) == 0 {
+		return resolved, true, nil, nil
+	}
+	return kept, true, excluded, nil
 }
 
 // classifyDuckDBReadError classifies a failed DuckDB read by storage state:

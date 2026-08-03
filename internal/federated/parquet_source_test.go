@@ -398,3 +398,83 @@ func TestParquetSource_PathsErrorClassifiedReadFailed(t *testing.T) {
 	require.ErrorContains(t, err, "resolve parquet paths")
 	require.Equal(t, 0, duck.calls, "resolution failure must precede execution")
 }
+
+// newExclusionTestEngine builds the minimal engine the resolve-time exclusion
+// tests need: only the parquet source and the corrupt-path cache participate,
+// so every other seam stays nil.
+func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
+	return NewDBFederatedQueryEngine(nil, nil, nil, nil, forma.DuckDBConfig{}, nil, "", WithParquetSource(src))
+}
+
+func exclusionTestQuery() *model.FederatedAttributeQuery {
+	return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}
+}
+
+// TestResolveParquetPathsExcludesCachedCorrupt pins the #251 resolve-time
+// exclusion: a verification-confirmed corrupt object drops out of a
+// source-authored path set and is reported for the execution-plan note.
+func TestResolveParquetPathsExcludesCachedCorrupt(t *testing.T) {
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet", "s3://b/bad.parquet"}})
+	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
+
+	paths, fromSource, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+	require.NoError(t, err)
+	require.True(t, fromSource, "source-authored set must report fromSource")
+	require.Equal(t, []string{"s3://b/a.parquet"}, paths)
+	require.Equal(t, []string{"s3://b/bad.parquet"}, excluded)
+}
+
+// TestResolveParquetPathsAllCorruptKeepsFullSet: excluding everything would
+// turn total corruption into a quiet ErrNoParquetPaths misconfiguration; the
+// full set must scan and fail loudly with today's classification instead.
+func TestResolveParquetPathsAllCorruptKeepsFullSet(t *testing.T) {
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}})
+	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
+
+	paths, _, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+	require.NoError(t, err)
+	require.Equal(t, []string{"s3://b/bad.parquet"}, paths,
+		"all-corrupt set must pass through unfiltered")
+	require.Empty(t, excluded, "an unfiltered scan must not claim a partial read")
+}
+
+// TestResolveParquetPathsHintSetNeverFiltered: hint sets are operator-pinned
+// (#184) — the caller named the objects, so exclusion must not silently narrow
+// them.
+func TestResolveParquetPathsHintSetNeverFiltered(t *testing.T) {
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet"}})
+	e.corruptPaths.Add([]string{"s3://hinted/x.parquet"})
+	q := exclusionTestQuery()
+	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://hinted/x.parquet"}
+
+	paths, fromSource, excluded, err := e.resolveParquetPaths(context.Background(), q)
+	require.NoError(t, err)
+	require.False(t, fromSource)
+	require.Empty(t, excluded)
+	require.Equal(t, []string{"s3://hinted/x.parquet"}, paths)
+}
+
+// TestRecordCorruptExclusionNotesExcludedObjects pins the loudness half: the
+// internal plan names every excluded object under the exported note prefix the
+// e2e harness and Go embedders assert on.
+func TestRecordCorruptExclusionNotesExcludedObjects(t *testing.T) {
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	planCtx := newDuckDBExecutionPlanContext(opts)
+
+	planCtx.recordCorruptExclusion([]string{"s3://b/bad.parquet"})
+
+	require.Contains(t, opts.ExecutionPlan.Notes[len(opts.ExecutionPlan.Notes)-1], NotePartialParquetExclusion)
+	require.Contains(t, opts.ExecutionPlan.Notes[len(opts.ExecutionPlan.Notes)-1], "s3://b/bad.parquet")
+}
+
+// TestRecordCorruptExclusionEmptyIsNoop: a full scan must not leave a partial
+// read note behind.
+func TestRecordCorruptExclusionEmptyIsNoop(t *testing.T) {
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	planCtx := newDuckDBExecutionPlanContext(opts)
+	before := len(opts.ExecutionPlan.Notes)
+
+	planCtx.recordCorruptExclusion(nil)
+
+	require.Len(t, opts.ExecutionPlan.Notes, before)
+}

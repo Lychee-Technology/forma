@@ -444,6 +444,23 @@ func (c *duckDBExecutionPlanContext) recordProjectionCache(hit bool) {
 	}
 }
 
+// NotePartialParquetExclusion prefixes the execution-plan note recording a
+// partial parquet scan (#251): verification-confirmed corrupt objects were
+// excluded and the query answered from the readable remainder. Notes never
+// cross the HTTP boundary (toExecutionPlan drops them, #301/#306); embedders
+// and the e2e harness assert on this exported prefix.
+const NotePartialParquetExclusion = "partial parquet scan: excluded corrupt objects"
+
+// recordCorruptExclusion notes the excluded object set on the plan. No-op
+// for an empty set or when no plan was requested.
+func (c *duckDBExecutionPlanContext) recordCorruptExclusion(excluded []string) {
+	if len(excluded) == 0 || c == nil || c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
+		return
+	}
+	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
+		fmt.Sprintf("%s: %v", NotePartialParquetExclusion, excluded))
+}
+
 // recordClientUnavailable records when the DuckDB client is not available.
 func (c *duckDBExecutionPlanContext) recordClientUnavailable() {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
