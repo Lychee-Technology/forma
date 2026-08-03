@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -89,6 +90,9 @@ type inMemoryManifestStore struct {
 	// lastSaveDoneMs records when the slowed Save completed.
 	saveDelay      time.Duration
 	lastSaveDoneMs int64
+	// lastSavedPath tracks the most recent saved manifest path for deterministic
+	// retrieval in tests (#256 test coverage).
+	lastSavedPath string
 }
 
 type objectOnlyS3Client struct{}
@@ -188,24 +192,27 @@ func (s *inMemoryManifestStore) Save(_ context.Context, path string, data []byte
 	etag := fmt.Sprintf("etag-%d", s.saved)
 	s.data[path] = append([]byte(nil), data...)
 	s.etags[path] = etag
+	s.lastSavedPath = path
 	return etag, nil
 }
 
 // lastEntry decodes the last saved manifest and returns its final file entry.
 // Used by tests to inspect manifest stamping.
-func (s *inMemoryManifestStore) lastEntry(t interface{ Fatalf(string, ...interface{}) }) *manifest.FileEntry {
+func (s *inMemoryManifestStore) lastEntry(t *testing.T) *manifest.FileEntry {
+	t.Helper()
 	if len(s.data) == 0 {
 		t.Fatalf("no manifest was saved")
 	}
-	var lastPath string
-	var lastData []byte
-	for path, data := range s.data {
-		lastPath = path
-		lastData = data
+	if s.lastSavedPath == "" {
+		t.Fatalf("lastSavedPath not tracked")
+	}
+	lastData, ok := s.data[s.lastSavedPath]
+	if !ok {
+		t.Fatalf("lastSavedPath %s not in data", s.lastSavedPath)
 	}
 	m, err := manifest.Parse(lastData)
 	if err != nil {
-		t.Fatalf("failed to parse manifest from %s: %v", lastPath, err)
+		t.Fatalf("failed to parse manifest from %s: %v", s.lastSavedPath, err)
 	}
 	if len(m.Files) == 0 {
 		t.Fatalf("manifest has no files")
