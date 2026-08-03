@@ -14,7 +14,7 @@ import (
 // (#251 spike). Corruption that decodes silently is invisible to every
 // reader — the set scan included — so it can never reach this function;
 // that pre-existing integrity gap is documented in the #251 spike findings
-// and tracked in a follow-up issue. Glob and quote-bearing
+// and tracked in #347. Glob and quote-bearing
 // entries are skipped: unverifiable means unexcludable, and the main scan
 // keeps its all-or-nothing behavior for them. A cancelled context confirms
 // nothing — cancellation is indistinguishable from corruption for the

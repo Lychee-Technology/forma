@@ -108,7 +108,7 @@ func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
 // must be truthful by construction rather than by annotation. Rewind truncates
 // Sources and Notes only: Timings is a merged map, not an append log, and is
 // deliberately left as-is — it does cross the HTTP boundary, so a retried
-// request can report both plan_cache_hit and plan_cache_miss (follow-up #<F2 issue>).
+// request can report both plan_cache_hit and plan_cache_miss (follow-up #348).
 // Everything recorded BEFORE the first pass survives — the routing decision and
 // its note are the caller's, not the failed pass's. The retry re-records the
 // corrupt-exclusion note itself, via path resolution.
