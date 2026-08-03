@@ -41,8 +41,10 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 
 	// Resolve the parquet path set once (#187): explicit render hints win,
 	// otherwise the manifest-driven source authors the list. Provenance
-	// gates the read-error classification.
-	paths, fromSource, excludedCorrupt, err := e.resolveParquetPaths(ctx, q)
+	// gates the read-error classification. A source also hands back its
+	// recorded footer stamps (#256) so the validation below can skip probing
+	// the objects the manifest already vouches for.
+	paths, fromSource, stamps, excludedCorrupt, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
 	}
@@ -75,7 +77,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// parquetcheck invariant codifies the PRODUCTION exporters, which never
 	// write those IDs (ValidateFixtureSchemaID reserves the range).
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		unionCols, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, nil)
+		unionCols, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, stamps)
 		if err != nil {
 			return scanSources{}, fmt.Errorf("pre-read parquet schema validation: %w", err)
 		}

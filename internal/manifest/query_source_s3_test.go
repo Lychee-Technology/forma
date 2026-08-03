@@ -135,7 +135,7 @@ func TestQuerySource_EmptyManifestFallbackUsesCanonicalGlob(t *testing.T) {
 	src := NewS3QuerySource(&fakeProbeClient{}, cfg)
 	src.Store = &memStore{} // no manifest object => empty manifest
 
-	paths, err := src.Paths(context.Background(), 7)
+	paths, _, err := src.Paths(context.Background(), 7)
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://bkt/delta/7/*.parquet"}, paths)
 }

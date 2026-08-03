@@ -16,8 +16,8 @@ import (
 // did), it only asks whether any scanned object is missing from storage.
 type execFakeSource struct{ missing []string }
 
-func (f *execFakeSource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
-	return nil, nil // unused in these tests
+func (f *execFakeSource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
+	return nil, nil, nil // unused in these tests
 }
 
 func (f *execFakeSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
