@@ -352,7 +352,10 @@ since the missing set is recomputed per query.
 **Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
 compaction merge) `DESCRIBE` each parquet object they publish and record its
 footer columns (name → DuckDB type) on the manifest entry
-(`FileEntry.columns`). The pre-read validator consults the stamp first: a stamp
+(`FileEntry.columns`) — flush and init describe the final key, while
+compaction describes the tmp object it staged, which is sound because tmp→final
+is a byte-identical `CopyObject` and the e2e suite pins the published object's
+footer against the stamp. The pre-read validator consults the stamp first: a stamp
 satisfying the system-column invariant short-circuits the footer probe and
 feeds the column union above; a stamp that is absent (an entry predating
 stamping) or fails the invariant falls back to the probe. On that invariant

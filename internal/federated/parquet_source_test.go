@@ -429,13 +429,18 @@ func TestResolveParquetPathsExcludesCachedCorrupt(t *testing.T) {
 // turn total corruption into a quiet ErrNoParquetPaths misconfiguration; the
 // full set must scan and fail loudly with today's classification instead.
 func TestResolveParquetPathsAllCorruptKeepsFullSet(t *testing.T) {
-	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}})
+	stamps := map[string]map[string]string{
+		"s3://b/bad.parquet": {"row_id": "UUID"},
+	}
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}, stamps: stamps})
 	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-	paths, _, _, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+	paths, _, gotStamps, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://b/bad.parquet"}, paths,
 		"all-corrupt set must pass through unfiltered")
+	require.Equal(t, stamps, gotStamps,
+		"the full-set fallback must still forward the source's stamps")
 	require.Empty(t, excluded, "an unfiltered scan must not claim a partial read")
 }
 

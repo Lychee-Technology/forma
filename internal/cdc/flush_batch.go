@@ -149,6 +149,13 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 // the entry unstamped — readers fall back to probing — so stamping never
 // fails a flush.
 func (e *flushBatchExecutor) stampColumns(ctx context.Context, finalKey string) map[string]string {
+	if e.manifestStore == nil {
+		// No manifest to stamp: the entry is never persisted (executeBatch
+		// skips updateManifest), so a footer probe would be a discarded S3
+		// read per batch.
+		return nil
+	}
+
 	describe := e.describeColumns
 	if describe == nil {
 		if e.duck == nil || e.duck.DB == nil {
