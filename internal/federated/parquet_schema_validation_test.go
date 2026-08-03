@@ -365,11 +365,13 @@ func TestValidateStampedPathSkipsProbe(t *testing.T) {
 	require.Contains(t, union, "score")
 	require.Equal(t, "UUID", union["row_id"])
 
-	// The stamp feeds the same write-once cache a probe would: a later query
-	// that carries no stamp still costs nothing.
-	_, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, nil)
+	// The stamp feeds the same write-once cache a probe would, and the cache
+	// owns its copy: mutating the caller's map afterwards cannot reach it.
+	delete(stamps["s3://b/1/a.parquet"], "score")
+	union, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.Empty(t, exec.probes, "a stamp-validated path is cached like a probed one")
+	require.Contains(t, union, "score", "the cache holds a clone, not the caller's map")
 }
 
 // A stamp violating the invariant must NOT fail the query by itself: the probe

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -59,10 +60,21 @@ func newParquetSchemaValidator() *parquetSchemaValidator {
 //
 // stamps carries manifest-recorded column maps keyed by the exact path strings
 // in paths (#256); it may be nil. A stamp that satisfies the invariant spares
-// that path its probe. A stamp that does not is ignored and the path is probed
-// as usual: a stamp may only short-circuit success, never author a failure, so
-// a stale or corrupt manifest can cost a probe but can never fail a healthy
-// object.
+// that path its probe; one that does not is ignored and the path is probed as
+// usual. On the Check verdict a stamp may only short-circuit success, never
+// author a failure — a rejected stamp costs at most one extra probe.
+//
+// The union is the one channel where a stamp can still fail a query. Check
+// inspects only the system columns, so a stamp that passes it while
+// UNDER-REPORTING the file's attribute columns contributes a short union with
+// complete still true, and #255 then augments a NULL alias for a column the
+// file really carries. Unlike the accepted glob skew, which self-heals on the
+// next query, that binder failure persists until the manifest entry is
+// corrected: the entry is durable and markValidated pins it for the process
+// lifetime. Accepted (plan decision 4) — stamps are written from a write-time
+// DESCRIBE of the actual bytes, so under-reporting takes a corrupted or
+// tampered manifest, and the outcome is a loud classified failure, never
+// silent data loss.
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
 	stamps map[string]map[string]string,
@@ -120,7 +132,10 @@ func (v *parquetSchemaValidator) validateConcrete(
 		}
 		if stamp, ok := stamps[path]; ok && len(stamp) > 0 {
 			if parquetcheck.Check(path, stamp) == nil {
-				v.markValidated(path, stamp)
+				// Clone: the cache outlives the call and must not alias a
+				// caller-owned map (a manifest entry in production), which
+				// would make it poisonable and racy.
+				v.markValidated(path, maps.Clone(stamp))
 				mergeColumnUnion(union, stamp)
 				continue
 			}
