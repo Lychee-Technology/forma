@@ -80,7 +80,7 @@ func TestManifestStamp_RogueOverwriteFailsLoudly(t *testing.T) {
 	// The rogue overwrite: same key, same manifest entry, same stamp — bytes
 	// that no longer carry row_id. Derived from the object itself so every
 	// OTHER column still binds and the guard is the only thing under test.
-	overwriteWithoutRowID(ctx, t, env, victim)
+	overwriteWithoutColumn(ctx, t, env, victim, "row_id")
 	if cols := describeParquetCols(ctx, t, env, victim); len(cols) == 0 {
 		t.Fatalf("rogue overwrite produced an unreadable object at %s", victim)
 	} else if _, ok := cols["row_id"]; ok {
@@ -112,6 +112,73 @@ func TestManifestStamp_RogueOverwriteFailsLoudly(t *testing.T) {
 	assertDegradedFallbackPlan(t, degraded)
 }
 
+// TestManifestStamp_RogueMissingChangedAtFailsLoudly is the same silent-loss
+// channel through the OTHER system column, and it is the worse of the two.
+//
+// row_id going NULL removes rows; changed_at going NULL keeps them and
+// corrupts the answer. changed_at is the LWW version: the merge ranks versions
+// by it, and DuckDB sorts NULLs FIRST under DESC, so a rogue object whose
+// changed_at was NULL-filled by union_by_name does not just participate in the
+// version race — it WINS it, and its stale or wrong payload becomes the visible
+// row. No error, no plan note, no missing count to notice: the query returns
+// the expected number of records with the wrong contents.
+//
+// Same setup as the row_id scenario: two stamped delta objects, one overwritten
+// with every column except changed_at, manifest entry and stale stamp left
+// intact. The sibling keeps changed_at in the union so the scan binds and the
+// guard — not the binder — is what fires.
+func TestManifestStamp_RogueMissingChangedAtFailsLoudly(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	wide := DefaultSchemaFixtures()[1]
+
+	keys := seedMultiParquet(ctx, t, env, wide)
+	victim := keys[0]
+
+	stamped := stampedEntryFor(ctx, t, env, wide, victim)
+	if _, ok := stamped["changed_at"]; !ok {
+		t.Fatalf("precondition: manifest stamp for %s does not claim changed_at: %#v", victim, stamped)
+	}
+
+	healthy, err := env.Query(ctx, Query{Schema: wide, Limit: 50})
+	if err != nil {
+		t.Fatalf("precondition query failed: %v", err)
+	}
+	if !healthy.Plan.Routing.UseDuckDB {
+		t.Fatalf("precondition: healthy query did not route to duckdb: %+v", healthy.Plan.Routing)
+	}
+	before := resultRowIDSet(t, healthy)
+
+	overwriteWithoutColumn(ctx, t, env, victim, "changed_at")
+	if cols := describeParquetCols(ctx, t, env, victim); len(cols) == 0 {
+		t.Fatalf("rogue overwrite produced an unreadable object at %s", victim)
+	} else if _, ok := cols["changed_at"]; ok {
+		t.Fatalf("rogue overwrite did not drop changed_at from %s: %#v", victim, cols)
+	}
+	if still := stampedEntryFor(ctx, t, env, wide, victim); len(still) == 0 {
+		t.Fatalf("manifest entry for %s lost its stamp; the scenario needs the stale stamp intact", victim)
+	}
+
+	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := env.Query(failCtx, Query{Schema: wide, Limit: 50})
+	if err == nil {
+		t.Fatalf("a stamp-trusted object with no changed_at was scanned silently: query returned %d records "+
+			"(%d before the overwrite) whose LWW winner was chosen against a NULL version (#256 silent-loss channel)",
+			len(res.Records), len(before))
+	}
+	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("a scanned object violating the export schema must classify as ErrFederatedReadFailed, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "NULL changed_at") {
+		t.Errorf("the failure must name the violated column so an operator can act on it, got: %v", err)
+	}
+
+	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50, AllowPartialDegradedMode: true})
+	assertDegradedFallbackPlan(t, degraded)
+}
+
 // stampedEntryFor returns the Columns stamp the schema's manifest currently
 // records for key, or nil if the entry is unstamped or absent.
 func stampedEntryFor(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, key string) map[string]string {
@@ -133,17 +200,17 @@ func stampedEntryFor(ctx context.Context, t *testing.T, env *Env, schema SchemaR
 	return nil
 }
 
-// overwriteWithoutRowID republishes key with every column it already carries
-// except row_id. Going through a staging table is deliberate: COPY cannot read
+// overwriteWithoutColumn republishes key with every column it already carries
+// except col. Going through a staging table is deliberate: COPY cannot read
 // and rewrite the same object in one statement.
-func overwriteWithoutRowID(ctx context.Context, t *testing.T, env *Env, key string) {
+func overwriteWithoutColumn(ctx context.Context, t *testing.T, env *Env, key, col string) {
 	t.Helper()
-	const staging = "rogue_missing_row_id"
+	staging := "rogue_missing_" + col
 	stage := fmt.Sprintf(
-		"CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (row_id) FROM read_parquet('s3://%s/%s')",
-		staging, env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+		"CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (%s) FROM read_parquet('s3://%s/%s')",
+		staging, col, env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
 	if _, err := env.Duck.DB.ExecContext(ctx, stage); err != nil {
-		t.Fatalf("stage rogue rewrite of %s: %v", key, err)
+		t.Fatalf("stage rogue rewrite of %s dropping %s: %v", key, col, err)
 	}
 	writeParquetViaDuck(ctx, t, env, "SELECT * FROM "+staging, key)
 }

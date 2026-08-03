@@ -23,41 +23,77 @@ type NullScanColumn struct {
 	DuckDBType string
 }
 
-// ParquetNullRowIDMessage is the text the scan-level row_id guard raises. It
-// names the invariant rather than the object: the scan source is schema-blind
-// and path-blind, and a path in a DuckDB error would be a storage-location
-// leak (#306). The manifest entry and the pre-read validator identify the
-// offending object.
-const ParquetNullRowIDMessage = "parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)"
+// ParquetNullRowIDMessage and ParquetNullChangedAtMessage are the texts the
+// scan-level system-column guard raises. Each names the offending column and
+// the invariant rather than the object: the scan source is schema-blind and
+// path-blind, and a path in a DuckDB error would be a storage-location leak
+// (#306). The manifest entry and the pre-read validator identify the offending
+// object.
+const (
+	ParquetNullRowIDMessage     = "parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)"
+	ParquetNullChangedAtMessage = "parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)"
+)
 
-// parquetRowIDGuardItem rewrites row_id in place so any scanned parquet row
-// whose row_id is NULL fails the query. It closes the one silent-loss channel
-// the #256 manifest stamps opened: a stamp with valid system columns spares
-// its path the footer probe, so a rogue overwrite (or a tampered manifest)
-// can put an object whose real bytes lack row_id into a scan the validator
-// waved through. union_by_name NULL-fills the absent column, those rows drop
-// out of the dirty anti-join, and the query succeeds while ignoring the file.
+// parquetSystemColumnGuardItem rewrites the parquetcheck system columns in
+// place so any scanned parquet row that violates the export schema invariant
+// fails the query. It closes the one silent-loss channel the #256 manifest
+// stamps opened: a stamp with valid system columns spares its path the footer
+// probe, so a rogue overwrite (or a tampered manifest) can put an object whose
+// real bytes lack a system column into a scan the validator waved through.
+// union_by_name NULL-fills the absent column and the rows flow on — a missing
+// row_id drops them out of the dirty anti-join, a missing changed_at feeds
+// NULL into LWW version ordering — and the query succeeds either way.
+//
+// Two guard shapes, because the two channels differ:
+//
+//   - PRESENCE (NULL → error): applied to row_id and changed_at, both of which
+//     are never legitimately NULL. Flush exports cl.changed_at from a NOT NULL
+//     change_log column; init/base exports m.ltbase_updated_at, likewise NOT
+//     NULL (#210); the benchmark shape carries changed_at directly
+//     (duckdb_benchmark_projection.go). deleted_at gets NO presence guard: the
+//     delta encoding writes NULL for every live row (cl.deleted_at, the #274
+//     asymmetry — only init/base COALESCEs it to 0), so a NULL-based presence
+//     guard would error on ordinary healthy data. See the residual note below.
+//
+//   - TYPE (CAST): applied to changed_at and deleted_at, both BIGINT in the
+//     production AND benchmark shapes. Without it a rogue file carrying either
+//     as VARCHAR widens the union_by_name result to VARCHAR and LWW ordering
+//     silently goes lexicographic ('9' > '100'). The CAST re-pins BIGINT:
+//     numeric strings coerce value-preservingly, garbage fails loudly.
+//     row_id gets NO cast — it is UUID in production exports and VARCHAR in
+//     the benchmark shape, so any cast would bind one and coerce the other
+//     (#147); its untyped COALESCE adopts whichever the file carries.
 //
 // Three engine behaviors make this shape the one that works (proved against
 // the pinned DuckDB in duckdb_cold_scan_guard_test.go):
-//   - error() is NOT folded at bind time inside the COALESCE, so a healthy
-//     scan is unaffected;
-//   - error() carries no type of its own, so COALESCE adopts row_id's — UUID
-//     for production exports, VARCHAR for the benchmark shape (schemas
-//     100-102 render through this same source). An explicit CAST would bind
-//     one of the two and coerce the other (#147);
-//   - REPLACE puts the guard IN the row_id expression, so projection pushdown
-//     cannot prune it while row_id is still read — and both template scan
-//     sites read it (the anti-join and the semijoin's SELECT row_id).
+//   - error() is NOT folded at bind time inside a COALESCE — with either or
+//     both guarded columns present — so a healthy scan is unaffected;
+//   - error() carries no type of its own, so COALESCE adopts the column's;
+//   - REPLACE puts each guard IN the column's own expression, so projection
+//     pushdown cannot prune it while that column is still read — and both
+//     template scan sites read row_id (the anti-join and the semijoin's
+//     SELECT row_id) while the merge reads changed_at.
 //
-// A scan set where NO object carries row_id fails to bind the REPLACE list
-// instead. Different message, same contract: loud, never silent.
-var parquetRowIDGuardItem = fmt.Sprintf(
-	"* REPLACE (COALESCE(row_id, error('%s')) AS row_id)", ParquetNullRowIDMessage)
+// RESIDUAL (#274): deleted_at's PRESENCE cannot be value-guarded here while
+// delta exports encode live rows as NULL — such a guard would fail every
+// healthy delta scan. Its TYPE is pinned by the CAST above; a file missing the
+// column entirely still reaches the merge as NULL (characterized in
+// duckdb_cold_scan_guard_test.go), covered only by the pre-read footer probe
+// and the manifest stamp. Extending the presence guard to deleted_at is
+// unblocked once #274 normalizes the delta encoding to 0.
+//
+// A scan set where NO object carries a guarded column fails to bind the
+// REPLACE list instead. Different message, same contract: loud, never silent.
+var parquetSystemColumnGuardItem = fmt.Sprintf(
+	"* REPLACE (COALESCE(row_id, error('%s')) AS row_id, "+
+		"CAST(COALESCE(changed_at, error('%s')) AS BIGINT) AS changed_at, "+
+		"CAST(deleted_at AS BIGINT) AS deleted_at)",
+	ParquetNullRowIDMessage, ParquetNullChangedAtMessage)
 
 // BuildParquetScanSource renders the parquet scan for the advanced
-// template's two scan sites: the row_id guard above, plus (#255) a typed NULL
-// for every current-schema column absent from every file in the set.
+// template's two scan sites: the system-column guard above, plus (#255) a
+// typed NULL for every current-schema column absent from every file in the
+// set.
 //
 // The guard renders unconditionally, so this no longer has a "bare
 // read_parquet" idle state — the pre-#256 byte-identity of the zero-missing
@@ -67,7 +103,7 @@ var parquetRowIDGuardItem = fmt.Sprintf(
 func BuildParquetScanSource(pathsSQL string, missing []NullScanColumn) string {
 	base := fmt.Sprintf("read_parquet(%s, union_by_name=true)", pathsSQL)
 	parts := make([]string, 0, len(missing)+1)
-	parts = append(parts, parquetRowIDGuardItem)
+	parts = append(parts, parquetSystemColumnGuardItem)
 	for _, mc := range missing {
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
 	}
