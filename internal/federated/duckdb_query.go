@@ -104,12 +104,14 @@ func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
 // carrying ActualRows=0, indistinguishable from a scan that legitimately
 // matched nothing — and a double-counted hot-tier RowEstimate. The Notes that
 // would explain the duplication never reach an API caller (toExecutionPlan
-// projects Sources and Routing only, leaving Notes internal), so the plan must
-// be truthful by construction rather than by annotation. Timings are left as-is
-// by design (a follow-up concern). Everything recorded BEFORE the first pass
-// survives — the routing decision and its note are the caller's, not the failed
-// pass's. The retry re-records the corrupt-exclusion note itself, via path
-// resolution.
+// projects Routing, Timings, Sources and Merge, but drops Notes), so the plan
+// must be truthful by construction rather than by annotation. Rewind truncates
+// Sources and Notes only: Timings is a merged map, not an append log, and is
+// deliberately left as-is — it does cross the HTTP boundary, so a retried
+// request can report both plan_cache_hit and plan_cache_miss (follow-up #<F2 issue>).
+// Everything recorded BEFORE the first pass survives — the routing decision and
+// its note are the caller's, not the failed pass's. The retry re-records the
+// corrupt-exclusion note itself, via path resolution.
 func (m executionPlanMark) rewind(opts *model.FederatedQueryOptions) {
 	if opts == nil || opts.ExecutionPlan == nil {
 		return
