@@ -13,9 +13,9 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// mergeStampFixture stages one healthy source file and returns (sourcePath,
+// buildMergeStampFixture stages one healthy source file and returns (sourcePath,
 // tmpPath) for a merge.
-func mergeStampFixture(t *testing.T, db *sql.DB) (string, string) {
+func buildMergeStampFixture(t *testing.T, db *sql.DB) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "base.parquet")
@@ -30,7 +30,7 @@ func TestDuckMergerStampsAndStaysSilentOnSuccess(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	src, tmp := mergeStampFixture(t, db)
+	src, tmp := buildMergeStampFixture(t, db)
 
 	core, logs := observer.New(zap.WarnLevel)
 	merger := &DuckMerger{DB: db, Logger: zap.New(core)}
@@ -54,7 +54,7 @@ func TestDuckMergerWarnsWhenStampProbeFails(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	src, tmp := mergeStampFixture(t, db)
+	src, tmp := buildMergeStampFixture(t, db)
 
 	core, logs := observer.New(zap.WarnLevel)
 	merger := &DuckMerger{
@@ -84,7 +84,7 @@ func TestDuckMergerNilLoggerIsSafe(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	src, tmp := mergeStampFixture(t, db)
+	src, tmp := buildMergeStampFixture(t, db)
 
 	merger := &DuckMerger{DB: db}
 	stats, err := merger.MergeToTmp(context.Background(), []string{src}, tmp)

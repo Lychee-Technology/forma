@@ -39,11 +39,6 @@ func describeRowsFor(cols map[string]string) [][2]string {
 	return out
 }
 
-func stampCacheValidator(t *testing.T) *parquetSchemaValidator {
-	t.Helper()
-	return newParquetSchemaValidator()
-}
-
 // validateOne runs one concrete path through the validator and returns the
 // column union it produced.
 func validateOne(t *testing.T, v *parquetSchemaValidator, duck DuckDBQueryExecutor, stamp map[string]string) map[string]string {
@@ -63,7 +58,7 @@ func validateOne(t *testing.T, v *parquetSchemaValidator, duck DuckDBQueryExecut
 // probe. Same stamp, same path — no DuckDB traffic at all after the first
 // acceptance.
 func TestValidatorCacheHitsWhileStampIsUnchanged(t *testing.T) {
-	v := stampCacheValidator(t)
+	v := newParquetSchemaValidator()
 	duck := &fakeDuckDBExecutor{describeCols: map[string][][2]string{}}
 
 	stamp := stampWith("city")
@@ -79,7 +74,7 @@ func TestValidatorCacheHitsWhileStampIsUnchanged(t *testing.T) {
 // at this path was overwritten and its manifest entry re-stamped with an extra
 // column; the cached entry belongs to the previous stamp and must not answer.
 func TestValidatorReValidatesWhenStampChanges(t *testing.T) {
-	v := stampCacheValidator(t)
+	v := newParquetSchemaValidator()
 	duck := &fakeDuckDBExecutor{describeCols: map[string][][2]string{}}
 
 	before := validateOne(t, v, duck, stampWith("city"))
@@ -102,7 +97,7 @@ func TestValidatorReValidatesOnStampAppearingAndDisappearing(t *testing.T) {
 	}}
 
 	t.Run("nil_then_stamp", func(t *testing.T) {
-		v := stampCacheValidator(t)
+		v := newParquetSchemaValidator()
 		duck.describeCalls = 0
 
 		first := validateOne(t, v, duck, nil)
@@ -116,7 +111,7 @@ func TestValidatorReValidatesOnStampAppearingAndDisappearing(t *testing.T) {
 	})
 
 	t.Run("stamp_then_nil", func(t *testing.T) {
-		v := stampCacheValidator(t)
+		v := newParquetSchemaValidator()
 		duck.describeCalls = 0
 
 		first := validateOne(t, v, duck, stampWith("stamped_only"))

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 	"sync"
 
@@ -45,6 +46,12 @@ import (
 type parquetSchemaValidator struct {
 	mu    sync.Mutex
 	valid map[string]validatedParquet
+	// inflight single-flights the footer probe per (path, stamp): concurrent
+	// misses on the same key would otherwise each issue their own DESCRIBE,
+	// and — because the probe runs outside mu — an older probe could publish
+	// its result after a newer one. Keyed by probeKey; the channel closes when
+	// the leader has published. See probeColumns.
+	inflight map[string]chan struct{}
 	// logger reports the stamp/footer cross-check (#256). Optional; see
 	// WithLogger. Nil is safe — log() substitutes a nop.
 	logger *zap.Logger
@@ -60,7 +67,10 @@ type validatedParquet struct {
 }
 
 func newParquetSchemaValidator() *parquetSchemaValidator {
-	return &parquetSchemaValidator{valid: map[string]validatedParquet{}}
+	return &parquetSchemaValidator{
+		valid:    map[string]validatedParquet{},
+		inflight: map[string]chan struct{}{},
+	}
 }
 
 // log is the nil-safe accessor for the optional logger.
@@ -164,7 +174,7 @@ func (v *parquetSchemaValidator) validateConcrete(
 			continue
 		}
 		stamp := currentStamp(stamps, path)
-		if cols, ok := v.validatedCols(path, stamp); ok {
+		if cols, ok := v.lookupValidatedCols(path, stamp); ok {
 			mergeColumnUnion(union, cols)
 			continue
 		}
@@ -180,22 +190,127 @@ func (v *parquetSchemaValidator) validateConcrete(
 		// may only short-circuit success, never author a failure — byte truth
 		// (#187) decides whether the file is malformed, and a corrupt manifest
 		// must not fail a healthy object (#256). So: probe.
-		cols, err := describeParquetColumns(ctx, duck, path)
+		cols, ok, err := v.probeColumns(ctx, duck, path, stamp)
 		if err != nil {
+			return false, err
+		}
+		if !ok {
 			complete = false // inconclusive: defer to the execution-path classifier
 			continue
 		}
-		if err := parquetcheck.Check(path, cols); err != nil {
-			return false, fmt.Errorf("%w: %w", ErrFederatedReadFailed, err)
-		}
-		v.warnStampDivergence(path, stamp, cols)
-		// The footer wins, and the CURRENT stamp is recorded next to it: a
-		// stamp the invariant rejected would otherwise never match the entry
-		// it produced, and the path would re-probe on every single query.
-		v.markValidated(path, cols, maps.Clone(stamp))
 		mergeColumnUnion(union, cols)
 	}
 	return complete, nil
+}
+
+// probeKey identifies one probe's work: the path AND the stamp generation it
+// would be validated under, so two queries racing on the same object under
+// DIFFERENT manifest stamps are not collapsed into one another's result. The
+// stamp is fingerprinted as a sorted name/type join. EVERY separator is NUL —
+// between pairs AND between a name and its type — because a printable
+// separator aliases: with "=", {"a": "b=c"} and {"a=b": "c"} both render
+// "a=b=c". NUL cannot appear in a DuckDB identifier, a type name, or an S3
+// key, so no two distinct inputs can render to the same fingerprint.
+func probeKey(path string, stamp map[string]string) string {
+	names := make([]string, 0, len(stamp))
+	for name := range stamp {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, 2*len(names)+1)
+	parts = append(parts, path)
+	for _, name := range names {
+		parts = append(parts, name, stamp[name])
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// probeColumns runs (or waits on) exactly one footer probe per (path, stamp).
+// It reports the validated columns and whether the probe was conclusive; an
+// unreadable footer is (nil, false, nil) — inconclusive, deferred to the
+// execution-path classifier — while an invariant violation is a loud error.
+//
+// The single-flight matters because the probe is the expensive part and it
+// deliberately runs OUTSIDE mu (a DESCRIBE is a network round trip; holding
+// the mutex across it would serialize every path in every concurrent query).
+// Without it, N concurrent queries hitting the same cold object issue N
+// DESCRIBEs, and a slower one can publish its cache entry after a faster,
+// newer one.
+//
+// A follower waits for the leader and then re-runs the ordinary lookup, which
+// re-checks stamp equality — that IS the generation recheck, so a leader whose
+// entry has already been superseded cannot hand a follower a stale answer.
+// A follower that finds no entry (the leader's probe was inconclusive, or it
+// raised a violation, or a newer stamp displaced it) probes itself rather than
+// inheriting a downgrade: the loud failure must reach every caller, not just
+// whichever one happened to win the race. That bounds a follower at two
+// probes and cannot livelock — it never re-enters the wait.
+//
+// Context cancellation while waiting returns the inconclusive path, exactly as
+// a failed probe does, so a cancelled follower never blocks on the leader.
+func (v *parquetSchemaValidator) probeColumns(
+	ctx context.Context, duck DuckDBQueryExecutor, path string, stamp map[string]string,
+) (map[string]string, bool, error) {
+	key := probeKey(path, stamp)
+	done, leader := v.beginProbe(key)
+	if leader {
+		defer v.finishProbe(key)
+		return v.runProbe(ctx, duck, path, stamp)
+	}
+	select {
+	case <-done:
+		if cols, ok := v.lookupValidatedCols(path, stamp); ok {
+			return cols, true, nil
+		}
+		return v.runProbe(ctx, duck, path, stamp)
+	case <-ctx.Done():
+		return nil, false, nil
+	}
+}
+
+// beginProbe claims leadership for key, or returns the incumbent leader's done
+// channel. The leader must call finishProbe.
+func (v *parquetSchemaValidator) beginProbe(key string) (<-chan struct{}, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if done, ok := v.inflight[key]; ok {
+		return done, false
+	}
+	done := make(chan struct{})
+	v.inflight[key] = done
+	return done, true
+}
+
+// finishProbe releases leadership and wakes the followers. It runs AFTER the
+// leader has published to the cache, so a woken follower's lookup sees it.
+func (v *parquetSchemaValidator) finishProbe(key string) {
+	v.mu.Lock()
+	done := v.inflight[key]
+	delete(v.inflight, key)
+	v.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+// runProbe is the un-deduplicated footer probe: DESCRIBE, enforce the
+// invariant, cross-check the stamp, publish.
+func (v *parquetSchemaValidator) runProbe(
+	ctx context.Context, duck DuckDBQueryExecutor, path string, stamp map[string]string,
+) (map[string]string, bool, error) {
+	cols, err := describeParquetColumns(ctx, duck, path)
+	if err != nil {
+		return nil, false, nil // inconclusive: defer to the execution-path classifier
+	}
+	if err := parquetcheck.Check(path, cols); err != nil {
+		return nil, false, fmt.Errorf("%w: %w", ErrFederatedReadFailed, err)
+	}
+	v.warnStampDivergence(path, stamp, cols)
+	// The footer wins, and the CURRENT stamp is recorded next to it: a stamp
+	// the invariant rejected would otherwise never match the entry it
+	// produced, and the path would re-probe on every single query.
+	v.markValidated(path, cols, maps.Clone(stamp))
+	return cols, true, nil
 }
 
 // currentStamp returns the manifest stamp in play for path, normalizing an
@@ -245,11 +360,11 @@ func mergeColumnUnion(union, cols map[string]string) {
 	}
 }
 
-// validatedCols answers from the cache only while the entry's recorded stamp
-// still equals the one currently in play. A changed stamp (including one
+// lookupValidatedCols answers from the cache only while the entry's recorded
+// stamp still equals the one currently in play. A changed stamp (including one
 // appearing on, or disappearing from, a previously validated path) is a miss,
 // so the caller re-validates and overwrites the entry.
-func (v *parquetSchemaValidator) validatedCols(path string, stamp map[string]string) (map[string]string, bool) {
+func (v *parquetSchemaValidator) lookupValidatedCols(path string, stamp map[string]string) (map[string]string, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	entry, ok := v.valid[path]
