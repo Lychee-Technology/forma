@@ -78,3 +78,5 @@ __pycache__/
 .superpowers/
 docs/superpowers/
 .opencode/
+.claude/
+.vscode/
