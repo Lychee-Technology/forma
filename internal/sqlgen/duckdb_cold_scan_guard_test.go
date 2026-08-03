@@ -54,8 +54,7 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 
 	set := guardFixtureSet{}
 	for _, w := range []struct {
-		dst *string
-		//nolint:govet // field order mirrors the write, not memory layout
+		dst       *string
 		name, sel string
 	}{
 		// changed_at=100 against varcharChangedAt's '9' is deliberate: the two
