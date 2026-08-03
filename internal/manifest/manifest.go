@@ -21,6 +21,14 @@ type FileEntry struct {
 	SizeBytes  int64  `json:"size_bytes"`
 	RowCount   int64  `json:"row_count"`
 	Checksum   string `json:"checksum,omitempty"`
+	// Columns records the file's parquet footer schema (column name → DuckDB
+	// type), stamped by the writer from a DESCRIBE of the object it just
+	// wrote (#256). Readers use it to validate the #189 system-column
+	// invariant and build the #255 column union without a footer probe.
+	// Nil/absent means the entry predates stamping: readers fall back to
+	// probing, so no manifest migration or version bump is needed — field
+	// presence is the format version signal.
+	Columns map[string]string `json:"columns,omitempty"`
 }
 
 // Manifest holds per-schema parquet inventory.
