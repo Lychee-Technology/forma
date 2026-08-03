@@ -9,6 +9,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -133,8 +134,10 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 		"the missing set alone must re-key the plan cache (#255 poisoning guard)")
 	require.NotContains(t, sql3, "NULL::INTEGER AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
-	require.NotContains(t, sql3, "AS cold_scan",
-		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
+	require.NotContains(t, sql3, ", NULL::",
+		"no missing columns: the scan source carries no typed-NULL augmentation at all")
+	require.Contains(t, sql3, sqlgen.ParquetNullRowIDMessage,
+		"the row_id guard renders in every state, augmented or not (#256)")
 }
 
 // coldPlanCacheGlob is a glob path hint: it is the ENTIRE scan-set string the
@@ -202,6 +205,8 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 		"the missing set ALONE must re-key the plan cache: the glob path string never changed (#255)")
 	require.NotContains(t, sql2, "NULL::INTEGER AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
-	require.NotContains(t, sql2, "AS cold_scan",
-		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
+	require.NotContains(t, sql2, ", NULL::",
+		"no missing columns: the scan source carries no typed-NULL augmentation at all")
+	require.Contains(t, sql2, sqlgen.ParquetNullRowIDMessage,
+		"the row_id guard renders in every state, augmented or not (#256)")
 }

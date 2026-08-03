@@ -228,8 +228,14 @@ s3_source AS (
     -- (#189): files written before an attribute existed contribute NULL,  
     -- and same-named columns widen to the common supertype. Corruption  
     -- loudness is preserved by the pre-read system-column invariant  
-    -- validator (internal/federated/parquet_schema_validation.go).  
-    FROM read_parquet($S3_PATHS, union_by_name=true)  
+    -- validator (internal/federated/parquet_schema_validation.go) and, at  
+    -- byte level, by the row_id guard below: a manifest stamp (#256) can  
+    -- spare an object its footer probe, so a rogue overwrite could put a  
+    -- row_id-less object in this set and have union_by_name NULL-fill it —  
+    -- and those rows would then drop out of the anti-join and vanish  
+    -- silently. Both scan sites render sqlgen.BuildParquetScanSource, which  
+    -- also appends the #255 typed NULLs for never-flushed columns.  
+    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan  
     WHERE   
         -- 1. Anti-Join: Exclude if a newer version exists in PG  
         row_id NOT IN (SELECT row_id FROM dirty_ids)  
@@ -239,7 +245,7 @@ s3_source AS (
         --    Filtering versions directly here drops newer non-matching  
         --    versions pre-dedup and resurrects stale rows (#173/#178).  
         AND row_id IN (  
-            SELECT row_id FROM read_parquet($S3_PATHS, union_by_name=true)  
+            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan  
             WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
         )  
 ),

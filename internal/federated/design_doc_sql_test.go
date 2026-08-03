@@ -86,9 +86,13 @@ func TestDesignDocSQL_PostgresScanIsThreeArg(t *testing.T) {
 func extractDocS3ProjectionItems(t *testing.T, sqlText string) []string {
 	t.Helper()
 
-	block := regexp.MustCompile(`(?s)s3_source AS \(\s*SELECT\b(.*?)FROM read_parquet`).
+	// Anchored on the CTE-level FROM (line-leading), not on `FROM read_parquet`:
+	// since #256 the scan source is a subquery that contains its own
+	// `FROM read_parquet`, which would swallow the guard expression into the
+	// projection items.
+	block := regexp.MustCompile(`(?s)s3_source AS \(\s*SELECT\b(.*?)\n\s*FROM `).
 		FindStringSubmatch(sqlText)
-	require.NotNil(t, block, "§5 must contain an s3_source CTE selecting from read_parquet")
+	require.NotNil(t, block, "§5 must contain an s3_source CTE with a FROM clause")
 
 	var cleaned []string
 	for _, line := range strings.Split(block[1], "\n") {
@@ -139,6 +143,22 @@ func TestDesignDocSQL_S3ProjectionAliasesMatchRuntime(t *testing.T) {
 	require.ElementsMatch(t, strings.Split(sp.S3SourceSelect, ", "), docProjection,
 		"§5 s3_source projection must match the runtime SchemaProjection.S3SourceSelect "+
 			"for the documented name/age/tag schema (attribute order aside)")
+}
+
+// TestDesignDocSQL_ScanSourceMatchesRuntimeGuard pins §5's parquet scan text
+// to the runtime builder itself, at both scan sites. The #256 row_id guard is
+// what keeps a stamp-trusted rogue object from vanishing under union_by_name,
+// so a doc that still showed the bare read_parquet form would document a
+// silent-loss path the engine no longer has — and the guard is only correct if
+// BOTH sites carry it (the semijoin decides which rows qualify at all).
+func TestDesignDocSQL_ScanSourceMatchesRuntimeGuard(t *testing.T) {
+	sqlText := extractDesignDocSection5SQL(t)
+
+	// The doc's path placeholder stands where the renderer splices its path
+	// list, so the rest of the source text must match byte for byte.
+	want := sqlgen.BuildParquetScanSource("$S3_PATHS", nil)
+	require.Equal(t, 2, strings.Count(sqlText, want),
+		"§5 must render sqlgen.BuildParquetScanSource at both scan sites (s3_source FROM and the pushdown semijoin); got:\n%s", want)
 }
 
 // rewriteDocSQLForLocalExecution turns the §5 sketch into a self-contained
