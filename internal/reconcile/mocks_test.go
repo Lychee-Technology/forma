@@ -147,6 +147,10 @@ type fakeStats struct {
 	// columns maps key -> #256 column stamp returned by FileColumns.
 	columns    map[string]map[string]string
 	columnsErr map[string]error
+	// columnsCalls records every probed key, so skip rules (legacy stamps,
+	// dangling entries, --verify-stamps off) can be asserted as "never
+	// probed" rather than only "no divergence reported".
+	columnsCalls []string
 }
 
 func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeStats, error) {
@@ -191,6 +195,7 @@ func (f *fakeStats) maskedProbe(t *testing.T, key string) []string {
 }
 
 func (f *fakeStats) FileColumns(_ context.Context, key string) (map[string]string, error) {
+	f.columnsCalls = append(f.columnsCalls, key)
 	if err := f.columnsErr[key]; err != nil {
 		return nil, err
 	}

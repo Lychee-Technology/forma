@@ -31,7 +31,11 @@ type SchemaReport struct {
 	// covers every file; empty when promotion succeeded or never ran. The
 	// refused files stay ordinary GC candidates.
 	InitPromotionRefusal string
-	Err                  error // per-schema failure; other schemas still reconcile
+	// StampDivergences are listed entries whose stamp no longer matches the
+	// object footer (--verify-stamps); each is a byte-truth breach requiring
+	// operator action — restamp via rewrite, or investigate the overwrite.
+	StampDivergences []string
+	Err              error // per-schema failure; other schemas still reconcile
 }
 
 // Report is a full reconcile run across schemas.
@@ -58,7 +62,9 @@ func (s SchemaReport) Residual() bool {
 	if s.Skipped || s.Err != nil {
 		return true
 	}
-	if len(s.Dangling) > 0 || len(s.Unknown) > 0 {
+	// Stamp divergences are actionable but are not orphan keys, so they can
+	// never be "resolved" by the repair/GC bookkeeping below.
+	if len(s.Dangling) > 0 || len(s.Unknown) > 0 || len(s.StampDivergences) > 0 {
 		return true
 	}
 	resolved := make(map[string]struct{}, len(s.Repaired)+len(s.Deleted)+len(s.PromotedBase))
@@ -100,6 +106,7 @@ func (r Report) Render(w io.Writer) {
 		renderKeys(w, "unknown shape", s.Unknown)
 		renderKeys(w, "dangling entry", s.Dangling)
 		renderKeys(w, "unverifiable entry", s.Unverifiable)
+		renderKeys(w, "stamp divergence", s.StampDivergences)
 		renderKeys(w, "repaired", s.Repaired)
 		renderKeys(w, "promoted base-init", s.PromotedBase)
 		if s.InitPromotionRefusal != "" {
@@ -115,7 +122,8 @@ func (r Report) Render(w io.Writer) {
 func (s SchemaReport) clean() bool {
 	return len(s.DeltaOrphans)+len(s.DeltaLeftovers)+len(s.BaseOrphans)+
 		len(s.TmpOrphans)+len(s.Unknown)+len(s.Dangling)+len(s.Unverifiable)+
-		len(s.Repaired)+len(s.PromotedBase)+len(s.Deleted) == 0 && s.Err == nil && s.InitPromotionRefusal == ""
+		len(s.Repaired)+len(s.PromotedBase)+len(s.Deleted)+
+		len(s.StampDivergences) == 0 && s.Err == nil && s.InitPromotionRefusal == ""
 }
 
 func renderKeys(w io.Writer, label string, keys []string) {

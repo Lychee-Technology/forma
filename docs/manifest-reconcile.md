@@ -191,6 +191,46 @@ grace，后续运行就会删除它们）。
 P 调度时上界 ≈ grace + 2P。
 混用"带 --gc 与不带 --gc"的运行方式时，早先运行留下的目击记录可能在文件短暂重新列入清单期间未被清理，建议保持一致的 --repair --gc 运行方式以让目击清理正常工作。
 
+## `--verify-stamps`：#256 戳记的离线字节真值核查
+
+#256 给每个 manifest 条目盖上 parquet footer 的列集印章（`FileEntry.columns`，列名 →
+DuckDB 类型）。读路径信任通过系统列不变量的印章并**跳过 footer 探测**——这正是 #256 的
+优化。代价是一条信任边界：若某个已列出对象的**字节**被带外改写，而条目上的印章依旧
+"形状合法"，读路径看不见这次改写。`--verify-stamps` 就是这条边界的离线字节真值核查。
+
+**比对什么。** 逐个已列出条目 `DESCRIBE` 其真实对象，把 footer 的**完整列名 → 类型映射**
+与条目印章做全量相等比较。这比读路径的 scan guard 严格得多：scan guard 只覆盖
+`row_id`/`changed_at` 的存在性与 `changed_at`/`deleted_at` 的类型，而这里任何一列的
+增删改型都会被发现。
+
+**能抓到什么。** 典型的三类带外改写：
+
+- **缺列**：对象不再携带 `deleted_at`。读侧 `union_by_name` 会用兄弟对象的 schema 把它
+  NULL 填充，而 delta 导出本来就把活行的 `deleted_at` 写成 NULL（#274），两者在扫描层
+  无法区分，所以这条通道**只有**本核查看得见；
+- **改型**：`row_id` 从 UUID 变成 VARCHAR。`row_id` 的守卫刻意不带类型（#147），大小写不同
+  的同一 UUID 拼写会被当作两行分区；
+- **属性列漂移**：印章少报了对象实际携带的属性列，导致列并集偏短、NULL 别名与真实列相撞。
+
+**跳过规则。** 三类条目不比对，也不因此报差异：
+
+- 无印章的**历史条目**（`columns` 为空）：#256 不做回填，读侧对它们照常懒探测，没有可比对象；
+- 已确认的 **dangling 条目**：背后没有字节可探（该差异本身已在报告里）；
+- **无法解析的路径**（unverifiable，含 glob）：同样已在报告里。
+
+**退出语义。** 发现分歧 → 计入残余差异 → 退出码 **2**（报告里逐条打印
+`stamp divergence: <key>: column "x" stamp "A" vs footer "B"`，缺失的一侧渲染为
+`(absent)`）；探测本身失败（S3 不可达、DuckDB 出错）→ 与 dangling 复核同一条规则，
+算**工具故障**退出 **1**，绝不伪装成"字节不一致"的判决。
+
+**处置。** 分歧不是自动可修的：工具不会拿 footer 去覆写印章，因为无法判断是印章错了
+还是字节被换了。运维应先查这个 key 的改写来源；确认对象本身正确后，用一次重写
+（compaction / 重跑 cdc-init）把条目连同印章一并重新发布。
+
+**运维建议。** 这是一次全量 footer 探测（每个已列出条目一次 `DESCRIBE`），比只读巡检
+贵得多，因此默认关闭。建议低频周期运行（例如每日一次），以及在**怀疑发生过带外改写**
+之后（手工改过桶、做过跨桶/跨环境恢复、外部作业写过数据前缀）立即跑一次。
+
 ## 用法
 
 ```bash
@@ -205,6 +245,9 @@ forma-tools manifest-reconcile ... --repair
 
 # 清理 #188 遗留：merged base / _tmp / 已判定的 delta 残留
 forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
+
+# #256 印章的离线字节真值核查（全量 footer 探测，低频运行）
+forma-tools manifest-reconcile ... --verify-stamps
 ```
 
 要点：
@@ -224,8 +267,9 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
 - `--data-prefix` 允许为空（对象 key 形如 `/7/{uuid}.parquet`，与 cdc path builder
   一致，比较时不做任何前导斜杠归一化）。
 - 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件、
-  记录目击但尚未过宽限期的残留）；`1` 工具自身失败（含任一 schema 的
-  list/load/lock/dangling 复核/GC 状态读取失败——不会伪装成「有差异」）。
+  记录目击但尚未过宽限期的残留、`--verify-stamps` 发现的印章分歧）；`1` 工具自身失败
+  （含任一 schema 的 list/load/lock/dangling 复核/GC 状态读取/印章 footer 探测
+  失败——不会伪装成「有差异」）。
 
 ## init 形态晋升（#292）
 

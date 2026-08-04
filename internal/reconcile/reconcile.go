@@ -25,7 +25,7 @@ type ManifestStore interface {
 // version-aware coverage probe) — with no listed keys it enumerates every
 // distinct row id in the file (#292 init promotion). FileColumns probes the
 // footer for the #256 column stamp. All take bucket-relative keys. Only
-// consulted under --repair.
+// consulted under --repair, plus FileColumns under --verify-stamps.
 type StatsReader interface {
 	FileStats(ctx context.Context, key string) (compaction.MergeStats, error)
 	UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error)
@@ -70,10 +70,14 @@ type GCStateStore interface {
 // Options selects the reconcile actions. The zero value is a read-only
 // report.
 type Options struct {
-	Repair         bool          // append delta-shaped orphans back to the manifest
-	GC             bool          // delete base-shaped and _tmp orphans past the grace period
-	GCGrace        time.Duration // minimum object age before GC may delete it
-	MaxETagRetries int           // manifest save retries on optimistic-concurrency conflict
+	Repair  bool          // append delta-shaped orphans back to the manifest
+	GC      bool          // delete base-shaped and _tmp orphans past the grace period
+	GCGrace time.Duration // minimum object age before GC may delete it
+	// VerifyStamps compares every listed entry's #256 column stamp against
+	// the object footer; divergence is the byte-truth breach the read-path
+	// stamp short-circuit cannot see.
+	VerifyStamps   bool
+	MaxETagRetries int // manifest save retries on optimistic-concurrency conflict
 }
 
 // Reconciler diffs S3 parquet objects against per-schema manifests and
@@ -83,7 +87,7 @@ type Reconciler struct {
 	Lister     ObjectLister
 	Deleter    ObjectDeleter
 	Manifests  ManifestStore
-	Stats      StatsReader    // may be nil unless Opts.Repair
+	Stats      StatsReader    // may be nil unless Opts.Repair or Opts.VerifyStamps
 	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
 	Locker     Locker
 	Schemas    SchemaEnumerator
@@ -155,6 +159,14 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		return s
 	}
 
+	if r.Opts.VerifyStamps {
+		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, s.Dangling)
+		if err != nil {
+			s.Err = fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
+			return s
+		}
+	}
+
 	var deltaLeftovers []ObjectInfo
 	promotedInit := false
 	if r.Opts.Repair && len(d.baseInitOrphans) > 0 {
@@ -179,31 +191,37 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		deltaLeftovers = outcome.leftovers
 	}
 	if r.Opts.GC {
-		// Init-shaped base orphans are GC candidates since #290 — unless this
-		// run just promoted them (#292): a promoted set is now manifest-listed
-		// inventory, and gcSchema's state prune drops their sighting entries
-		// so a later unlisting restarts the grace clock. A refused set keeps
-		// the #290 behavior: recovery for a failed publish is re-running
-		// cdc-init or a later --repair pass that can prove coverage.
-		// Delta leftovers require the repair analysis, so they are only
-		// deletable under --repair --gc.
-		var candidates []ObjectInfo
-		if !promotedInit {
-			candidates = append(candidates, d.baseInitOrphans...)
-		}
-		candidates = append(candidates, d.baseMergedOrphans...)
-		candidates = append(candidates, d.tmpOrphans...)
-		candidates = append(candidates, deltaLeftovers...)
-		// Run even with zero candidates: sighting-state entries for keys
-		// that stopped being orphans must be pruned so a later unlisting
-		// restarts their grace clock.
-		s.Deleted, err = r.gcSchema(ctx, schemaID, candidates)
+		s.Deleted, err = r.collectAndGC(ctx, schemaID, d, promotedInit, deltaLeftovers)
 		if err != nil {
 			s.Err = err
 			return s
 		}
 	}
 	return s
+}
+
+// collectAndGC assembles this schema's GC candidate set from the diff and
+// hands it to gcSchema.
+func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffResult, promotedInit bool, deltaLeftovers []ObjectInfo) ([]string, error) {
+	// Init-shaped base orphans are GC candidates since #290 — unless this
+	// run just promoted them (#292): a promoted set is now manifest-listed
+	// inventory, and gcSchema's state prune drops their sighting entries
+	// so a later unlisting restarts the grace clock. A refused set keeps
+	// the #290 behavior: recovery for a failed publish is re-running
+	// cdc-init or a later --repair pass that can prove coverage.
+	// Delta leftovers require the repair analysis, so they are only
+	// deletable under --repair --gc.
+	var candidates []ObjectInfo
+	if !promotedInit {
+		candidates = append(candidates, d.baseInitOrphans...)
+	}
+	candidates = append(candidates, d.baseMergedOrphans...)
+	candidates = append(candidates, d.tmpOrphans...)
+	candidates = append(candidates, deltaLeftovers...)
+	// Run even with zero candidates: sighting-state entries for keys
+	// that stopped being orphans must be pruned so a later unlisting
+	// restarts their grace clock.
+	return r.gcSchema(ctx, schemaID, candidates)
 }
 
 // confirmDangling re-verifies dangling candidates against a fresh manifest
