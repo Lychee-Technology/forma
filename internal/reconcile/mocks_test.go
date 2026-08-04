@@ -158,11 +158,15 @@ func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []st
 }
 
 // fakeLiveRows reports which row ids are missing from entity_main. The
-// zero value treats every row as live (the safe-append case).
+// zero value treats every row as live (the safe-append case) and reports
+// 0 live rows, which safely refuses init promotion.
 type fakeLiveRows struct {
-	missing map[string]bool // row id -> deleted in Postgres
-	err     error
-	queried [][]string
+	missing    map[string]bool // row id -> deleted in Postgres
+	err        error
+	queried    [][]string
+	liveCount  int64
+	countErr   error
+	countCalls int
 }
 
 func (f *fakeLiveRows) MissingLiveRows(_ context.Context, _ int16, rowIDs []string) ([]string, error) {
@@ -177,6 +181,14 @@ func (f *fakeLiveRows) MissingLiveRows(_ context.Context, _ int16, rowIDs []stri
 		}
 	}
 	return missing, nil
+}
+
+func (f *fakeLiveRows) LiveRowCount(_ context.Context, _ int16) (int64, error) {
+	f.countCalls++
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return f.liveCount, nil
 }
 
 type fakeEnum struct {

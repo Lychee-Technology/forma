@@ -29,12 +29,17 @@ type StatsReader interface {
 	UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error)
 }
 
-// LiveRowChecker reports which of the given row ids are NOT live in the
-// Postgres entity store. A row absent from every manifest-listed parquet
-// AND missing from Postgres was deleted — its tombstone won a compaction
-// merge and was dropped, so re-appending the file would resurrect it.
+// LiveRowChecker reports Postgres entity-store liveness. MissingLiveRows
+// returns which of the given row ids are NOT live (a row absent from every
+// manifest-listed parquet AND missing from Postgres was deleted — its
+// tombstone won a compaction merge and was dropped, so re-appending would
+// resurrect it; see classifyDeltaOrphan in repair.go). LiveRowCount returns
+// the number of live rows for a schema — the right-hand side of init
+// promotion's coverage identity (#292): the orphan set may replace the base
+// tier only if it provably covers every one of these rows.
 type LiveRowChecker interface {
 	MissingLiveRows(ctx context.Context, schemaID int16, rowIDs []string) ([]string, error)
+	LiveRowCount(ctx context.Context, schemaID int16) (int64, error)
 }
 
 // Locker serializes reconciliation against the live flusher per schema.
