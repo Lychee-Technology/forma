@@ -287,7 +287,7 @@ var writeErrorAllowed4xx = map[string]bool{
 // *status* expression; it cannot tell whether the third argument is safe to
 // disclose. That judgement belongs to canDiscloseVerbatim inside
 // respondErrorWithStatus, and the direct call sites stay safe only because their
-// messages come from request parsing (parsePath, readEntityJSONBody, parseUUID,
+// messages come from request parsing (parsePath, readJSONBody, parseUUID,
 // parseCreateObjects, parseSortParams), never from the manager, the engine, S3,
 // or PG_CONN.
 func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {

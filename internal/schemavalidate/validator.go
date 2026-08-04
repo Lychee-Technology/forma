@@ -14,6 +14,7 @@
 package schemavalidate
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -249,7 +250,8 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 // doc is marshalled before validating. Native Go values do not carry their JSON
 // types: time.Time presents as an object and fails a "type":"string" property
 // until round-tripped, and two production call sites assign time.Now() to
-// string-typed properties.
+// string-typed properties. The round-trip decodes with UseNumber and rewrites
+// numbers via exactNumberInstance so constraint checks stay exact above 2^53.
 //
 // A nil receiver is treated as "no schema resolved" rather than panicking:
 // callers may hold a *Validator that is nil when validation is unconfigured.
@@ -267,8 +269,14 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload for schema %d: %w", schemaID, err)
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var instance any
-	if err := json.Unmarshal(raw, &instance); err != nil {
+	if err := dec.Decode(&instance); err != nil {
+		return fmt.Errorf("failed to decode payload for schema %d: %w", schemaID, err)
+	}
+	instance, err = exactNumberInstance(instance)
+	if err != nil {
 		return fmt.Errorf("failed to decode payload for schema %d: %w", schemaID, err)
 	}
 

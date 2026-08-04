@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -161,5 +165,22 @@ func TestParseSortParams(t *testing.T) {
 				t.Fatalf("expected order %q, got %q", tt.wantOrder, order)
 			}
 		})
+	}
+}
+
+// TestReadJSONBodyDecodesNumbersExactly guards #282: every HTTP body decode
+// must deliver json.Number for numeric literals landing in any-typed sinks,
+// so no payload rides float64 at the door.
+func TestReadJSONBodyDecodesNumbersExactly(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"n": 9007199254740993}`))
+
+	var decoded map[string]any
+	if err := readJSONBody(req, &decoded); err != nil {
+		t.Fatalf("readJSONBody: %v", err)
+	}
+
+	got := decoded["n"]
+	if want := json.Number("9007199254740993"); got != want {
+		t.Fatalf("decoded[n] = %#v (%T), want %#v", got, got, want)
 	}
 }

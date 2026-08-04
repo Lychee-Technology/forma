@@ -418,7 +418,7 @@ delegates to it, and `executeGet` (`internal/httpapi/server.go:175`) calls
 
 Handlers also call `writeError` directly — 33 sites in `server.go` — and those
 bodies are verbatim without passing the gate. They are safe because every one of
-them reports a request-parsing failure (`parsePath`, `readEntityJSONBody`,
+them reports a request-parsing failure (`parsePath`, `readJSONBody`,
 `parseUUID`, `parseCreateObjects`, `parseSortParams`); none touches the manager,
 the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
 `TestWriteErrorAlwaysCarriesALiteral4xxStatus`
