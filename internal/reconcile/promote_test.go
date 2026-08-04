@@ -309,3 +309,14 @@ func writeTombstoneFixture(t *testing.T, db *sql.DB, path, rowID string, changed
 		t.Fatalf("write tombstone fixture: %v", err)
 	}
 }
+
+// manifestPaths returns the saved manifest's paths in one tier, in file order.
+func manifestPaths(manifests *fakeManifests, schemaID int16, tier string) []string {
+	var paths []string
+	for _, f := range manifests.manifests[schemaID].Files {
+		if f.Tier == tier {
+			paths = append(paths, f.Path)
+		}
+	}
+	return paths
+}
