@@ -736,6 +736,15 @@ def decode_cursor(encoded: str) -> Cursor:
     )
 ```
 
+**Decoder numeric exactness (#281):** the decoder MUST NOT route numeric cursor
+fields through a default JSON number path — Go's `encoding/json` decodes into
+`float64`, which silently rounds integers above 2^53 and makes the resulting
+`BIGINT col > DOUBLE param` boundary skip or duplicate one row of the next page.
+Integer sort keys must either stay strings (as the pseudocode's `sk` already
+models) or decode via `json.Number` to an exact `int64` (`numutil.Int64Exact`)
+before reaching `model.KeysetCursor.Values`, which the SQL generator binds
+verbatim without coercion (pinned by `TestKeysetArgsPreserveInt64Above2p53`).
+
 ### 6.4 Backward Pagination SQL
 
 ```sql

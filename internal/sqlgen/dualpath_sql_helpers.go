@@ -119,7 +119,24 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		}
 		return valStr, nil
 
-	case forma.ValueTypeNumeric, forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+	case forma.ValueTypeNumeric, forma.ValueTypeBigInt:
+		// Integral literals bind as exact int64 (#281): ToDuckDBParam renders
+		// int64 via %d, so a bigint predicate above 2^53 — legal column state
+		// since #205 — compares exactly instead of riding float64 + %.15g.
+		// Fractional literals keep float64, the numeric family's storage
+		// contract. EAV-only bigints round at write (2^53 ceiling), so exact
+		// binds above it miss on every tier alike — tier parity preserved.
+		if i, e := strconv.ParseInt(valStr, 10, 64); e == nil {
+			return i, nil
+		}
+		if f, e := strconv.ParseFloat(valStr, 64); e == nil {
+			return f, nil
+		}
+		return nil, fmt.Errorf("invalid numeric literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
+
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// Stays float64: INTEGER/SMALLINT ranges end at 2^31/2^15, float64 is
+		// exact through 2^53, and ToDuckDBParam's integer arm takes float64.
 		if f, e := strconv.ParseFloat(valStr, 64); e == nil {
 			return f, nil
 		}

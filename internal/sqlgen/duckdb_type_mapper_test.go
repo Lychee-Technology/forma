@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -296,6 +297,16 @@ func TestToDuckDBParam_Numeric_FromInt64(t *testing.T) {
 	result, err := ToDuckDBParam(val, forma.ValueTypeBigInt)
 	require.NoError(t, err)
 	require.Equal(t, "42", result)
+}
+
+// TestToDuckDBParam_Numeric_FromInt64MaxValue pins the exactness the #281 binder
+// fix rests on: the bigint/numeric arm renders int64 with %d, so all 19
+// significant digits of MaxInt64 survive. The float64 path (decimalString's
+// %.15g) caps at 15 and would emit "9.22337203685478e+18" instead.
+func TestToDuckDBParam_Numeric_FromInt64MaxValue(t *testing.T) {
+	result, err := ToDuckDBParam(int64(math.MaxInt64), forma.ValueTypeBigInt)
+	require.NoError(t, err)
+	require.Equal(t, "9223372036854775807", result)
 }
 
 func TestToDuckDBParam_Numeric_FromString(t *testing.T) {
