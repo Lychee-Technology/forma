@@ -8,11 +8,11 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// DescribeRows is the row surface of a DESCRIBE result — satisfied by
+// DescribeRowScanner is the row surface of a DESCRIBE result — satisfied by
 // *sql.Rows and by the federated engine's duckDBRowsIterator. It deliberately
 // omits Close: lifetime stays with the caller that issued the query, so this
 // package never closes a handle it did not open.
-type DescribeRows interface {
+type DescribeRowScanner interface {
 	Next() bool
 	Scan(dest ...any) error
 	Err() error
@@ -27,7 +27,7 @@ type DescribeRows interface {
 //
 // uri is carried purely for error context — every returned error names the
 // object being described, per the read-path consistency contract.
-func ScanDescribeColumns(rows DescribeRows, uri string) (map[string]string, error) {
+func ScanDescribeColumns(rows DescribeRowScanner, uri string) (map[string]string, error) {
 	cols := map[string]string{}
 	for rows.Next() {
 		var name, typ string
