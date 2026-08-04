@@ -23,10 +23,13 @@ type boundaryProbe struct {
 // TestBigintFilterBoundaryBothDialects (#281) probes comparison-side exactness
 // for a bound bigint above 2^53 on both binder paths: PreferHot (Postgres,
 // ConvertPgMainValue int64) and federated (DuckDB, parseDuckDBRawParam → exact
-// decimal string). Pre-#281 the DuckDB binder rode float64 + %.15g, so
-// equals:9007199254740993 bound 9007199254740992 and matched the WRONG row —
-// hot and cold tiers disagreed on the same filter. #205 made those values legal
-// column state, so the filter has to be able to address them.
+// decimal string). Pre-#281 the bind rendered via %.15g of the float64
+// ("9.00719925474099e+15" / "9.22337203685478e+18"), so the predicate could not
+// address these values at all — equality probes returned nothing (the rendered
+// literal is a value no row holds, and the MaxInt64-side literal overflows
+// CAST(? AS BIGINT) outright) and hot/cold tiers disagreed on the same filter.
+// #205 made those values legal column state, so the filter has to be able to
+// address them.
 func TestBigintFilterBoundaryBothDialects(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -86,8 +89,8 @@ func runBoundaryProbes(ctx context.Context, t *testing.T, env *Env, label string
 
 // assertExactBigintRowSet fails unless res.Records is exactly the given events
 // (as an unordered set) and each carries the exact seeded amount. Both halves
-// matter: a float64 bind can drop a row that should match AND admit its
-// neighbour, and only an exact-set assertion sees both.
+// matter: an inexact bind can drop a row that should match and/or admit one
+// that should not, and only an exact-set assertion sees both directions.
 func assertExactBigintRowSet(t *testing.T, label string, res *QueryResult, want []*Event) {
 	t.Helper()
 	got := map[uuid.UUID]int64{}
