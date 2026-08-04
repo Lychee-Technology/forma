@@ -17,6 +17,13 @@ import (
 // its args are appended last. Prefix columns repeat across disjuncts, so
 // each value is appended once per occurrence: an n-column cursor yields
 // n(n+1)/2 args.
+//
+// Values bind verbatim — no type coercion, no metadata lookup. The caller
+// owns exactness: BIGINT cursor columns require int64 values (a float64
+// above 2^53 makes `BIGINT col > DOUBLE param` skip or duplicate one page
+// row — #281 / #205 M-2). No continuation-token codec exists today; a
+// future decoder must produce int64 for integer values (UseNumber /
+// numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
 func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}) {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "1=1", nil
