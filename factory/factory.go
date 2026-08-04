@@ -107,11 +107,11 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to collect tables for schema %s: %w", schemaName, err)
 	}
 
 	if err := requireCoreTables(effectiveConfig, tables); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("core table check failed: %w", err)
 	}
 
 	// Load metadata from database at startup

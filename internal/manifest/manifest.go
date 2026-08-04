@@ -193,6 +193,22 @@ func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, ent
 	return nil
 }
 
+// SpliceTierFiles replaces every entry of the given tier on the in-memory
+// manifest with the provided entries, preserving other tiers in their
+// original order. Extracted from ReplaceTierFiles so callers that manage
+// their own etag/save cycle — manifest-reconcile's 412-retried init
+// promotion (#292) — reuse the exact replacement semantics.
+func SpliceTierFiles(m *Manifest, tier string, entries []FileEntry) {
+	kept := make([]FileEntry, 0, len(m.Files)+len(entries))
+	target := strings.ToLower(tier)
+	for _, f := range m.Files {
+		if strings.ToLower(f.Tier) != target {
+			kept = append(kept, f)
+		}
+	}
+	m.Files = append(kept, entries...)
+}
+
 // ReplaceTierFiles replaces every manifest entry of the given tier with the
 // provided entries, preserving entries of other tiers in their original
 // order. cdc-init is a full re-export of a schema's live rows, so after a
@@ -207,14 +223,7 @@ func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
-	kept := make([]FileEntry, 0, len(m.Files)+len(entries))
-	target := strings.ToLower(tier)
-	for _, f := range m.Files {
-		if strings.ToLower(f.Tier) != target {
-			kept = append(kept, f)
-		}
-	}
-	m.Files = append(kept, entries...)
+	SpliceTierFiles(m, tier, entries)
 	if _, err := Save(ctx, st, path, m, etag); err != nil {
 		return fmt.Errorf("save manifest: %w", err)
 	}

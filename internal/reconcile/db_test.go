@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
@@ -51,5 +52,29 @@ func TestRegistrySchemaEnumerator_FilterMissingSchemaErrors(t *testing.T) {
 	_, err := enum.SchemaIDs(context.Background())
 	if err == nil {
 		t.Fatal("an unregistered --schema-id must error, not report an empty (clean) run")
+	}
+}
+
+func TestPGLiveRows_LiveRowCount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM "entity_main" WHERE ltbase_schema_id = \$1 AND ltbase_deleted_at IS NULL`).
+		WithArgs(int16(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(42)))
+
+	p := &PGLiveRows{DB: db, Table: "entity_main"}
+	n, err := p.LiveRowCount(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("LiveRowCount: %v", err)
+	}
+	if n != 42 {
+		t.Fatalf("count = %d, want 42", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("mock expectations not met: %v", err)
 	}
 }

@@ -313,3 +313,27 @@ func TestFileEntryColumnsLegacyCompat(t *testing.T) {
 		t.Fatalf("stampless entry must omit the columns key: %s", out)
 	}
 }
+
+func TestSpliceTierFiles_ReplacesTierPreservesOthers(t *testing.T) {
+	m := &Manifest{SchemaID: 7, Files: []FileEntry{
+		{Tier: "delta", Path: "d1.parquet"},
+		{Tier: "base", Path: "old1.parquet"},
+		{Tier: "delta", Path: "d2.parquet"},
+		{Tier: "BASE", Path: "old2.parquet"}, // case-insensitive match
+	}}
+	SpliceTierFiles(m, "base", []FileEntry{{Tier: "base", Path: "new1.parquet"}})
+
+	got := make([]string, 0, len(m.Files))
+	for _, f := range m.Files {
+		got = append(got, f.Path)
+	}
+	want := []string{"d1.parquet", "d2.parquet", "new1.parquet"}
+	if len(got) != len(want) {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("files = %v, want %v", got, want)
+		}
+	}
+}

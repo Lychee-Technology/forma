@@ -75,6 +75,11 @@ func (l *PGAdvisoryLocker) TryLock(ctx context.Context, schemaID int16) (bool, f
 	return cdc.TrySchemaLock(ctx, l.DB, schemaID)
 }
 
+// liveRowPredicate is the WHERE clause fragment defining liveness: rows not
+// marked as soft-deleted. Must be identical in both MissingLiveRows and
+// LiveRowCount queries to ensure the counting identity is sound.
+const liveRowPredicate = "ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL"
+
 // PGLiveRows implements LiveRowChecker over the entity main table. Liveness
 // mirrors cdc-init's export filter (init.go): the row exists under the
 // (schema_id, row_id) primary key AND ltbase_deleted_at IS NULL — writes can
@@ -95,8 +100,8 @@ func (p *PGLiveRows) MissingLiveRows(ctx context.Context, schemaID int16, rowIDs
 		}
 	}
 	query := fmt.Sprintf(
-		"SELECT ltbase_row_id::text FROM %s WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL AND ltbase_row_id = ANY(string_to_array($2, ',')::uuid[])",
-		sqlutil.SanitizeIdentifier(p.Table))
+		"SELECT ltbase_row_id::text FROM %s WHERE %s AND ltbase_row_id = ANY(string_to_array($2, ',')::uuid[])",
+		sqlutil.SanitizeIdentifier(p.Table), liveRowPredicate)
 	rows, err := p.DB.QueryContext(ctx, query, schemaID, strings.Join(rowIDs, ","))
 	if err != nil {
 		return nil, fmt.Errorf("query live rows of schema %d from %s: %w", schemaID, p.Table, err)
@@ -122,6 +127,21 @@ func (p *PGLiveRows) MissingLiveRows(ctx context.Context, schemaID int16, rowIDs
 		}
 	}
 	return missing, nil
+}
+
+// LiveRowCount counts live rows with the same liveness predicate as
+// MissingLiveRows, mirroring cdc-init's export filter: the counting
+// identity in init promotion (#292) is only sound if numerator and
+// denominator use one definition of "live".
+func (p *PGLiveRows) LiveRowCount(ctx context.Context, schemaID int16) (int64, error) {
+	query := fmt.Sprintf(
+		"SELECT COUNT(*) FROM %s WHERE %s",
+		sqlutil.SanitizeIdentifier(p.Table), liveRowPredicate)
+	var count int64
+	if err := p.DB.QueryRowContext(ctx, query, schemaID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count live rows of schema %d in %s: %w", schemaID, p.Table, err)
+	}
+	return count, nil
 }
 
 var (

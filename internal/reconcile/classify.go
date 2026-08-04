@@ -3,7 +3,9 @@
 // classified by filename shape — and dangling entries — manifest paths whose
 // object is gone. Optional repair appends delta-shaped orphans back to the
 // manifest when the coverage + Postgres-liveness guard proves they are the
-// #197 flush failure mode (data exists nowhere else); provable compaction
+// #197 flush failure mode (data exists nowhere else), and promotes complete
+// init-shaped base orphan sets into the base tier once coverage, eviction
+// safety, and the no-resurrection proof all hold (#292); provable compaction
 // leftovers are instead classified for GC, which also deletes merged-base
 // and _tmp/ orphans left behind by compaction rewrites (#188).
 package reconcile
@@ -25,7 +27,9 @@ import (
 // #290: cdc-init now holds the same per-schema advisory lock reconcile takes,
 // so under that lock an init-shaped orphan is provably not from an in-flight
 // init — it is either a failed manifest publish or a file superseded by a
-// later init run. Unknown shapes are reported and never touched.
+// later init run. Since #292 an init-shaped set that --repair can prove
+// complete is promoted into the base tier instead of collected. Unknown
+// shapes are reported and never touched.
 type OrphanClass int
 
 const (

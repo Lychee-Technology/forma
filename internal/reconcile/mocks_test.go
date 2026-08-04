@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/compaction"
@@ -133,9 +134,23 @@ type fakeStats struct {
 	// uncovered maps orphan key -> uncovered rows. Keys not in the map
 	// default to one synthetic live uncovered row, so append-path tests
 	// behave like a genuine #197 orphan.
-	uncovered      map[string][]compaction.UncoveredRow
+	uncovered map[string][]compaction.UncoveredRow
+	// uncoveredVs answers MASKED probes (len(listedKeys) > 0) — the #292
+	// eviction-safety and resurrection guards — separately from the
+	// bare-enumeration probe (listedKeys nil) that lists a file's distinct
+	// row ids. A key absent here falls back to uncovered, so tests that
+	// never set it keep their existing single-answer behavior.
+	uncoveredVs    map[string][]compaction.UncoveredRow
 	uncoveredCalls [][]string // listedKeys per UncoveredRows call
+	uncoveredKeys  []string   // probed key per UncoveredRows call, index-aligned with uncoveredCalls
 	uncoveredErr   map[string]error
+	// columns maps key -> #256 column stamp returned by FileColumns.
+	columns    map[string]map[string]string
+	columnsErr map[string]error
+	// columnsCalls records every probed key, so skip rules (legacy stamps,
+	// dangling entries, --verify-stamps off) can be asserted as "never
+	// probed" rather than only "no divergence reported".
+	columnsCalls []string
 }
 
 func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeStats, error) {
@@ -148,8 +163,14 @@ func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeSt
 
 func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
 	f.uncoveredCalls = append(f.uncoveredCalls, listedKeys)
+	f.uncoveredKeys = append(f.uncoveredKeys, key)
 	if err := f.uncoveredErr[key]; err != nil {
 		return nil, err
+	}
+	if len(listedKeys) > 0 {
+		if rows, ok := f.uncoveredVs[key]; ok {
+			return rows, nil
+		}
 	}
 	if rows, ok := f.uncovered[key]; ok {
 		return rows, nil
@@ -157,12 +178,40 @@ func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []st
 	return []compaction.UncoveredRow{{RowID: "synthetic-uncovered-row"}}, nil
 }
 
+// maskedProbe returns the listedKeys of the single masked (len > 0) probe of
+// the given key, failing the test unless exactly one such probe happened.
+func (f *fakeStats) maskedProbe(t *testing.T, key string) []string {
+	t.Helper()
+	var found [][]string
+	for i, k := range f.uncoveredKeys {
+		if k == key && len(f.uncoveredCalls[i]) > 0 {
+			found = append(found, f.uncoveredCalls[i])
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly 1 masked UncoveredRows probe of %s, got %d", key, len(found))
+	}
+	return found[0]
+}
+
+func (f *fakeStats) FileColumns(_ context.Context, key string) (map[string]string, error) {
+	f.columnsCalls = append(f.columnsCalls, key)
+	if err := f.columnsErr[key]; err != nil {
+		return nil, err
+	}
+	return f.columns[key], nil
+}
+
 // fakeLiveRows reports which row ids are missing from entity_main. The
-// zero value treats every row as live (the safe-append case).
+// zero value treats every row as live (the safe-append case) and reports
+// 0 live rows, which safely refuses init promotion.
 type fakeLiveRows struct {
-	missing map[string]bool // row id -> deleted in Postgres
-	err     error
-	queried [][]string
+	missing    map[string]bool // row id -> deleted in Postgres
+	err        error
+	queried    [][]string
+	liveCount  int64
+	countErr   error
+	countCalls int
 }
 
 func (f *fakeLiveRows) MissingLiveRows(_ context.Context, _ int16, rowIDs []string) ([]string, error) {
@@ -177,6 +226,14 @@ func (f *fakeLiveRows) MissingLiveRows(_ context.Context, _ int16, rowIDs []stri
 		}
 	}
 	return missing, nil
+}
+
+func (f *fakeLiveRows) LiveRowCount(_ context.Context, _ int16) (int64, error) {
+	f.countCalls++
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return f.liveCount, nil
 }
 
 type fakeEnum struct {

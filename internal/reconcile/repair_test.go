@@ -12,6 +12,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 )
 
 var errTestConflict = &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "test conflict"}
@@ -33,6 +34,10 @@ func (l *localStatsReader) UncoveredRows(ctx context.Context, key string, listed
 		listed = append(listed, filepath.Join(l.dir, filepath.Base(k)))
 	}
 	return compaction.UncoveredRows(ctx, l.db, filepath.Join(l.dir, filepath.Base(key)), listed)
+}
+
+func (l *localStatsReader) FileColumns(ctx context.Context, key string) (map[string]string, error) {
+	return parquetcheck.DescribeColumns(ctx, l.db, filepath.Join(l.dir, filepath.Base(key)))
 }
 
 func writeDeltaFixture(t *testing.T, db *sql.DB, path string) {

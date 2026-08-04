@@ -436,6 +436,25 @@ never excluded — correct: exclusion is for unreadable bytes, while an
 export-schema violation is an operator-visible consistency fault, not something
 to route around.
 
+**Trust boundary.** A stamp is trusted without reading bytes only because every
+object behind one was written by a Forma writer under manifest transactionality:
+flush and compaction mint fresh keys and stamp what they just wrote, an init
+rerun overwrites its deterministic key and re-stamps it in the same
+`ReplaceTierFiles` publish, and `manifest-reconcile --repair`'s init promotion
+(#292) recomputes the stamp from the footer rather than inventing one. Outside
+that boundary — an out-of-band overwrite of a listed object's bytes while its
+entry keeps a stamp that still satisfies the system-column invariant — the read
+path cannot see the change, and three things bound the exposure: (a) the scan
+guards above, which re-derive `row_id`/`changed_at` presence and the
+`changed_at`/`deleted_at` types from the bytes on every scan regardless of what
+the stamp claimed; (b) `manifest-reconcile --verify-stamps`, the offline
+full-map comparison of every listed entry's stamp against its object's real
+footer — strictly stronger than the scan guards (it sees dropped attribute
+columns and a re-typed `row_id` too) and at zero read-path cost, since it runs
+in the tool; and (c) the `deleted_at` presence channel, which stays #274-gated
+at the read path and is therefore reachable *only* through (b) until the delta
+encoding normalizes to 0.
+
 **Triage: the guard names the invariant, not the object.** When the guard fires,
 the operator gets the violated invariant and the offending column, but no path.
 Three things compound to that: the guard runs inside a single `union_by_name`

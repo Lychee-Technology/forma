@@ -23,7 +23,19 @@ type SchemaReport struct {
 	// deleted in Postgres): never appended, GC-eligible under --gc.
 	DeltaLeftovers []string
 	Deleted        []string // leftover/merged-base/tmp orphans removed (--gc)
-	Err            error    // per-schema failure; other schemas still reconcile
+	// PromotedBase are init-shaped base orphans promoted into the manifest
+	// base tier after the coverage + eviction-safety proof (--repair, #292).
+	PromotedBase []string
+	// InitPromotionRefusal explains why an init-shaped orphan set was NOT
+	// promoted. Promotion is all-or-nothing over the set, so one reason
+	// covers every file; empty when promotion succeeded or never ran. The
+	// refused files stay ordinary GC candidates.
+	InitPromotionRefusal string
+	// StampDivergences are listed entries whose stamp no longer matches the
+	// object footer (--verify-stamps); each is a byte-truth breach requiring
+	// operator action — restamp via rewrite, or investigate the overwrite.
+	StampDivergences []string
+	Err              error // per-schema failure; other schemas still reconcile
 }
 
 // Report is a full reconcile run across schemas.
@@ -32,9 +44,10 @@ type Report struct {
 }
 
 // HasResidualDiscrepancies reports whether anything actionable is left after
-// repair and GC: orphans not repaired or deleted, dangling entries, skipped
-// schemas, unknown shapes, or per-schema failures. Unverifiable paths are
-// informational — they cannot be proven inconsistent from this run.
+// repair and GC: orphans not repaired, promoted, or deleted, dangling entries, skipped
+// schemas, unknown shapes, stamp divergences (--verify-stamps), or per-schema
+// failures. Unverifiable paths are informational — they cannot be proven
+// inconsistent from this run.
 func (r Report) HasResidualDiscrepancies() bool {
 	for _, s := range r.Schemas {
 		if s.Residual() {
@@ -50,14 +63,19 @@ func (s SchemaReport) Residual() bool {
 	if s.Skipped || s.Err != nil {
 		return true
 	}
-	if len(s.Dangling) > 0 || len(s.Unknown) > 0 {
+	// Stamp divergences are actionable but are not orphan keys, so they can
+	// never be "resolved" by the repair/GC bookkeeping below.
+	if len(s.Dangling) > 0 || len(s.Unknown) > 0 || len(s.StampDivergences) > 0 {
 		return true
 	}
-	resolved := make(map[string]struct{}, len(s.Repaired)+len(s.Deleted))
+	resolved := make(map[string]struct{}, len(s.Repaired)+len(s.Deleted)+len(s.PromotedBase))
 	for _, k := range s.Repaired {
 		resolved[k] = struct{}{}
 	}
 	for _, k := range s.Deleted {
+		resolved[k] = struct{}{}
+	}
+	for _, k := range s.PromotedBase {
 		resolved[k] = struct{}{}
 	}
 	for _, orphans := range [][]string{s.DeltaOrphans, s.BaseOrphans, s.TmpOrphans} {
@@ -89,7 +107,12 @@ func (r Report) Render(w io.Writer) {
 		renderKeys(w, "unknown shape", s.Unknown)
 		renderKeys(w, "dangling entry", s.Dangling)
 		renderKeys(w, "unverifiable entry", s.Unverifiable)
+		renderKeys(w, "stamp divergence", s.StampDivergences)
 		renderKeys(w, "repaired", s.Repaired)
+		renderKeys(w, "promoted base-init", s.PromotedBase)
+		if s.InitPromotionRefusal != "" {
+			fmt.Fprintf(w, "  init promotion refused: %s\n", s.InitPromotionRefusal)
+		}
 		renderKeys(w, "deleted", s.Deleted)
 		if s.Err != nil {
 			fmt.Fprintf(w, "  error: %v\n", s.Err)
@@ -100,7 +123,8 @@ func (r Report) Render(w io.Writer) {
 func (s SchemaReport) clean() bool {
 	return len(s.DeltaOrphans)+len(s.DeltaLeftovers)+len(s.BaseOrphans)+
 		len(s.TmpOrphans)+len(s.Unknown)+len(s.Dangling)+len(s.Unverifiable)+
-		len(s.Repaired)+len(s.Deleted) == 0 && s.Err == nil
+		len(s.Repaired)+len(s.PromotedBase)+len(s.Deleted)+
+		len(s.StampDivergences) == 0 && s.Err == nil && s.InitPromotionRefusal == ""
 }
 
 func renderKeys(w io.Writer, label string, keys []string) {

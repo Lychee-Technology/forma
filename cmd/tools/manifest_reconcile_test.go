@@ -109,8 +109,8 @@ func TestParseReconcileFlags_Defaults(t *testing.T) {
 	if opts.etagRetries != 3 {
 		t.Fatalf("etagRetries = %d, want 3", opts.etagRetries)
 	}
-	if opts.repair || opts.gc {
-		t.Fatalf("repair/gc must default to false")
+	if opts.repair || opts.gc || opts.verifyStamps {
+		t.Fatalf("repair/gc/verify-stamps must default to false")
 	}
 	if opts.schemaID != 0 {
 		t.Fatalf("schemaID = %d, want 0 (all schemas)", opts.schemaID)
@@ -129,13 +129,16 @@ func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
 		"--s3-bucket", "bkt",
 		"--schema-registry-table", "t",
 		"--schema-id", "7",
-		"--repair", "--gc", "--gc-grace", "1m",
+		"--repair", "--gc", "--gc-grace", "1m", "--verify-stamps",
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if !opts.repair || !opts.gc || opts.gcGrace != time.Minute || opts.schemaID != 7 {
 		t.Fatalf("mode flags not parsed: %+v", opts)
+	}
+	if !opts.verifyStamps {
+		t.Fatalf("--verify-stamps not parsed: %+v", opts)
 	}
 
 	opts, err = parseReconcileFlags([]string{"--help"})

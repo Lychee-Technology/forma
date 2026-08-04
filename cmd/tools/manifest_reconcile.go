@@ -42,6 +42,7 @@ type reconcileOptions struct {
 	schemaID        int
 	repair          bool
 	gc              bool
+	verifyStamps    bool
 	gcGrace         time.Duration
 	etagRetries     int
 	duck            duckExportFlags
@@ -87,8 +88,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 	registryTable := fs.String("schema-registry-table", "", "Schema registry table for schema enumeration (required)")
 	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = all registered schemas)")
-	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans (metadata recomputed from parquet contents)")
+	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans and promote complete init-shaped base orphan sets (coverage + eviction-safety verified)")
 	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
+	verifyStamps := fs.Bool("verify-stamps", false, "Compare every listed entry's column stamp against the parquet footer (byte-truth check for the #256 stamp trust)")
 	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")
 	etagRetries := fs.Int("etag-retries", 3, "Manifest save retries on optimistic-concurrency conflict")
 	opts.duck.register(fs, duckExportFlagOptions{memLimitDefault: "4GB", queryTimeout: 5 * time.Minute})
@@ -121,6 +123,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	opts.schemaID = *schemaID
 	opts.repair = *repair
 	opts.gc = *gc
+	opts.verifyStamps = *verifyStamps
 	opts.gcGrace = *gcGrace
 	opts.etagRetries = *etagRetries
 	return opts, nil
@@ -172,17 +175,24 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 			Repair:         opts.repair,
 			GC:             opts.gc,
 			GCGrace:        opts.gcGrace,
+			VerifyStamps:   opts.verifyStamps,
 			MaxETagRetries: opts.etagRetries,
 		},
 	}
 
-	if opts.repair {
+	// Both the repair guards and --verify-stamps read parquet through the
+	// DuckDB stats engine; only repair needs the Postgres liveness surface,
+	// so LiveRows stays under its own gate to keep the "may be nil unless
+	// Opts.Repair" contract on the field honest.
+	if opts.repair || opts.verifyStamps {
 		exporter, err := openReconcileStatsEngine(ctx, opts, logger)
 		if err != nil {
 			return fmt.Errorf("build stats engine: %w", err)
 		}
 		defer func() { _ = exporter.DB.Close() }()
 		r.Stats = &reconcile.DuckStatsReader{DB: exporter.DB, Bucket: opts.s3.bucket}
+	}
+	if opts.repair {
 		r.LiveRows = &reconcile.PGLiveRows{DB: db, Table: opts.entityMainTable}
 	}
 
@@ -190,7 +200,8 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		zap.String("bucket", opts.s3.bucket),
 		zap.String("data_prefix", opts.dataPrefix),
 		zap.Bool("repair", opts.repair),
-		zap.Bool("gc", opts.gc))
+		zap.Bool("gc", opts.gc),
+		zap.Bool("verify_stamps", opts.verifyStamps))
 
 	report, err := r.Run(ctx)
 	if err != nil {
