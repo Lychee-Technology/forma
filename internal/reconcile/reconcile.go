@@ -151,29 +151,50 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)
 	s.Unknown = objectKeyList(d.unknown)
 	s.Unverifiable = d.unverifiable
-	s.Dangling, err = r.confirmDangling(ctx, schemaID, d.dangling)
+	confirmed, present, err := r.confirmDangling(ctx, schemaID, d.dangling)
 	if err != nil {
 		// An unconfirmable candidate is a tool failure, not a data-drift
 		// verdict: the caller maps s.Err to exit 1, never 2.
 		s.Err = fmt.Errorf("confirm schema %d dangling candidates: %w", schemaID, err)
 		return s
 	}
+	s.Dangling = confirmed
 
 	if r.Opts.VerifyStamps {
-		// d.dangling, not s.Dangling: the unconfirmed candidate list is the
-		// safe skip set (see verifyStamps).
-		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, d.dangling)
+		// The skip set is the candidates this run did NOT prove present —
+		// neither the confirmed-dangling list alone nor the raw candidate
+		// list (see verifyStamps).
+		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, unprovenDangling(d.dangling, present))
 		if err != nil {
 			s.Err = fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
 			return s
 		}
 	}
 
-	var deltaLeftovers []ObjectInfo
-	promotedInit := false
+	deltaLeftovers, promotedInit := r.runRepairs(ctx, schemaID, m, etag, d, objects, &s)
+	if s.Err != nil {
+		return s
+	}
+	if r.Opts.GC {
+		s.Deleted, err = r.collectAndGC(ctx, schemaID, d, promotedInit, deltaLeftovers)
+		if err != nil {
+			s.Err = err
+			return s
+		}
+	}
+	return s
+}
+
+// runRepairs is reconcileSchema's --repair half: promote a provably complete
+// init-shaped base orphan set, then hand the post-promotion manifest and etag
+// to the delta-orphan repair pass. Both passes record their outcome on s;
+// s.Err set means the schema aborts and neither the returned leftovers nor
+// promotedInit may be used.
+func (r *Reconciler) runRepairs(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string,
+	d diffResult, objects []ObjectInfo, s *SchemaReport) (deltaLeftovers []ObjectInfo, promotedInit bool) {
 	if r.Opts.Repair && len(d.baseInitOrphans) > 0 {
-		// The promotion's eviction proof dates listed base objects against the
-		// init export, so it needs this run's listing keyed by object key.
+		// The promotion's date fences date listed objects against the init
+		// export, so they need this run's listing keyed by object key.
 		listed := make(map[string]ObjectInfo, len(objects))
 		for _, o := range objects {
 			listed[o.Key] = o
@@ -181,7 +202,7 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		promo, pm, petag, err := r.promoteInitOrphans(ctx, schemaID, m, etag, d.baseInitOrphans, listed)
 		if err != nil {
 			s.Err = err
-			return s
+			return nil, false
 		}
 		m, etag = pm, petag
 		s.PromotedBase = promo.promoted
@@ -192,20 +213,13 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		outcome, err := r.repairSchema(ctx, schemaID, m, etag, d.deltaOrphans)
 		if err != nil {
 			s.Err = err
-			return s
+			return nil, false
 		}
 		s.Repaired = outcome.repaired
 		s.DeltaLeftovers = objectKeyList(outcome.leftovers)
 		deltaLeftovers = outcome.leftovers
 	}
-	if r.Opts.GC {
-		s.Deleted, err = r.collectAndGC(ctx, schemaID, d, promotedInit, deltaLeftovers)
-		if err != nil {
-			s.Err = err
-			return s
-		}
-	}
-	return s
+	return deltaLeftovers, promotedInit
 }
 
 // collectAndGC assembles this schema's GC candidate set from the diff and
@@ -239,13 +253,20 @@ func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffRes
 // failed reload or probe leaves the candidate UNCONFIRMED and is returned
 // as an error — a storage outage must surface as a tool failure (exit 1),
 // never as a confirmed data-drift report (exit 2).
-func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) ([]string, error) {
+//
+// It returns both verdicts the probe actually establishes: confirmed (still
+// listed in the reloaded manifest, object provably gone) and present (still
+// listed, object provably THERE — a stale-listing race, not drift at all).
+// present is what lets --verify-stamps keep covering those entries: a
+// candidate whose bytes this run already proved reachable is not a probe
+// hazard, so skipping it would forfeit coverage for no reason.
+func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) (confirmed, present []string, err error) {
 	if len(dangling) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	m2, _, err := r.Manifests.Load(ctx, schemaID)
 	if err != nil {
-		return nil, fmt.Errorf("reload manifest: %w", err)
+		return nil, nil, fmt.Errorf("reload manifest: %w", err)
 	}
 	still := make(map[string]bool, len(m2.Files))
 	for _, f := range m2.Files {
@@ -254,14 +275,13 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 		}
 	}
 
-	var confirmed []string
 	for _, key := range dangling {
 		if !still[key] {
 			continue // spliced out concurrently; nothing dangling anymore
 		}
 		objs, err := r.Lister.ListObjects(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("re-probe candidate %s: %w", key, err)
+			return nil, nil, fmt.Errorf("re-probe candidate %s: %w", key, err)
 		}
 		exists := false
 		for _, o := range objs {
@@ -270,11 +290,33 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 				break
 			}
 		}
-		if !exists {
-			confirmed = append(confirmed, key)
+		if exists {
+			present = append(present, key)
+			continue
+		}
+		confirmed = append(confirmed, key)
+	}
+	return confirmed, present, nil
+}
+
+// unprovenDangling narrows a dangling candidate list to the entries this run
+// did NOT prove present — the only ones --verify-stamps must skip. Candidates
+// confirmDangling probed and found alive keep their stamp coverage.
+func unprovenDangling(candidates, present []string) []string {
+	if len(present) == 0 {
+		return candidates
+	}
+	proven := make(map[string]bool, len(present))
+	for _, key := range present {
+		proven[key] = true
+	}
+	unproven := make([]string, 0, len(candidates))
+	for _, key := range candidates {
+		if !proven[key] {
+			unproven = append(unproven, key)
 		}
 	}
-	return confirmed, nil
+	return unproven
 }
 
 func objectKeyList(objs []ObjectInfo) []string {

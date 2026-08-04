@@ -175,11 +175,12 @@ func TestVerifyStamps_DanglingEntryNotProbed(t *testing.T) {
 }
 
 func TestVerifyStamps_UnconfirmedDanglingCandidateNotProbed(t *testing.T) {
-	// The skip set is the UNCONFIRMED candidate list. Here a concurrent
-	// compactor splices the entry out (and deletes the object) mid-run, so
-	// confirmDangling clears the candidate — but the pre-run manifest this
-	// pass iterates still carries it. Probing it would fail and escalate the
-	// schema to a spurious exit 1; skipping costs one run of coverage.
+	// The skip set covers candidates that are neither confirmed dangling nor
+	// proven present. Here a concurrent compactor splices the entry out (and
+	// deletes the object) mid-run, so confirmDangling clears the candidate
+	// WITHOUT ever probing it — but the pre-run manifest this pass iterates
+	// still carries it. Probing it would fail and escalate the schema to a
+	// spurious exit 1; skipping costs one run of coverage.
 	key := "data/7/" + uuidA + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{"data/7/": nil}}
 	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
@@ -201,6 +202,42 @@ func TestVerifyStamps_UnconfirmedDanglingCandidateNotProbed(t *testing.T) {
 	require.Empty(t, stats.columnsCalls, "a dangling candidate must not be probed")
 	require.Empty(t, s.StampDivergences)
 	require.False(t, report.HasResidualDiscrepancies())
+}
+
+// TestVerifyStamps_PresentDanglingCandidateIsVerified pins the round-4
+// narrowing of the skip rule. The schema listing came back WITHOUT the key —
+// a stale-listing race, not drift — so the entry became a dangling candidate.
+// confirmDangling then probes the key directly and finds the object very much
+// alive, which is proof its bytes are reachable. Skipping stamp verification
+// for a proven-present object would forfeit coverage for nothing, so the skip
+// set is now "candidates NOT proven present" rather than every candidate.
+//
+// fakeLister keys probes by prefix, and confirmDangling probes with the full
+// key as the prefix, so seeding lister.objects[key] is exactly the per-key
+// existence probe returning a hit.
+func TestVerifyStamps_PresentDanglingCandidateIsVerified(t *testing.T) {
+	key := "data/7/" + uuidA + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": nil,                                               // stale schema listing: the key is missing
+		key:       {{Key: key, Size: 10, LastModified: testClock()}}, // per-key probe: it exists
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: key, Columns: stampCols()},
+	}})
+	// A planted divergence: it may only surface if the entry IS verified.
+	footer := stampCols()
+	footer["row_id"] = "VARCHAR"
+	stats := &fakeStats{columns: map[string]map[string]string{key: footer}}
+	r := verifyReconciler(t, lister, manifests, stats)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.Dangling, "the object exists, so nothing is dangling")
+	require.Equal(t, []string{key}, stats.columnsCalls, "a proven-present candidate must still be verified")
+	require.Equal(t, []string{fmt.Sprintf("%s: column %q stamp %q vs footer %q", key, "row_id", "UUID", "VARCHAR")},
+		s.StampDivergences)
+	require.True(t, report.HasResidualDiscrepancies())
 }
 
 func TestVerifyStamps_OutOfPrefixEntryNotProbed(t *testing.T) {

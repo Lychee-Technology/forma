@@ -32,18 +32,24 @@ const absentColumn = "(absent)"
 //   - paths normalizeKey cannot resolve, and keys outside this schema's data
 //     prefix — both are the unverifiable class diffSchema already reports,
 //     and neither is covered by the listing that would prove it present;
-//   - every dangling **candidate** (the pre-confirmation list), not merely
-//     the confirmed ones. The tradeoff is deliberate: a candidate that
-//     confirmDangling proves still live loses stamp coverage for this run,
-//     which is cheap and self-correcting on the next pass, whereas probing
-//     an object a concurrent compactor spliced out and deleted mid-run would
-//     fail and escalate the whole schema to a spurious exit 1.
-func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manifest.Manifest, danglingCandidates []string) ([]string, error) {
+//   - every dangling candidate this run did NOT prove present — which is
+//     broader than the confirmed-dangling list (a candidate a concurrent
+//     compactor spliced out and deleted mid-run is unconfirmed yet would
+//     still fail a probe and escalate the whole schema to a spurious exit 1)
+//     but narrower than the raw candidate list. confirmDangling probes every
+//     candidate's existence anyway; a candidate it found ALIVE — a
+//     stale-listing race, not drift — is a proven-reachable object, so
+//     skipping it would forfeit stamp coverage for nothing. Only candidates
+//     whose bytes stay unprovable are skipped.
+//
+// The skip list is therefore the caller's job to compute (unprovenDangling);
+// this function does not re-derive it.
+func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manifest.Manifest, unprovenDangling []string) ([]string, error) {
 	if r.Stats == nil {
 		return nil, fmt.Errorf("stamp verification requested for schema %d but stats reader is not configured", schemaID)
 	}
-	skip := make(map[string]bool, len(danglingCandidates))
-	for _, key := range danglingCandidates {
+	skip := make(map[string]bool, len(unprovenDangling))
+	for _, key := range unprovenDangling {
 		skip[key] = true
 	}
 	prefix := schemaDataPrefix(r.DataPrefix, schemaID)
@@ -55,7 +61,7 @@ func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manife
 		}
 		key, ok := normalizeKey(r.Bucket, f.Path)
 		if !ok || !strings.HasPrefix(key, prefix) || skip[key] {
-			continue // unverifiable or dangling candidate: already reported
+			continue // unverifiable, or an unprovable candidate: already reported
 		}
 		cols, err := r.Stats.FileColumns(ctx, key)
 		if err != nil {
