@@ -2,7 +2,6 @@ package federated
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"maps"
 	"sort"
@@ -417,7 +416,9 @@ func globParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, pattern str
 }
 
 // describeParquetColumns reads one parquet object's footer schema and
-// returns column name → DuckDB type.
+// returns column name → DuckDB type. The query is issued over the engine's
+// executor seam; the row scan itself is shared with the *sql.DB probe in
+// parquetcheck so the DESCRIBE row shape lives in exactly one place.
 func describeParquetColumns(ctx context.Context, duck DuckDBQueryExecutor, path string) (map[string]string, error) {
 	rows, err := duck.Query(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", path))
 	if err != nil {
@@ -425,17 +426,5 @@ func describeParquetColumns(ctx context.Context, duck DuckDBQueryExecutor, path 
 	}
 	defer func() { _ = rows.Close() }()
 
-	cols := map[string]string{}
-	for rows.Next() {
-		var name, typ string
-		var null, key, def, extra sql.NullString
-		if err := rows.Scan(&name, &typ, &null, &key, &def, &extra); err != nil {
-			return nil, fmt.Errorf("scan describe row for %s: %w", path, err)
-		}
-		cols[name] = typ
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate describe rows for %s: %w", path, err)
-	}
-	return cols, nil
+	return parquetcheck.ScanDescribeColumns(rows, path)
 }
