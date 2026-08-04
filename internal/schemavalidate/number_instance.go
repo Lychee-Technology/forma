@@ -25,10 +25,11 @@ func exactNumberInstance(v any) (any, error) {
 		if i, err := t.Int64(); err == nil {
 			return i, nil
 		}
-		if f, err := t.Float64(); err == nil {
-			return f, nil
+		f, err := t.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("numeric literal %q fits neither int64 nor float64: %w", t.String(), err)
 		}
-		return nil, fmt.Errorf("numeric literal %q fits neither int64 nor float64", t.String())
+		return f, nil
 	case map[string]any:
 		for key, item := range t {
 			converted, err := exactNumberInstance(item)
