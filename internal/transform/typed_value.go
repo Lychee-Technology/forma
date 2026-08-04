@@ -98,13 +98,36 @@ func toString(value any) (string, error) {
 }
 
 // toInt64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
-// shapes ToEAVRecord tolerates for numeric values.
+// shapes ToEAVRecord tolerates for numeric values (#282): every pointer type
+// toFloat64ForEAV dereferences must also reach the exact path, or the value
+// silently rides the float64 fallback and rounds above 2^53. *float32 is
+// deliberately absent: numutil.Int64Exact has no float32 case, and a float32
+// cannot hold an integer wide enough to need the exact sidecar.
 func toInt64ExactForEAV(value any) (int64, bool) {
-	if p, ok := value.(*int64); ok {
-		if p == nil {
-			return 0, false
-		}
-		return *p, true
+	switch p := value.(type) {
+	case *int64:
+		return derefInt64Exact(p)
+	case *int:
+		return derefInt64Exact(p)
+	case *int16:
+		return derefInt64Exact(p)
+	case *int32:
+		return derefInt64Exact(p)
+	case *float64:
+		return derefInt64Exact(p)
+	case *string:
+		return derefInt64Exact(p)
+	default:
+		return numutil.Int64Exact(value)
 	}
-	return numutil.Int64Exact(value)
+}
+
+// derefInt64Exact dereferences a pointer shape and delegates to
+// numutil.Int64Exact; a nil pointer reports not-exact so the caller keeps the
+// existing nil handling of the float64 path.
+func derefInt64Exact[T any](p *T) (int64, bool) {
+	if p == nil {
+		return 0, false
+	}
+	return numutil.Int64Exact(*p)
 }

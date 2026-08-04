@@ -122,3 +122,42 @@ func TestToPersistentRecordClearsSidecarForEAVOnlyBigint(t *testing.T) {
 		"EAV-only bigint must not carry the exact sidecar")
 	require.NotNil(t, rec.OtherAttributes[0].ValueNumeric)
 }
+
+// TestToInt64ExactForEAVPointerShapes guards the #282 fold-in of the #205
+// final-review gap: every integral pointer shape toFloat64ForEAV accepts must
+// also reach the exact-int64 sidecar, or the value silently rides the float64
+// fallback and rounds above 2^53.
+func TestToInt64ExactForEAVPointerShapes(t *testing.T) {
+	i := int(9007199254740993)
+	i16 := int16(32767)
+	i32 := int32(2147483647)
+	i64 := int64(math.MaxInt64)
+	f64 := float64(1 << 50)
+	s := "9007199254740993"
+
+	cases := []struct {
+		name  string
+		value any
+		want  int64
+	}{
+		{"ptr-int", &i, 9007199254740993},
+		{"ptr-int16", &i16, 32767},
+		{"ptr-int32", &i32, 2147483647},
+		{"ptr-int64", &i64, math.MaxInt64},
+		{"ptr-float64-integral", &f64, 1 << 50},
+		{"ptr-string-integer", &s, 9007199254740993},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := toInt64ExactForEAV(tc.value)
+			if !ok || got != tc.want {
+				t.Fatalf("toInt64ExactForEAV(%T) = (%d, %t), want (%d, true)", tc.value, got, ok, tc.want)
+			}
+		})
+	}
+
+	var nilInt *int
+	if _, ok := toInt64ExactForEAV(nilInt); ok {
+		t.Fatal("nil *int must not report exact")
+	}
+}
