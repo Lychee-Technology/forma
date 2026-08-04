@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,12 @@ func TestReport_HasResidualDiscrepancies(t *testing.T) {
 		{"unverifiable is informational only", Report{Schemas: []SchemaReport{
 			{SchemaID: 1, Unverifiable: []string{"s3://other/x.parquet"}},
 		}}, false},
+		{"refused init orphan is residual", Report{Schemas: []SchemaReport{
+			{SchemaID: 1, BaseOrphans: []string{"data/1/a_b.parquet"}, InitPromotionRefusal: "reason"},
+		}}, true},
+		{"partial promotion of base orphans is residual", Report{Schemas: []SchemaReport{
+			{SchemaID: 1, BaseOrphans: []string{"data/1/k1", "data/1/k2"}, PromotedBase: []string{"data/1/k1"}},
+		}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,5 +83,68 @@ func TestReport_RenderNamesExactKeys(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("Render output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestResidual_PromotedBaseCountsResolved(t *testing.T) {
+	s := SchemaReport{
+		BaseOrphans:  []string{"data/7/a_b.parquet"},
+		PromotedBase: []string{"data/7/a_b.parquet"},
+	}
+	if s.Residual() {
+		t.Fatal("promoted base orphan must not be residual")
+	}
+}
+
+func TestRender_PromotionLines(t *testing.T) {
+	var buf bytes.Buffer
+	Report{Schemas: []SchemaReport{{
+		SchemaID:             7,
+		BaseOrphans:          []string{"data/7/a_b.parquet"},
+		InitPromotionRefusal: "orphan set covers 2 of 3 live rows; a partial init export must not replace the base tier",
+	}}}.Render(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "init promotion refused: orphan set covers 2 of 3 live rows") {
+		t.Fatalf("missing refusal line in:\n%s", out)
+	}
+
+	buf.Reset()
+	Report{Schemas: []SchemaReport{{
+		SchemaID:     7,
+		BaseOrphans:  []string{"data/7/a_b.parquet"},
+		PromotedBase: []string{"data/7/a_b.parquet"},
+	}}}.Render(&buf)
+	if !strings.Contains(buf.String(), "promoted base-init: data/7/a_b.parquet") {
+		t.Fatalf("missing promoted line in:\n%s", buf.String())
+	}
+}
+
+func TestRender_RefusedInitOrphanNotClean(t *testing.T) {
+	var buf bytes.Buffer
+	Report{Schemas: []SchemaReport{{
+		SchemaID:             7,
+		InitPromotionRefusal: "orphan set covers 2 of 3 live rows; a partial init export must not replace the base tier",
+	}}}.Render(&buf)
+	out := buf.String()
+	if strings.Contains(out, "schema 7: clean") {
+		t.Fatalf("refused init orphan must not render clean:\n%s", out)
+	}
+	if !strings.Contains(out, "init promotion refused:") {
+		t.Fatalf("missing refusal line in:\n%s", out)
+	}
+}
+
+func TestRender_PromotionOnlyNotClean(t *testing.T) {
+	var buf bytes.Buffer
+	Report{Schemas: []SchemaReport{{
+		SchemaID:     7,
+		PromotedBase: []string{"data/7/a_b.parquet"},
+	}}}.Render(&buf)
+	out := buf.String()
+	if strings.Contains(out, "schema 7: clean") {
+		t.Fatalf("promotion-only schema must not render clean:\n%s", out)
+	}
+	if !strings.Contains(out, "promoted base-init: data/7/a_b.parquet") {
+		t.Fatalf("missing promoted line in:\n%s", out)
 	}
 }
