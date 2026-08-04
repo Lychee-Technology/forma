@@ -73,8 +73,10 @@ func TestSQLGenerator_ToSQLClauses(t *testing.T) {
 		t.Fatalf("unexpected SQL clause.\nexpected: %s\nactual:   %s", expectedClause, sqlClause)
 	}
 
+	// price is `gt:10` on a numeric attribute: integral literals bind as exact
+	// int64 since #281 (fractional literals still bind float64).
 	expectedArgs := []any{
-		int16(10), float64(10),
+		int16(10), int64(10),
 		int16(11), "active",
 		int16(12), "A%",
 	}

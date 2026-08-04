@@ -253,7 +253,9 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		parsed := numutil.TryParseNumber(valStr)
 		switch v := parsed.(type) {
 		case int64:
-			parsedValue = float64(v)
+			// Exact bind (#281): pgx encodes int64 into the NUMERIC comparison
+			// losslessly. Mirrors ConvertPgMainValue on the main-table path.
+			parsedValue = v
 		case float64:
 			parsedValue = v
 		default:
