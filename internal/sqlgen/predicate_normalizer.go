@@ -241,46 +241,9 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 	opStr := operator.Operator
 	valStr := operator.Value
 
-	var valueColumn string
-	var parsedValue any
-
-	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
-		valueColumn = "value_text"
-		parsedValue = valStr
-	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		valueColumn = "value_numeric"
-		parsed := numutil.TryParseNumber(valStr)
-		switch v := parsed.(type) {
-		case int64:
-			// Exact bind (#281): pgx encodes int64 into the NUMERIC comparison
-			// losslessly. Mirrors ConvertPgMainValue on the main-table path.
-			parsedValue = v
-		case float64:
-			parsedValue = v
-		default:
-			return PgEavLeafPayload{Err: fmt.Errorf("invalid numeric value for '%s': %s: %w", kv.Attr, valStr, forma.ErrInvalidInput)}
-		}
-	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		valueColumn = "value_numeric"
-		var err error
-		parsedValue, err = parseDateValue(valStr, meta)
-		if err != nil {
-			return PgEavLeafPayload{Err: fmt.Errorf("invalid date value for '%s': %w", kv.Attr, err)}
-		}
-	case forma.ValueTypeBool:
-		valueColumn = "value_numeric"
-		parsedInt, err := strconv.Atoi(valStr)
-		if err != nil {
-			return PgEavLeafPayload{Err: fmt.Errorf("invalid boolean value for '%s': %s: %w", kv.Attr, valStr, forma.ErrInvalidInput)}
-		}
-		if parsedInt > 0 {
-			parsedValue = float64(1)
-		} else {
-			parsedValue = float64(0)
-		}
-	default:
-		return PgEavLeafPayload{Err: fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, kv.Attr)}
+	valueColumn, parsedValue, err := parsePgEavValue(kv.Attr, meta, valStr)
+	if err != nil {
+		return PgEavLeafPayload{Err: err}
 	}
 
 	sqlOperator, err := conditionexpr.ToSQLOperator(opStr, valStr)
@@ -298,8 +261,8 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 	// starts_with on a UUID column answered an opaque 500 instead of a 400 naming
 	// the operator and the type (#307 round-4 Finding 4).
 	//
-	// The `unsupported value_type` default above deliberately stays plain: that
-	// names the schema's declared type, not anything the caller sent.
+	// The `unsupported value_type` default in parsePgEavValue deliberately stays
+	// plain: that names the schema's declared type, not anything the caller sent.
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
 		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s': %w", opStr, meta.ValueType, forma.ErrInvalidInput)}
 	}
@@ -312,6 +275,50 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		ValueColumn: valueColumn,
 		SQLOp:       sqlOp,
 		Value:       parsedValue,
+	}
+}
+
+// parsePgEavValue picks the eav_data value column for the attribute's declared
+// type and converts the literal into the Go value bound against it. Extracted
+// from normalizePgEavPayload (#357) to keep that function under the size limit;
+// behavior is unchanged, and the characterization matrix guards it.
+func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (valueColumn string, parsedValue any, err error) {
+	switch meta.ValueType {
+	case forma.ValueTypeText, forma.ValueTypeUUID:
+		return "value_text", valStr, nil
+
+	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
+		switch v := numutil.TryParseNumber(valStr).(type) {
+		case int64:
+			// Exact bind (#281, #357): pgx encodes int64 into the NUMERIC
+			// comparison losslessly, in every integral spelling. Mirrors
+			// ConvertPgMainValue on the main-table path.
+			return "value_numeric", v, nil
+		case float64:
+			return "value_numeric", v, nil
+		default:
+			return "", nil, fmt.Errorf("invalid numeric value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+		}
+
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		parsed, dateErr := parseDateValue(valStr, meta)
+		if dateErr != nil {
+			return "", nil, fmt.Errorf("invalid date value for '%s': %w", attr, dateErr)
+		}
+		return "value_numeric", parsed, nil
+
+	case forma.ValueTypeBool:
+		parsedInt, boolErr := strconv.Atoi(valStr)
+		if boolErr != nil {
+			return "", nil, fmt.Errorf("invalid boolean value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+		}
+		if parsedInt > 0 {
+			return "value_numeric", float64(1), nil
+		}
+		return "value_numeric", float64(0), nil
+
+	default:
+		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, attr)
 	}
 }
 

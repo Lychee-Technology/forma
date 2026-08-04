@@ -87,7 +87,7 @@ func TestBigintKeysetBoundaryNoDupNoSkip(t *testing.T) {
 		Query{Schema: wide, Limit: 100}, len(keysetBoundaryAmounts))
 
 	asc := keysetBoundaryAmounts
-	desc := reversedInt64s(asc)
+	desc := reverseInt64s(asc)
 	for _, tc := range []keysetWalkCase{
 		// pages [0..2] [3..5] ⇒ the page-1 cursor sits on 2^53+1.
 		{"asc_page3", false, 3, asc, []int64{asc[2], asc[5]}},
@@ -166,8 +166,8 @@ func assertInt64Seq(t *testing.T, label string, got, want []int64) {
 	}
 }
 
-// reversedInt64s returns a reversed copy, leaving the input untouched.
-func reversedInt64s(in []int64) []int64 {
+// reverseInt64s returns a reversed copy, leaving the input untouched.
+func reverseInt64s(in []int64) []int64 {
 	out := make([]int64, len(in))
 	for i, v := range in {
 		out[len(in)-1-i] = v
