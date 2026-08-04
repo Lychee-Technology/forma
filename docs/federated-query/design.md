@@ -436,6 +436,17 @@ never excluded — correct: exclusion is for unreadable bytes, while an
 export-schema violation is an operator-visible consistency fault, not something
 to route around.
 
+**Triage: the guard names the invariant, not the object.** When the guard fires,
+the operator gets the violated invariant and the offending column, but no path.
+Three things compound to that: the guard runs inside a single `union_by_name`
+scan over the whole resolved set, so DuckDB raises one error for the set rather
+than per file; the object *exists*, so nothing in the missing-key classification
+path speaks up; and the #251 drain above is unguarded, so its verify pass reads
+the file clean and excludes nothing. Until #351 adds guarded per-file
+identification, the triage path is manual bisection: list the schema's manifest
+paths, then run the guarded scan against one path at a time until the failing
+object is isolated.
+
 **Cache invalidation.** The validator caches each path it validates, keyed by
 path **and by the stamp it was validated under** (nil for probe-validated). Path
 alone would be wrong: objects are write-once for flush and compaction, which

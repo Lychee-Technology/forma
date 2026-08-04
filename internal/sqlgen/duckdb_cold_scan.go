@@ -29,6 +29,10 @@ type NullScanColumn struct {
 // path-blind, and a path in a DuckDB error would be a storage-location leak
 // (#306). The manifest entry and the pre-read validator identify the offending
 // object.
+//
+// Correlating a fired guard back to a specific object is therefore manual
+// bisection today (see the triage note in docs/federated-query/design.md §5);
+// #351 tracks giving the guard per-file identification.
 const (
 	ParquetNullRowIDMessage     = "parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)"
 	ParquetNullChangedAtMessage = "parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)"
