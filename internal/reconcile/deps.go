@@ -98,7 +98,11 @@ type DuckStatsReader struct {
 }
 
 func (d *DuckStatsReader) FileStats(ctx context.Context, key string) (compaction.MergeStats, error) {
-	return compaction.SingleFileStats(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
+	stats, err := compaction.SingleFileStats(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
+	if err != nil {
+		return compaction.MergeStats{}, fmt.Errorf("recompute parquet stats of %s: %w", key, err)
+	}
+	return stats, nil
 }
 
 func (d *DuckStatsReader) UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
@@ -106,13 +110,21 @@ func (d *DuckStatsReader) UncoveredRows(ctx context.Context, key string, listedK
 	for _, k := range listedKeys {
 		listed = append(listed, fmt.Sprintf("s3://%s/%s", d.Bucket, k))
 	}
-	return compaction.UncoveredRows(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
+	rows, err := compaction.UncoveredRows(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
+	if err != nil {
+		return nil, fmt.Errorf("probe uncovered rows of %s: %w", key, err)
+	}
+	return rows, nil
 }
 
 // FileColumns probes the parquet footer for the #256 column stamp,
 // exactly as cdc-init's initStampColumns does for its own entries.
 func (d *DuckStatsReader) FileColumns(ctx context.Context, key string) (map[string]string, error) {
-	return parquetcheck.DescribeColumns(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
+	cols, err := parquetcheck.DescribeColumns(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
+	if err != nil {
+		return nil, fmt.Errorf("describe parquet columns of %s: %w", key, err)
+	}
+	return cols, nil
 }
 
 var (

@@ -189,6 +189,71 @@ func TestPromote_TombstoneDeltaMasksDeletedRow(t *testing.T) {
 	require.Equal(t, []string{deltaKey}, stats.maskedProbe(t, file2))
 }
 
+// TestPromote_UnlistedTombstoneDeltaRefusesThenConverges pins the sequence
+// raised as Finding-1 in this PR's review: the init publish failed AND the
+// tombstone delta recording a later delete is itself unlisted. Coverage
+// balances (dead rows do not count) and eviction safety has no base entry to
+// check, so only the resurrection guard stands between promotion and a delete
+// silently shadowed by a promoted base carrying the row's stale live version.
+//
+// The invariant: an unlisted newer tombstone can NEVER be shadowed by a
+// promoted base. Run 1 refuses promotion — the probe may only mask against
+// LISTED deltas — while the delta-repair pass in the SAME run restores the
+// tombstone to the manifest (tombstone + dead row = lost delete). Run 2 can
+// now mask rid3 against that listed tombstone, so the set converges and
+// promotes with the delta entry preserved. Refusal is therefore transient and
+// self-healing, never a permanent stall.
+func TestPromote_UnlistedTombstoneDeltaRefusesThenConverges(t *testing.T) {
+	lister, stats, live, file1, file2 := deletedRowInitSet()
+	deltaKey := "data/7/" + uuidA + ".parquet"
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: deltaKey, Size: 33, LastModified: testClock()})
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}})
+	// The unlisted delta carries rid3's newer tombstone. With an empty
+	// manifest both the resurrection probe and the repair guard's probe run
+	// with zero listed keys, which the fake answers from `uncovered` — the
+	// bare-enumeration map — for every key.
+	stats.stats[deltaKey] = compaction.MergeStats{
+		RowsOut: 1, RowIDMin: rid3, RowIDMax: rid3, CreatedMin: 400, CreatedMax: 400,
+	}
+	stats.uncovered[deltaKey] = []compaction.UncoveredRow{{RowID: rid3, Tombstone: true}}
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Contains(t, s.InitPromotionRefusal, "resurrect")
+	require.Empty(t, s.PromotedBase, "an unlisted tombstone must block wholesale replacement")
+	// Same run: the repair pass classifies the delta orphan as a lost delete
+	// and restores it, which is exactly what unblocks the next run.
+	require.Contains(t, s.Repaired, deltaKey)
+	require.Equal(t, []string{deltaKey}, manifestPaths(manifests, 7, "delta"))
+	require.Empty(t, manifestPaths(manifests, 7, "base"), "nothing may reach the base tier yet")
+
+	// Run 2: the tombstone is listed, so the resurrection probe masks rid3 —
+	// the real anti-join outcome once the surviving delta supersedes it.
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{file2: {}}
+	report, err = r.Run(context.Background())
+	require.NoError(t, err)
+	s = report.Schemas[0]
+	require.Empty(t, s.InitPromotionRefusal)
+	require.ElementsMatch(t, []string{file1, file2}, s.PromotedBase)
+	require.ElementsMatch(t, []string{file1, file2}, manifestPaths(manifests, 7, "base"))
+	require.Equal(t, []string{deltaKey}, manifestPaths(manifests, 7, "delta"),
+		"the restored tombstone must survive the splice")
+}
+
+// manifestPaths returns the saved manifest's paths in one tier, in file order.
+func manifestPaths(manifests *fakeManifests, schemaID int16, tier string) []string {
+	var paths []string
+	for _, f := range manifests.manifests[schemaID].Files {
+		if f.Tier == tier {
+			paths = append(paths, f.Path)
+		}
+	}
+	return paths
+}
+
 // Real-DuckDB verification of the resurrection guard: a genuine tombstone
 // delta (deleted_at set, newer changed_at) read through the production
 // UncoveredRows query.
