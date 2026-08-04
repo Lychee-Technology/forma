@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 )
 
@@ -96,13 +97,39 @@ func OptionalPointerValue[T any](value *T) (T, bool) {
 	return *value, false
 }
 
-// TryParseNumber parses s as int64, then float64, falling back to the raw string.
+// TryParseNumber parses s as int64, then float64, falling back to the raw
+// string. Integral spellings in decimal or exponent form ("42.0",
+// "9.007199254740993e15") refine to exact int64 when they fit (#357):
+// ParseFloat gates acceptance so the accepted grammar is unchanged, and
+// big.Rat supplies the exact value ParseFloat would have rounded above 2^53.
+// Integral values beyond int64 range and genuinely fractional literals stay
+// float64.
 func TryParseNumber(s string) any {
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		if i, ok := integralInt64(s); ok {
+			return i
+		}
 		return f
 	}
 	return s
+}
+
+// integralInt64 reports the exact int64 value of a literal that denotes an
+// integer, in any spelling big.Rat understands. Callers must have already
+// gated s through ParseFloat: big.Rat alone accepts forms the condition DSL
+// must not (e.g. "1/3"), and rejects forms it must keep ("inf", "NaN"),
+// which fall back to float64 unchanged.
+func integralInt64(s string) (int64, bool) {
+	r, ok := new(big.Rat).SetString(s)
+	if !ok || !r.IsInt() {
+		return 0, false
+	}
+	n := r.Num()
+	if !n.IsInt64() {
+		return 0, false
+	}
+	return n.Int64(), true
 }

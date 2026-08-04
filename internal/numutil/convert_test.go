@@ -18,7 +18,11 @@ func TestTryParseNumber(t *testing.T) {
 		{name: "int64", input: "42", expect: int64(42)},
 		{name: "negative int64", input: "-7", expect: int64(-7)},
 		{name: "float64", input: "3.14", expect: float64(3.14)},
-		{name: "scientific float64", input: "1e3", expect: float64(1000)},
+		// "1e3" denotes the integer 1000, so since #357 it refines to int64
+		// like every other integral spelling; a fractional exponent literal
+		// still lands on float64.
+		{name: "scientific integral", input: "1e3", expect: int64(1000)},
+		{name: "scientific float64", input: "1.5e-3", expect: float64(0.0015)},
 		{name: "non-numeric", input: "abc", expect: "abc"},
 	}
 
@@ -40,6 +44,63 @@ func TestTryParseNumber(t *testing.T) {
 				assert.Equal(t, exp, val)
 			default:
 				t.Fatalf("unsupported expected type %T", exp)
+			}
+		})
+	}
+}
+
+// TestTryParseNumberIntegralSpellings pins the #357 contract: an accepted
+// literal that denotes an integer in int64 range yields an exact int64 in
+// EVERY spelling, not only the bare-digits one. The grammar itself is
+// unchanged — ParseFloat still decides acceptance, so a string it rejects
+// ("1/3", "abc") still falls through to the raw-string arm even when
+// big.Rat could parse it.
+func TestTryParseNumberIntegralSpellings(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  any
+	}{
+		{"bare integer", "42", int64(42)},
+		{"decimal spelling", "42.0", int64(42)},
+		{"decimal spelling above 2^53", "9007199254740993.0", int64(9007199254740993)},
+		{"exponent spelling above 2^53", "9.007199254740993e15", int64(9007199254740993)},
+		{"exponent spelling at MaxInt64", "9.223372036854775807e18", int64(math.MaxInt64)},
+		{"trailing-zero exponent", "1e0", int64(1)},
+		{"negative decimal spelling", "-9007199254740993.0", int64(-9007199254740993)},
+		{"negative zero folds to int64 zero", "-0.0", int64(0)},
+		{"fractional stays float64", "3.5", float64(3.5)},
+		// Integral but outside int64 — int64 cannot carry it, so the float64
+		// fallback (today's behavior) stands rather than a silent truncation.
+		{"integral beyond int64 range", "1e300", float64(1e300)},
+		// ParseFloat accepts these; big.Rat does not. The refinement fails
+		// closed and the float64 they always produced survives.
+		{"positive infinity keeps float64", "inf", math.Inf(1)},
+		{"NaN keeps float64", "NaN", math.NaN()},
+		// Grammar must not widen: big.Rat alone would take "1/3".
+		{"rat-only fraction is not a number", "1/3", "1/3"},
+		{"non-numeric", "abc", "abc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TryParseNumber(tc.input)
+			switch want := tc.want.(type) {
+			case int64:
+				require.IsType(t, int64(0), got, "spelling %q must refine to int64", tc.input)
+				require.Equal(t, want, got.(int64))
+			case float64:
+				require.IsType(t, float64(0), got, "spelling %q must stay float64", tc.input)
+				if math.IsNaN(want) {
+					require.True(t, math.IsNaN(got.(float64)), "want NaN, got %v", got)
+					return
+				}
+				require.Equal(t, want, got.(float64))
+			case string:
+				require.IsType(t, "", got, "spelling %q must fall through to the raw string", tc.input)
+				require.Equal(t, want, got.(string))
+			default:
+				t.Fatalf("unsupported expected type %T", want)
 			}
 		})
 	}
