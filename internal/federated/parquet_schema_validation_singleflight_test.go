@@ -108,9 +108,17 @@ func TestValidatorSingleFlightsConcurrentProbes(t *testing.T) {
 // The count is asserted while both leaders are parked inside their probe,
 // which is the only deterministic window: once they publish, the two
 // generations overwrite each other's single cache entry for this path, so
-// woken followers legitimately re-probe. In-flight is what the single-flight
-// controls, so in-flight is what this measures — exactly 2 probes for 8
-// callers across 2 generations.
+// woken followers legitimately re-probe (measured: a post-join total ranges
+// over 2..8 across runs, which is why nothing here asserts a final total).
+// In-flight is what the single-flight controls, so in-flight is what this
+// measures — exactly 2 probes and exactly 2 leaders for 8 callers across 2
+// generations.
+//
+// The parked window needs no wall-clock sampling to be safe. beginProbe admits
+// one leader per key under the mutex, and a follower cannot probe before its
+// leader's done channel closes, which finishProbe only reaches after release.
+// So while the gate is shut the counts are structurally pinned, and one
+// snapshot taken under the validator's own mutex is the whole assertion.
 func TestValidatorSingleFlightDoesNotCollapseDistinctStamps(t *testing.T) {
 	v := newParquetSchemaValidator()
 	duck := newSlowDescribeExecutor(0)
@@ -129,8 +137,18 @@ func TestValidatorSingleFlightDoesNotCollapseDistinctStamps(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool { return duck.describes.Load() == 2 }, 2*time.Second, time.Millisecond,
-		"two distinct stamp generations on one path must EACH get a probe; got %d", duck.describes.Load())
-	require.Never(t, func() bool { return duck.describes.Load() > 2 }, 150*time.Millisecond, 5*time.Millisecond,
+		"two distinct stamp generations on one path must EACH get a probe")
+
+	// Both leaders are now parked on the gate. Snapshot the leadership map and
+	// the probe count together: 2 in-flight keys means the 6 followers took
+	// leadership of nothing, and the count still at 2 means none of them
+	// probed on its own.
+	v.mu.Lock()
+	inflight := len(v.inflight)
+	v.mu.Unlock()
+	require.Equal(t, 2, inflight,
+		"one leader per (path, stamp) — the 6 followers must hold no probe of their own")
+	require.Equal(t, int32(2), duck.describes.Load(),
 		"the other 6 callers must have collapsed onto the two leaders, not probed on their own")
 
 	close(duck.release)
