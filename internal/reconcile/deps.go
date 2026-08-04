@@ -112,7 +112,7 @@ func (d *DuckStatsReader) UncoveredRows(ctx context.Context, key string, listedK
 	}
 	rows, err := compaction.UncoveredRows(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
 	if err != nil {
-		return nil, fmt.Errorf("probe uncovered rows of %s: %w", key, err)
+		return nil, fmt.Errorf("duckdb uncovered-rows query for %s: %w", key, err)
 	}
 	return rows, nil
 }
