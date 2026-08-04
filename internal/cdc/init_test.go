@@ -167,3 +167,56 @@ func TestUpdateSchemaManifest_RerunReconcilesBaseTier(t *testing.T) {
 		t.Fatalf("entries = %s,%s want delta preserved then reconciled base", m.Files[0].Path, m.Files[1].Path)
 	}
 }
+
+func TestRecordSchemaBatchResultCarriesStamp(t *testing.T) {
+	state := &schemaInitState{schemaID: 7}
+	batch := schemaBatchExport{finalKey: "base/7/x.parquet"}
+	cols := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}
+	recordSchemaBatchResult(state, batch, 123, 456, cols)
+	if got := state.fileEntries[0].Columns["row_id"]; got != "UUID" {
+		t.Fatalf("base entry not stamped: %#v", state.fileEntries[0].Columns)
+	}
+}
+
+// initStampColumns is best-effort: a failed probe returns nil (entry stays
+// unstamped) and never errors the init run.
+func TestInitStampColumnsBestEffort(t *testing.T) {
+	runCtx := &initRunContext{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		logger:        zap.NewNop(),
+		manifestStore: &memManifestStore{},
+		describeColumns: func(ctx context.Context, uri string) (map[string]string, error) {
+			return nil, errors.New("footer read failed")
+		},
+	}
+	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols != nil {
+		t.Fatalf("failed probe must yield nil stamp, got %#v", cols)
+	}
+	// success path
+	runCtx.describeColumns = func(ctx context.Context, uri string) (map[string]string, error) {
+		if uri != "s3://b/base/7/x.parquet" {
+			t.Fatalf("probe hit %q, want the final object URI", uri)
+		}
+		return map[string]string{"row_id": "UUID"}, nil
+	}
+	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols["row_id"] != "UUID" {
+		t.Fatalf("stamp not returned: %#v", cols)
+	}
+}
+
+// initStampColumns short-circuits when manifestStore is nil (no manifest
+// to persist fileEntries to, so footer probe would be wasted).
+func TestInitStampColumnsShortCircuitWhenNoManifestStore(t *testing.T) {
+	runCtx := &initRunContext{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		logger:        zap.NewNop(),
+		manifestStore: nil,
+		describeColumns: func(ctx context.Context, uri string) (map[string]string, error) {
+			t.Fatalf("describe must not be called when manifestStore is nil")
+			return nil, nil
+		},
+	}
+	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols != nil {
+		t.Fatalf("manifest store nil must yield nil stamp, got %#v", cols)
+	}
+}

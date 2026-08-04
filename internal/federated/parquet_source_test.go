@@ -18,6 +18,7 @@ func hybridDuckConfig() forma.DuckDBConfig {
 
 type fakeParquetSource struct {
 	paths        []string
+	stamps       map[string]map[string]string
 	pathsErr     error
 	missing      []string
 	missingErr   error
@@ -26,9 +27,9 @@ type fakeParquetSource struct {
 	lastScanned  []string
 }
 
-func (f *fakeParquetSource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
+func (f *fakeParquetSource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
 	f.pathsCalls++
-	return f.paths, f.pathsErr
+	return f.paths, f.stamps, f.pathsErr
 }
 
 func (f *fakeParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
@@ -417,7 +418,7 @@ func TestResolveParquetPathsExcludesCachedCorrupt(t *testing.T) {
 	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet", "s3://b/bad.parquet"}})
 	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-	paths, fromSource, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+	paths, fromSource, _, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
 	require.NoError(t, err)
 	require.True(t, fromSource, "source-authored set must report fromSource")
 	require.Equal(t, []string{"s3://b/a.parquet"}, paths)
@@ -428,13 +429,18 @@ func TestResolveParquetPathsExcludesCachedCorrupt(t *testing.T) {
 // turn total corruption into a quiet ErrNoParquetPaths misconfiguration; the
 // full set must scan and fail loudly with today's classification instead.
 func TestResolveParquetPathsAllCorruptKeepsFullSet(t *testing.T) {
-	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}})
+	stamps := map[string]map[string]string{
+		"s3://b/bad.parquet": {"row_id": "UUID"},
+	}
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}, stamps: stamps})
 	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-	paths, _, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+	paths, _, gotStamps, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://b/bad.parquet"}, paths,
 		"all-corrupt set must pass through unfiltered")
+	require.Equal(t, stamps, gotStamps,
+		"the full-set fallback must still forward the source's stamps")
 	require.Empty(t, excluded, "an unfiltered scan must not claim a partial read")
 }
 
@@ -447,7 +453,7 @@ func TestResolveParquetPathsHintSetNeverFiltered(t *testing.T) {
 	q := exclusionTestQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://hinted/x.parquet"}
 
-	paths, fromSource, excluded, err := e.resolveParquetPaths(context.Background(), q)
+	paths, fromSource, _, excluded, err := e.resolveParquetPaths(context.Background(), q)
 	require.NoError(t, err)
 	require.False(t, fromSource)
 	require.Empty(t, excluded)

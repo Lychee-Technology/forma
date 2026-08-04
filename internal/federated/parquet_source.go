@@ -22,7 +22,11 @@ type ParquetSource interface {
 	// every query reaching the DuckDB engine wants warm and/or cold data, so
 	// an empty set cannot be answered honestly. A schema with no data yet
 	// should yield its fallback glob rather than nothing.
-	Paths(ctx context.Context, schemaID int16) ([]string, error)
+	//
+	// stamps carries each stamped entry's write-time footer columns keyed by
+	// its returned path; nil/absent keys mean unstamped — the validator falls
+	// back to probing (#256).
+	Paths(ctx context.Context, schemaID int16) (paths []string, stamps map[string]map[string]string, err error)
 	// MissingIn probes the given scanned path set (full s3:// URIs; glob
 	// and foreign-bucket entries are skipped as unprovable) and returns the
 	// bucket-relative keys absent from storage. It is consulted only on the
@@ -51,18 +55,25 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // path sets the source authored. Only source-authored sets are filtered
 // against the verification-confirmed corrupt objects (#251); excludedCorrupt
 // names what was dropped so the execution plan can say the scan was partial.
-func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, excludedCorrupt []string, err error) {
+//
+// stamps are the source's manifest-recorded footer columns (#256), keyed by
+// the returned paths, for the pre-read validator to consult instead of
+// probing. Only a source can author them: hint-authored paths name objects no
+// manifest entry vouches for, so they stay nil and probe as before. They are
+// forwarded unfiltered — a stamp key for a #251-excluded object is harmless
+// because the validator looks up by surviving path.
+func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, excludedCorrupt []string, err error) {
 	hinted, err := duckDBParquetPathsForQuery(q)
 	if err != nil {
-		return nil, false, nil, fmt.Errorf("render parquet path hint: %w", err)
+		return nil, false, nil, nil, fmt.Errorf("render parquet path hint: %w", err)
 	}
 	if len(hinted) > 0 {
-		return hinted, false, nil, nil
+		return hinted, false, nil, nil, nil
 	}
 	if e == nil || e.parquetSource == nil || q == nil {
-		return nil, false, nil, nil
+		return nil, false, nil, nil, nil
 	}
-	resolved, err := e.parquetSource.Paths(ctx, q.SchemaID)
+	resolved, stamps, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
 		// Resolution failures are transient infrastructure by default (S3
 		// unreachable, manifest unreadable) and classify as degradable. But a
@@ -71,18 +82,18 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 		// hand it to the degraded fallback — silencing exactly the state it
 		// exists to report.
 		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
-			return nil, false, nil, fmt.Errorf("manifest parquet source: %w", err)
+			return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w", err)
 		}
-		return nil, false, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
+		return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
 	// Exclude verification-confirmed corrupt objects (#251). If that would
 	// empty the set, scan the full set instead: total corruption must fail
 	// loudly with its own classification, not as ErrNoParquetPaths.
 	kept, excluded := e.corruptPaths.Split(resolved)
 	if len(kept) == 0 {
-		return resolved, true, nil, nil
+		return resolved, true, stamps, nil, nil
 	}
-	return kept, true, excluded, nil
+	return kept, true, stamps, excluded, nil
 }
 
 // classifyDuckDBReadError classifies a failed DuckDB read by storage state:

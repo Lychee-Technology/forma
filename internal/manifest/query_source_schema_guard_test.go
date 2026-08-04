@@ -36,7 +36,7 @@ func TestQuerySource_ManifestSchemaMismatchFailsBeforeScan(t *testing.T) {
 		Bucket:   "b",
 	}
 
-	paths, err := src.Paths(context.Background(), 7)
+	paths, _, err := src.Paths(context.Background(), 7)
 	require.Error(t, err, "a manifest stamped for another schema must not serve paths")
 	require.Nil(t, paths, "no path may escape to the scanner")
 	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
@@ -62,7 +62,7 @@ func TestQuerySource_MatchingManifestSchemaResolves(t *testing.T) {
 		Bucket:   "b",
 	}
 
-	paths, err := src.Paths(context.Background(), 7)
+	paths, _, err := src.Paths(context.Background(), 7)
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://b/delta/7/a.parquet"}, paths)
 }
@@ -86,7 +86,7 @@ func TestQuerySource_UnstampedManifestIsAccepted(t *testing.T) {
 		Bucket:   "b",
 	}
 
-	paths, err := src.Paths(context.Background(), 7)
+	paths, _, err := src.Paths(context.Background(), 7)
 	require.NoError(t, err, "an unstamped (pre-existing) manifest must still resolve")
 	require.Equal(t, []string{"s3://b/delta/7/a.parquet"}, paths)
 }
@@ -112,7 +112,7 @@ func TestQuerySource_MissingManifestStillFallsBack(t *testing.T) {
 		Fallback: func(schemaID int16) string { return "s3://b/delta/7/*.parquet" },
 	}
 
-	paths, err := src.Paths(context.Background(), 7)
+	paths, _, err := src.Paths(context.Background(), 7)
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://b/delta/7/*.parquet"}, paths)
 }

@@ -31,7 +31,9 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		e.breaker = fedengine.NewCircuitBreaker(e.opts.breakerFailures, e.opts.breakerCooldown, e.opts.breakerCooldown)
 	}
 
-	var opts []fedengine.EngineOption
+	// The engine's logger carries the #256 stamp/footer cross-check warning,
+	// which has no other outlet — the read it observes succeeds.
+	opts := []fedengine.EngineOption{fedengine.WithLogger(e.logger)}
 	if src := e.parquetSource(); src != nil {
 		if e.ParquetSourceWrap != nil {
 			src = e.ParquetSourceWrap(src)

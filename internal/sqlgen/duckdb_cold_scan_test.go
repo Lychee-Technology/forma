@@ -11,11 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Idle-state invariant (#255): no missing columns renders the exact
-// pre-#255 scan text, keeping every rendered-SQL contract byte-identical.
-func TestBuildParquetScanSourceEmptyIsBareReadParquet(t *testing.T) {
+// wantGuardREPLACE is the exact REPLACE list the scan source must emit: a
+// presence guard on row_id and changed_at, a type pin (CAST) on changed_at and
+// deleted_at, and deliberately NO cast on row_id (UUID in production, VARCHAR
+// in the benchmark shape) and NO presence guard on deleted_at (legitimately
+// NULL for live delta rows, #274). Spelled out rather than composed from the
+// production expression so a shape change has to be made twice, on purpose.
+const wantGuardREPLACE = "* REPLACE (COALESCE(row_id, error('" + ParquetNullRowIDMessage + "')) AS row_id, " +
+	"CAST(COALESCE(changed_at, error('" + ParquetNullChangedAtMessage + "')) AS BIGINT) AS changed_at, " +
+	"CAST(deleted_at AS BIGINT) AS deleted_at)"
+
+// Idle state (#256): with no missing columns the scan source is the
+// system-column guard alone. The pre-#256 bare read_parquet form is retired —
+// the guard is unconditional, because the object it protects against is
+// exactly the one no probe ran on.
+func TestBuildParquetScanSourceEmptyIsGuardOnly(t *testing.T) {
 	got := BuildParquetScanSource("'s3://b/base/a.parquet'", nil)
-	require.Equal(t, "read_parquet('s3://b/base/a.parquet', union_by_name=true)", got)
+	require.Equal(t,
+		"(SELECT "+wantGuardREPLACE+
+			" FROM read_parquet('s3://b/base/a.parquet', union_by_name=true)) AS cold_scan",
+		got)
 }
 
 func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
@@ -24,7 +39,8 @@ func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
 		{Name: "tags", DuckDBType: "BIGINT[]"},
 	})
 	require.Equal(t,
-		"(SELECT *, NULL::INTEGER AS score, NULL::BIGINT[] AS tags "+
+		"(SELECT "+wantGuardREPLACE+", "+
+			"NULL::INTEGER AS score, NULL::BIGINT[] AS tags "+
 			"FROM read_parquet(['s3://b/a.parquet', 's3://b/b.parquet'], union_by_name=true)) AS cold_scan",
 		got)
 }
@@ -93,7 +109,8 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	injectDuckDBTemplateParams(params, nil, nil)
 	// nil query keeps this a pure param-derivation probe.
 	src, _ := params["S3_SCAN_SOURCE"].(string)
-	require.Equal(t, "read_parquet('s3://b/base/a.parquet', union_by_name=true)", src)
+	require.Equal(t, BuildParquetScanSource("'s3://b/base/a.parquet'", nil), src)
+	require.Contains(t, src, ParquetNullRowIDMessage)
 
 	params = map[string]any{
 		"S3_PATHS":           "'s3://b/base/a.parquet'",
@@ -109,6 +126,12 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	require.NoError(t, AdvancedQueryTemplateDuckDB.Execute(&b, minimalAdvancedParams(t, []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})))
 	require.Equal(t, 2, strings.Count(b.String(), "NULL::INTEGER AS score"))
 	require.Equal(t, 2, strings.Count(b.String(), "read_parquet("))
+	// The #256 guard reaches both sites too — the semijoin is where a
+	// NULL-row_id row would silently under-qualify the outer scan, and a
+	// NULL/VARCHAR changed_at would silently misorder the LWW merge.
+	require.Equal(t, 2, strings.Count(b.String(), ParquetNullRowIDMessage))
+	require.Equal(t, 2, strings.Count(b.String(), ParquetNullChangedAtMessage))
+	require.Equal(t, 2, strings.Count(b.String(), "CAST(deleted_at AS BIGINT) AS deleted_at"))
 }
 
 // eavFixtureSubquery mimics the eav_data columns the hot-leg pivot reads, at

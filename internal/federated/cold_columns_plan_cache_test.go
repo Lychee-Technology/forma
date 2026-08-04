@@ -9,6 +9,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,7 +107,7 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 
 	// Pre-flush: the validator's write-once cache holds the v1 footer, so the
 	// probe never reaches the fake executor and the union is complete.
-	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false))
+	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false), nil)
 
 	sql1, notes1 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, sql1, "NULL::INTEGER AS score",
@@ -119,22 +120,26 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	require.Contains(t, sql2, "NULL::INTEGER AS score")
 
 	// The first flush lands `score`. Overwriting the cached footer is a TEST
-	// STAND-IN for "a new file's columns joined the union": production parquet
-	// objects are write-once, so a validated path's footer never actually
-	// changes under the validator's cache. The realistic production trigger —
-	// a glob expansion that gained a file — is the sibling test below; this
-	// one isolates the re-key with the path set held provably constant.
+	// STAND-IN for "a new file's columns joined the union": flush and
+	// compaction always mint fresh keys, so their footers join the union
+	// through a NEW path rather than by changing this one. (An init rerun does
+	// overwrite in place — that case is re-keyed by the manifest stamp, see
+	// parquet_schema_validation_stamps_test.go.) The realistic production
+	// trigger — a glob expansion that gained a file — is the sibling test
+	// below; this one isolates the re-key with the path set held constant.
 	// Either way the union the next request computes carries the column, and
 	// the path set, query shape, tables, limit and fingerprint are unchanged.
-	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(true))
+	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(true), nil)
 
 	sql3, notes3 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, notes3, "plan_cache=miss",
 		"the missing set alone must re-key the plan cache (#255 poisoning guard)")
 	require.NotContains(t, sql3, "NULL::INTEGER AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
-	require.NotContains(t, sql3, "AS cold_scan",
-		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
+	require.NotContains(t, sql3, ", NULL::",
+		"no missing columns: the scan source carries no typed-NULL augmentation at all")
+	require.Contains(t, sql3, sqlgen.ParquetNullRowIDMessage,
+		"the row_id guard renders in every state, augmented or not (#256)")
 }
 
 // coldPlanCacheGlob is a glob path hint: it is the ENTIRE scan-set string the
@@ -202,6 +207,8 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 		"the missing set ALONE must re-key the plan cache: the glob path string never changed (#255)")
 	require.NotContains(t, sql2, "NULL::INTEGER AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
-	require.NotContains(t, sql2, "AS cold_scan",
-		"no missing columns: the scan source reverts to the unaugmented read_parquet form")
+	require.NotContains(t, sql2, ", NULL::",
+		"no missing columns: the scan source carries no typed-NULL augmentation at all")
+	require.Contains(t, sql2, sqlgen.ParquetNullRowIDMessage,
+		"the row_id guard renders in every state, augmented or not (#256)")
 }

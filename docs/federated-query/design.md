@@ -12,19 +12,19 @@ The architecture implements a **Real-Time Lakehouse** pattern. DuckDB acts as th
 
 ### **2.1 Core Components**
 
-1. **Search API / Orchestrator:**  
-   * Parses incoming JSON DSL.  
-   * Determines query routing (OLTP vs. OLAP vs. Hybrid).  
-   * Manages the lifecycle of the DuckDB connection.  
-2. **Query Translator:**  
-   * Converts JSON filter trees into dialect-specific SQL fragments (DuckDB SQL vs. PostgreSQL SQL).  
-   * Manages Schema Mapping (Logical JSON Path $\leftrightarrow$ Physical EAV Columns).  
-3. **Compute Engine (DuckDB):**  
-   * Embedded, stateless SQL engine.  
-   * Extensions: postgres_scanner, httpfs (S3).  
-   * Configuration: Read-Only, Memory-Limited.  
-4. **Storage Layer:**  
-   * **S3 (Parquet):** Flattened, columnar data (Base + Delta files).  
+1. **Search API / Orchestrator:**
+   * Parses incoming JSON DSL.
+   * Determines query routing (OLTP vs. OLAP vs. Hybrid).
+   * Manages the lifecycle of the DuckDB connection.
+2. **Query Translator:**
+   * Converts JSON filter trees into dialect-specific SQL fragments (DuckDB SQL vs. PostgreSQL SQL).
+   * Manages Schema Mapping (Logical JSON Path $\leftrightarrow$ Physical EAV Columns).
+3. **Compute Engine (DuckDB):**
+   * Embedded, stateless SQL engine.
+   * Extensions: postgres_scanner, httpfs (S3).
+   * Configuration: Read-Only, Memory-Limited.
+4. **Storage Layer:**
+   * **S3 (Parquet):** Flattened, columnar data (Base + Delta files).
    * **PostgreSQL (Row):** change_log (Buffer pointer), entity_main (Fixed attributes), eav_data (Dynamic attributes).
 
 ## **3. Data Consistency Model**
@@ -92,17 +92,17 @@ The translator must traverse the filter tree and generate two distinct SQL fragm
 
 **A. PostgreSQL Pushdown Fragment ($PG_WHERE_CLAUSE)**
 
-* **Target:** pg_source `WHERE` clause (DuckDB's postgres scanner pushes it down into the scan).  
-* **Scope:** Only attributes mapping to entity_main.  
-* **Syntax:** Physical Column Names.  
-* **Sanitization:** Strict literal escaping to prevent SQL injection.  
+* **Target:** pg_source `WHERE` clause (DuckDB's postgres scanner pushes it down into the scan).
+* **Scope:** Only attributes mapping to entity_main.
+* **Syntax:** Physical Column Names.
+* **Sanitization:** Strict literal escaping to prevent SQL injection.
 * *Example:* (integer_01 > 18 AND text_01 LIKE 'John%')
 
 **B. DuckDB Logical Fragment ($LOGICAL_WHERE_CLAUSE)**
 
-* **Target:** WHERE clauses in CTEs and final projection.  
-* **Scope:** All attributes (Main + EAV).  
-* **Syntax:** Logical JSON Paths / Parquet Column Names.  
+* **Target:** WHERE clauses in CTEs and final projection.
+* **Scope:** All attributes (Main + EAV).
+* **Syntax:** Logical JSON Paths / Parquet Column Names.
 * *Example:* (age > 18 AND name LIKE 'John%' AND tag = 'developer')
 
 ### **4.3 Federated Request Controls**
@@ -184,116 +184,126 @@ It is a simplified sketch of the runtime template (`internal/sqlgen/advanced_que
 
 ```SQL
 
--- 1. Configuration  
-PRAGMA memory_limit='4GB';  
+-- 1. Configuration
+PRAGMA memory_limit='4GB';
 PRAGMA threads=4;
 
--- 2. Define Query Parameters (To be interpolated by the Host Application)  
--- $SCHEMA_ID:       Integer (e.g., 1)  
--- $PG_CONN:         String (Postgres Connection String)  
--- $PG_WHERE_CLAUSE: String (Generated Physical SQL for Pushdown)  
+-- 2. Define Query Parameters (To be interpolated by the Host Application)
+-- $SCHEMA_ID:       Integer (e.g., 1)
+-- $PG_CONN:         String (Postgres Connection String)
+-- $PG_WHERE_CLAUSE: String (Generated Physical SQL for Pushdown)
 -- $S3_PATHS:        List (e.g., ['s3://bucket/base/*.parquet'])
 -- $FLUSH_GRACE_CUTOFF_MS: BIGINT (the instant this query resolved $S3_PATHS,
 --                    minus the clock-skew margin, #252; MaxInt64 disables
 --                    the widening — hot-excluded renders omit it entirely)
 
-WITH   
--- =========================================================================  
--- CTE 1: The Dirty Set  
--- Identifies records currently in the transaction buffer.  
--- =========================================================================  
-dirty_ids AS (  
-    SELECT row_id   
-    FROM postgres_scan($PG_CONN, 'public', 'change_log')  
-    WHERE schema_id = $SCHEMA_ID  
+WITH
+-- =========================================================================
+-- CTE 1: The Dirty Set
+-- Identifies records currently in the transaction buffer.
+-- =========================================================================
+dirty_ids AS (
+    SELECT row_id
+    FROM postgres_scan($PG_CONN, 'public', 'change_log')
+    WHERE schema_id = $SCHEMA_ID
         AND (flushed_at = 0 OR flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
 ),
 
--- =========================================================================  
--- CTE 2: S3 Source (Cold & Warm)  
--- Reads historical data with the dirty-set anti-join and semijoin pushdown.  
--- =========================================================================  
-s3_source AS (  
-    SELECT   
-        row_id,   
-        changed_at AS created_at,  
-        changed_at AS ver_ts,  
-        deleted_at AS deleted_ts,  
-        -- Logical Columns (Native in Parquet)  
-        name,   
-        age,   
-        tag,  
-        1 AS source_tier_priority  
-    -- union_by_name resolves the schema UNION across parquet generations  
-    -- (#189): files written before an attribute existed contribute NULL,  
-    -- and same-named columns widen to the common supertype. Corruption  
-    -- loudness is preserved by the pre-read system-column invariant  
-    -- validator (internal/federated/parquet_schema_validation.go).  
-    FROM read_parquet($S3_PATHS, union_by_name=true)  
-    WHERE   
-        -- 1. Anti-Join: Exclude if a newer version exists in PG  
-        row_id NOT IN (SELECT row_id FROM dirty_ids)  
-        -- 2. Predicate pushdown as a row_id SEMIJOIN: a row qualifies when  
-        --    ANY of its parquet versions matches; ALL of its versions then  
-        --    enter dedup so the latest wins BEFORE the real filter below.  
-        --    Filtering versions directly here drops newer non-matching  
-        --    versions pre-dedup and resurrects stale rows (#173/#178).  
-        AND row_id IN (  
-            SELECT row_id FROM read_parquet($S3_PATHS, union_by_name=true)  
-            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')  
-        )  
+-- =========================================================================
+-- CTE 2: S3 Source (Cold & Warm)
+-- Reads historical data with the dirty-set anti-join and semijoin pushdown.
+-- =========================================================================
+s3_source AS (
+    SELECT
+        row_id,
+        changed_at AS created_at,
+        changed_at AS ver_ts,
+        deleted_at AS deleted_ts,
+        -- Logical Columns (Native in Parquet)
+        name,
+        age,
+        tag,
+        1 AS source_tier_priority
+    -- union_by_name resolves the schema UNION across parquet generations
+    -- (#189): files written before an attribute existed contribute NULL,
+    -- and same-named columns widen to the common supertype. Corruption
+    -- loudness is preserved by the pre-read system-column invariant
+    -- validator (internal/federated/parquet_schema_validation.go) and, at
+    -- byte level, by the system-column guard below: a manifest stamp (#256)
+    -- can spare an object its footer probe, so a rogue overwrite could put an
+    -- object missing row_id or changed_at in this set and have union_by_name
+    -- NULL-fill it — NULL row_id drops those rows out of the anti-join, NULL
+    -- changed_at misorders the LWW merge. The CAST re-pins BIGINT so a
+    -- VARCHAR changed_at cannot widen the union and make ordering
+    -- lexicographic. deleted_at is type-pinned but NOT presence-guarded: live
+    -- delta rows encode it as NULL (#274 residual). Both scan sites render
+    -- sqlgen.BuildParquetScanSource, which also appends the #255 typed NULLs
+    -- for never-flushed columns.
+    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+    WHERE
+        -- 1. Anti-Join: Exclude if a newer version exists in PG
+        row_id NOT IN (SELECT row_id FROM dirty_ids)
+        -- 2. Predicate pushdown as a row_id SEMIJOIN: a row qualifies when
+        --    ANY of its parquet versions matches; ALL of its versions then
+        --    enter dedup so the latest wins BEFORE the real filter below.
+        --    Filtering versions directly here drops newer non-matching
+        --    versions pre-dedup and resurrects stale rows (#173/#178).
+        AND row_id IN (
+            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+        )
 ),
 
--- =========================================================================  
--- CTE 3: PostgreSQL Source (Hot)  
--- Performs Dynamic Pivoting and Predicate Pushdown.  
--- =========================================================================  
-pg_source AS (  
-    SELECT   
-        m.ltbase_row_id AS row_id,  
-        m.ltbase_created_at AS created_at,  
-        cl.changed_at AS ver_ts,   
-        cl.deleted_at AS deleted_ts,  
-          
-        -- [Type Casting] MANDATORY: Cast PG types to match Parquet Schema  
-        CAST(m.text_01 AS VARCHAR) AS name,  
-        CAST(m.integer_01 AS INTEGER) AS age,  
-          
-        -- [EAV Pivot] Aggregation for dynamic attributes  
-        -- Note: EAV filtering is done in the WHERE clause below, not pushed to EAV scan  
-        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,  
+-- =========================================================================
+-- CTE 3: PostgreSQL Source (Hot)
+-- Performs Dynamic Pivoting and Predicate Pushdown.
+-- =========================================================================
+pg_source AS (
+    SELECT
+        m.ltbase_row_id AS row_id,
+        m.ltbase_created_at AS created_at,
+        cl.changed_at AS ver_ts,
+        cl.deleted_at AS deleted_ts,
+
+        -- [Type Casting] MANDATORY: Cast PG types to match Parquet Schema
+        CAST(m.text_01 AS VARCHAR) AS name,
+        CAST(m.integer_01 AS INTEGER) AS age,
+
+        -- [EAV Pivot] Aggregation for dynamic attributes
+        -- Note: EAV filtering is done in the WHERE clause below, not pushed to EAV scan
+        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,
         3 AS source_tier_priority
 
-    FROM postgres_scan($PG_CONN, 'public', 'change_log') cl  
-      
-    -- [Optimization] PUSHDOWN: $PG_WHERE_CLAUSE is a plain predicate in the  
-    -- WHERE clause below; DuckDB's postgres scanner pushes it down to  
-    -- PostgreSQL so entity_main is filtered by PG indexes, not in DuckDB.  
-    JOIN postgres_scan($PG_CONN, 'public', 'entity_main_dev') m   
-      ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id  
-        
-    LEFT JOIN postgres_scan($PG_CONN, 'public', 'eav_data_dev') e   
-      ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id  
-      
-    WHERE cl.schema_id = $SCHEMA_ID  
+    FROM postgres_scan($PG_CONN, 'public', 'change_log') cl
+
+    -- [Optimization] PUSHDOWN: $PG_WHERE_CLAUSE is a plain predicate in the
+    -- WHERE clause below; DuckDB's postgres scanner pushes it down to
+    -- PostgreSQL so entity_main is filtered by PG indexes, not in DuckDB.
+    JOIN postgres_scan($PG_CONN, 'public', 'entity_main_dev') m
+      ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id
+
+    LEFT JOIN postgres_scan($PG_CONN, 'public', 'eav_data_dev') e
+      ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id
+
+    WHERE cl.schema_id = $SCHEMA_ID
         AND (cl.flushed_at = 0 OR cl.flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
-        AND m.ltbase_schema_id = $SCHEMA_ID  
-        AND ($PG_WHERE_CLAUSE)  
-    GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01  
+        AND m.ltbase_schema_id = $SCHEMA_ID
+        AND ($PG_WHERE_CLAUSE)
+    GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01
 ),
 
--- =========================================================================  
--- CTE 4: Unified View  
--- =========================================================================  
-unified AS (  
-    SELECT * FROM s3_source  
-    UNION ALL  
-    SELECT * FROM pg_source  
+-- =========================================================================
+-- CTE 4: Unified View
+-- =========================================================================
+unified AS (
+    SELECT * FROM s3_source
+    UNION ALL
+    SELECT * FROM pg_source
 ),
 
--- =========================================================================  
--- CTE 5: Ranked (Last-Write-Wins Deduplication)  
--- =========================================================================  
+-- =========================================================================
+-- CTE 5: Ranked (Last-Write-Wins Deduplication)
+-- =========================================================================
 ranked AS (
     SELECT *,
         ROW_NUMBER() OVER (
@@ -349,44 +359,156 @@ flush landing between them can collide the NULL alias with the newly-landed real
 column — a one-time loud classified failure that self-heals on the next query,
 since the missing set is recomputed per query.
 
+**Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
+compaction merge) `DESCRIBE` each parquet object they publish and record its
+footer columns (name → DuckDB type) on the manifest entry
+(`FileEntry.columns`) — flush and init describe the final key, while
+compaction describes the tmp object it staged, which is sound because tmp→final
+is a byte-identical `CopyObject` and the e2e suite pins the published object's
+footer against the stamp. The pre-read validator consults the stamp first: a stamp
+satisfying the system-column invariant short-circuits the footer probe and
+feeds the column union above; a stamp that is absent (an entry predating
+stamping) or fails the invariant falls back to the probe. On that invariant
+verdict a stamp may only short-circuit **success** — a rejected stamp costs one
+probe and never authors a failure, so byte truth (#187) alone decides whether a
+file is malformed, and corruption detection (unreadable footers, the #251
+verify-and-exclude pass in §7.3) is untouched because it never ran on `DESCRIBE`
+results to begin with. The column union is the one named exception to that
+guarantee: the invariant check inspects only the system columns, so a stamp
+that passes it while *under-reporting* the file's attribute columns yields a
+short union that still counts as complete, and the NULL alias then collides
+with a column the file really carries. Unlike the glob-listing race above,
+which self-heals on the next query, that failure **persists until the manifest
+entry is corrected** — but correcting it is enough: the rewritten stamp is a
+new cache key (below), so the fix lands on the next query without a restart.
+Accepted, because a stamp is a write-time `DESCRIBE` of the bytes just written:
+under-reporting takes a corrupted or tampered manifest, and the outcome is a
+loud classified failure rather than silent data loss. Stamping is best-effort
+at write time — a failed self-describe leaves the entry unstamped at the cost
+of one probe on first read, and is logged rather than swallowed.
+
+**Scan-level system-column guard.** Trusting a stamp means not looking at the
+bytes, which opens one channel the probe path did not have: if the object behind
+a stamped key does not actually carry the system columns — a rogue overwrite, a
+tampered manifest, the wrong file restored — `union_by_name` NULL-fills them
+from the sibling objects' schema and the query **succeeds while reading garbage
+or nothing**. A NULL-filled `row_id` drops those rows out of the dirty anti-join
+(silent data loss); a NULL-filled `changed_at` keeps them but feeds NULL into
+LWW version ordering (a silently wrong winner). Either way it is the exact
+inversion of #187's contract. The scan source therefore rewrites the system
+columns in place (`sqlgen.BuildParquetScanSource`, rendered at both scan sites
+in §5), classified `ErrFederatedReadFailed` and degradable like every other
+read-side schema violation. Two guard shapes, because the two channels differ:
+
+- **Presence** (`COALESCE(col, error(…))`) on `row_id` and `changed_at`, neither
+  of which is ever legitimately NULL — flush exports `cl.changed_at` from a
+  `NOT NULL` change_log column, init/base exports the equally `NOT NULL`
+  `m.ltbase_updated_at` (#210), and the benchmark shape carries `changed_at`
+  directly. The `row_id` guard stays **untyped** on purpose: `error()` carries
+  no type of its own, so `COALESCE` adopts the column's — UUID for production
+  exports, VARCHAR for the benchmark shape — and nothing coerces `row_id`
+  anywhere (#147).
+- **Type** (`CAST(… AS BIGINT)`) on `changed_at` and `deleted_at`, both BIGINT
+  in the production *and* benchmark shapes. Without it a rogue file carrying
+  either as VARCHAR widens the whole `union_by_name` result and LWW ordering
+  silently goes lexicographic (`'9' > '100'`). The CAST re-pins BIGINT: numeric
+  strings coerce value-preservingly, garbage fails loudly.
+
+A scan set where *no* object carries a guarded column fails to bind instead;
+different message, same contract.
+
+**Residual: `deleted_at` presence (#274).** `deleted_at` gets the type pin but
+**no** presence guard, because the delta export encodes every live row's
+`deleted_at` as a literal NULL (`cl.deleted_at`; only init/base wraps it in
+`COALESCE(…, 0)`). A NULL-based presence guard would therefore fail every
+healthy delta scan. The consequence is that an object missing `deleted_at`
+entirely still reaches the merge with a NULL, indistinguishable at the scan from
+a legitimate live row; that divergence is covered only by the pre-read footer
+probe and the manifest stamp. Extending the presence guard to `deleted_at` is
+unblocked once #274 normalizes the delta encoding to 0. The residual is pinned
+in the test suite, not only here:
+`sqlgen.TestParquetScanGuardTolerateNullDeletedAt` characterizes today's
+behavior and is the test that should go red when #274 lands.
+
+Note that #251 verification drains `SELECT *` without the guard, so a
+schema-wrong (as opposed to byte-corrupt) object is never confirmed corrupt and
+never excluded — correct: exclusion is for unreadable bytes, while an
+export-schema violation is an operator-visible consistency fault, not something
+to route around.
+
+**Triage: the guard names the invariant, not the object.** When the guard fires,
+the operator gets the violated invariant and the offending column, but no path.
+Three things compound to that: the guard runs inside a single `union_by_name`
+scan over the whole resolved set, so DuckDB raises one error for the set rather
+than per file; the object *exists*, so nothing in the missing-key classification
+path speaks up; and the #251 drain above is unguarded, so its verify pass reads
+the file clean and excludes nothing. Until #351 adds guarded per-file
+identification, the triage path is manual bisection: list the schema's manifest
+paths, then run the guarded scan against one path at a time until the failing
+object is isolated.
+
+**Cache invalidation.** The validator caches each path it validates, keyed by
+path **and by the stamp it was validated under** (nil for probe-validated). Path
+alone would be wrong: objects are write-once for flush and compaction, which
+mint fresh UUIDv7 keys, but **not for init** — `cdc.BuildBasePath` is
+deterministic (`{min}_{max}.parquet`), so an init rerun overwrites the object in
+place and rewrites its entry under the same key. A path-keyed cache would serve
+a warmed server the pre-rerun columns for the life of the process. The manifest
+rewrite is therefore the invalidation signal: same stamp, keep the entry; new
+stamp, re-validate. An unchanged stamp still costs zero probes, so the
+cold-start win is intact. When a probe *does* run on a stamped path — which
+happens only when the stamp failed the invariant — the two are cross-checked
+and any divergence is logged with the footer winning the union; that is a log
+and not an error because the read succeeds, so nothing in the caller's result
+would ever mention it.
+
+**Backfill contract: lazy fallback, no backfill.** There is no migration pass
+and no manifest version bump — field presence is the format signal. Legacy
+entries acquire stamps only when a writer rewrites them (compaction merging
+them into a new base, or an init rerun), and an entry that is never rewritten
+stays probe-based **indefinitely, by design**: an unstamped path costs exactly
+one footer probe per process lifetime, which is the pre-#256 steady state, so
+there is nothing to repair and no window in which correctness depends on the
+stamp existing.
+
 ## **6. Optimization Strategies**
 
 ### **6.1 Predicate Pushdown (Critical)**
 
-* **Mechanism:** `$PG_WHERE_CLAUSE` is rendered as a plain predicate in the pg_source `WHERE` clause; DuckDB's postgres scanner pushes supported predicates down into the PostgreSQL scan.  
-* **Rationale:** entity_main may contain millions of rows. Pulling all rows to DuckDB for filtering is unacceptable. Pushdown leverages PostgreSQL indexes.  
+* **Mechanism:** `$PG_WHERE_CLAUSE` is rendered as a plain predicate in the pg_source `WHERE` clause; DuckDB's postgres scanner pushes supported predicates down into the PostgreSQL scan.
+* **Rationale:** entity_main may contain millions of rows. Pulling all rows to DuckDB for filtering is unacceptable. Pushdown leverages PostgreSQL indexes.
 * **Limitation:** Only applicable to entity_main columns. EAV columns and complex functions must be filtered in DuckDB memory after the join.
 
 ### **6.2 Streaming Result Processing**
 
-* **Requirement:** 4.2 (Memory Management).  
-* **Implementation:** The Go/Java application **MUST NOT** load the full DuckDB result set into a slice/array.  
+* **Requirement:** 4.2 (Memory Management).
+* **Implementation:** The Go/Java application **MUST NOT** load the full DuckDB result set into a slice/array.
 * **Pattern:** Use database/sql (Go) or JDBC ResultSet iterator patterns to stream row-by-row JSON serialization to the HTTP response writer.
 
 ### **6.3 Smart Type Casting**
 
-* PostgreSQL numeric $\rightarrow$ DuckDB DOUBLE (Precision loss acceptable for search, not for finance).  
-* PostgreSQL smallint $\rightarrow$ DuckDB INTEGER or BIGINT (Safe).  
+* PostgreSQL numeric $\rightarrow$ DuckDB DOUBLE (Precision loss acceptable for search, not for finance).
+* PostgreSQL smallint $\rightarrow$ DuckDB INTEGER or BIGINT (Safe).
 * PostgreSQL text (containing UUID) $\rightarrow$ DuckDB UUID (Explicit cast required).
 
 ## **7. Resilience and Error Handling**
 
 ### **7.1 Circuit Breaker**
 
-* **Trigger:** 5 consecutive failures (Timeout or OOM) within 30 seconds.  
+* **Trigger:** 5 consecutive failures (Timeout or OOM) within 30 seconds.
 * **Action:** Immediately fail requests with storage=['olap']. Fallback to storage=['oltp'] (Postgres only) if allowed by the request.
 
 ### **7.2 Degraded Modes**
 
-1. **S3 Unavailable:**  
-   * Log Error.  
-   * Rewrite query to select *only* from pg_source.  
-   * Return HTTP 200 with metadata: `{"partial_result": true, "warning": "Historical data unavailable"}`.  
-2. **PostgreSQL Unavailable:**  
-   * Cannot query dirty_ids or hot-tier rows.  
-   * Rewrite query to select *only* from s3_source.  
-   * **Risk:** "Ghost Reads" (Deleted data reappearing) and missing unflushed hot rows.  
-   * Action: Only permissible if `federated.consistency_mode = "eventual"` is set on the request; otherwise return HTTP 503.  
+1. **S3 Unavailable:**
+   * Log Error.
+   * Rewrite query to select *only* from pg_source.
+   * Return HTTP 200 with metadata: `{"partial_result": true, "warning": "Historical data unavailable"}`.
+2. **PostgreSQL Unavailable:**
+   * Cannot query dirty_ids or hot-tier rows.
+   * Rewrite query to select *only* from s3_source.
+   * **Risk:** "Ghost Reads" (Deleted data reappearing) and missing unflushed hot rows.
+   * Action: Only permissible if `federated.consistency_mode = "eventual"` is set on the request; otherwise return HTTP 503.
    * S3-only responses carry metadata: `{"partial_result": true, "warning": "Hot-tier data unavailable, results may be stale"}`, plus an `X-Forma-Consistency: eventual` HTTP warning header.
 
 ### **7.3 Partial-Read Resilience (#251)**
@@ -428,14 +550,14 @@ One unreadable parquet object no longer fails a whole manifest-authored scan. Th
 
 The following metrics MUST be emitted to opentelemetry:
 
-* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.  
-* `fed_query_row_count`: Count of rows returned by S3 vs. PG (helps tune compaction frequency).  
+* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.
+* `fed_query_row_count`: Count of rows returned by S3 vs. PG (helps tune compaction frequency).
 * `fed_query_pushdown_efficiency`: Ratio of PG_Scan_Rows / Final_Result_Rows. High ratio indicates poor pushdown logic.
 
 The execution plan and response metadata MUST include:
 
-* `consistency_mode`: The requested freshness contract (`strict` or `eventual`).  
-* `degraded_mode`: Boolean indicating whether results are partial due to a degraded data source.  
-* `circuit_breaker_state`: Current breaker state (`closed`, `open`, `half_open`) when relevant.  
-* `source_availability`: Per-source status snapshot (PG available, S3 available).  
+* `consistency_mode`: The requested freshness contract (`strict` or `eventual`).
+* `degraded_mode`: Boolean indicating whether results are partial due to a degraded data source.
+* `circuit_breaker_state`: Current breaker state (`closed`, `open`, `half_open`) when relevant.
+* `source_availability`: Per-source status snapshot (PG available, S3 available).
 * `warning`: Human-readable warning when results are partial or consistency is reduced.

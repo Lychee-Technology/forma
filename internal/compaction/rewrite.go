@@ -82,6 +82,7 @@ func (c *Compactor) runRewrite(
 		CreatedMin: stats.CreatedMin,
 		CreatedMax: stats.CreatedMax,
 		SizeBytes:  sizeBytes,
+		Columns:    stats.Columns,
 	})
 
 	if _, err := c.saveManifestChecked(ctx, schemaID, m, etag); err != nil {

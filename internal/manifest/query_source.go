@@ -72,28 +72,45 @@ func (s *QuerySource) load(ctx context.Context, schemaID int16) (*Manifest, erro
 // manifest format accepts both bucket-relative keys (what the CDC writers
 // produce) and absolute s3:// URIs — absolute entries pass through
 // unchanged instead of being double-prefixed (#249 review).
-func (s *QuerySource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
+//
+// It also returns each stamped entry's write-time footer columns (#256),
+// keyed by the SAME string returned for that entry in paths — relative keys
+// carry the bucket prefix, absolute entries the passed-through URI — so the
+// pre-read validator can look a stamp up by scanned path without re-deriving
+// URIs. Entries written before stamping existed (no Columns) and the fallback
+// glob, which names no entry at all, contribute no key; those paths probe as
+// before. The returned maps alias the loaded manifest and must not be
+// mutated by callers.
+func (s *QuerySource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
 	m, err := s.load(ctx, schemaID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve manifest paths: %w", err)
+		return nil, nil, fmt.Errorf("resolve manifest paths: %w", err)
 	}
 	if len(m.Files) == 0 {
 		if s.Fallback != nil {
 			if glob := s.Fallback(schemaID); glob != "" {
-				return []string{glob}, nil
+				return []string{glob}, nil, nil
 			}
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	uris := make([]string, 0, len(m.Files))
+	var stamps map[string]map[string]string
 	for _, f := range m.Files {
-		if strings.HasPrefix(f.Path, "s3://") {
-			uris = append(uris, f.Path)
+		uri := f.Path
+		if !strings.HasPrefix(f.Path, "s3://") {
+			uri = fmt.Sprintf("s3://%s/%s", s.Bucket, f.Path)
+		}
+		uris = append(uris, uri)
+		if len(f.Columns) == 0 {
 			continue
 		}
-		uris = append(uris, fmt.Sprintf("s3://%s/%s", s.Bucket, f.Path))
+		if stamps == nil {
+			stamps = make(map[string]map[string]string, len(m.Files))
+		}
+		stamps[uri] = f.Columns
 	}
-	return uris, nil
+	return uris, stamps, nil
 }
 
 // MissingIn probes the given scanned URIs and returns the bucket-relative

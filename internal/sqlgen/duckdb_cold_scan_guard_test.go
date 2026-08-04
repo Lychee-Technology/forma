@@ -1,0 +1,362 @@
+package sqlgen
+
+import (
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/stretchr/testify/require"
+)
+
+// The tests below are the real-DuckDB proof of the #256 scan-level
+// system-column guard. A manifest stamp that satisfies the parquetcheck
+// invariant spares its path the footer probe, so a rogue overwrite (or a
+// tampered manifest) can put an object whose real bytes lack a system column
+// into a scan the validator waved through. union_by_name then NULL-fills it:
+// rows with a NULL row_id fall out of the dirty anti-join, rows with a NULL
+// changed_at flow straight into LWW version ordering, and the query SUCCEEDS
+// either way — the silent data loss the pre-stamp probe path failed loudly on.
+//
+// They run against a real engine because every load-bearing property here is
+// the engine's, not the string's: that error() is not folded away at bind time
+// on a healthy scan, that it type-unifies with row_id instead of coercing it,
+// that the CAST re-pins a union-widened changed_at, and that it all survives
+// into the plan at both template scan sites.
+
+// guardFixtureSet is the parquet corpus the guard has to handle. Every file
+// carries the production system-column trio unless the field name says
+// otherwise.
+type guardFixtureSet struct {
+	// healthy is production-shaped: row_id UUID, changed_at BIGINT,
+	// deleted_at BIGINT NULL (the live-row delta encoding, #274).
+	healthy string
+	// noRowID / noChangedAt / noDeletedAt each drop exactly one system column,
+	// the rogue-overwrite shape a stale-but-valid stamp lets past the probe.
+	noRowID, noChangedAt, noDeletedAt string
+	// varcharRowID is the benchmark shape — schemas 100-102 carry the legacy
+	// CSV-sniffed harness shape and render through this same scan source.
+	varcharRowID string
+	// varcharChangedAt / garbageChangedAt exercise the type channel: a rogue
+	// file whose changed_at is VARCHAR widens the union and would make LWW
+	// ordering lexicographic.
+	varcharChangedAt, garbageChangedAt string
+}
+
+func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
+	t.Helper()
+	dir := t.TempDir()
+	const rowIDA = "CAST('018f05c0-0000-7000-8000-00000000000a' AS UUID) AS row_id"
+	const rowIDB = "CAST('018f05c0-0000-7000-8000-00000000000b' AS UUID) AS row_id"
+	const liveDeleted = "CAST(NULL AS BIGINT) AS deleted_at"
+
+	set := guardFixtureSet{}
+	for _, w := range []struct {
+		dst       *string
+		name, sel string
+	}{
+		// changed_at=100 against varcharChangedAt's '9' is deliberate: the two
+		// order one way numerically and the other way lexicographically, which
+		// is what makes the union-widening failure visible.
+		{&set.healthy, "healthy.parquet", rowIDA + ", CAST(100 AS BIGINT) AS changed_at, " + liveDeleted + ", 'alive' AS title"},
+		{&set.noRowID, "no_row_id.parquet", "CAST(2 AS BIGINT) AS changed_at, " + liveDeleted + ", 'rogue' AS title"},
+		{&set.noChangedAt, "no_changed_at.parquet", rowIDB + ", " + liveDeleted + ", 'rogue' AS title"},
+		{&set.noDeletedAt, "no_deleted_at.parquet", rowIDB + ", CAST(4 AS BIGINT) AS changed_at, 'rogue' AS title"},
+		{&set.varcharRowID, "benchmark.parquet", "CAST('rid-1' AS VARCHAR) AS row_id, " +
+			"CAST(3 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, 'bench' AS title"},
+		{&set.varcharChangedAt, "varchar_changed_at.parquet", rowIDB +
+			", CAST('9' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'numeric-string' AS title"},
+		{&set.garbageChangedAt, "garbage_changed_at.parquet", rowIDB +
+			", CAST('not-a-number' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'garbage' AS title"},
+	} {
+		*w.dst = filepath.Join(dir, w.name)
+		_, err := db.Exec(fmt.Sprintf("COPY (SELECT %s) TO '%s' (FORMAT PARQUET)", w.sel, *w.dst))
+		require.NoError(t, err, "write parquet fixture %s", *w.dst)
+	}
+	return set
+}
+
+func guardDuckDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	return db
+}
+
+// formatPathList renders paths as the quoted DuckDB list literal
+// BuildParquetScanSource expects.
+func formatPathList(paths ...string) string {
+	quoted := make([]string, 0, len(paths))
+	for _, p := range paths {
+		quoted = append(quoted, "'"+p+"'")
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// scanRowIDs runs a query and returns the row_id values it produced, or the
+// error the engine raised.
+func scanRowIDs(db *sql.DB, query string) ([]any, error) {
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []any
+	for rows.Next() {
+		var v any
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// TestParquetScanGuardFailsLoudlyOnRogueObject is the silent-loss closer. The
+// scan set mixes a healthy object with one whose bytes carry no row_id — the
+// rogue-overwrite shape a valid-looking manifest stamp lets past the pre-read
+// validator. The query mirrors the template's s3_source site (the dirty
+// anti-join reads row_id), and it must FAIL rather than quietly return the
+// rogue rows with a NULL row_id that the anti-join then discards.
+func TestParquetScanGuardFailsLoudlyOnRogueObject(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil)
+	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan+
+		" WHERE CAST(row_id AS UUID) NOT IN (SELECT CAST('018f05c0-0000-7000-8000-0000000000ff' AS UUID))")
+
+	require.Error(t, err, "a scanned object without row_id must fail the query, not vanish from the anti-join; got rows %v", got)
+	require.Contains(t, err.Error(), "NULL row_id",
+		"the failure must name the violated invariant so an operator can act on it")
+}
+
+// TestParquetScanGuardFiresAtSemijoinSite pins the SECOND template scan site
+// (the pushdown semijoin's inner SELECT row_id). Both sites render the same
+// scan source, so both must carry the guard — a semijoin that silently loses
+// the rogue rows would under-qualify the outer scan.
+func TestParquetScanGuardFiresAtSemijoinSite(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil)
+	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan+" WHERE (1=1)")
+
+	require.Error(t, err, "semijoin site must fail on the rogue object too; got rows %v", got)
+	require.Contains(t, err.Error(), "NULL row_id")
+}
+
+// TestParquetScanGuardPassesHealthyScan is the constant-folding pin. DuckDB
+// evaluates some scalar functions at bind time; if error() were folded, EVERY
+// guarded scan would fail — the guard has to be inert on healthy bytes.
+func TestParquetScanGuardPassesHealthyScan(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.healthy), nil)
+	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan)
+
+	require.NoError(t, err, "the guard must not fire on an object that satisfies the invariant")
+	require.Len(t, got, 1)
+}
+
+// TestParquetScanGuardPreservesRowIDType is the #147 no-coercion pin. row_id is
+// UUID in production exports and VARCHAR in the benchmark shape, and the scan
+// source is schema-blind — so the guard must adopt the column's own type at
+// both, never impose one. A CAST(error(...) AS UUID) form passes the first case
+// and fails to bind the second; this test is what separates them.
+func TestParquetScanGuardPreservesRowIDType(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	for _, tc := range []struct {
+		name, path, want string
+	}{
+		{"production_uuid", fx.healthy, "UUID"},
+		{"benchmark_varchar", fx.varcharRowID, "VARCHAR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scan := BuildParquetScanSource(formatPathList(tc.path), nil)
+
+			var guarded string
+			require.NoError(t, db.QueryRow("SELECT typeof(row_id) FROM "+scan).Scan(&guarded),
+				"guarded scan of %s must bind", tc.path)
+
+			var bare string
+			require.NoError(t, db.QueryRow(fmt.Sprintf(
+				"SELECT typeof(row_id) FROM read_parquet('%s', union_by_name=true)", tc.path)).Scan(&bare))
+
+			require.Equal(t, bare, guarded,
+				"the guard must leave row_id's physical type exactly as the unguarded scan reports it")
+			require.Equal(t, tc.want, guarded)
+		})
+	}
+}
+
+// TestParquetScanGuardComposesWithNullAugmentation pins that the guard and the
+// #255 typed-NULL augmentation share one SELECT without either disabling the
+// other: REPLACE rewrites row_id in place while the appended items add the
+// cold-absent columns.
+func TestParquetScanGuardComposesWithNullAugmentation(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.healthy), []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})
+	var rowID any
+	var score sql.NullInt64
+	var scoreType string
+	require.NoError(t, db.QueryRow("SELECT row_id, score, typeof(score) FROM "+scan).Scan(&rowID, &score, &scoreType))
+	require.False(t, score.Valid, "the augmented column stays NULL")
+	require.Equal(t, "INTEGER", scoreType)
+
+	// And the guard still fires when the augmented scan hits a rogue object.
+	rogueScan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})
+	_, err := scanRowIDs(db, "SELECT row_id FROM "+rogueScan)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "NULL row_id")
+}
+
+// TestParquetScanGuardFailsWhenRowIDAbsentEverywhere covers the degenerate set
+// where NO scanned object carries row_id: REPLACE cannot bind the column, so
+// the engine refuses the query. Different message, same contract — loud, never
+// silent.
+func TestParquetScanGuardFailsWhenRowIDAbsentEverywhere(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.noRowID), nil)
+	got, err := scanRowIDs(db, "SELECT changed_at FROM "+scan)
+
+	require.Error(t, err, "a scan set with no row_id column anywhere must not bind; got rows %v", got)
+	require.Contains(t, err.Error(), "row_id")
+}
+
+// TestParquetScanGuardFailsLoudlyOnMissingChangedAt is the second silent-loss
+// closer. row_id is not the only column a stale-but-valid stamp can let a
+// rogue object omit: changed_at is the LWW version, so a NULL-filled one does
+// not drop the rows — it feeds NULL into version ordering and lets the merge
+// pick a winner on garbage. The scan set keeps a healthy sibling so changed_at
+// still binds and the guard, not the binder, is what fires.
+func TestParquetScanGuardFailsLoudlyOnMissingChangedAt(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noChangedAt), nil)
+	got, err := scanRowIDs(db, "SELECT changed_at FROM "+scan)
+
+	require.Error(t, err, "a scanned object without changed_at must fail the query, not enter LWW ordering as NULL; got rows %v", got)
+	require.Contains(t, err.Error(), "NULL changed_at",
+		"the failure must name the violated column so an operator can act on it")
+}
+
+// TestUnguardedScanAdmitsNullChangedAtSilently is the RED half of the test
+// above, straight from the engine: without the guard the rogue object's rows
+// arrive with a NULL changed_at and no error at all.
+func TestUnguardedScanAdmitsNullChangedAtSilently(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	got, err := scanRowIDs(db, fmt.Sprintf(
+		"SELECT changed_at FROM read_parquet(%s, union_by_name=true)",
+		formatPathList(fx.healthy, fx.noChangedAt)))
+
+	require.NoError(t, err, "the unguarded scan is exactly the silent path")
+	require.Len(t, got, 2)
+	require.Contains(t, got, nil, "the rogue object's row reaches LWW ordering with a NULL version")
+}
+
+// TestParquetScanGuardPinsSystemColumnTypes is the type-channel pin. A rogue
+// file carrying changed_at as VARCHAR widens the whole union_by_name result to
+// VARCHAR, at which point LWW version ordering is lexicographic — '9' sorts
+// above '100' — and the merge silently picks the wrong winner. The CAST in the
+// guard re-pins BIGINT: numeric strings coerce value-preservingly, ordering
+// stays numeric. The unguarded leg is asserted alongside so the test fails if
+// DuckDB ever stops widening (which would make the CAST look load-bearing when
+// it no longer is).
+func TestParquetScanGuardPinsSystemColumnTypes(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+	paths := formatPathList(fx.healthy, fx.varcharChangedAt)
+
+	var bareType, bareMax string
+	require.NoError(t, db.QueryRow(fmt.Sprintf(
+		"SELECT typeof(changed_at), max(changed_at) OVER () FROM read_parquet(%s, union_by_name=true) LIMIT 1",
+		paths)).Scan(&bareType, &bareMax))
+	require.Equal(t, "VARCHAR", bareType, "union_by_name widens to the rogue file's type")
+	require.Equal(t, "9", bareMax,
+		"and the LWW winner silently flips: lexicographically '9' beats '100'")
+
+	var guardedType string
+	var guardedMax, guardedMin int64
+	require.NoError(t, db.QueryRow("SELECT typeof(changed_at), max(changed_at) OVER (), min(changed_at) OVER () FROM "+
+		BuildParquetScanSource(paths, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
+		"a numeric-string changed_at must coerce, not fail")
+	require.Equal(t, "BIGINT", guardedType, "the guard re-pins the LWW version type")
+	require.Equal(t, int64(100), guardedMax, "and the numeric winner is restored")
+	require.Equal(t, int64(9), guardedMin, "the VARCHAR '9' coerced value-preservingly to 9")
+
+	// deleted_at is pinned the same way, on the healthy file where it is the
+	// live-row NULL — the CAST must not turn that into a failure.
+	var deletedType string
+	require.NoError(t, db.QueryRow("SELECT typeof(deleted_at) FROM "+
+		BuildParquetScanSource(formatPathList(fx.healthy), nil)).Scan(&deletedType))
+	require.Equal(t, "BIGINT", deletedType)
+
+	// Garbage in the version column is loud, not coerced to some default.
+	_, err := scanRowIDs(db, "SELECT changed_at FROM "+
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.garbageChangedAt), nil))
+	require.Error(t, err, "a non-numeric changed_at must fail loudly")
+	require.Contains(t, err.Error(), "not-a-number")
+}
+
+// TestParquetScanGuardTolerateNullDeletedAt is the deleted_at RESIDUAL
+// characterization (#274). deleted_at cannot get a presence guard while the
+// delta export encodes live rows as a literal NULL (cdc's `cl.deleted_at`;
+// only init/base COALESCEs to 0), so this pins BOTH halves of today's
+// behavior:
+//
+//   - a healthy live delta row (deleted_at NULL) must pass — a presence guard
+//     here would fail every ordinary delta scan, which is why there isn't one;
+//   - a rogue object MISSING deleted_at entirely still flows through with a
+//     NULL, undetected by the scan. That gap is covered only by the pre-read
+//     footer probe and the manifest stamp, and closing it is unblocked once
+//     #274 normalizes the delta encoding to 0. When that lands, this test is
+//     the one that should go red.
+func TestParquetScanGuardTolerateNullDeletedAt(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	var deleted sql.NullInt64
+	require.NoError(t, db.QueryRow("SELECT deleted_at FROM "+
+		BuildParquetScanSource(formatPathList(fx.healthy), nil)).Scan(&deleted),
+		"a live delta row's NULL deleted_at is legitimate and must not fire the guard (#274)")
+	require.False(t, deleted.Valid)
+
+	got, err := scanRowIDs(db, "SELECT deleted_at FROM "+
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.noDeletedAt), nil))
+	require.NoError(t, err,
+		"RESIDUAL (#274): an object missing deleted_at is NOT caught by the scan guard today")
+	require.Len(t, got, 2)
+	require.Equal(t, []any{nil, nil}, got,
+		"both the legitimate live-row NULL and the rogue absence look identical here — "+
+			"exactly why deleted_at presence cannot be value-guarded until #274")
+}
+
+// TestUnguardedScanLosesRogueRowsSilently characterizes what the guard exists
+// to prevent, straight from the engine: the bare union_by_name scan the
+// template used before #256 accepts the rogue object and hands its rows a NULL
+// row_id. Downstream that is indistinguishable from "not in this tier".
+func TestUnguardedScanLosesRogueRowsSilently(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	got, err := scanRowIDs(db, fmt.Sprintf(
+		"SELECT row_id FROM read_parquet(%s, union_by_name=true)", formatPathList(fx.healthy, fx.noRowID)))
+
+	require.NoError(t, err, "the unguarded scan is exactly the silent path")
+	require.Len(t, got, 2)
+	require.Contains(t, got, nil, "the rogue object's row arrives with a NULL row_id and drops out of the anti-join")
+}

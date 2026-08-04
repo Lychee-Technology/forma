@@ -116,12 +116,15 @@ func TestParquetSchemaValidator_ValidPathsPassAndCache(t *testing.T) {
 	v := newParquetSchemaValidator()
 	paths := []string{"s3://b/1/a.parquet", "s3://b/1/b.parquet"}
 
-	_, _, err := v.Validate(context.Background(), duck, paths)
+	_, _, err := v.Validate(context.Background(), duck, paths, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 
-	// Parquet objects are write-once: validated paths are never re-probed.
-	_, _, err = v.Validate(context.Background(), duck, paths)
+	// Nothing changed — same paths, still no stamps — so the cached entries
+	// answer and no path is re-probed. (An entry is only re-validated when the
+	// manifest stamp keying it moves; see
+	// parquet_schema_validation_stamps_test.go.)
+	_, _, err = v.Validate(context.Background(), duck, paths, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
@@ -132,7 +135,7 @@ func TestParquetSchemaValidator_MissingSystemColumnFailsClassified(t *testing.T)
 	}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
@@ -146,7 +149,7 @@ func TestParquetSchemaValidator_WrongSystemColumnTypeFailsClassified(t *testing.
 	}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/poisoned.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), `"row_id"`)
@@ -161,12 +164,12 @@ func TestParquetSchemaValidator_UnreadableFooterIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"corrupt.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 1)
 
 	// Inconclusive results are not cached: the next query re-probes.
-	_, _, err = v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"})
+	_, _, err = v.Validate(context.Background(), duck, []string{"s3://b/1/corrupt.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 2)
 }
@@ -185,7 +188,7 @@ func TestParquetSchemaValidator_GlobExpandsAndValidatesMatches(t *testing.T) {
 	}
 	v := newParquetSchemaValidator()
 
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.Contains(t, err.Error(), "wrong.parquet")
@@ -195,7 +198,7 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"1/*.parquet": true}}
 	v := newParquetSchemaValidator()
 
-	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"})
+	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
 	require.NoError(t, err)
 	require.Len(t, duck.probes, 1, "the glob listing attempt is the only probe")
 	require.False(t, complete,
@@ -207,9 +210,9 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
 	duck := &scriptedDescribeExecutor{}
 	var nilValidator *parquetSchemaValidator
-	_, _, err := nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"})
+	_, _, err := nilValidator.Validate(context.Background(), duck, []string{"s3://b/1/a.parquet"}, nil)
 	require.NoError(t, err)
-	_, _, err = newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"})
+	_, _, err = newParquetSchemaValidator().Validate(context.Background(), nil, []string{"s3://b/1/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.Empty(t, duck.probes)
 }
@@ -299,7 +302,7 @@ func TestValidateReturnsCompleteColumnUnion(t *testing.T) {
 	}}
 	v := newParquetSchemaValidator()
 	union, complete, err := v.Validate(context.Background(), exec,
-		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"})
+		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Contains(t, union, "name")
@@ -314,7 +317,7 @@ func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
 	}
 	v := newParquetSchemaValidator()
 	union, complete, err := v.Validate(context.Background(), exec,
-		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"})
+		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"}, nil)
 	require.NoError(t, err, "unreadable footer stays inconclusive, not an error")
 	require.False(t, complete)
 	require.Contains(t, union, "row_id", "probed files still contribute")
@@ -326,11 +329,11 @@ func TestValidateCachedPathContributesColumnsWithoutReprobe(t *testing.T) {
 		"a.parquet": append(buildValidSystemCols(), [2]string{"score", "INTEGER"}),
 	}}
 	v := newParquetSchemaValidator()
-	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	_, _, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"}, nil)
 	require.NoError(t, err)
 	probesAfterFirst := len(exec.probes)
 
-	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"})
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Contains(t, union, "score")

@@ -144,8 +144,8 @@ func (p *pausingParquetSource) Release() {
 	p.releaseOnce.Do(func() { close(p.release) })
 }
 
-func (p *pausingParquetSource) Paths(ctx context.Context, schemaID int16) ([]string, error) {
-	paths, err := p.inner.Paths(ctx, schemaID)
+func (p *pausingParquetSource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
+	paths, stamps, err := p.inner.Paths(ctx, schemaID)
 	first := false
 	p.reachOnce.Do(func() { first = true })
 	if first {
@@ -155,7 +155,7 @@ func (p *pausingParquetSource) Paths(ctx context.Context, schemaID int16) ([]str
 		case <-ctx.Done():
 		}
 	}
-	return paths, err
+	return paths, stamps, err
 }
 
 func (p *pausingParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {

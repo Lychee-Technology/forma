@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"text/template"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -81,45 +80,6 @@ type DBFederatedQueryEngine struct {
 	// (#251) so resolveParquetPaths can exclude them. TTL-bounded — see
 	// corruptParquetCache. Only source-authored path sets consult it.
 	corruptPaths *corruptParquetCache
-}
-
-// EngineOption customizes optional engine collaborators.
-type EngineOption func(*DBFederatedQueryEngine)
-
-// WithPlanCache injects a shared compiled-plan cache (#142).
-func WithPlanCache(c *queryplan.Cache) EngineOption {
-	return func(e *DBFederatedQueryEngine) { e.planCache = c }
-}
-
-// defaultCorruptPathRetention bounds how long a confirmed-corrupt parquet
-// object stays excluded before being re-verified (#251).
-const defaultCorruptPathRetention = 5 * time.Minute
-
-// WithCorruptPathRetention overrides how long a verification-confirmed
-// corrupt parquet object stays excluded from path resolution (#251). The
-// entry always expires — a terminal verdict must never be memoized forever
-// (#326): repair, compaction, or manifest reconcile self-heal only through
-// re-verification. A non-positive d effectively disables exclusion — entries
-// expire the moment they are added — so misconfigured callers fail open to
-// today's all-or-nothing scan; production callers should keep the default.
-func WithCorruptPathRetention(d time.Duration) EngineOption {
-	return func(e *DBFederatedQueryEngine) { e.corruptPaths = newCorruptParquetCache(d) }
-}
-
-// WithFlushVisibilityGrace overrides the #252 clock-skew margin subtracted
-// from the query's path-resolution timestamp when computing the dirty-barrier
-// cutoff. d == 0 is the exact anchor (the default); d > 0 hardens against
-// cross-host clock skew (flushed_at is stamped on the CDC host, the cutoff on
-// the query host) at the cost of hot-serving rows flushed up to d before the
-// query; d < 0 disables the widening entirely (the pre-#252 barrier).
-func WithFlushVisibilityGrace(d time.Duration) EngineOption {
-	return func(e *DBFederatedQueryEngine) {
-		if d < 0 {
-			e.flushVisibilityGraceMs = -1
-			return
-		}
-		e.flushVisibilityGraceMs = d.Milliseconds()
-	}
 }
 
 // flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the

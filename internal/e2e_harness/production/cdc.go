@@ -211,7 +211,7 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 			DirtyRatioPct:       ov.DirtyRatioPct,
 		},
 		Provider:   provider,
-		Merger:     &compaction.DuckMerger{DB: exporter.DB},
+		Merger:     &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
 		S3:         s3Client,
 		Bucket:     e.Cluster.Bucket,
 		DataPrefix: e.S3Prefix,

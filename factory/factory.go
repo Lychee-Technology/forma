@@ -110,15 +110,8 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, err
 	}
 
-	requiredTables := []string{
-		normalizeTableName(effectiveConfig.Database.TableNames.SchemaRegistry),
-		normalizeTableName(effectiveConfig.Database.TableNames.EAVData),
-		normalizeTableName(effectiveConfig.Database.TableNames.EntityMain),
-	}
-	for _, required := range requiredTables {
-		if required == "" || !slices.Contains(tables, required) {
-			return nil, fmt.Errorf("required tables are missing in the database")
-		}
+	if err := requireCoreTables(effectiveConfig, tables); err != nil {
+		return nil, err
 	}
 
 	// Load metadata from database at startup
@@ -164,26 +157,8 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
 	}
 
-	// One plan cache shared by the repository and the federated engine (#142):
-	// its lifetime is the manager's, so compiled plans survive across requests.
-	planCache := queryplan.NewCache(4096)
-	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
-	engineOpts := []federated.EngineOption{federated.WithPlanCache(planCache)}
-	// Append only a real source, so the manifest-off path stays byte-identical
-	// to the pre-#250 engine construction.
-	if parquetSource != nil {
-		engineOpts = append(engineOpts, federated.WithParquetSource(parquetSource))
-	}
-	federatedEngine := federated.NewDBFederatedQueryEngine(
-		repository,
-		federated.NewPostgresDirtyIDFetcher(pool),
-		federated.NewDuckDBClientQueryExecutor(duckClient),
-		newDuckDBCircuitBreaker(effectiveConfig.DuckDB),
-		effectiveConfig.DuckDB,
-		metadataCache,
-		federated.DuckDBPostgresConnStringFromPool(pool),
-		engineOpts...,
-	)
+	repository, federatedEngine := newRepositoryAndEngine(
+		pool, metadataCache, effectiveConfig, duckClient, parquetSource)
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
@@ -195,6 +170,55 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Create and return entity manager
 	return internal.NewEntityManager(
 		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...), nil
+}
+
+// requireCoreTables fails closed when any of the three tables the manager
+// cannot operate without is absent from the resolved schema.
+func requireCoreTables(cfg *forma.Config, tables []string) error {
+	for _, required := range []string{
+		normalizeTableName(cfg.Database.TableNames.SchemaRegistry),
+		normalizeTableName(cfg.Database.TableNames.EAVData),
+		normalizeTableName(cfg.Database.TableNames.EntityMain),
+	} {
+		if required == "" || !slices.Contains(tables, required) {
+			return fmt.Errorf("required tables are missing in the database")
+		}
+	}
+	return nil
+}
+
+// newRepositoryAndEngine builds the OLTP repository and the federated engine
+// as a pair, because they share one plan cache (#142): its lifetime is the
+// manager's, so compiled plans survive across requests.
+func newRepositoryAndEngine(
+	pool *pgxpool.Pool, metadataCache *schemameta.MetadataCache, cfg *forma.Config,
+	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource,
+) (*internal.DBPersistentRecordRepository, *federated.DBFederatedQueryEngine) {
+	planCache := queryplan.NewCache(4096)
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
+	// zap.L() is the same global the rest of this package logs through. It
+	// carries the federated validator's #256 stamp/footer cross-check, whose
+	// only surface is a log line: the read it observes succeeds, so no caller
+	// error and no execution plan would ever mention it.
+	engineOpts := []federated.EngineOption{
+		federated.WithPlanCache(planCache),
+		federated.WithLogger(zap.L()),
+	}
+	// Append only a real source, so the manifest-off path stays byte-identical
+	// to the pre-#250 engine construction.
+	if parquetSource != nil {
+		engineOpts = append(engineOpts, federated.WithParquetSource(parquetSource))
+	}
+	return repository, federated.NewDBFederatedQueryEngine(
+		repository,
+		federated.NewPostgresDirtyIDFetcher(pool),
+		federated.NewDuckDBClientQueryExecutor(duckClient),
+		newDuckDBCircuitBreaker(cfg.DuckDB),
+		cfg.DuckDB,
+		metadataCache,
+		federated.DuckDBPostgresConnStringFromPool(pool),
+		engineOpts...,
+	)
 }
 
 // newFederatedReadSurface opens the DuckDB client and the manifest parquet source

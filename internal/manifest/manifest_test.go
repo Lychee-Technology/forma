@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -268,5 +269,47 @@ func TestReplaceTierFiles_CreatesFreshManifest(t *testing.T) {
 	}
 	if len(m.Files) != 1 || m.Files[0].Path != "p/1/a_b.parquet" || m.Version != 1 {
 		t.Fatalf("fresh manifest = %+v (version %d), want single a_b.parquet at version 1", m.Files, m.Version)
+	}
+}
+
+func TestFileEntryColumnsRoundTrip(t *testing.T) {
+	entry := FileEntry{
+		Tier: "delta",
+		Path: "delta/7/a.parquet",
+		Columns: map[string]string{
+			"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT",
+		},
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back FileEntry
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Columns["row_id"] != "UUID" || len(back.Columns) != 3 {
+		t.Fatalf("columns did not round-trip: %#v", back.Columns)
+	}
+}
+
+// Legacy manifests predate the stamp; their entries must decode with a nil
+// Columns map (read as "no stamp"), and a stampless entry must not emit the
+// key at all — field presence is the format version signal.
+func TestFileEntryColumnsLegacyCompat(t *testing.T) {
+	legacy := []byte(`{"tier":"base","path":"base/7/b.parquet","row_count":5}`)
+	var e FileEntry
+	if err := json.Unmarshal(legacy, &e); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if e.Columns != nil {
+		t.Fatalf("legacy entry must have nil Columns, got %#v", e.Columns)
+	}
+	out, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "columns") {
+		t.Fatalf("stampless entry must omit the columns key: %s", out)
 	}
 }
