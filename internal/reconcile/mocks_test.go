@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/compaction"
@@ -133,8 +134,15 @@ type fakeStats struct {
 	// uncovered maps orphan key -> uncovered rows. Keys not in the map
 	// default to one synthetic live uncovered row, so append-path tests
 	// behave like a genuine #197 orphan.
-	uncovered      map[string][]compaction.UncoveredRow
+	uncovered map[string][]compaction.UncoveredRow
+	// uncoveredVs answers MASKED probes (len(listedKeys) > 0) — the #292
+	// eviction-safety and resurrection guards — separately from the
+	// bare-enumeration probe (listedKeys nil) that lists a file's distinct
+	// row ids. A key absent here falls back to uncovered, so tests that
+	// never set it keep their existing single-answer behavior.
+	uncoveredVs    map[string][]compaction.UncoveredRow
 	uncoveredCalls [][]string // listedKeys per UncoveredRows call
+	uncoveredKeys  []string   // probed key per UncoveredRows call, index-aligned with uncoveredCalls
 	uncoveredErr   map[string]error
 	// columns maps key -> #256 column stamp returned by FileColumns.
 	columns    map[string]map[string]string
@@ -151,13 +159,35 @@ func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeSt
 
 func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error) {
 	f.uncoveredCalls = append(f.uncoveredCalls, listedKeys)
+	f.uncoveredKeys = append(f.uncoveredKeys, key)
 	if err := f.uncoveredErr[key]; err != nil {
 		return nil, err
+	}
+	if len(listedKeys) > 0 {
+		if rows, ok := f.uncoveredVs[key]; ok {
+			return rows, nil
+		}
 	}
 	if rows, ok := f.uncovered[key]; ok {
 		return rows, nil
 	}
 	return []compaction.UncoveredRow{{RowID: "synthetic-uncovered-row"}}, nil
+}
+
+// maskedProbe returns the listedKeys of the single masked (len > 0) probe of
+// the given key, failing the test unless exactly one such probe happened.
+func (f *fakeStats) maskedProbe(t *testing.T, key string) []string {
+	t.Helper()
+	var found [][]string
+	for i, k := range f.uncoveredKeys {
+		if k == key && len(f.uncoveredCalls[i]) > 0 {
+			found = append(found, f.uncoveredCalls[i])
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly 1 masked UncoveredRows probe of %s, got %d", key, len(found))
+	}
+	return found[0]
 }
 
 func (f *fakeStats) FileColumns(_ context.Context, key string) (map[string]string, error) {

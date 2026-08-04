@@ -156,6 +156,18 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 
 	var deltaLeftovers []ObjectInfo
+	promotedInit := false
+	if r.Opts.Repair && len(d.baseInitOrphans) > 0 {
+		promo, pm, petag, err := r.promoteInitOrphans(ctx, schemaID, m, etag, d.baseInitOrphans)
+		if err != nil {
+			s.Err = err
+			return s
+		}
+		m, etag = pm, petag
+		s.PromotedBase = promo.promoted
+		s.InitPromotionRefusal = promo.refusal
+		promotedInit = len(promo.promoted) > 0
+	}
 	if r.Opts.Repair && len(d.deltaOrphans) > 0 {
 		outcome, err := r.repairSchema(ctx, schemaID, m, etag, d.deltaOrphans)
 		if err != nil {
@@ -167,15 +179,18 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		deltaLeftovers = outcome.leftovers
 	}
 	if r.Opts.GC {
-		// Init-shaped base orphans are GC candidates since #290: cdc-init holds
-		// the same per-schema advisory lock, so under this lock an init-shaped
-		// orphan is provably not from an in-flight init — it is either the output
-		// of a failed manifest publish or a file superseded by a later init run.
-		// Recovery for a failed publish is re-running cdc-init (the source of
-		// truth is entity_main); auto-promotion (--repair) is a follow-up.
-		// Delta leftovers require the repair analysis, so they are only deletable
-		// under --repair --gc.
-		candidates := append([]ObjectInfo(nil), d.baseInitOrphans...)
+		// Init-shaped base orphans are GC candidates since #290 — unless this
+		// run just promoted them (#292): a promoted set is now manifest-listed
+		// inventory, and gcSchema's state prune drops their sighting entries
+		// so a later unlisting restarts the grace clock. A refused set keeps
+		// the #290 behavior: recovery for a failed publish is re-running
+		// cdc-init or a later --repair pass that can prove coverage.
+		// Delta leftovers require the repair analysis, so they are only
+		// deletable under --repair --gc.
+		var candidates []ObjectInfo
+		if !promotedInit {
+			candidates = append(candidates, d.baseInitOrphans...)
+		}
 		candidates = append(candidates, d.baseMergedOrphans...)
 		candidates = append(candidates, d.tmpOrphans...)
 		candidates = append(candidates, deltaLeftovers...)
