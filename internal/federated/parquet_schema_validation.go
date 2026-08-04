@@ -116,9 +116,13 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // Accepted (plan decision 4) — stamps are written from a write-time DESCRIBE
 // of the actual bytes, so under-reporting takes a corrupted or tampered
 // manifest, and the outcome is a loud classified failure, never silent data
-// loss. The bytes themselves are guarded independently: any scanned row with a
-// NULL row_id fails the query outright (sqlgen.BuildParquetScanSource), so a
-// stamp can never license a silently ignored object.
+// loss. The bytes themselves are guarded independently
+// (sqlgen.BuildParquetScanSource): any scanned row with a NULL row_id or a
+// NULL changed_at fails the query outright, and changed_at/deleted_at are
+// CAST to BIGINT so a rogue VARCHAR cannot widen the union and reorder the LWW
+// merge. So a stamp can never license a silently ignored object, nor a
+// silently misordered one. deleted_at PRESENCE is the one residual — live
+// delta rows encode it as NULL, so it cannot be value-guarded until #274.
 //
 // When a probe DOES run on a stamped path, the two are cross-checked and any
 // divergence is logged — see warnStampDivergence.
@@ -209,8 +213,15 @@ func (v *parquetSchemaValidator) validateConcrete(
 // stamp is fingerprinted as a sorted name/type join. EVERY separator is NUL —
 // between pairs AND between a name and its type — because a printable
 // separator aliases: with "=", {"a": "b=c"} and {"a=b": "c"} both render
-// "a=b=c". NUL cannot appear in a DuckDB identifier, a type name, or an S3
-// key, so no two distinct inputs can render to the same fingerprint.
+// "a=b=c". NUL does not occur in a DuckDB identifier, a type name, or an S3
+// key, so realistic stamps cannot collide — but a manifest is JSON and JSON
+// can encode an escaped NUL, so this is a strong practical guarantee, not a proof.
+//
+// It does not need to be a proof. The fingerprint only gates the single-flight;
+// it never answers a query. Whatever a follower wakes to is re-checked by
+// maps.Equal in lookupValidatedCols against the stamp actually in play, so a
+// contrived collision costs one extra probe and can never serve one
+// generation's columns for another's.
 func probeKey(path string, stamp map[string]string) string {
 	names := make([]string, 0, len(stamp))
 	for name := range stamp {
