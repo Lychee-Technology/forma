@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -22,16 +23,30 @@ const absentColumn = "(absent)"
 // shape valid (missing deleted_at, a re-typed row_id, a dropped attribute
 // column) is invisible there. This offline pass IS the byte truth: a full
 // map comparison, strictly stronger than the scan guard, at zero read-path
-// cost. Entries with nil Columns are legacy (lazy fallback, no backfill —
-// #256 contract) and are skipped; dangling entries have no bytes to probe
-// and are skipped (already reported); unverifiable paths are skipped
-// (already reported). A probe failure is a tool failure (exit 1), never a
-// divergence verdict — mirroring confirmDangling's storage-outage rule.
-func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manifest.Manifest, dangling []string) ([]string, error) {
-	skip := make(map[string]bool, len(dangling))
-	for _, key := range dangling {
+// cost. A probe failure is a tool failure (exit 1), never a divergence
+// verdict — mirroring confirmDangling's storage-outage rule, which is also
+// why the skip set is deliberately generous. Skipped, in order:
+//
+//   - entries with nil Columns — legacy (lazy fallback, no backfill: the
+//     #256 contract), so there is nothing to compare against;
+//   - paths normalizeKey cannot resolve, and keys outside this schema's data
+//     prefix — both are the unverifiable class diffSchema already reports,
+//     and neither is covered by the listing that would prove it present;
+//   - every dangling **candidate** (the pre-confirmation list), not merely
+//     the confirmed ones. The tradeoff is deliberate: a candidate that
+//     confirmDangling proves still live loses stamp coverage for this run,
+//     which is cheap and self-correcting on the next pass, whereas probing
+//     an object a concurrent compactor spliced out and deleted mid-run would
+//     fail and escalate the whole schema to a spurious exit 1.
+func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manifest.Manifest, danglingCandidates []string) ([]string, error) {
+	if r.Stats == nil {
+		return nil, fmt.Errorf("stamp verification requested for schema %d but stats reader is not configured", schemaID)
+	}
+	skip := make(map[string]bool, len(danglingCandidates))
+	for _, key := range danglingCandidates {
 		skip[key] = true
 	}
+	prefix := schemaDataPrefix(r.DataPrefix, schemaID)
 
 	var divergences []string
 	for _, f := range m.Files {
@@ -39,8 +54,8 @@ func (r *Reconciler) verifyStamps(ctx context.Context, schemaID int16, m *manife
 			continue // legacy unstamped entry: the read path probes it lazily
 		}
 		key, ok := normalizeKey(r.Bucket, f.Path)
-		if !ok || skip[key] {
-			continue // unverifiable path or confirmed dangling: already reported
+		if !ok || !strings.HasPrefix(key, prefix) || skip[key] {
+			continue // unverifiable or dangling candidate: already reported
 		}
 		cols, err := r.Stats.FileColumns(ctx, key)
 		if err != nil {

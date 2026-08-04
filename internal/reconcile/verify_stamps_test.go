@@ -108,6 +108,38 @@ func TestVerifyStamps_RetypedRowIDIsDivergence(t *testing.T) {
 	require.True(t, report.HasResidualDiscrepancies())
 }
 
+func TestVerifyStamps_ExtraFooterColumnIsDivergence(t *testing.T) {
+	// An under-reporting stamp is the one exception to #256's "a stamp may
+	// only short-circuit success": the read path's column union comes up
+	// short and the NULL alias collides with a real column.
+	key := "data/7/" + uuidA + ".parquet"
+	lister, manifests := listedEntry(key, stampCols())
+	footer := stampCols()
+	footer["score"] = "DOUBLE"
+	stats := &fakeStats{columns: map[string]map[string]string{key: footer}}
+	r := verifyReconciler(t, lister, manifests, stats)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Len(t, s.StampDivergences, 1)
+	require.Equal(t, fmt.Sprintf("%s: column %q stamp %q vs footer %q", key, "score", "(absent)", "DOUBLE"),
+		s.StampDivergences[0])
+	require.True(t, report.HasResidualDiscrepancies())
+}
+
+func TestVerifyStamps_MissingStatsReaderFailsSchema(t *testing.T) {
+	key := "data/7/" + uuidA + ".parquet"
+	lister, manifests := listedEntry(key, stampCols())
+	r := verifyReconciler(t, lister, manifests, nil)
+	r.Stats = nil
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	require.Error(t, report.Schemas[0].Err)
+	require.Contains(t, report.Schemas[0].Err.Error(), "stats reader is not configured")
+}
+
 func TestVerifyStamps_LegacyUnstampedEntrySkipped(t *testing.T) {
 	// #256 never backfills: an entry written before stamping has no Columns
 	// and the read path probes it lazily. There is nothing to compare.
@@ -139,6 +171,60 @@ func TestVerifyStamps_DanglingEntryNotProbed(t *testing.T) {
 	s := report.Schemas[0]
 	require.Equal(t, []string{key}, s.Dangling)
 	require.Empty(t, stats.columnsCalls, "a dangling entry must not be probed")
+	require.Empty(t, s.StampDivergences)
+}
+
+func TestVerifyStamps_UnconfirmedDanglingCandidateNotProbed(t *testing.T) {
+	// The skip set is the UNCONFIRMED candidate list. Here a concurrent
+	// compactor splices the entry out (and deletes the object) mid-run, so
+	// confirmDangling clears the candidate — but the pre-run manifest this
+	// pass iterates still carries it. Probing it would fail and escalate the
+	// schema to a spurious exit 1; skipping costs one run of coverage.
+	key := "data/7/" + uuidA + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{"data/7/": nil}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: key, Columns: stampCols()},
+	}})
+	manifests.onLoad = func(f *fakeManifests) {
+		if f.loads >= 2 { // confirmDangling's reload sees the splice
+			f.manifests[7] = &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}}
+		}
+	}
+	// No columns entry: an unexpected probe would report a bogus divergence.
+	stats := &fakeStats{columns: map[string]map[string]string{}}
+	r := verifyReconciler(t, lister, manifests, stats)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.Dangling, "the candidate was spliced out, so it is not confirmed dangling")
+	require.Empty(t, stats.columnsCalls, "a dangling candidate must not be probed")
+	require.Empty(t, s.StampDivergences)
+	require.False(t, report.HasResidualDiscrepancies())
+}
+
+func TestVerifyStamps_OutOfPrefixEntryNotProbed(t *testing.T) {
+	// An entry outside this schema's data prefix is the unverifiable
+	// subclass diffSchema reports: the listing does not cover it, so its
+	// absence cannot be proven — and probing a missing object would escalate
+	// to a spurious exit 1.
+	key := "data/7/" + uuidA + ".parquet"
+	outOfPrefix := "data/9/" + uuidB + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": {{Key: key, Size: 10, LastModified: testClock()}},
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: key, Columns: stampCols()},
+		{Tier: "base", Path: outOfPrefix, Columns: stampCols()},
+	}})
+	stats := &fakeStats{columns: map[string]map[string]string{key: stampCols()}}
+	r := verifyReconciler(t, lister, manifests, stats)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Equal(t, []string{outOfPrefix}, s.Unverifiable)
+	require.Equal(t, []string{key}, stats.columnsCalls, "only the in-prefix entry is probed")
 	require.Empty(t, s.StampDivergences)
 }
 

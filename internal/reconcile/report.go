@@ -45,8 +45,9 @@ type Report struct {
 
 // HasResidualDiscrepancies reports whether anything actionable is left after
 // repair and GC: orphans not repaired, promoted, or deleted, dangling entries, skipped
-// schemas, unknown shapes, or per-schema failures. Unverifiable paths are
-// informational — they cannot be proven inconsistent from this run.
+// schemas, unknown shapes, stamp divergences (--verify-stamps), or per-schema
+// failures. Unverifiable paths are informational — they cannot be proven
+// inconsistent from this run.
 func (r Report) HasResidualDiscrepancies() bool {
 	for _, s := range r.Schemas {
 		if s.Residual() {

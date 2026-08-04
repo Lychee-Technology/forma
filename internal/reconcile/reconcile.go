@@ -160,7 +160,9 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 
 	if r.Opts.VerifyStamps {
-		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, s.Dangling)
+		// d.dangling, not s.Dangling: the unconfirmed candidate list is the
+		// safe skip set (see verifyStamps).
+		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, d.dangling)
 		if err != nil {
 			s.Err = fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
 			return s
