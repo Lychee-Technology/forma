@@ -335,6 +335,12 @@ func toBoolForEAV(value any) (bool, error) {
 			return false, err
 		}
 		return float64ToBool(num), nil
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
+		}
+		return f != 0, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}

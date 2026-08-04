@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -88,6 +89,33 @@ func TestToBoolForEAV(t *testing.T) {
 		{"ptr float64 nil", (*float64)(nil), false, true},
 
 		{"unsupported slice", []int{1, 2}, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := toBoolForEAV(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("toBoolForEAV(%#v) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("toBoolForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToBoolForEAVJSONNumber(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   json.Number
+		want    bool
+		wantErr bool
+	}{
+		{"json.Number 1", json.Number("1"), true, false},
+		{"json.Number 0", json.Number("0"), false, false},
+		{"json.Number 2", json.Number("2"), true, false},
+		{"json.Number -1", json.Number("-1"), true, false},
+		{"json.Number invalid", json.Number("abc"), false, true},
 	}
 
 	for _, tt := range tests {
