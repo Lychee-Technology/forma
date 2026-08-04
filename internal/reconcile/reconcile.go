@@ -22,11 +22,14 @@ type ManifestStore interface {
 // StatsReader inspects one parquet file's contents: FileStats recomputes
 // manifest metadata; UncoveredRows returns the rows whose newest version no
 // listed file supersedes, with a tombstone flag (the repair guard's
-// version-aware coverage probe). Both take bucket-relative keys. Only
+// version-aware coverage probe) — with no listed keys it enumerates every
+// distinct row id in the file (#292 init promotion). FileColumns probes the
+// footer for the #256 column stamp. All take bucket-relative keys. Only
 // consulted under --repair.
 type StatsReader interface {
 	FileStats(ctx context.Context, key string) (compaction.MergeStats, error)
 	UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error)
+	FileColumns(ctx context.Context, key string) (map[string]string, error)
 }
 
 // LiveRowChecker reports Postgres entity-store liveness. MissingLiveRows

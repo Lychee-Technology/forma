@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 )
 
 // ObjectInfo is one listed S3 object with the metadata reconcile needs:
@@ -106,6 +107,12 @@ func (d *DuckStatsReader) UncoveredRows(ctx context.Context, key string, listedK
 		listed = append(listed, fmt.Sprintf("s3://%s/%s", d.Bucket, k))
 	}
 	return compaction.UncoveredRows(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key), listed)
+}
+
+// FileColumns probes the parquet footer for the #256 column stamp,
+// exactly as cdc-init's initStampColumns does for its own entries.
+func (d *DuckStatsReader) FileColumns(ctx context.Context, key string) (map[string]string, error) {
+	return parquetcheck.DescribeColumns(ctx, d.DB, fmt.Sprintf("s3://%s/%s", d.Bucket, key))
 }
 
 var (

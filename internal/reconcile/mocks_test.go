@@ -136,6 +136,9 @@ type fakeStats struct {
 	uncovered      map[string][]compaction.UncoveredRow
 	uncoveredCalls [][]string // listedKeys per UncoveredRows call
 	uncoveredErr   map[string]error
+	// columns maps key -> #256 column stamp returned by FileColumns.
+	columns    map[string]map[string]string
+	columnsErr map[string]error
 }
 
 func (f *fakeStats) FileStats(_ context.Context, key string) (compaction.MergeStats, error) {
@@ -155,6 +158,13 @@ func (f *fakeStats) UncoveredRows(_ context.Context, key string, listedKeys []st
 		return rows, nil
 	}
 	return []compaction.UncoveredRow{{RowID: "synthetic-uncovered-row"}}, nil
+}
+
+func (f *fakeStats) FileColumns(_ context.Context, key string) (map[string]string, error) {
+	if err := f.columnsErr[key]; err != nil {
+		return nil, err
+	}
+	return f.columns[key], nil
 }
 
 // fakeLiveRows reports which row ids are missing from entity_main. The
