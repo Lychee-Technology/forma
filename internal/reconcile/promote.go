@@ -40,6 +40,11 @@ type initCoverage struct {
 // stays on the GC path — always safe, because re-running cdc-init rebuilds
 // the base tier from entity_main.
 //
+// The two sides of the identity are read without a shared PG snapshot; any
+// concurrent write skews them toward inequality (refusal), and post-snapshot
+// inserts are hot-masked via change_log — the same contract cdc-init's own
+// batched export relies on.
+//
 // Coverage alone is NOT sufficient to promote: it says nothing about rows
 // deleted since the export. verifyNoResurrection completes the proof.
 func (r *Reconciler) verifyInitCoverage(ctx context.Context, schemaID int16, orphans []ObjectInfo) (initCoverage, string) {
