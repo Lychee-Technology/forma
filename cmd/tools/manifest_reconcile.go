@@ -87,7 +87,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 	registryTable := fs.String("schema-registry-table", "", "Schema registry table for schema enumeration (required)")
 	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = all registered schemas)")
-	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans (metadata recomputed from parquet contents)")
+	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans and promote complete init-shaped base orphan sets (coverage + eviction-safety verified)")
 	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
 	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")
 	etagRetries := fs.Int("etag-retries", 3, "Manifest save retries on optimistic-concurrency conflict")

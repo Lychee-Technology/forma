@@ -25,7 +25,7 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 |------|------|------|------|
 | delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
 | merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
-| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件（`--repair` 自动重建留 follow-up） |
+| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--repair` 下先经晋升守卫（三重证明，见下）整组判定：证明通过则整组补录进 manifest base 层；证明不通过（或未开 `--repair`）保持 GC 候选，走 `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件 |
 | `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
 
 形态匹配是严格的：`base-` 后缀与 `{min}_{max}` 两段都必须是合法 UUID，否则归
@@ -71,6 +71,92 @@ entity_main 且 `ltbase_deleted_at IS NULL`。
 `delta leftover`），在 `--repair --gc` 同时开启时按下述两阶段删除；混杂 → 拒绝自动
 补录与自动删除，留人工处置（保持非零退出码）。
 
+## `--repair` 的 init 形态晋升守卫（#292）
+
+cdc-init 是一次全量重导出，因此**一组完整的 init 输出本身就是 base 层的规范清单**——正是
+发布失败时本该写下的那份 manifest。`--repair` 因此可以把 init 形态孤儿整组补录回 manifest
+base 层（`SpliceTierFiles`：整个 base 层被这组条目替换，其他 tier 条目原样保留），但只在
+能证明这么做无损时才做。
+
+晋升在 delta 孤儿补录**之前**执行，跑在同一把 per-schema advisory lock 下；manifest 写入
+仍走 ETag 乐观并发（compactor 不持这把锁），冲突后重载 manifest 并**重新验证**依赖在册清单
+的那两个证明（下面的 2、3），因为重载后的 base / delta 条目可能已经变了。
+
+语义是 **all-or-nothing**：整组晋升，或整组拒绝——不存在只补录其中几个文件。
+
+### 三重证明
+
+**1. 覆盖验证**（证明这组文件确实是一次完整 init 导出，只看 parquet 内容与 Postgres 计数）
+
+- schema 当前**没有存活行** → 拒绝（此时 init 形态孤儿必然已被取代）；
+- 逐文件重算 parquet 统计；统计读不到 → 拒绝；
+- 文件名 `{min}_{max}` 与重算出的 row_id 区间**不一致** → 拒绝（元数据永不取自文件名，
+  该检查只是为了让"看起来像 init 形态"的外来/截断文件进不了 base 层）；
+- 任意两文件的 `[min, max]` 区间**重叠** → 拒绝：一次导出的批次互不相交，重叠说明这组
+  文件混了多代 init，晋升会把重复行版本塞进 base 层；
+- 文件含 **tombstone 行** → 拒绝（cdc-init 只导出存活行，含墓碑说明这不是 init 输出）。
+  判定口径是逐 row_id 取**最新版本**（`arg_max`）看它是否为墓碑；真实 cdc-init 输出里每行
+  只有一个版本，故与"文件中出现过任何墓碑行"等价；
+- **计数恒等式**：Σ 每文件（distinct row_id 数 − 在 PG 中已死的行数）== `entity_main`
+  存活行数（`--entity-main-table`，口径 `ltbase_schema_id = ? AND ltbase_deleted_at IS NULL`，
+  与 cdc-init 的导出口径、与分子分母同一定义）。区间互不相交保证各文件的 row_id 集合互不
+  相交，因此逐文件计数可以直接相加；不相等 → 拒绝（部分导出绝不能替换整个 base 层）。
+
+条目元数据（行数、row_id / created_at 区间、大小）全部从 parquet 内容与对象本身重算。
+#256 的列集印章是 best-effort 探测：探不到只是条目不带印章（读侧回落到探测），不阻塞晋升。
+
+**2. 复活守卫**（证明晋升不会让已删除的行复活）
+
+覆盖计数只是"不计入"死行，说明不了它们的去向。可达的故障场景是：某行在 init 导出失败**之后**
+被删除，其墓碑 delta 已 flush 并被 compaction 合并丢弃（合并后的 base 不保留墓碑行），
+change_log 也已标记 flushed（热层不再遮蔽），而 init 文件里仍留着该行的**旧的活版本**——
+覆盖验证会过，驱逐安全也会过，晋升却把删除撤销了。
+
+因此对每个含死行的文件，用**仍在册的非 base 条目（幸存 delta）**做版本反连接：只要某个死行
+的活版本没有任何幸存 delta 覆盖 → 拒绝。晋升集自身及其兄弟文件不参与遮蔽（它们正是被审查的
+对象，算进去会让检查空洞地通过），被驱逐的 base 条目也不参与（它们即将离场，splice 之后遮蔽
+不了任何东西）。没有死行时该守卫零额外查询。
+
+**3. 驱逐安全**（证明整体替换 base 层不丢版本）
+
+整组晋升会驱逐 base 层当前**全部**在册条目。对每个被驱逐的 base 条目做版本反连接，遮蔽集 =
+晋升集 ∪ 幸存 delta 条目；只要存在未被覆盖的行版本 → 拒绝。这挡住的是 compaction 竞态：
+init 发布失败后 compaction 又合并出的 `base-{uuid}` 可能携带比孤儿集**更新**的版本，整体
+替换会让这些版本变成孤儿、读路径回退到旧值（它们的 change_log 已标记 flushed，热层不会遮蔽）。
+**被驱逐的 base 条目**路径无法在本 bucket 解析（跨 bucket / 带 glob）→ 直接拒绝整体替换：
+无法验证即不放行。无法解析的**非 base 条目**不构成拒绝，而是被保守地剔出遮蔽集（读不到的
+文件绝不能算作提供覆盖）——这只会让证明更难通过，不会放宽它。
+
+保守拒绝是可接受的代价——兜底恢复手段始终是重跑 cdc-init 从 `entity_main` 全量重建 base 层。
+
+### 拒绝与晋升的表现
+
+- **拒绝**：报表打印一行 `init promotion refused: <reason>`（all-or-nothing，一条原因覆盖
+  整组）；这组文件保持普通 GC 候选，`--repair --gc` 同跑时按两阶段删除处理。退出码取决于
+  这些文件**本轮是否被删除**：未删除（只读、只 `--repair`、或目击尚未满 grace）时它们仍是
+  残余差异 → 退出 `2`；`--repair --gc` 同跑且本轮真的删除了它们时，它们已被计为"已处置"，
+  在无其他差异的情况下退出 `0`——但报表**照常打印那行 `init promotion refused:`**，不要把
+  退出 0 读作"没发生过拒绝"。
+- **晋升**：报表逐 key 打印 `promoted base-init`，这些文件成为 base 层在册条目，本轮不再是
+  GC 候选（其目击状态也会被剪除，日后若再次未列出则宽限时钟重新起算）。被替换掉的**旧 base
+  条目对应的对象**随即变成未列出对象；晋升本身不删除任何对象。这些对象在后续运行中按形态处理：
+  `base-{uuid}` 形态直接进 `--gc` 两阶段删除候选；init 形态的旧文件会在下一次 `--repair`
+  运行中**重新经过晋升守卫**（本文不承诺重评估必然拒绝），只有该轮未晋升它们时才落回
+  `--gc` 候选。
+
+### 运维注意事项：探测失败也表现为"拒绝"
+
+parquet 统计读不到、DuckDB / S3 访问失败、Postgres 查询出错，这些**探测类故障**不会让工具
+退出 1，而是与"证明不成立"一样表现为一次拒绝（原因文本里带着底层错误）。后果是：`--repair --gc`
+同跑时，这组 init 文件仍会照常进入 GC 的两阶段流程（本次只记录目击；若故障持续到目击满
+grace，后续运行就会删除它们）。
+
+因此看到 `init promotion refused:` 且原因属于探测失败（`unreadable parquet stats` /
+`live-row count unavailable` / `enumerate rows of` / `check live rows of` /
+`cannot prove ...` 之类）时，**先修复故障源、重跑确认拒绝原因
+是真的"无法证明完整"而不是"暂时探不到"，再开 `--gc`**。删除本身仍然是安全的（重跑 cdc-init
+即可重建），但会白白丢掉一次可以零成本晋升的机会。
+
 ## `--gc` 的两阶段删除（unlisted 时长语义）
 
 #188 follow-up 要求「对象解除列出超过最大查询时长后才删除」。对象的 LastModified
@@ -97,7 +183,7 @@ forma-tools manifest-reconcile \
   --schema-registry-table schema_registry \
   --pg-host ... --pg-db forma
 
-# 修复 #197 孤儿（经守卫判定）
+# 修复 #197 孤儿（经守卫判定），并晋升可证明完整的 init 形态孤儿集（#292）
 forma-tools manifest-reconcile ... --repair
 
 # 清理 #188 遗留：merged base / _tmp / 已判定的 delta 残留
@@ -112,7 +198,8 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
 - 工具需要 Postgres：逐 schema 取与 flusher/cdc-init 同款 advisory lock
   （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上），消除与 flusher 的
   list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。#290 起 cdc-init 也持这把锁，
-  故此锁下的 init 形态孤儿必非 in-flight init，纳入 `--gc` 候选。compactor 仍不持这把锁，
+  故此锁下的 init 形态孤儿必非 in-flight init：`--repair` 下先经晋升守卫判定（#292），
+  未晋升者纳入 `--gc` 候选。compactor 仍不持这把锁，
   故 manifest 写入另有 ETag 条件写保护（不存在的 manifest 用 If-None-Match
   条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认。
 - `--schema-id` 指向未注册 schema 时直接报错退出 1（而不是空跑报「一致」）。
@@ -123,10 +210,15 @@ forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
   记录目击但尚未过宽限期的残留）；`1` 工具自身失败（含任一 schema 的
   list/load/lock/dangling 复核/GC 状态读取失败——不会伪装成「有差异」）。
 
-## 已知范围限制（follow-up）
+## init 形态晋升（#292）
 
-cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）留下的 init 形态
-孤儿自 #290 起可由 `--gc` 两阶段删除（cdc-init 与 reconcile 持同一把 per-schema
-advisory lock，故此锁下的 init 形态孤儿必非 in-flight init）。删除后重跑 cdc-init 即
-可从 entity_main 重新导出；把孤儿直接自动补录进 manifest（`--repair` 提升 init 形态）
-仍留 follow-up issue——部分导出误提升风险尚未有守卫。
+cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）留下的 init 形态孤儿
+现在有两条恢复路径：
+
+- `--repair`：经上述三重证明（覆盖验证 / 复活守卫 / 驱逐安全）后整组晋升进 manifest
+  base 层，等价于补上那次失败的发布，数据无需重新导出；
+- 证明不通过或未开 `--repair`：这组文件保持 GC 候选，由 `--gc` 两阶段删除（#290），
+  删除后重跑 cdc-init 从 `entity_main` 重新导出。
+
+两条路径都依赖 #290 起 cdc-init 与 reconcile 共持的那把 per-schema advisory lock：此锁下
+出现的 init 形态孤儿必非 in-flight init。
