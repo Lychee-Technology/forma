@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -186,6 +187,15 @@ type promotionResult struct {
 	refusal  string
 }
 
+// replacementContext carries the run-level object facts the eviction date
+// fence needs, alongside the manifest inventory: this run's S3 listing
+// (bucket-relative key -> object) and the newest LastModified across the
+// promoted init set. See verifyEvictionSafety for what the dates prove.
+type replacementContext struct {
+	listed         map[string]ObjectInfo
+	maxInitWritten time.Time
+}
+
 // promoteInitOrphans verifies and, on proof, promotes the ENTIRE init-shaped
 // orphan set into the manifest base tier with ReplaceTierFiles semantics
 // (manifest.SpliceTierFiles): cdc-init is a full re-export, so a proven
@@ -197,10 +207,19 @@ type promotionResult struct {
 // on every retry: a 412 means the inventory changed under us. Returns the
 // (possibly reloaded) manifest and etag so the delta-repair pass that
 // follows works against the post-promotion inventory.
-func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string, orphans []ObjectInfo) (promotionResult, *manifest.Manifest, string, error) {
+func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string, orphans []ObjectInfo, listed map[string]ObjectInfo) (promotionResult, *manifest.Manifest, string, error) {
 	if r.Stats == nil || r.LiveRows == nil {
 		return promotionResult{}, nil, "", fmt.Errorf(
 			"init promotion requested for schema %d but stats reader or live-row checker is not configured", schemaID)
+	}
+	// The whole orphan set is written by one cdc-init run, so its newest
+	// object time is the instant that run stopped writing — the fence the
+	// eviction proof dates listed base objects against.
+	rc := replacementContext{listed: listed}
+	for _, o := range orphans {
+		if o.LastModified.After(rc.maxInitWritten) {
+			rc.maxInitWritten = o.LastModified
+		}
 	}
 	cov, refusal := r.verifyInitCoverage(ctx, schemaID, orphans)
 	if refusal != "" {
@@ -216,7 +235,7 @@ func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *
 	}
 
 	for attempt := 0; ; attempt++ {
-		if refusal := r.verifyReplacementSafety(ctx, m, cov); refusal != "" {
+		if refusal := r.verifyReplacementSafety(ctx, m, cov, rc); refusal != "" {
 			r.Logger.Warn("refusing init orphan promotion; set stays GC-eligible",
 				zap.Int16("schema_id", schemaID), zap.String("reason", refusal))
 			return promotionResult{refusal: refusal}, m, etag, nil
@@ -250,8 +269,8 @@ func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *
 // manifest inventory rather than on the parquet contents alone, so both must
 // be re-run on every save attempt: a 412 means the inventory changed under
 // us, and a reloaded manifest may have gained or lost base AND delta entries.
-func (r *Reconciler) verifyReplacementSafety(ctx context.Context, m *manifest.Manifest, cov initCoverage) string {
-	if refusal := r.verifyEvictionSafety(ctx, m, cov.entries); refusal != "" {
+func (r *Reconciler) verifyReplacementSafety(ctx context.Context, m *manifest.Manifest, cov initCoverage, rc replacementContext) string {
+	if refusal := r.verifyEvictionSafety(ctx, m, cov.entries, rc); refusal != "" {
 		return refusal
 	}
 	return r.verifyNoResurrection(ctx, m, cov)
@@ -329,9 +348,35 @@ func survivingDeltaKeys(bucket string, m *manifest.Manifest) []string {
 // versions NEWER than the orphan set's; wholesale replacement would orphan
 // those versions and readers would regress to stale values, because their
 // change_log rows are already marked flushed (no hot-tier masking).
-// Conservative refusals (dangling base entry, unreadable file) are fine —
-// the documented fallback is re-running cdc-init.
-func (r *Reconciler) verifyEvictionSafety(ctx context.Context, m *manifest.Manifest, entries []manifest.FileEntry) string {
+//
+// The proof has two parts, because the version probe's coverage predicate is
+// `l.changed_at >= o.changed_at` — equal-timestamp is accepted as superseding,
+// and the probe cannot see values. Strict `>` is not an option: unchanged rows
+// tie at equal changed_at across generations, so it would refuse every
+// promotion facing a non-empty base tier. The tie is therefore fenced by
+// OBJECT DATE instead:
+//
+//  1. Evicted base entries whose object POSTDATES the promoted set are refused
+//     outright. cdc-init holds the per-schema advisory lock for its whole run
+//     and the flusher needs that same lock, so a delta carrying any write made
+//     after init's snapshot read can only be flushed AFTER the failed init
+//     released the lock — strictly after every init object was written. Any
+//     base entry folding such a delta therefore has a strictly later
+//     LastModified. Refusing those is what stops a same-millisecond
+//     post-snapshot write (equal changed_at, different value) from being
+//     "covered" by the stale init version and silently regressing readers.
+//
+//  2. For entries written no later than the promoted set, `>=` coverage IS
+//     sound. Such an object can only contain pre-lock writes, and for those an
+//     equal-changed_at tie means the SAME Postgres write: changed_at is the
+//     row's ltbase_updated_at stamp, so identical stamps on one row id are one
+//     stamping event, hence value-identical. Nothing is lost by evicting it.
+//
+// The date fence runs BEFORE the version probe: it is cheap, and a base entry
+// this run cannot date at all (absent from the listing) is refused rather than
+// probed. Conservative refusals (dangling base entry, unreadable file,
+// undatable entry) are fine — the documented fallback is re-running cdc-init.
+func (r *Reconciler) verifyEvictionSafety(ctx context.Context, m *manifest.Manifest, entries []manifest.FileEntry, rc replacementContext) string {
 	survivors := make([]string, 0, len(entries)+len(m.Files))
 	for _, e := range entries {
 		survivors = append(survivors, e.Path)
@@ -352,6 +397,9 @@ func (r *Reconciler) verifyEvictionSafety(ctx context.Context, m *manifest.Manif
 		}
 		survivors = append(survivors, key)
 	}
+	if refusal := checkEvictionDates(evicted, rc); refusal != "" {
+		return refusal
+	}
 	for _, key := range evicted {
 		uncovered, err := r.Stats.UncoveredRows(ctx, key, survivors)
 		if err != nil {
@@ -359,6 +407,24 @@ func (r *Reconciler) verifyEvictionSafety(ctx context.Context, m *manifest.Manif
 		}
 		if len(uncovered) > 0 {
 			return fmt.Sprintf("evicting listed base entry %s would lose %d row versions the promoted set does not supersede", key, len(uncovered))
+		}
+	}
+	return ""
+}
+
+// checkEvictionDates is verifyEvictionSafety's part-1 fence: every base entry
+// about to be evicted must be datable from this run's listing AND written no
+// later than the promoted init set. See verifyEvictionSafety for the proof
+// this implements.
+func checkEvictionDates(evicted []string, rc replacementContext) string {
+	for _, key := range evicted {
+		obj, ok := rc.listed[key]
+		if !ok {
+			return fmt.Sprintf("listed base entry %s is absent from this run's object listing; cannot date it against the init export", key)
+		}
+		if obj.LastModified.After(rc.maxInitWritten) {
+			return fmt.Sprintf("listed base entry %s postdates the init export (%s > %s); it may fold post-export same-millisecond writes, so equal-timestamp coverage cannot prove value identity",
+				key, obj.LastModified.UTC().Format(time.RFC3339), rc.maxInitWritten.UTC().Format(time.RFC3339))
 		}
 	}
 	return ""

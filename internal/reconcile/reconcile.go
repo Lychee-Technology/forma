@@ -172,7 +172,13 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	var deltaLeftovers []ObjectInfo
 	promotedInit := false
 	if r.Opts.Repair && len(d.baseInitOrphans) > 0 {
-		promo, pm, petag, err := r.promoteInitOrphans(ctx, schemaID, m, etag, d.baseInitOrphans)
+		// The promotion's eviction proof dates listed base objects against the
+		// init export, so it needs this run's listing keyed by object key.
+		listed := make(map[string]ObjectInfo, len(objects))
+		for _, o := range objects {
+			listed[o.Key] = o
+		}
+		promo, pm, petag, err := r.promoteInitOrphans(ctx, schemaID, m, etag, d.baseInitOrphans, listed)
 		if err != nil {
 			s.Err = err
 			return s

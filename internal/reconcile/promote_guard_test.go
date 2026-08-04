@@ -3,8 +3,10 @@ package reconcile
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -85,6 +87,69 @@ func TestPromote_EvictsCoveredStaleBase(t *testing.T) {
 	probe := stats.maskedProbe(t, staleKey)
 	require.Subset(t, probe, []string{file1, file2, deltaKey})
 	require.NotContains(t, probe, staleKey)
+}
+
+// The eviction date fence. The version probe's coverage predicate is
+// `changed_at >= changed_at`, so an equal-timestamp survivor counts as
+// superseding — and the probe cannot see values. A base entry written AFTER
+// the init export may fold a post-snapshot same-millisecond write, whose
+// value differs from the init snapshot's; accepting the tie there regresses
+// readers. Strict `>` cannot be the fix (unchanged rows tie across
+// generations), so the entry is fenced by object date instead.
+
+func TestPromote_RefusesEvictionOfPostInitBase(t *testing.T) {
+	lister, stats, live, _, _ := completeInitSet()
+	mergedKey := "data/7/base-" + uuidB + ".parquet"
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "base", Path: mergedKey},
+	}})
+	// Compaction folded a post-init-failure delta an hour after the init
+	// objects were written.
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: mergedKey, Size: 1, LastModified: testClock().Add(time.Hour)})
+	// Version coverage would PASS: the >= anti-join reports nothing uncovered.
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{mergedKey: {}}
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "postdates the init export")
+	require.Empty(t, manifests.saves)
+
+	// The fence precedes the probe, so the entry is never even probed.
+	for i, k := range stats.uncoveredKeys {
+		if k == mergedKey {
+			require.Empty(t, stats.uncoveredCalls[i],
+				"date fence must refuse before the version probe runs")
+		}
+	}
+}
+
+// TestPromote_RefusesOlderGenerationAgainstNewerBase closes the generational
+// ping-pong the docs previously left open: an init-shaped file evicted by a
+// NEWER init generation stays an orphan and is re-examined by the next
+// --repair run. The date fence makes that re-evaluation deterministically a
+// refusal — an older generation can never evict a newer base — so the
+// unlisted old files have one settled destiny: the GC candidate path.
+func TestPromote_RefusesOlderGenerationAgainstNewerBase(t *testing.T) {
+	lister, stats, live, _, _ := completeInitSet()
+	newerKey := initKey(rid1, rid3) // the generation that actually got published
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "base", Path: newerKey},
+	}})
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: newerKey, Size: 1, LastModified: testClock().Add(time.Minute)})
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{newerKey: {}}
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase, "an older generation must not evict a newer base")
+	require.Contains(t, s.InitPromotionRefusal, "postdates the init export")
+	require.Empty(t, manifests.saves)
 }
 
 func TestPromote_RefusesUnverifiableBaseEntry(t *testing.T) {
@@ -323,4 +388,57 @@ func TestPromote_RealStats_RefusesResurrectionWithoutTombstoneDelta(t *testing.T
 	require.Contains(t, report.Schemas[0].InitPromotionRefusal, "resurrect")
 	require.Contains(t, report.Schemas[0].InitPromotionRefusal, rid3)
 	require.Empty(t, manifests.saves)
+}
+
+// writeValueFixture writes a one-row live parquet with an explicit title, so
+// two files can carry the SAME row id at the SAME changed_at with DIFFERENT
+// values — the tie the version anti-join is blind to.
+func writeValueFixture(t *testing.T, db *sql.DB, path, rowID string, changedAt int64, title string) {
+	t.Helper()
+	q := fmt.Sprintf(
+		"COPY (SELECT CAST('%s' AS UUID) AS row_id, CAST(%d AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, '%s' AS title) TO '%s' (FORMAT PARQUET)",
+		rowID, changedAt, title, path)
+	if _, err := db.Exec(q); err != nil {
+		t.Fatalf("write value fixture: %v", err)
+	}
+}
+
+// TestPromote_RealStats_RefusesEqualTimestampDifferentPayload is the fence's
+// reason for existing, run through the production UncoveredRows query: the
+// failed init holds rid1='old'@100, and a merged base written afterwards
+// holds rid1='new'@100 — the post-init-failure write that landed in the same
+// millisecond. The >= anti-join reports the base entry fully covered (equal
+// changed_at supersedes, and payloads are invisible to it), so without the
+// date fence promotion would evict 'new' and regress readers to 'old'.
+func TestPromote_RealStats_RefusesEqualTimestampDifferentPayload(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	dir := t.TempDir()
+	initFile := initKey(rid1, rid1)
+	baseKey := "data/7/base-" + uuidB + ".parquet"
+	writeValueFixture(t, db, filepath.Join(dir, filepath.Base(initFile)), rid1, 100, "old")
+	writeValueFixture(t, db, filepath.Join(dir, filepath.Base(baseKey)), rid1, 100, "new")
+
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": {
+			{Key: initFile, Size: 11, LastModified: testClock()},
+			{Key: baseKey, Size: 22, LastModified: testClock().Add(time.Hour)},
+		},
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "base", Path: baseKey},
+	}})
+	r := promoteReconciler(t, lister, manifests, &localStatsReader{db: db, dir: dir},
+		&fakeLiveRows{liveCount: 1})
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "postdates the init export")
+	require.Empty(t, manifests.saves, "the manifest must be left untouched")
+	require.Equal(t, []string{baseKey}, manifestPaths(manifests, 7, "base"),
+		"the newer base entry must stay listed")
 }

@@ -75,6 +75,33 @@ func TestPromote_RefusesWhenConflictRevealsUnsafeEviction(t *testing.T) {
 	require.Empty(t, manifests.saves, "the conflicting attempt must not be retried into a save")
 }
 
+func TestPromote_RefusesUndatableEvictedBase(t *testing.T) {
+	// The concurrent compaction committed its base entry after this run took
+	// its listing, so the entry cannot be dated against the init export at
+	// all. Undatable is refused, not probed: the eviction proof's
+	// equal-timestamp coverage is only sound for entries provably written no
+	// later than the promoted set.
+	lister, stats, live, _, _ := completeInitSet()
+	mergedKey := "data/7/base-" + uuidB + ".parquet" // deliberately absent from the listing
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}})
+	manifests.saveErrs = []error{errTestConflict}
+	manifests.onSaveConflict = func(f *fakeManifests) {
+		f.manifests[7] = &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+			{Tier: "base", Path: mergedKey},
+		}}
+		f.etags[7] = "etag-7-concurrent"
+	}
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{mergedKey: {}} // coverage would pass
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "absent from this run's object listing")
+	require.Empty(t, manifests.saves)
+}
+
 func TestPromote_ThenDeltaRepairUsesFreshETag(t *testing.T) {
 	// Promotion saves first and hands its post-save manifest+etag to the
 	// delta-repair pass; repair must not save against the stale pre-promotion
