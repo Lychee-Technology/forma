@@ -22,8 +22,13 @@ func TestPromote_RetriesOnETagConflict(t *testing.T) {
 	lister, stats, live, file1, file2 := completeInitSet()
 	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}})
 	manifests.saveErrs = []error{errTestConflict}
-	// The writer that won the race added a delta entry and moved the etag.
+	// The writer that won the race listed an existing (pre-init) delta object
+	// and moved the etag. The object predates the init export and is in this
+	// run's listing, so the survivor fence clears it on ground 1 and the retry
+	// is what the test actually exercises.
 	concurrentDelta := "data/7/" + uuidB + ".parquet"
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: concurrentDelta, Size: 1, LastModified: preInitClock()})
 	manifests.onSaveConflict = func(f *fakeManifests) {
 		f.manifests[7] = &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
 			{Tier: "delta", Path: concurrentDelta},
@@ -62,8 +67,10 @@ func TestPromote_RefusesWhenConflictRevealsUnsafeEviction(t *testing.T) {
 		}}
 		f.etags[7] = "etag-7-concurrent"
 	}
+	// Datable and strictly older than the init set, so the date fence clears
+	// it and the version probe is what refuses.
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: mergedKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: mergedKey, Size: 1, LastModified: preInitClock()})
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{mergedKey: {{RowID: rid1}}}
 	r := promoteReconciler(t, lister, manifests, stats, live)
 

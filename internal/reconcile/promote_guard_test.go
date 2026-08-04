@@ -38,9 +38,11 @@ func TestPromote_RefusesWhenEvictionWouldLoseVersions(t *testing.T) {
 		{Tier: "base", Path: mergedKey},
 		{Tier: "delta", Path: deltaKey},
 	}})
+	// Both entries predate the init export, so the date fences clear them and
+	// the version probe is what refuses.
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: mergedKey, Size: 1, LastModified: testClock()},
-		ObjectInfo{Key: deltaKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: mergedKey, Size: 1, LastModified: preInitClock()},
+		ObjectInfo{Key: deltaKey, Size: 1, LastModified: preInitClock()})
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{
 		mergedKey: {{RowID: rid1}}, // newer version only here
 	}
@@ -70,8 +72,8 @@ func TestPromote_EvictsCoveredStaleBase(t *testing.T) {
 		{Tier: "delta", Path: deltaKey},
 	}})
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: staleKey, Size: 1, LastModified: testClock()},
-		ObjectInfo{Key: deltaKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: staleKey, Size: 1, LastModified: preInitClock()},
+		ObjectInfo{Key: deltaKey, Size: 1, LastModified: preInitClock()})
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{
 		staleKey: {}, // fully superseded by the promoted set
 	}
@@ -169,11 +171,15 @@ func TestPromote_RefusesUnverifiableBaseEntry(t *testing.T) {
 	require.Empty(t, manifests.saves)
 }
 
-func TestPromote_GlobDeltaEntryIsNotASurvivor(t *testing.T) {
-	// A glob delta entry cannot be resolved to a probeable key, so it must
-	// never be counted as masking coverage — but it also must not block
-	// promotion the way an unverifiable BASE entry does.
-	lister, stats, live, file1, file2 := completeInitSet()
+func TestPromote_RefusesUndatableSurvivor_Glob(t *testing.T) {
+	// TIGHTENED in round 4. A glob delta entry cannot be resolved to a
+	// probeable key, so the resurrection probe has always skipped it — but it
+	// stays LISTED after the splice and therefore still participates in the
+	// read path's equal-changed_at tie-break, which is base-wins. Previously
+	// such an entry was silently tolerated and promotion went ahead; now an
+	// entry this run cannot date at all refuses the whole promotion, exactly
+	// like an unverifiable BASE entry.
+	lister, stats, live, _, _ := completeInitSet()
 	globPath := "data/7/*.parquet"
 	staleKey := "data/7/base-" + uuidB + ".parquet"
 	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
@@ -181,17 +187,107 @@ func TestPromote_GlobDeltaEntryIsNotASurvivor(t *testing.T) {
 		{Tier: "base", Path: staleKey},
 	}})
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: staleKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: staleKey, Size: 1, LastModified: preInitClock()})
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{staleKey: {}}
 	r := promoteReconciler(t, lister, manifests, stats, live)
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{file1, file2}, report.Schemas[0].PromotedBase)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "cannot be dated against the init export")
+	require.Contains(t, s.InitPromotionRefusal, globPath)
+	require.Empty(t, manifests.saves)
 
-	probe := stats.maskedProbe(t, staleKey)
-	require.NotContains(t, probe, globPath, "unresolvable glob must not be treated as coverage")
-	require.Subset(t, probe, []string{file1, file2})
+	// The survivor fence is pure arithmetic and runs first, so the eviction
+	// version probe never runs.
+	require.NotContains(t, stats.uncoveredKeys, staleKey)
+}
+
+// TestPromote_RefusesUndatableSurvivor_Unlisted covers the other undatable
+// shape: a resolvable key the run's listing does not carry (a concurrent
+// flusher committed the entry after this run took its listing).
+func TestPromote_RefusesUndatableSurvivor_Unlisted(t *testing.T) {
+	lister, stats, live, _, _ := completeInitSet()
+	deltaKey := "data/7/" + uuidA + ".parquet" // deliberately absent from the listing
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: deltaKey, CreatedMin: 500, CreatedMax: 500},
+	}})
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase, "an undatable survivor must block promotion")
+	require.Contains(t, s.InitPromotionRefusal, "cannot be dated against the init export")
+	require.Empty(t, manifests.saves)
+}
+
+// The survivor fence's two acceptance grounds and their boundary, driven
+// directly through a post-init survivor object (ground 1 unavailable).
+func TestPromote_SurvivorFenceVersionRange(t *testing.T) {
+	deltaKey := "data/7/" + uuidA + ".parquet"
+	// The init set's newest row version is CreatedMax = 300 (file2).
+	cases := []struct {
+		name       string
+		createdMin int64
+		promotes   bool
+	}{
+		{"strictly above the init set promotes", 301, true},
+		{"equal to the init set refuses", 300, false},
+		{"below the init set refuses", 200, false},
+		{"unset created_min refuses", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lister, stats, live, file1, file2 := completeInitSet()
+			manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+				{Tier: "delta", Path: deltaKey, CreatedMin: tc.createdMin, CreatedMax: 500},
+			}})
+			// Written AFTER the init export, so only the version range can
+			// clear this survivor.
+			lister.objects["data/7/"] = append(lister.objects["data/7/"],
+				ObjectInfo{Key: deltaKey, Size: 1, LastModified: testClock().Add(time.Hour)})
+			r := promoteReconciler(t, lister, manifests, stats, live)
+
+			report, err := r.Run(context.Background())
+			require.NoError(t, err)
+			s := report.Schemas[0]
+			if tc.promotes {
+				require.ElementsMatch(t, []string{file1, file2}, s.PromotedBase)
+				require.Empty(t, s.InitPromotionRefusal)
+				return
+			}
+			require.Empty(t, s.PromotedBase)
+			require.Contains(t, s.InitPromotionRefusal, "surviving non-base entry")
+			require.Empty(t, manifests.saves)
+		})
+	}
+}
+
+// TestPromote_RefusesEqualSecondEvictedBase pins the round-4 tightening of the
+// eviction fence from "no later than" to "strictly earlier than". S3
+// LastModified is second-granular, so an evicted base entry stamped in the
+// SAME second as the last init object could still fold a lock release, delta
+// flush and compaction that all landed inside that second — the exact
+// equal-changed_at regression the fence exists to stop.
+func TestPromote_RefusesEqualSecondEvictedBase(t *testing.T) {
+	lister, stats, live, _, _ := completeInitSet()
+	mergedKey := "data/7/base-" + uuidB + ".parquet"
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "base", Path: mergedKey},
+	}})
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: mergedKey, Size: 1, LastModified: testClock()}) // == max init write
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{mergedKey: {}} // coverage would pass
+	r := promoteReconciler(t, lister, manifests, stats, live)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "postdates the init export")
+	require.Empty(t, manifests.saves)
 }
 
 // deletedRowInitSet returns the completeInitSet fakes adjusted so rid3 —
@@ -212,7 +308,7 @@ func TestPromote_RefusesResurrectionOfDeletedRow(t *testing.T) {
 		{Tier: "delta", Path: deltaKey},
 	}})
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: deltaKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: deltaKey, Size: 1, LastModified: preInitClock()})
 	// No surviving delta supersedes rid3's stale live version: its tombstone
 	// was already merged away.
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{file2: {{RowID: rid3}}}
@@ -236,8 +332,8 @@ func TestPromote_TombstoneDeltaMasksDeletedRow(t *testing.T) {
 		{Tier: "base", Path: staleKey},
 	}})
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: deltaKey, Size: 1, LastModified: testClock()},
-		ObjectInfo{Key: staleKey, Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: deltaKey, Size: 1, LastModified: preInitClock()},
+		ObjectInfo{Key: staleKey, Size: 1, LastModified: preInitClock()})
 	stats.uncoveredVs = map[string][]compaction.UncoveredRow{
 		file2:    {}, // the surviving delta's tombstone supersedes rid3
 		staleKey: {}, // and the evicted base is fully superseded
@@ -268,6 +364,15 @@ func TestPromote_TombstoneDeltaMasksDeletedRow(t *testing.T) {
 // now mask rid3 against that listed tombstone, so the set converges and
 // promotes with the delta entry preserved. Refusal is therefore transient and
 // self-healing, never a permanent stall.
+//
+// This convergence is also why the round-4 survivor fence is a version-RANGE
+// rule rather than a flat "refuse any post-init survivor": the restored
+// tombstone delta is necessarily written after the failed init, so ground 1
+// (strictly older object) can never clear it. It clears on ground 2 instead —
+// its CreatedMin (400, from the fake stats below) is strictly above the init
+// set's newest row version (CreatedMax 300 on file2), so it cannot tie with
+// any promoted row and wins LWW legitimately. A flat post-init refusal would
+// deadlock this sequence forever.
 func TestPromote_UnlistedTombstoneDeltaRefusesThenConverges(t *testing.T) {
 	lister, stats, live, file1, file2 := deletedRowInitSet()
 	deltaKey := "data/7/" + uuidA + ".parquet"
@@ -341,7 +446,9 @@ func TestPromote_RealStats_TombstoneDeltaMasksDeletedRow(t *testing.T) {
 		"data/7/": {
 			{Key: file1, Size: 11, LastModified: testClock()},
 			{Key: file2, Size: 22, LastModified: testClock()},
-			{Key: deltaKey, Size: 33, LastModified: testClock()},
+			// Predates the init export, so the survivor fence clears it on
+			// ground 1 without needing the entry's version range.
+			{Key: deltaKey, Size: 33, LastModified: preInitClock()},
 		},
 	}}
 	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
@@ -441,4 +548,49 @@ func TestPromote_RealStats_RefusesEqualTimestampDifferentPayload(t *testing.T) {
 	require.Empty(t, manifests.saves, "the manifest must be left untouched")
 	require.Equal(t, []string{baseKey}, manifestPaths(manifests, 7, "base"),
 		"the newer base entry must stay listed")
+}
+
+// TestPromote_RealStats_RefusesSurvivingDeltaTie is the survivor fence's
+// reason for existing, run through the production stats queries. There is NO
+// listed base entry at all, so the eviction fence has nothing to check and
+// coverage balances cleanly. The hazard lives entirely on the SURVIVING side:
+// the failed init holds rid1='old'@100 and a listed delta — written after the
+// failed init released the lock — holds rid1='new'@100. Promotion would
+// publish 'old' as base, and the read path's equal-changed_at tie-break is
+// base-wins (#183), so readers would deterministically regress to 'old'. The
+// delta's manifest CreatedMin ties the init set's max changed_at rather than
+// exceeding it, so neither acceptance ground applies and the fence refuses.
+func TestPromote_RealStats_RefusesSurvivingDeltaTie(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	dir := t.TempDir()
+	initFile := initKey(rid1, rid1)
+	deltaKey := "data/7/" + uuidA + ".parquet"
+	writeValueFixture(t, db, filepath.Join(dir, filepath.Base(initFile)), rid1, 100, "old")
+	writeValueFixture(t, db, filepath.Join(dir, filepath.Base(deltaKey)), rid1, 100, "new")
+
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": {
+			{Key: initFile, Size: 11, LastModified: testClock()},
+			{Key: deltaKey, Size: 22, LastModified: testClock().Add(time.Hour)},
+		},
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: deltaKey, CreatedMin: 100, CreatedMax: 100},
+	}})
+	r := promoteReconciler(t, lister, manifests, &localStatsReader{db: db, dir: dir},
+		&fakeLiveRows{liveCount: 1})
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	s := report.Schemas[0]
+	require.Empty(t, s.PromotedBase)
+	require.Contains(t, s.InitPromotionRefusal, "surviving non-base entry")
+	require.Contains(t, s.InitPromotionRefusal, deltaKey)
+	require.Empty(t, manifests.saves, "the manifest must be left untouched")
+	require.Equal(t, []string{deltaKey}, manifestPaths(manifests, 7, "delta"),
+		"the delta carrying the newer value must stay listed")
+	require.Empty(t, manifestPaths(manifests, 7, "base"))
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -29,6 +30,15 @@ const (
 )
 
 func initKey(minID, maxID string) string { return "data/7/" + minID + "_" + maxID + ".parquet" }
+
+// preInitClock is the listing time an object must carry to clear the survivor
+// fence on ground 1 (checkSurvivorDates): a listed non-base entry may only
+// survive the splice when its object is written STRICTLY EARLIER than every
+// promoted init object, or when its version range starts strictly above the
+// promoted set's. The same strictness now applies to evicted base entries
+// (checkEvictionDates), so both sides of a promotion fixture predate the init
+// set unless the test is exercising a refusal.
+func preInitClock() time.Time { return testClock().Add(-time.Hour) }
 
 // promoteReconciler wires a repair-mode reconciler whose fakes describe a
 // two-file init orphan set covering live rows rid1..rid3.
@@ -75,8 +85,9 @@ func TestPromote_PromotesCompleteInitSet(t *testing.T) {
 	}})
 	// The pre-existing delta entry must survive the splice; it is listed, so
 	// it is not an orphan, and eviction safety has no base entries to check.
+	// It predates the init export, so the survivor fence clears it on ground 1.
 	lister.objects["data/7/"] = append(lister.objects["data/7/"],
-		ObjectInfo{Key: "data/7/" + uuidA + ".parquet", Size: 1, LastModified: testClock()})
+		ObjectInfo{Key: "data/7/" + uuidA + ".parquet", Size: 1, LastModified: preInitClock()})
 	r := promoteReconciler(t, lister, manifests, stats, live)
 
 	report, err := r.Run(context.Background())
