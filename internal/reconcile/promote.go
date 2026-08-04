@@ -63,15 +63,16 @@ func (r *Reconciler) verifyInitCoverage(ctx context.Context, schemaID int16, orp
 		entries = append(entries, manifest.FileEntry{
 			Tier:       "base",
 			Path:       obj.Key,
-			RowIDMin:   stats.RowIDMin,
-			RowIDMax:   stats.RowIDMax,
+			RowIDMin:   strings.ToLower(stats.RowIDMin),
+			RowIDMax:   strings.ToLower(stats.RowIDMax),
 			CreatedMin: stats.CreatedMin,
 			CreatedMax: stats.CreatedMax,
 			RowCount:   stats.RowsOut,
 			SizeBytes:  obj.Size,
-			Columns:    r.promotionColumns(ctx, schemaID, obj.Key),
 		})
 	}
+	// Canonical lowercase keeps range ordering and cross-checks uniform
+	// regardless of reader casing.
 	if refusal := checkDisjointRanges(entries); refusal != "" {
 		return initCoverage{}, refusal
 	}
@@ -201,6 +202,12 @@ func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *
 		r.Logger.Warn("refusing init orphan promotion; set stays GC-eligible",
 			zap.Int16("schema_id", schemaID), zap.String("reason", refusal))
 		return promotionResult{refusal: refusal}, m, etag, nil
+	}
+
+	// Stamp the column set on each entry now that verifyInitCoverage has
+	// confirmed the set is promotable.
+	for i := range cov.entries {
+		cov.entries[i].Columns = r.promotionColumns(ctx, schemaID, cov.entries[i].Path)
 	}
 
 	for attempt := 0; ; attempt++ {
