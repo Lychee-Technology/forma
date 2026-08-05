@@ -63,8 +63,8 @@ func buildCharBigIntCases() []charCase {
 		},
 		{
 			// #357: exponent spelling — 9.007199254740993e15 is exactly 2^53+1,
-			// a value float64 cannot hold, so only the big.Rat refinement can
-			// recover it from this spelling.
+			// a value float64 cannot hold, so only reading the spelling exactly
+			// — never the parsed float64 — can recover it.
 			name: "bigint exponent spelling above 2^53: all three exact",
 			cond: charKv("amount", "gte:9.007199254740993e15"),
 			want: DualClauses{
