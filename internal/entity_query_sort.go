@@ -18,13 +18,21 @@ type sortKey struct {
 
 // resolveSortKeys normalizes the request's two sort surfaces into ordered
 // sortKey pairs. The structured Sort field carries per-key directions (#240);
-// the legacy SortBy list shares the single SortOrder. The two surfaces are
-// mutually exclusive so a caller bug cannot be silently half-applied.
+// the legacy SortBy list shares the single SortOrder, normalized by the same
+// rules as a Sort entry's direction (#296). The two surfaces are mutually
+// exclusive so a caller bug cannot be silently half-applied.
 func resolveSortKeys(req *forma.QueryRequest) ([]sortKey, error) {
 	if len(req.Sort) == 0 {
-		sortOrder := req.SortOrder
-		if sortOrder == "" {
-			sortOrder = forma.SortOrderAsc
+		// The legacy surface shares one direction across all SortBy keys. It goes
+		// through the same normalizeSortOrder as structured Sort entries (#296):
+		// non-empty garbage is invalid input even when SortBy is empty, because a
+		// direction that cannot apply to anything is still a caller bug.
+		sortOrder, err := normalizeSortOrder(req.SortOrder)
+		if err != nil {
+			// A plain wrap on purpose, not WrapPublicf: this prefix is operator
+			// context (there is no per-entry attribute to name), and the published
+			// body must stay exactly the normalizeSortOrder message.
+			return nil, fmt.Errorf("failed to normalize legacy sort_order: %w", err)
 		}
 		keys := make([]sortKey, 0, len(req.SortBy))
 		for _, attr := range req.SortBy {

@@ -79,6 +79,10 @@ Two distinct error classes (`docs/error-handling.md`):
 
 Error messages must name the logical value type, the offending column/attribute, and the expected state. Detail an operator needs but a caller cannot act on goes behind `forma.WithOperatorDetail` — it stays in `Error()` and the log, never in the published message.
 
+## Specs and Design Docs
+
+Planning artifacts — specs, design docs, implementation plans — are not committed to the repo (`docs/superpowers/` is gitignored). Post them to the GitHub issue they serve instead: once a spec or design is approved, add its full content as a comment on the relevant issue so the issue carries the complete decision record. This covers per-issue planning artifacts only; reference designs that document the system itself (e.g. `docs/federated-query/design.md`) live in `docs/` as before.
+
 ## Pull Request Rules
 
 * 请不要自动合并PR
