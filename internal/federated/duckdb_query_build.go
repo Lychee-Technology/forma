@@ -284,9 +284,12 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, err
 		// A caller-supplied template that cannot render is invalid input, not
 		// an absent hint: swallowing it would silently serve the query from a
 		// different path set (the manifest source, or none) than the caller
-		// explicitly requested (#249 review).
-		return nil, fmt.Errorf("render s3 parquet path template %q: %w: %w",
-			q.DuckDBHints.S3ParquetPathTemplate, forma.ErrInvalidInput, err)
+		// explicitly requested (#249 review). The template is the caller's own
+		// payload field, so the published message may echo it; text/template's
+		// render prose is operator detail and stays log-only (#313).
+		return nil, forma.WithOperatorDetail(
+			forma.InvalidInputf("render s3 parquet path template %q: the template is not renderable",
+				q.DuckDBHints.S3ParquetPathTemplate), err)
 	}
 	parts := strings.Split(rendered, ",")
 	paths := make([]string, 0, len(parts))
@@ -304,8 +307,8 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, err
 		// the caller explicitly requested. Same rule as an unrenderable
 		// template: explicit hints always win, including when they fail
 		// (#250 PR review).
-		return nil, fmt.Errorf("s3 parquet path template %q rendered no usable paths: %w",
-			q.DuckDBHints.S3ParquetPathTemplate, forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("s3 parquet path template %q rendered no usable paths",
+			q.DuckDBHints.S3ParquetPathTemplate)
 	}
 	return paths, nil
 }
