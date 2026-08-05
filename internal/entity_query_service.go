@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,18 +45,18 @@ func newEntityQueryService(em *entityManager) *entityQueryService {
 
 func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest) (*forma.QueryResult, error) {
 	if s.config == nil {
-		return nil, fmt.Errorf("entity manager config is required: %w", forma.ErrInvalidInput)
+		return nil, errors.New("entity manager config is required")
 	}
 	if s.registry == nil || s.repository == nil || s.toDataRecord == nil || s.enrichDataRecords == nil {
-		return nil, fmt.Errorf("entity query service is not initialized: %w", forma.ErrInvalidInput)
+		return nil, errors.New("entity query service is not initialized")
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("query request cannot be nil: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("query request cannot be nil")
 	}
 
 	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("schema name is required")
 	}
 
 	if req.Page < 1 {
@@ -247,10 +248,10 @@ func federatedPreferredTiers(tiers []string) []model.DataTier {
 
 func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {
 	if s.config == nil {
-		return nil, fmt.Errorf("entity manager config is required: %w", forma.ErrInvalidInput)
+		return nil, errors.New("entity manager config is required")
 	}
 	if s.registry == nil || s.repository == nil || s.toDataRecord == nil || s.enrichDataRecords == nil {
-		return nil, fmt.Errorf("entity query service is not initialized: %w", forma.ErrInvalidInput)
+		return nil, errors.New("entity query service is not initialized")
 	}
 
 	if err := s.validateCrossSchemaRequest(req); err != nil {
@@ -305,13 +306,13 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 // validateCrossSchemaRequest validates the cross schema search request parameters.
 func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRequest) error {
 	if req == nil {
-		return fmt.Errorf("cross schema request cannot be nil: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("cross schema request cannot be nil")
 	}
 	if len(req.SchemaNames) == 0 {
-		return fmt.Errorf("schema names are required: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("schema names are required")
 	}
 	if req.SearchTerm == "" {
-		return fmt.Errorf("search term is required: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("search term is required")
 	}
 	if req.Page < 1 {
 		req.Page = 1
