@@ -3,6 +3,7 @@ package numutil
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -67,6 +68,9 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		{"exponent spelling above 2^53", "9.007199254740993e15", int64(9007199254740993)},
 		{"exponent spelling at MaxInt64", "9.223372036854775807e18", int64(math.MaxInt64)},
 		{"trailing-zero exponent", "1e0", int64(1)},
+		// A fractional mantissa still denotes an integer once the exponent is
+		// applied — it is the value that decides, not the spelling's shape.
+		{"fractional mantissa, integral value", "1.5e3", int64(1500)},
 		{"negative decimal spelling", "-9007199254740993.0", int64(-9007199254740993)},
 		{"negative zero folds to int64 zero", "-0.0", int64(0)},
 		{"fractional stays float64", "3.5", float64(3.5)},
@@ -80,6 +84,26 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		// Grammar must not widen: big.Rat alone would take "1/3".
 		{"rat-only fraction is not a number", "1/3", "1/3"},
 		{"non-numeric", "abc", "abc"},
+
+		// Cost guards (see refineFloatLiteral). Each row is value-preserving;
+		// they exist so the guards cannot be removed silently, and they are
+		// cheap by construction — a hostile literal never reaches big.Rat.
+		//
+		// Underflow class: ParseFloat accepts "1e-1000000" and returns 0 with
+		// no error, but big.Rat would materialize a 10^1000000 denominator
+		// (~20ms per call, ×3 emitters per condition leaf). The zero fold
+		// answers int64(0), which compares identically to the float64(0) this
+		// literal produced before.
+		{"underflow to zero folds to int64 zero", "1e-1000000", int64(0)},
+		{"plain zero folds to int64 zero", "0e5", int64(0)},
+		// Length cap: an integral value spelled longer than refinableLen keeps
+		// the pre-#357 float64 binding rather than paying unbounded big.Rat
+		// cost. 42 has spellings far shorter than the cap, so nothing an API
+		// caller would write is affected.
+		{"over-long integral spelling stays float64", "42." + strings.Repeat("0", 70), float64(42)},
+		// Magnitude cap: beyond ±refinableMagnitude no literal can denote an
+		// in-range int64, so refinement is pointless work.
+		{"beyond magnitude cap stays float64", "1e19", float64(1e19)},
 	}
 
 	for _, tc := range cases {

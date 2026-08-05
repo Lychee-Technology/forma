@@ -125,7 +125,7 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 
 	// PG leg: rows are unflushed, PreferHot short-circuits to postgres-only.
 	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
-	assertEAVCeilingStored(ctx, t, env, "hot-pg", hotBase, aboveCeiling)
+	assertEAVCeilingStored(ctx, t, env, "hot-pg", hotBase, false, aboveCeiling)
 	runBoundaryProbes(ctx, t, env, "eav/hot-pg", hotBase, false, probes)
 
 	// DuckDB leg: export to base, then drop the change_log entries so the rows
@@ -138,7 +138,7 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 		wide.ID, rowIDs(seeded))
 
 	coldBase := Query{Schema: wide, Limit: 100}
-	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, aboveCeiling)
+	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, true, aboveCeiling)
 	runBoundaryProbes(ctx, t, env, "eav/cold-duck", coldBase, true, probes)
 }
 
@@ -146,9 +146,18 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 // tier really holds the rounded 2^53, so an empty result is the storage
 // contract and not a broken binder. Without this the miss probe would pass
 // just as happily against a filter that matches nothing at all.
-func assertEAVCeilingStored(ctx context.Context, t *testing.T, env *Env, label string, base Query, ev *Event) {
+//
+// wantDuck is asserted here too: this control IS the parquet premise on the
+// cold leg, so a silently hot-served control would leave that premise unproven
+// while still reporting green.
+func assertEAVCeilingStored(ctx context.Context, t *testing.T, env *Env, label string,
+	base Query, wantDuck bool, ev *Event) {
 	t.Helper()
 	res := mustQuery(ctx, t, env, base)
+	if got := res.Plan.Routing.UseDuckDB; got != wantDuck {
+		t.Errorf("%s: control query UseDuckDB = %t, want %t (routing %+v)",
+			label, got, wantDuck, res.Plan.Routing)
+	}
 	for _, rec := range res.Records {
 		if rec.RowID == ev.RowID {
 			// maxEAVInt is 2^53, the value the write path rounded 2^53+1 down

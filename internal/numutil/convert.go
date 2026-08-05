@@ -97,24 +97,65 @@ func OptionalPointerValue[T any](value *T) (T, bool) {
 	return *value, false
 }
 
+// refinableMagnitude bounds the |float64| that may reach the big.Rat
+// refinement. float64(math.MaxInt64) is 2^63 ≈ 9.2233720368547758e18, so every
+// literal that could denote an in-range int64 parses well inside this bound and
+// still refines exactly; anything larger cannot be an int64 candidate and is
+// turned away before paying for big.Rat.
+const refinableMagnitude = 9.3e18
+
+// refinableLen bounds the input length that may reach the big.Rat refinement.
+// big.Rat's cost is superlinear in the mantissa/exponent digits of a
+// caller-supplied literal, so an unbounded spelling is a CPU amplifier. Every
+// int64 value has spellings far shorter than this; a longer integral spelling
+// falls back to float64, i.e. exactly the pre-#357 behavior.
+const refinableLen = 64
+
 // TryParseNumber parses s as int64, then float64, falling back to the raw
 // string. Integral spellings in decimal or exponent form ("42.0",
-// "9.007199254740993e15") refine to exact int64 when they fit (#357):
-// ParseFloat gates acceptance so the accepted grammar is unchanged, and
-// big.Rat supplies the exact value ParseFloat would have rounded above 2^53.
-// Integral values beyond int64 range and genuinely fractional literals stay
-// float64.
+// "9.007199254740993e15", "1.5e3"), and the hex-float and underscore forms
+// ParseFloat also accepts ("0x1p4", "1_000"), refine to exact int64 when they
+// fit (#357): ParseFloat gates acceptance so the accepted grammar is unchanged,
+// and big.Rat supplies the exact value ParseFloat would have rounded above
+// 2^53. Integral values beyond int64 range and genuinely fractional literals
+// stay float64.
+//
+// The refinement is cost-bounded because s is caller-supplied: literals that
+// underflow to zero, exceed refinableMagnitude, or are longer than refinableLen
+// skip big.Rat entirely. Each guard is value-preserving — the skipped literals
+// resolve to the same number they always did.
 func TryParseNumber(s string) any {
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		if i, ok := integralInt64(s); ok {
-			return i
-		}
-		return f
+		return refineFloatLiteral(s, f)
 	}
 	return s
+}
+
+// refineFloatLiteral decides between the exact int64 and the float64 that
+// ParseFloat already produced, refusing big.Rat work that a hostile literal
+// could amplify. NaN passes both magnitude comparisons and reaches big.Rat,
+// which rejects it — the float64 fallback is unchanged.
+func refineFloatLiteral(s string, f float64) any {
+	// Zero and the underflow class ("1e-1000000" parses to 0 with no error but
+	// would materialize a 10^1000000 denominator in big.Rat). float64(0) and
+	// int64(0) compare equal to every operand alike, so folding them here is
+	// value-identical to refining them.
+	if f == 0 {
+		return int64(0)
+	}
+	if f > refinableMagnitude || f < -refinableMagnitude {
+		return f
+	}
+	if len(s) > refinableLen {
+		return f
+	}
+	if i, ok := integralInt64(s); ok {
+		return i
+	}
+	return f
 }
 
 // integralInt64 reports the exact int64 value of a literal that denotes an
