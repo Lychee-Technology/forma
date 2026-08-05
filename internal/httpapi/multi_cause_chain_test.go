@@ -193,7 +193,7 @@ func TestCarrierSurvivesReWrapping(t *testing.T) {
 	defer restore()
 
 	leaf := forma.InvalidInputf("invalid value for attribute 'age' (attrID=2): cannot convert string to float64")
-	err := forma.WrapPublicf(leaf, "operation[0]: failed to transform data to persistent record")
+	err := forma.WrapPublicf(fmt.Errorf("failed to transform data to persistent record: %w", leaf), "operation[0]")
 	err = fmt.Errorf("batch create: %w", err)
 	err = fmt.Errorf("manager: %w", err)
 
@@ -208,6 +208,9 @@ func TestCarrierSurvivesReWrapping(t *testing.T) {
 		if !strings.Contains(body, required) {
 			t.Fatalf("published message lost %q; body: %s", required, body)
 		}
+	}
+	if strings.Contains(body, "failed to transform") {
+		t.Fatalf("an internal phase name reached the body (#362 review, P2): %s", body)
 	}
 }
 

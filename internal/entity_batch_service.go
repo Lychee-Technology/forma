@@ -207,7 +207,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 
 		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to get schema", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
 
 		rowID := uuid.Must(uuid.NewV7())
@@ -233,11 +233,11 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 
 		record, err := s.transformer.ToPersistentRecord(ctx, schemaID, rowID, inputData)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to transform data to persistent record", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform data to persistent record: %w", err), "operation[%d]", i)
 		}
 		attributes, err := s.transformer.FromPersistentRecord(ctx, record)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to transform persistent record to json", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform persistent record to json: %w", err), "operation[%d]", i)
 		}
 
 		persistentRecords[i] = record
@@ -285,12 +285,12 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to get schema", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
 
 		existingRecord, err := s.repository.GetPersistentRecord(ctx, tables, schemaID, op.RowID)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to load existing record", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to load existing record: %w", err), "operation[%d]", i)
 		}
 		if existingRecord == nil {
 			return nil, forma.NotFoundf("operation[%d]: entity not found: %s/%s", i, op.SchemaName, op.RowID)
@@ -298,7 +298,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 		existingData, err := s.transformer.FromPersistentRecord(ctx, existingRecord)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to transform existing record", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform existing record: %w", err), "operation[%d]", i)
 		}
 
 		mergedData := mergeMaps(existingData, op.Updates)
@@ -323,7 +323,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 		updatedRecord, err := s.transformer.ToPersistentRecord(ctx, schemaID, op.RowID, mergedData)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to transform merged data", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform merged data: %w", err), "operation[%d]", i)
 		}
 		updatedRecord.CreatedAt = existingRecord.CreatedAt
 		updatedRecord.DeletedAt = existingRecord.DeletedAt
@@ -370,7 +370,7 @@ func (s *entityBatchService) batchDeleteAtomic(ctx context.Context, req *forma.B
 
 		schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
-			return nil, forma.WrapPublicf(err, "operation[%d]: failed to get schema", i)
+			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
 
 		keys[i] = model.PersistentRecordKey{SchemaID: schemaID, RowID: op.RowID}

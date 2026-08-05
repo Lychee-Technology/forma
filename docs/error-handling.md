@@ -830,7 +830,7 @@ The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
 ```json
 {
   "success": false,
-  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema"
+  "error": "batch create failed: operation[0]: schema not found: nosuchschema"
 }
 ```
 
@@ -840,7 +840,9 @@ name-keyed `forma.NotFoundf` leaf publishes the schema name the caller sent,
 index, so `classifyManagerError` returns `404` on sentinel evidence and the
 boundary emits the accumulated publication — logged at `Debugw`, with no
 `error_class`, no `error_id` and no `schema_id`. (Before #313 the body ended in
-`: not found`; the sentinel suffix no longer crosses.) Pinned by
+`: not found`; the sentinel suffix no longer crosses. The `failed to get
+schema` phase context is a plain wrap per the authorship rule — #362 review,
+P2 — so it stays in `Error()` and the log, not the body.) Pinned by
 `TestCreateUnknownSchemaIs404AndVerbatim`.
 
 Clients keying on `500` to detect create failures must key on `success: false`

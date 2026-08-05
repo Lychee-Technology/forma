@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -107,5 +108,43 @@ func TestQueryServiceWiringGuardsAreNotClientErrors(t *testing.T) {
 		t.Fatalf("expected the cross-schema config guard to fail")
 	} else if errors.Is(alsoErr, forma.ErrInvalidInput) {
 		t.Fatalf("internal wiring guard still classified as caller fault: %v", alsoErr)
+	}
+}
+
+// Phase context stays operator-only (#362 review, P2): a batch failure whose
+// leaf publishes must reach the caller as index + leaf, without the service's
+// internal phase names ("failed to get schema", "failed to transform …").
+func TestBatchCreateAtomicPublishesWithoutPhaseNames(t *testing.T) {
+	ctx := context.Background()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	em := NewEntityManager(transform.NewPersistentRecordTransformer(registry),
+		newMockPersistentRecordRepository(), nil, registry, createTestConfig(), nil)
+
+	req := &forma.BatchOperation{
+		Atomic: true,
+		Operations: []forma.EntityOperation{
+			{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "nosuchschema"},
+				Type:             forma.OperationCreate,
+				Data:             map[string]any{"name": "x"},
+			},
+		},
+	}
+
+	_, err = em.BatchCreate(ctx, req)
+	if err == nil {
+		t.Fatalf("expected the unknown schema to fail the atomic batch")
+	}
+	if !errors.Is(err, forma.ErrNotFound) {
+		t.Fatalf("registry miss lost its sentinel: %v", err)
+	}
+	if got, want := publicMessageOf(t, err), "operation[0]: schema not found: nosuchschema"; got != want {
+		t.Fatalf("published message = %q, want %q", got, want)
+	}
+	if !strings.Contains(err.Error(), "failed to get schema") {
+		t.Fatalf("the operator copy lost the phase context: %v", err)
 	}
 }
