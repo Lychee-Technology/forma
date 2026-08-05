@@ -74,10 +74,10 @@ Module: `github.com/lychee-technology/forma`.
 
 Two distinct error classes (`docs/error-handling.md`):
 
-- **Write-path validation** wraps `forma.ErrInvalidInput` → surfaces as user-facing 4xx.
+- **Write-path validation** builds `forma.InvalidInputf` (or `NotFoundf`/`Conflictf`) carriers → surfaces as user-facing 4xx whose body is the carrier's published message (#313). A bare `%w` wrap of a sentinel earns the status but answers a redacted body, and fails the `TestNoBareSentinelWraps` guard.
 - **Read-path consistency** errors (metadata drift, storage column mismatch) are plain errors → operator-visible failures, not 4xx.
 
-Error messages must name the logical value type, the offending column/attribute, and the expected state.
+Error messages must name the logical value type, the offending column/attribute, and the expected state. Detail an operator needs but a caller cannot act on goes behind `forma.WithOperatorDetail` — it stays in `Error()` and the log, never in the published message.
 
 ## Pull Request Rules
 
