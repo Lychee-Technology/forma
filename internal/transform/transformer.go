@@ -293,7 +293,7 @@ func (t *transformer) flattenToAttributes(
 			if value == nil {
 				candidateName := strings.Join(append(path, key), ".")
 				if isKnownAttributeOrParent(candidateName, cache) {
-					return fmt.Errorf("attribute '%s' cannot be set to null; omit the key to preserve its current value: %w", candidateName, forma.ErrInvalidInput)
+					return forma.InvalidInputf("attribute '%s' cannot be set to null; omit the key to preserve its current value", candidateName)
 				}
 				continue
 			}
@@ -326,7 +326,7 @@ func (t *transformer) flattenToAttributes(
 			if item == nil {
 				attrName := strings.Join(path, ".")
 				if isKnownAttributeOrParent(attrName, cache) {
-					return fmt.Errorf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value: %w", attrName, i, forma.ErrInvalidInput)
+					return forma.InvalidInputf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value", attrName, i)
 				}
 				continue
 			}
@@ -339,7 +339,7 @@ func (t *transformer) flattenToAttributes(
 		attrName := strings.Join(path, ".")
 		meta, ok := cache[attrName]
 		if !ok {
-			return fmt.Errorf("attribute '%s' is not defined for schema %d: %w", attrName, schemaID, forma.ErrInvalidInput)
+			return forma.InvalidInputf("attribute '%s' is not defined for schema %d", attrName, schemaID)
 		}
 
 		attr := model.EAVRecord{
@@ -387,13 +387,13 @@ func validateRequiredAttributesFromInput(data map[string]any, cache forma.Schema
 			missing = false
 		}
 		if missing {
-			// Wraps forma.ErrInvalidInput: a create/update body that omits a required
-			// attribute is caller fault, and since #301 the HTTP boundary classifies on
+			// A client error: a create/update body that omits a required attribute
+			// is caller fault, and since #301 the HTTP boundary classifies on
 			// sentinel evidence alone — without this the write path would answer 500
 			// with a redacted body instead of a 400 naming the attribute. The sibling
 			// null-rejection errors in this file already carry the sentinel.
-			return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records: %w",
-				attrName, meta.AttributeID, forma.ErrInvalidInput)
+			return forma.InvalidInputf("missing required attribute '%s' (attrID=%d) in EAV records",
+				attrName, meta.AttributeID)
 		}
 	}
 

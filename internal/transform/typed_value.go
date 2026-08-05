@@ -10,13 +10,12 @@ import (
 )
 
 func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
+	// The converter's own text is published: it describes the caller's value
+	// ("cannot convert string to float64") and is the whole point of the 400.
 	handleConversionError := func(err error) (bool, error) {
-		return false, fmt.Errorf(
-			"invalid value for attribute '%s' (attrID=%d): %w",
-			attrName,
-			meta.AttributeID,
-			fmt.Errorf("%w: %v", forma.ErrInvalidInput, err),
-		)
+		return false, forma.InvalidInputf(
+			"invalid value for attribute '%s' (attrID=%d): %v",
+			attrName, meta.AttributeID, err)
 	}
 
 	switch meta.ValueType {
