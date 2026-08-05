@@ -27,6 +27,69 @@ type PublicError interface {
 	PublicMessage() string
 }
 
+// ResolvePublicMessage returns the message err deliberately published, if
+// any. It is the canonical resolution used by the HTTP boundary, by
+// WrapPublicf/WithOperatorDetail to qualify their input, and by the
+// decorators' own PublicMessage delegation — one traversal, so the
+// publication a decorator carries is exactly the one the boundary would emit.
+//
+// The walk is preorder, left-first (errors.As order, so wrap prefixes
+// accumulate outermost-wins), and each node is matched the way errors.As
+// matches: direct implementation or the node's As(any) bool protocol
+// (#363 review, P2). A node qualifies only when a client sentinel is
+// reachable from that node's OWN subtree (#362/#363 reviews, P1): two gates
+// searching the whole tree independently let a mixed tree borrow — sentinel
+// evidence from one branch, PublicMessage() from a foreign sibling — and
+// decorating such a tree must not manufacture the same borrow one level up.
+// Non-qualifying nodes are stepped over, not terminal, so a real carrier
+// behind a foreign publisher still resolves. An empty publication is treated
+// as no publication and the walk continues past it.
+func ResolvePublicMessage(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if pub, ok := publicErrorAt(err); ok && carriesClientSentinel(err) {
+		if msg := pub.PublicMessage(); msg != "" {
+			return msg, true
+		}
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return ResolvePublicMessage(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, cause := range u.Unwrap() {
+			if msg, ok := ResolvePublicMessage(cause); ok {
+				return msg, true
+			}
+		}
+	}
+	return "", false
+}
+
+// publicErrorAt matches a single node the way errors.As matches nodes,
+// without descending: direct interface satisfaction first, then the node's
+// own As(any) bool protocol.
+func publicErrorAt(err error) (PublicError, bool) {
+	if pub, ok := err.(PublicError); ok {
+		return pub, true
+	}
+	if as, ok := err.(interface{ As(any) bool }); ok {
+		var pub PublicError
+		if as.As(&pub) && pub != nil {
+			return pub, true
+		}
+	}
+	return nil, false
+}
+
+// carriesClientSentinel reports whether err's subtree proves caller fault —
+// the same three sentinels internal/httpapi classifies status on.
+func carriesClientSentinel(err error) bool {
+	return errors.Is(err, ErrInvalidInput) ||
+		errors.Is(err, ErrNotFound) ||
+		errors.Is(err, ErrConflict)
+}
+
 // InvalidInputf builds a client error classified by ErrInvalidInput whose
 // formatted message is published verbatim. Error() renders
 // "<message>: invalid input".
@@ -60,8 +123,12 @@ func WrapPublicf(err error, format string, args ...any) error {
 		return nil
 	}
 	prefix := fmt.Sprintf(format, args...)
-	var pub PublicError
-	if !errors.As(err, &pub) {
+	// Qualification is the canonical resolution, not a bare errors.As: an
+	// input whose publication ResolvePublicMessage would reject — a foreign
+	// PublicError in a sibling branch of a bare sentinel — must degrade to
+	// the plain wrap, or the decorator would manufacture the very borrow the
+	// resolver exists to prevent (#363 review, P1).
+	if _, ok := ResolvePublicMessage(err); !ok {
 		return fmt.Errorf("%s: %w", prefix, err)
 	}
 	return &publicWrap{prefix: prefix, err: err}
@@ -76,8 +143,11 @@ func WithOperatorDetail(err error, detail error) error {
 	if err == nil {
 		return nil
 	}
-	var pub PublicError
-	if detail == nil || !errors.As(err, &pub) {
+	if detail == nil {
+		return err
+	}
+	// Same qualification rule as WrapPublicf (#363 review, P1).
+	if _, ok := ResolvePublicMessage(err); !ok {
 		return err
 	}
 	return &operatorDetail{err: err, detail: detail}
@@ -106,10 +176,14 @@ func (e *clientError) Error() string         { return e.public + ": " + e.sentin
 func (e *clientError) PublicMessage() string { return e.public }
 func (e *clientError) Unwrap() error         { return e.sentinel }
 
-// publicWrap prefixes both messages of an error already carrying a
-// PublicError; WrapPublicf guarantees the inner resolution succeeds. Being
-// outermost, it is the node errors.As finds first, so prefixes accumulate
-// outside-in exactly as they do in Error().
+// publicWrap prefixes both messages of an error whose publication
+// ResolvePublicMessage accepted; WrapPublicf guarantees that at construction.
+// Being outermost, it is the node the resolver finds first, so prefixes
+// accumulate outside-in exactly as they do in Error(). Delegation re-runs the
+// canonical resolution — never a whole-tree errors.As, which would adopt a
+// foreign sibling's text (#363 review, P1). The structure is immutable, so
+// the empty-string fallback is unreachable; if it were reached, the boundary
+// treats an empty publication as none and denies.
 type publicWrap struct {
 	prefix string
 	err    error
@@ -119,9 +193,11 @@ func (e *publicWrap) Error() string { return e.prefix + ": " + e.err.Error() }
 func (e *publicWrap) Unwrap() error { return e.err }
 
 func (e *publicWrap) PublicMessage() string {
-	var pub PublicError
-	errors.As(e.err, &pub)
-	return e.prefix + ": " + pub.PublicMessage()
+	msg, ok := ResolvePublicMessage(e.err)
+	if !ok {
+		return ""
+	}
+	return e.prefix + ": " + msg
 }
 
 // operatorDetail joins operator-only detail to a publishing error. The detail
@@ -137,7 +213,6 @@ func (e *operatorDetail) Error() string   { return e.err.Error() + ": " + e.deta
 func (e *operatorDetail) Unwrap() []error { return []error{e.err, e.detail} }
 
 func (e *operatorDetail) PublicMessage() string {
-	var pub PublicError
-	errors.As(e.err, &pub)
-	return pub.PublicMessage()
+	msg, _ := ResolvePublicMessage(e.err)
+	return msg
 }

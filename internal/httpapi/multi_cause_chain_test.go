@@ -338,3 +338,45 @@ func TestForeignNodeDoesNotBlockCarrierResolution(t *testing.T) {
 		t.Fatalf("the foreign text crossed: %s", rec.Body.String())
 	}
 }
+
+// TestDecoratedForeignPublicationIsRedacted pins the round-2 P1 (#363
+// review): after the #362 fix bound resolution at this boundary, wrapping the
+// same mixed tree in forma.WrapPublicf (or WithOperatorDetail) reconstructed
+// the borrow one level up — the decorator qualified via whole-tree errors.As
+// and its PublicMessage delegated the same way, so the boundary saw a
+// directly-implemented carrier whose subtree held a sentinel, and the foreign
+// sibling's text crossed as "operation[0]: <foreign>". Qualification and
+// delegation now run the same canonical resolution (forma.ResolvePublicMessage),
+// so both decorators degrade and the deny shape answers.
+func TestDecoratedForeignPublicationIsRedacted(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	mixed := errors.Join(
+		fmt.Errorf("bad input: %w", forma.ErrInvalidInput),
+		&foreignPublicError{msg: "manifests/lead/22.json"})
+
+	for name, err := range map[string]error{
+		"WrapPublicf":        forma.WrapPublicf(mixed, "operation[%d]", 0),
+		"WithOperatorDetail": forma.WithOperatorDetail(mixed, errors.New("op detail")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			respondError(rec, "query failed", err, "schema", "orders")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 from the sentinel branch, got %d", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "manifests/") {
+				t.Fatalf("a decorated foreign publication crossed: %s", rec.Body.String())
+			}
+			var resp APIResponse
+			if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+				t.Fatalf("body is not valid JSON: %v", uerr)
+			}
+			if resp.ErrorClass == "" || resp.ErrorID == "" {
+				t.Fatalf("expected the deny shape, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
+			}
+		})
+	}
+}

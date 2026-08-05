@@ -724,16 +724,28 @@ joined anywhere in a mixed chain publishes only its own message
 denied whatever its shape (`TestUnconvertedSentinelIsRedacted4xx`,
 `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`).
 
-**Resolution is provenance-bound (#362 review, P1).** A `PublicError` node
+**Resolution is provenance-bound and canonical (#362/#363 reviews, P1).**
+`forma.ResolvePublicMessage` is the one traversal: the HTTP boundary calls it,
+`WrapPublicf`/`WithOperatorDetail` qualify their input with it, and the
+decorators' own `PublicMessage()` delegates through it. A `PublicError` node
 qualifies only when a client sentinel is reachable from that node's *own*
 subtree — the forma constructors guarantee this by construction. Two gates
 searching the whole tree independently would let a mixed chain borrow:
 `errors.Join(bareSentinelWrap, foreignPublicError)` has sentinel evidence in
 one branch and a `PublicMessage()` in the other, and the foreign text would
-cross on the 400. Non-qualifying nodes are stepped over rather than terminal,
-so a legitimate carrier behind a foreign publisher still resolves. Pinned by
-`TestForeignPublicationCannotBorrowSentinelBranch` and
-`TestForeignNodeDoesNotBlockCarrierResolution`.
+cross on the 400. Confining the rule to the boundary was not enough — the
+first fix left the decorators qualifying and delegating via whole-tree
+`errors.As`, so `forma.WrapPublicf(thatSameJoin, "operation[0]")`
+reconstructed the borrow one level up; sharing the traversal closes the class,
+not the instance. Node matching follows `errors.As` semantics (direct
+implementation or the node's `As(any) bool` protocol), and non-qualifying
+nodes are stepped over rather than terminal, so a legitimate carrier behind a
+foreign publisher still resolves. Pinned by
+`TestForeignPublicationCannotBorrowSentinelBranch`,
+`TestForeignNodeDoesNotBlockCarrierResolution`,
+`TestDecoratedForeignPublicationIsRedacted`,
+`TestDecoratorsDoNotAdoptForeignPublications`, and
+`TestAsProvidedPublicationResolves`.
 
 Note the deliberate semantic shift from #307: `errors.Join(operatorErr,
 carrier)` now *publishes* the carrier's message at a 4xx, where the shape rule
