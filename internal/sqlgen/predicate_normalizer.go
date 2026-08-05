@@ -231,7 +231,7 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 // operator whitelist.
 func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, hasMeta bool) PgEavLeafPayload {
 	if !hasMeta {
-		return PgEavLeafPayload{Err: fmt.Errorf("attribute not found in cache: %s: %w", kv.Attr, forma.ErrInvalidInput)}
+		return PgEavLeafPayload{Err: forma.InvalidInputf("attribute not found in cache: %s", kv.Attr)}
 	}
 
 	operator, err := conditionexpr.ParseOperatorValueStrict(kv.Value)
@@ -264,10 +264,10 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 	// The `unsupported value_type` default in parsePgEavValue deliberately stays
 	// plain: that names the schema's declared type, not anything the caller sent.
 	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' only supported for text attributes, not '%s': %w", opStr, meta.ValueType, forma.ErrInvalidInput)}
+		return PgEavLeafPayload{Err: forma.InvalidInputf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)}
 	}
 	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return PgEavLeafPayload{Err: fmt.Errorf("operator '%s' not supported for boolean attributes: %w", opStr, forma.ErrInvalidInput)}
+		return PgEavLeafPayload{Err: forma.InvalidInputf("operator '%s' not supported for boolean attributes", opStr)}
 	}
 
 	return PgEavLeafPayload{
@@ -297,7 +297,7 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 		case float64:
 			return "value_numeric", v, nil
 		default:
-			return "", nil, fmt.Errorf("invalid numeric value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+			return "", nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
 		}
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
@@ -310,7 +310,7 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 	case forma.ValueTypeBool:
 		parsedInt, boolErr := strconv.Atoi(valStr)
 		if boolErr != nil {
-			return "", nil, fmt.Errorf("invalid boolean value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+			return "", nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 		}
 		if parsedInt > 0 {
 			return "value_numeric", float64(1), nil
@@ -342,7 +342,7 @@ func normalizePgMainPayload(
 		if meta.ColumnBinding == nil {
 			return PgMainLeafPayload{Skip: true}
 		}
-		return PgMainLeafPayload{Err: fmt.Errorf("unsupported operator: %s: %w", lenient.Operator, forma.ErrInvalidInput)}
+		return PgMainLeafPayload{Err: forma.InvalidInputf("unsupported operator: %s", lenient.Operator)}
 	}
 	if lenientSQLErr != nil {
 		return PgMainLeafPayload{Err: lenientSQLErr}

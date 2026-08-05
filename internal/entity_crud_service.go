@@ -52,15 +52,15 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("entity operation cannot be nil: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("entity operation cannot be nil")
 	}
 
 	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("schema name is required")
 	}
 
 	if req.Data == nil {
-		return nil, fmt.Errorf("data is required for create operation: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("data is required for create operation")
 	}
 
 	// Get schema by name to obtain schema ID and the attribute cache the
@@ -132,15 +132,15 @@ func (s *entityCRUDService) Get(ctx context.Context, req *forma.QueryRequest) (*
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("query request cannot be nil: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("query request cannot be nil")
 	}
 
 	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("schema name is required")
 	}
 
 	if req.RowID == nil {
-		return nil, fmt.Errorf("row ID is required for get operation: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("row ID is required for get operation")
 	}
 
 	// Verify schema exists and fetch schema ID.
@@ -154,7 +154,7 @@ func (s *entityCRUDService) Get(ctx context.Context, req *forma.QueryRequest) (*
 		return nil, fmt.Errorf("failed to load persistent record: %w", err)
 	}
 	if record == nil {
-		return nil, fmt.Errorf("entity not found: %s/%s: %w", req.SchemaName, req.RowID, forma.ErrNotFound)
+		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
 	dataRecord, err := s.toDataRecord(ctx, req.SchemaName, record)
@@ -177,19 +177,19 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	}
 
 	if req == nil {
-		return nil, fmt.Errorf("entity operation cannot be nil: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("entity operation cannot be nil")
 	}
 
 	if req.SchemaName == "" {
-		return nil, fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("schema name is required")
 	}
 
 	if req.RowID == (uuid.UUID{}) {
-		return nil, fmt.Errorf("row ID is required for update operation: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("row ID is required for update operation")
 	}
 
 	if req.Updates == nil {
-		return nil, fmt.Errorf("updates are required for update operation: %w", forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("updates are required for update operation")
 	}
 
 	// Get schema by name.
@@ -204,7 +204,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
 	if existingRecord == nil {
-		return nil, fmt.Errorf("entity not found: %s/%s: %w", req.SchemaName, req.RowID, forma.ErrNotFound)
+		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
 	existingData, err := s.transformer.FromPersistentRecord(ctx, existingRecord)
@@ -258,15 +258,15 @@ func (s *entityCRUDService) Delete(ctx context.Context, req *forma.EntityOperati
 	}
 
 	if req == nil {
-		return fmt.Errorf("entity operation cannot be nil: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("entity operation cannot be nil")
 	}
 
 	if req.SchemaName == "" {
-		return fmt.Errorf("schema name is required: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("schema name is required")
 	}
 
 	if req.RowID == (uuid.UUID{}) {
-		return fmt.Errorf("row ID is required for delete operation: %w", forma.ErrInvalidInput)
+		return forma.InvalidInputf("row ID is required for delete operation")
 	}
 
 	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)

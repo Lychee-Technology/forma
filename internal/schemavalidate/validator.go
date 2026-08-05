@@ -281,7 +281,12 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 	}
 
 	if err := resolved.Validate(instance); err != nil {
-		return fmt.Errorf("schema validation failed: %v: %w", err, forma.ErrInvalidInput)
+		// Deliberately publishes the library's violation prose (#313): it is
+		// type/enum/pattern/minimum text over the caller's own instance and the
+		// schema's own constraints — no paths, no credentials. If a shipped schema
+		// ever uses anyOf/oneOf (whose branches render schema objects, $ref
+		// fragments included), switch this site to forma.WithOperatorDetail.
+		return forma.InvalidInputf("schema validation failed: %v", err)
 	}
 	return nil
 }

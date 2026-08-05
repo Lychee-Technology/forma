@@ -150,7 +150,7 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 	defer restore()
 
 	manager := &mockEntityManager{
-		batchCreateErr: fmt.Errorf("attribute 'age' (attrID=2): %w: cannot convert string to float64", forma.ErrInvalidInput),
+		batchCreateErr: forma.InvalidInputf("attribute 'age' (attrID=2): cannot convert string to float64"),
 	}
 	srv := NewServer(manager, Options{})
 
@@ -166,24 +166,24 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 	}
 }
 
-// TestCreateUnknownSchemaIs404AndVerbatim pins the only externally visible
-// behaviour change in #301: handleCreate stopped hardcoding 500 and now answers
-// its classified status, so POST to an unknown schema returns 404 instead of
-// 500.
+// TestCreateUnknownSchemaIs404AndVerbatim pins the externally visible
+// behaviour change from #301: handleCreate answers its classified status, so
+// POST to an unknown schema returns 404 instead of 500.
 //
-// It also pins that this 404 takes the *verbatim* branch. The chain is the real
-// one — internal/schemameta/file_registry.go:222 wraps forma.ErrNotFound — so
-// classifyManagerError reaches 404 on sentinel evidence and isClientError is
-// true. That combination must leave the body unredacted and free of
-// error_class/error_id, which is what distinguishes it from an error carrying no
-// sentinel at all (TestSentinelLessErrorIsRedacted500).
+// It also pins that this 404 publishes. The chain is the shape the batch
+// service now builds — the registry's name-keyed forma.NotFoundf leaf under
+// the batch loop's forma.WrapPublicf — so the body names the schema the
+// caller sent while staying free of error_class/error_id, which is what
+// distinguishes it from an error carrying no publication at all
+// (TestUnconvertedSentinelIsRedacted4xx).
 func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
 
 	manager := &mockEntityManager{
-		batchCreateErr: fmt.Errorf("operation[0]: failed to get schema: %w",
-			fmt.Errorf("schema not found: %s: %w", "nosuchschema", forma.ErrNotFound)),
+		batchCreateErr: forma.WrapPublicf(
+			forma.NotFoundf("schema not found: %s", "nosuchschema"),
+			"operation[0]: failed to get schema"),
 	}
 	srv := NewServer(manager, Options{})
 
@@ -265,9 +265,10 @@ var writeErrorAllowed4xx = map[string]bool{
 // The invariant: every writeError call in a non-test file passes a literal 4xx
 // http.Status* constant from writeErrorAllowed4xx, with exactly one sanctioned
 // exception — respondErrorWithStatus in error_response.go, which passes the
-// variable `status` under a runtime gate (canDiscloseVerbatim) that is what actually
-// constrains it. That exception is exempted by asserting it is unique, so if it
-// moves, multiplies, or reappears in another file the guard fails.
+// variable `status` under a runtime gate (isClientError + resolvePublicMessage,
+// #313) that is what actually constrains it. That exception is exempted by
+// asserting it is unique, so if it moves, multiplies, or reappears in another
+// file the guard fails.
 //
 // It is an allowlist rather than a blocklist of bad statuses because a blocklist
 // can be spelled around, and the most likely regression shape spells around it
@@ -285,7 +286,7 @@ var writeErrorAllowed4xx = map[string]bool{
 //
 // NOTE: the other unchecked axis is the message. This guard reads only the
 // *status* expression; it cannot tell whether the third argument is safe to
-// disclose. That judgement belongs to canDiscloseVerbatim inside
+// disclose. That judgement belongs to resolvePublicMessage inside
 // respondErrorWithStatus, and the direct call sites stay safe only because their
 // messages come from request parsing (parsePath, readJSONBody, parseUUID,
 // parseCreateObjects, parseSortParams), never from the manager, the engine, S3,

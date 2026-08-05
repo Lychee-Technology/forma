@@ -20,12 +20,11 @@ import (
 // the operator log line.
 //
 // Classification keys off sentinel evidence alone; disclosure needs that *and*
-// an unambiguous chain (canDiscloseVerbatim). So a redacted body is a 500 on
-// every live path today — no production error joins a client sentinel to an
-// operator cause — but the two are separately decided and a redacted 4xx is now
-// reachable by construction: a multi-cause chain carrying a client sentinel
-// classifies 4xx on that sentinel and still redacts. Such a body carries
-// error_class "internal" plus an error_id, like any other redacted response.
+// a deliberately published message (#313, resolvePublicMessage). A client
+// error built without a forma.PublicError carrier keeps its 4xx status but
+// takes the redacted branch — deny-by-default on the disclosure axis. Such a
+// body carries error_class "internal" plus an error_id, like any other
+// redacted response.
 //
 // errorClassInternal deliberately absorbs ErrFederatedReadFailed,
 // ErrPostgresReadFailed, metadata drift, and transform failures. A client-facing
@@ -163,12 +162,10 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 // Deleting the heuristic also removes the last site in the codebase that
 // classified an error by string comparison, which AGENTS.md forbids outright.
 //
-// The cost is that a genuine client error only earns its 4xx by wrapping a
+// The cost is that a genuine client error only earns its 4xx by carrying a
 // sentinel, and removing the heuristic therefore required a sweep. Six sites
-// across four packages had been relying on it and now wrap forma.ErrInvalidInput.
-// The human-authored message prefix is unchanged; the %w rendering appends
-// ": invalid input" to the full string, and that suffix is a kept part of the
-// body contract (#309):
+// across four packages had been relying on it and now carry
+// forma.ErrInvalidInput (since #313 via the forma.InvalidInputf carrier):
 //
 //   - internal/entity_query_sort.go — unknown sort attribute (#296)
 //   - internal/transform/transformer.go — create or update body omitting a
@@ -187,10 +184,12 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 // The table in docs/error-handling.md ("Public HTTP error surface") is the
 // maintained list, with the caller mistake each one represents.
 //
-// IF YOU ADD A VALIDATOR that rejects caller input anywhere behind this boundary,
-// wrap forma.ErrInvalidInput. There is no message-text fallback any more: an
-// unwrapped validation error is a 500 with an opaque body, and the caller is told
-// nothing about what they got wrong.
+// IF YOU ADD A VALIDATOR that rejects caller input anywhere behind this
+// boundary, build the error with forma.InvalidInputf (or NotFoundf/Conflictf)
+// so it carries both the sentinel and a published message. There is no
+// message-text fallback: an error with no sentinel is a 500 with an opaque
+// body, and a bare fmt.Errorf wrap of a sentinel is a 4xx with an opaque body
+// (#313) — either way the caller is told nothing about what they got wrong.
 func classifyManagerError(err error) int {
 	switch {
 	case err == nil:
@@ -209,10 +208,10 @@ func classifyManagerError(err error) int {
 // respondError classifies err, records the chain for operators under
 // redactCredentials, and writes a client-safe body.
 //
-// A 4xx that carries positive sentinel evidence of caller fault down an
-// unambiguous chain (canDiscloseVerbatim) keeps the verbatim message: it
-// describes caller-supplied input, the caller needs to know what to fix, and
-// nothing on the write path touches S3 or the postgres_scan connection string.
+// A 4xx that carries positive sentinel evidence of caller fault AND a
+// deliberately published message (forma.PublicError) emits that message: it
+// was authored at the wrap site for the caller, and nothing else from the
+// chain rides along (#313).
 //
 // Everything else carries no error text at all (#301). Errors reaching this point hold
 // bucket-relative S3 object keys and — when DuckDB fails to attach
@@ -227,96 +226,76 @@ func respondError(w http.ResponseWriter, op string, err error, logFields ...any)
 
 // isClientError reports whether err is provably the caller's fault.
 //
-// Positive sentinel evidence is the only safe gate for disclosure (#301). It is
-// now also what classifyManagerError decides on, so for a respondError caller the
-// two agree by construction. The check stays separate because
-// respondErrorWithStatus also serves callers that pass their own status
-// (executeGet), and a status alone must never be able to open the verbatim branch.
+// Positive sentinel evidence is the first conjunct of the disclosure decision
+// (#301). It is also what classifyManagerError decides on, so for a
+// respondError caller the two agree by construction. The check stays separate
+// because respondErrorWithStatus also serves callers that pass their own
+// status (executeGet), and a status alone must never be able to open the
+// disclosed branch.
 //
-// It is necessary but no longer sufficient for disclosure: errors.Is matches any
-// leaf, so a sentinel found inside a multi-cause chain proves only that *some*
-// branch is caller fault. hasMultipleCauses is the second conjunct — see
-// canDiscloseVerbatim.
+// It is necessary but not sufficient: disclosure additionally requires a
+// deliberately published message (resolvePublicMessage). Keeping the sentinel
+// conjunct means a foreign type that happens to implement PublicMessage()
+// cannot publish itself through this boundary without also carrying a client
+// sentinel — the same "necessary, never sufficient" relationship the status
+// conjunct has.
 func isClientError(err error) bool {
 	return errors.Is(err, forma.ErrInvalidInput) ||
 		errors.Is(err, forma.ErrNotFound) ||
 		errors.Is(err, forma.ErrConflict)
 }
 
-// hasMultipleCauses reports whether any node in err's chain fans out to more
-// than one cause.
+// resolvePublicMessage returns the message err deliberately published, if any.
 //
-// Both errors.Join and a multi-verb fmt.Errorf("%w: %w", …) produce a node
-// implementing `Unwrap() []error`, and that is the shape that makes provenance
-// ambiguous: errors.Is descends into every branch, so a client sentinel in one
-// branch cannot tell you the *other* branch is also the caller's fault.
+// This replaces #307's chain-shape heuristic (canDiscloseVerbatim's
+// "single-cause chains may disclose verbatim"): shape proved a weak proxy for
+// provenance — a single-cause wrap could still embed driver prose in its own
+// text, and the one live mixed chain (an unrenderable caller-supplied path
+// template, internal/federated/duckdb_query_build.go) collapsed to an opaque
+// body precisely when the caller needed guidance. Publication is decided where
+// the error is authored: errors.As resolves the outermost forma.PublicError
+// (preorder, left-first), so wrap prefixes accumulate and a carrier joined
+// anywhere in a multi-cause chain still publishes only its own text.
 //
-// errors.Unwrap alone cannot walk this: it is defined only for `Unwrap() error`
-// and returns nil at a multi-cause node, so a loop built on it would stop at the
-// fan-out instead of detecting it. Single-cause nodes are followed through so a
-// join wrapped in context is still caught.
-func hasMultipleCauses(err error) bool {
-	for err != nil {
-		joined, ok := err.(interface{ Unwrap() []error })
-		if !ok {
-			err = errors.Unwrap(err)
-			continue
-		}
-		causes := joined.Unwrap()
-		if len(causes) > 1 {
-			return true
-		}
-		if len(causes) == 0 {
-			return false
-		}
-		err = causes[0]
+// An empty publication is treated as no publication: nothing about an empty
+// string proves a wrap site authored it deliberately.
+func resolvePublicMessage(err error) (string, bool) {
+	var pub forma.PublicError
+	if !errors.As(err, &pub) {
+		return "", false
 	}
-	return false
-}
-
-// canDiscloseVerbatim reports whether err's message may cross to the client
-// unchanged (#301, Finding 3).
-//
-// Two conjuncts, both required. isClientError is the positive sentinel evidence
-// that the error describes caller-supplied input. hasMultipleCauses is the
-// provenance check: a chain that fans out carries causes the sentinel says
-// nothing about, so it is treated as ambiguous and redacted regardless of the
-// sentinel. Previously any client-sentinel leaf granted disclosure, so
-// errors.Join(clientSentinel, operatorError) published the operator cause —
-// credentials scrubbed, but an S3 object key still reached a 400 body.
-//
-// The blast radius of the second conjunct is nil in this repo: every error that
-// wraps forma.ErrInvalidInput/ErrNotFound/ErrConflict is built with a single
-// `%w`, and every multi-cause site (internal/federated's `%w: %w` wraps,
-// internal/compaction, internal/cdc's errors.Join) carries read-path sentinels
-// that already redact. A future client error built multi-cause would lose its
-// verbatim body rather than gain a wrong status — the conservative direction,
-// and the one the issue owner asked for over the alternative of narrowing
-// errors.Is to the outermost cause.
-func canDiscloseVerbatim(err error) bool {
-	return isClientError(err) && !hasMultipleCauses(err)
+	msg := pub.PublicMessage()
+	if msg == "" {
+		return "", false
+	}
+	return msg, true
 }
 
 // respondErrorWithStatus is respondError for callers that have already
 // classified in order to choose their message (executeGet's 404 wording).
 //
-// The gate on disclosure is canDiscloseVerbatim — positive sentinel evidence
-// down an unambiguous chain — not the status code, so a caller-supplied 4xx
-// cannot promote an operator error to verbatim. The status conjunct only ever
-// holds disclosure back.
+// The gate on disclosure is sentinel evidence plus a published message
+// (isClientError + resolvePublicMessage) — not the status code, so a
+// caller-supplied 4xx cannot promote an operator error to disclosure. The
+// status conjunct only ever holds disclosure back.
 //
-// Every string that leaves this function passes through redactCredentials first,
-// body and log alike. The log needs it because DuckDB puts the postgres_scan
-// connection string, password included, into its own attach-failure prose, and
-// this package's Errorw line is where that would otherwise enter log collection
-// and retention. The body keeps it as defence in depth: the multi-cause chains
-// that could carry driver text now take the redacted branch anyway, so nothing
-// depends on the scrub to keep a password out of a response.
+// Every string that leaves this function passes through redactCredentials
+// first, body and log alike. The log needs it because DuckDB puts the
+// postgres_scan connection string, password included, into its own
+// attach-failure prose, and this package's Errorw line is where that would
+// otherwise enter log collection and retention. The published message is
+// scrubbed too, as defence in depth: it is authored at a wrap site, and a wrap
+// site can interpolate a DSN by accident.
 //
-// Every redacted response logs at Errorw whatever its status, because a redacted
-// body is the operator's only remaining copy of the detail and the production
-// logger runs at Info (cmd/server/main.go). Only the verbatim branch logs at
-// Debugw: there, the caller already has the full message.
+// Log levels are contract. Every redacted response logs at Errorw whatever its
+// status, because a redacted body is the operator's only remaining copy of the
+// detail and the production logger runs at Info (cmd/server/main.go). A
+// disclosed 4xx logs at Debugw when the chain holds nothing beyond its
+// publication — the caller already has everything — but at Warnw when
+// operator detail was withheld (forma.HasOperatorDetail): that line is the
+// only copy of the detail, so it must clear the Info threshold, without
+// inheriting Errorw's alerting weight for something a caller can trigger at
+// will.
 func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
 	fields := make([]any, 0, len(logFields)+8)
 	fields = append(fields, logFields...)
@@ -331,10 +310,14 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	}
 	safe := redactCredentials(err.Error())
 
-	if status < http.StatusInternalServerError && canDiscloseVerbatim(err) {
+	if msg, ok := resolvePublicMessage(err); ok && status < http.StatusInternalServerError && isClientError(err) {
 		fields = append(fields, "error", safe)
-		zap.S().Debugw(op, fields...)
-		_ = writeError(w, status, fmt.Sprintf("%s: %s", op, safe))
+		if forma.HasOperatorDetail(err) {
+			zap.S().Warnw(op, fields...)
+		} else {
+			zap.S().Debugw(op, fields...)
+		}
+		_ = writeError(w, status, fmt.Sprintf("%s: %s", op, redactCredentials(msg)))
 		return
 	}
 

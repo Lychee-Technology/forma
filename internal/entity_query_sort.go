@@ -34,20 +34,21 @@ func resolveSortKeys(req *forma.QueryRequest) ([]sortKey, error) {
 	}
 
 	if len(req.SortBy) > 0 || req.SortOrder != "" {
-		return nil, fmt.Errorf(
-			"sort cannot be combined with sort_by/sort_order: use sort alone for per-key directions: %w",
-			forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf(
+			"sort cannot be combined with sort_by/sort_order: use sort alone for per-key directions")
 	}
 
 	keys := make([]sortKey, 0, len(req.Sort))
 	for i, entry := range req.Sort {
 		attr := strings.TrimSpace(entry.Attribute)
 		if attr == "" {
-			return nil, fmt.Errorf("sort entry %d has an empty attribute: %w", i, forma.ErrInvalidInput)
+			return nil, forma.InvalidInputf("sort entry %d has an empty attribute", i)
 		}
 		order, err := normalizeSortOrder(entry.SortOrder)
 		if err != nil {
-			return nil, fmt.Errorf("sort entry for attribute '%s': %w", attr, err)
+			// The attribute name identifies which entry is wrong — caller-actionable,
+			// so the prefix belongs in the published message too.
+			return nil, forma.WrapPublicf(err, "sort entry for attribute '%s'", attr)
 		}
 		keys = append(keys, sortKey{attr: attr, order: order})
 	}
@@ -63,7 +64,7 @@ func normalizeSortOrder(raw forma.SortOrder) (forma.SortOrder, error) {
 	case forma.SortOrderDesc:
 		return forma.SortOrderDesc, nil
 	default:
-		return "", fmt.Errorf("invalid sort_order '%s': expected 'asc' or 'desc': %w", raw, forma.ErrInvalidInput)
+		return "", forma.InvalidInputf("invalid sort_order '%s': expected 'asc' or 'desc'", raw)
 	}
 }
 
@@ -81,15 +82,12 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 	for _, key := range keys {
 		meta, ok := schemaCache[key.attr]
 		if !ok {
-			// Wraps forma.ErrInvalidInput (#296): naming an attribute the schema
-			// does not define is caller fault, and the HTTP boundary now classifies
-			// on sentinel evidence alone (#301). Without the sentinel this would
-			// answer 500 with a redacted body instead of 400 with the guidance the
-			// caller needs. The human-authored prefix is unchanged on purpose — it
-			// is what callers and tests match on — while the %w rendering appends
-			// ": invalid input" to the full string (#309).
-			return nil, fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s': %w",
-				key.attr, req.SchemaName, forma.ErrInvalidInput)
+			// A client error (#296): naming an attribute the schema does not define
+			// is caller fault, and the HTTP boundary classifies on sentinel evidence
+			// alone (#301). The carrier's published message is the whole body text
+			// the caller sees (#313), so it must name the attribute and the schema.
+			return nil, forma.InvalidInputf("cannot sort by unknown attribute '%s' in schema '%s'",
+				key.attr, req.SchemaName)
 		}
 		order := model.AttributeOrder{
 			AttrID:    meta.AttributeID,

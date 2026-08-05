@@ -32,7 +32,7 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 		case float64:
 			return v, nil
 		default:
-			return nil, fmt.Errorf("invalid numeric value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+			return nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
 		}
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
@@ -54,7 +54,7 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 func convertPgBoolValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	parsedInt, err := strconv.Atoi(valStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid boolean value for '%s': %s: %w", attr, valStr, forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 	}
 
 	if meta.ColumnBinding == nil {
@@ -137,7 +137,7 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		case float64:
 			return v, nil
 		default:
-			return nil, fmt.Errorf("invalid numeric literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
+			return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
 		}
 
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
@@ -146,7 +146,7 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		if f, e := strconv.ParseFloat(valStr, 64); e == nil {
 			return f, nil
 		}
-		return nil, fmt.Errorf("invalid numeric literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Epoch-ms int64: date columns in the federated CTEs are BIGINT (#200).
@@ -155,7 +155,7 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		} else if i, e := strconv.ParseInt(valStr, 10, 64); e == nil {
 			return i, nil
 		}
-		return nil, fmt.Errorf("invalid date literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
+		return nil, forma.InvalidInputf("invalid date literal for %s: %s", attr, valStr)
 
 	default:
 		return valStr, nil

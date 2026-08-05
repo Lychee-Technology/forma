@@ -6,8 +6,11 @@ Forma uses two error classes in the schema/metadata pipeline.
 
 ## Write-path validation errors
 
-Write operations wrap `forma.ErrInvalidInput` when the caller provides data that
-cannot be accepted.
+Write operations build a `forma.InvalidInputf` carrier when the caller provides
+data that cannot be accepted. The carrier does two things at once: it wraps
+`forma.ErrInvalidInput` (so `errors.Is` classification holds everywhere), and
+it records the message as *deliberately published* (`forma.PublicError`), which
+is what the HTTP boundary emits on the 4xx body (#313).
 
 Examples:
 
@@ -17,7 +20,10 @@ Examples:
 - a payload that violates the entity's JSON Schema (`internal/schemavalidate`) —
   see "JSON Schema enforcement on write" below
 
-These errors are intended to surface as user-facing `4xx` responses.
+These errors are intended to surface as user-facing `4xx` responses. A bare
+`fmt.Errorf("…: %w", forma.ErrInvalidInput)` still earns the 400 status but
+answers a **redacted** body — the deny-by-default shape (#313) — and is
+rejected at build time by `TestNoBareSentinelWraps` (root package).
 
 ## JSON Schema enforcement on write
 
@@ -431,12 +437,14 @@ cannot echo a runtime-classified status without going through `respondError`.
 `forma.ErrConflict` (409), and `forma.ErrInvalidInput` (400); everything else —
 including a `nil` error — is `500`.
 
-**Disclosure needs the same evidence plus an unambiguous chain.**
-`canDiscloseVerbatim` is `isClientError(err) && !hasMultipleCauses(err)`: a body
-is verbatim only when the error *provably* wraps one of those three sentinels
-*and* no node in its chain fans out to more than one cause. Everything else is
-redacted. See "Multi-cause chains are redacted" below for why the second
-conjunct exists.
+**Disclosure needs the same evidence plus a deliberately published message
+(#313).** The gate is `isClientError(err)` plus `resolvePublicMessage(err)`: a
+4xx body carries text only when the error *provably* wraps one of those three
+sentinels *and* the chain holds a `forma.PublicError` — a carrier built by
+`forma.InvalidInputf`/`NotFoundf`/`Conflictf`, optionally prefixed through
+`forma.WrapPublicf`. What crosses is `PublicMessage()`, never `err.Error()`.
+Everything else is redacted. See "Only published text crosses" below for how
+this replaced the earlier chain-shape rule.
 
 There is no substring heuristic. An earlier version classified on message text
 (`not found` → 404, `duplicate` → 409, `invalid`/`required`/`must be` → 400) for
@@ -453,11 +461,11 @@ errors that wrapped no sentinel. It was removed for two reasons:
 - **It was the last site classifying an error by string comparison**, which
   `AGENTS.md` forbids.
 
-The consequence is that a genuine client error earns its 4xx only by wrapping a
-sentinel. Removing the heuristic therefore required a sweep of the sites that had
-been relying on it — every one of them now wraps `forma.ErrInvalidInput`, with
-the human-authored message prefix unchanged (the rendered string gains a
-sentinel suffix — see below):
+The consequence is that a genuine client error earns its 4xx only by carrying a
+sentinel. Removing the heuristic therefore required a sweep of the sites that
+had been relying on it — every one of them now builds a `forma.InvalidInputf`
+carrier, and the message each publishes is the same human-authored text it
+always rendered:
 
 | site | caller mistake |
 | --- | --- |
@@ -472,26 +480,43 @@ attribute would answer `500` with an opaque body instead of naming the attribute
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
 
-**The rendered body is the prefix plus a sentinel suffix, and the suffix is
-deliberate (#309).** Wrapping with `%w` renders the sentinel's own text, so a
-verbatim 4xx body ends in `: invalid input` (likewise `: not found` and
-`: conflict` for the other two sentinels) — e.g.
-`unsupported operator: equals: invalid input`, or the
-`…: schema not found: nosuchschema: not found` body in the worked example under
-"Accepted disclosures inside the allowlist" below. What the sweep preserved is
-the human-authored prefix, not the exact full string. The suffix is kept as part
-of the body contract: clients must not assert on the exact full message — match
-the prefix (this repo's tests use `Contains`) or, better, key on the status
-code. Stripping the suffix would be a message-construction change to every wrap
-site, and #309 decided against it.
+**The sentinel suffix no longer reaches bodies — #309's clause is overturned by
+#313.** `Error()` still renders `<message>: invalid input` (likewise
+`: not found`, `: conflict`), byte-identical to the old `%w` wraps, so logs and
+Go embedders see the same text as before. But the body now carries
+`PublicMessage()`, which is the human-authored message alone — e.g.
+`unsupported operator: equals`, no suffix. #309 declined to strip the suffix
+because doing so meant touching every wrap site; #313 touched every wrap site
+anyway, so the removal came for free. The standing advice is unchanged and now
+enforced by construction: clients must not assert on the exact full message —
+match a substring (this repo's tests use `Contains`) or, better, key on the
+status code.
+
+**Authorship rule for wrap layers.** `forma.WrapPublicf` prefixes both the
+operator message and the published one; use it only where the layer adds
+caller-actionable identification — a batch index (`operation[%d]`), a
+caller-supplied name. A layer that adds operator context (an internal phase
+name like `pg sql generation`, an internal schema id) stays a plain
+`fmt.Errorf`, so its prefix reaches the log and never the body. Operator-only
+facts that belong *on the same error* ride `forma.WithOperatorDetail`: they
+stay in `Error()` and in the chain for `errors.Is`/`As`, and never in
+`PublicMessage()`.
 
 Since #314 there is a **second** write-path validator on the same footing,
-`internal/schemavalidate`'s `Validator.Validate`, which wraps
-`forma.ErrInvalidInput` for a JSON Schema violation — `enum`, `pattern`, `type`,
-`minimum`/`maximum`, and the schema's own `required`. It is independent of the
-`required_policy` row above: the two check different things and both run. Its
-*non*-violation errors deliberately stay plain, so a `500`; see "JSON Schema
-enforcement on write" for the split.
+`internal/schemavalidate`'s `Validator.Validate`, which builds an
+`InvalidInputf` carrier for a JSON Schema violation — `enum`, `pattern`,
+`type`, `minimum`/`maximum`, and the schema's own `required`. It is independent
+of the `required_policy` row above: the two check different things and both
+run. Its *non*-violation errors deliberately stay plain, so a `500`; see "JSON
+Schema enforcement on write" for the split.
+
+Its published message deliberately includes the third-party `jsonschema-go`
+violation prose (decision recorded at the wrap site, `validator.go`): that text
+is `type`/`enum`/`pattern`/`minimum` prose over the caller's own instance and
+the schema's own constraints — no paths, no credentials. Recorded trigger for
+revisiting: the library's `anyOf`/`oneOf` branches render schema objects,
+`$ref` fragments included. No shipped schema uses `anyOf`/`oneOf` today; if one
+ever does, that site switches to `forma.WithOperatorDetail`.
 
 **The sweep also underreached once.** It missed
 `normalizePgEavPayload`'s operator whitelist — the two rejections that pair an
@@ -533,18 +558,17 @@ startup validation) or internal invariants — `schema id must be positive`,
 `500` is the more truthful answer than the misleading 4xx they used to return.
 
 The full disclosure condition is `status < http.StatusInternalServerError &&
-canDiscloseVerbatim(err)`. The status conjunct can only hold disclosure back,
-never grant it: a caller that passes an explicit 5xx to `respondErrorWithStatus`
-gets a redacted body even if the error wraps a sentinel.
+isClientError(err)` plus a resolved publication (`resolvePublicMessage`). The
+status conjunct can only hold disclosure back, never grant it: a caller that
+passes an explicit 5xx to `respondErrorWithStatus` gets a redacted body even if
+the error wraps a publishing carrier. Pinned by `TestCarrierAtA5xxIsRedacted`.
 
-On every live path today **a redacted body is a `500`** — no error in this repo
-joins a client sentinel to an operator cause, so an error without a sentinel
-classifies 500 and redacts, and one with a sentinel classifies 4xx and discloses.
-But status and disclosure are now separately decided in a way that a client must
-not read as coupled: a multi-cause chain carrying a client sentinel classifies
-`4xx` on that sentinel and **still redacts**, producing a `400` body with
-`error_class` and `error_id`. Clients must key on `error_class`/`error_id` being
-present, never on the status, to know whether a body is redacted.
+Status and disclosure are separately decided in a way that a client must not
+read as coupled: an error that carries a client sentinel but publishes nothing
+— a bare sentinel wrap, or a carrier-less mixed chain — classifies `4xx` on
+that sentinel and **still redacts**, producing a `400` body with `error_class`
+and `error_id`. Clients must key on `error_class`/`error_id` being present,
+never on the status, to know whether a body is redacted.
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 an `error_id`, and — when the chain holds a typed read-path carrier — a
@@ -555,9 +579,9 @@ common case in production** — it absorbs `ErrFederatedReadFailed`,
 `ErrPostgresReadFailed`, metadata drift, and transform failures — so a client
 asserting on the literal `internal read error` would break on the majority of
 redacted responses. Discriminate on `error_class`, never on `error`. The chain
-goes to `zap.S().Errorw`; the verbatim branch logs the same text at `Debugw`,
-where the caller already has it. An operator retrieves the detail from the
-`error_id` the caller quotes.
+goes to `zap.S().Errorw`; the disclosed branch logs the same text at `Debugw` —
+or at `Warnw` when the error withholds operator detail, see "Log levels" below.
+An operator retrieves the detail from the `error_id` the caller quotes.
 
 #### `schema_id` on a redacted body — a reversed decision
 
@@ -578,10 +602,11 @@ asked about. Operators still see both ids — the full message is on the log lin
 "error class + schema id"; the design settled on `error_class` + `error_id` and
 this section previously stated "no schema id" as a constraint on redacted bodies;
 the issue owner reinstated the schema id. The reasoning that justified excluding
-it is what now permits it — a schema ID is a low-value opaque integer, and one
-already crosses verbatim on the ID-keyed 404s recorded under the "Accepted
-disclosures inside the allowlist" section below. What it buys is a redacted body
-a client can correlate without an operator round-trip.
+it is what now permits it — a schema ID is a low-value opaque integer. (When
+this was decided one also crossed inside ID-keyed 404 prose; #313 has since
+closed that, see "Formerly accepted disclosures" below, but the structured
+field here stands on the same low-value reasoning.) What it buys is a redacted
+body a client can correlate without an operator round-trip.
 
 `schema_id` is `omitempty` on `APIResponse`, and that encoding is lossless rather
 than lossy only because **schema IDs are always positive** — the same invariant
@@ -595,9 +620,10 @@ message, so operator log queries filter on `schema_id` instead of parsing prose.
 It is omitted from the log line too when zero, so a log entry never asserts a
 schema the error did not name.
 
-Verbatim 4xx bodies are unaffected: population happens on the redacted branch
-only, so their serialization is byte-identical to pre-#301. Pinned by
-`TestVerbatim4xxBodyCarriesNoSchemaID`.
+Published 4xx bodies are unaffected: population happens on the redacted branch
+only, so a disclosed body carries message text and nothing else — even when the
+chain holds a resolvable carrier as operator detail. Pinned by
+`TestPublished4xxBodyCarriesNoSchemaID`.
 
 ### Credentials are scrubbed before anything is written
 
@@ -666,39 +692,44 @@ Of that list only the schema id also crosses to the client, as its own
 `schema_id` field (see above). Object keys, endpoint URLs and driver prose are
 log-only.
 
-### Multi-cause chains are redacted
+### Only published text crosses
 
 `isClientError` uses `errors.Is`, which matches any leaf. A multi-cause chain —
 `errors.Join(forma.ErrInvalidInput, driverErr)`, or the `fmt.Errorf("%w: %w", …)`
-shape used throughout `internal/federated` — used to take the **verbatim** branch
-on that leaf alone and echo the driver cause alongside the client one.
+shape used throughout `internal/federated` — used to take the **verbatim**
+branch on that leaf alone and echo the driver cause alongside the client one.
 `redactCredentials` covered the credential half, but a non-credential operator
 detail (an S3 object key) reached a public `400`.
 
-`hasMultipleCauses` closes it. Both `errors.Join` and multi-`%w` produce a node
-implementing `Unwrap() []error`; the walk descends the chain and reports any node
-that fans out. A fan-out means the sentinel proves only that *one* branch is
-caller fault, so provenance is ambiguous and the body is redacted regardless of
-sentinel evidence. Note that `errors.Unwrap` alone cannot detect this — it is
-defined for `Unwrap() error` and returns `nil` at a multi-cause node, so a walk
-built on it stops at the fan-out instead of seeing it.
+#307's answer was a chain-*shape* rule, `canDiscloseVerbatim = isClientError &&
+!hasMultipleCauses`, recorded here with the claim **"Blast radius: nil — no
+production error joins a client sentinel to an operator cause."** That claim
+was false when written: `internal/federated/duckdb_query_build.go` joined
+`forma.ErrInvalidInput` to `text/template`'s render error for an unrenderable
+caller-supplied path template, HTTP-reachable through `POST
+/api/v1/advanced_query`. The rule was safe there but harmful: the caller's own
+broken template answered an opaque `"internal error"` 400. Shape was also a
+weak proxy in the other direction — a single-cause wrap can embed driver or
+third-party prose in its own message text and disclosed it verbatim.
 
-**Blast radius: nil.** Every error in this repo that wraps
-`ErrInvalidInput`/`ErrNotFound`/`ErrConflict` is built with a single `%w`, and
-every multi-cause site carries read-path sentinels that already redact —
-`internal/federated`'s `%w: %w` wraps (`ErrFederatedReadFailed`,
-`ErrPostgresReadFailed`), `internal/cdc`'s `ErrSchemaAttrCacheUnavailable` and
-its `errors.Join` of per-schema flush failures, and `internal/compaction`'s
-`ErrConcurrentModification`. None of those is a client sentinel, and the CDC and
-compaction paths do not reach the HTTP boundary at all. So no live response
-changes; what changes is that a future client error built multi-cause loses its
-verbatim body rather than keeps leaking.
+#313 replaces shape with **provenance of the text itself**. A client error is
+built as a `forma.PublicError` carrier (`InvalidInputf`/`NotFoundf`/
+`Conflictf`, prefixed via `WrapPublicf`, operator facts attached via
+`WithOperatorDetail`), and the boundary emits `PublicMessage()` — text some
+wrap site deliberately authored for the caller — or nothing.
+`hasMultipleCauses` and `canDiscloseVerbatim` are **deleted**: chain shape
+stopped carrying information once raw chain text stopped crossing. A carrier
+joined anywhere in a mixed chain publishes only its own message
+(`TestMixedChainPublishesClientTextOnly`); a sentinel without a carrier is
+denied whatever its shape (`TestUnconvertedSentinelIsRedacted4xx`,
+`TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`).
 
-This is the narrower of the two options considered, and the one the issue owner
-endorsed. The alternative — giving client errors typed public messages instead of
-echoing chain text — is a redesign of the 4xx surface and remains a follow-up.
-Pinned by `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`,
-`TestSingleCauseClientErrorStaysVerbatim`, and `TestHasMultipleCauses`.
+Note the deliberate semantic shift from #307: `errors.Join(operatorErr,
+carrier)` now *publishes* the carrier's message at a 4xx, where the shape rule
+would have redacted it. That is the intended reading of deny-by-default on the
+disclosure axis — the join proves nothing about the carrier's own text, which
+was authored for the caller regardless of what it is joined to. The operator
+branch of the join still never crosses.
 
 ```json
 {
@@ -742,42 +773,38 @@ The success path has the matching rule: `toExecutionPlan`
 the source SQL embeds the `postgres_scan` connection string, and notes can echo
 raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
 
-### Accepted disclosures inside the allowlist
+### Formerly accepted disclosures — both closed by #313
 
-The allowlist is a gate on *provenance*, not on content: an error that wraps a
-client sentinel down a single-cause chain is disclosed verbatim. Two live cases
-put more than the caller's own input into a 4xx body. Both are accepted, not
-bugs — recorded here so the boundary is stated rather than discovered. Both are
-single-cause chains, so `hasMultipleCauses` does not reach them.
+Under the verbatim regime the allowlist was a gate on *provenance*, not on
+content, and two live cases put more than the caller's own input into a 4xx
+body. Both were recorded here as accepted; both are now **closed**, each by the
+remedy this section itself prescribed — summarise at the wrap site, not widen
+the redaction gate.
 
-- **Postgres driver prose on a 409.**
-  `internal/postgres_persistent_repository_main_table.go:25` wraps `pgErr.Detail`
-  with `forma.ErrConflict`, so a unique-violation body carries driver-authored
-  text naming physical columns, e.g.
-  `Key (schema_id, row_id)=(…) already exists.` No credentials or object keys
-  cross, but this is the one remaining case where driver text reaches a public
-  body. If the detail ever needs to stop leaking the physical column layout, the
-  fix is to summarise at the wrap site, not to widen the redaction gate.
-- **Schema identifiers on a 404.** The eleven `forma.ErrNotFound` chains in
-  `internal/schemameta/file_registry.go:199-299` split two ways. Four are
-  name-keyed (`:222`, `:227`, `:276`, `:281`) and echo only the schema name the
-  caller put in the URL — nothing is disclosed that the caller did not supply.
-  The other seven (`:199`, `:204`, `:209`, `:242`, `:247`, `:294`, `:299`) are
-  ID-keyed and render the internal `int16`, e.g. `schema not found for ID: 402`.
-  A caller never supplies that: the URL carries a schema *name* and the system
-  resolves the ID internally, so this genuinely exposes an internal identifier.
-  It is accepted because a schema ID is a low-value opaque integer — not a
-  credential, not a storage path, and not something an attacker can act on
-  without already holding the access the 404 just denied.
+- **Postgres driver prose on a 409 — closed.** `classifyPgError`
+  (`internal/postgres_persistent_repository_main_table.go`) used to wrap
+  `pgErr.Detail`, so a unique-violation body carried driver-authored text
+  naming physical columns (`Key (schema_id, row_id)=(…) already exists.`). It
+  now publishes a curated summary — `the write conflicts with a row that
+  already exists` — and pushes the whole driver error, `Detail` included, into
+  operator detail. Pinned by `TestClassifyPgError`.
+- **Internal schema identifiers on a 404 — closed.** The seven ID-keyed
+  `forma.ErrNotFound` chains in `internal/schemameta/file_registry.go` used to
+  render the internal `int16` (`schema not found for ID: 402`) into the body —
+  an identifier the caller never supplied (the URL carries a schema *name*).
+  They now publish `schema not found` (likewise `schema data not found` /
+  `attribute id index not found`) and carry `schema id N` as operator detail,
+  so the log keeps it. The four name-keyed chains still publish the name — it
+  is the caller's own URL segment. The three repository not-found sites
+  (`postgres_persistent_repository{,_main_table,_batch}.go`) follow the same
+  split: the caller-supplied row id (and batch `key[%d]`) is published, the
+  internal schema id is operator detail. Pinned by
+  `TestRegistryNotFoundPublications`.
 
-  That judgement is no longer confined to the verbatim branch. "No schema id"
-  was originally a stated constraint on *redacted* bodies, and this bullet
-  existed to record where the constraint stopped applying. The constraint has
-  since been **lifted** — the issue owner reinstated the schema id on redacted
-  bodies, on exactly the reasoning above (see the "`schema_id` on a redacted
-  body" subsection above). Both branches now agree that a bare schema ID may
-  cross; the difference is that the redacted branch emits it as a structured
-  `schema_id` field rather than inside prose.
+A bare schema ID may still cross on a **redacted** body as the structured
+`schema_id` field (see "`schema_id` on a redacted body" above) — that decision
+predates #313 and stands; what #313 removed is internal ids riding inside
+published prose.
 
 ### Status change: create errors are now classified
 
@@ -787,21 +814,22 @@ status like every other handler. This is a public contract change, and it is
 independent of redaction.
 
 The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
-**`404` instead of `500`**, and its body is **verbatim, not redacted**:
+**`404` instead of `500`**, and its body is **published, not redacted**:
 
 ```json
 {
   "success": false,
-  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema: not found"
+  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema"
 }
 ```
 
-That follows from the gate rather than contradicting it. The chain built by
-`file_registry.go:222` wraps `forma.ErrNotFound`, and `batchCreateAtomic` wraps
-that in turn, so `classifyManagerError` returns `404` on sentinel evidence and
-`canDiscloseVerbatim` is true — single `%w` at every level, so no fan-out — the
-verbatim branch, logged at `Debugw`, with no
-`error_class`, no `error_id` and no `schema_id`. Pinned by
+That follows from the gate rather than contradicting it. The registry's
+name-keyed `forma.NotFoundf` leaf publishes the schema name the caller sent,
+`batchCreateAtomic` prefixes it through `forma.WrapPublicf` with the batch
+index, so `classifyManagerError` returns `404` on sentinel evidence and the
+boundary emits the accumulated publication — logged at `Debugw`, with no
+`error_class`, no `error_id` and no `schema_id`. (Before #313 the body ended in
+`: not found`; the sentinel suffix no longer crosses.) Pinned by
 `TestCreateUnknownSchemaIs404AndVerbatim`.
 
 Clients keying on `500` to detect create failures must key on `success: false`
@@ -822,23 +850,22 @@ error wraps `forma.ErrInvalidInput` as part of the sweep above.
 | | before (pre-#301) | after |
 | --- | --- | --- |
 | status | `404` | `400` |
-| body | verbatim | verbatim |
+| body | verbatim | disclosed (published since #313) |
 
-**Only the status changed.** The body was verbatim before and is verbatim now —
-this endpoint reached `writeError` directly with the full message, and redaction
-did not exist at all before #301. No `error_class`, `error_id` or `schema_id`
-appeared on this response before, and none appears now: it takes the verbatim
-branch, so its serialization is byte-identical to pre-#301. A client
-keying on `404` to detect a filter typo breaks silently, and that is the whole of
-the migration impact.
+**Only the status changed at #301.** The message a caller reads is the same
+human-authored text throughout; since #313 it arrives as the carrier's
+published message (minus the sentinel suffix) rather than as raw chain text.
+No `error_class`, `error_id` or `schema_id` appeared on this response before,
+and none appears now. A client keying on `404` to detect a filter typo breaks
+silently, and that is the whole of the migration impact.
 
 **Most other condition-DSL errors did not change.** Unparseable filter values,
 unknown operators and malformed `"op:value"` all contain `invalid` or
-`unsupported`, so the heuristic already classified them `400` with a verbatim
-body, and they still answer `400` with a verbatim body. For those, wrapping the
-sentinel *preserved* the existing contract rather than altering it — without it,
-deleting the heuristic would have regressed them to a redacted `500`. That is what
-the sweep was for.
+`unsupported`, so the heuristic already classified them `400` with a usable
+body, and they still answer `400` with the same message published. For those,
+carrying the sentinel *preserved* the existing contract rather than altering
+it — without it, deleting the heuristic would have regressed them to a
+redacted `500`. That is what the sweep was for.
 
 ### Status change: an operator the attribute's type rejects is now 400, not 500
 
@@ -856,7 +883,7 @@ verbatim body; after #301 removed the heuristic it answered `500` with a
 | | before (pre-#301) | after #307, before round 4 | now |
 | --- | --- | --- | --- |
 | status | `500` | `500` | **`400`** |
-| body | verbatim | redacted | verbatim |
+| body | verbatim | redacted | published (#313) |
 
 The sweep simply missed this function; the operator is caller-supplied and the
 message names exactly what to change, so `400` is what the DSL contract always
@@ -935,8 +962,37 @@ of it, including a shortened or emptied list.
 `insertEAVAttributes` additionally routes its `tx.Exec` error through
 `classifyPgError`, matching the two `entity_main` sites. Any residual `23505` the
 dedupe cannot reach — a concurrent writer racing the same row, which could not be
-settled without a live database — therefore answers `409` with a verbatim body
-rather than a redacted `500`.
+settled without a live database — therefore answers `409` with the published
+conflict summary rather than a redacted `500`.
+
+### Status change: service-wiring guards are now 500, not 400 (#313)
+
+Four guards in `internal/entity_query_service.go` — `entity manager config is
+required` and `entity query service is not initialized`, at the head of `Query`
+and `CrossSchemaSearch` — used to wrap `forma.ErrInvalidInput` and answer
+`400`. Nothing about the request is wrong there: they report a mis-wired
+service, which is precisely the operator-fault class. They are plain errors
+now, so they answer a redacted `500`, matching the crud service's existing
+wiring guard. Unreachable through `factory`-wired production servers; visible
+only to embedders that construct the service partially. Pinned by
+`TestQueryServiceWiringGuardsAreNotClientErrors`.
+
+### Log levels are contract
+
+Three levels, decided by what the body withheld (`respondErrorWithStatus`):
+
+| branch | level | why |
+| --- | --- | --- |
+| redacted (any status) | `Errorw` | the body carries no text; the log line is the operator's only copy, and production runs at Info (`cmd/server/main.go`) |
+| disclosed 4xx, no withheld detail | `Debugw` | the caller already has everything; client mistakes must not page anyone |
+| disclosed 4xx with withheld detail (`forma.HasOperatorDetail`) | `Warnw` | the boundary just withheld text whose only remaining copy is this line — it must clear the Info threshold, but `Errorw` would hand callers an alert trigger they can pull at will |
+
+The standing hazard this creates: a disclosed 4xx that withholds detail carries
+**no `error_id`** for the caller to quote back (correlation fields are a
+redacted-branch shape, pinned by six assertions). If withheld-detail 4xxs turn
+out to need operator correlation in practice, adding `error_id` to disclosed
+bodies is a separate contract change — recorded as a follow-up candidate, not
+done here.
 
 ### Known gap
 
@@ -945,6 +1001,10 @@ scrubs them at the HTTP boundary, so nothing served or logged by
 `internal/httpapi` carries one — but a Go embedder using
 `factory.NewEntityManager*` receives the raw `error` and can capture the password
 in its own logs. Scrubbing at the engine's error wraps is tracked by #306.
+
+The same applies to publications: `PublicMessage()` is scrubbed at the HTTP
+boundary as defence in depth, but an embedder reading it directly gets the
+wrap site's text as authored.
 
 ## Message style
 
@@ -958,4 +1018,10 @@ Examples:
 
 - `storage type mismatch for numeric: value_text should not be populated (expected value_numeric)`
 - `missing required attribute 'name' (attrID=1) in EAV records`
-- `attribute 'age' (attrID=2): invalid value: invalid input: cannot convert string to float64`
+- `attribute 'age' (attrID=2): invalid value: cannot convert string to float64`
+
+For client errors, the published message is the whole body the caller sees, so
+the same rules apply to it directly. Anything an operator needs but a caller
+cannot act on — internal ids, driver detail, third-party render prose — goes
+behind `forma.WithOperatorDetail`, which keeps it in `Error()` and the log
+while withholding it from the publication.

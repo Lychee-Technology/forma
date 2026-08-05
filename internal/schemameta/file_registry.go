@@ -196,17 +196,17 @@ func (r *fileSchemaRegistry) schemaMetadataForID(id int16) (forma.SchemaAttribut
 	defer r.mu.RUnlock()
 
 	if _, exists := r.idToName[id]; !exists {
-		return nil, nil, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
+		return nil, nil, forma.WithOperatorDetail(forma.NotFoundf("schema not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	schema, exists := r.schemaAttributeCaches[id]
 	if !exists {
-		return nil, nil, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
+		return nil, nil, forma.WithOperatorDetail(forma.NotFoundf("schema data not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	idToName, exists := r.attrIDToName[id]
 	if !exists {
-		return nil, nil, fmt.Errorf("attribute id index not found for ID: %d: %w", id, forma.ErrNotFound)
+		return nil, nil, forma.WithOperatorDetail(forma.NotFoundf("attribute id index not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	return schema, idToName, nil
@@ -219,12 +219,12 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, 
 
 	schemaID, exists := r.nameToID[name]
 	if !exists {
-		return 0, nil, fmt.Errorf("schema not found: %s: %w", name, forma.ErrNotFound)
+		return 0, nil, forma.NotFoundf("schema not found: %s", name)
 	}
 
 	schema, exists := r.schemaAttributeCaches[schemaID]
 	if !exists {
-		return 0, nil, fmt.Errorf("schema data not found: %s: %w", name, forma.ErrNotFound)
+		return 0, nil, forma.NotFoundf("schema data not found: %s", name)
 	}
 
 	// Return a copy to prevent external mutations
@@ -239,12 +239,12 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, form
 
 	name, exists := r.idToName[id]
 	if !exists {
-		return "", nil, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
+		return "", nil, forma.WithOperatorDetail(forma.NotFoundf("schema not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	schema, exists := r.schemaAttributeCaches[id]
 	if !exists {
-		return "", nil, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
+		return "", nil, forma.WithOperatorDetail(forma.NotFoundf("schema data not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	// Return a copy to prevent external mutations
@@ -273,12 +273,12 @@ func (r *fileSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSche
 
 	schemaID, exists := r.nameToID[name]
 	if !exists {
-		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s: %w", name, forma.ErrNotFound)
+		return 0, forma.JSONSchema{}, forma.NotFoundf("schema not found: %s", name)
 	}
 
 	schema, exists := r.schemas[schemaID]
 	if !exists {
-		return 0, forma.JSONSchema{}, fmt.Errorf("schema data not found: %s: %w", name, forma.ErrNotFound)
+		return 0, forma.JSONSchema{}, forma.NotFoundf("schema data not found: %s", name)
 	}
 
 	return schemaID, schema, nil
@@ -291,12 +291,12 @@ func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 
 	name, exists := r.idToName[id]
 	if !exists {
-		return "", forma.JSONSchema{}, fmt.Errorf("schema not found for ID: %d: %w", id, forma.ErrNotFound)
+		return "", forma.JSONSchema{}, forma.WithOperatorDetail(forma.NotFoundf("schema not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	schema, exists := r.schemas[id]
 	if !exists {
-		return "", forma.JSONSchema{}, fmt.Errorf("schema data not found for ID: %d: %w", id, forma.ErrNotFound)
+		return "", forma.JSONSchema{}, forma.WithOperatorDetail(forma.NotFoundf("schema data not found"), fmt.Errorf("schema id %d", id))
 	}
 
 	return name, schema, nil
