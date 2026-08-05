@@ -126,6 +126,31 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		{"hex right shift past a set bit", "0x1p-1", float64(0.5)},
 		{"hex zero padding is transparent", "0x" + strings.Repeat("0", 50) + "1p4", int64(16)},
 
+		// A significant run of 17 hex digits carries 65..68 bits, yet a run
+		// ending in a nonzero digit still hides up to 3 trailing zero *bits*, so
+		// a right shift of 1..3 can land it back inside int64. Rejecting on run
+		// width alone would bind the rounded float64 instead — the #357
+		// off-by-one class (2^61+1 would come back as 2^61).
+		{"17-hex-digit run shifted back into range", "0x10000000000000008p-3", int64(2305843009213693953)},
+		{"17-hex-digit run, two-bit shift", "0x10000000000000004p-2", int64(4611686018427387905)},
+		{"17-hex-digit run with a wider leading digit", "0x18000000000000008p-3", int64(3458764513820540929)},
+		{"17-hex-digit run at MaxInt64", "0x3FFFFFFFFFFFFFFF8p-3", int64(math.MaxInt64)},
+		{"17-hex-digit run at MaxInt64, two-bit shift", "0x1FFFFFFFFFFFFFFFCp-2", int64(math.MaxInt64)},
+		{"17-hex-digit run at -MaxInt64", "-0x3FFFFFFFFFFFFFFF8p-3", int64(math.MinInt64 + 1)},
+		// MinInt64 is a power of two, so it can only be spelled with a run that
+		// ends in zeros — which the significant-run trim shortens back to one
+		// digit. The shifted-back-into-range 17-digit neighbours are one past it.
+		{"MinInt64 in hex survives the trailing-zero trim", "-0x40000000000000000p-3", int64(math.MinInt64)},
+		{"17-hex-digit run one past MaxInt64 stays float64", "0x40000000000000008p-3", float64(9223372036854775809)},
+		{"17-hex-digit run one past MinInt64 stays float64", "-0x40000000000000008p-3", float64(-9223372036854775809)},
+		// The shift budget is the run's trailing zero bits, not a fixed width:
+		// one bit too far and the literal is genuinely fractional.
+		{"17-hex-digit run shifted past a set bit stays float64", "0x10000000000000008p-4", float64(1152921504606846976.5)},
+		{"17-hex-digit run with a nonzero low bit stays float64", "0x8000000000000000Fp-3", float64(1.8446744073709552e19)},
+		// 18 digits cannot be saved: >= 2^68 with at most 3 trailing zero bits
+		// leaves >= 2^65 after any integral shift.
+		{"18-hex-digit run stays float64", "0x100000000000000008p-3", float64(3.6893488147419103e19)},
+
 		// Cost is linear in len(s) with no amplification: these literals are
 		// answered by string inspection alone, so an arbitrarily long spelling
 		// is both exact (no length cap) and cheap (no exact-arithmetic

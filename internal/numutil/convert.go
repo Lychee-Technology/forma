@@ -108,10 +108,10 @@ const maxInt64Digits = 19
 // "9.007199254740993e15", "1.5e3"), and the hex-float and underscore forms
 // ParseFloat also accepts ("0x1p4", "1_000"), refine to exact int64 when they
 // fit (#357). ParseFloat is the sole acceptance authority — the refinement runs
-// only on strings it already accepted, so the grammar neither widens (big.Rat's
-// "1/3" stays a raw string) nor narrows. Integral values beyond int64 range and
-// genuinely fractional literals — including nonzero literals that underflow
-// float64 to zero — stay float64.
+// only on strings it already accepted, so the grammar neither widens (rational
+// syntax like "1/3" stays a raw string) nor narrows. Integral values beyond
+// int64 range and genuinely fractional literals — including nonzero literals
+// that underflow float64 to zero — stay float64.
 func TryParseNumber(s string) any {
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
@@ -213,11 +213,14 @@ func hexIntegralInt64(neg bool, s string) (int64, bool) {
 		return 0, true
 	}
 	run := digits[first : last+1]
-	if len(run) > 16 { // >64 bits of significand cannot land in int64.
-		return 0, false
-	}
-	mag, err := strconv.ParseUint(string(run), 16, 64)
-	if err != nil {
+	// The run starts and ends with a nonzero hex digit, so its value needs
+	// 4*len(run)-3 bits at minimum and carries at most 3 trailing zero *bits*
+	// (the widest such last digit is "8" = 0b1000). Integrality therefore caps
+	// any right shift at 3 bits, so an 18-digit run — at least 2^68 — still
+	// leaves 2^65 after every shift it can survive, and is out of int64 range
+	// for certain. 17 digits is the widest that can ever land, and it needs the
+	// two-word path below because 65..68 bits do not fit one uint64.
+	if len(run) > 17 {
 		return 0, false
 	}
 	exp, ok := parseExponent(expLit, 4*int64(len(mant))+128)
@@ -225,11 +228,56 @@ func hexIntegralInt64(neg bool, s string) (int64, bool) {
 		return 0, false
 	}
 	binExp := exp - 4*int64(fracLen) + 4*int64(len(digits)-1-last)
+	if len(run) == 17 {
+		return wideHexIntegralInt64(neg, run, binExp)
+	}
+	mag, err := strconv.ParseUint(string(run), 16, 64)
+	if err != nil {
+		return 0, false
+	}
 	mag, ok = shiftMagnitude(mag, binExp)
 	if !ok {
 		return 0, false
 	}
 	return signedFromMagnitude(neg, mag)
+}
+
+// wideHexIntegralInt64 decides a 17-hex-digit significant run, whose value
+// hi*2^64 + lo needs 65..68 bits and so cannot be accumulated in one uint64
+// (hi is run[0], 1..15; lo is the remaining 16 digits). Rejecting on width
+// alone would be wrong, not merely conservative: the run ends in a nonzero
+// digit, which still leaves up to 3 trailing zero bits, so a right shift of
+// 1..3 can bring the value back inside int64 — "0x10000000000000008p-3" is
+// exactly 2^61+1.
+//
+// Only binExp < 0 can save such a run: at binExp >= 0 the value is already at
+// least 2^64. Writing k = -binExp, the literal is integral iff lo's low k bits
+// are all zero (a set bit shifted out means a genuine fraction), which also
+// forces k <= 3 — the guard below only bounds the shift width so that the
+// 64-bit expression stays defined. The shifted value is
+// (hi << (64-k)) | (lo >> k), well defined in uint64 exactly when hi >> k == 0;
+// hi >> k != 0 means the result is at least 2^64, i.e. out of range anyway.
+// signedFromMagnitude then applies the sign, admitting 2^63 only as MinInt64.
+func wideHexIntegralInt64(neg bool, run []byte, binExp int64) (int64, bool) {
+	if binExp >= 0 || binExp < -3 {
+		return 0, false
+	}
+	hi, err := strconv.ParseUint(string(run[:1]), 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	lo, err := strconv.ParseUint(string(run[1:]), 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	k := uint(-binExp) // 1..3
+	if lo&((1<<k)-1) != 0 {
+		return 0, false // a set bit would be shifted out: the literal is fractional.
+	}
+	if hi>>k != 0 {
+		return 0, false // the shifted value still needs >= 65 bits.
+	}
+	return signedFromMagnitude(neg, hi<<(64-k)|lo>>k)
 }
 
 // shiftMagnitude applies 2^binExp to a nonzero magnitude, reporting false when
