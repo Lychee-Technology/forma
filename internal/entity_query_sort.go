@@ -29,6 +29,9 @@ func resolveSortKeys(req *forma.QueryRequest) ([]sortKey, error) {
 		// direction that cannot apply to anything is still a caller bug.
 		sortOrder, err := normalizeSortOrder(req.SortOrder)
 		if err != nil {
+			// Returned bare on purpose: a WrapPublicf prefix would leak into the
+			// published body (there is no per-entry attribute to name here), and
+			// buildAttributeOrders adds the operator schema context one level up.
 			return nil, err
 		}
 		keys := make([]sortKey, 0, len(req.SortBy))

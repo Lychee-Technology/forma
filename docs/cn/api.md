@@ -37,7 +37,7 @@ Reference: [Advanced Query documentation](./advanced_query.md)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sort_by` + `sort_order` | `string[]` + `string` | Legacy: every key shares the one direction (`asc` default), case-insensitive; other values → 400 (#296). |
+| `sort_by` + `sort_order` | `string[]` + `string` | Legacy: every key shares the one direction (`asc` default), case-insensitive; other values → 400, even when `sort_by` is empty (#296). |
 | `sort` | `{attribute, sort_order}[]` | Per-key directions (#240). `sort_order` per entry: `asc` (default when omitted) or `desc`, case-insensitive. |
 
 Mixed-direction example — `status ASC, created_at DESC`:

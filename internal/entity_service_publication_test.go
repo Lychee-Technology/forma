@@ -90,6 +90,25 @@ func TestSortErrorsPublishTheirMessages(t *testing.T) {
 			t.Fatalf("published message = %q, want %q", got, want)
 		}
 	})
+
+	t.Run("legacy shared direction publishes verbatim", func(t *testing.T) {
+		// The legacy surface (#296) publishes the leaf message with no entry
+		// prefix — there is no per-entry attribute to name — and the operator
+		// wrap buildAttributeOrders adds must stay out of the body.
+		req := &forma.QueryRequest{
+			SchemaName: "e2e_wide",
+			SortBy:     []string{"rank"},
+			SortOrder:  forma.SortOrder("descending"),
+		}
+		_, err := buildAttributeOrders(req, buildSortTestCache())
+		if err == nil {
+			t.Fatalf("expected invalid sort_order error, got nil")
+		}
+		want := "invalid sort_order 'descending': expected 'asc' or 'desc'"
+		if got := publicMessageOf(t, err); got != want {
+			t.Fatalf("published message = %q, want %q", got, want)
+		}
+	})
 }
 
 // The service-wiring guards are operator faults, not caller faults: they no
