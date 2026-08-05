@@ -82,6 +82,43 @@ func TestBuildAttributeOrdersLegacyDefaultAsc(t *testing.T) {
 	}
 }
 
+func TestBuildAttributeOrdersLegacyCaseInsensitiveDesc(t *testing.T) {
+	req := &forma.QueryRequest{
+		SchemaName: "e2e_wide",
+		SortBy:     []string{"rank"},
+		SortOrder:  forma.SortOrder("DESC"),
+	}
+	orders, err := buildAttributeOrders(req, buildSortTestCache())
+	if err != nil {
+		t.Fatalf("buildAttributeOrders legacy DESC: %v", err)
+	}
+	if orders[0].SortOrder != forma.SortOrderDesc {
+		t.Fatalf("legacy orders[0].SortOrder = %s, want folded desc", orders[0].SortOrder)
+	}
+}
+
+func TestBuildAttributeOrdersLegacyInvalidDirectionMessage(t *testing.T) {
+	// Pins the legacy surface to the same carrier and prose as the structured
+	// Sort path (#296): the message is produced by the shared normalizeSortOrder,
+	// so the two surfaces cannot drift.
+	req := &forma.QueryRequest{
+		SchemaName: "e2e_wide",
+		SortBy:     []string{"rank"},
+		SortOrder:  forma.SortOrder("descending"),
+	}
+	_, err := buildAttributeOrders(req, buildSortTestCache())
+	if err == nil {
+		t.Fatalf("expected invalid sort_order error, got nil")
+	}
+	want := "invalid sort_order 'descending': expected 'asc' or 'desc'"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+	}
+	if !errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("error %v does not wrap forma.ErrInvalidInput", err)
+	}
+}
+
 func TestBuildAttributeOrdersValidation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -104,6 +141,17 @@ func TestBuildAttributeOrdersValidation(t *testing.T) {
 		{"invalid_direction", &forma.QueryRequest{
 			SchemaName: "e2e_wide",
 			Sort:       []forma.OrderBy{{Attribute: "rank", SortOrder: forma.SortOrder("descending")}},
+		}},
+		{"legacy_invalid_direction", &forma.QueryRequest{
+			SchemaName: "e2e_wide",
+			SortBy:     []string{"rank"},
+			SortOrder:  forma.SortOrder("descending"),
+		}},
+		{"legacy_direction_without_sortby", &forma.QueryRequest{
+			// A garbage direction is caller fault even with no sort_by to apply it
+			// to (#296 boundary contract): non-empty SortOrder is always validated.
+			SchemaName: "e2e_wide",
+			SortOrder:  forma.SortOrder("descending"),
 		}},
 	}
 	for _, tc := range cases {
