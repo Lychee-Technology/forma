@@ -193,7 +193,7 @@ func TestCarrierSurvivesReWrapping(t *testing.T) {
 	defer restore()
 
 	leaf := forma.InvalidInputf("invalid value for attribute 'age' (attrID=2): cannot convert string to float64")
-	err := forma.WrapPublicf(leaf, "operation[0]: failed to transform data to persistent record")
+	err := forma.WrapPublicf(fmt.Errorf("failed to transform data to persistent record: %w", leaf), "operation[0]")
 	err = fmt.Errorf("batch create: %w", err)
 	err = fmt.Errorf("manager: %w", err)
 
@@ -208,6 +208,9 @@ func TestCarrierSurvivesReWrapping(t *testing.T) {
 		if !strings.Contains(body, required) {
 			t.Fatalf("published message lost %q; body: %s", required, body)
 		}
+	}
+	if strings.Contains(body, "failed to transform") {
+		t.Fatalf("an internal phase name reached the body (#362 review, P2): %s", body)
 	}
 }
 
@@ -260,5 +263,120 @@ func TestPublishedMessageIsCredentialScrubbed(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "***REDACTED***") {
 		t.Fatalf("expected the credential replaced in place, got %s", rec.Body.String())
+	}
+}
+
+// foreignPublicError stands in for any type outside this module that happens
+// to satisfy forma.PublicError without being built by the forma constructors —
+// and therefore without any guarantee that its text was authored for a caller.
+type foreignPublicError struct{ msg string }
+
+func (f *foreignPublicError) Error() string         { return f.msg }
+func (f *foreignPublicError) PublicMessage() string { return f.msg }
+
+// TestForeignPublicationCannotBorrowSentinelBranch pins the provenance
+// binding (#362 review, P1). Before it, isClientError and
+// resolvePublicMessage searched the whole tree independently, so a join of a
+// bare-sentinel branch and an unrelated PublicError branch passed both gates
+// and the foreign text — here an operator's manifest path — crossed on a 400.
+// The publication must come from the branch that carries the client sentinel;
+// this chain has no such branch, so it takes the deny shape.
+func TestForeignPublicationCannotBorrowSentinelBranch(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := errors.Join(
+		fmt.Errorf("bad input: %w", forma.ErrInvalidInput),
+		&foreignPublicError{msg: "manifests/lead/22.json"})
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the sentinel branch, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "manifests/") {
+		t.Fatalf("a foreign publication borrowed the sentinel branch: %s", rec.Body.String())
+	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if resp.ErrorClass == "" || resp.ErrorID == "" {
+		t.Fatalf("expected the deny shape, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
+	}
+}
+
+// TestForeignNodeDoesNotBlockCarrierResolution pins the other half of the
+// branch-aware walk: a non-qualifying PublicError encountered first must be
+// stepped over, not treated as the final answer — otherwise joining any
+// foreign publisher in front of a legitimate carrier would silently degrade
+// the caller's 400 to the deny shape.
+func TestForeignNodeDoesNotBlockCarrierResolution(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := errors.Join(
+		&foreignPublicError{msg: "manifests/lead/22.json"},
+		forma.InvalidInputf("bad filter"))
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if !strings.Contains(resp.Error, "bad filter") {
+		t.Fatalf("the carrier's publication was lost behind a foreign node: %q", resp.Error)
+	}
+	if strings.Contains(rec.Body.String(), "manifests/") {
+		t.Fatalf("the foreign text crossed: %s", rec.Body.String())
+	}
+}
+
+// TestDecoratedForeignPublicationIsRedacted pins the round-2 P1 (#363
+// review): after the #362 fix bound resolution at this boundary, wrapping the
+// same mixed tree in forma.WrapPublicf (or WithOperatorDetail) reconstructed
+// the borrow one level up — the decorator qualified via whole-tree errors.As
+// and its PublicMessage delegated the same way, so the boundary saw a
+// directly-implemented carrier whose subtree held a sentinel, and the foreign
+// sibling's text crossed as "operation[0]: <foreign>". Qualification and
+// delegation now run the same canonical resolution (forma.ResolvePublicMessage),
+// so both decorators degrade and the deny shape answers.
+func TestDecoratedForeignPublicationIsRedacted(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	mixed := errors.Join(
+		fmt.Errorf("bad input: %w", forma.ErrInvalidInput),
+		&foreignPublicError{msg: "manifests/lead/22.json"})
+
+	for name, err := range map[string]error{
+		"WrapPublicf":        forma.WrapPublicf(mixed, "operation[%d]", 0),
+		"WithOperatorDetail": forma.WithOperatorDetail(mixed, errors.New("op detail")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			respondError(rec, "query failed", err, "schema", "orders")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 from the sentinel branch, got %d", rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "manifests/") {
+				t.Fatalf("a decorated foreign publication crossed: %s", rec.Body.String())
+			}
+			var resp APIResponse
+			if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+				t.Fatalf("body is not valid JSON: %v", uerr)
+			}
+			if resp.ErrorClass == "" || resp.ErrorID == "" {
+				t.Fatalf("expected the deny shape, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
+			}
+		})
 	}
 }

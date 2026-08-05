@@ -724,6 +724,29 @@ joined anywhere in a mixed chain publishes only its own message
 denied whatever its shape (`TestUnconvertedSentinelIsRedacted4xx`,
 `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`).
 
+**Resolution is provenance-bound and canonical (#362/#363 reviews, P1).**
+`forma.ResolvePublicMessage` is the one traversal: the HTTP boundary calls it,
+`WrapPublicf`/`WithOperatorDetail` qualify their input with it, and the
+decorators' own `PublicMessage()` delegates through it. A `PublicError` node
+qualifies only when a client sentinel is reachable from that node's *own*
+subtree — the forma constructors guarantee this by construction. Two gates
+searching the whole tree independently would let a mixed chain borrow:
+`errors.Join(bareSentinelWrap, foreignPublicError)` has sentinel evidence in
+one branch and a `PublicMessage()` in the other, and the foreign text would
+cross on the 400. Confining the rule to the boundary was not enough — the
+first fix left the decorators qualifying and delegating via whole-tree
+`errors.As`, so `forma.WrapPublicf(thatSameJoin, "operation[0]")`
+reconstructed the borrow one level up; sharing the traversal closes the class,
+not the instance. Node matching follows `errors.As` semantics (direct
+implementation or the node's `As(any) bool` protocol), and non-qualifying
+nodes are stepped over rather than terminal, so a legitimate carrier behind a
+foreign publisher still resolves. Pinned by
+`TestForeignPublicationCannotBorrowSentinelBranch`,
+`TestForeignNodeDoesNotBlockCarrierResolution`,
+`TestDecoratedForeignPublicationIsRedacted`,
+`TestDecoratorsDoNotAdoptForeignPublications`, and
+`TestAsProvidedPublicationResolves`.
+
 Note the deliberate semantic shift from #307: `errors.Join(operatorErr,
 carrier)` now *publishes* the carrier's message at a 4xx, where the shape rule
 would have redacted it. That is the intended reading of deny-by-default on the
@@ -819,7 +842,7 @@ The clearest case is an unknown schema. `POST /api/v1/nosuchschema` returns
 ```json
 {
   "success": false,
-  "error": "batch create failed: operation[0]: failed to get schema: schema not found: nosuchschema"
+  "error": "batch create failed: operation[0]: schema not found: nosuchschema"
 }
 ```
 
@@ -829,7 +852,9 @@ name-keyed `forma.NotFoundf` leaf publishes the schema name the caller sent,
 index, so `classifyManagerError` returns `404` on sentinel evidence and the
 boundary emits the accumulated publication — logged at `Debugw`, with no
 `error_class`, no `error_id` and no `schema_id`. (Before #313 the body ended in
-`: not found`; the sentinel suffix no longer crosses.) Pinned by
+`: not found`; the sentinel suffix no longer crosses. The `failed to get
+schema` phase context is a plain wrap per the authorship rule — #362 review,
+P2 — so it stays in `Error()` and the log, not the body.) Pinned by
 `TestCreateUnknownSchemaIs404AndVerbatim`.
 
 Clients keying on `500` to detect create failures must key on `success: false`

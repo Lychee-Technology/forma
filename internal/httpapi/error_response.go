@@ -234,11 +234,10 @@ func respondError(w http.ResponseWriter, op string, err error, logFields ...any)
 // disclosed branch.
 //
 // It is necessary but not sufficient: disclosure additionally requires a
-// deliberately published message (resolvePublicMessage). Keeping the sentinel
-// conjunct means a foreign type that happens to implement PublicMessage()
-// cannot publish itself through this boundary without also carrying a client
-// sentinel — the same "necessary, never sufficient" relationship the status
-// conjunct has.
+// deliberately published message resolved from the same branch
+// (resolvePublicMessage). The whole-tree form here still gates the disclosed
+// branch as a cheap precondition, but the load-bearing provenance check is
+// per-node inside the resolver.
 func isClientError(err error) bool {
 	return errors.Is(err, forma.ErrInvalidInput) ||
 		errors.Is(err, forma.ErrNotFound) ||
@@ -253,22 +252,19 @@ func isClientError(err error) bool {
 // text, and the one live mixed chain (an unrenderable caller-supplied path
 // template, internal/federated/duckdb_query_build.go) collapsed to an opaque
 // body precisely when the caller needed guidance. Publication is decided where
-// the error is authored: errors.As resolves the outermost forma.PublicError
-// (preorder, left-first), so wrap prefixes accumulate and a carrier joined
-// anywhere in a multi-cause chain still publishes only its own text.
+// the error is authored.
 //
-// An empty publication is treated as no publication: nothing about an empty
-// string proves a wrap site authored it deliberately.
+// The resolution itself is forma.ResolvePublicMessage — branch-provenance
+// bound (a node publishes only if a client sentinel is reachable from its own
+// subtree) and node-matched the way errors.As matches (#362/#363 reviews).
+// It lives in the forma package because the decorators' own PublicMessage
+// delegation must apply the identical rule: after the #362 fix confined the
+// rule to this boundary, wrapping a mixed tree in forma.WrapPublicf
+// reconstructed the borrow one level up (#363 review, P1). One shared
+// traversal means what a decorator carries is exactly what this boundary
+// emits.
 func resolvePublicMessage(err error) (string, bool) {
-	var pub forma.PublicError
-	if !errors.As(err, &pub) {
-		return "", false
-	}
-	msg := pub.PublicMessage()
-	if msg == "" {
-		return "", false
-	}
-	return msg, true
+	return forma.ResolvePublicMessage(err)
 }
 
 // respondErrorWithStatus is respondError for callers that have already

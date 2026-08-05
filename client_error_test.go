@@ -6,15 +6,13 @@ import (
 	"testing"
 )
 
-// resolvePublic mirrors the boundary's resolution: the outermost PublicError in
-// preorder left-first DFS wins.
+// resolvePublic is the boundary's resolution: the canonical
+// branch-provenance-bound walk, not a raw errors.As — the raw form finds a
+// PublicError anywhere in the tree, which is exactly the borrow the resolver
+// exists to reject (#362/#363 reviews).
 func resolvePublic(t *testing.T, err error) (string, bool) {
 	t.Helper()
-	var pub PublicError
-	if !errors.As(err, &pub) {
-		return "", false
-	}
-	return pub.PublicMessage(), true
+	return ResolvePublicMessage(err)
 }
 
 func mustPublish(t *testing.T, err error, want string) {
@@ -187,4 +185,77 @@ func TestResolutionOrderOnMultiCauseChains(t *testing.T) {
 		err := WrapPublicf(InvalidInputf("leaf"), "outer")
 		mustPublish(t, err, "outer: leaf")
 	})
+}
+
+// foreignPublication stands in for a type outside this module that satisfies
+// PublicError without being built by the constructors — no guarantee its text
+// was authored for a caller.
+type foreignPublication struct{ msg string }
+
+func (f *foreignPublication) Error() string         { return f.msg }
+func (f *foreignPublication) PublicMessage() string { return f.msg }
+
+// The decorators must not adopt a publication the branch-provenance rule
+// would reject (#363 review, P1): wrapping a mixed tree whose sentinel branch
+// is bare and whose publication branch is foreign must degrade exactly as the
+// unwrapped tree would — no publication.
+func TestDecoratorsDoNotAdoptForeignPublications(t *testing.T) {
+	mixed := errors.Join(
+		fmt.Errorf("bad input: %w", ErrInvalidInput),
+		&foreignPublication{msg: "manifests/lead/22.json"})
+
+	t.Run("WrapPublicf degrades to a plain wrap", func(t *testing.T) {
+		err := WrapPublicf(mixed, "operation[%d]", 0)
+		if _, ok := resolvePublic(t, err); ok {
+			t.Fatalf("a wrap over a foreign publication still published: %v", err)
+		}
+		want := fmt.Errorf("operation[0]: %w", mixed)
+		if err.Error() != want.Error() {
+			t.Fatalf("Error() = %q, want plain-wrap %q", err.Error(), want.Error())
+		}
+	})
+
+	t.Run("WithOperatorDetail passes through unchanged", func(t *testing.T) {
+		if got := WithOperatorDetail(mixed, errors.New("detail")); got != mixed {
+			t.Fatalf("an error without a qualifying publication must pass through, got %v", got)
+		}
+	})
+
+	t.Run("a real carrier in the mixed tree still qualifies", func(t *testing.T) {
+		legit := errors.Join(&foreignPublication{msg: "manifests/lead/22.json"},
+			InvalidInputf("bad filter"))
+		err := WrapPublicf(legit, "operation[%d]", 0)
+		mustPublish(t, err, "operation[0]: bad filter")
+	})
+}
+
+// asProvidedCarrier exposes a PublicError through the As(any) bool protocol
+// rather than by direct implementation — the other half of errors.As node
+// matching, which the resolver must honour (#363 review, P2).
+type asProvidedCarrier struct{ inner error }
+
+func (a *asProvidedCarrier) Error() string { return "as-provided: " + a.inner.Error() }
+func (a *asProvidedCarrier) Unwrap() error { return a.inner }
+
+func (a *asProvidedCarrier) As(target any) bool {
+	if p, ok := target.(*PublicError); ok {
+		*p = &foreignPublication{msg: "published via As"}
+		return true
+	}
+	return false
+}
+
+func TestAsProvidedPublicationResolves(t *testing.T) {
+	// The node's own subtree carries the sentinel, so it qualifies under the
+	// branch-provenance rule even though the PublicError arrives via As.
+	err := fmt.Errorf("ctx: %w", &asProvidedCarrier{inner: InvalidInputf("leaf")})
+	if msg, ok := ResolvePublicMessage(err); !ok || msg != "published via As" {
+		t.Fatalf("As-provided publication not resolved: msg=%q ok=%v", msg, ok)
+	}
+
+	// Without a sentinel in its subtree the same node must not publish.
+	bare := fmt.Errorf("ctx: %w", &asProvidedCarrier{inner: errors.New("operator")})
+	if msg, ok := ResolvePublicMessage(bare); ok {
+		t.Fatalf("sentinel-less As-provided node published %q", msg)
+	}
 }

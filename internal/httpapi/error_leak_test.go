@@ -171,10 +171,12 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 // POST to an unknown schema returns 404 instead of 500.
 //
 // It also pins that this 404 publishes. The chain is the shape the batch
-// service now builds — the registry's name-keyed forma.NotFoundf leaf under
-// the batch loop's forma.WrapPublicf — so the body names the schema the
-// caller sent while staying free of error_class/error_id, which is what
-// distinguishes it from an error carrying no publication at all
+// service now builds — the registry's name-keyed forma.NotFoundf leaf under a
+// plain phase wrap under the batch loop's forma.WrapPublicf — so the body
+// names the schema the caller sent plus the batch index, while the phase
+// context ("failed to get schema") stays operator-only (#362 review, P2) and
+// the body stays free of error_class/error_id, which is what distinguishes it
+// from an error carrying no publication at all
 // (TestUnconvertedSentinelIsRedacted4xx).
 func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
@@ -182,8 +184,9 @@ func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 
 	manager := &mockEntityManager{
 		batchCreateErr: forma.WrapPublicf(
-			forma.NotFoundf("schema not found: %s", "nosuchschema"),
-			"operation[0]: failed to get schema"),
+			fmt.Errorf("failed to get schema: %w",
+				forma.NotFoundf("schema not found: %s", "nosuchschema")),
+			"operation[0]"),
 	}
 	srv := NewServer(manager, Options{})
 
@@ -199,8 +202,11 @@ func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("body is not valid JSON: %v", err)
 	}
-	if !strings.Contains(resp.Error, "nosuchschema") {
-		t.Fatalf("expected the verbatim message naming the schema, got %q", resp.Error)
+	if !strings.Contains(resp.Error, "operation[0]: schema not found: nosuchschema") {
+		t.Fatalf("expected the published message naming the index and schema, got %q", resp.Error)
+	}
+	if strings.Contains(resp.Error, "failed to get schema") {
+		t.Fatalf("an internal phase name reached the 404 body: %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
 		t.Fatalf("a sentinel-carrying error took the redacted branch: error_class=%q error_id=%q",
