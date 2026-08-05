@@ -262,3 +262,76 @@ func TestPublishedMessageIsCredentialScrubbed(t *testing.T) {
 		t.Fatalf("expected the credential replaced in place, got %s", rec.Body.String())
 	}
 }
+
+// foreignPublicError stands in for any type outside this module that happens
+// to satisfy forma.PublicError without being built by the forma constructors —
+// and therefore without any guarantee that its text was authored for a caller.
+type foreignPublicError struct{ msg string }
+
+func (f *foreignPublicError) Error() string         { return f.msg }
+func (f *foreignPublicError) PublicMessage() string { return f.msg }
+
+// TestForeignPublicationCannotBorrowSentinelBranch pins the provenance
+// binding (#362 review, P1). Before it, isClientError and
+// resolvePublicMessage searched the whole tree independently, so a join of a
+// bare-sentinel branch and an unrelated PublicError branch passed both gates
+// and the foreign text — here an operator's manifest path — crossed on a 400.
+// The publication must come from the branch that carries the client sentinel;
+// this chain has no such branch, so it takes the deny shape.
+func TestForeignPublicationCannotBorrowSentinelBranch(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := errors.Join(
+		fmt.Errorf("bad input: %w", forma.ErrInvalidInput),
+		&foreignPublicError{msg: "manifests/lead/22.json"})
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the sentinel branch, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "manifests/") {
+		t.Fatalf("a foreign publication borrowed the sentinel branch: %s", rec.Body.String())
+	}
+
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if resp.ErrorClass == "" || resp.ErrorID == "" {
+		t.Fatalf("expected the deny shape, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
+	}
+}
+
+// TestForeignNodeDoesNotBlockCarrierResolution pins the other half of the
+// branch-aware walk: a non-qualifying PublicError encountered first must be
+// stepped over, not treated as the final answer — otherwise joining any
+// foreign publisher in front of a legitimate carrier would silently degrade
+// the caller's 400 to the deny shape.
+func TestForeignNodeDoesNotBlockCarrierResolution(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	err := errors.Join(
+		&foreignPublicError{msg: "manifests/lead/22.json"},
+		forma.InvalidInputf("bad filter"))
+
+	rec := httptest.NewRecorder()
+	respondError(rec, "query failed", err, "schema", "orders")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	if !strings.Contains(resp.Error, "bad filter") {
+		t.Fatalf("the carrier's publication was lost behind a foreign node: %q", resp.Error)
+	}
+	if strings.Contains(rec.Body.String(), "manifests/") {
+		t.Fatalf("the foreign text crossed: %s", rec.Body.String())
+	}
+}

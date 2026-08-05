@@ -724,6 +724,17 @@ joined anywhere in a mixed chain publishes only its own message
 denied whatever its shape (`TestUnconvertedSentinelIsRedacted4xx`,
 `TestMixedChainIsRedacted`, `TestMultiVerbWrapChainIsRedacted`).
 
+**Resolution is provenance-bound (#362 review, P1).** A `PublicError` node
+qualifies only when a client sentinel is reachable from that node's *own*
+subtree — the forma constructors guarantee this by construction. Two gates
+searching the whole tree independently would let a mixed chain borrow:
+`errors.Join(bareSentinelWrap, foreignPublicError)` has sentinel evidence in
+one branch and a `PublicMessage()` in the other, and the foreign text would
+cross on the 400. Non-qualifying nodes are stepped over rather than terminal,
+so a legitimate carrier behind a foreign publisher still resolves. Pinned by
+`TestForeignPublicationCannotBorrowSentinelBranch` and
+`TestForeignNodeDoesNotBlockCarrierResolution`.
+
 Note the deliberate semantic shift from #307: `errors.Join(operatorErr,
 carrier)` now *publishes* the carrier's message at a 4xx, where the shape rule
 would have redacted it. That is the intended reading of deny-by-default on the

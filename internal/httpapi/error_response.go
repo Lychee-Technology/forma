@@ -234,11 +234,10 @@ func respondError(w http.ResponseWriter, op string, err error, logFields ...any)
 // disclosed branch.
 //
 // It is necessary but not sufficient: disclosure additionally requires a
-// deliberately published message (resolvePublicMessage). Keeping the sentinel
-// conjunct means a foreign type that happens to implement PublicMessage()
-// cannot publish itself through this boundary without also carrying a client
-// sentinel — the same "necessary, never sufficient" relationship the status
-// conjunct has.
+// deliberately published message resolved from the same branch
+// (resolvePublicMessage). The whole-tree form here still gates the disclosed
+// branch as a cheap precondition, but the load-bearing provenance check is
+// per-node inside the resolver.
 func isClientError(err error) bool {
 	return errors.Is(err, forma.ErrInvalidInput) ||
 		errors.Is(err, forma.ErrNotFound) ||
@@ -253,22 +252,43 @@ func isClientError(err error) bool {
 // text, and the one live mixed chain (an unrenderable caller-supplied path
 // template, internal/federated/duckdb_query_build.go) collapsed to an opaque
 // body precisely when the caller needed guidance. Publication is decided where
-// the error is authored: errors.As resolves the outermost forma.PublicError
-// (preorder, left-first), so wrap prefixes accumulate and a carrier joined
-// anywhere in a multi-cause chain still publishes only its own text.
+// the error is authored.
 //
-// An empty publication is treated as no publication: nothing about an empty
-// string proves a wrap site authored it deliberately.
+// The walk is preorder, left-first — errors.As order, so wrap prefixes
+// accumulate outermost-wins — but a node qualifies only when the client
+// sentinel is reachable from that node's OWN subtree (#362 review, P1). The
+// two gates searching the whole tree independently let a mixed chain borrow:
+// errors.Join(bareSentinelWrap, foreignPublicError) had sentinel evidence in
+// one branch and a PublicMessage() in the other, and the foreign text — never
+// authored for a caller — crossed on the 400. The forma constructors bind
+// message and sentinel into the same branch, so every real carrier qualifies;
+// a foreign PublicError qualifies only by doing the same, which is the
+// contract, not a loophole. Non-qualifying nodes are stepped over, not
+// terminal: a carrier behind a foreign publisher still resolves.
+//
+// An empty publication is treated as no publication — nothing about an empty
+// string proves a wrap site authored it deliberately — and the walk continues
+// past it.
 func resolvePublicMessage(err error) (string, bool) {
-	var pub forma.PublicError
-	if !errors.As(err, &pub) {
+	if err == nil {
 		return "", false
 	}
-	msg := pub.PublicMessage()
-	if msg == "" {
-		return "", false
+	if pub, ok := err.(forma.PublicError); ok && isClientError(err) {
+		if msg := pub.PublicMessage(); msg != "" {
+			return msg, true
+		}
 	}
-	return msg, true
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return resolvePublicMessage(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, cause := range u.Unwrap() {
+			if msg, ok := resolvePublicMessage(cause); ok {
+				return msg, true
+			}
+		}
+	}
+	return "", false
 }
 
 // respondErrorWithStatus is respondError for callers that have already
