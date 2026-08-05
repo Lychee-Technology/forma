@@ -51,6 +51,12 @@ func TestBigintFilterBoundaryBothDialects(t *testing.T) {
 		{"gt_2p53_boundary", Filter{Attr: "amount", Op: "gt", Value: "9007199254740992"}, []*Event{abovePow53, nearMax, atMax}},
 		{"equals_maxint64_minus_1", Filter{Attr: "amount", Op: "equals", Value: "9223372036854775806"}, []*Event{nearMax}},
 		{"lte_maxint64_minus_1_excludes_max", Filter{Attr: "amount", Op: "lte", Value: "9223372036854775806"}, []*Event{atPow53, abovePow53, nearMax}},
+		// #357: the SAME value in the other two accepted spellings must address
+		// the same row on both binders. Pre-#357 only the bare-digits spelling
+		// bound exactly — these two rode ParseFloat's rounded float64, so
+		// "…993.0" silently addressed 2^53 and matched the WRONG row.
+		{"equals_2p53_plus_1_decimal_spelling", Filter{Attr: "amount", Op: "equals", Value: "9007199254740993.0"}, []*Event{abovePow53}},
+		{"gte_2p53_plus_1_exponent_spelling", Filter{Attr: "amount", Op: "gte", Value: "9.007199254740993e15"}, []*Event{abovePow53, nearMax, atMax}},
 	}
 
 	// PG dialect: rows are unflushed, PreferHot short-circuits to postgres-only.
@@ -67,6 +73,102 @@ func TestBigintFilterBoundaryBothDialects(t *testing.T) {
 		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
 		wide.ID, rowIDs(seeded))
 	runBoundaryProbes(ctx, t, env, "cold-duck", Query{Schema: wide, Limit: 100}, true, probes)
+}
+
+// TestEAVBigintFilterBoundaryBothDialects (#357) is the execution-level twin of
+// the "bigint EAV-only above 2^53" characterization row: it proves on real
+// storage, on BOTH binders, that the exact bind #281 introduced does not
+// silently change which rows an EAV-only bigint filter returns.
+//
+// The contract has two halves and only asserting both is meaningful:
+//   - the value that was never stored (2^53+1) matches NOTHING on either leg —
+//     an exact bind must not "find" a row by colliding with the same rounding
+//     error the write path made;
+//   - the value that WAS stored (2^53, the rounded form) still matches the row
+//     on either leg — the exactness must not cost reachability.
+//
+// Tier parity is the point: hot Postgres and cold DuckDB must answer the same
+// filter identically. AssertQueryMatches is deliberately unused — the oracle
+// normalizes numerics to float64 and is structurally blind to this distinction.
+func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	ctx := context.Background()
+	wide := DefaultSchemaFixtures()[1]
+
+	// `total` (attr 15) is the EAV-only bigint; `amount` (bound bigint_01) is
+	// only row identity here, so assertExactBigintRowSet can name the rows.
+	aboveCeiling := CreateEvent(wide, map[string]any{
+		"title": "eav-2p53p1", "total": int64(1)<<53 + 1, "amount": int64(101),
+	})
+	belowCeiling := CreateEvent(wide, map[string]any{
+		"title": "eav-small", "total": int64(7), "amount": int64(102),
+	})
+	seeded := []*Event{aboveCeiling, belowCeiling}
+	mustApplyEvents(ctx, t, env, "eav bigint boundary creates", seeded...)
+
+	probes := []boundaryProbe{
+		// Never stored: the write rounded it away. Empty on both legs.
+		{"eav_equals_2p53_plus_1_matches_nothing",
+			Filter{Attr: "total", Op: "equals", Value: "9007199254740993"}, nil},
+		// Stored (rounded) value stays addressable.
+		{"eav_equals_2p53_matches_rounded_row",
+			Filter{Attr: "total", Op: "equals", Value: "9007199254740992"}, []*Event{aboveCeiling}},
+		// Below the ceiling nothing is lossy — sanity that the probe schema works.
+		{"eav_equals_below_ceiling", Filter{Attr: "total", Op: "equals", Value: "7"}, []*Event{belowCeiling}},
+		// #357 spellings: same value, decimal/exponent form, same answer.
+		{"eav_equals_2p53_decimal_spelling",
+			Filter{Attr: "total", Op: "equals", Value: "9007199254740992.0"}, []*Event{aboveCeiling}},
+		{"eav_equals_2p53_plus_1_exponent_spelling_matches_nothing",
+			Filter{Attr: "total", Op: "equals", Value: "9.007199254740993e15"}, nil},
+	}
+
+	// PG leg: rows are unflushed, PreferHot short-circuits to postgres-only.
+	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
+	assertEAVCeilingStored(ctx, t, env, "hot-pg", hotBase, false, aboveCeiling)
+	runBoundaryProbes(ctx, t, env, "eav/hot-pg", hotBase, false, probes)
+
+	// DuckDB leg: export to base, then drop the change_log entries so the rows
+	// leave the dirty set and are served from cold parquet.
+	if _, err := env.RunInit(ctx, wide); err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	env.ExecSQL(ctx,
+		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
+		wide.ID, rowIDs(seeded))
+
+	coldBase := Query{Schema: wide, Limit: 100}
+	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, true, aboveCeiling)
+	runBoundaryProbes(ctx, t, env, "eav/cold-duck", coldBase, true, probes)
+}
+
+// assertEAVCeilingStored pins WHY the 2^53+1 probe must come back empty: the
+// tier really holds the rounded 2^53, so an empty result is the storage
+// contract and not a broken binder. Without this the miss probe would pass
+// just as happily against a filter that matches nothing at all.
+//
+// wantDuck is asserted here too: this control IS the parquet premise on the
+// cold leg, so a silently hot-served control would leave that premise unproven
+// while still reporting green.
+func assertEAVCeilingStored(ctx context.Context, t *testing.T, env *Env, label string,
+	base Query, wantDuck bool, ev *Event) {
+	t.Helper()
+	res := mustQuery(ctx, t, env, base)
+	if got := res.Plan.Routing.UseDuckDB; got != wantDuck {
+		t.Errorf("%s: control query UseDuckDB = %t, want %t (routing %+v)",
+			label, got, wantDuck, res.Plan.Routing)
+	}
+	for _, rec := range res.Records {
+		if rec.RowID == ev.RowID {
+			// maxEAVInt is 2^53, the value the write path rounded 2^53+1 down
+			// to: eav_data persists value_numeric only (transform clears the
+			// exact int64 sidecar for unbound attributes), so the float64 hop
+			// is lossy above the ceiling (#205).
+			assertEAVNumeric(t, label+" eav total", rec, 15, maxEAVInt)
+			return
+		}
+	}
+	t.Fatalf("%s: seeded EAV boundary row %s absent from the unfiltered control query", label, ev.RowID)
 }
 
 // runBoundaryProbes executes every probe against base and asserts the routing

@@ -16,8 +16,10 @@ import (
 // on attribute metadata. It is the canonical value converter for Postgres
 // main-table predicates, shared by the dual-path generator and the hybrid
 // condition builder. Numeric-family literals keep their own type via
-// TryParseNumber (integral → int64, lossless for bigint beyond 2^53;
-// fractional → float64).
+// TryParseNumber: a literal denoting an integer in int64 range binds as exact
+// int64 in every accepted spelling ("42", "42.0", "9.007199254740993e15" —
+// #357), lossless for bigint beyond 2^53; genuinely fractional literals bind
+// as float64.
 func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	switch meta.ValueType {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
@@ -120,19 +122,23 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		return valStr, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt:
-		// Integral literals bind as exact int64 (#281): ToDuckDBParam renders
-		// int64 via %d, so a bigint predicate above 2^53 — legal column state
-		// since #205 — compares exactly instead of riding float64 + %.15g.
-		// Fractional literals keep float64, the numeric family's storage
-		// contract. EAV-only bigints round at write (2^53 ceiling), so exact
-		// binds above it miss on every tier alike — tier parity preserved.
-		if i, e := strconv.ParseInt(valStr, 10, 64); e == nil {
-			return i, nil
+		// Integral literals in ANY accepted spelling — bare, decimal or
+		// exponent — bind as exact int64 (#281, #357) via the same
+		// TryParseNumber the two Postgres predicate paths use, so all three
+		// emitters agree on the value. ToDuckDBParam renders int64 via %d, so
+		// a bigint predicate above 2^53 — legal column state since #205 —
+		// compares exactly instead of riding float64 + %.15g. Fractional
+		// literals keep float64, the numeric family's storage contract.
+		// EAV-only bigints round at write (2^53 ceiling), so exact binds above
+		// it miss on every tier alike — tier parity preserved.
+		switch v := numutil.TryParseNumber(valStr).(type) {
+		case int64:
+			return v, nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("invalid numeric literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
 		}
-		if f, e := strconv.ParseFloat(valStr, 64); e == nil {
-			return f, nil
-		}
-		return nil, fmt.Errorf("invalid numeric literal for %s: %s: %w", attr, valStr, forma.ErrInvalidInput)
 
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
 		// Stays float64: INTEGER/SMALLINT ranges end at 2^31/2^15, float64 is
