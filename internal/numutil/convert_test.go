@@ -50,18 +50,52 @@ func TestTryParseNumber(t *testing.T) {
 	}
 }
 
-// TestTryParseNumberIntegralSpellings pins the #357 contract: an accepted
-// literal that denotes an integer in int64 range yields an exact int64 in
-// EVERY spelling, not only the bare-digits one. The grammar itself is
+// tryParseNumberCase is one spelling and the result TryParseNumber owes it: an
+// int64 when the literal denotes an integer in range, a float64 when it stays
+// fractional or leaves int64 range, and the raw string when ParseFloat rejects
+// it outright.
+type tryParseNumberCase struct {
+	name  string
+	input string
+	want  any
+}
+
+// runTryParseNumberCases asserts the #357 contract over a table of spellings:
+// an accepted literal that denotes an integer in int64 range yields an exact
+// int64 in EVERY spelling, not only the bare-digits one. The grammar itself is
 // unchanged — ParseFloat still decides acceptance, so a string it rejects
 // ("1/3", "abc") still falls through to the raw-string arm no matter what
 // other number syntaxes would take it.
-func TestTryParseNumberIntegralSpellings(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  any
-	}{
+func runTryParseNumberCases(t *testing.T, cases []tryParseNumberCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TryParseNumber(tc.input)
+			switch want := tc.want.(type) {
+			case int64:
+				require.IsType(t, int64(0), got, "spelling %q must refine to int64", tc.input)
+				require.Equal(t, want, got.(int64))
+			case float64:
+				require.IsType(t, float64(0), got, "spelling %q must stay float64", tc.input)
+				if math.IsNaN(want) {
+					require.True(t, math.IsNaN(got.(float64)), "want NaN, got %v", got)
+					return
+				}
+				require.Equal(t, want, got.(float64))
+			case string:
+				require.IsType(t, "", got, "spelling %q must fall through to the raw string", tc.input)
+				require.Equal(t, want, got.(string))
+			default:
+				t.Fatalf("unsupported expected type %T", want)
+			}
+		})
+	}
+}
+
+// TestTryParseNumberDecimalSpellings pins the decimal and exponent forms,
+// including the zero, underflow and int64-boundary edges.
+func TestTryParseNumberDecimalSpellings(t *testing.T) {
+	runTryParseNumberCases(t, []tryParseNumberCase{
 		{"bare integer", "42", int64(42)},
 		{"decimal spelling", "42.0", int64(42)},
 		{"decimal spelling above 2^53", "9007199254740993.0", int64(9007199254740993)},
@@ -77,14 +111,6 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		// Integral but outside int64 — int64 cannot carry it, so the float64
 		// fallback (today's behavior) stands rather than a silent truncation.
 		{"integral beyond int64 range", "1e300", float64(1e300)},
-		// ParseFloat accepts these; they carry no digits, so the refinement
-		// fails closed and the float64 they always produced survives.
-		{"positive infinity keeps float64", "inf", math.Inf(1)},
-		{"NaN keeps float64", "NaN", math.NaN()},
-		// Grammar must not widen: rational syntax would take "1/3", but the
-		// ParseFloat gate is the sole acceptance authority.
-		{"rational syntax is not a number", "1/3", "1/3"},
-		{"non-numeric", "abc", "abc"},
 
 		// A nonzero literal that underflows float64 to zero denotes a genuine
 		// fraction (10^-1000000 ≠ 0), so the fractional-literal contract keeps
@@ -92,14 +118,6 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		// *denotes* zero is integral zero.
 		{"underflowing nonzero literal stays float64", "1e-1000000", float64(0)},
 		{"zero in exponent spelling is integral zero", "0e5", int64(0)},
-		// Spelling length is not a contract boundary: an integral value refines
-		// exactly however long its spelling is. Zero padding past any cap must
-		// not resurrect the rounded float64 (2^53+1 rounds to ...92 as float64).
-		{
-			"over-long integral spelling refines exactly",
-			strings.Repeat("0", 50) + "9007199254740993.0",
-			int64(9007199254740993),
-		},
 		// Beyond int64 range there is no exact int64 to bind, so the float64
 		// fallback (today's behavior) stands.
 		{"beyond int64 range stays float64", "1e19", float64(1e19)},
@@ -116,7 +134,13 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		{"decimal spelling at MinInt64", "-9223372036854775808.0", int64(math.MinInt64)},
 		{"MaxInt64+1 has no int64 and stays float64", "9223372036854775808.0", float64(9223372036854775808)},
 		{"negative underflow stays float64", "-1e-1000000", float64(0)},
+	})
+}
 
+// TestTryParseNumberHexSpellings pins the hex-float forms, including the
+// 17-hex-digit significant runs a small right shift can bring back into range.
+func TestTryParseNumberHexSpellings(t *testing.T) {
+	runTryParseNumberCases(t, []tryParseNumberCase{
 		// Hex-float edges: the value is hexDigits × 2^binExp, integral only when
 		// the significand survives the binary shift with no bit lost.
 		{"hex integer", "0x1p4", int64(16)},
@@ -150,6 +174,38 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 		// 18 digits cannot be saved: >= 2^68 with at most 3 trailing zero bits
 		// leaves >= 2^65 after any integral shift.
 		{"18-hex-digit run stays float64", "0x100000000000000008p-3", float64(3.6893488147419103e19)},
+	})
+}
+
+// TestTryParseNumberGrammarGate pins the acceptance boundary: ParseFloat is the
+// sole authority, so the refinement neither widens the grammar nor rescues a
+// spelling that carries no digits.
+func TestTryParseNumberGrammarGate(t *testing.T) {
+	runTryParseNumberCases(t, []tryParseNumberCase{
+		// ParseFloat accepts these; they carry no digits, so the refinement
+		// fails closed and the float64 they always produced survives.
+		{"positive infinity keeps float64", "inf", math.Inf(1)},
+		{"NaN keeps float64", "NaN", math.NaN()},
+		// Grammar must not widen: rational syntax would take "1/3", but the
+		// ParseFloat gate is the sole acceptance authority.
+		{"rational syntax is not a number", "1/3", "1/3"},
+		{"non-numeric", "abc", "abc"},
+	})
+}
+
+// TestTryParseNumberLongSpellings pins the adversarial-length class: cost is
+// linear in len(s) with no amplification, and no length cap may change a
+// verdict.
+func TestTryParseNumberLongSpellings(t *testing.T) {
+	runTryParseNumberCases(t, []tryParseNumberCase{
+		// Spelling length is not a contract boundary: an integral value refines
+		// exactly however long its spelling is. Zero padding past any cap must
+		// not resurrect the rounded float64 (2^53+1 rounds to ...92 as float64).
+		{
+			"over-long integral spelling refines exactly",
+			strings.Repeat("0", 50) + "9007199254740993.0",
+			int64(9007199254740993),
+		},
 
 		// Cost is linear in len(s) with no amplification: these literals are
 		// answered by string inspection alone, so an arbitrarily long spelling
@@ -171,30 +227,7 @@ func TestTryParseNumberIntegralSpellings(t *testing.T) {
 			"0." + strings.Repeat("0", 100000) + "1e100001",
 			int64(1),
 		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := TryParseNumber(tc.input)
-			switch want := tc.want.(type) {
-			case int64:
-				require.IsType(t, int64(0), got, "spelling %q must refine to int64", tc.input)
-				require.Equal(t, want, got.(int64))
-			case float64:
-				require.IsType(t, float64(0), got, "spelling %q must stay float64", tc.input)
-				if math.IsNaN(want) {
-					require.True(t, math.IsNaN(got.(float64)), "want NaN, got %v", got)
-					return
-				}
-				require.Equal(t, want, got.(float64))
-			case string:
-				require.IsType(t, "", got, "spelling %q must fall through to the raw string", tc.input)
-				require.Equal(t, want, got.(string))
-			default:
-				t.Fatalf("unsupported expected type %T", want)
-			}
-		})
-	}
+	})
 }
 
 func TestInt64Exact(t *testing.T) {

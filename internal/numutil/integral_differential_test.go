@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestIntegralInt64AgainstRat is the differential oracle for the syntactic
+// TestParseIntegralInt64AgainstRat is the differential oracle for the syntactic
 // parser that replaced big.Rat in the production path (#357 round-2). For every
 // literal in a generated corpus of ParseFloat-accepted spellings it asserts the
 // parser's verdict and value match exact rational arithmetic: a literal is
@@ -22,7 +22,7 @@ import (
 // big.Rat is imported here and nowhere else in the package: the point of the
 // rewrite is that production never pays for it, while tests keep its
 // known-correct arithmetic as the reference.
-func TestIntegralInt64AgainstRat(t *testing.T) {
+func TestParseIntegralInt64AgainstRat(t *testing.T) {
 	corpus := integralCorpus()
 	require.Greater(t, len(corpus), 3000, "corpus too small to be a meaningful oracle")
 
@@ -35,13 +35,13 @@ func TestIntegralInt64AgainstRat(t *testing.T) {
 	require.Greater(t, fractional, 500, "corpus exercises too few non-integral literals")
 }
 
-// TestWideHexIntegralInt64AgainstRat isolates the 17..18-hex-digit significand
-// class, whose accepting cases are rare enough under the general generator that
-// they would be invisible inside the main corpus's totals. A 17-digit run needs
+// TestParseWideHexIntegralInt64AgainstRat isolates the 17..18-hex-digit
+// significand class, whose accepting cases are rare enough under the general
+// generator that they would be invisible in the corpus totals. A 17-digit run needs
 // 65..68 bits yet can still land in int64 after a 1..3-bit right shift; that
 // combination is exactly what the earlier 16-digit width cap got wrong, so this
 // test asserts its own non-degeneracy instead of borrowing the main corpus's.
-func TestWideHexIntegralInt64AgainstRat(t *testing.T) {
+func TestParseWideHexIntegralInt64AgainstRat(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260805))
 	corpus := make([]string, 0, 4000)
 	for i := 0; i < 4000; i++ {
@@ -70,7 +70,7 @@ func assertParserMatchesRat(t *testing.T, corpus []string) (integral, fractional
 		require.True(t, ok, "reference could not read %q", s)
 		wantOK := r.IsInt() && r.Num().IsInt64()
 
-		gotVal, gotOK := integralInt64(s)
+		gotVal, gotOK := parseIntegralInt64(s)
 		require.Equal(t, wantOK, gotOK, "integrality verdict for %q (exact value %s)", s, r.RatString())
 		if wantOK {
 			require.Equal(t, r.Num().Int64(), gotVal, "exact value for %q", s)
