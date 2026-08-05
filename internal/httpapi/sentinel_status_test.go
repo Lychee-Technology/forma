@@ -76,7 +76,7 @@ func TestCreateMissingRequiredAttributeIs400AndVerbatim(t *testing.T) {
 	}
 
 	manager := &mockEntityManager{
-		batchCreateErr: fmt.Errorf("operation[0]: %w", writeErr),
+		batchCreateErr: forma.WrapPublicf(writeErr, "operation[0]"),
 	}
 	srv := NewServer(manager, Options{})
 
@@ -93,7 +93,13 @@ func TestCreateMissingRequiredAttributeIs400AndVerbatim(t *testing.T) {
 		t.Fatalf("body is not valid JSON: %v", err)
 	}
 	if !strings.Contains(resp.Error, "missing required attribute 'email'") {
-		t.Fatalf("expected the verbatim message naming the attribute, got %q", resp.Error)
+		t.Fatalf("expected the published message naming the attribute, got %q", resp.Error)
+	}
+	// The batch index is the one piece of the failure the caller cannot recover
+	// from anywhere else in the response; losing it from the published body is
+	// the silent regression this assertion exists to catch (#313).
+	if !strings.Contains(resp.Error, "operation[0]") {
+		t.Fatalf("expected the published message to keep the batch index, got %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
 		t.Fatalf("a write-validation error took the redacted branch: error_class=%q error_id=%q",
@@ -148,7 +154,13 @@ func TestAdvancedQueryOperatorWhitelistIs400AndVerbatim(t *testing.T) {
 		t.Fatalf("body is not valid JSON: %v", err)
 	}
 	if !strings.Contains(resp.Error, "only supported for text attributes") {
-		t.Fatalf("expected the verbatim message naming the operator constraint, got %q", resp.Error)
+		t.Fatalf("expected the published message naming the operator constraint, got %q", resp.Error)
+	}
+	// The generator's internal phase wraps ("pg main generation",
+	// "pg sql generation") are plain context, not publication — they must stay
+	// out of the body now that only published text crosses (#313).
+	if strings.Contains(resp.Error, "generation") {
+		t.Fatalf("an internal phase name reached the 400 body: %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
 		t.Fatalf("a condition-DSL error took the redacted branch: error_class=%q error_id=%q",

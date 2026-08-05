@@ -164,15 +164,19 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 	}
 }
 
-// TestRespondErrorKeeps4xxMessageVerbatim pins the other half of the contract:
-// a client error describes caller-supplied input, so the caller still gets the
-// full message and no correlation fields are emitted.
-func TestRespondErrorKeeps4xxMessageVerbatim(t *testing.T) {
-	core, logs := observer.New(zap.ErrorLevel)
+// TestRespondError4xxPublishesOnlyTheCarriersMessage pins the other half of
+// the contract (#313): the caller gets the deliberately published message —
+// and only that. Operator detail attached to the same error stays out of the
+// body, and its presence promotes the log line to WARN because the boundary
+// just withheld text whose only remaining copy is that line.
+func TestRespondError4xxPublishesOnlyTheCarriersMessage(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
 	restore := zap.ReplaceGlobals(zap.New(core))
 	defer restore()
 
-	err := fmt.Errorf("attribute 'age' (attrID=2): %w: cannot convert string to float64", forma.ErrInvalidInput)
+	err := forma.WithOperatorDetail(
+		forma.InvalidInputf("attribute 'age' (attrID=2): cannot convert string to float64"),
+		fmt.Errorf("while flushing %s", canaryKey))
 	rec := httptest.NewRecorder()
 	respondError(rec, "create failed", err, "schema", "orders")
 
@@ -185,16 +189,25 @@ func TestRespondErrorKeeps4xxMessageVerbatim(t *testing.T) {
 		t.Fatalf("body is not valid JSON: %v", uerr)
 	}
 	if !strings.Contains(resp.Error, "create failed: attribute 'age' (attrID=2)") {
-		t.Fatalf("4xx message was not preserved verbatim: %q", resp.Error)
+		t.Fatalf("published message was not preserved: %q", resp.Error)
 	}
 	if !strings.Contains(resp.Error, "cannot convert string to float64") {
-		t.Fatalf("4xx message was truncated: %q", resp.Error)
+		t.Fatalf("published message was truncated: %q", resp.Error)
+	}
+	if strings.Contains(rec.Body.String(), canaryKey) {
+		t.Fatalf("operator detail leaked into the 400 body: %s", rec.Body.String())
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
 		t.Fatalf("4xx must not emit correlation fields, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
 	}
-	if logs.Len() != 0 {
-		t.Fatalf("a client error must not log at ERROR level, got %d entries", logs.Len())
+
+	entries := logs.All()
+	if len(entries) != 1 || entries[0].Level != zap.WarnLevel {
+		t.Fatalf("withheld operator detail must log at WARN, got %d entries %v", len(entries), entries)
+	}
+	logged, _ := entries[0].ContextMap()["error"].(string)
+	if !strings.Contains(logged, canaryKey) {
+		t.Fatalf("operator log lost the withheld detail; logged: %s", logged)
 	}
 }
 
@@ -206,7 +219,7 @@ func TestRespondErrorWithStatusHonoursCallerStatus(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	respondErrorWithStatus(rec, http.StatusNotFound, "record not found",
-		fmt.Errorf("wrap: %w", forma.ErrNotFound), "schema", "orders")
+		forma.NotFoundf("wrap"), "schema", "orders")
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d", rec.Code)
@@ -282,20 +295,18 @@ func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
 	}
 }
 
-// TestUnknownSortAttributeIs400AndVerbatim closes the loop between #301 and #296.
-//
-// Removing the substring heuristic would have regressed the one genuine client
-// error that relied on it — `cannot sort by unknown attribute` — from a 400 with
-// usable guidance to a 500 with an opaque body. internal/entity_query_sort.go now
-// wraps forma.ErrInvalidInput instead, so it reaches 400 through the sentinel
-// branch and keeps its verbatim message. This is the error shape that function
-// actually produces, prose unchanged.
-func TestUnknownSortAttributeIs400AndVerbatim(t *testing.T) {
+// TestUnknownSortAttributeIs400AndPublished closes the loop between #301,
+// #296, and #313: the unknown-sort-attribute error keeps its 400 and its
+// guidance, now as a published carrier message. The sentinel suffix that #309
+// kept as body contract no longer reaches the body at all — only Error()
+// carries it — which the negative assertion pins. This is the error shape
+// internal/entity_query_sort.go actually produces, prose unchanged.
+func TestUnknownSortAttributeIs400AndPublished(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
 
-	err := fmt.Errorf("cannot sort by unknown attribute '%s' in schema '%s': %w",
-		"nope", "lead", forma.ErrInvalidInput)
+	err := forma.InvalidInputf("cannot sort by unknown attribute '%s' in schema '%s'",
+		"nope", "lead")
 
 	rec := httptest.NewRecorder()
 	respondError(rec, "query failed", err, "schema", "lead")
@@ -309,10 +320,13 @@ func TestUnknownSortAttributeIs400AndVerbatim(t *testing.T) {
 		t.Fatalf("body is not valid JSON: %v", uerr)
 	}
 	if !strings.Contains(resp.Error, "cannot sort by unknown attribute 'nope' in schema 'lead'") {
-		t.Fatalf("expected the guidance preserved verbatim, got %q", resp.Error)
+		t.Fatalf("expected the guidance preserved, got %q", resp.Error)
+	}
+	if strings.Contains(resp.Error, ": invalid input") {
+		t.Fatalf("the sentinel suffix must stay out of the body (#313), got %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
-		t.Fatalf("a sentinel-carrying 400 must not emit correlation fields, got class=%q id=%q",
+		t.Fatalf("a published 400 must not emit correlation fields, got class=%q id=%q",
 			resp.ErrorClass, resp.ErrorID)
 	}
 }
@@ -348,28 +362,48 @@ func TestSentinelLessErrorIsRedacted500(t *testing.T) {
 	}
 }
 
-// TestRespondErrorLogLevels pins the log level of each branch. Levels are now
+// TestRespondErrorLogLevels pins the log level of each branch. Levels are
 // contract: the redacted branch must be ERROR so it survives production's Info
-// threshold, and the verbatim branch must stay DEBUG so client mistakes do not
-// page anyone. Asserting Debug positively also closes a hole in
-// TestRespondErrorKeeps4xxMessageVerbatim, whose zero-ERROR-entries check would
-// pass even if nothing were logged at all.
+// threshold; a disclosed 4xx with no withheld detail stays DEBUG so client
+// mistakes do not page anyone; a disclosed 4xx that withholds operator detail
+// logs at WARN — that line is the only remaining copy of the detail, and it
+// must clear the Info threshold without inheriting ERROR's alerting weight
+// (a caller can trigger 4xx at will).
 func TestRespondErrorLogLevels(t *testing.T) {
-	t.Run("verbatim client error logs at debug", func(t *testing.T) {
+	t.Run("published client error logs at debug", func(t *testing.T) {
 		core, logs := observer.New(zap.DebugLevel)
 		restore := zap.ReplaceGlobals(zap.New(core))
 		defer restore()
 
 		rec := httptest.NewRecorder()
 		respondError(rec, "create failed",
-			fmt.Errorf("attribute 'age': %w", forma.ErrInvalidInput), "schema", "orders")
+			forma.InvalidInputf("attribute 'age'"), "schema", "orders")
 
 		entries := logs.All()
 		if len(entries) != 1 {
 			t.Fatalf("expected exactly 1 log entry, got %d", len(entries))
 		}
 		if entries[0].Level != zap.DebugLevel {
-			t.Fatalf("expected the verbatim branch to log at DEBUG, got %s", entries[0].Level)
+			t.Fatalf("expected the published branch to log at DEBUG, got %s", entries[0].Level)
+		}
+	})
+
+	t.Run("published client error with withheld detail logs at warn", func(t *testing.T) {
+		core, logs := observer.New(zap.DebugLevel)
+		restore := zap.ReplaceGlobals(zap.New(core))
+		defer restore()
+
+		rec := httptest.NewRecorder()
+		respondError(rec, "create failed",
+			forma.WithOperatorDetail(forma.InvalidInputf("attribute 'age'"),
+				fmt.Errorf("operator cause")), "schema", "orders")
+
+		entries := logs.All()
+		if len(entries) != 1 {
+			t.Fatalf("expected exactly 1 log entry, got %d", len(entries))
+		}
+		if entries[0].Level != zap.WarnLevel {
+			t.Fatalf("expected the withheld-detail branch to log at WARN, got %s", entries[0].Level)
 		}
 	})
 

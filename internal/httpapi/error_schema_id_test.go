@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -217,39 +216,20 @@ func TestRedactedBodyOmitsSchemaIDWithoutACarrier(t *testing.T) {
 	}
 }
 
-// clientClassifiedCarrier is a single-cause error that classifies as client
-// fault while still holding a typed read-path carrier underneath, so
-// errorSchemaID resolves a non-zero id on the verbatim branch.
-type clientClassifiedCarrier struct {
-	cause error
-}
-
-func (e *clientClassifiedCarrier) Error() string { return "bad filter: " + e.cause.Error() }
-func (e *clientClassifiedCarrier) Unwrap() error { return e.cause }
-func (e *clientClassifiedCarrier) Is(target error) bool {
-	return errors.Is(target, forma.ErrInvalidInput)
-}
-
-// TestVerbatim4xxBodyCarriesNoSchemaID pins that the reversal is confined to the
-// redacted branch. A provable client error keeps a body byte-identical to
-// pre-#301: message only, no correlation fields, no schema id.
-//
-// The chain deliberately carries a schema id that errorSchemaID *would* resolve —
-// a ParquetSetInconsistentError reachable from a client-classified error — so the
-// test fails if the field is populated before the disclosure gate instead of
-// after it.
-//
-// It has to be a *single-cause* chain, which is why the fixture type below exists
-// rather than `fmt.Errorf("%w: %w", …)`: since Finding 3 a multi-cause chain is
-// redacted regardless of sentinel evidence, so the joined form would no longer
-// reach the verbatim branch this test is about.
-func TestVerbatim4xxBodyCarriesNoSchemaID(t *testing.T) {
+// TestPublished4xxBodyCarriesNoSchemaID pins that the schema-id reversal is
+// confined to the redacted branch. A published client error keeps a body of
+// message only: no correlation fields, no schema id — even when the chain
+// deliberately carries a ParquetSetInconsistentError that errorSchemaID
+// *would* resolve, attached as operator detail. The test fails if the field
+// is populated before the disclosure gate instead of after it, and the
+// object-key assertion makes it strictly stronger than its pre-#313 version:
+// the detail's text must not surface either.
+func TestPublished4xxBodyCarriesNoSchemaID(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
 
-	err := &clientClassifiedCarrier{
-		cause: &forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},
-	}
+	err := forma.WithOperatorDetail(forma.InvalidInputf("bad filter"),
+		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}})
 
 	rec := httptest.NewRecorder()
 	respondError(rec, "query failed", err)
@@ -259,9 +239,12 @@ func TestVerbatim4xxBodyCarriesNoSchemaID(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, forbidden := range []string{"schema_id", "error_class", "error_id"} {
+	for _, forbidden := range []string{"schema_id", "error_class", "error_id", canaryKey} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("verbatim 4xx body carried %q; body: %s", forbidden, body)
+			t.Fatalf("published 4xx body carried %q; body: %s", forbidden, body)
 		}
+	}
+	if !strings.Contains(body, "bad filter") {
+		t.Fatalf("expected the published message, got %s", body)
 	}
 }
