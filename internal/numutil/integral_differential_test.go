@@ -138,7 +138,9 @@ func curatedSpellings() []string {
 		"0x"+strings.Repeat("0", 50)+"1p4", "0xffffffffffffffffp0", "0x1_0p4",
 		"0X1P-4", "0x1.fffffffffffffp62", "0x8000000000000000p0",
 		// Significands wider than the fast-path caps (>19 decimal digits,
-		// >16 hex digits) and shifts that span the whole 64-bit width.
+		// >17 hex digits; 17-digit hex runs route to the two-word path and
+		// 18+ digits are provably out of range) and shifts that span the
+		// whole 64-bit width.
 		"12345678901234567890123.0", "1234567890123456789012e-3",
 		"99999999999999999999e-1", "0.0000000000000000001e19",
 		"0x1ffffffffffffffffp0", "0x1_0000_0000_0000_0000p0",
