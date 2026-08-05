@@ -199,7 +199,8 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 		return fmt.Errorf("delete entity_main row: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("entity not found (schema=%d row=%s): %w", schemaID, rowID, forma.ErrNotFound)
+		return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),
+			fmt.Errorf("schema=%d", schemaID))
 	}
 
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))

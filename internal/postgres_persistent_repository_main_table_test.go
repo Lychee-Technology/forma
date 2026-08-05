@@ -189,6 +189,19 @@ func TestClassifyPgError(t *testing.T) {
 		assert.ErrorIs(t, err, forma.ErrConflict)
 	})
 
+	t.Run("publishes a summary, not pg detail", func(t *testing.T) {
+		pgDetail := "Key (schema_id, row_id)=(7, abc) already exists."
+		err := classifyPgError(&pgconn.PgError{Code: "23505", Detail: pgDetail})
+		require.Error(t, err)
+
+		var pub forma.PublicError
+		require.True(t, errors.As(err, &pub), "conflict publishes no client message: %v", err)
+		assert.Equal(t, "the write conflicts with a row that already exists", pub.PublicMessage())
+		assert.NotContains(t, pub.PublicMessage(), "Key (")
+		assert.Contains(t, err.Error(), pgDetail, "the operator copy must keep the driver detail")
+		assert.True(t, forma.HasOperatorDetail(err))
+	})
+
 	t.Run("leaves other pg errors unchanged", func(t *testing.T) {
 		original := &pgconn.PgError{Code: "23503", Detail: "violates foreign key constraint"}
 		assert.Same(t, original, classifyPgError(original))

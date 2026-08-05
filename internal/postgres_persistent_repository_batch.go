@@ -138,7 +138,8 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("delete entity_main row for key[%d]: %w", i, err)
 		}
 		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("entity not found for key[%d] (schema=%d row=%s): %w", i, key.SchemaID, key.RowID, forma.ErrNotFound)
+			return forma.WithOperatorDetail(forma.NotFoundf("entity not found for key[%d] (row=%s)", i, key.RowID),
+				fmt.Errorf("schema=%d", key.SchemaID))
 		}
 		if _, err := tx.Exec(ctx, deleteEAV, key.SchemaID, key.RowID); err != nil {
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)
