@@ -339,7 +339,11 @@ func (t *transformer) flattenToAttributes(
 		attrName := strings.Join(path, ".")
 		meta, ok := cache[attrName]
 		if !ok {
-			return forma.InvalidInputf("attribute '%s' is not defined for schema %d", attrName, schemaID)
+			// The internal schema id is operator detail: the caller addressed a
+			// schema by name and cannot act on the int16 (#362 review, P2).
+			return forma.WithOperatorDetail(
+				forma.InvalidInputf("attribute '%s' is not defined for this schema", attrName),
+				fmt.Errorf("schema %d", schemaID))
 		}
 
 		attr := model.EAVRecord{
