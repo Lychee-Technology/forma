@@ -43,7 +43,7 @@ func ParseOperatorValueStrict(raw string) (OperatorValue, error) {
 		opPart := before
 		valPart := after
 		if opPart == "" || valPart == "" {
-			return OperatorValue{}, fmt.Errorf("invalid KvCondition value format: %s: %w", raw, forma.ErrInvalidInput)
+			return OperatorValue{}, forma.InvalidInputf("invalid KvCondition value format: %s", raw)
 		}
 		return OperatorValue{Operator: opPart, Value: valPart}, nil
 	}
@@ -97,7 +97,7 @@ func ToSQLOperator(op, value string) (SQLOperatorResult, error) {
 	case "contains":
 		return SQLOperatorResult{SQLOperator: "LIKE", Value: "%" + value + "%"}, nil
 	default:
-		return SQLOperatorResult{}, fmt.Errorf("unsupported operator: %s: %w", op, forma.ErrInvalidInput)
+		return SQLOperatorResult{}, forma.InvalidInputf("unsupported operator: %s", op)
 	}
 }
 
@@ -119,7 +119,7 @@ func ParseRFC3339OrUnixMs(raw string) (time.Time, error) {
 	}
 	ms, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date value: expected ISO 8601 format or unix milliseconds, got '%s': %w", raw, forma.ErrInvalidInput)
+		return time.Time{}, forma.InvalidInputf("invalid date value: expected ISO 8601 format or unix milliseconds, got '%s'", raw)
 	}
 	return time.UnixMilli(ms), nil
 }
