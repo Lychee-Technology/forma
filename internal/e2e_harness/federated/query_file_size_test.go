@@ -16,13 +16,13 @@ func TestCountSourceLinesIncludesFinalUnterminatedLine(t *testing.T) {
 	}
 }
 
-func TestListQuerySourceFilesExcludesTests(t *testing.T) {
-	files, err := listQuerySourceFiles()
+func TestListGuardedSourceFilesExcludesTests(t *testing.T) {
+	files, err := listGuardedSourceFiles()
 	if err != nil {
-		t.Fatalf("list query source files: %v", err)
+		t.Fatalf("list guarded source files: %v", err)
 	}
 	if len(files) == 0 {
-		t.Fatal("expected query source files")
+		t.Fatal("expected guarded source files")
 	}
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -43,30 +43,31 @@ func countSourceLines(source []byte) int {
 	return lines
 }
 
-func listQuerySourceFiles() ([]string, error) {
-	candidates, err := filepath.Glob("query*.go")
-	if err != nil {
-		return nil, fmt.Errorf("glob query source files: %w", err)
-	}
-
-	files := make([]string, 0, len(candidates))
-	for _, name := range candidates {
-		if !strings.HasSuffix(name, "_test.go") {
-			files = append(files, name)
+func listGuardedSourceFiles() ([]string, error) {
+	var files []string
+	for _, pattern := range []string{"query*.go", "harness*.go"} {
+		candidates, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("glob guarded source files %q: %w", pattern, err)
+		}
+		for _, name := range candidates {
+			if !strings.HasSuffix(name, "_test.go") {
+				files = append(files, name)
+			}
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no query source files matched query*.go")
+		return nil, fmt.Errorf("no guarded source files matched query*.go or harness*.go")
 	}
 	return files, nil
 }
 
-// TestQuerySourcesStayWithinFileSizeLimit prevents query assembly concerns
-// from accumulating back into an oversized source file (#220).
-func TestQuerySourcesStayWithinFileSizeLimit(t *testing.T) {
-	names, err := listQuerySourceFiles()
+// TestGuardedSourcesStayWithinFileSizeLimit prevents query assembly and harness
+// infrastructure concerns from accumulating back into oversized source files (#220).
+func TestGuardedSourcesStayWithinFileSizeLimit(t *testing.T) {
+	names, err := listGuardedSourceFiles()
 	if err != nil {
-		t.Fatalf("list query source files: %v", err)
+		t.Fatalf("list guarded source files: %v", err)
 	}
 
 	for _, name := range names {
