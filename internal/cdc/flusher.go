@@ -342,7 +342,12 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 	return nil
 }
 
-// shouldFlush determines if flush thresholds are met.
+// shouldFlush determines if flush thresholds are met. The age trigger is the
+// one place a wall-clock comparison against changed_at survives (#274): a
+// clock-ahead version has negative age until the clock reaches it, so a LONE
+// such row age-triggers only after drift + MaxAgeMs. That delays only the
+// TRIGGER — any run started by the count threshold or by other rows exports
+// and marks clock-ahead rows normally (SelectBatchRowIDs / MarkFlushedVersions).
 func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 	nowMs := time.Now().UnixMilli()
 	if cfg.MinRecords > 0 && cnt >= int64(cfg.MinRecords) {

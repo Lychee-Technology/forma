@@ -370,11 +370,17 @@ entries from that era, and compaction's fold of such a legacy pair is
 arbitrary (the copies were already unordered on disk). Second, during the
 mixed-vintage window a legacy delta object (live `NULL`) tying a new-vintage
 object (live `0`) resolves to the new object under `NULLS LAST` — the copies
-encode the same version, so this is a curiosity, not a regression. One
-write-side consequence is worth knowing: a version that ran ahead of the
-wall clock is not flush-eligible until the clock passes it (the export
-snapshot filters `changed_at <= snapshotTS`); the drift is bounded by
-writes-per-millisecond-per-row and decays as the clock catches up.
+encode the same version, so this is a curiosity, not a regression. CDC is
+version-aware, not wall-clock-gated: the flush snapshot is the MAX of the
+wall clock and the batch's listed versions, and marking is exact against
+the listed `(row_id, version)` pairs (`cdc.MarkFlushedVersions`), so a
+clock-ahead version exports and marks in the same run — a wall-clock-only
+cutoff would have starved such rows indefinitely under sustained
+faster-than-one-write-per-millisecond traffic. The only wall-clock trace
+left is the age-based flush *trigger* (`now - oldest >= MaxAgeMs`), which
+starts counting once the clock reaches the version; a lone clock-ahead row
+waits out its drift plus MaxAge before age-triggering, but flushes with any
+run triggered by count or by other rows.
 
 Keyset (cursor) pagination carries the same total-order requirement, and it is
 now **enforced**, not merely documented: the engine rejects any cursor whose
