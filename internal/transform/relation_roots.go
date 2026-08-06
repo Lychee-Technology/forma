@@ -24,6 +24,21 @@ type RelationRoots map[string]struct{}
 // A name that *is* a relation root is not covered. It never reaches this check
 // in production (the strip deleted it) and it is not dotted, so expansion does
 // not apply to it either way.
+func (r RelationRoots) Covers(name string) bool {
+	if len(r) == 0 {
+		return false
+	}
+	for i, char := range name {
+		if char != '.' {
+			continue
+		}
+		if _, ok := r[name[:i]]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // RelationRootsLookup answers a schema's relation roots by schema name.
 //
 // It exists so package internal — which owns RelationIndex and is the only
@@ -40,19 +55,4 @@ type RelationRootsLookup func(schemaName string) RelationRoots
 // transformer is used concurrently; nothing reads the field until then.
 type RelationRootsAware interface {
 	SetRelationRoots(lookup RelationRootsLookup)
-}
-
-func (r RelationRoots) Covers(name string) bool {
-	if len(r) == 0 {
-		return false
-	}
-	for i, char := range name {
-		if char != '.' {
-			continue
-		}
-		if _, ok := r[name[:i]]; ok {
-			return true
-		}
-	}
-	return false
 }

@@ -125,6 +125,68 @@ func TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself(t *testing.T) 
 	}
 }
 
+// TestFromEAVRecordsEnforcesRequiredPolicyOnFullVariant is the positive control
+// for the carve-out's blast radius: it must not reach the _full variants.
+//
+// visit_full.json is the inlined artifact, and inlining resolves $ref and drops
+// x-* — so it declares no x-relation and RelationIndex finds no relation roots
+// for it. contactSnapshot is therefore an ordinary nested object there, and its
+// children stay under required-policy enforcement even though the identical
+// names are exempt on visit.
+//
+// The metadata below mirrors visit_full_attributes.json after the #315 repair
+// (synthetic, to match this file's other fixtures): contactSnapshot.name (16)
+// lost required_if_parent_present, contactSnapshot.nameKana (17) never had one,
+// and contactSnapshot.isAnonymous (43) is new and carries it. That combination
+// is a write-contract change on visit_full, and is pinned here deliberately.
+func TestFromEAVRecordsEnforcesRequiredPolicyOnFullVariant(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   501,
+		schemaName: "visit_full_like",
+		cache: forma.SchemaAttributeCache{
+			"id":                          {AttributeID: 1, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyAlways},
+			"contactSnapshot.name":        {AttributeID: 16, ValueType: forma.ValueTypeText},
+			"contactSnapshot.nameKana":    {AttributeID: 17, ValueType: forma.ValueTypeText},
+			"contactSnapshot.isAnonymous": {AttributeID: 43, ValueType: forma.ValueTypeBool, RequiredPolicy: forma.RequiredPolicyIfParentPresent},
+		},
+	}
+
+	// The lookup is installed and answers "no roots" for this schema, exactly
+	// as RelationIndex does for an inlined _full schema. The carve-out is wired
+	// but must not fire.
+	converter := NewAttributeConverter(registry)
+	converter.SetRelationRoots(func(schemaName string) RelationRoots {
+		if schemaName == "visit_like" {
+			return RelationRoots{"contactSnapshot": struct{}{}}
+		}
+		return nil
+	})
+
+	rowID := uuid.Must(uuid.NewV7())
+	id := "visit-1"
+	nameKana := "Ada"
+	withoutIsAnonymous := []model.EAVRecord{
+		{SchemaID: 501, RowID: rowID, AttrID: 1, ValueText: &id},
+		{SchemaID: 501, RowID: rowID, AttrID: 17, ValueText: &nameKana},
+	}
+
+	_, err := converter.FromEAVRecords(withoutIsAnonymous)
+	if err == nil {
+		t.Fatal("visit_full has no relation roots, so contactSnapshot children stay enforced")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'contactSnapshot.isAnonymous'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	isAnonymous := 0.0
+	withIsAnonymous := append(withoutIsAnonymous,
+		model.EAVRecord{SchemaID: 501, RowID: rowID, AttrID: 43, ValueNumeric: &isAnonymous},
+	)
+	if _, err := converter.FromEAVRecords(withIsAnonymous); err != nil {
+		t.Fatalf("supplying contactSnapshot.isAnonymous must satisfy the policy: %v", err)
+	}
+}
+
 // TestFromEAVRecordsWithoutRelationRootsKeepsEnforcement pins that an
 // uninstalled lookup changes nothing — the carve-out is opt-in per wiring.
 func TestFromEAVRecordsWithoutRelationRootsKeepsEnforcement(t *testing.T) {
