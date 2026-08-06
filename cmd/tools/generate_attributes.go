@@ -70,14 +70,18 @@ func runGenerateAttributes(_ context.Context, args []string) error {
 }
 
 func generateAttributesJSON(schemaPath, outputPath string) error {
-	data, err := os.ReadFile(schemaPath)
+	inliner := NewSchemaInliner(filepath.Dir(schemaPath))
+	schema, err := inliner.InlineFile(schemaPath)
 	if err != nil {
-		return fmt.Errorf("read schema file: %w", err)
-	}
-
-	var schema map[string]any
-	if err := json.Unmarshal(data, &schema); err != nil {
-		return fmt.Errorf("parse schema JSON: %w", err)
+		// Adapt inliner error messages to match legacy test expectations
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "read file") {
+			return fmt.Errorf("read schema file: %w", err)
+		}
+		if strings.Contains(errMsg, "parse JSON") {
+			return fmt.Errorf("parse schema JSON: %w", err)
+		}
+		return fmt.Errorf("inline schema: %w", err)
 	}
 
 	// Extract attributes from the schema
