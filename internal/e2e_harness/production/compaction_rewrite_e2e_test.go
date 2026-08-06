@@ -22,7 +22,7 @@ import (
 // changed_at carried verbatim (#210: no re-stamping) and, when the winning
 // event pins a title, the winning payload; zero rows for physically removed
 // entities; zero tombstones; and deleted_at normalized to 0 on every survivor
-// (#183: the merged file must keep base-wins tie semantics).
+// (#274: 0 is the canonical live encoding on every cold tier).
 func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string, winners map[uuid.UUID]*Event, absent []uuid.UUID) {
 	t.Helper()
 	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))

@@ -54,12 +54,16 @@ const (
 )
 
 // TestDuckMerger_MergeToTmp runs the real merge SQL on in-memory DuckDB over
-// local parquet fixtures shaped like production exports: base rows carry
-// deleted_at=0 (init exporter's COALESCE), live delta rows carry NULL, and
-// tombstones carry the delete timestamp. Pins the four #188 fold behaviors:
-// newest-version wins, tombstones drop, equal-ver_ts ties stay base-wins
-// (#183), and survivors are normalized to deleted_at=0 with changed_at
-// carried verbatim (#210).
+// local parquet fixtures shaped like pre-#274 production exports: base rows
+// carry deleted_at=0 (init exporter's COALESCE), live LEGACY delta rows carry
+// NULL, and tombstones carry the delete timestamp. Pins the #188 fold
+// behaviors: newest-version wins, tombstones drop, and survivors are
+// normalized to deleted_at=0 with changed_at carried verbatim (#210). The
+// rowD tie is a LEGACY-vintage characterization: 0-vs-NULL still resolves
+// base-wins under NULLS LAST, which keeps the merge deterministic over old
+// delta objects. Post-#274 both live encodings are 0 and the tie winner is
+// unspecified (value-identical copies) — see
+// TestDuckMerger_EqualVertsIdenticalZeroEncodedCopies.
 func TestDuckMerger_MergeToTmp(t *testing.T) {
 	db, err := sql.Open("duckdb", "")
 	require.NoError(t, err)
@@ -122,6 +126,41 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 	if err := parquetcheck.Check("merged", stats.Columns); err != nil {
 		t.Fatalf("merged stats must carry a stamp satisfying the invariant: %v", err)
 	}
+}
+
+// TestDuckMerger_EqualVertsIdenticalZeroEncodedCopies pins the post-#274 tie
+// contract: both source files encode the live row as deleted_at=0 (base and
+// new-vintage delta alike), the copies tie on changed_at with IDENTICAL
+// values, and the merge must fold them to exactly one row carrying that
+// value. Winner identity is deliberately NOT asserted — with both encodings
+// at 0 the LWW ORDER BY has no discriminator left inside the partition, and
+// the contract is multiplicity + value, not scan order.
+func TestDuckMerger_EqualVertsIdenticalZeroEncodedCopies(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.parquet")
+	deltaPath := filepath.Join(dir, "delta.parquet")
+	tmpPath := filepath.Join(dir, "merged.parquet")
+
+	writeParquetFixture(t, db, basePath, []mergeFixtureRow{{rowA, 150, "0", "same-value"}})
+	writeParquetFixture(t, db, deltaPath, []mergeFixtureRow{{rowA, 150, "0", "same-value"}})
+
+	merger := &DuckMerger{DB: db}
+	stats, err := merger.MergeToTmp(context.Background(), []string{basePath, deltaPath}, tmpPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stats.RowsIn)
+	require.Equal(t, int64(1), stats.RowsOut, "identical zero-encoded copies must fold to one row, not duplicate or drop")
+
+	var changedAt, deletedAt int64
+	var title string
+	require.NoError(t, db.QueryRow(fmt.Sprintf(
+		"SELECT changed_at, deleted_at, title FROM read_parquet('%s')", tmpPath)).Scan(&changedAt, &deletedAt, &title))
+	require.Equal(t, int64(150), changedAt)
+	require.Equal(t, int64(0), deletedAt)
+	require.Equal(t, "same-value", title, "whichever copy won, the served value must be the shared one")
 }
 
 // TestDuckMerger_AllTombstones pins the schema-empties-out edge: the merge

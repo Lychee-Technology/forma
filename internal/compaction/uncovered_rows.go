@@ -19,8 +19,10 @@ type UncoveredRow struct {
 
 // UncoveredRows returns, per row_id, the orphan parquet's versions that no
 // listed file supersedes. Coverage is version-aware: a listed version with
-// changed_at >= the orphan version's covers it (equal ties resolve
-// base-wins in LWW, #183), so a same-row lost update — an orphan carrying a
+// changed_at >= the orphan version's covers it (the anti-join is >=, so an
+// equal-changed_at listed version counts as covering — post-#274 equal ties
+// are value-identical copies with an unspecified winner), so a same-row lost
+// update — an orphan carrying a
 // NEWER version than anything listed — still counts as uncovered. The
 // manifest-reconcile tool (#203) builds its repair verdict on this: a
 // row_id-only anti-join would misclassify lost updates as deletable

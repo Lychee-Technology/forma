@@ -10,11 +10,16 @@ import (
 // `ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC` over
 // the parquet aliases ver_ts=changed_at, deleted_ts=deleted_at. Every cold
 // file shares source_tier_priority=1, so within a parquet-only merge that
-// term is constant and drops out. NULLS LAST is DuckDB's default null order
-// but is spelled out so the merge cannot diverge from the reader if a
-// session ever reconfigures it: base exports carry deleted_at=0 and delta
-// exports carry NULL for live rows, and 0-sorts-before-NULL is what makes
-// equal-ver_ts ties deterministically base-wins (#183).
+// term is constant and drops out. Since #274 both exporters encode live rows
+// as deleted_at=0, so on an equal-ver_ts live/live tie deleted_at DESC is
+// degenerate too: the copies are value-identical and the winner identity is
+// unspecified — the contract is multiplicity + value, never scan order. A
+// tombstone (deleted_at > 0) beating a live 0/NULL on the tie remains the
+// hard delete-wins contract. NULLS LAST is DuckDB's default null order but is
+// spelled out so the merge cannot diverge from the reader if a session ever
+// reconfigures it: pre-#274 delta objects still carry NULL for live rows
+// until compaction retires them, and 0-sorts-before-NULL keeps those legacy
+// ties resolving the same way the reader does.
 const mergeLWWOrderBy = "changed_at DESC, deleted_at DESC NULLS LAST, row_id ASC"
 
 // defaultMergeCopyOptions matches the CDC exporters' parquet COPY options

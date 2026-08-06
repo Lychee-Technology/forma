@@ -15,8 +15,9 @@ import (
 // presence guard on row_id and changed_at, a type pin (CAST) on changed_at and
 // deleted_at, and deliberately NO cast on row_id (UUID in production, VARCHAR
 // in the benchmark shape) and NO presence guard on deleted_at (legitimately
-// NULL for live delta rows, #274). Spelled out rather than composed from the
-// production expression so a shape change has to be made twice, on purpose.
+// NULL for live rows in pre-#274 legacy delta objects, #365). Spelled out
+// rather than composed from the production expression so a shape change has
+// to be made twice, on purpose.
 const wantGuardREPLACE = "* REPLACE (COALESCE(row_id, error('" + ParquetNullRowIDMessage + "')) AS row_id, " +
 	"CAST(COALESCE(changed_at, error('" + ParquetNullChangedAtMessage + "')) AS BIGINT) AS changed_at, " +
 	"CAST(deleted_at AS BIGINT) AS deleted_at)"

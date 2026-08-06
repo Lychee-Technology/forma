@@ -54,10 +54,11 @@ const (
 //     are never legitimately NULL. Flush exports cl.changed_at from a NOT NULL
 //     change_log column; init/base exports m.ltbase_updated_at, likewise NOT
 //     NULL (#210); the benchmark shape carries changed_at directly
-//     (duckdb_benchmark_projection.go). deleted_at gets NO presence guard: the
-//     delta encoding writes NULL for every live row (cl.deleted_at, the #274
-//     asymmetry — only init/base COALESCEs it to 0), so a NULL-based presence
-//     guard would error on ordinary healthy data. See the residual note below.
+//     (duckdb_benchmark_projection.go). deleted_at gets NO presence guard:
+//     although both exporters now COALESCE live rows to 0 (#274), delta
+//     objects written BEFORE #274 still encode live rows as NULL and remain
+//     readable until compaction retires them, so a NULL-based presence guard
+//     would still error on healthy legacy data. See the residual note below.
 //
 //   - TYPE (CAST): applied to changed_at and deleted_at, both BIGINT in the
 //     production AND benchmark shapes. Without it a rogue file carrying either
@@ -78,13 +79,14 @@ const (
 //     template scan sites read row_id (the anti-join and the semijoin's
 //     SELECT row_id) while the merge reads changed_at.
 //
-// RESIDUAL (#274): deleted_at's PRESENCE cannot be value-guarded here while
-// delta exports encode live rows as NULL — such a guard would fail every
-// healthy delta scan. Its TYPE is pinned by the CAST above; a file missing the
-// column entirely still reaches the merge as NULL (characterized in
-// duckdb_cold_scan_guard_test.go), covered only by the pre-read footer probe
-// and the manifest stamp. Extending the presence guard to deleted_at is
-// unblocked once #274 normalizes the delta encoding to 0.
+// RESIDUAL (#365): deleted_at's PRESENCE cannot be value-guarded here while
+// pre-#274 delta objects (live rows encoded as NULL) are still readable —
+// such a guard would fail every healthy scan touching one. Its TYPE is pinned
+// by the CAST above; a file missing the column entirely still reaches the
+// merge as NULL (characterized in duckdb_cold_scan_guard_test.go), covered
+// only by the pre-read footer probe and the manifest stamp. #274 normalized
+// the delta encoding to 0 for NEW objects; extending the presence guard is
+// gated on the legacy objects being retired by compaction — tracked in #365.
 //
 // A scan set where NO object carries a guarded column fails to bind the
 // REPLACE list instead. Different message, same contract: loud, never silent.

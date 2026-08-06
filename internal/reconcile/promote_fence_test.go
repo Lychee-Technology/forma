@@ -17,8 +17,10 @@ import (
 // The two object-date fences an init-orphan promotion must clear (#292),
 // mirroring the production split in promote_fence.go. Both exist because the
 // version anti-join accepts an equal changed_at as superseding and cannot see
-// values, while the read path's equal-changed_at tie-break is deterministically
-// base-wins (#183). checkEvictionDates covers the entries a promotion REMOVES;
+// values, while the read path leaves an equal-changed_at live/live cold tie
+// with an unspecified winner (#274) — either copy may be served, so the
+// fences are what keeps divergent-value ties from being published at all.
+// checkEvictionDates covers the entries a promotion REMOVES;
 // checkSurvivorDates covers the ones it LEAVES BEHIND.
 //
 // The inventory-dependent version and resurrection proofs live in
@@ -91,7 +93,8 @@ func TestPromote_RefusesUndatableSurvivor_Glob(t *testing.T) {
 	// TIGHTENED in round 4. A glob delta entry cannot be resolved to a
 	// probeable key, so the resurrection probe has always skipped it — but it
 	// stays LISTED after the splice and therefore still participates in the
-	// read path's equal-changed_at tie-break, which is base-wins. Previously
+	// read path's equal-changed_at tie, whose live/live winner is
+	// unspecified (#274) — either copy may be served. Previously
 	// such an entry was silently tolerated and promotion went ahead; now an
 	// entry this run cannot date at all refuses the whole promotion, exactly
 	// like an unverifiable BASE entry.
@@ -265,8 +268,9 @@ func TestPromote_RealStats_RefusesEqualTimestampDifferentPayload(t *testing.T) {
 // coverage balances cleanly. The hazard lives entirely on the SURVIVING side:
 // the failed init holds rid1='old'@100 and a listed delta — written after the
 // failed init released the lock — holds rid1='new'@100. Promotion would
-// publish 'old' as base, and the read path's equal-changed_at tie-break is
-// base-wins (#183), so readers would deterministically regress to 'old'. The
+// publish 'old' as base, and the read path's equal-changed_at live/live tie
+// has an unspecified winner (#274), so readers may serve 'old', flapping per
+// scan with no probe able to see it. The
 // delta's manifest CreatedMin ties the init set's max changed_at rather than
 // exceeding it, so neither acceptance ground applies and the fence refuses.
 func TestPromote_RealStats_RefusesSurvivingDeltaTie(t *testing.T) {
