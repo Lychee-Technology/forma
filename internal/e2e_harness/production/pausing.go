@@ -17,7 +17,7 @@ import (
 // open mid-pipeline so a test can mutate rows inside the race window (#182).
 // Pausing on S3OpCopy suspends the flush after dirty-ID selection, snapshot
 // capture, and the DuckDB export, but before MarkFlushedVersions — the
-// window the changed_at <= snapshot guard protects.
+// window the exact listed-version mark guard protects (#274).
 //
 // Only the first matching call pauses; later matches pass straight through.
 // The paused call also unblocks when its context is cancelled, so a timed-out

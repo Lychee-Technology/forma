@@ -339,7 +339,9 @@ partition; `source_tier_priority DESC` resolves hot-vs-cold at an equal
 `ver_ts` (hot is 3, every parquet row is 1 — base and delta are
 indistinguishable at rank time); `deleted_ts DESC` makes a tombstone
 (`deleted_ts = T > 0`) beat a live copy (`0` from any cold export since #274,
-`NULL` from the hot leg or a pre-#274 legacy delta object) so the delete wins
+`NULL` from the hot leg, a pre-#274 legacy delta object, or the benchmark
+harness shape — which deliberately keeps the raw legacy encoding and stays
+#365-tolerant) so the delete wins
 the fold and is then dropped by the visibility filter — this delete-wins arm
 is a hard contract. The trailing `row_id ASC` is inert here: `row_id` is the
 partition key, so it is constant within every partition (it earns its keep in

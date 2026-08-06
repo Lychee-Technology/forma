@@ -44,8 +44,9 @@ func validateMergeURI(uri string) error {
 // survivors drop tombstones entirely (safe ONLY because the source set is
 // the schema's complete base+delta inventory — a partial merge could
 // resurrect a row via an unmerged older version), and survivor deleted_at is
-// normalized to 0 so the merged file keeps base-tier tie semantics. All
-// remaining columns — changed_at above all (#210) — pass through verbatim.
+// normalized to 0, the canonical live encoding on every cold tier (#274).
+// All remaining columns — changed_at above all (#210) — pass through
+// verbatim.
 func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, error) {
 	if len(sourceURIs) == 0 {
 		return "", fmt.Errorf("merge needs at least one source parquet URI")

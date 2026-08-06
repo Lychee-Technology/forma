@@ -132,6 +132,10 @@ func chooseLWW(existing *model.PersistentRecord, existingTier model.DataTier, ne
 	// cold-tier parquet encodes live rows as DeletedAt = 0 (#274) while hot
 	// rows carry nil, so both nil and &0 mean live here — matching the SQL
 	// rank order's deleted_ts DESC, where a tombstone T > 0 beats live 0/NULL.
+	// (The SQL rank evaluates tier priority before deleted_ts; this arm runs
+	// first — semantics match, order differs. Post-#274 the divergence is
+	// unreachable: tombstones stamp strictly above live versions, so an
+	// equal-UpdatedAt live/tombstone pair cannot be minted. Noted for #365.)
 	existingDeleted := existing.DeletedAt != nil && *existing.DeletedAt != 0
 	newDeleted := newRec.DeletedAt != nil && *newRec.DeletedAt != 0
 	if !existingDeleted && newDeleted {

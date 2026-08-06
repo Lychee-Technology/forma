@@ -197,7 +197,7 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	// the identity clock read. The per-row lock serializes the history read
 	// against a concurrent delete's tombstone allocation.
 	if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
-		return err
+		return fmt.Errorf("lock row version for insert: %w", err)
 	}
 	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
 	if err != nil {
@@ -278,7 +278,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	// The per-row lock pairs with the create path's: a concurrent recreate
 	// must observe this delete's tombstone before allocating its version.
 	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
-		return err
+		return fmt.Errorf("lock row version for delete: %w", err)
 	}
 
 	// RETURNING captures the deleted row's version so the tombstone can be
