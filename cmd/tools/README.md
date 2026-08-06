@@ -18,10 +18,12 @@ generate-attributes
 - `-schema`：Schema 名（不含 `.json`）；与 `-schema-file` 互斥。
 - `-schema-file`：Schema 文件全路径；优先于 `-schema/-schema-dir`。
 - `-out`：输出文件路径；默认写到 schema 同目录的 `<name>_attributes.json`。
+- `-init`：允许创建全新的 attributes 文件；不指定此标志时，输出文件缺失会导致错误（因为生成会将所有 attributeID 从 1 重新编号）。
 
 示例：
-- `go run ./cmd/tools generate-attributes -schema lead`
-- `go run ./cmd/tools generate-attributes -schema-file /path/to/schema.json -out /tmp/schema_attributes.json`
+- `go run ./cmd/tools generate-attributes -schema lead`（更新既有 attributes 文件）
+- `go run ./cmd/tools generate-attributes -schema-file /path/to/schema.json`（再生成）
+- `go run ./cmd/tools generate-attributes -schema-file /path/to/schema.json -out /tmp/schema_attributes.json -init`（创建新文件）
 
 init-db
 -------
