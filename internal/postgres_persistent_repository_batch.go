@@ -33,7 +33,10 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		}
 
 		// Recreates must outrank their retained tombstone (#274); see
-		// InsertPersistentRecord.
+		// InsertPersistentRecord. Lock order follows input order.
+		if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
+			return fmt.Errorf("lock row version for record[%d]: %w", i, err)
+		}
 		effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
 		if err != nil {
 			return fmt.Errorf("stamp create version for record[%d]: %w", i, err)
@@ -143,6 +146,9 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("key[%d] has empty row id", i)
 		}
 
+		if err := lockRowVersion(ctx, tx, key.SchemaID, key.RowID); err != nil {
+			return fmt.Errorf("lock row version for key[%d]: %w", i, err)
+		}
 		var prevUpdatedAt int64
 		if err := tx.QueryRow(ctx, deleteMain, key.SchemaID, key.RowID).Scan(&prevUpdatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

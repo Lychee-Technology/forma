@@ -358,7 +358,11 @@ deletes stamp their tombstone strictly past the deleted row's version the
 same way; and a (re)create of a reused `row_id` stamps strictly above every
 version `change_log` retains for the row (`nextRowVersion`) — a recreate
 that stamped bare wall time would land BELOW its own clock-ahead tombstone
-and lose the LWW fold to it forever. Two serialized writes to one row —
+and lose the LWW fold to it forever. Create and delete allocate under a
+per-row transaction advisory lock (`lockRowVersion`; the two share no table
+row to lock), so a recreate can never read the row's history while a
+concurrent delete's tombstone is in flight — without it the two could tie
+and the tombstone would win the fold. Two serialized writes to one row —
 even in the same millisecond, even across a failed-init snapshot boundary,
 even through a delete/recreate — can never share or regress a `ver_ts`. An
 equal-ver_ts

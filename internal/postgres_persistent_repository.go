@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -88,6 +89,40 @@ func validateWriteTables(tables model.StorageTables) error {
 	return nil
 }
 
+// rowVersionLockKey derives the advisory-lock key that serializes version
+// allocation for one (schema_id, row_id). The single-bigint
+// pg_advisory_xact_lock keyspace is disjoint from the (int4, int4) form the
+// per-schema CDC lock uses (internal/cdc/schema_lock.go), so colliding with
+// that lock is impossible by construction; a hash collision between two
+// distinct rows only serializes two unrelated writes — a latency curiosity,
+// never a correctness issue.
+func rowVersionLockKey(schemaID int16, rowID uuid.UUID) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte{byte(uint16(schemaID) >> 8), byte(uint16(schemaID))})
+	_, _ = h.Write(rowID[:])
+	return int64(h.Sum64())
+}
+
+// lockRowVersion takes the transaction-scoped per-row advisory lock under
+// which create and delete allocate versions (#274 round 4). The two writers
+// share no table row to lock (delete locks the existing main row; create
+// inserts a new one), so without this a recreate could read the row's
+// version history while a concurrent delete commits a tombstone the
+// recreate then ties — and an equal-ver_ts live/tombstone pair resolves
+// tombstone-wins, hiding the recreate in cold reads for good. Updates need
+// no advisory lock: their version is computed inside the row UPDATE under
+// the row lock, which every competing delete also takes. Batch writers
+// acquire these locks in input order, the same discipline as their existing
+// row locks; an order inversion between two batches is detected and errored
+// by PostgreSQL's deadlock checker like any row-lock inversion. The lock
+// releases at transaction end.
+func lockRowVersion(ctx context.Context, tx pgx.Tx, schemaID int16, rowID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", rowVersionLockKey(schemaID, rowID)); err != nil {
+		return fmt.Errorf("acquire row version lock for %s: %w", rowID, err)
+	}
+	return nil
+}
+
 // nextRowVersion returns the version a (re)created row must carry: no
 // earlier than the clock read, and strictly above every version change_log
 // retains for the row across ALL slots — flushed tombstones included. A
@@ -159,7 +194,11 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 
 	// A recreate of a deleted row_id must outrank the retained tombstone
 	// (#274): the version comes from nextRowVersion, while CreatedAt stays
-	// the identity clock read.
+	// the identity clock read. The per-row lock serializes the history read
+	// against a concurrent delete's tombstone allocation.
+	if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
+		return err
+	}
 	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
 	if err != nil {
 		return fmt.Errorf("stamp create version for row %s: %w", record.RowID, err)
@@ -235,6 +274,12 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+
+	// The per-row lock pairs with the create path's: a concurrent recreate
+	// must observe this delete's tombstone before allocating its version.
+	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
+		return err
+	}
 
 	// RETURNING captures the deleted row's version so the tombstone can be
 	// stamped strictly after it (#274): update timestamps are per-row
