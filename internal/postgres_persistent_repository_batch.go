@@ -122,7 +122,7 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
-	// RETURNING + tombstoneStamp: see DeletePersistentRecord — the tombstone
+	// RETURNING + computeTombstoneStamp: see DeletePersistentRecord — the tombstone
 	// must rank strictly after the row's (possibly clock-ahead) last update
 	// or the delete loses the LWW tie (#274).
 	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at", sanitizeIdentifier(tables.EntityMain))
@@ -149,7 +149,7 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
-			stamp := tombstoneStamp(now, prevUpdatedAt)
+			stamp := computeTombstoneStamp(now, prevUpdatedAt)
 			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, stamp, &stamp); err != nil {
 				return fmt.Errorf("upsert change log for key[%d]: %w", i, err)
 			}

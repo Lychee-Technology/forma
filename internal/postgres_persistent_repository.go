@@ -88,11 +88,11 @@ func validateWriteTables(tables model.StorageTables) error {
 	return nil
 }
 
-// tombstoneStamp is the version a hard delete's tombstone carries: strictly
+// computeTombstoneStamp is the version a hard delete's tombstone carries: strictly
 // after the deleted row's last update (#274 per-row monotonic versions can
 // run ahead of the wall clock, and delete-wins only holds on an equal or
 // greater ver_ts), and no earlier than the current clock read.
-func tombstoneStamp(nowMillis, prevUpdatedAt int64) int64 {
+func computeTombstoneStamp(nowMillis, prevUpdatedAt int64) int64 {
 	if prevUpdatedAt+1 > nowMillis {
 		return prevUpdatedAt + 1
 	}
@@ -225,7 +225,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	}
 
 	if tables.ChangeLog != "" {
-		stamp := tombstoneStamp(r.nowMillis(), prevUpdatedAt)
+		stamp := computeTombstoneStamp(r.nowMillis(), prevUpdatedAt)
 		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, stamp, &stamp); err != nil {
 			return err
 		}
