@@ -1,6 +1,7 @@
 // Federated harness container/client infrastructure, extracted from
 // harness.go (#220): testcontainer lifecycle and the MinIO-configured S3
 // client. Pure move, no behavior change.
+
 package federated
 
 import (
