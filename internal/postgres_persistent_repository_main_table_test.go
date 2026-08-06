@@ -143,13 +143,16 @@ func TestInsertAndUpdateMainRow(t *testing.T) {
 
 	updateQuery, updateArgs, err := buildUpdateMainStatement("entity_main", record)
 	require.NoError(t, err)
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	// PG computes the effective version (GREATEST over the previous row
+	// version, #274) and updateMainRow adopts it into record.UpdatedAt.
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(21)))
 
 	repo := &DBPersistentRecordRepository{}
 	require.NoError(t, repo.insertMainRow(ctx, mock, "entity_main", record))
 	require.NoError(t, repo.updateMainRow(ctx, mock, "entity_main", record))
+	assert.Equal(t, int64(21), record.UpdatedAt, "updateMainRow must adopt the RETURNING'd effective version")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -170,7 +173,7 @@ func TestUpdateMainRowClassifiesUniqueViolationAsConflict(t *testing.T) {
 
 	updateQuery, updateArgs, err := buildUpdateMainStatement("entity_main", record)
 	require.NoError(t, err)
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
 		WillReturnError(&pgconn.PgError{Code: "23505", Detail: "duplicate key value violates unique constraint"})
 

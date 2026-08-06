@@ -342,7 +342,12 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 	return nil
 }
 
-// shouldFlush determines if flush thresholds are met.
+// shouldFlush determines if flush thresholds are met. The age trigger is the
+// one place a wall-clock comparison against changed_at survives (#274): a
+// clock-ahead version has negative age until the clock reaches it, so a LONE
+// such row age-triggers only after drift + MaxAgeMs. That delays only the
+// TRIGGER — any run started by the count threshold or by other rows exports
+// and marks clock-ahead rows normally (SelectBatchRowIDs / MarkFlushedVersions).
 func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 	nowMs := time.Now().UnixMilli()
 	if cfg.MinRecords > 0 && cnt >= int64(cfg.MinRecords) {
@@ -356,7 +361,7 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 
 // executeFlush performs the actual flush operation.
 func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) error {
-	ids, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
+	ids, versions, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("select batch row ids: %w", err)
 	}
@@ -386,6 +391,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		tableName:        c.tableName,
 		schemaID:         schemaID,
 		snapshot:         snapshot,
+		versions:         versions,
 		pgConnForDuck:    pgConnForDuck,
 		attrCache:        attrCache,
 		dryRun:           c.dryRun,

@@ -315,7 +315,7 @@ func assertTombstoneParquet(ctx context.Context, t *testing.T, env *Env, key str
 }
 
 // assertSoleLiveVersion asserts one delta parquet file holds exactly one
-// version of the event's row and that it is live: deleted_at NULL and
+// version of the event's row and that it is live: deleted_at 0 (#274) and
 // changed_at equal to the event's read-back change_log timestamp. Attribute
 // columns are not inspected — use assertLiveParquetRow for e2e_wide rows.
 func assertSoleLiveVersion(ctx context.Context, t *testing.T, env *Env, key string, ev *Event) {
@@ -329,8 +329,8 @@ func assertSoleLiveVersion(ctx context.Context, t *testing.T, env *Env, key stri
 		ev.RowID.String()).Scan(&n, &deletedAt, &changedAt); err != nil {
 		t.Fatalf("scan delta parquet %s: %v", key, err)
 	}
-	if n != 1 || deletedAt.Valid || !changedAt.Valid || changedAt.Int64 != ev.ChangedAt {
-		t.Errorf("delta %s: versions=%d deleted_at=(%d,%t) changed_at=(%d,%t), want 1 live version at %d",
+	if n != 1 || !deletedAt.Valid || deletedAt.Int64 != 0 || !changedAt.Valid || changedAt.Int64 != ev.ChangedAt {
+		t.Errorf("delta %s: versions=%d deleted_at=(%d,%t) changed_at=(%d,%t), want 1 live version (deleted_at=0, #274) at %d",
 			ev.RowID, n, deletedAt.Int64, deletedAt.Valid, changedAt.Int64, changedAt.Valid, ev.ChangedAt)
 	}
 }
@@ -396,10 +396,10 @@ func soleParquetKey(t *testing.T, flush *FlushReport) string {
 }
 
 // assertLiveParquetRow asserts one delta parquet file holds exactly one
-// version of the event's row and that it is live: deleted_at NULL (the delta
-// exporter emits raw cl.deleted_at), changed_at equal to the event's
-// read-back change_log timestamp, and the pinned title/count attributes
-// equal to the event payload.
+// version of the event's row and that it is live: deleted_at 0 (the delta
+// exporter COALESCEs cl.deleted_at to 0, matching base — #274), changed_at
+// equal to the event's read-back change_log timestamp, and the pinned
+// title/count attributes equal to the event payload.
 func assertLiveParquetRow(ctx context.Context, t *testing.T, env *Env, key string, ev *Event) {
 	t.Helper()
 	wantTitle, isStr := ev.Attrs["title"].(string)
@@ -428,8 +428,8 @@ func assertLiveParquetRow(ctx context.Context, t *testing.T, env *Env, key strin
 		if err := rows.Scan(&title, &count, &changedAt, &deletedAt); err != nil {
 			t.Fatalf("scan delta parquet row: %v", err)
 		}
-		if deletedAt.Valid {
-			t.Errorf("delta %s.deleted_at = %d, want NULL (live row)", ev.RowID, deletedAt.Int64)
+		if !deletedAt.Valid || deletedAt.Int64 != 0 {
+			t.Errorf("delta %s.deleted_at = (%d,%t), want 0 (live row, #274)", ev.RowID, deletedAt.Int64, deletedAt.Valid)
 		}
 		if !changedAt.Valid || changedAt.Int64 != ev.ChangedAt {
 			t.Errorf("delta %s.changed_at = %d (valid=%t), want %d", ev.RowID, changedAt.Int64, changedAt.Valid, ev.ChangedAt)

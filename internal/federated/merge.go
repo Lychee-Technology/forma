@@ -14,7 +14,9 @@ import (
 // Behavior:
 //   - Records are deduplicated by (SchemaID, RowID).
 //   - For each key, the record with the highest UpdatedAt is chosen. If UpdatedAt is equal,
-//     deterministic tier priority is used (Hot > Warm > Cold) to break ties.
+//     a tombstone (DeletedAt != nil && *DeletedAt != 0) beats a live copy; DeletedAt = 0
+//     is the cold-tier live encoding (#274), never a tombstone. Remaining ties use
+//     deterministic tier priority (Hot > Warm > Cold).
 //   - If a record originates from the ChangeLog buffer (flushed_at == 0) it is
 //     considered the authoritative hot source and wins ties regardless of UpdatedAt.
 //   - The chosen record is returned with OtherAttributes merged across all source
@@ -117,13 +119,6 @@ func mergeKey(r *model.PersistentRecord) string {
 // chooseLWW returns the record that should win based on UpdatedAt and preferences.
 // existing and newRec are compared; existingTier / newTier indicate their source tiers.
 func chooseLWW(existing *model.PersistentRecord, existingTier model.DataTier, newRec *model.PersistentRecord, newTier model.DataTier, preferHot bool, tierPriority map[model.DataTier]int) *model.PersistentRecord {
-	// If either record has a ChangeLog origin marker (OtherAttributes may include a special meta),
-	// prefer the record that indicates it's from the ChangeLog buffer. We represent this by a
-	// convention: repositories providing inputs should set UpdatedAt and DeletedAt accordingly,
-	// and mark Hot records coming from change_log with UpdatedAt and DeletedAt reflecting the buffer.
-	// For explicit handling, if UpdatedAt timestamps are equal but one record has a non-nil DeletedAt and
-	// the other doesn't, rely on UpdatedAt/DeletedAt comparison below.
-
 	// Compare UpdatedAt
 	if newRec.UpdatedAt > existing.UpdatedAt {
 		return newRec
@@ -132,11 +127,21 @@ func chooseLWW(existing *model.PersistentRecord, existingTier model.DataTier, ne
 		return existing
 	}
 
-	// If UpdatedAt equal, check DeletedAt presence (deleted should win as it is later change)
-	if existing.DeletedAt == nil && newRec.DeletedAt != nil {
+	// If UpdatedAt equal, a tombstone wins over a live copy (the delete is the
+	// later change). Liveness is a value question, not a presence question:
+	// cold-tier parquet encodes live rows as DeletedAt = 0 (#274) while hot
+	// rows carry nil, so both nil and &0 mean live here — matching the SQL
+	// rank order's deleted_ts DESC, where a tombstone T > 0 beats live 0/NULL.
+	// (The SQL rank evaluates tier priority before deleted_ts; this arm runs
+	// first — semantics match, order differs. Post-#274 the divergence is
+	// unreachable: tombstones stamp strictly above live versions, so an
+	// equal-UpdatedAt live/tombstone pair cannot be minted. Noted for #365.)
+	existingDeleted := existing.DeletedAt != nil && *existing.DeletedAt != 0
+	newDeleted := newRec.DeletedAt != nil && *newRec.DeletedAt != 0
+	if !existingDeleted && newDeleted {
 		return newRec
 	}
-	if existing.DeletedAt != nil && newRec.DeletedAt == nil {
+	if existingDeleted && !newDeleted {
 		return existing
 	}
 

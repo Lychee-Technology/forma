@@ -235,10 +235,11 @@ s3_source AS (
     -- NULL-fill it — NULL row_id drops those rows out of the anti-join, NULL
     -- changed_at misorders the LWW merge. The CAST re-pins BIGINT so a
     -- VARCHAR changed_at cannot widen the union and make ordering
-    -- lexicographic. deleted_at is type-pinned but NOT presence-guarded: live
-    -- delta rows encode it as NULL (#274 residual). Both scan sites render
-    -- sqlgen.BuildParquetScanSource, which also appends the #255 typed NULLs
-    -- for never-flushed columns.
+    -- lexicographic. deleted_at is type-pinned but NOT presence-guarded:
+    -- pre-#274 legacy delta objects encode live rows as NULL and stay
+    -- readable until compaction retires them (#365 residual). Both scan
+    -- sites render sqlgen.BuildParquetScanSource, which also appends the
+    -- #255 typed NULLs for never-flushed columns.
     FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
     WHERE
         -- 1. Anti-Join: Exclude if a newer version exists in PG
@@ -332,6 +333,66 @@ ORDER BY created_at DESC, row_id ASC
 LIMIT $PAGE_SIZE OFFSET $OFFSET;
 ```
 
+**The intra-partition tie-break contract (#274).** Inside the `ranked` window
+the terms do decreasing amounts of work: `ver_ts DESC` decides almost every
+partition; `source_tier_priority DESC` resolves hot-vs-cold at an equal
+`ver_ts` (hot is 3, every parquet row is 1 — base and delta are
+indistinguishable at rank time); `deleted_ts DESC` makes a tombstone
+(`deleted_ts = T > 0`) beat a live copy (`0` from any cold export since #274,
+`NULL` from the hot leg, a pre-#274 legacy delta object, or the benchmark
+harness shape — which deliberately keeps the raw legacy encoding and stays
+#365-tolerant) so the delete wins
+the fold and is then dropped by the visibility filter — this delete-wins arm
+is a hard contract. The trailing `row_id ASC` is inert here: `row_id` is the
+partition key, so it is constant within every partition (it earns its keep in
+the outer pagination ORDER BY, not in the window).
+
+That leaves the equal-`ver_ts` **live/live cold tie** with no discriminating
+term at all, and that is deliberate: the winner identity is **unspecified**,
+because the write path guarantees the copies are value-identical. Two
+mechanisms carry that guarantee. #210 stamps base `ver_ts` from the same
+clock write as `change_log.changed_at`, so a base copy and a delta copy of
+the same version always agree. #274 makes per-row versions **strictly
+ordered at write time**, across all three writers: updates compute
+`ltbase_updated_at = GREATEST($now, ltbase_updated_at + 1)` and stamp
+`change_log` from the RETURNING'd value in the same transaction; hard
+deletes stamp their tombstone strictly past the deleted row's version the
+same way; and a (re)create of a reused `row_id` stamps strictly above every
+version `change_log` retains for the row (`nextRowVersion`) — a recreate
+that stamped bare wall time would land BELOW its own clock-ahead tombstone
+and lose the LWW fold to it forever. Create and delete allocate under a
+per-row transaction advisory lock (`lockRowVersion`; the two share no table
+row to lock), so a recreate can never read the row's history while a
+concurrent delete's tombstone is in flight — without it the two could tie
+and the tombstone would win the fold. Two serialized writes to one row —
+even in the same millisecond, even across a failed-init snapshot boundary,
+even through a delete/recreate — can never share or regress a `ver_ts`. An
+equal-ver_ts
+live/live tie is therefore always the same version exported twice (create →
+flush → init with no intervening update, or a base copy tying its own newest
+flushed delta), and whichever copy `ROW_NUMBER()` picks, the served row is
+identical — the contract is row multiplicity and value, never scan order.
+
+Two residuals bound this guarantee. First, objects written **before** the
+#274 ordering fix may still hold divergent same-`ver_ts` copies from
+pre-fix same-millisecond writes; the #292 promotion fences
+(`internal/reconcile/promote_fence.go`) refuse to publish unverifiable
+entries from that era, and compaction's fold of such a legacy pair is
+arbitrary (the copies were already unordered on disk). Second, during the
+mixed-vintage window a legacy delta object (live `NULL`) tying a new-vintage
+object (live `0`) resolves to the new object under `NULLS LAST` — the copies
+encode the same version, so this is a curiosity, not a regression. CDC is
+version-aware, not wall-clock-gated: the flush snapshot is the MAX of the
+wall clock and the batch's listed versions, and marking is exact against
+the listed `(row_id, version)` pairs (`cdc.MarkFlushedVersions`), so a
+clock-ahead version exports and marks in the same run — a wall-clock-only
+cutoff would have starved such rows indefinitely under sustained
+faster-than-one-write-per-millisecond traffic. The only wall-clock trace
+left is the age-based flush *trigger* (`now - oldest >= MaxAgeMs`), which
+starts counting once the clock reaches the version; a lone clock-ahead row
+waits out its drift plus MaxAge before age-triggering, but flushes with any
+run triggered by count or by other rows.
+
 Keyset (cursor) pagination carries the same total-order requirement, and it is
 now **enforced**, not merely documented: the engine rejects any cursor whose
 final column is not `row_id` (`validateKeysetTiebreak`, guarding both the live
@@ -417,18 +478,19 @@ read-side schema violation. Two guard shapes, because the two channels differ:
 A scan set where *no* object carries a guarded column fails to bind instead;
 different message, same contract.
 
-**Residual: `deleted_at` presence (#274).** `deleted_at` gets the type pin but
-**no** presence guard, because the delta export encodes every live row's
-`deleted_at` as a literal NULL (`cl.deleted_at`; only init/base wraps it in
-`COALESCE(…, 0)`). A NULL-based presence guard would therefore fail every
-healthy delta scan. The consequence is that an object missing `deleted_at`
-entirely still reaches the merge with a NULL, indistinguishable at the scan from
-a legitimate live row; that divergence is covered only by the pre-read footer
-probe and the manifest stamp. Extending the presence guard to `deleted_at` is
-unblocked once #274 normalizes the delta encoding to 0. The residual is pinned
-in the test suite, not only here:
+**Residual: `deleted_at` presence (#365).** `deleted_at` gets the type pin but
+**no** presence guard. Both exporters now encode live rows as
+`COALESCE(…, 0)` (#274), but delta objects written *before* #274 still carry a
+literal NULL for live rows and remain readable until compaction retires them —
+a NULL-based presence guard would fail every healthy scan touching one. The
+consequence is that an object missing `deleted_at` entirely still reaches the
+merge with a NULL, indistinguishable at the scan from a legacy live row; that
+divergence is covered only by the pre-read footer probe and the manifest
+stamp. Extending the presence guard to `deleted_at` is gated on the legacy
+delta objects being retired and is tracked in #365. The residual is pinned in
+the test suite, not only here:
 `sqlgen.TestParquetScanGuardTolerateNullDeletedAt` characterizes today's
-behavior and is the test that should go red when #274 lands.
+behavior and is the test that should go red when #365 lands.
 
 Note that #251 verification drains `SELECT *` without the guard, so a
 schema-wrong (as opposed to byte-corrupt) object is never confirmed corrupt and
@@ -451,9 +513,9 @@ the stamp claimed; (b) `manifest-reconcile --verify-stamps`, the offline
 full-map comparison of every listed entry's stamp against its object's real
 footer — strictly stronger than the scan guards (it sees dropped attribute
 columns and a re-typed `row_id` too) and at zero read-path cost, since it runs
-in the tool; and (c) the `deleted_at` presence channel, which stays #274-gated
-at the read path and is therefore reachable *only* through (b) until the delta
-encoding normalizes to 0.
+in the tool; and (c) the `deleted_at` presence channel, which stays gated at
+the read path until pre-#274 legacy delta objects are retired (#365) and is
+therefore reachable *only* through (b) until then.
 
 **Triage: the guard names the invariant, not the object.** When the guard fires,
 the operator gets the violated invariant and the offending column, but no path.

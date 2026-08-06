@@ -31,7 +31,8 @@ import (
 // otherwise.
 type guardFixtureSet struct {
 	// healthy is production-shaped: row_id UUID, changed_at BIGINT,
-	// deleted_at BIGINT NULL (the live-row delta encoding, #274).
+	// deleted_at BIGINT NULL (the pre-#274 legacy live-row delta encoding,
+	// still readable until compaction retires it — #365).
 	healthy string
 	// noRowID / noChangedAt / noDeletedAt each drop exactly one system column,
 	// the rogue-overwrite shape a stale-but-valid stamp lets past the probe.
@@ -313,17 +314,18 @@ func TestParquetScanGuardPinsSystemColumnTypes(t *testing.T) {
 }
 
 // TestParquetScanGuardTolerateNullDeletedAt is the deleted_at RESIDUAL
-// characterization (#274). deleted_at cannot get a presence guard while the
-// delta export encodes live rows as a literal NULL (cdc's `cl.deleted_at`;
-// only init/base COALESCEs to 0), so this pins BOTH halves of today's
-// behavior:
+// characterization (#365). #274 normalized the delta export to COALESCE live
+// rows to 0, but delta objects written BEFORE #274 still encode live rows as
+// a literal NULL and remain readable until compaction retires them, so the
+// scan must keep tolerating the NULL. This pins BOTH halves of that residual:
 //
-//   - a healthy live delta row (deleted_at NULL) must pass — a presence guard
-//     here would fail every ordinary delta scan, which is why there isn't one;
+//   - a legacy live delta row (deleted_at NULL) must pass — a presence guard
+//     today would fail every healthy scan touching a pre-#274 object, which
+//     is why there isn't one;
 //   - a rogue object MISSING deleted_at entirely still flows through with a
 //     NULL, undetected by the scan. That gap is covered only by the pre-read
-//     footer probe and the manifest stamp, and closing it is unblocked once
-//     #274 normalizes the delta encoding to 0. When that lands, this test is
+//     footer probe and the manifest stamp. Closing it is gated on the legacy
+//     objects being retired — tracked in #365; when THAT lands, this test is
 //     the one that should go red.
 func TestParquetScanGuardTolerateNullDeletedAt(t *testing.T) {
 	db := guardDuckDB(t)
@@ -332,17 +334,17 @@ func TestParquetScanGuardTolerateNullDeletedAt(t *testing.T) {
 	var deleted sql.NullInt64
 	require.NoError(t, db.QueryRow("SELECT deleted_at FROM "+
 		BuildParquetScanSource(formatPathList(fx.healthy), nil)).Scan(&deleted),
-		"a live delta row's NULL deleted_at is legitimate and must not fire the guard (#274)")
+		"a legacy live delta row's NULL deleted_at is legitimate and must not fire the guard (#365)")
 	require.False(t, deleted.Valid)
 
 	got, err := scanRowIDs(db, "SELECT deleted_at FROM "+
 		BuildParquetScanSource(formatPathList(fx.healthy, fx.noDeletedAt), nil))
 	require.NoError(t, err,
-		"RESIDUAL (#274): an object missing deleted_at is NOT caught by the scan guard today")
+		"RESIDUAL (#365): an object missing deleted_at is NOT caught by the scan guard today")
 	require.Len(t, got, 2)
 	require.Equal(t, []any{nil, nil}, got,
-		"both the legitimate live-row NULL and the rogue absence look identical here — "+
-			"exactly why deleted_at presence cannot be value-guarded until #274")
+		"both the legacy live-row NULL and the rogue absence look identical here — "+
+			"exactly why deleted_at presence cannot be value-guarded until #365")
 }
 
 // TestUnguardedScanLosesRogueRowsSilently characterizes what the guard exists

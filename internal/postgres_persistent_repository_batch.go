@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -16,7 +17,7 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch insert: %w", err)
 	}
 
 	now := r.nowMillis()
@@ -31,8 +32,17 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 			return fmt.Errorf("record[%d] cannot be nil", i)
 		}
 
+		// Recreates must outrank their retained tombstone (#274); see
+		// InsertPersistentRecord. Lock order follows input order.
+		if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
+			return fmt.Errorf("lock row version for record[%d]: %w", i, err)
+		}
+		effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+		if err != nil {
+			return fmt.Errorf("stamp create version for record[%d]: %w", i, err)
+		}
 		record.CreatedAt = now
-		record.UpdatedAt = now
+		record.UpdatedAt = effective
 
 		if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 			return fmt.Errorf("insert main row for record[%d]: %w", i, err)
@@ -41,7 +51,7 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 			return fmt.Errorf("insert eav attributes for record[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
-			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
 				return fmt.Errorf("upsert change log for record[%d]: %w", i, err)
 			}
 		}
@@ -58,7 +68,7 @@ func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch update: %w", err)
 	}
 
 	now := r.nowMillis()
@@ -112,7 +122,7 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch delete: %w", err)
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -121,7 +131,10 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
-	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", sanitizeIdentifier(tables.EntityMain))
+	// RETURNING + computeTombstoneStamp: see DeletePersistentRecord — the tombstone
+	// must rank strictly after the row's (possibly clock-ahead) last update
+	// or the delete loses the LWW tie (#274).
+	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at", sanitizeIdentifier(tables.EntityMain))
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 
 	now := r.nowMillis()
@@ -133,20 +146,23 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("key[%d] has empty row id", i)
 		}
 
-		tag, err := tx.Exec(ctx, deleteMain, key.SchemaID, key.RowID)
-		if err != nil {
-			return fmt.Errorf("delete entity_main row for key[%d]: %w", i, err)
+		if err := lockRowVersion(ctx, tx, key.SchemaID, key.RowID); err != nil {
+			return fmt.Errorf("lock row version for key[%d]: %w", i, err)
 		}
-		if tag.RowsAffected() == 0 {
-			return forma.WithOperatorDetail(forma.NotFoundf("entity not found for key[%d] (row=%s)", i, key.RowID),
-				fmt.Errorf("schema=%d", key.SchemaID))
+		var prevUpdatedAt int64
+		if err := tx.QueryRow(ctx, deleteMain, key.SchemaID, key.RowID).Scan(&prevUpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return forma.WithOperatorDetail(forma.NotFoundf("entity not found for key[%d] (row=%s)", i, key.RowID),
+					fmt.Errorf("schema=%d", key.SchemaID))
+			}
+			return fmt.Errorf("delete entity_main row for key[%d]: %w", i, err)
 		}
 		if _, err := tx.Exec(ctx, deleteEAV, key.SchemaID, key.RowID); err != nil {
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
-			deletedAt := now
-			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, now, &deletedAt); err != nil {
+			stamp := computeTombstoneStamp(now, prevUpdatedAt)
+			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, stamp, &stamp); err != nil {
 				return fmt.Errorf("upsert change log for key[%d]: %w", i, err)
 			}
 		}

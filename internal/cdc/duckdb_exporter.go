@@ -94,10 +94,15 @@ func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID 
 		schemaIDSelect:     "cl.schema_id",
 		rowIDSelect:        "cl.row_id",
 		timeSlotSelect:     "cl.changed_at AS changed_at",
-		deletedAtSelect:    "cl.deleted_at",
+		// #274: live rows encode deleted_at = 0 on both tiers (base already
+		// COALESCEs in init_exporter.go). The AS alias is load-bearing: without
+		// it DuckDB names the parquet column "coalesce(cl.deleted_at, 0)". The
+		// inner change_log postgres_query and the raw m.ltbase_deleted_at main
+		// column below stay untouched.
+		deletedAtSelect: "COALESCE(cl.deleted_at, 0) AS deleted_at",
 	}, pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", fmt.Errorf("failed to build delta export SQL plan for schema %d: %w", schemaID, err)
 	}
 
 	return plan.sql, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, nil

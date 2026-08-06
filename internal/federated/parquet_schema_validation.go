@@ -120,8 +120,9 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // NULL changed_at fails the query outright, and changed_at/deleted_at are
 // CAST to BIGINT so a rogue VARCHAR cannot widen the union and reorder the LWW
 // merge. So a stamp can never license a silently ignored object, nor a
-// silently misordered one. deleted_at PRESENCE is the one residual — live
-// delta rows encode it as NULL, so it cannot be value-guarded until #274.
+// silently misordered one. deleted_at PRESENCE is the one residual — pre-#274
+// legacy delta objects encode live rows as NULL, so it cannot be
+// value-guarded until those objects are retired (#365).
 //
 // When a probe DOES run on a stamped path, the two are cross-checked and any
 // divergence is logged — see warnStampDivergence.

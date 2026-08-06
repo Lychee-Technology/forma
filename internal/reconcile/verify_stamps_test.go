@@ -65,8 +65,8 @@ func TestVerifyStamps_MatchingFooterIsClean(t *testing.T) {
 
 func TestVerifyStamps_MissingDeletedAtIsDivergence(t *testing.T) {
 	// F1: the object no longer carries deleted_at. At the read path a
-	// NULL-filled deleted_at is indistinguishable from a live delta row
-	// (#274), so only this offline map comparison can see it.
+	// NULL-filled deleted_at is indistinguishable from a legacy pre-#274
+	// live delta row (#365), so only this offline map comparison can see it.
 	key := "data/7/" + uuidA + ".parquet"
 	lister, manifests := listedEntry(key, stampCols())
 	footer := stampCols()

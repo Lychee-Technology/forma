@@ -72,7 +72,7 @@ func TestUncoveredRows_EqualChangedAtIsCovered(t *testing.T) {
 
 	uncovered, err := UncoveredRows(context.Background(), db, orphan, []string{listed})
 	require.NoError(t, err)
-	require.Empty(t, uncovered, "equal changed_at ties resolve base-wins in LWW (#183), so the listed version covers the orphan's")
+	require.Empty(t, uncovered, "equal changed_at counts as covered (the version anti-join is >=), so the listed version covers the orphan's")
 }
 
 func TestUncoveredRows_NoListedFilesEverythingUncovered(t *testing.T) {

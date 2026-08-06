@@ -12,19 +12,22 @@ import (
 // copy of the same row_id meet in one glob scan. The dedup ranks
 //
 //	ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
-//	(advanced_query_template_duckdb.go:76-83)
+//	(advanced_query_template_duckdb.go, the `ranked` CTE)
 //
-// All parquet rows share tier priority 1; live BASE rows carry deleted_ts = 0
-// (init COALESCEs ltbase_deleted_at, init_exporter.go) while live DELTA rows
-// carry deleted_ts = NULL — under DuckDB's default NULLS LAST, 0 sorts before
-// NULL in a DESC key, so on an equal-ver_ts tie the BASE copy wins. Since
-// #210, cdc-init stamps base ver_ts from ltbase_updated_at (the same clock
-// read as change_log.changed_at), so an equal-ver_ts base/delta tie only
-// arises between copies encoding the SAME version: create->flush->init with
-// no intervening update (scenario 1, identical values) or a restamped
-// tombstone (scenario 3). Scenario 2 pins the #210 fix itself: an intervening
-// update no longer yields the pre-#210 divergent equal-ver_ts tie — the base
-// copy carries the update's timestamp and wins by strict recency.
+// All parquet rows share tier priority 1, and since #274 BOTH exporters
+// encode live rows as deleted_ts = 0, so on an equal-ver_ts live/live tie no
+// rank term discriminates the copies (row_id is the partition key, hence
+// constant): the winner identity is UNSPECIFIED. That is the documented
+// contract, not a gap — since #210, cdc-init stamps base ver_ts from
+// ltbase_updated_at (the same clock read as change_log.changed_at), so an
+// equal-ver_ts base/delta tie only arises between copies encoding the SAME
+// version: create->flush->init with no intervening update (scenario 1,
+// identical values — multiplicity is the invariant, winner identity is not)
+// or a restamped tombstone (scenario 3, where deleted_ts = T > 0 beats live 0
+// — the delete-wins side of the tie stays deterministic and hard). Scenario 2
+// pins the #210 fix itself: an intervening update no longer yields the
+// pre-#210 divergent equal-ver_ts tie — the base copy carries the update's
+// timestamp and wins by strict recency.
 func TestWarmColdTiebreak(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -90,11 +93,12 @@ func testEqualVertsIdenticalCopies(ctx context.Context, t *testing.T, env *Env, 
 
 // testInitRestampBeatsStaleDelta pins the #210 fix from the read side. The
 // construction is the former failure-mode-2 probe, unchanged: create stale-v1
-// + a bystander -> flush (delta v1 @ T1, deleted_ts NULL) -> update to
-// fresh-v2 @ T2 -> RunInit -> clear change_log. Pre-#210 the base copy
+// + a bystander -> flush (delta v1 @ T1, deleted_ts 0 since #274) -> update
+// to fresh-v2 @ T2 -> RunInit -> clear change_log. Pre-#210 the base copy
 // carried the v2 attrs at ver_ts = ltbase_created_at = T1, producing an
-// equal-ver_ts DIVERGENT tie that base only won through the deleted_ts
-// 0-vs-NULL accident (the retired adjudication A3, arm A). Since #210,
+// equal-ver_ts DIVERGENT tie that base only won through the then-existing
+// deleted_ts 0-vs-NULL encoding accident (the retired adjudication A3, arm A;
+// the accident itself was retired by #274). Since #210,
 // cdc-init stamps ver_ts from ltbase_updated_at, so the base copy carries T2
 // and beats the stale delta by strict recency — no tie exists. The oracle now
 // agrees for the same reason (its Seq tiebreak has no equal-ChangedAt pair to

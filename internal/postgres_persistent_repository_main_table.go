@@ -123,7 +123,14 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	assignments := make([]string, 0, len(record.TextItems)+len(record.Int16Items)+len(record.Int32Items)+len(record.Int64Items)+len(record.Float64Items)+2)
 	args := make([]any, 0, cap(assignments)+2)
 
-	assignments = append(assignments, fmt.Sprintf("ltbase_updated_at = $%d", len(args)+1))
+	// Strictly-ordered per-row versions (#274): the cross-tier LWW rank has no
+	// discriminator beyond the version timestamp, so two serialized
+	// same-millisecond updates must not tie. GREATEST advances the stored
+	// version past the row's previous one even when the wall clock has not
+	// moved (or jumped backwards); the effective value is RETURNING'd so
+	// change_log gets the identical stamp in the same transaction (#210
+	// same-source contract).
+	assignments = append(assignments, fmt.Sprintf("ltbase_updated_at = GREATEST($%d, ltbase_updated_at + 1)", len(args)+1))
 	args = append(args, record.UpdatedAt)
 
 	var deleted any
@@ -134,22 +141,22 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	args = append(args, deleted)
 
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.TextItems, model.AllowedTextColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect text update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int16Items, model.AllowedSmallintColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect smallint update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int32Items, model.AllowedIntegerColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect integer update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int64Items, model.AllowedBigintColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect bigint update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Float64Items, model.AllowedDoubleColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect double update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.UUIDItems, model.AllowedUUIDColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect uuid update assignments: %w", err)
 	}
 
 	if len(assignments) == 0 {
@@ -161,7 +168,7 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	whereRowIdx := len(args)
 
 	query := fmt.Sprintf(
-		"UPDATE %s SET %s WHERE ltbase_schema_id = $%d AND ltbase_row_id = $%d",
+		"UPDATE %s SET %s WHERE ltbase_schema_id = $%d AND ltbase_row_id = $%d RETURNING ltbase_updated_at",
 		sanitizeIdentifier(table),
 		strings.Join(assignments, ", "),
 		whereSchemaIdx,
@@ -174,7 +181,7 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildInsertMainStatement(table, record)
 	if err != nil {
-		return err
+		return fmt.Errorf("build insert statement: %w", err)
 	}
 	zap.S().Debugw("insert main row", "query", query, "args", args)
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
@@ -183,19 +190,24 @@ func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx
 	return nil
 }
 
+// updateMainRow applies the update and overwrites record.UpdatedAt with the
+// EFFECTIVE version PostgreSQL computed (GREATEST over the row's previous
+// version, #274) — callers must stamp change_log from record.UpdatedAt only
+// after this returns, so both stores carry the identical version.
 func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildUpdateMainStatement(table, record)
 	if err != nil {
-		return err
+		return fmt.Errorf("build update statement: %w", err)
 	}
-	tag, err := tx.Exec(ctx, query, args...)
-	if err != nil {
+	var effectiveUpdatedAt int64
+	if err := tx.QueryRow(ctx, query, args...).Scan(&effectiveUpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", record.RowID),
+				fmt.Errorf("schema=%d", record.SchemaID))
+		}
 		return fmt.Errorf("update entity_main: %w", classifyPgError(err))
 	}
-	if tag.RowsAffected() == 0 {
-		return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", record.RowID),
-			fmt.Errorf("schema=%d", record.SchemaID))
-	}
+	record.UpdatedAt = effectiveUpdatedAt
 	return nil
 }
 

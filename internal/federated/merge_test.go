@@ -101,3 +101,39 @@ func TestMergeLWW_EqualTimestampUsesTierPriority(t *testing.T) {
 		t.Fatalf("expected hot to win equal timestamp tie")
 	}
 }
+
+// TestMergeLWW_ZeroDeletedAtIsLiveNotTombstone pins the #274 contract at the
+// Go merge: DeletedAt = &0 is a LIVE row (the cold-tier parquet encoding on
+// both base and, post-#274, delta), not a tombstone. An equal-UpdatedAt tie
+// between a live cold copy (&0) and a live hot copy (nil) must fall to tier
+// priority (hot wins), mirroring the SQL rank order where
+// source_tier_priority DESC is evaluated before deleted_ts DESC.
+func TestMergeLWW_ZeroDeletedAtIsLiveNotTombstone(t *testing.T) {
+	rowID := uuid.New()
+	zero := int64(0)
+	hot := makeRec(1, rowID, 100)
+	cold := makeRec(1, rowID, 100)
+	cold.DeletedAt = &zero
+
+	results, err := MergePersistentRecordsByTier(map[model.DataTier][]*model.PersistentRecord{
+		model.DataTierHot:  {hot},
+		model.DataTierCold: {cold},
+	}, false)
+
+	if err != nil {
+		t.Fatalf("merge error: %v", err)
+	}
+	if len(results) != 1 || results[0] != hot {
+		t.Fatalf("expected hot to win the equal-timestamp tie via tier priority; DeletedAt=&0 must not be treated as a tombstone")
+	}
+
+	// Both argument orders of the pairwise compare must agree: &0 is live, so
+	// neither presence branch may fire and tier priority decides.
+	tierPriority := map[model.DataTier]int{model.DataTierHot: 3, model.DataTierCold: 1}
+	if got := chooseLWW(hot, model.DataTierHot, cold, model.DataTierCold, false, tierPriority); got != hot {
+		t.Fatalf("chooseLWW(hot, cold): expected hot, got cold (&0 treated as tombstone)")
+	}
+	if got := chooseLWW(cold, model.DataTierCold, hot, model.DataTierHot, false, tierPriority); got != hot {
+		t.Fatalf("chooseLWW(cold, hot): expected hot, got cold (&0 treated as tombstone)")
+	}
+}
