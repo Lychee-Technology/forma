@@ -220,7 +220,7 @@ func TestGenerateAttributesJSONInvalidSchemaFile(t *testing.T) {
 	outputPath := filepath.Join(tempDir, "attributes.json")
 
 	err := generateAttributesJSON(schemaPath, outputPath)
-	if err == nil || !strings.Contains(err.Error(), "read schema file") {
+	if err == nil || !strings.Contains(err.Error(), "inline schema") {
 		t.Fatalf("expected read error, got %v", err)
 	}
 }
@@ -234,7 +234,7 @@ func TestGenerateAttributesJSONInvalidJSON(t *testing.T) {
 	_ = os.WriteFile(schemaPath, []byte("{invalid json"), 0o644)
 
 	err := generateAttributesJSON(schemaPath, outputPath)
-	if err == nil || !strings.Contains(err.Error(), "parse schema JSON") {
+	if err == nil || !strings.Contains(err.Error(), "inline schema") {
 		t.Fatalf("expected parse error, got %v", err)
 	}
 }
