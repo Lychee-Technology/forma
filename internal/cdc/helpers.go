@@ -86,14 +86,17 @@ func SelectBatchRowIDs(ctx context.Context, db *sql.DB, table string, schemaID i
 }
 
 // MarkFlushedVersions updates flushed_at for the given rows only where the
-// slot-0 changed_at is still at (or before) the version LISTED for that row
-// at batch selection. This is what keeps export and mark consistent without
-// a global wall-clock cutoff: per-row versions are strictly monotonic, so a
-// row whose version advanced past its listed one was concurrently rewritten
-// — its exported copy (if any) is superseded, and the row must stay dirty
-// for the next run. A clock-ahead listed version, by contrast, matches its
-// own listing and marks normally (review round 2 P1). Returns the row_ids
-// actually marked flushed.
+// slot-0 changed_at still EQUALS the version LISTED for that row at batch
+// selection. Exact equality is what keeps export and mark consistent without
+// a global wall-clock cutoff: any slot whose version differs from its
+// listing was concurrently rewritten — advanced by an update/delete, or
+// replaced by a delete→recreate — and its exported copy (if any) no longer
+// matches slot-0, so the row must stay dirty for the next run. (`<=` is NOT
+// safe here: a recreate overwrites the slot, and before #274's create
+// ordering it could even land BELOW a clock-ahead tombstone's listing — a
+// `<=` mark would clear the dirty barrier for a payload no parquet holds.)
+// A clock-ahead listed version matches its own listing and marks normally
+// (review round 2 P1). Returns the row_ids actually marked flushed.
 func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64) ([]uuid.UUID, error) {
 	if table == "" {
 		table = "change_log"
@@ -116,7 +119,7 @@ func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID
 		`UPDATE %s cl SET flushed_at = $1
 		 FROM (VALUES %s) AS v(row_id, version)
 		 WHERE cl.schema_id = $2 AND cl.flushed_at = 0
-		   AND cl.row_id = v.row_id AND cl.changed_at <= v.version
+		   AND cl.row_id = v.row_id AND cl.changed_at = v.version
 		 RETURNING cl.row_id`,
 		sanitizeIdentifier(table),
 		strings.Join(valueRows, ","),

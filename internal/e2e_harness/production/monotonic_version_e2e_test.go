@@ -6,6 +6,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	internal "github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // TestMonotonicVersionsCloseSameMillisecondTies (#274 review P1) pins the
@@ -179,6 +182,106 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 		}
 		if len(res.Records) != 0 {
 			t.Fatalf("repeat %d: deleted row visible (%d rows) — the tombstone lost to the clock-ahead live version", i, len(res.Records))
+		}
+	}
+}
+
+// TestRecreateBetweenExportAndMark (#274 review round 3 P1) drives the
+// delete/recreate race straight through the export→mark window: a
+// clock-ahead tombstone is selected and exported, the flush pauses at its
+// CopyObject, the row is recreated while the flush hangs, and the mark then
+// runs against a slot the recreate overwrote. The recreate goes through the
+// repository contract (InsertPersistentRecord) directly: the EntityManager
+// surface always mints a fresh UUIDv7, so row_id reuse is the repository's
+// seam — the one restore/import-style callers use — and the harness mirrors
+// the event into the oracle log like the tiebreak suite's restamps.
+// Two write-side guarantees keep the recreate alive: nextRowVersion stamps
+// it strictly above the retained tombstone (pre-fix it stamped wall time,
+// REGRESSING below a clock-ahead tombstone), and MarkFlushedVersions is
+// exact equality against the listed version (pre-fix `<=` would have
+// accepted the regressed slot, clearing the dirty barrier for a payload no
+// parquet holds — the cold tombstone would hide the recreate forever).
+func TestRecreateBetweenExportAndMark(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	wide := DefaultSchemaFixtures()[1] // e2e_wide
+
+	victim := CreateEvent(wide, map[string]any{"title": "doomed", "count": float64(10)})
+	control := CreateEvent(wide, map[string]any{"title": "recreate-control", "count": float64(20)})
+	mustApplyEvents(ctx, t, env, "recreate-race creates", victim, control)
+	mustFlush(ctx, t, env) // delta #1: both live
+
+	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, 2000)
+	del := DeleteEvent(wide, victim.RowID)
+	mustApplyEvents(ctx, t, env, "recreate-race delete", del)
+	if del.ChangedAt != ahead+1 {
+		t.Fatalf("tombstone stamped %d, want %d", del.ChangedAt, ahead+1)
+	}
+
+	// The paused flush lists and exports the tombstone @ ahead+1, then hangs
+	// before mark; the recreate lands while it hangs. title/count are the
+	// wide schema's text_01/integer_01 bindings (e2e_wide_attributes.json).
+	repo := internal.NewDBPersistentRecordRepository(env.Pool, nil)
+	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
+	rec := &model.PersistentRecord{
+		SchemaID:   wide.ID,
+		RowID:      victim.RowID,
+		TextItems:  map[string]string{"text_01": "reborn"},
+		Int32Items: map[string]int32{"integer_01": 30},
+	}
+	report, err := runPausedFlush(ctx, t, env, func() {
+		if err := repo.InsertPersistentRecord(ctx, tables, rec); err != nil {
+			t.Errorf("recreate during paused flush: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("paused flush: %v", err)
+	}
+	if rec.UpdatedAt != ahead+2 {
+		t.Fatalf("recreate stamped %d, want %d (strictly above the retained tombstone)", rec.UpdatedAt, ahead+2)
+	}
+	// Mirror the recreate into the oracle event log (the restamp-mirroring
+	// pattern) so oracle-checked probes stay meaningful.
+	env.eventSeq++
+	recreate := &Event{Kind: EventCreate, Schema: wide, RowID: victim.RowID,
+		Attrs: map[string]any{"title": "reborn", "count": float64(30)},
+		Seq:   env.eventSeq, ChangedAt: rec.UpdatedAt}
+	env.events = append(env.events, recreate)
+	// The recreate overwrote the listed slot, so the mark must leave it
+	// dirty: its payload is in no parquet file yet.
+	if report.UnflushedAfter != 1 {
+		t.Fatalf("paused flush left %d rows dirty, want 1 (the recreated slot must not be marked)", report.UnflushedAfter)
+	}
+
+	// While dirty, the hot tier masks the exported tombstone: the recreate is
+	// visible.
+	rebornQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "reborn"}}, Limit: 10}
+	assertRowCount(ctx, t, env, "recreate visible while dirty", rebornQ, 1)
+
+	// A clean retry drains the recreate into its own delta.
+	retry := runCleanRetry(ctx, t, env)
+	retryFinals, _ := splitKeys(retry.NewObjects)
+	if len(retryFinals) != 1 {
+		t.Fatalf("retry must promote exactly one delta, got %v", retryFinals)
+	}
+	assertLiveParquetRow(ctx, t, env, retryFinals[0], recreate)
+
+	// Cold-only: the recreate @ ahead+2 must outrank the flushed tombstone @
+	// ahead+1 — no resurrection of the delete, no hidden recreate.
+	env.ExecSQL(ctx, "DELETE FROM change_log")
+	controlQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "recreate-control"}}, Limit: 10}
+	assertRowCount(ctx, t, env, "recreate-race control", controlQ, 1)
+	assertRowCount(ctx, t, env, "recreate wins cold", rebornQ, 1)
+	doomedQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "doomed"}}, Limit: 10}
+	assertZeroRows(ctx, t, env, "pre-delete payload", doomedQ)
+	for i := 0; i < 5; i++ { // no flapping: strict ordering leaves no tie
+		res, err := env.Query(ctx, rebornQ)
+		if err != nil {
+			t.Fatalf("repeat %d: %v", i, err)
+		}
+		if len(res.Records) != 1 {
+			t.Fatalf("repeat %d: recreate returned %d rows, want 1 (lost to its own tombstone)", i, len(res.Records))
 		}
 	}
 }

@@ -88,6 +88,29 @@ func validateWriteTables(tables model.StorageTables) error {
 	return nil
 }
 
+// nextRowVersion returns the version a (re)created row must carry: no
+// earlier than the clock read, and strictly above every version change_log
+// retains for the row across ALL slots — flushed tombstones included. A
+// recreate that stamped bare wall time could land BELOW its own clock-ahead
+// tombstone (#274 versions can outrun the clock) and lose the LWW fold to
+// it forever once that tombstone reaches parquet. change_log's flushed
+// entries are never garbage-collected, so the MAX is the row's full
+// retained history; a fresh row_id has none and gets the plain clock read.
+func nextRowVersion(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, nowMillis int64) (int64, error) {
+	if table == "" {
+		return nowMillis, nil
+	}
+	var prev int64
+	query := fmt.Sprintf("SELECT COALESCE(MAX(changed_at), 0) FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(table))
+	if err := tx.QueryRow(ctx, query, schemaID, rowID).Scan(&prev); err != nil {
+		return 0, fmt.Errorf("resolve prior row version for %s: %w", rowID, err)
+	}
+	if prev+1 > nowMillis {
+		return prev + 1, nil
+	}
+	return nowMillis, nil
+}
+
 // computeTombstoneStamp is the version a hard delete's tombstone carries: strictly
 // after the deleted row's last update (#274 per-row monotonic versions can
 // run ahead of the wall clock, and delete-wins only holds on an equal or
@@ -123,12 +146,10 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 		return fmt.Errorf("record cannot be nil")
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for insert: %w", err)
 	}
 
 	now := r.nowMillis()
-	record.CreatedAt = now
-	record.UpdatedAt = now
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -136,17 +157,27 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
+	// A recreate of a deleted row_id must outrank the retained tombstone
+	// (#274): the version comes from nextRowVersion, while CreatedAt stays
+	// the identity clock read.
+	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+	if err != nil {
+		return fmt.Errorf("stamp create version for row %s: %w", record.RowID, err)
+	}
+	record.CreatedAt = now
+	record.UpdatedAt = effective
+
 	if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-		return err
+		return fmt.Errorf("insert main row for %s: %w", record.RowID, err)
 	}
 
 	if err := r.insertEAVAttributes(ctx, tx, tables.EAVData, record.OtherAttributes); err != nil {
-		return err
+		return fmt.Errorf("insert eav attributes for %s: %w", record.RowID, err)
 	}
 
 	if tables.ChangeLog != "" {
-		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
-			return err
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
+			return fmt.Errorf("upsert change log for %s: %w", record.RowID, err)
 		}
 	}
 
@@ -162,7 +193,7 @@ func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Contex
 		return fmt.Errorf("record cannot be nil")
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for update: %w", err)
 	}
 
 	record.UpdatedAt = r.nowMillis()
@@ -174,16 +205,16 @@ func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Contex
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
 	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-		return err
+		return fmt.Errorf("update main row for %s: %w", record.RowID, err)
 	}
 
 	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
-		return err
+		return fmt.Errorf("replace eav attributes for %s: %w", record.RowID, err)
 	}
 
 	if tables.ChangeLog != "" {
 		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-			return err
+			return fmt.Errorf("upsert change log for %s: %w", record.RowID, err)
 		}
 	}
 
@@ -196,7 +227,7 @@ func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Contex
 
 func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for delete: %w", err)
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -227,7 +258,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	if tables.ChangeLog != "" {
 		stamp := computeTombstoneStamp(r.nowMillis(), prevUpdatedAt)
 		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, stamp, &stamp); err != nil {
-			return err
+			return fmt.Errorf("upsert tombstone change log for %s: %w", rowID, err)
 		}
 	}
 

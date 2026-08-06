@@ -351,12 +351,17 @@ because the write path guarantees the copies are value-identical. Two
 mechanisms carry that guarantee. #210 stamps base `ver_ts` from the same
 clock write as `change_log.changed_at`, so a base copy and a delta copy of
 the same version always agree. #274 makes per-row versions **strictly
-ordered at write time**: the repository computes `ltbase_updated_at =
-GREATEST($now, ltbase_updated_at + 1)` and stamps `change_log` from the
-RETURNING'd value in the same transaction (hard deletes stamp their
-tombstone strictly past the deleted row's version the same way), so two
-serialized writes to one row — even in the same millisecond, even across a
-failed-init snapshot boundary — can never share a `ver_ts`. An equal-ver_ts
+ordered at write time**, across all three writers: updates compute
+`ltbase_updated_at = GREATEST($now, ltbase_updated_at + 1)` and stamp
+`change_log` from the RETURNING'd value in the same transaction; hard
+deletes stamp their tombstone strictly past the deleted row's version the
+same way; and a (re)create of a reused `row_id` stamps strictly above every
+version `change_log` retains for the row (`nextRowVersion`) — a recreate
+that stamped bare wall time would land BELOW its own clock-ahead tombstone
+and lose the LWW fold to it forever. Two serialized writes to one row —
+even in the same millisecond, even across a failed-init snapshot boundary,
+even through a delete/recreate — can never share or regress a `ver_ts`. An
+equal-ver_ts
 live/live tie is therefore always the same version exported twice (create →
 flush → init with no intervening update, or a base copy tying its own newest
 flushed delta), and whichever copy `ROW_NUMBER()` picks, the served row is

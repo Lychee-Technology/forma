@@ -75,6 +75,11 @@ func TestInsertPersistentRecordWithMockPool(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
+	// nextRowVersion (#274): a fresh row_id has no retained change_log
+	// history, so the create stamps the plain clock read.
+	mock.ExpectQuery(`^SELECT COALESCE\(MAX\(changed_at\), 0\) FROM "change_log"`).
+		WithArgs(int16(1), rowID).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(0)))
 	mock.ExpectExec("^" + regexp.QuoteMeta(insertQuery) + "$").
 		WithArgs(insertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -128,12 +133,18 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(`^SELECT COALESCE\(MAX\(changed_at\), 0\) FROM "change_log"`).
+		WithArgs(int16(1), rowID1).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(0)))
 	mock.ExpectExec("^" + regexp.QuoteMeta(insertQuery1) + "$").
 		WithArgs(insertArgs1...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec(`^INSERT INTO "change_log"`).
 		WithArgs(int16(1), rowID1, int64(0), fixedMillis, nil).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`^SELECT COALESCE\(MAX\(changed_at\), 0\) FROM "change_log"`).
+		WithArgs(int16(1), rowID2).
+		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(0)))
 	mock.ExpectExec("^" + regexp.QuoteMeta(insertQuery2) + "$").
 		WithArgs(insertArgs2...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))

@@ -128,3 +128,47 @@ func dbNowMs(t *testing.T, db *sql.DB) int64 {
 	require.NoError(t, err)
 	return ts
 }
+
+// TestMarkFlushedVersions_SkipsRegressedRows codifies the round-3 review
+// probe: marking is EQUALITY against the listed version, so a slot whose
+// changed_at moved in EITHER direction stays dirty. A recreate overwrites
+// slot-0 and (before the #274 create ordering) could land BELOW a
+// clock-ahead tombstone's listing — a <= predicate would have marked it
+// flushed with its payload in no parquet file.
+func TestMarkFlushedVersions_SkipsRegressedRows(t *testing.T) {
+	ctx := context.Background()
+	h := &e2e_harness.TestHarness{}
+	_, err := h.StartPostgres(ctx)
+	require.NoError(t, err)
+	defer func() { _ = h.StopPostgres(ctx) }()
+
+	db := h.PGDB
+	require.NoError(t, createChangeLogTable(ctx, db))
+
+	rowID := uuid.New()
+	listed := dbNowMs(t, db)
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO change_log (schema_id, row_id, flushed_at, changed_at, deleted_at)
+		VALUES ($1, $2, 0, $3, NULL)
+	`, int16(1), rowID, listed)
+	require.NoError(t, err)
+
+	// The slot regresses below its listing (the recreate-overwrites-slot
+	// shape the round-3 probe demonstrated).
+	_, err = db.ExecContext(ctx, `
+		UPDATE change_log SET changed_at = $1
+		WHERE schema_id = $2 AND row_id = $3 AND flushed_at = 0
+	`, listed-1000, int16(1), rowID)
+	require.NoError(t, err)
+
+	updated, err := MarkFlushedVersions(ctx, db, "change_log", 1, []uuid.UUID{rowID}, map[uuid.UUID]int64{rowID: listed}, listed+2000)
+	require.NoError(t, err)
+	require.Len(t, updated, 0, "a regressed slot must stay dirty — its payload is in no exported parquet")
+
+	var flushedAt int64
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT flushed_at FROM change_log WHERE schema_id = $1 AND row_id = $2
+	`, int16(1), rowID).Scan(&flushedAt))
+	require.Equal(t, int64(0), flushedAt)
+}

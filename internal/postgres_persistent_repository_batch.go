@@ -17,7 +17,7 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch insert: %w", err)
 	}
 
 	now := r.nowMillis()
@@ -32,8 +32,14 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 			return fmt.Errorf("record[%d] cannot be nil", i)
 		}
 
+		// Recreates must outrank their retained tombstone (#274); see
+		// InsertPersistentRecord.
+		effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+		if err != nil {
+			return fmt.Errorf("stamp create version for record[%d]: %w", i, err)
+		}
 		record.CreatedAt = now
-		record.UpdatedAt = now
+		record.UpdatedAt = effective
 
 		if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 			return fmt.Errorf("insert main row for record[%d]: %w", i, err)
@@ -42,7 +48,7 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 			return fmt.Errorf("insert eav attributes for record[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
-			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.CreatedAt, record.DeletedAt); err != nil {
+			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
 				return fmt.Errorf("upsert change log for record[%d]: %w", i, err)
 			}
 		}
@@ -59,7 +65,7 @@ func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch update: %w", err)
 	}
 
 	now := r.nowMillis()
@@ -113,7 +119,7 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 		return nil
 	}
 	if err := validateWriteTables(tables); err != nil {
-		return err
+		return fmt.Errorf("validate tables for batch delete: %w", err)
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})

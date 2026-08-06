@@ -353,3 +353,64 @@ func TestSameMillisecondWritesStayStrictlyOrderedIntegration(t *testing.T) {
 	wantTombstone := frozenMillis + 3
 	assertChangeLogStamp(wantTombstone, &wantTombstone)
 }
+
+// TestRecreateOutranksClockAheadTombstoneIntegration pins the #274 recreate
+// leg against real PostgreSQL: a row recreated after a clock-ahead delete
+// must obtain a version strictly above its retained tombstone — a bare
+// clock-read stamp would regress the slot-0 version and lose the LWW fold to
+// the tombstone forever once it reaches parquet (review round 3 P1).
+func TestRecreateOutranksClockAheadTombstoneIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+	tables := createTempPersistentTables(t, ctx, pool)
+
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("recreate_schema", 1, forma.SchemaAttributeCache{
+		"a": {AttributeName: "a", AttributeID: 10, ValueType: forma.ValueTypeText},
+	}))
+	repo := NewDBPersistentRecordRepository(pool, mc)
+
+	frozen := time.Date(2026, 8, 6, 7, 8, 9, 0, time.UTC)
+	repo.withClock(func() time.Time { return frozen })
+	frozenMillis := frozen.UnixMilli()
+
+	rowID := uuid.New()
+	record := &model.PersistentRecord{
+		SchemaID:  1,
+		RowID:     rowID,
+		TextItems: map[string]string{"text_01": "v1"},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
+	require.Equal(t, frozenMillis, record.UpdatedAt, "fresh row_id stamps the clock read")
+
+	// Same-millisecond delete: the tombstone lands at T+1, ahead of the
+	// still-frozen clock.
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID))
+
+	// Recreate on the same frozen millisecond: the new live version must land
+	// strictly above the retained tombstone (T+2), not at the clock read (T).
+	recreated := &model.PersistentRecord{
+		SchemaID:  1,
+		RowID:     rowID,
+		TextItems: map[string]string{"text_01": "v2"},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, recreated))
+	require.Equal(t, frozenMillis, recreated.CreatedAt, "CreatedAt stays the identity clock read")
+	require.Equal(t, frozenMillis+2, recreated.UpdatedAt,
+		"recreate must outrank the retained tombstone, not regress to the clock read")
+
+	var changedAt int64
+	var deletedAt pgtype.Int8
+	query := fmt.Sprintf(`SELECT changed_at, deleted_at FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0`, sanitizeIdentifier(tables.ChangeLog))
+	require.NoError(t, pool.QueryRow(ctx, query, recreated.SchemaID, rowID).Scan(&changedAt, &deletedAt))
+	require.Equal(t, frozenMillis+2, changedAt, "change_log carries the recreate's effective version")
+	require.False(t, deletedAt.Valid, "the slot-0 entry is live again")
+
+	var mainVer int64
+	require.NoError(t, pool.QueryRow(ctx, fmt.Sprintf(
+		"SELECT ltbase_updated_at FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+		sanitizeIdentifier(tables.EntityMain)), recreated.SchemaID, rowID).Scan(&mainVer))
+	require.Equal(t, frozenMillis+2, mainVer, "entity_main and change_log stay same-source (#210)")
+}
