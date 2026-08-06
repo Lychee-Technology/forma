@@ -22,11 +22,14 @@ import (
 // The wall clock cannot be frozen through the harness API, so each scenario
 // forces the collision by restamping entity_main's ltbase_updated_at a few
 // seconds AHEAD of the clock (the ExecSQL escape hatch, mirroring the
-// tiebreak suite's restamps) before writing through the real API. One
-// systemic consequence is exercised deliberately: a clock-ahead version is
-// not flush-eligible until the wall clock passes it (the export snapshot
-// filters changed_at <= snapshotTS), so both scenarios wait the drift out
-// before flushing.
+// tiebreak suite's restamps) before writing through the real API. Both
+// scenarios then flush IMMEDIATELY, while the version is still ahead of the
+// wall clock, and assert the flush actually exported and marked the row:
+// the export snapshot covers the batch's version watermark and marking is
+// exact per listed (row_id, version), so a clock-ahead version must not
+// starve CDC (review round 2 P1 — pre-fix the wall-clock snapshot excluded
+// the row from both export and mark, shipping an empty delta and leaving
+// the row dirty forever under sustained lead).
 func TestMonotonicVersionsCloseSameMillisecondTies(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -68,15 +71,6 @@ func restampMainVersionAhead(ctx context.Context, t *testing.T, env *Env, schema
 	return ahead
 }
 
-// waitClockPastMillis blocks until the wall clock is strictly past the given
-// millisecond, making a clock-ahead version flush-eligible.
-func waitClockPastMillis(t *testing.T, millis int64) {
-	t.Helper()
-	for time.Now().UnixMilli() <= millis {
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // testUpdateAdvancesPastClockAheadVersion drives the review's stale-copy
 // sequence with the collision forced: a flushed stale delta, a row whose
 // stored version sits ahead of the wall clock, then an ordinary API update.
@@ -110,8 +104,14 @@ func testUpdateAdvancesPastClockAheadVersion(ctx context.Context, t *testing.T, 
 		t.Fatalf("entity_main version %d != change_log version %d — the #210 same-source contract broke", mainVer, upd.ChangedAt)
 	}
 
-	waitClockPastMillis(t, upd.ChangedAt) // clock-ahead versions flush only once the clock passes them
-	mustFlush(ctx, t, env)                // delta B: live "fresh-b" @ ahead+1
+	// Flush IMMEDIATELY, while the version is still ahead of the wall clock:
+	// the row must be exported and marked in this run (round-2 P1 — pre-fix
+	// this shipped an empty delta and left the row dirty).
+	flush := mustFlush(ctx, t, env) // delta B: live "fresh-b" @ ahead+1
+	if flush.UnflushedAfter != 0 {
+		t.Fatalf("flush left %d rows dirty, want 0 — the clock-ahead version was not marked", flush.UnflushedAfter)
+	}
+	assertSoleLiveVersion(ctx, t, env, soleParquetKey(t, flush), upd)
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
@@ -158,8 +158,13 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 			del.ChangedAt, del.DeletedAt, ahead+1)
 	}
 
-	waitClockPastMillis(t, del.ChangedAt)
-	mustFlush(ctx, t, env)                     // tombstone parquet @ ahead+1
+	// Flush IMMEDIATELY: the clock-ahead tombstone must be exported and
+	// marked in this run (round-2 P1).
+	flush := mustFlush(ctx, t, env) // tombstone parquet @ ahead+1
+	if flush.UnflushedAfter != 0 {
+		t.Fatalf("flush left %d rows dirty, want 0 — the clock-ahead tombstone was not marked", flush.UnflushedAfter)
+	}
+	assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush), del)
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 
 	controlQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "mono-control"}}, Limit: 10}

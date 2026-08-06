@@ -16,7 +16,7 @@ import (
 // matching Op until Resume is called, holding a real CDC flush
 // open mid-pipeline so a test can mutate rows inside the race window (#182).
 // Pausing on S3OpCopy suspends the flush after dirty-ID selection, snapshot
-// capture, and the DuckDB export, but before MarkFlushedIDsAtSnapshot — the
+// capture, and the DuckDB export, but before MarkFlushedVersions — the
 // window the changed_at <= snapshot guard protects.
 //
 // Only the first matching call pauses; later matches pass straight through.

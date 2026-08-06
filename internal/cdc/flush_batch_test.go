@@ -95,6 +95,7 @@ func TestExecuteBatch_ReturnsErrorWhenManifestLoadFails(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
@@ -148,6 +149,7 @@ func TestExecuteBatch_ReturnsErrorWhenManifestSaveFails(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
@@ -203,6 +205,7 @@ func TestExecuteBatch_MarkStampSampledAfterManifestAppend(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
@@ -254,6 +257,7 @@ func TestExecuteBatch_MarkFailsAfterManifestAppend(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
@@ -261,7 +265,7 @@ func TestExecuteBatch_MarkFailsAfterManifestAppend(t *testing.T) {
 		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
-		markFlushed: func(context.Context, *sql.DB, string, int16, []uuid.UUID, int64, int64) ([]uuid.UUID, error) {
+		markFlushed: func(context.Context, *sql.DB, string, int16, []uuid.UUID, map[uuid.UUID]int64, int64) ([]uuid.UUID, error) {
 			return nil, markErr
 		},
 	}
@@ -269,7 +273,7 @@ func TestExecuteBatch_MarkFailsAfterManifestAppend(t *testing.T) {
 	err = executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single")
 	require.Error(t, err)
 	require.ErrorIs(t, err, markErr)
-	require.Contains(t, err.Error(), "mark flushed at snapshot")
+	require.Contains(t, err.Error(), "mark flushed at listed versions")
 
 	// The manifest entry stays: the delta is listed while the rows stay dirty.
 	require.Equal(t, 1, store.saved)
@@ -304,6 +308,7 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 		tableName:     "change_log",
 		schemaID:      7,
 		snapshot:      snapshot,
+		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
@@ -351,6 +356,7 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 		tableName:     "change_log",
 		schemaID:      7,
 		snapshot:      snapshot,
+		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
@@ -398,6 +404,7 @@ func TestExecuteBatch_DryRunPerformsNoSideEffects(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		dryRun:           true,
 		logger:           zap.NewNop(),
@@ -456,6 +463,7 @@ func TestExecuteBatch_BeforeExportHookRunsBeforeExport(t *testing.T) {
 		tableName:        "change_log",
 		schemaID:         7,
 		snapshot:         snapshot,
+		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    newInMemoryManifestStore(),
@@ -506,6 +514,7 @@ func TestExecuteBatch_BeforeExportHookErrorAbortsBeforeSideEffects(t *testing.T)
 		tableName:     "change_log",
 		schemaID:      7,
 		snapshot:      snapshot,
+		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
 		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,

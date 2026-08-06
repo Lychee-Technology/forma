@@ -356,7 +356,7 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 
 // executeFlush performs the actual flush operation.
 func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) error {
-	ids, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
+	ids, versions, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("select batch row ids: %w", err)
 	}
@@ -386,6 +386,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		tableName:        c.tableName,
 		schemaID:         schemaID,
 		snapshot:         snapshot,
+		versions:         versions,
 		pgConnForDuck:    pgConnForDuck,
 		attrCache:        attrCache,
 		dryRun:           c.dryRun,

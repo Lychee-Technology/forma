@@ -41,78 +41,89 @@ func GetChangeLogStats(ctx context.Context, db *sql.DB, table string, schemaID i
 	return cnt, oldest, nil
 }
 
-// SelectBatchRowIDs picks up to batchSize row_ids for flushing and returns a
-// snapshot cutoff (ms) used for exporting.
-func SelectBatchRowIDs(ctx context.Context, db *sql.DB, table string, schemaID int16, batchSize int) ([]uuid.UUID, int64, error) {
+// SelectBatchRowIDs picks up to batchSize row_ids for flushing, recording
+// each listed row's changed_at version, and returns a snapshot cutoff (ms)
+// for exporting. The snapshot is the MAX of the wall clock and the listed
+// versions: per-row versions are strictly monotonic and may run ahead of the
+// wall clock (#274 GREATEST ordering), so a wall-clock-only cutoff would
+// exclude a clock-ahead row from both export and mark — shipping an empty
+// delta and leaving the row dirty until the clock caught up, indefinitely
+// under sustained lead (review round 2 P1). The versions feed
+// MarkFlushedVersions, which marks exactly what was listed.
+func SelectBatchRowIDs(ctx context.Context, db *sql.DB, table string, schemaID int16, batchSize int) ([]uuid.UUID, map[uuid.UUID]int64, int64, error) {
 	if table == "" {
 		table = "change_log"
 	}
 	if batchSize <= 0 {
 		batchSize = 10000
 	}
-	query := fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0 ORDER BY changed_at ASC LIMIT $2", sanitizeIdentifier(table))
+	query := fmt.Sprintf("SELECT row_id, changed_at FROM %s WHERE schema_id = $1 AND flushed_at = 0 ORDER BY changed_at ASC LIMIT $2", sanitizeIdentifier(table))
 	rows, err := db.QueryContext(ctx, query, schemaID, batchSize)
 	if err != nil {
-		return nil, 0, fmt.Errorf("select batch row ids: %w", err)
+		return nil, nil, 0, fmt.Errorf("select batch row ids: %w", err)
 	}
 	defer rows.Close()
 
 	var ids []uuid.UUID
+	versions := make(map[uuid.UUID]int64)
+	snapshot := time.Now().UnixMilli()
 	for rows.Next() {
 		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, 0, fmt.Errorf("scan row id: %w", err)
+		var changedAt int64
+		if err := rows.Scan(&id, &changedAt); err != nil {
+			return nil, nil, 0, fmt.Errorf("scan row id: %w", err)
 		}
 		ids = append(ids, id)
+		versions[id] = changedAt
+		if changedAt > snapshot {
+			snapshot = changedAt
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate row ids: %w", err)
+		return nil, nil, 0, fmt.Errorf("iterate row ids: %w", err)
 	}
-	snapshot := time.Now().UnixMilli()
-	return ids, snapshot, nil
+	return ids, versions, snapshot, nil
 }
 
-// MarkFlushed updates flushed_at for rows up to the snapshot.
-func MarkFlushed(ctx context.Context, db *sql.DB, table string, schemaID int16, snapshot int64, flushedAt int64) (int64, error) {
-	if table == "" {
-		table = "change_log"
-	}
-	query := fmt.Sprintf("UPDATE %s SET flushed_at = $1 WHERE schema_id = $2 AND flushed_at = 0 AND changed_at <= $3", sanitizeIdentifier(table))
-	res, err := db.ExecContext(ctx, query, flushedAt, schemaID, snapshot)
-	if err != nil {
-		return 0, fmt.Errorf("mark flushed: %w", err)
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected: %w", err)
-	}
-	return affected, nil
-}
-
-// MarkFlushedIDsAtSnapshot updates flushed_at for specific row_ids only if their changed_at
-// is at or before the snapshot. It returns the row_ids actually marked flushed.
-func MarkFlushedIDsAtSnapshot(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, snapshot int64, flushedAt int64) ([]uuid.UUID, error) {
+// MarkFlushedVersions updates flushed_at for the given rows only where the
+// slot-0 changed_at is still at (or before) the version LISTED for that row
+// at batch selection. This is what keeps export and mark consistent without
+// a global wall-clock cutoff: per-row versions are strictly monotonic, so a
+// row whose version advanced past its listed one was concurrently rewritten
+// — its exported copy (if any) is superseded, and the row must stay dirty
+// for the next run. A clock-ahead listed version, by contrast, matches its
+// own listing and marks normally (review round 2 P1). Returns the row_ids
+// actually marked flushed.
+func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64) ([]uuid.UUID, error) {
 	if table == "" {
 		table = "change_log"
 	}
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, 0, len(rowIDs))
-	args := make([]any, 0, len(rowIDs)+3)
-	args = append(args, flushedAt, schemaID, snapshot)
-	for i, id := range rowIDs {
-		placeholders = append(placeholders, fmt.Sprintf("$%d", i+4))
-		args = append(args, id)
+	valueRows := make([]string, 0, len(rowIDs))
+	args := make([]any, 0, len(rowIDs)*2+2)
+	args = append(args, flushedAt, schemaID)
+	for _, id := range rowIDs {
+		version, ok := versions[id]
+		if !ok {
+			return nil, fmt.Errorf("mark flushed: row %s has no listed version", id)
+		}
+		valueRows = append(valueRows, fmt.Sprintf("($%d::uuid, $%d::bigint)", len(args)+1, len(args)+2))
+		args = append(args, id, version)
 	}
 	query := fmt.Sprintf(
-		"UPDATE %s SET flushed_at = $1 WHERE schema_id = $2 AND flushed_at = 0 AND changed_at <= $3 AND row_id IN (%s) RETURNING row_id",
+		`UPDATE %s cl SET flushed_at = $1
+		 FROM (VALUES %s) AS v(row_id, version)
+		 WHERE cl.schema_id = $2 AND cl.flushed_at = 0
+		   AND cl.row_id = v.row_id AND cl.changed_at <= v.version
+		 RETURNING cl.row_id`,
 		sanitizeIdentifier(table),
-		strings.Join(placeholders, ","),
+		strings.Join(valueRows, ","),
 	)
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("mark flushed by ids with snapshot: %w", err)
+		return nil, fmt.Errorf("mark flushed by listed versions: %w", err)
 	}
 	defer rows.Close()
 

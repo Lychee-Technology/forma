@@ -14,13 +14,17 @@ import (
 )
 
 type flushBatchExecutor struct {
-	db               *sql.DB
-	duck             *DuckExporter
-	s3Client         S3ObjectClient
-	cfg              CDCConfig
-	tableName        string
-	schemaID         int16
-	snapshot         int64
+	db        *sql.DB
+	duck      *DuckExporter
+	s3Client  S3ObjectClient
+	cfg       CDCConfig
+	tableName string
+	schemaID  int16
+	snapshot  int64
+	// versions holds the changed_at listed per batch row at selection time;
+	// marking is exact against it (MarkFlushedVersions), so a clock-ahead
+	// version flushes normally and a concurrently advanced row stays dirty.
+	versions         map[uuid.UUID]int64
 	pgConnForDuck    string
 	attrCache        forma.SchemaAttributeCache
 	dryRun           bool
@@ -30,7 +34,7 @@ type flushBatchExecutor struct {
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
-	markFlushed      func(context.Context, *sql.DB, string, int16, []uuid.UUID, int64, int64) ([]uuid.UUID, error)
+	markFlushed      func(context.Context, *sql.DB, string, int16, []uuid.UUID, map[uuid.UUID]int64, int64) ([]uuid.UUID, error)
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
 	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
@@ -108,11 +112,11 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	flushedAt := time.Now().UnixMilli()
 	markFlushed := e.markFlushed
 	if markFlushed == nil {
-		markFlushed = MarkFlushedIDsAtSnapshot
+		markFlushed = MarkFlushedVersions
 	}
-	updatedIDs, err := markFlushed(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.snapshot, flushedAt)
+	updatedIDs, err := markFlushed(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.versions, flushedAt)
 	if err != nil {
-		return fmt.Errorf("mark flushed at snapshot (%s): %w", batchKind, err)
+		return fmt.Errorf("mark flushed at listed versions (%s): %w", batchKind, err)
 	}
 
 	if len(updatedIDs) == 0 {
