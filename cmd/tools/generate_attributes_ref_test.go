@@ -66,7 +66,7 @@ func TestGenerateAttributesExpandsObjectRef(t *testing.T) {
 }`)
 	outputPath := filepath.Join(dir, "main_attributes.json")
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("generateAttributesJSON: %v", err)
 	}
 	attrs := readGeneratedAttributes(t, outputPath)
@@ -115,7 +115,7 @@ func TestGenerateAttributesScalarRefUsesTargetKeywords(t *testing.T) {
 }`)
 	outputPath := filepath.Join(dir, "main_attributes.json")
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("generateAttributesJSON: %v", err)
 	}
 	attrs := readGeneratedAttributes(t, outputPath)

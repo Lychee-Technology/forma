@@ -55,6 +55,7 @@ func TestRunGenerateAttributesWithSchemaName(t *testing.T) {
 		"-schema-dir", tempDir,
 		"-schema", "test",
 		"-out", outputPath,
+		"-init",
 	}
 	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
@@ -90,6 +91,7 @@ func TestRunGenerateAttributesWithSchemaFile(t *testing.T) {
 	args := []string{
 		"-schema-file", schemaPath,
 		"-out", outputPath,
+		"-init",
 	}
 	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
@@ -123,6 +125,7 @@ func TestRunGenerateAttributesDefaultOutputPath(t *testing.T) {
 
 	args := []string{
 		"-schema-file", schemaPath,
+		"-init",
 	}
 	err := runGenerateAttributes(context.Background(), args)
 	if err != nil {
@@ -236,5 +239,42 @@ func TestGetValueType(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+// #315: a missing output file makes the generator renumber every
+// attributeID from 1 (loadExistingAttributes returns an empty map on
+// ENOENT). That must be an explicit opt-in, never an accident.
+func TestRunGenerateAttributesRefusesMissingOutputWithoutInit(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "thing.json")
+	if err := os.WriteFile(schemaPath, []byte(`{"type":"object","properties":{"a":{"type":"string"}}}`), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	err := runGenerateAttributes(context.Background(), []string{"-schema-file", schemaPath})
+	if err == nil {
+		t.Fatal("expected error for missing output file without -init, got nil")
+	}
+	if !strings.Contains(err.Error(), "-init") || !strings.Contains(err.Error(), "renumber") {
+		t.Fatalf("error should explain the renumbering trap and name -init, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "thing_attributes.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("refusal must not create the output file, stat err: %v", statErr)
+	}
+}
+
+func TestRunGenerateAttributesInitCreatesNewFile(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "thing.json")
+	if err := os.WriteFile(schemaPath, []byte(`{"type":"object","properties":{"a":{"type":"string"}}}`), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	if err := runGenerateAttributes(context.Background(), []string{"-schema-file", schemaPath, "-init"}); err != nil {
+		t.Fatalf("expected success with -init, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "thing_attributes.json")); statErr != nil {
+		t.Fatalf("output file should exist after -init run: %v", statErr)
 	}
 }

@@ -50,6 +50,7 @@ func TestRunToolMain_Success(t *testing.T) {
 		"generate-attributes",
 		"-schema-file", schemaPath,
 		"-out", outputPath,
+		"-init",
 	}, &out)
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d output=%q", exitCode, out.String())

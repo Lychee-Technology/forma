@@ -25,7 +25,7 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	schemaData, _ := json.Marshal(schema1)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Update schema to add date format
 	schema2 := map[string]any{
@@ -40,7 +40,7 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	schemaData, _ = json.Marshal(schema2)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Verify value type was updated
 	data, _ := os.ReadFile(outputPath)
@@ -72,7 +72,7 @@ func TestGenerateAttributesJSONMarksRequiredAttributes(t *testing.T) {
 	schemaData, _ := json.Marshal(schema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 	schemaData, _ := json.Marshal(initialSchema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestGenerateAttributesJSONUpdatesRequiredFlag(t *testing.T) {
 	schemaData, _ = json.Marshal(updatedSchema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("expected no error on regeneration, got %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestGenerateAttributesJSONMaxIDCalculation(t *testing.T) {
 	schemaData, _ := json.Marshal(schema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Verify new IDs start after maxID (10)
 	data, _ := os.ReadFile(outputPath)
@@ -219,7 +219,7 @@ func TestGenerateAttributesJSONInvalidSchemaFile(t *testing.T) {
 	schemaPath := filepath.Join(tempDir, "nonexistent.json")
 	outputPath := filepath.Join(tempDir, "attributes.json")
 
-	err := generateAttributesJSON(schemaPath, outputPath)
+	err := generateAttributesJSON(schemaPath, outputPath, true)
 	if err == nil || !strings.Contains(err.Error(), "inline schema") {
 		t.Fatalf("expected read error, got %v", err)
 	}
@@ -233,7 +233,7 @@ func TestGenerateAttributesJSONInvalidJSON(t *testing.T) {
 
 	_ = os.WriteFile(schemaPath, []byte("{invalid json"), 0o644)
 
-	err := generateAttributesJSON(schemaPath, outputPath)
+	err := generateAttributesJSON(schemaPath, outputPath, true)
 	if err == nil || !strings.Contains(err.Error(), "inline schema") {
 		t.Fatalf("expected parse error, got %v", err)
 	}
@@ -305,7 +305,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 	schemaData, _ := json.Marshal(schema1)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	err := generateAttributesJSON(schemaPath, outputPath)
+	err := generateAttributesJSON(schemaPath, outputPath, true)
 	if err != nil {
 		t.Fatalf("first generation failed: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 	schemaData, _ = json.Marshal(schema2)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	err = generateAttributesJSON(schemaPath, outputPath)
+	err = generateAttributesJSON(schemaPath, outputPath, true)
 	if err != nil {
 		t.Fatalf("second generation failed: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestGenerateAttributesJSONNewAttributesAreSorted(t *testing.T) {
 	schemaData, _ := json.Marshal(schema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	data, _ := os.ReadFile(outputPath)
 	var result map[string]map[string]any
