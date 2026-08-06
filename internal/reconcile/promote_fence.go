@@ -13,10 +13,13 @@ import (
 // superseding and cannot see values, while the read path leaves an
 // equal-changed_at live/live tie between cold copies with an UNSPECIFIED
 // winner (#274: both tiers encode live rows as deleted_at=0, so no rank term
-// discriminates them). The read path is therefore entitled to serve either
-// copy — which makes these fences load-bearing, not defense-in-depth: they
-// are what keeps divergent-value ties from being published in the first
-// place. checkEvictionDates covers the entries a promotion REMOVES;
+// discriminates them). Post-#274 writes cannot mint a divergent tie in the
+// first place — per-row versions are strictly ordered at write time
+// (GREATEST over the row's previous version, postgres repository) — but
+// objects written before that fix may still hold divergent same-changed_at
+// copies, and the read path is entitled to serve either. The fences are what
+// keeps such pre-fix (or unverifiable) ties from being published.
+// checkEvictionDates covers the entries a promotion REMOVES;
 // checkSurvivorDates covers the ones it LEAVES BEHIND. Strict `>` on the
 // version predicate is not an alternative: unchanged rows tie across
 // generations, so it would refuse every promotion facing a non-empty
@@ -36,13 +39,14 @@ type replacementContext struct {
 // non-base entries that SURVIVE the splice. checkEvictionDates only covers
 // entries the promotion evicts, which leaves this reachable regression: the
 // manifest has no base tier at all, a listed delta carries `R=new@T` (a
-// post-snapshot same-millisecond write, flushed after the failed init), and
-// the init set holds `R=old@T`. Promotion publishes `old` as base, and the
-// read path's equal-changed_at live/live tie has an UNSPECIFIED winner
-// (#274) — so any read may serve `old`, flapping per scan, with no probe able
-// to see it. (A surviving TOMBSTONE `R@T` is not at risk: deleted_ts DESC
-// still ranks its T > 0 above a promoted live 0, so the delete holds — the
-// hazard is confined to divergent live values.)
+// pre-#274-ordering same-millisecond post-snapshot write, flushed after the
+// failed init — post-fix writes land at T+1 and cannot tie), and the init
+// set holds `R=old@T`. Promotion publishes `old` as base, and the read
+// path's equal-changed_at live/live tie has an UNSPECIFIED winner (#274) —
+// so any read may serve `old`, flapping per scan, with no probe able to see
+// it. (A surviving TOMBSTONE `R@T` is not at risk: deleted_ts DESC still
+// ranks its T > 0 above a promoted live 0, so the delete holds — the hazard
+// is confined to divergent live values.)
 //
 // Every listed non-base entry is fenced, not merely those the resurrection
 // probe masks against: an entry this bucket cannot resolve is skipped by the

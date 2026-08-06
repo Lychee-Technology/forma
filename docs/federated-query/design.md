@@ -346,22 +346,35 @@ partition key, so it is constant within every partition (it earns its keep in
 the outer pagination ORDER BY, not in the window).
 
 That leaves the equal-`ver_ts` **live/live cold tie** with no discriminating
-term at all, and that is deliberate: the winner identity is **unspecified**.
-Since #210 stamps base `ver_ts` from the same clock write as
-`change_log.changed_at`, such a tie only arises between copies encoding the
-same version with identical attributes through production export paths
-(create → flush → init with no intervening update, or a base copy tying its
-own newest flushed delta), so whichever copy `ROW_NUMBER()` picks, the served
-row is identical — the contract is row multiplicity and value, never scan
-order. Two caveats bound this guarantee. First, the one known window that can
-produce *divergent* values at an equal `ver_ts` — a same-millisecond write
-across a failed-init boundary — is fenced at promotion time
-(`internal/reconcile/promote_fence.go`, #292) and retired by compaction;
-those fences are load-bearing for this contract, not defense-in-depth.
-Second, during the mixed-vintage window a legacy delta object (live `NULL`)
-tying a new-vintage object (live `0`) resolves to the new object under
-`NULLS LAST` — the copies encode the same version, so this is a curiosity,
-not a regression.
+term at all, and that is deliberate: the winner identity is **unspecified**,
+because the write path guarantees the copies are value-identical. Two
+mechanisms carry that guarantee. #210 stamps base `ver_ts` from the same
+clock write as `change_log.changed_at`, so a base copy and a delta copy of
+the same version always agree. #274 makes per-row versions **strictly
+ordered at write time**: the repository computes `ltbase_updated_at =
+GREATEST($now, ltbase_updated_at + 1)` and stamps `change_log` from the
+RETURNING'd value in the same transaction (hard deletes stamp their
+tombstone strictly past the deleted row's version the same way), so two
+serialized writes to one row — even in the same millisecond, even across a
+failed-init snapshot boundary — can never share a `ver_ts`. An equal-ver_ts
+live/live tie is therefore always the same version exported twice (create →
+flush → init with no intervening update, or a base copy tying its own newest
+flushed delta), and whichever copy `ROW_NUMBER()` picks, the served row is
+identical — the contract is row multiplicity and value, never scan order.
+
+Two residuals bound this guarantee. First, objects written **before** the
+#274 ordering fix may still hold divergent same-`ver_ts` copies from
+pre-fix same-millisecond writes; the #292 promotion fences
+(`internal/reconcile/promote_fence.go`) refuse to publish unverifiable
+entries from that era, and compaction's fold of such a legacy pair is
+arbitrary (the copies were already unordered on disk). Second, during the
+mixed-vintage window a legacy delta object (live `NULL`) tying a new-vintage
+object (live `0`) resolves to the new object under `NULLS LAST` — the copies
+encode the same version, so this is a curiosity, not a regression. One
+write-side consequence is worth knowing: a version that ran ahead of the
+wall clock is not flush-eligible until the clock passes it (the export
+snapshot filters `changed_at <= snapshotTS`); the drift is bounded by
+writes-per-millisecond-per-row and decays as the clock catches up.
 
 Keyset (cursor) pagination carries the same total-order requirement, and it is
 now **enforced**, not merely documented: the engine rejects any cursor whose
