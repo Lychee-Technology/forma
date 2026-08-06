@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -85,6 +86,17 @@ func validateWriteTables(tables model.StorageTables) error {
 		zap.S().Info("change log table name is empty, cdc will be disabled")
 	}
 	return nil
+}
+
+// tombstoneStamp is the version a hard delete's tombstone carries: strictly
+// after the deleted row's last update (#274 per-row monotonic versions can
+// run ahead of the wall clock, and delete-wins only holds on an equal or
+// greater ver_ts), and no earlier than the current clock read.
+func tombstoneStamp(nowMillis, prevUpdatedAt int64) int64 {
+	if prevUpdatedAt+1 > nowMillis {
+		return prevUpdatedAt + 1
+	}
+	return nowMillis
 }
 
 func (r *DBPersistentRecordRepository) upsertChangeLog(ctx context.Context, tx pgx.Tx, table string, schemaID int16, rowID uuid.UUID, changedAt int64, deletedAt *int64) error {
@@ -193,14 +205,18 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
-	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", sanitizeIdentifier(tables.EntityMain))
-	tag, err := tx.Exec(ctx, deleteMain, schemaID, rowID)
-	if err != nil {
+	// RETURNING captures the deleted row's version so the tombstone can be
+	// stamped strictly after it (#274): update timestamps are per-row
+	// monotonic and may run ahead of the wall clock, so a bare nowMillis()
+	// tombstone could rank BELOW the live version it deletes — a lost delete.
+	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at", sanitizeIdentifier(tables.EntityMain))
+	var prevUpdatedAt int64
+	if err := tx.QueryRow(ctx, deleteMain, schemaID, rowID).Scan(&prevUpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),
+				fmt.Errorf("schema=%d", schemaID))
+		}
 		return fmt.Errorf("delete entity_main row: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),
-			fmt.Errorf("schema=%d", schemaID))
 	}
 
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
@@ -209,9 +225,8 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	}
 
 	if tables.ChangeLog != "" {
-		now := r.nowMillis()
-		deletedAt := now
-		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, now, &deletedAt); err != nil {
+		stamp := tombstoneStamp(r.nowMillis(), prevUpdatedAt)
+		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, stamp, &stamp); err != nil {
 			return err
 		}
 	}

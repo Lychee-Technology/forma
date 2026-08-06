@@ -137,10 +137,16 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 	_, eavArgs, err := buildAttributeValuesClause(record.OtherAttributes)
 	require.NoError(t, err)
 
+	// PG computes GREATEST($now, prev + 1) and RETURNING hands it back; a
+	// same-millisecond prior write makes the effective version run AHEAD of
+	// the frozen clock (#274). change_log must receive that effective value,
+	// never the raw clock read.
+	effectiveMillis := fixedMillis + 5
+
 	mock.ExpectBegin()
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(effectiveMillis))
 	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
 		WithArgs(int16(1), rowID, []int16{11}).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
@@ -148,14 +154,15 @@ func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
 		WithArgs(eavArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec(`^INSERT INTO "change_log"`).
-		WithArgs(int16(1), rowID, int64(0), fixedMillis, nil).
+		WithArgs(int16(1), rowID, int64(0), effectiveMillis, nil).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 	mock.ExpectRollback()
 
 	err = repo.UpdatePersistentRecord(ctx, tables, record)
 	require.NoError(t, err)
-	assert.Equal(t, fixedMillis, record.UpdatedAt)
+	assert.Equal(t, effectiveMillis, record.UpdatedAt,
+		"UpdatePersistentRecord must adopt the effective version PG computed (#274)")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -185,9 +192,9 @@ func TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(fixed.UnixMilli()))
 	// No EAV delete, no EAV insert, no changelog upsert — transaction rolls back.
 	mock.ExpectRollback()
 
@@ -214,15 +221,21 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 	fixedMillis := fixed.UnixMilli()
 
+	// The deleted row's version runs AHEAD of the frozen clock (per-row
+	// monotonic updates, #274): the tombstone must be stamped strictly after
+	// it, or the delete would lose the LWW tie to the version it removes.
+	prevUpdatedAt := fixedMillis + 10
+	wantStamp := prevUpdatedAt + 1
+
 	mock.ExpectBegin()
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(prevUpdatedAt))
 	mock.ExpectExec(`^DELETE FROM "eav_table"`).
 		WithArgs(int16(1), rowID).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec(`^INSERT INTO "change_log"`).
-		WithArgs(int16(1), rowID, int64(0), fixedMillis, fixedMillis).
+		WithArgs(int16(1), rowID, int64(0), wantStamp, wantStamp).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 	mock.ExpectRollback()
@@ -245,9 +258,9 @@ func TestDeletePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID).
-		WillReturnResult(pgxmock.NewResult("DELETE", 0)) // 0 rows affected
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row deleted
 	mock.ExpectRollback()
 
 	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
@@ -269,9 +282,9 @@ func TestDeletePersistentRecord_WhenRowMissing_DoesNotWriteChangelog(t *testing.
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID).
-		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row deleted
 	// No EAV delete, no changelog upsert expected — transaction rolls back
 	mock.ExpectRollback()
 
@@ -307,10 +320,10 @@ func TestUpdatePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
-	// UPDATE affects 0 rows — row does not exist
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	// UPDATE matches no row — RETURNING yields no rows
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}))
 	mock.ExpectRollback()
 
 	err = repo.UpdatePersistentRecord(ctx, tables, record)
@@ -347,9 +360,9 @@ func TestUpdatePersistentRecord_WhenRowMissing_DoesNotWriteEAVOrChangelog(t *tes
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
-	mock.ExpectExec("^" + regexp.QuoteMeta(updateQuery) + "$").
+	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row matched
 	// No EAV delete, no EAV insert, no changelog upsert expected — transaction rolls back
 	mock.ExpectRollback()
 
@@ -436,15 +449,15 @@ func TestBatchDeletePersistentRecordsRollsBackOnError(t *testing.T) {
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: ""}
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID1).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(100)))
 	mock.ExpectExec(`^DELETE FROM "eav_table"`).
 		WithArgs(int16(1), rowID1).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID2).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(100)))
 	mock.ExpectExec(`^DELETE FROM "eav_table"`).
 		WithArgs(int16(1), rowID2).
 		WillReturnError(assert.AnError)
@@ -634,19 +647,19 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_ReturnsNotFound(t *testing.
 
 	mock.ExpectBegin()
 	// First key deletes successfully.
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID1).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(100)))
 	mock.ExpectExec(`^DELETE FROM "eav_table"`).
 		WithArgs(int16(1), rowID1).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	mock.ExpectExec(`^INSERT INTO "change_log"`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	// Second key row does not exist — 0 rows affected.
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	// Second key row does not exist — RETURNING yields no rows.
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID2).
-		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}))
 	mock.ExpectRollback()
 
 	err = repo.BatchDeletePersistentRecords(ctx, tables, keys)
@@ -671,9 +684,9 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_DoesNotWriteEAVOrChangelog(
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`^DELETE FROM "entity_main"`).
+	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID).
-		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row deleted
 	// No EAV delete, no changelog upsert expected — transaction rolls back.
 	mock.ExpectRollback()
 

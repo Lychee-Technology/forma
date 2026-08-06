@@ -184,9 +184,12 @@ func TestBuildUpdateMainStatement(t *testing.T) {
 	query, args, err := buildUpdateMainStatement("entity_main", record)
 	require.NoError(t, err)
 
+	// GREATEST + RETURNING (#274): the stored version must advance past the
+	// row's previous one even on a same-millisecond (or backwards) clock, and
+	// the caller adopts the effective value for change_log.
 	expectedQuery := "UPDATE " + sanitizeIdentifier("entity_main") + " SET " +
-		"ltbase_updated_at = $1, ltbase_deleted_at = $2, text_01 = $3, text_02 = $4, smallint_01 = $5, double_02 = $6 " +
-		"WHERE ltbase_schema_id = $7 AND ltbase_row_id = $8"
+		"ltbase_updated_at = GREATEST($1, ltbase_updated_at + 1), ltbase_deleted_at = $2, text_01 = $3, text_02 = $4, smallint_01 = $5, double_02 = $6 " +
+		"WHERE ltbase_schema_id = $7 AND ltbase_row_id = $8 RETURNING ltbase_updated_at"
 
 	assert.Equal(t, expectedQuery, query)
 
@@ -491,4 +494,14 @@ func BenchmarkOptimizedQueryRender(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestTombstoneStamp pins the delete-side monotonicity rule (#274): the
+// tombstone version is the clock read unless the deleted row's version has
+// run ahead of it, in which case it lands strictly past that version.
+func TestTombstoneStamp(t *testing.T) {
+	assert.Equal(t, int64(100), tombstoneStamp(100, 50), "clock ahead of the row: stamp the clock read")
+	assert.Equal(t, int64(100), tombstoneStamp(100, 99), "prev+1 == now: the clock read already outranks the row")
+	assert.Equal(t, int64(101), tombstoneStamp(100, 100), "same millisecond: advance past the live version")
+	assert.Equal(t, int64(201), tombstoneStamp(100, 200), "clock-ahead row: advance past it, not the clock")
 }

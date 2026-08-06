@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -121,7 +122,10 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
-	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", sanitizeIdentifier(tables.EntityMain))
+	// RETURNING + tombstoneStamp: see DeletePersistentRecord — the tombstone
+	// must rank strictly after the row's (possibly clock-ahead) last update
+	// or the delete loses the LWW tie (#274).
+	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at", sanitizeIdentifier(tables.EntityMain))
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 
 	now := r.nowMillis()
@@ -133,20 +137,20 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 			return fmt.Errorf("key[%d] has empty row id", i)
 		}
 
-		tag, err := tx.Exec(ctx, deleteMain, key.SchemaID, key.RowID)
-		if err != nil {
+		var prevUpdatedAt int64
+		if err := tx.QueryRow(ctx, deleteMain, key.SchemaID, key.RowID).Scan(&prevUpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return forma.WithOperatorDetail(forma.NotFoundf("entity not found for key[%d] (row=%s)", i, key.RowID),
+					fmt.Errorf("schema=%d", key.SchemaID))
+			}
 			return fmt.Errorf("delete entity_main row for key[%d]: %w", i, err)
-		}
-		if tag.RowsAffected() == 0 {
-			return forma.WithOperatorDetail(forma.NotFoundf("entity not found for key[%d] (row=%s)", i, key.RowID),
-				fmt.Errorf("schema=%d", key.SchemaID))
 		}
 		if _, err := tx.Exec(ctx, deleteEAV, key.SchemaID, key.RowID); err != nil {
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
-			deletedAt := now
-			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, now, &deletedAt); err != nil {
+			stamp := tombstoneStamp(now, prevUpdatedAt)
+			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, stamp, &stamp); err != nil {
 				return fmt.Errorf("upsert change log for key[%d]: %w", i, err)
 			}
 		}

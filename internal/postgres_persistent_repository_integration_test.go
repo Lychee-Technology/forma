@@ -285,3 +285,71 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		ChangeLog:  changeLogTable,
 	}
 }
+
+// TestSameMillisecondWritesStayStrictlyOrderedIntegration pins the #274
+// write-side version contract against real PostgreSQL: serialized writes to
+// one row NEVER share a version timestamp, even when the wall clock does not
+// advance between them. GREATEST($now, ltbase_updated_at + 1) computes the
+// effective version in PG, RETURNING hands it back, and change_log receives
+// the identical stamp — pre-#274 two same-millisecond updates tied at the
+// clock read and the cold-tier LWW had no discriminator left to order them.
+func TestSameMillisecondWritesStayStrictlyOrderedIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+
+	pool := connectTestPostgres(t, ctx)
+	tables := createTempPersistentTables(t, ctx, pool)
+
+	mc := schemameta.NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("monotonic_schema", 1, forma.SchemaAttributeCache{
+		"a": {AttributeName: "a", AttributeID: 10, ValueType: forma.ValueTypeText},
+	}))
+	repo := NewDBPersistentRecordRepository(pool, mc)
+
+	frozen := time.Date(2026, 8, 5, 6, 7, 8, 0, time.UTC)
+	repo.withClock(func() time.Time { return frozen })
+	frozenMillis := frozen.UnixMilli()
+
+	rowID := uuid.New()
+	record := &model.PersistentRecord{
+		SchemaID:  1,
+		RowID:     rowID,
+		TextItems: map[string]string{"text_01": "v1"},
+	}
+	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
+	require.Equal(t, frozenMillis, record.UpdatedAt, "create stamps the clock read")
+
+	assertChangeLogStamp := func(wantChangedAt int64, wantDeleted *int64) {
+		t.Helper()
+		var changedAt int64
+		var deletedAt pgtype.Int8
+		query := fmt.Sprintf(`SELECT changed_at, deleted_at FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0`, sanitizeIdentifier(tables.ChangeLog))
+		require.NoError(t, pool.QueryRow(ctx, query, record.SchemaID, rowID).Scan(&changedAt, &deletedAt))
+		require.Equal(t, wantChangedAt, changedAt, "change_log must carry the effective version, not the clock read")
+		if wantDeleted == nil {
+			require.False(t, deletedAt.Valid)
+		} else {
+			require.True(t, deletedAt.Valid)
+			require.Equal(t, *wantDeleted, deletedAt.Int64)
+		}
+	}
+
+	// Update #1 on the same frozen millisecond: the effective version must
+	// advance past the create, in both stores.
+	record.TextItems["text_01"] = "v2"
+	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
+	require.Equal(t, frozenMillis+1, record.UpdatedAt, "same-millisecond update must advance the version by 1")
+	assertChangeLogStamp(frozenMillis+1, nil)
+
+	// Update #2, still on the same frozen millisecond: strictly ordered again.
+	record.TextItems["text_01"] = "v3"
+	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
+	require.Equal(t, frozenMillis+2, record.UpdatedAt)
+	assertChangeLogStamp(frozenMillis+2, nil)
+
+	// Delete, same frozen millisecond: the tombstone must rank strictly after
+	// the clock-ahead live version or the delete loses the LWW tie.
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID))
+	wantTombstone := frozenMillis + 3
+	assertChangeLogStamp(wantTombstone, &wantTombstone)
+}
