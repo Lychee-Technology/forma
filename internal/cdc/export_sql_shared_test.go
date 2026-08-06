@@ -50,6 +50,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 		expectedMemoryLimit   string
 		expectedModeTable     string
 		expectedTimeSlotExpr  string
+		expectedDeletedAtExpr string
 		expectActiveOnly      bool
 		expectChangeLogInMode bool
 	}{
@@ -70,6 +71,7 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			expectedMemoryLimit:   "2GB",
 			expectedModeTable:     `FROM "change_log_dev"`,
 			expectedTimeSlotExpr:  "cl.changed_at AS changed_at",
+			expectedDeletedAtExpr: "COALESCE(cl.deleted_at, 0) AS deleted_at",
 			expectChangeLogInMode: true,
 		},
 		{
@@ -85,10 +87,11 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 				sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, attrCache)
 				return exportSQLResult{sql: sql, mQuery: mQuery, eQuery: eQuery}, err
 			},
-			expectedMemoryLimit:  "6GB",
-			expectedModeTable:    "",
-			expectedTimeSlotExpr: "m.ltbase_updated_at AS changed_at",
-			expectActiveOnly:     true,
+			expectedMemoryLimit:   "6GB",
+			expectedModeTable:     "",
+			expectedTimeSlotExpr:  "m.ltbase_updated_at AS changed_at",
+			expectedDeletedAtExpr: "COALESCE(m.ltbase_deleted_at, 0) AS deleted_at",
+			expectActiveOnly:      true,
 		},
 	}
 
@@ -114,6 +117,9 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 			}
 			if !strings.Contains(res.sql, tt.expectedTimeSlotExpr) {
 				t.Fatalf("sql missing expected changed_at projection %q: %s", tt.expectedTimeSlotExpr, res.sql)
+			}
+			if !strings.Contains(res.sql, tt.expectedDeletedAtExpr) {
+				t.Fatalf("sql missing expected deleted_at projection %q (#274: live rows must encode 0 on both tiers): %s", tt.expectedDeletedAtExpr, res.sql)
 			}
 			if tt.expectChangeLogInMode && !strings.Contains(res.modeSQL, tt.expectedModeTable) {
 				t.Fatalf("mode query missing expected table %q: %s", tt.expectedModeTable, res.modeSQL)
