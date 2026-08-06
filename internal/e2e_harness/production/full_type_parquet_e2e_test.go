@@ -353,8 +353,8 @@ type systemCols struct {
 // BASE exporter emits m.ltbase_updated_at AS changed_at — the row's true
 // latest-version timestamp (#210; internal/cdc/init_exporter.go); DELTA emits
 // cl.changed_at (internal/cdc/duckdb_exporter.go) == Event.ChangedAt.
-// deleted_at: BASE COALESCEs to 0 (init_exporter.go); DELTA emits raw
-// cl.deleted_at, NULL for a live create (duckdb_exporter.go).
+// deleted_at: both tiers COALESCE to 0 for live rows (#274 — base in
+// init_exporter.go, delta in duckdb_exporter.go).
 // ltbase_deleted_at is the raw entity_main main column, NULL for every
 // non-deleted row on both tiers.
 func checkSystemColumns(t *testing.T, tier string, rowID uuid.UUID, schemaID int16, want *wideVals, got systemCols) {
@@ -369,12 +369,11 @@ func checkSystemColumns(t *testing.T, tier string, rowID uuid.UUID, schemaID int
 	// ltbase_deleted_at: raw main column, NULL for every non-deleted row.
 	checkI64(t, tier, rowID, "ltbase_deleted_at", got.ltbaseDeletedAt, nil)
 
-	wantChangedAt := want.changedAt      // delta: cl.changed_at
-	var wantDeletedAt *int64             // delta: raw cl.deleted_at, NULL for a create
+	wantChangedAt := want.changedAt // delta: cl.changed_at
+	zero := int64(0)
+	wantDeletedAt := &zero // both tiers: COALESCE(..., 0) for live rows (#274)
 	if tier == "base" {
 		wantChangedAt = want.ltbaseUpdatedAt // base: m.ltbase_updated_at AS changed_at (#210)
-		zero := int64(0)                     // base: COALESCE(ltbase_deleted_at, 0)
-		wantDeletedAt = &zero
 	}
 	checkI64(t, tier, rowID, "changed_at", got.changedAt, &wantChangedAt)
 	checkI64(t, tier, rowID, "deleted_at", got.deletedAt, wantDeletedAt)
