@@ -28,7 +28,7 @@ func TestFlushFaultMarkFlushed(t *testing.T) {
 	if err == nil {
 		t.Fatal("flush with poisoned mark-flushed must fail")
 	}
-	if !strings.Contains(err.Error(), "mark flushed at snapshot") {
+	if !strings.Contains(err.Error(), "mark flushed at listed versions") {
 		t.Errorf("failure must surface at the mark-flushed step, got: %v", err)
 	}
 	firstFinals, _ := splitKeys(report.NewObjects)
