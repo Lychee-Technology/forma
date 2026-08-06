@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
@@ -107,6 +108,19 @@ func NewEntityManager(
 			relationIdx = idx
 		}
 	}
+	// The relation index is loaded here, from config, so the transformer this
+	// manager was handed predates it. Install the roots now: without them the
+	// EAV required-policy check enforces policies on relation-root children,
+	// which #314 ruled must never gate a write (#315).
+	if aware, ok := transformer.(transform.RelationRootsAware); ok {
+		aware.SetRelationRoots(relationIdx.RelationRoots)
+	} else if relationIdx != nil {
+		// Loud, not silent: a transformer decorator that does not forward the
+		// install leaves relation-root children under required-policy
+		// enforcement, which rejects writes #314 ruled acceptable.
+		zap.S().Warn("transformer does not accept relation roots; required-policy enforcement will not honour the #314 relation-root carve-out")
+	}
+
 	em := &entityManager{
 		transformer:          transformer,
 		repository:           repository,

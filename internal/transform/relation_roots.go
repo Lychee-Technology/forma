@@ -24,6 +24,24 @@ type RelationRoots map[string]struct{}
 // A name that *is* a relation root is not covered. It never reaches this check
 // in production (the strip deleted it) and it is not dotted, so expansion does
 // not apply to it either way.
+// RelationRootsLookup answers a schema's relation roots by schema name.
+//
+// It exists so package internal — which owns RelationIndex and is the only
+// place that can build a RelationRoots set — can hand the set to this package
+// without an import cycle, at the seams that only know a schema ID.
+type RelationRootsLookup func(schemaName string) RelationRoots
+
+// RelationRootsAware is implemented by the transformers in this package so the
+// relation roots can be installed after construction.
+//
+// NewEntityManager loads the relation index itself, from config, and by then
+// the transformer it was handed already exists — so the lookup is installed
+// once at wiring time rather than injected at construction. Install before the
+// transformer is used concurrently; nothing reads the field until then.
+type RelationRootsAware interface {
+	SetRelationRoots(lookup RelationRootsLookup)
+}
+
 func (r RelationRoots) Covers(name string) bool {
 	if len(r) == 0 {
 		return false

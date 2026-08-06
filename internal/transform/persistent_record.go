@@ -14,6 +14,23 @@ import (
 type persistentRecordTransformer struct {
 	registry        forma.SchemaRegistry
 	jsonTransformer *transformer
+	relationRoots   RelationRootsLookup
+}
+
+// SetRelationRoots installs the relation-root lookup on this transformer and on
+// every converter it builds, so the required-policy carve-out (#314/#315)
+// applies on both the write and read halves of this type.
+func (t *persistentRecordTransformer) SetRelationRoots(lookup RelationRootsLookup) {
+	t.relationRoots = lookup
+	t.jsonTransformer.SetRelationRoots(lookup)
+}
+
+// newConverter builds a converter carrying whatever relation-root lookup has
+// been installed.
+func (t *persistentRecordTransformer) newConverter() *AttributeConverter {
+	converter := NewAttributeConverter(t.registry)
+	converter.SetRelationRoots(t.relationRoots)
+	return converter
 }
 
 // NewPersistentRecordTransformer creates a new PersistentRecordTransformer instance
@@ -36,7 +53,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	}
 
 	// Convert EntityAttributes to EAVRecords for database layer
-	converter := NewAttributeConverter(t.registry)
+	converter := t.newConverter()
 	eavRecords, err := converter.ToEAVRecords(entityAttributes, rowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert to EAVRecords: %w", err)
@@ -132,7 +149,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	attributes = append(attributes, record.OtherAttributes...)
 
 	// Convert EAVRecords to EntityAttributes
-	converter := NewAttributeConverter(t.registry)
+	converter := t.newConverter()
 	entityAttributes, err := converter.FromEAVRecords(attributes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)

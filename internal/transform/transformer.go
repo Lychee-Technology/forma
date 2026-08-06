@@ -37,6 +37,12 @@ func NewTransformer(registry forma.SchemaRegistry) *transformer {
 	}
 }
 
+// SetRelationRoots forwards the relation-root lookup to the converter that
+// performs the required-policy check (#314/#315).
+func (t *transformer) SetRelationRoots(lookup RelationRootsLookup) {
+	t.converter.SetRelationRoots(lookup)
+}
+
 func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) ([]model.EntityAttribute, error) {
 	if jsonData == nil {
 		return []model.EntityAttribute{}, nil

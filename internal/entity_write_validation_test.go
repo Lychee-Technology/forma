@@ -111,6 +111,15 @@ func (w *writeSpy) FromPersistentRecord(ctx context.Context, record *model.Persi
 	return w.inner.FromPersistentRecord(ctx, record)
 }
 
+// SetRelationRoots forwards the install to the wrapped transformer. A decorator
+// that swallows this optional interface silently disables the #314/#315
+// relation-root carve-out, so the spy has to stay transparent to it.
+func (w *writeSpy) SetRelationRoots(lookup transform.RelationRootsLookup) {
+	if aware, ok := w.inner.(transform.RelationRootsAware); ok {
+		aware.SetRelationRoots(lookup)
+	}
+}
+
 // newValidationHarness builds a validating manager over validationRegistry.
 func newValidationHarness(
 	t *testing.T, strict bool,
