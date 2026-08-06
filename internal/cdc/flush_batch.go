@@ -58,7 +58,7 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	}
 
 	if err := e.exportBatchToTmp(ctx, batchIDs, tmpKey, batchKind); err != nil {
-		return err
+		return fmt.Errorf("export flush batch to tmp: %w", err)
 	}
 
 	if err := CopyTmpToFinal(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {

@@ -141,22 +141,22 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	args = append(args, deleted)
 
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.TextItems, model.AllowedTextColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect text update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int16Items, model.AllowedSmallintColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect smallint update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int32Items, model.AllowedIntegerColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect integer update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Int64Items, model.AllowedBigintColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect bigint update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.Float64Items, model.AllowedDoubleColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect double update assignments: %w", err)
 	}
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.UUIDItems, model.AllowedUUIDColumns); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("collect uuid update assignments: %w", err)
 	}
 
 	if len(assignments) == 0 {
@@ -181,7 +181,7 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildInsertMainStatement(table, record)
 	if err != nil {
-		return err
+		return fmt.Errorf("build insert statement: %w", err)
 	}
 	zap.S().Debugw("insert main row", "query", query, "args", args)
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
@@ -197,7 +197,7 @@ func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx
 func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
 	query, args, err := buildUpdateMainStatement(table, record)
 	if err != nil {
-		return err
+		return fmt.Errorf("build update statement: %w", err)
 	}
 	var effectiveUpdatedAt int64
 	if err := tx.QueryRow(ctx, query, args...).Scan(&effectiveUpdatedAt); err != nil {
