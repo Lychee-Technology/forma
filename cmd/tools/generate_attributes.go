@@ -39,6 +39,7 @@ func runGenerateAttributes(_ context.Context, args []string) error {
 	schemaName := flags.String("schema", "", "Schema name without extension (mutually exclusive with -schema-file)")
 	schemaFile := flags.String("schema-file", "", "Path to the JSON schema file (overrides -schema and -schema-dir)")
 	outputFile := flags.String("out", "", "Path to write the generated attributes JSON (defaults next to schema file)")
+	initNew := flags.Bool("init", false, "Allow creating a brand-new attributes file (without it, a missing output file is an error because generation would renumber every attributeID from 1)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -61,7 +62,7 @@ func runGenerateAttributes(_ context.Context, args []string) error {
 		resolvedOutputPath = filepath.Join(filepath.Dir(resolvedSchemaPath), base+"_attributes.json")
 	}
 
-	if err := generateAttributesJSON(resolvedSchemaPath, resolvedOutputPath); err != nil {
+	if err := generateAttributesJSON(resolvedSchemaPath, resolvedOutputPath, *initNew); err != nil {
 		return err
 	}
 
@@ -69,15 +70,20 @@ func runGenerateAttributes(_ context.Context, args []string) error {
 	return nil
 }
 
-func generateAttributesJSON(schemaPath, outputPath string) error {
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return fmt.Errorf("read schema file: %w", err)
+func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error {
+	if _, err := os.Stat(outputPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat output file %s: %w", outputPath, err)
+		}
+		if !allowNew {
+			return fmt.Errorf("output file %s does not exist: generating without it would renumber every attributeID from 1 (attributeIDs are physical EAV keys); pass -init only for a genuinely new schema", outputPath)
+		}
 	}
 
-	var schema map[string]any
-	if err := json.Unmarshal(data, &schema); err != nil {
-		return fmt.Errorf("parse schema JSON: %w", err)
+	inliner := NewSchemaInliner(filepath.Dir(schemaPath))
+	schema, err := inliner.InlineFile(schemaPath)
+	if err != nil {
+		return fmt.Errorf("inline schema %s: %w", schemaPath, err)
 	}
 
 	// Extract attributes from the schema

@@ -9,7 +9,8 @@
   },
   "attendees": {
     "attributeID": 3,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contactSnapshot.annualIncome": {
     "attributeID": 4,
@@ -27,6 +28,10 @@
     "attributeID": 7,
     "valueType": "text"
   },
+  "contactSnapshot.contactCode": {
+    "attributeID": 42,
+    "valueType": "text"
+  },
   "contactSnapshot.currentResidence": {
     "attributeID": 8,
     "valueType": "text"
@@ -42,6 +47,11 @@
   "contactSnapshot.familySize": {
     "attributeID": 11,
     "valueType": "numeric"
+  },
+  "contactSnapshot.isAnonymous": {
+    "attributeID": 43,
+    "valueType": "bool",
+    "required_policy": "required_if_parent_present"
   },
   "contactSnapshot.isBlacklisted": {
     "attributeID": 12,
@@ -61,8 +71,7 @@
   },
   "contactSnapshot.name": {
     "attributeID": 16,
-    "valueType": "text",
-    "required_policy": "required_if_parent_present"
+    "valueType": "text"
   },
   "contactSnapshot.nameKana": {
     "attributeID": 17,
@@ -72,13 +81,18 @@
     "attributeID": 18,
     "valueType": "text"
   },
+  "contactSnapshot.nickname": {
+    "attributeID": 44,
+    "valueType": "text"
+  },
   "contactSnapshot.occupation": {
     "attributeID": 19,
     "valueType": "text"
   },
   "contactSnapshot.phones": {
     "attributeID": 20,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contactSnapshot.preferredChannel": {
     "attributeID": 21,
@@ -99,6 +113,10 @@
   "createdAt": {
     "attributeID": 25,
     "valueType": "date"
+  },
+  "createdBy": {
+    "attributeID": 45,
+    "valueType": "text"
   },
   "feedback": {
     "attributeID": 26,
@@ -121,6 +139,10 @@
   "nextFollowUpAt": {
     "attributeID": 30,
     "valueType": "date"
+  },
+  "ownerTeam": {
+    "attributeID": 46,
+    "valueType": "text"
   },
   "propertyId": {
     "attributeID": 31,
@@ -164,6 +186,10 @@
   "updatedAt": {
     "attributeID": 40,
     "valueType": "date"
+  },
+  "updatedBy": {
+    "attributeID": 47,
+    "valueType": "text"
   },
   "userId": {
     "attributeID": 41,

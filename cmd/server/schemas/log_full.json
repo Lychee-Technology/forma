@@ -7,8 +7,11 @@
       "format": "date-time",
       "type": "string"
     },
+    "createdBy": {
+      "description": "User ID of who created the visit record",
+      "type": "string"
+    },
     "data": {
-      "description": "Base64 encoded data content (audio, image, or text)",
       "type": "string"
     },
     "id": {
@@ -29,6 +32,10 @@
     },
     "ownerId": {
       "description": "Owner/creator of this log entry",
+      "type": "string"
+    },
+    "ownerTeam": {
+      "description": "Team that owns the visit record",
       "type": "string"
     },
     "summary": {
@@ -53,6 +60,10 @@
       "format": "date-time",
       "type": "string"
     },
+    "updatedBy": {
+      "description": "User ID of who last updated the visit record",
+      "type": "string"
+    },
     "visitId": {
       "description": "Visit identifier",
       "format": "uuid",
@@ -62,7 +73,6 @@
   },
   "required": [
     "id",
-    "leadId",
     "ownerId",
     "type",
     "createdAt"

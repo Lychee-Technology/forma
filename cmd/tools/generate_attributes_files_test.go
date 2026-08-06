@@ -192,7 +192,7 @@ func TestGenerateAttributesJSONNewFile(t *testing.T) {
 		t.Fatalf("failed to write schema file: %v", err)
 	}
 
-	err := generateAttributesJSON(schemaPath, outputPath)
+	err := generateAttributesJSON(schemaPath, outputPath, true)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -240,7 +240,7 @@ func TestGenerateAttributesJSONPreserveExistingIDs(t *testing.T) {
 		t.Fatalf("failed to write schema file: %v", err)
 	}
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Read first generation result
 	data, _ := os.ReadFile(outputPath)
@@ -266,7 +266,7 @@ func TestGenerateAttributesJSONPreserveExistingIDs(t *testing.T) {
 		t.Fatalf("failed to write schema file: %v", err)
 	}
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Read second generation result
 	data, _ = os.ReadFile(outputPath)
@@ -309,7 +309,7 @@ func TestGenerateAttributesJSONRemoveAttributeFromSchema(t *testing.T) {
 	schemaData, _ := json.Marshal(schema1)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Now remove one attribute from schema
 	schema2 := map[string]any{
@@ -322,7 +322,7 @@ func TestGenerateAttributesJSONRemoveAttributeFromSchema(t *testing.T) {
 	schemaData, _ = json.Marshal(schema2)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath)
+	_ = generateAttributesJSON(schemaPath, outputPath, true)
 
 	// Verify that email is still in the attributes file
 	data, _ := os.ReadFile(outputPath)
@@ -359,7 +359,7 @@ func TestGenerateAttributesJSONRemovedAttributeClearsRequiredFlag(t *testing.T) 
 	schemaData, _ := json.Marshal(initialSchema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("expected no error on initial generation, got %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestGenerateAttributesJSONRemovedAttributeClearsRequiredFlag(t *testing.T) 
 	schemaData, _ = json.Marshal(updatedSchema)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	if err := generateAttributesJSON(schemaPath, outputPath); err != nil {
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
 		t.Fatalf("expected no error on regeneration, got %v", err)
 	}
 

@@ -69,9 +69,12 @@ func leadFullPayload(requirement map[string]any, extra map[string]any) map[strin
 		"pipeline":    "buy",
 		"stage":       "new",
 		"status":      "open",
-		"contact":     map[string]any{"name": "Ada"},
-		"createdAt":   "2026-07-25T00:00:00Z",
-		"updatedAt":   "2026-07-25T00:00:00Z",
+		// contact.isAnonymous is lead.json's only required contact property
+		// (#315: the shipped lead_full.json used to say "name" because it had
+		// drifted from its source schema).
+		"contact":   map[string]any{"name": "Ada", "isAnonymous": false},
+		"createdAt": "2026-07-25T00:00:00Z",
+		"updatedAt": "2026-07-25T00:00:00Z",
 	}
 	if requirement != nil {
 		doc["requirement"] = requirement
@@ -141,7 +144,7 @@ func TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray(t *testing.T) {
 	require.Contains(t, arrays, "contact.phones", "the fixture must exercise a real array path")
 
 	out := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
-		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
+		"contact":        map[string]any{"name": "Ada", "isAnonymous": false, "phones": []any{"080-0000-0000"}},
 		"contact.phones": []any{"090-1111-2222"},
 	}), cache, arrays, nil)
 
@@ -151,7 +154,7 @@ func TestNormalizeExpandsWhenOnlyTheFinalSegmentIsAnArray(t *testing.T) {
 
 	// The point of expanding: the value is now inside the schema's reach.
 	bad := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
-		"contact":        map[string]any{"name": "Ada", "phones": []any{"080-0000-0000"}},
+		"contact":        map[string]any{"name": "Ada", "isAnonymous": false, "phones": []any{"080-0000-0000"}},
 		"contact.phones": []any{12345},
 	}), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,
@@ -195,7 +198,7 @@ func TestNormalizeStillExpandsAttributeNotUnderArray(t *testing.T) {
 	}
 
 	out := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
-		"contact":       map[string]any{"name": "Ada"},
+		"contact":       map[string]any{"name": "Ada", "isAnonymous": false},
 		"contact.email": "ada@example.com",
 	}), cache, arrays, nil)
 
@@ -204,7 +207,7 @@ func TestNormalizeStillExpandsAttributeNotUnderArray(t *testing.T) {
 	require.NoError(t, validator.Validate(schemaID, out))
 
 	bad := NormalizeDottedKeys(leadFullPayload(nil, map[string]any{
-		"contact":       map[string]any{"name": "Ada"},
+		"contact":       map[string]any{"name": "Ada", "isAnonymous": false},
 		"contact.email": 12345,
 	}), cache, arrays, nil)
 	require.ErrorIs(t, validator.Validate(schemaID, bad), forma.ErrInvalidInput,

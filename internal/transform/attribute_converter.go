@@ -19,7 +19,8 @@ import (
 
 // AttributeConverter provides conversion between model.EntityAttribute and model.EAVRecord
 type AttributeConverter struct {
-	registry forma.SchemaRegistry
+	registry      forma.SchemaRegistry
+	relationRoots RelationRootsLookup
 }
 
 // NewAttributeConverter creates a new AttributeConverter instance
@@ -27,6 +28,26 @@ func NewAttributeConverter(registry forma.SchemaRegistry) *AttributeConverter {
 	return &AttributeConverter{
 		registry: registry,
 	}
+}
+
+// SetRelationRoots installs the relation-root lookup consulted by the
+// required-policy check in FromEAVRecords. A nil lookup, or one that answers an
+// empty set, leaves enforcement exactly as it was.
+func (c *AttributeConverter) SetRelationRoots(lookup RelationRootsLookup) {
+	c.relationRoots = lookup
+}
+
+// relationRootsFor resolves the relation roots of schemaID, translating the ID
+// to the schema name the lookup is keyed by.
+func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, error) {
+	if c.relationRoots == nil {
+		return nil, nil
+	}
+	schemaName, _, err := c.registry.GetSchemaByID(schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve schema name for id %d: %w", schemaID, err)
+	}
+	return c.relationRoots(schemaName), nil
 }
 
 // ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord
@@ -187,8 +208,35 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 			"schemaID", schemaID, "rowID", records[0].RowID, "attrIDs", ids)
 	}
 
+	if err := c.checkRequiredAttributes(schemaID, cache, presentAttrIndices); err != nil {
+		return nil, err
+	}
+
+	return attributes, nil
+}
+
+// checkRequiredAttributes enforces each attribute's required policy against the
+// attribute names the records actually carried, per array-index context.
+func (c *AttributeConverter) checkRequiredAttributes(
+	schemaID int16,
+	cache forma.SchemaAttributeCache,
+	presentAttrIndices map[string]map[string]struct{},
+) error {
+	relationRoots, err := c.relationRootsFor(schemaID)
+	if err != nil {
+		return fmt.Errorf("resolve relation roots for required-policy check: %w", err)
+	}
+
 	missingRequired := make(map[int16]string)
 	for attrName, metadata := range cache {
+		// #314/#315: relation-root data is derived on read and never
+		// schema-validated on write (the documented #314 gap), so required
+		// policies beneath a root must follow the same rule — otherwise
+		// expanding a root's attributes (#315 resolved contactSnapshot's $ref)
+		// turns payloads #314 ruled acceptable into 400s.
+		if relationRoots.Covers(attrName) {
+			continue
+		}
 		switch metadata.EffectiveRequiredPolicy() {
 		case forma.RequiredPolicyAlways:
 			if isRequiredAttributeMissing(attrName, presentAttrIndices, true) {
@@ -200,29 +248,30 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 			}
 		}
 	}
-	if len(missingRequired) > 0 {
-		zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
-		for missingAttrID, missingAttrName := range missingRequired {
-			// Plain error, deliberately. FromEAVRecords is not write-only: the read
-			// path rebuilds already-stored records through it
-			// (persistent_record.go's FromPersistentRecord), so a persisted row
-			// missing a required EAV row reaches here too. Wrapping
-			// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
-			// HTTP boundary answer that persisted-drift case with a verbatim 400,
-			// inverting the split AGENTS.md and this repo's error-handling doc
-			// draw: write validation carries the sentinel, read-path consistency
-			// failures stay plain and operator-visible.
-			//
-			// The write path's 400 does not depend on this wrap. It has its own
-			// write-only validator, validateRequiredAttributesFromInput
-			// (transformer.go), which ToAttributes runs against the caller's input
-			// before flattening and which does carry the sentinel.
-			return nil, fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
-				missingAttrName, missingAttrID)
-		}
+	if len(missingRequired) == 0 {
+		return nil
 	}
 
-	return attributes, nil
+	zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
+	for missingAttrID, missingAttrName := range missingRequired {
+		// Plain error, deliberately. FromEAVRecords is not write-only: the read
+		// path rebuilds already-stored records through it
+		// (persistent_record.go's FromPersistentRecord), so a persisted row
+		// missing a required EAV row reaches here too. Wrapping
+		// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
+		// HTTP boundary answer that persisted-drift case with a verbatim 400,
+		// inverting the split AGENTS.md and this repo's error-handling doc
+		// draw: write validation carries the sentinel, read-path consistency
+		// failures stay plain and operator-visible.
+		//
+		// The write path's 400 does not depend on this wrap. It has its own
+		// write-only validator, validateRequiredAttributesFromInput
+		// (transformer.go), which ToAttributes runs against the caller's input
+		// before flattening and which does carry the sentinel.
+		return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
+			missingAttrName, missingAttrID)
+	}
+	return nil
 }
 
 // Helper functions for conversion
