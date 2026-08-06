@@ -46,6 +46,10 @@
           "description": "Employer or company name",
           "type": "string"
         },
+        "contactCode": {
+          "description": "Code for the contact when it is anonymous",
+          "type": "string"
+        },
         "currentResidence": {
           "description": "Current residential address or area",
           "type": "string"
@@ -65,6 +69,10 @@
           "description": "Number of family members excluding the lead",
           "minimum": 0,
           "type": "integer"
+        },
+        "isAnonymous": {
+          "description": "Whether the contact is anonymous",
+          "type": "boolean"
         },
         "isBlacklisted": {
           "description": "Whether the lead is blacklisted",
@@ -99,6 +107,10 @@
         },
         "nameNative": {
           "description": "Native language name",
+          "type": "string"
+        },
+        "nickname": {
+          "description": "Nickname for the contact. Used when the contact is anonymous.",
           "type": "string"
         },
         "occupation": {
@@ -147,13 +159,17 @@
         }
       },
       "required": [
-        "name"
+        "isAnonymous"
       ],
       "type": "object"
     },
     "createdAt": {
       "description": "Record creation timestamp",
       "format": "date-time",
+      "type": "string"
+    },
+    "createdBy": {
+      "description": "User ID of who created the visit record",
       "type": "string"
     },
     "firstTouchAt": {
@@ -175,6 +191,10 @@
     "nextFollowUpAt": {
       "description": "Scheduled next follow-up time",
       "format": "date-time",
+      "type": "string"
+    },
+    "ownerTeam": {
+      "description": "Team that owns the visit record",
       "type": "string"
     },
     "ownerUserId": {
@@ -493,6 +513,10 @@
     "updatedAt": {
       "description": "Last update timestamp",
       "format": "date-time",
+      "type": "string"
+    },
+    "updatedBy": {
+      "description": "User ID of who last updated the visit record",
       "type": "string"
     },
     "visits": {

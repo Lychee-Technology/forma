@@ -5,7 +5,8 @@
   },
   "communications": {
     "attributeID": 2,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contact.annualIncome": {
     "attributeID": 3,
@@ -23,6 +24,10 @@
     "attributeID": 6,
     "valueType": "text"
   },
+  "contact.contactCode": {
+    "attributeID": 77,
+    "valueType": "text"
+  },
   "contact.currentResidence": {
     "attributeID": 7,
     "valueType": "text"
@@ -38,6 +43,11 @@
   "contact.familySize": {
     "attributeID": 10,
     "valueType": "numeric"
+  },
+  "contact.isAnonymous": {
+    "attributeID": 78,
+    "valueType": "bool",
+    "required_policy": "required_always"
   },
   "contact.isBlacklisted": {
     "attributeID": 11,
@@ -57,8 +67,7 @@
   },
   "contact.name": {
     "attributeID": 15,
-    "valueType": "text",
-    "required_policy": "required_always"
+    "valueType": "text"
   },
   "contact.nameKana": {
     "attributeID": 16,
@@ -68,13 +77,18 @@
     "attributeID": 17,
     "valueType": "text"
   },
+  "contact.nickname": {
+    "attributeID": 79,
+    "valueType": "text"
+  },
   "contact.occupation": {
     "attributeID": 18,
     "valueType": "text"
   },
   "contact.phones": {
     "attributeID": 19,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contact.preferredChannel": {
     "attributeID": 20,
@@ -97,6 +111,10 @@
     "valueType": "date",
     "required_policy": "required_always"
   },
+  "createdBy": {
+    "attributeID": 80,
+    "valueType": "text"
+  },
   "firstTouchAt": {
     "attributeID": 25,
     "valueType": "date"
@@ -113,6 +131,10 @@
   "nextFollowUpAt": {
     "attributeID": 28,
     "valueType": "date"
+  },
+  "ownerTeam": {
+    "attributeID": 81,
+    "valueType": "text"
   },
   "ownerUserId": {
     "attributeID": 29,
@@ -221,11 +243,13 @@
   },
   "requirement.mustHave": {
     "attributeID": 54,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "requirement.niceToHave": {
     "attributeID": 55,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "requirement.propertyType": {
     "attributeID": 56,
@@ -261,7 +285,8 @@
   },
   "requirement.unwantedConditions": {
     "attributeID": 64,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "score": {
     "attributeID": 65,
@@ -296,7 +321,8 @@
   },
   "tags": {
     "attributeID": 72,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "temperature": {
     "attributeID": 73,
@@ -312,8 +338,13 @@
     "valueType": "date",
     "required_policy": "required_always"
   },
+  "updatedBy": {
+    "attributeID": 82,
+    "valueType": "text"
+  },
   "visits": {
     "attributeID": 76,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   }
 }

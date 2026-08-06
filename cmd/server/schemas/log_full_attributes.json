@@ -4,6 +4,10 @@
     "valueType": "date",
     "required_policy": "required_always"
   },
+  "createdBy": {
+    "attributeID": 11,
+    "valueType": "text"
+  },
   "data": {
     "attributeID": 2,
     "valueType": "text"
@@ -15,8 +19,7 @@
   },
   "leadId": {
     "attributeID": 4,
-    "valueType": "text",
-    "required_policy": "required_always"
+    "valueType": "text"
   },
   "noteId": {
     "attributeID": 5,
@@ -26,6 +29,10 @@
     "attributeID": 6,
     "valueType": "text",
     "required_policy": "required_always"
+  },
+  "ownerTeam": {
+    "attributeID": 12,
+    "valueType": "text"
   },
   "summary": {
     "attributeID": 7,
@@ -39,6 +46,10 @@
   "updatedAt": {
     "attributeID": 9,
     "valueType": "date"
+  },
+  "updatedBy": {
+    "attributeID": 13,
+    "valueType": "text"
   },
   "visitId": {
     "attributeID": 10,

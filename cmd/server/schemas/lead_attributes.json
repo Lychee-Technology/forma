@@ -5,7 +5,8 @@
   },
   "communications": {
     "attributeID": 2,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contact.annualIncome": {
     "attributeID": 3,
@@ -86,7 +87,8 @@
   },
   "contact.phones": {
     "attributeID": 19,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contact.preferredChannel": {
     "attributeID": 20,
@@ -241,11 +243,13 @@
   },
   "requirement.mustHave": {
     "attributeID": 54,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "requirement.niceToHave": {
     "attributeID": 55,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "requirement.propertyType": {
     "attributeID": 56,
@@ -281,7 +285,8 @@
   },
   "requirement.unwantedConditions": {
     "attributeID": 64,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "score": {
     "attributeID": 65,
@@ -316,7 +321,8 @@
   },
   "tags": {
     "attributeID": 72,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "temperature": {
     "attributeID": 73,
@@ -338,6 +344,7 @@
   },
   "visits": {
     "attributeID": 76,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   }
 }

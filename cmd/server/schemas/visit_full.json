@@ -50,6 +50,10 @@
           "description": "Employer or company name",
           "type": "string"
         },
+        "contactCode": {
+          "description": "Code for the contact when it is anonymous",
+          "type": "string"
+        },
         "currentResidence": {
           "description": "Current residential address or area",
           "type": "string"
@@ -69,6 +73,10 @@
           "description": "Number of family members excluding the lead",
           "minimum": 0,
           "type": "integer"
+        },
+        "isAnonymous": {
+          "description": "Whether the contact is anonymous",
+          "type": "boolean"
         },
         "isBlacklisted": {
           "description": "Whether the lead is blacklisted",
@@ -103,6 +111,10 @@
         },
         "nameNative": {
           "description": "Native language name",
+          "type": "string"
+        },
+        "nickname": {
+          "description": "Nickname for the contact. Used when the contact is anonymous.",
           "type": "string"
         },
         "occupation": {
@@ -151,13 +163,17 @@
         }
       },
       "required": [
-        "name"
+        "isAnonymous"
       ],
       "type": "object"
     },
     "createdAt": {
       "description": "Record creation timestamp",
       "format": "date-time",
+      "type": "string"
+    },
+    "createdBy": {
+      "description": "User ID of who created the visit record",
       "type": "string"
     },
     "feedback": {
@@ -176,17 +192,13 @@
       "pattern": "^[a-zA-Z0-9_-]+$",
       "type": "string"
     },
-    "logs": {
-      "description": "Visit log IDs tied to this visit",
-      "items": {
-        "description": "Log ID",
-        "type": "string"
-      },
-      "type": "array"
-    },
     "nextFollowUpAt": {
       "description": "Next follow-up time derived from the visit",
       "format": "date-time",
+      "type": "string"
+    },
+    "ownerTeam": {
+      "description": "Team that owns the visit record",
       "type": "string"
     },
     "propertyId": {
@@ -240,6 +252,10 @@
     "updatedAt": {
       "description": "Last update timestamp",
       "format": "date-time",
+      "type": "string"
+    },
+    "updatedBy": {
+      "description": "User ID of who last updated the visit record",
       "type": "string"
     },
     "userId": {

@@ -9,10 +9,68 @@
   },
   "attendees": {
     "attributeID": 3,
-    "valueType": "text"
+    "valueType": "list",
+    "items_type": "text"
   },
   "contactSnapshot": {
     "attributeID": 25,
+    "valueType": "text"
+  },
+  "contactSnapshot.annualIncome": {
+    "attributeID": 29,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.annualIncomeCurrency": {
+    "attributeID": 30,
+    "valueType": "text"
+  },
+  "contactSnapshot.birthday": {
+    "attributeID": 31,
+    "valueType": "date"
+  },
+  "contactSnapshot.company": {
+    "attributeID": 32,
+    "valueType": "text"
+  },
+  "contactSnapshot.contactCode": {
+    "attributeID": 33,
+    "valueType": "text"
+  },
+  "contactSnapshot.currentResidence": {
+    "attributeID": 34,
+    "valueType": "text"
+  },
+  "contactSnapshot.email": {
+    "attributeID": 35,
+    "valueType": "text"
+  },
+  "contactSnapshot.employmentYear": {
+    "attributeID": 36,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.familySize": {
+    "attributeID": 37,
+    "valueType": "numeric"
+  },
+  "contactSnapshot.isAnonymous": {
+    "attributeID": 38,
+    "valueType": "bool",
+    "required_policy": "required_if_parent_present"
+  },
+  "contactSnapshot.isBlacklisted": {
+    "attributeID": 39,
+    "valueType": "bool"
+  },
+  "contactSnapshot.lineId": {
+    "attributeID": 40,
+    "valueType": "text"
+  },
+  "contactSnapshot.maritalStatus": {
+    "attributeID": 41,
+    "valueType": "text"
+  },
+  "contactSnapshot.memo": {
+    "attributeID": 42,
     "valueType": "text"
   },
   "contactSnapshot.name": {
@@ -27,8 +85,33 @@
     "attributeID": 23,
     "valueType": "text"
   },
+  "contactSnapshot.nickname": {
+    "attributeID": 43,
+    "valueType": "text"
+  },
+  "contactSnapshot.occupation": {
+    "attributeID": 44,
+    "valueType": "text"
+  },
+  "contactSnapshot.phones": {
+    "attributeID": 45,
+    "valueType": "list",
+    "items_type": "text"
+  },
+  "contactSnapshot.preferredChannel": {
+    "attributeID": 46,
+    "valueType": "text"
+  },
+  "contactSnapshot.preferredLanguage": {
+    "attributeID": 47,
+    "valueType": "text"
+  },
   "contactSnapshot.primaryPhone": {
     "attributeID": 24,
+    "valueType": "text"
+  },
+  "contactSnapshot.wechatId": {
+    "attributeID": 48,
     "valueType": "text"
   },
   "createdAt": {
