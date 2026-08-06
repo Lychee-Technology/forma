@@ -48,10 +48,6 @@ type SchemaProjection struct {
 	// EAVAttrs lists attribute names that are EAV-only (no column binding).
 	EAVAttrs []string
 
-	// EAVAttrsJSON is the JSON object expression for EAV attributes in the
-	// outer SELECT, e.g. json_object('attr_id', '8', 'value', exchange, ...).
-	EAVAttrsJSONSelect string
-
 	// HasEAVAttrs is true if the schema has any EAV-only attributes.
 	HasEAVAttrs bool
 
