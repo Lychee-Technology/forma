@@ -102,7 +102,7 @@ func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID 
 		deletedAtSelect: "COALESCE(cl.deleted_at, 0) AS deleted_at",
 	}, pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", fmt.Errorf("failed to build delta export SQL plan for schema %d: %w", schemaID, err)
 	}
 
 	return plan.sql, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, nil
