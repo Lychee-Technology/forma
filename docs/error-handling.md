@@ -318,17 +318,28 @@ type).
 Since #342 that rule is enforced. `generate-attributes` keeps the removed
 attribute's entry in `<schema>_attributes.json` marked `"retired": true` and
 forced optional — the file is the attributeID ledger, not just the active
-attribute list. Every metadata registration path (the file registry, the
-DB-backed loader, and `MetadataCache.RegisterSchema`) validates the **full**
-cache with retired entries included, and fails when an active attribute rebinds
+attribute list. The two production registration paths — the file registry and
+the DB-backed loader — validate the **full** cache with retired entries
+included, and fail when an active attribute rebinds
 a retired attributeID, a retired main-column binding, or a retired attribute's
-folded parquet column. Retired entries are stripped only after that check and
-never reach a consumer, so a retired attribute reads, writes, flushes, and
+folded parquet column. `MetadataCache.RegisterSchema` applies the same
+validation but has no production callers; it is defence in depth for
+programmatic registration. Retired entries are stripped only after that check
+and never reach a consumer, so a retired attribute reads, writes, flushes, and
 projects exactly as if its entry were absent — the #294 skip-and-preserve
 behavior above is unchanged. Re-adding the same name with the same `valueType`
-and `items_type` clears the marker and restores the preserved values; re-adding
-under a different type is rejected by the generator, which names the attribute
-and both the old and the new type. The guard has no signal for generations
+and `items_type` clears the marker and restores the preserved values **for rows
+still in the hot tier only**: CDC derives its EAV `attr_id` filter from the
+active cache, so a retired attribute is never exported to parquet, and rows
+already flushed are served from warm/cold where the column is absent. On
+lakehouse (CDC-enabled) deployments treat retirement as effectively
+irreversible for flushed rows — and note the reverse asymmetry, that a
+preserved Postgres row re-flushes on the next write after an un-retire, so a
+value that read `NULL` can reappear later. This is inherited #294 semantics,
+not new to #342; the operator-facing detail is in
+[`schema-consistency-migration.md`](./schema-consistency-migration.md#removing-an-attribute-342).
+Re-adding under a different type is rejected by the generator, which names the
+attribute and both the old and the new type. The guard has no signal for generations
 whose entries were hand-deleted from the ledger before #342 — for those files
 the rule remains documentation-only. Full removal workflow:
 [`schema-consistency-migration.md`](./schema-consistency-migration.md#removing-an-attribute-342).

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/lychee-technology/forma"
 )
 
 type attributeSpec struct {
@@ -127,7 +129,7 @@ func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error 
 	// Build the result. First, preserve ALL existing attributes (even ones the
 	// schema dropped): this file is the attributeID ledger (#342).
 	if err := mergeExistingAttributes(existingAttrs, newAttributes, result); err != nil {
-		return err
+		return fmt.Errorf("merge existing attributes from %s: %w", outputPath, err)
 	}
 
 	// Then, add new attributes from the schema
@@ -175,7 +177,7 @@ func mergeExistingAttributes(
 		}
 
 		if err := clearRetiredOnReAdd(name, existingData, spec); err != nil {
-			return err
+			return fmt.Errorf("re-add retired attribute: %w", err)
 		}
 		existingData["valueType"] = spec.ValueType
 		if spec.ItemsType != "" {
@@ -201,7 +203,7 @@ func clearRetiredOnReAdd(name string, existingData map[string]any, spec attribut
 
 	oldType, _ := existingData["valueType"].(string)
 	oldItems, _ := existingData["items_type"].(string)
-	if oldType != spec.ValueType || oldItems != spec.ItemsType {
+	if oldType != spec.ValueType || effectiveItemsType(oldItems) != effectiveItemsType(spec.ItemsType) {
 		return fmt.Errorf(
 			"attribute %s is retired with valueType %s/items_type %q but re-added as %s/%q: preserved EAV rows store the old type and would become unreadable; restore the original type or use a new attribute name",
 			name, oldType, oldItems, spec.ValueType, spec.ItemsType)
@@ -210,6 +212,18 @@ func clearRetiredOnReAdd(name string, existingData map[string]any, spec attribut
 	// Same name, same type: the re-add restores the preserved values.
 	delete(existingData, "retired")
 	return nil
+}
+
+// effectiveItemsType resolves an omitted items_type the way the runtime does:
+// forma.AttributeMetadata.EffectiveItemsType treats an empty items_type as
+// text. A legacy ledger entry stored as a bare `list` therefore describes the
+// same physical rows as one written `list`/`text`, and re-adding it must not be
+// refused for a difference that does not exist on disk (#342).
+func effectiveItemsType(itemsType string) string {
+	if itemsType == "" {
+		return string(forma.ValueTypeText)
+	}
+	return itemsType
 }
 
 // loadExistingAttributes reads an existing attributes file and returns its contents.

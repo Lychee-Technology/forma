@@ -110,6 +110,36 @@ func TestGenerateAttributes_ReAddDifferentItemsTypeRejected(t *testing.T) {
 	}
 }
 
+// #342: a legacy ledger entry may record a list without any items_type, which
+// the runtime reads as text (forma.AttributeMetadata.EffectiveItemsType). The
+// re-add guard must compare effective types, not literal strings: refusing this
+// re-add would hand the operator an instruction they cannot satisfy, since the
+// generator never writes items_type "text" back as an empty field.
+func TestGenerateAttributes_ReAddListWithoutItemsTypeClearsRetired(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_list":{"type":"array","items":{"type":"string"}}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":     { "attributeID": 1, "valueType": "text" },
+	  "old_list": { "attributeID": 3, "valueType": "list", "retired": true }
+	}`)
+
+	if err := generateAttributesJSON(schema, out, false); err != nil {
+		t.Fatalf("re-add of a legacy items_type-less list must be accepted: %v", err)
+	}
+	attrs := readGeneratedAttributes(t, out)
+	oldList := attrs["old_list"]
+	if _, exists := oldList["retired"]; exists {
+		t.Fatalf("re-added attribute must lose the retired marker: %v", oldList)
+	}
+	if id, _ := oldList["attributeID"].(float64); id != 3 {
+		t.Fatalf("re-add must keep attributeID 3, got %v", oldList["attributeID"])
+	}
+	if items, _ := oldList["items_type"].(string); items != "text" {
+		t.Fatalf("re-add must record the now-explicit element type text, got %v", oldList["items_type"])
+	}
+}
+
 // #342: a retired entry still occupies its attributeID, so a genuinely new
 // attribute must be numbered above it rather than reusing the freed id.
 func TestGenerateAttributes_NewAttributeDoesNotReuseRetiredID(t *testing.T) {
