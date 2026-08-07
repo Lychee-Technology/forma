@@ -27,7 +27,7 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 	seenBindings := make(map[forma.MainColumn]string)
 	for attrName, meta := range cache {
 		if existingAttr, exists := seenAttrIDs[meta.AttributeID]; exists {
-			return fmt.Errorf("schema %s has duplicate attribute id %d for %s and %s", schemaName, meta.AttributeID, existingAttr, attrName)
+			return attrIDCollisionError(schemaName, cache, meta.AttributeID, existingAttr, attrName)
 		}
 		seenAttrIDs[meta.AttributeID] = attrName
 
@@ -35,7 +35,7 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 			continue
 		}
 		if existingAttr, exists := seenBindings[meta.ColumnBinding.ColumnName]; exists {
-			return fmt.Errorf("schema %s has duplicate column binding %s for %s and %s", schemaName, meta.ColumnBinding.ColumnName, existingAttr, attrName)
+			return bindingCollisionError(schemaName, cache, meta.ColumnBinding.ColumnName, existingAttr, attrName)
 		}
 		seenBindings[meta.ColumnBinding.ColumnName] = attrName
 	}
@@ -43,9 +43,47 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 	// Reject attribute names whose folded parquet columns land on a CDC/read
 	// system column or collide with each other — such a schema would accept
 	// hot-tier writes it can never flush or read back federated (#260,
-	// PR #273 review).
+	// PR #273 review). Retired entries stay in scope: their folded columns
+	// still exist in flushed parquet files (#342).
 	if err := sqlgen.ValidateParquetAttrColumns(cache); err != nil {
 		return fmt.Errorf("schema %s: %w", schemaName, err)
 	}
 	return nil
+}
+
+// attrIDCollisionError names the retired side of an attributeID collision.
+// AttributeIDs are physical EAV keys: an id freed by attribute removal is
+// still bound to preserved rows, so rebinding it to a different attribute
+// would surface old values under the new name or make rows unreadable (#342).
+func attrIDCollisionError(schemaName string, cache forma.SchemaAttributeCache, id int16, a, b string) error {
+	if retiredName, activeName, ok := splitRetiredPair(cache, a, b); ok {
+		return fmt.Errorf(
+			"schema %s reuses attribute id %d: retired attribute %s (valueType %s) still owns preserved EAV rows and cannot be rebound to %s; re-add the original name and valueType to restore it, or assign a new id",
+			schemaName, id, retiredName, cache[retiredName].ValueType, activeName)
+	}
+	return fmt.Errorf("schema %s has duplicate attribute id %d for %s and %s", schemaName, id, a, b)
+}
+
+// bindingCollisionError is the main-table analogue: a retired attribute's hot
+// column still holds its historical values.
+func bindingCollisionError(schemaName string, cache forma.SchemaAttributeCache, col forma.MainColumn, a, b string) error {
+	if retiredName, activeName, ok := splitRetiredPair(cache, a, b); ok {
+		return fmt.Errorf(
+			"schema %s reuses main column %s: retired attribute %s (valueType %s) still owns its stored values and cannot share the column with %s; keep the binding retired or assign a new column",
+			schemaName, col, retiredName, cache[retiredName].ValueType, activeName)
+	}
+	return fmt.Errorf("schema %s has duplicate column binding %s for %s and %s", schemaName, col, a, b)
+}
+
+// splitRetiredPair returns (retired, active, true) when exactly one of the two
+// colliding attributes is retired — the reuse case #342 guards against.
+func splitRetiredPair(cache forma.SchemaAttributeCache, a, b string) (string, string, bool) {
+	aRetired, bRetired := cache[a].Retired, cache[b].Retired
+	if aRetired == bRetired {
+		return "", "", false
+	}
+	if aRetired {
+		return a, b, true
+	}
+	return b, a, true
 }
