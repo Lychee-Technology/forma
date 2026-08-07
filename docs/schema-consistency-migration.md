@@ -212,14 +212,33 @@ become visible again. Re-adding under a different `valueType` or `items_type` is
 a generator error naming the attribute and both the old and the new
 type/items — the stored rows carry the old physical type and would be
 unreadable. Renaming an attribute is *not* a re-add: it needs a fresh
-`attributeID`, and the old entry stays retired.
+`attributeID`, and the old entry stays retired. Note the boundary: this type
+check fires **only** on retired entries. Changing the `valueType` of a *live*
+attribute is still written straight through by `generate-attributes`, which
+leaves that attribute's existing EAV rows in the wrong physical column — the
+condition the next section tells you to repair. Treat a live type change as a
+remove-then-add-under-a-new-name, not an edit.
 
-**Shipped schemas already carrying the marker.** `visit_attributes.json`
-`contactSnapshot` (`attributeID` 25) and `visit_full_attributes.json` `logs`
-(`attributeID` 29) were absent from their schemas but still active in the ledger
-before `#342`; they are now `retired: true`. Their EAV rows flip from visible to
-skipped-on-read. The rows themselves are preserved (`#294`) and reappear if the
-properties are re-added under the same type.
+**Shipped schemas already carrying the marker.** Two entries are now
+`retired: true`, for different reasons — in both cases because
+`generate-attributes` no longer *produces* the entry, which is what the marker
+records:
+
+- `visit_full_attributes.json` `logs` (`attributeID` 29) — the `logs` property
+  was removed from `visit_full.json`. This is the ordinary removal case.
+- `visit_attributes.json` `contactSnapshot` (`attributeID` 25) — the
+  `contactSnapshot` property is still declared in `visit.json`, but as a `$ref`
+  to `lead.json#/properties/contact`, which is an **object**. The generator now
+  resolves that `$ref` and traverses into it, emitting one entry per leaf
+  (`contactSnapshot.annualIncome`, `contactSnapshot.birthday`, …) and no bare
+  `contactSnapshot` entry. The `attributeID` 25 entry is a leftover from when
+  `$ref`s were not followed and the node was recorded as a single `text` value.
+
+In both cases the EAV rows under those ids flip from visible to skipped-on-read,
+and the rows themselves are preserved (`#294`). `logs` un-retires if the property
+is re-added to `visit_full.json` as `text`. `contactSnapshot` has no property to
+re-add — it would un-retire only if that node ever resolved to a scalar again,
+which is not an operator action; treat `attributeID` 25 as permanently reserved.
 
 **Residual gap.** An attribute whose ledger entry was hand-deleted *before*
 `#342` leaves no record at all, so the guard cannot see it and its
