@@ -83,6 +83,33 @@ func TestGenerateAttributes_ReAddDifferentTypeRejected(t *testing.T) {
 	}
 }
 
+// #342: a list attribute keeps its element type in items_type, so a re-add
+// that preserves valueType "list" but swaps the element type is just as
+// destructive as a scalar type change and must be refused too. This pins the
+// items_type leg of the guard, which the valueType cases cannot reach: both
+// sides here are "list", so only the items_type comparison can fail.
+func TestGenerateAttributes_ReAddDifferentItemsTypeRejected(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_list":{"type":"array","items":{"type":"number"}}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":     { "attributeID": 1, "valueType": "text" },
+	  "old_list": { "attributeID": 3, "valueType": "list", "items_type": "text", "retired": true }
+	}`)
+
+	err := generateAttributesJSON(schema, out, false)
+	if err == nil {
+		t.Fatalf("expected items_type-mismatch error on re-add")
+	}
+	// "text" is the retired element type, "numeric" the one the schema now asks
+	// for; naming both is what tells the operator which rows are at stake.
+	for _, want := range []string{"old_list", "text", "numeric"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err.Error(), want)
+		}
+	}
+}
+
 // #342: a retired entry still occupies its attributeID, so a genuinely new
 // attribute must be numbered above it rather than reusing the freed id.
 func TestGenerateAttributes_NewAttributeDoesNotReuseRetiredID(t *testing.T) {
