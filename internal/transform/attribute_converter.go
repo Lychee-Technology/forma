@@ -253,25 +253,32 @@ func (c *AttributeConverter) checkRequiredAttributes(
 	}
 
 	zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
-	for missingAttrID, missingAttrName := range missingRequired {
-		// Plain error, deliberately. FromEAVRecords is not write-only: the read
-		// path rebuilds already-stored records through it
-		// (persistent_record.go's FromPersistentRecord), so a persisted row
-		// missing a required EAV row reaches here too. Wrapping
-		// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
-		// HTTP boundary answer that persisted-drift case with a verbatim 400,
-		// inverting the split AGENTS.md and this repo's error-handling doc
-		// draw: write validation carries the sentinel, read-path consistency
-		// failures stay plain and operator-visible.
-		//
-		// The write path's 400 does not depend on this wrap. It has its own
-		// write-only validator, validateRequiredAttributesFromInput
-		// (transformer.go), which ToAttributes runs against the caller's input
-		// before flattening and which does carry the sentinel.
-		return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
-			missingAttrName, missingAttrID)
+	names := make([]string, 0, len(missingRequired))
+	idsByName := make(map[string]int16, len(missingRequired))
+	for id, name := range missingRequired {
+		names = append(names, name)
+		idsByName[name] = id
 	}
-	return nil
+	// Name the alphabetically first missing attribute, not whichever the map
+	// yields first, so the same drift produces the same error on every run.
+	missingAttrName := slices.Min(names)
+
+	// Plain error, deliberately. FromEAVRecords is not write-only: the read
+	// path rebuilds already-stored records through it
+	// (persistent_record.go's FromPersistentRecord), so a persisted row
+	// missing a required EAV row reaches here too. Wrapping
+	// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
+	// HTTP boundary answer that persisted-drift case with a verbatim 400,
+	// inverting the split AGENTS.md and this repo's error-handling doc
+	// draw: write validation carries the sentinel, read-path consistency
+	// failures stay plain and operator-visible.
+	//
+	// The write path's 400 does not depend on this wrap. It has its own
+	// write-only validator, validateRequiredAttributesFromInput
+	// (transformer.go), which ToAttributes runs against the caller's input
+	// before flattening and which does carry the sentinel.
+	return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
+		missingAttrName, idsByName[missingAttrName])
 }
 
 // Helper functions for conversion
