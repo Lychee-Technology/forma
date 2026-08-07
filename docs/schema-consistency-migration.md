@@ -268,15 +268,37 @@ two is not symmetric**, so assess them separately:
 - **`logs` (29) is write-breaking, not merely read-affecting.**
   `visit_full.json` declares no `logs` property *and* sets no
   `additionalProperties`, so JSON Schema validation lets the extra key through:
-  before this change a client could write `logs`, the attribute cache resolved
-  the name, and `attributeID` 29 was written and read back. After this change
-  the attribute is stripped from the active cache, so a write carrying `logs`
-  is rejected with `400 attribute 'logs' is not defined for this schema`, and
-  any values already stored under id 29 disappear from reads. If any client was
-  writing `logs` to `visit_full`, this is a breaking API change for that client
-  — either re-add the property to `visit_full.json` as `text` (which un-retires
-  it, subject to the flushed-row caveat above) or update the client to stop
-  sending the key.
+  before this change **both** payload shapes reached `attributeID` 29. `logs`
+  was declared an *array of strings* until it was removed, and the transformer
+  recurses into an array under the *bare* attribute name — one EAV row per
+  element, distinguished only by `array_indices` — while a scalar payload lands
+  on the same name with empty `array_indices`. Either shape resolved through the
+  attribute cache, so id 29 was written and read back. After this change the
+  attribute is stripped from the active cache, so a write carrying `logs` in any
+  shape is rejected with `400 attribute 'logs' is not defined for this schema`,
+  and any values already stored under id 29 disappear from reads. If any client
+  was writing `logs` to `visit_full`, this is a breaking API change for that
+  client, and — unlike an ordinary retirement — **`attributeID` 29 cannot be
+  restored under its original shape**:
+  - Re-adding the original array declaration makes `generate-attributes` emit
+    `valueType: list` / `items_type: text` (the shape `attendees` carries in the
+    same ledger). Entry 29 is recorded `valueType: text`, so the retired-re-add
+    type check refuses it and tells the operator to "restore the original type
+    or use a new attribute name" — a demand the original type cannot satisfy.
+  - Re-adding it as a scalar `text` property does pass that check and un-retires
+    29, but it does not repair the break: since `#314`, JSON Schema validation
+    rejects the array payload a legacy client sends, and the preserved rows
+    carry `array_indices`, so reads materialize an array under a property the
+    schema now declares a string.
+
+  So there are two honest paths, and neither restores id 29 to service:
+  - Accept the break: update clients to stop sending `logs`. Values under id 29
+    stay preserved on disk but unreadable.
+  - Declare a **new** property under a different name as an array of strings.
+    `generate-attributes` treats an unseen name as new, assigns it a fresh
+    `attributeID` above the current maximum with `valueType: list` /
+    `items_type: text`, and leaves entry 29 retired with its rows untouched. The
+    old values do not migrate themselves — copy them across if they matter.
 - **`contactSnapshot` (25) is practically inert.** Reaching the bare
   `attributeID` 25 leaf requires the client to send `contactSnapshot` as a
   *scalar*: an object payload recurses through the map branch of the
@@ -386,8 +408,10 @@ LIMIT 50;
   validator will flag on **every** deployment that holds rows under those ids.
   The tool does not yet classify preserved rows separately
   from genuinely orphaned ones, so confirm the reported `attr_id`s against the
-  retired entries in `<schema>_attributes.json` and proceed (follow-up tracked
-  on the PR).
+  retired entries in `<schema>_attributes.json` — and, for ledgers generated
+  before `#342`, against the attributes removed in the schema files' version
+  history, since a hand-deleted entry left no retired marker to cross-check —
+  then proceed (follow-up tracked on the PR).
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - no active attribute reuses a `retired` attributeID, main-column binding, or folded parquet column (`#342` startup check)
 - hardened release deployed
