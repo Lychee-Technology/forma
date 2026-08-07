@@ -141,6 +141,12 @@ type AttributeMetadata struct {
 	// New code should use RequiredPolicy.
 	Required      bool               `json:"required,omitempty"`
 	ColumnBinding *MainColumnBinding `json:"column_binding,omitempty"`
+	// Retired marks an attribute removed from the schema whose entry stays in
+	// the attributes file as the attributeID ledger (#342). Retired attributes
+	// are excluded from every active cache — reads skip their EAV rows (#294),
+	// writes preserve them — but their (id, name, valueType) still guards
+	// against rebinding the freed id to a different attribute.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

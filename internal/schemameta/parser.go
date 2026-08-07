@@ -47,6 +47,15 @@ func parseAttributeMetadata(attrName string, attrData map[string]any, source str
 
 	meta.ColumnBinding = binding
 
+	if rawRetired, exists := attrData["retired"]; exists {
+		retired, ok := rawRetired.(bool)
+		if !ok {
+			return forma.AttributeMetadata{}, fmt.Errorf(
+				"invalid retired flag for attribute %s in %s: must be a boolean", attrName, source)
+		}
+		meta.Retired = retired
+	}
+
 	return meta, nil
 }
 
