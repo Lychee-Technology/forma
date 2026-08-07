@@ -14,7 +14,8 @@
   },
   "contactSnapshot": {
     "attributeID": 25,
-    "valueType": "text"
+    "valueType": "text",
+    "retired": true
   },
   "contactSnapshot.annualIncome": {
     "attributeID": 29,
