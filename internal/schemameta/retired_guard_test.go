@@ -137,6 +137,24 @@ func TestMetadataCacheRegisterSchema_StripsRetired(t *testing.T) {
 	assert.NotContains(t, mc.attributeMetadata[100], "old_col", "retired attribute must be stripped from attributeMetadata")
 }
 
+// TestMetadataCacheRegisterSchema_RejectsRetiredIDReuse pins that the strip
+// never swallows a collision: RegisterSchema validates the FULL cache before
+// stripping, so a retired/active id clash is an error rather than a silent
+// drop that would rebind the retired id to the active attribute (#342).
+func TestMetadataCacheRegisterSchema_RejectsRetiredIDReuse(t *testing.T) {
+	mc := NewMetadataCache()
+	err := mc.RegisterSchema("user", 100, forma.SchemaAttributeCache{
+		"nickname": {AttributeName: "nickname", AttributeID: 3, ValueType: forma.ValueTypeText},
+		"old_col":  {AttributeName: "old_col", AttributeID: 3, ValueType: forma.ValueTypeText, Retired: true},
+	})
+	require.Error(t, err, "retired id reuse must not register silently")
+	assert.Contains(t, err.Error(), "retired attribute old_col", "error does not carry the reuse diagnosis")
+
+	_, ok := mc.GetSchemaCacheByID(100)
+	assert.False(t, ok, "a rejected schema must not be registered")
+	assert.NotContains(t, mc.schemaNameToID, "user", "a rejected schema must not appear in the name index")
+}
+
 // TestLoadMetadata_StripsRetiredFromFileCache covers the loader's file path
 // (loadAttributeMetadataFromFiles), the fourth storage point.
 func TestLoadMetadata_StripsRetiredFromFileCache(t *testing.T) {

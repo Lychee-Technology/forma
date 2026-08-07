@@ -88,10 +88,12 @@ func (r *DBPersistentRecordRepository) knownAttrIDs(schemaID int16) ([]int16, er
 	for _, meta := range cache {
 		ids = append(ids, meta.AttributeID)
 	}
-	// Map iteration order is random; sort for a deterministic bind value. The
-	// compact then drops duplicate IDs (distinct attribute names may share an
-	// attributeID) — Compact only removes consecutive duplicates, which the
-	// preceding sort guarantees are adjacent.
+	// Map iteration order is random; sort for a deterministic bind value.
+	// Since #342 every registration path (file/DB loaders and
+	// MetadataCache.RegisterSchema alike) rejects duplicate attribute ids, so a
+	// cache holding two names on one id is unconstructible. The compact stays as
+	// cheap belt-and-suspenders — Compact only removes consecutive duplicates,
+	// which the preceding sort guarantees are adjacent.
 	slices.Sort(ids)
 	return slices.Compact(ids), nil
 }

@@ -59,6 +59,12 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	if existingID, exists := mc.schemaNameToID[schemaName]; exists && existingID != schemaID {
 		return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
 	}
+	// Validate the FULL cache before stripping: without this the strip below
+	// would swallow a retired/active attributeID or binding collision, silently
+	// dropping the retired entry and rebinding its id to the active one (#342).
+	if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
+		return fmt.Errorf("register schema %s: %w", schemaName, err)
+	}
 	// Store a private copy: the caller keeps ownership of its map, so later
 	// caller-side mutations cannot silently invalidate cached plans (#142).
 	// Retired entries are a validation-only ledger and never reach consumers (#342).

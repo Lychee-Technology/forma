@@ -83,8 +83,14 @@ func TestReplaceEAVAttributes(t *testing.T) {
 // TestReplaceEAVAttributes_DeleteScopedToCurrentSchemaAttrIDs is the #294
 // "preserve" half: attrID 99 was dropped by schema evolution, so it is absent
 // from the delete scope and its EAV rows survive the update untouched. The
-// scope is sorted (map iteration order is random) and deduplicated (two
-// attribute names may share an attributeID).
+// scope is sorted, because map iteration order is random and the bind value
+// must be deterministic — the ids below are declared out of order on purpose.
+//
+// Every attribute carries a distinct id. This test previously registered two
+// names on attributeID 12 to exercise the dedup in knownAttrIDs, but since #342
+// duplicate attribute ids are rejected at every registration path — the file
+// and DB loaders and MetadataCache.RegisterSchema alike — so that state is
+// unconstructible and the slices.Compact there is defence in depth only.
 func TestReplaceEAVAttributes_DeleteScopedToCurrentSchemaAttrIDs(t *testing.T) {
 	ctx := context.Background()
 	mock, err := pgxmock.NewPool()
@@ -95,15 +101,15 @@ func TestReplaceEAVAttributes_DeleteScopedToCurrentSchemaAttrIDs(t *testing.T) {
 
 	mc := schemameta.NewMetadataCache()
 	require.NoError(t, mc.RegisterSchema("evolved_schema", 4, forma.SchemaAttributeCache{
-		"zeta":        {AttributeName: "zeta", AttributeID: 21, ValueType: forma.ValueTypeText},
-		"alpha":       {AttributeName: "alpha", AttributeID: 3, ValueType: forma.ValueTypeNumeric},
-		"mid":         {AttributeName: "mid", AttributeID: 12, ValueType: forma.ValueTypeText},
-		"mid_aliased": {AttributeName: "mid_aliased", AttributeID: 12, ValueType: forma.ValueTypeText},
+		"zeta":  {AttributeName: "zeta", AttributeID: 21, ValueType: forma.ValueTypeText},
+		"alpha": {AttributeName: "alpha", AttributeID: 3, ValueType: forma.ValueTypeNumeric},
+		"mid":   {AttributeName: "mid", AttributeID: 12, ValueType: forma.ValueTypeText},
+		"beta":  {AttributeName: "beta", AttributeID: 7, ValueType: forma.ValueTypeText},
 	}))
 
 	// attrID 99 (dropped attribute) is deliberately NOT in the scope.
 	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
-		WithArgs(int16(4), rowID, []int16{3, 12, 21}).
+		WithArgs(int16(4), rowID, []int16{3, 7, 12, 21}).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	repo := &DBPersistentRecordRepository{metadataCache: mc}
