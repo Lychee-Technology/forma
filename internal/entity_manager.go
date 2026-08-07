@@ -113,6 +113,8 @@ func NewEntityManager(
 	// EAV required-policy check enforces policies on relation-root children,
 	// which #314 ruled must never gate a write (#315).
 	if aware, ok := transformer.(transform.RelationRootsAware); ok {
+		// Safe when relationIdx is nil: RelationRoots is nil-receiver-safe
+		// (relation_index.go) and installs an empty lookup.
 		aware.SetRelationRoots(relationIdx.RelationRoots)
 	} else if relationIdx != nil {
 		// Loud, not silent: a transformer decorator that does not forward the

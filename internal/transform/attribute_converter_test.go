@@ -277,8 +277,47 @@ func TestAttributeConverterFromEAVRecords_NestedArrayRequiredUsesFullIndexPath(t
 	if !strings.Contains(err.Error(), "missing required attribute '") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "orders.items.price") && !strings.Contains(err.Error(), "contact.phones.kind") {
-		t.Fatalf("expected nested required attribute error, got %v", err)
+	// Both contact.phones.kind and orders.items.price are missing; the error
+	// deterministically names the alphabetically first.
+	if !strings.Contains(err.Error(), "missing required attribute 'contact.phones.kind' (attrID=6)") {
+		t.Fatalf("expected the alphabetically first missing attribute, got %v", err)
+	}
+}
+
+// TestAttributeConverterFromEAVRecords_MissingRequiredErrorIsDeterministic pins
+// the selection rule when several required attributes are missing at once: the
+// alphabetically first is named, on every run, instead of whichever the
+// missingRequired map happens to yield first (PR #373 review, F5). The repeat
+// loop is the red anchor — under map-order selection with four candidates it
+// fails with high probability.
+func TestAttributeConverterFromEAVRecords_MissingRequiredErrorIsDeterministic(t *testing.T) {
+	registry := &stubSchemaRegistry{
+		schemaID:   405,
+		schemaName: "multi_missing_schema",
+		cache: forma.SchemaAttributeCache{
+			"id":     {AttributeID: 1, ValueType: forma.ValueTypeText, Required: true},
+			"delta":  {AttributeID: 2, ValueType: forma.ValueTypeText, Required: true},
+			"bravo":  {AttributeID: 3, ValueType: forma.ValueTypeText, Required: true},
+			"echo":   {AttributeID: 4, ValueType: forma.ValueTypeText, Required: true},
+			"alpha":  {AttributeID: 5, ValueType: forma.ValueTypeText, Required: true},
+			"filled": {AttributeID: 6, ValueType: forma.ValueTypeText},
+		},
+	}
+
+	converter := NewAttributeConverter(registry)
+	rowID := uuid.Must(uuid.NewV7())
+	idValue := "row-1"
+
+	for run := 0; run < 25; run++ {
+		_, err := converter.FromEAVRecords([]model.EAVRecord{
+			{SchemaID: 405, RowID: rowID, AttrID: 1, ValueText: &idValue},
+		})
+		if err == nil {
+			t.Fatal("expected missing required attribute error")
+		}
+		if !strings.Contains(err.Error(), "missing required attribute 'alpha' (attrID=5)") {
+			t.Fatalf("run %d: expected deterministic 'alpha', got %v", run, err)
+		}
 	}
 }
 
