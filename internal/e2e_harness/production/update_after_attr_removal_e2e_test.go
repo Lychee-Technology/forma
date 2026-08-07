@@ -38,6 +38,17 @@ const remV2Attrs = `{
 }
 `
 
+// remV2RetiredAttrs is the #342 blessed form of the same removal: instead of
+// deleting old_col's entry, the generation keeps it as the attributeID ledger
+// and marks it retired. Behavior must be identical to remV2Attrs
+// (hand-deleted): invisible on read, row still updatable, value preserved.
+const remV2RetiredAttrs = `{
+  "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
+  "value": { "attributeID": 2, "valueType": "numeric" },
+  "old_col": { "attributeID": 3, "valueType": "text", "retired": true }
+}
+`
+
 // jsonNormalizedAttrs round-trips an attribute map through JSON so
 // assertions compare plain strings/float64s rather than the transformer's
 // internal pointer types.
@@ -145,6 +156,90 @@ func TestUpdateAfterAttributeRemoval(t *testing.T) {
 		"value": float64(3),
 	})); err != nil {
 		t.Fatalf("update after re-add: %v", err)
+	}
+	attrs3 := getNormalizedAttrs(ctx, t, env, schema, create.RowID, "after second update")
+	if attrs3["old_col"] != "keep-me" || attrs3["value"] != float64(3) {
+		t.Fatalf("after second update got old_col=%v value=%v, want keep-me / 3", attrs3["old_col"], attrs3["value"])
+	}
+}
+
+// TestRetiredMarkerRemovalWorkflow pins the #342 blessed removal workflow end
+// to end, step for step against TestUpdateAfterAttributeRemoval above: a
+// generation that RETIRES old_col rather than deleting its entry must behave
+// identically to the hand-deleted generation — the preserved EAV row survives
+// the update's replace cycle, stays invisible while retired, and reappears
+// when the attribute is un-retired (re-added with the same id/name/type).
+//
+// The invisibility assertion is the load-bearing one: retired entries are
+// stripped from the active caches (schemameta.activeAttributeCache), so a
+// regression that let a retired entry reach consumers would surface old_col in
+// the read path and fail here.
+func TestRetiredMarkerRemovalWorkflow(t *testing.T) {
+	ctx := context.Background()
+	cluster := SharedCluster(t)
+	v1 := writeSimpleSchemaDir(t, remV1Props, remV1Attrs)
+	v2Retired := writeSimpleSchemaDir(t, remV2Props, remV2RetiredAttrs)
+	env := NewEnv(t, cluster, WithSchemaDir(v1))
+	schema := DefaultSchemaFixtures()[0]
+
+	create := CreateEvent(schema, map[string]any{
+		"name":    "r1",
+		"value":   float64(1),
+		"old_col": "keep-me",
+	})
+	if err := env.ApplyEvents(ctx, create); err != nil {
+		t.Fatalf("seed v1 row: %v", err)
+	}
+
+	if err := env.EvolveSchema(ctx, v2Retired); err != nil {
+		t.Fatalf("evolve schema to retired-marker v2: %v", err)
+	}
+
+	if err := env.ApplyEvents(ctx, UpdateEvent(schema, create.RowID, map[string]any{
+		"value": float64(2),
+	})); err != nil {
+		t.Fatalf("update row carrying retired-attr EAV data under v2: %v", err)
+	}
+
+	// Preserve, not drop: retiring must leave the EAV row physically present.
+	var preserved string
+	if err := env.Pool.QueryRow(ctx,
+		`SELECT value_text FROM eav_data WHERE schema_id = $1 AND row_id = $2 AND attr_id = 3`,
+		schema.ID, create.RowID).Scan(&preserved); err != nil {
+		t.Fatalf("retired old_col EAV row missing after update (tolerate-and-preserve violated): %v", err)
+	}
+	if preserved != "keep-me" {
+		t.Fatalf("retired old_col EAV value = %q, want %q", preserved, "keep-me")
+	}
+
+	// Under the retired-marker generation the value stays invisible on read.
+	attrs := getNormalizedAttrs(ctx, t, env, schema, create.RowID, "under retired-marker v2")
+	if _, ok := attrs["old_col"]; ok {
+		t.Fatalf("retired old_col visible under retired-marker v2 schema: %v", attrs)
+	}
+	if attrs["value"] != float64(2) {
+		t.Fatalf("value = %v, want 2", attrs["value"])
+	}
+
+	// Un-retire old_col (evolve back to the v1 shape, same attributeID 3,
+	// same name and valueType): the preserved value must reappear.
+	if err := env.EvolveSchema(ctx, v1); err != nil {
+		t.Fatalf("un-retire old_col (evolve back to v1 shape): %v", err)
+	}
+	attrs2 := getNormalizedAttrs(ctx, t, env, schema, create.RowID, "after un-retire")
+	if attrs2["old_col"] != "keep-me" {
+		t.Fatalf("old_col after un-retire = %v, want \"keep-me\" (preserve vs drop discriminator)", attrs2["old_col"])
+	}
+	if attrs2["value"] != float64(2) {
+		t.Fatalf("value after un-retire = %v, want 2", attrs2["value"])
+	}
+
+	// The row stays a normal citizen: another update under the restored
+	// schema round-trips old_col like any live attribute.
+	if err := env.ApplyEvents(ctx, UpdateEvent(schema, create.RowID, map[string]any{
+		"value": float64(3),
+	})); err != nil {
+		t.Fatalf("update after un-retire: %v", err)
 	}
 	attrs3 := getNormalizedAttrs(ctx, t, env, schema, create.RowID, "after second update")
 	if attrs3["old_col"] != "keep-me" || attrs3["value"] != float64(3) {
