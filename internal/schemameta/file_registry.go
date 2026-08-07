@@ -175,10 +175,12 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Validate on the FULL cache, then register only the active subset:
+		// retired entries are an attributeID ledger, not consumer state (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
-		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
+		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
 			return err
 		}
 	}
@@ -371,10 +373,12 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 		if err != nil {
 			return err
 		}
+		// Validate on the FULL cache, then register only the active subset:
+		// retired entries are an attributeID ledger, not consumer state (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 			return err
 		}
-		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
+		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
 			return err
 		}
 		nextSchemaID++

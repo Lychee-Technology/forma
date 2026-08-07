@@ -61,7 +61,8 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	}
 	// Store a private copy: the caller keeps ownership of its map, so later
 	// caller-side mutations cannot silently invalidate cached plans (#142).
-	snapshot := copySchemaAttributeCache(cache)
+	// Retired entries are a validation-only ledger and never reach consumers (#342).
+	snapshot := activeAttributeCache(copySchemaAttributeCache(cache))
 	mc.schemaNameToID[schemaName] = schemaID
 	mc.schemaIDToName[schemaID] = schemaName
 	mc.schemaCaches[schemaID] = snapshot
@@ -299,7 +300,6 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 
 		// Convert to AttributeMeta map
-		attrMap := make(map[string]forma.AttributeMetadata)
 		schemaCache := make(forma.SchemaAttributeCache)
 
 		for attrName, attrData := range rawAttributes {
@@ -307,17 +307,19 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			if err != nil {
 				return err
 			}
-			attrMap[attrName] = meta
 			schemaCache[attrName] = meta
 		}
+		// Validate on the FULL cache (retired entries included) and only then
+		// strip them: the retired ledger guards id/binding reuse (#342).
 		if err := validateSchemaAttributeCache(schemaName, schemaCache); err != nil {
 			return err
 		}
+		active := activeAttributeCache(schemaCache)
 
-		cache.attributeMetadata[schemaID] = attrMap
-		cache.schemaCaches[schemaID] = schemaCache
+		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(active)
+		cache.schemaCaches[schemaID] = active
 
-		zap.S().Infow("Loaded attributes for schema", "count", len(attrMap), "schema", schemaName)
+		zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)
 	}
 
 	// Also check for any schema files without database entries

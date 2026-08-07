@@ -51,6 +51,23 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 	return nil
 }
 
+// activeAttributeCache returns cache without retired entries. Retired entries
+// exist only as the attributeID ledger (#342): they take part in validation
+// above, but no consumer may see them — a retired attribute reads, writes,
+// flushes, and projects exactly as if its entry were absent (#294 skip).
+// Callers must invoke this strictly after validateSchemaAttributeCache, so the
+// guard always sees the full ledger.
+func activeAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
+	active := make(forma.SchemaAttributeCache, len(cache))
+	for name, meta := range cache {
+		if meta.Retired {
+			continue
+		}
+		active[name] = meta
+	}
+	return active
+}
+
 // attrIDCollisionError names the retired side of an attributeID collision.
 // AttributeIDs are physical EAV keys: an id freed by attribute removal is
 // still bound to preserved rows, so rebinding it to a different attribute
