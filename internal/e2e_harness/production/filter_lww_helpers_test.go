@@ -68,9 +68,18 @@ func assertRowCount(ctx context.Context, t *testing.T, env *Env, name string, q 
 func waitClockPast(t *testing.T, evs ...*Event) {
 	t.Helper()
 	for _, ev := range evs {
-		for time.Now().UnixMilli() <= ev.ChangedAt {
-			time.Sleep(time.Millisecond)
-		}
+		waitClockPastMillis(ev.ChangedAt)
+	}
+}
+
+// waitClockPastMillis is waitClockPast against a bare millisecond anchor: a
+// flush snapshot (SelectBatchRowIDs' snapshot := time.Now().UnixMilli()) or any
+// other timestamp not carried by an Event. It takes no *testing.T so CDC hooks
+// can call it — a hook reports failure through the flush error, never through
+// t.* (#276).
+func waitClockPastMillis(ms int64) {
+	for time.Now().UnixMilli() <= ms {
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -78,6 +87,20 @@ func waitClockPast(t *testing.T, evs ...*Event) {
 // strictly after its predecessor's at millisecond resolution — otherwise an
 // LWW probe degrades into an undefined equal-ver_ts tie (#210 fixed the init
 // stamp; equal-timestamp DIVERGENT versions of a row remain unranked).
+//
+// Since #274 the write path guarantees this for pairs on the SAME row_id:
+// ltbase_updated_at = GREATEST($now, ltbase_updated_at + 1) with RETURNING
+// (postgres_persistent_repository_main_table.go), computeTombstoneStamp for
+// deletes and nextRowVersion for recreates each raise the successor above the
+// row's previous version even inside one millisecond, and change_log is stamped
+// from that same effective value. For same-row pairs this guard is therefore a
+// cheap redundant assertion, and no wait is needed before the later write.
+//
+// It stays load-bearing for pairs the write path cannot order, and those are the
+// only sites that need waitClockPast / waitClockPastMillis first (#276): pairs
+// on DIFFERENT row_ids (each write takes its own clock read, including two
+// writes inside one ApplyEvents batch), and comparisons against an independent
+// anchor such as a flush snapshot.
 func assertStrictlyNewer(t *testing.T, olds, news []*Event) {
 	t.Helper()
 	for i := range olds {

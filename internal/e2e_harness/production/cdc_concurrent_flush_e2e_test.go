@@ -174,6 +174,13 @@ func testUpdateBeforeExport(ctx context.Context, t *testing.T) {
 	cfg.BeforeExportHook = func(hctx context.Context, _ int16, ids []uuid.UUID, snapshot int64) error {
 		hookSnapshot = snapshot
 		hookBatch = len(ids)
+		// The snapshot is an independent clock read, so #274's per-row
+		// monotonicity does not order the mutation against it: without this
+		// wait the update can land inside the snapshot millisecond, the
+		// mark-flushed guard (changed_at <= snapshot) then marks the row
+		// flushed, and both halves of the scenario collapse. Observed flaking
+		// in CI on PR #280 (actions run 29606517056) — #276.
+		waitClockPastMillis(snapshot)
 		update = UpdateEvent(wide, victim.RowID, map[string]any{
 			"title": "hot-00",
 			"count": float64(900000),
