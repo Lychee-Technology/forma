@@ -37,7 +37,10 @@ All three are covered below.
 2. Back up the database.
 3. Run the checked-in SQL script for DB-level sanity checks.
 4. Run the checked-in Go validator for full metadata-aware validation.
-5. Fix all reported issues.
+5. Fix all reported issues — never by deleting EAV rows the validator reports in
+   the informational block. Those are `#294`-preserved rows; deleting them is
+   irreversible. See
+   [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav).
 6. Deploy the hardened release.
 7. Run the validator again after deploy.
 
@@ -165,28 +168,17 @@ Example validator output:
 - unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=12
 ```
 
-That means the table contains rows that current metadata cannot decode. There are two very different reasons this can happen, and they call for opposite actions. **Determine which case you are in before touching any row**: check whether that `attr_id` was ever a legitimate attribute in an earlier generation of the schema's `<schema>_attributes.json` (version control on the schema files is the record) and was later removed.
+That means the table contains rows that current metadata cannot decode. **Three**
+different things can put an `attr_id` in this state, and they call for opposite
+actions: the rows were **never legitimate** (case (i)), they are **preserved by
+attribute removal** (`#294`, case (ii)), or the attribute is still legitimate and
+its **metadata was lost by accident** (case (iii)). Since `#341` the validator
+classifies case (ii) for you whenever the ledger carries the retired entry, so
+the manual determination below is only needed for what the validator still
+reports as a **failure**.
 
-Three things can put an `attr_id` in this state, and the third one is neither of
-the two cases below: the metadata may have been **lost by accident** — a partial
-deploy, a rollback that reverted the attributes file but not the data, or a
-ledger entry hand-deleted before `#342`. If the values are legitimate and the
-attribute genuinely belongs to the schema, the fix is to restore the metadata,
-not to touch the rows. See
-[Removing an attribute](#removing-an-attribute-342) for how to rebuild a missing
-ledger entry.
-
-**Case (i) — never legitimate.** The rows came from a bad deployment, a
-mis-mapped import, or leftover test data: no schema generation ever defined that
-`attr_id`, and no metadata is missing. Fix by deleting the orphaned EAV rows.
-
-**Case (ii) — preserved by attribute removal (`#294`).** The attribute did exist and was removed from the schema. Since `#294` (tolerate-and-preserve) these rows are the **expected** state: the read path skips them and the write path preserves them untouched, so removing an attribute is non-destructive and re-adding it (same `attributeID`) restores the stored values. **Do not delete them.** Deletion is destructive and irreversible — it permanently forfeits the re-add restore path — and nothing else in the system is asking you to do it. Leave the rows in place and treat the validator finding as informational.
-
-If you cannot establish which case applies, treat the rows as case (ii) and leave them alone; keeping undecodable rows costs storage, deleting recoverable ones costs the data.
-
-Since `#341` the validator makes this split for you whenever the ledger carries
-the retired entry. Case (ii) rows are reported in a separate block and do not
-fail the run:
+Concretely: rows whose `attr_id` matches a `retired` ledger entry are reported in
+a separate informational block and do not fail the run.
 
 ```text
 schema consistency checks passed for 3 schema(s), 1 informational finding(s)
@@ -194,10 +186,43 @@ informational (not a failure):
 - preserved EAV rows for retired attributes in eav_data_dev: schema=visit schema_id=1 attr_id=25 attribute=contactSnapshot rows=12
 ```
 
-The manual determination above is still yours to make in exactly one situation:
-the attribute was removed **before** `#342`, so no `retired` entry records it and
-the validator can only see an unledgered id. That is a failure until you rebuild
-the ledger entry — see [Removing an attribute](#removing-an-attribute-342).
+Everything else still comes out as an `unknown attribute IDs` **failure**, and
+that is what the rest of this section is for.
+
+**Determine which case you are in before touching any row.** Version control on
+the schema files is the record: check whether that `attr_id` was ever a
+legitimate attribute in an earlier generation of the schema's
+`<schema>_attributes.json`, whether it was later removed, and whether the entry
+that should describe it is simply missing. The determination is yours whenever
+the validator reports a **failure** rather than an informational finding, and
+three possibilities remain at that point: the rows were never legitimate (case
+(i)), the attribute was retired **before** `#342` so no `retired` entry records
+it and the validator can only see an unledgered id (case (ii)), or legitimate
+metadata was lost by accident and must be restored (case (iii)).
+
+**Case (i) — never legitimate.** The rows came from a bad deployment, a
+mis-mapped import, or leftover test data: no schema generation ever defined that
+`attr_id`, and no metadata is missing. Fix by deleting the orphaned EAV rows.
+
+**Case (ii) — preserved by attribute removal (`#294`).** The attribute did exist and was removed from the schema. Since `#294` (tolerate-and-preserve) these rows are the **expected** state: the read path skips them and the write path preserves them untouched, so removing an attribute is non-destructive and re-adding it (same `attributeID`) restores the stored values. **Do not delete them.** Deletion is destructive and irreversible — it permanently forfeits the re-add restore path — and nothing else in the system is asking you to do it. Leave the rows in place and treat the validator finding as informational.
+
+This case reaches you as a *failure* only when the attribute was removed before
+`#342`, so the ledger carries no `retired` entry to classify it against. The
+repair is to rebuild that entry, not to delete the rows — see
+[Removing an attribute](#removing-an-attribute-342).
+
+**Case (iii) — metadata lost by accident.** The attribute is still legitimate and
+genuinely belongs to the schema, but its metadata is gone — a partial deploy, a
+rollback that reverted the attributes file but not the data, or a ledger entry
+hand-deleted before `#342`. The fix is to **restore the metadata, not to touch
+the rows**: put the property back into `<schema>.json` and re-run
+`generate-attributes` (or restore the attributes file from version history),
+keeping the original `attributeID`. Once metadata describes the id again the
+rows decode as they always did. If the attribute is not wanted back, retire it
+properly instead — see
+[Removing an attribute](#removing-an-attribute-342).
+
+If you cannot establish which case applies, treat the rows as case (ii) and leave them alone; keeping undecodable rows costs storage, deleting recoverable ones costs the data.
 
 Whichever case applies, an `attributeID` freed by removing an attribute must never be reused for a different attribute: the preserved rows would silently bind to the new attribute's name, or make the row unreadable with a storage type mismatch. Since `#342` that is enforced at startup rather than left to convention — see [Removing an attribute](#removing-an-attribute-342) below.
 
@@ -348,25 +373,41 @@ documentation-only: check the schema files' version history before assigning any
 
 **Rebuilding a lost ledger entry.** Hand-add the entry back to
 `<schema>_attributes.json` under its original name, with its original
-`attributeID` and `valueType` (and `items_type`, for a list), marked retired:
+`attributeID`, its original `valueType` (and `items_type`, for a list), **and its
+original `column_binding.col_name` if the attribute had a hot column**, marked
+retired:
 
 ```json
-"legacy_field": { "attributeID": 9, "valueType": "text", "retired": true }
+"legacy_field": {
+  "attributeID": 9,
+  "valueType": "text",
+  "column_binding": {"col_name":"text_01"},
+  "retired": true
+}
 ```
+
+The `column_binding` matters as much as the id, and like `valueType` it has to be
+recovered from the schema files' version history — nothing derives it. Omit it
+and the entry reserves only the id: a later attribute can bind that main-table
+column with the guard silent, and reads then serve the retired attribute's stale
+values out of `text_01`. The third reserved resource, the folded parquet column,
+needs no separate field — it is derived from the attribute name, which this
+recipe already requires you to restore.
 
 This is the one hand-edit the ledger sanctions, and it is not the unsupported
 case described above: the schema no longer declares the property, so the next
 `generate-attributes` run finds nothing to re-add and keeps the marker. Once the
-entry exists, the reuse guard protects the id and
-`validate-schema-consistency` reclassifies its preserved rows as informational
-(`#341`).
+entry exists, the reuse guard protects the id, the main column and the folded
+parquet column, and `validate-schema-consistency` reclassifies its preserved rows
+as informational (`#341`).
 
 Two things to expect. The entry is now subject to full-ledger validation, so if
-that `attributeID` was already handed to a different attribute during the
+that `attributeID`, that `column_binding.col_name`, or that attribute name's
+folded parquet column was already handed to a different attribute during the
 pre-`#342` era, startup will fail naming both — that is pre-existing corruption
 surfacing, not a regression, and the fix is to give the *newer* attribute an
-unused id. And the `valueType` you record must be the one the stored rows
-actually carry: get it wrong and a future re-add restores values through the
+unused id/column/name. And the `valueType` you record must be the one the stored
+rows actually carry: get it wrong and a future re-add restores values through the
 wrong physical column.
 
 ### Storage-column mismatches
@@ -458,9 +499,11 @@ LIMIT 50;
   informational block — expected `#294` tolerate-and-preserve state, not a
   deployment blocker, and not part of the exit code (`#341`). With the shipped
   ledgers this covers `attr_id` 25 on `visit` and `attr_id` 29 on `visit_full`.
-  A remaining `unknown attribute IDs` **failure** means one of two things: rows
-  that were never legitimate, or an attribute retired before `#342` whose ledger
-  entry is missing. Resolve it with
+  A remaining `unknown attribute IDs` **failure** means one of three things: rows
+  that were never legitimate (delete them), an attribute retired before `#342`
+  whose ledger entry is missing (rebuild the entry), or metadata lost by accident
+  for an attribute that is still legitimate (restore the metadata — do **not**
+  touch the rows). Resolve it with
   [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav) — do not wave it
   through.
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
