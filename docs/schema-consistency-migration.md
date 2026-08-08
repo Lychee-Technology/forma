@@ -11,7 +11,11 @@ The new checks fail on:
 - duplicate `schema_id` values in the schema registry table
 - duplicate `attributeID` values inside a single `<schema>_attributes.json`
 - duplicate hot-column bindings inside a single `<schema>_attributes.json`
-- EAV rows whose `attr_id` is not present in metadata for that schema
+- EAV rows whose `attr_id` is not present in metadata for that schema — as
+  originally shipped in `#121`. Since `#294` the runtime path no longer errors
+  on these: it skips them on read and preserves them on write. See
+  [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav) for what the
+  validator does with them today.
 - EAV rows whose value is stored in the wrong physical column (`value_text` vs `value_numeric`)
 - writes that reference attributes not defined in schema metadata
 
@@ -108,7 +112,10 @@ It validates:
 - every referenced `<schema>_attributes.json` parses successfully
 - each schema’s metadata has unique `attributeID` values
 - each schema’s metadata has unique `column_binding.col_name` values
-- `eav_data.attr_id` values all map to known metadata IDs for the same `schema_id`
+- `eav_data.attr_id` values all map to known metadata IDs for the same
+  `schema_id` — ids belonging to a `retired` ledger entry (`#342`) are reported
+  as informational rather than as failures, because those rows are the `#294`
+  preserved state (`#341`)
 - numeric/date/bool values are not incorrectly stored in `value_text`
 - text/uuid/list values are not incorrectly stored in `value_numeric`
 
@@ -160,14 +167,37 @@ Example validator output:
 
 That means the table contains rows that current metadata cannot decode. There are two very different reasons this can happen, and they call for opposite actions. **Determine which case you are in before touching any row**: check whether that `attr_id` was ever a legitimate attribute in an earlier generation of the schema's `<schema>_attributes.json` (version control on the schema files is the record) and was later removed.
 
-**Case (i) — never legitimate.** The rows came from a bad deployment, a mis-mapped import, or leftover test data: no schema generation ever defined that `attr_id`. Fix by either:
+Three things can put an `attr_id` in this state, and the third one is neither of
+the two cases below: the metadata may have been **lost by accident** — a partial
+deploy, a rollback that reverted the attributes file but not the data, or a
+ledger entry hand-deleted before `#342`. If the values are legitimate and the
+attribute genuinely belongs to the schema, the fix is to restore the metadata,
+not to touch the rows. See
+[Removing an attribute](#removing-an-attribute-342) for how to rebuild a missing
+ledger entry.
 
-1. restoring the missing attribute metadata if the data is legitimate, or
-2. deleting the orphaned EAV rows.
+**Case (i) — never legitimate.** The rows came from a bad deployment, a
+mis-mapped import, or leftover test data: no schema generation ever defined that
+`attr_id`, and no metadata is missing. Fix by deleting the orphaned EAV rows.
 
 **Case (ii) — preserved by attribute removal (`#294`).** The attribute did exist and was removed from the schema. Since `#294` (tolerate-and-preserve) these rows are the **expected** state: the read path skips them and the write path preserves them untouched, so removing an attribute is non-destructive and re-adding it (same `attributeID`) restores the stored values. **Do not delete them.** Deletion is destructive and irreversible — it permanently forfeits the re-add restore path — and nothing else in the system is asking you to do it. Leave the rows in place and treat the validator finding as informational.
 
 If you cannot establish which case applies, treat the rows as case (ii) and leave them alone; keeping undecodable rows costs storage, deleting recoverable ones costs the data.
+
+Since `#341` the validator makes this split for you whenever the ledger carries
+the retired entry. Case (ii) rows are reported in a separate block and do not
+fail the run:
+
+```text
+schema consistency checks passed for 3 schema(s), 1 informational finding(s)
+informational (not a failure):
+- preserved EAV rows for retired attributes in eav_data_dev: schema=visit schema_id=1 attr_id=25 attribute=contactSnapshot rows=12
+```
+
+The manual determination above is still yours to make in exactly one situation:
+the attribute was removed **before** `#342`, so no `retired` entry records it and
+the validator can only see an unledgered id. That is a failure until you rebuild
+the ledger entry — see [Removing an attribute](#removing-an-attribute-342).
 
 Whichever case applies, an `attributeID` freed by removing an attribute must never be reused for a different attribute: the preserved rows would silently bind to the new attribute's name, or make the row unreadable with a storage type mismatch. Since `#342` that is enforced at startup rather than left to convention — see [Removing an attribute](#removing-an-attribute-342) below.
 
@@ -316,6 +346,29 @@ two is not symmetric**, so assess them separately:
 documentation-only: check the schema files' version history before assigning any
 `attributeID` that no current entry claims.
 
+**Rebuilding a lost ledger entry.** Hand-add the entry back to
+`<schema>_attributes.json` under its original name, with its original
+`attributeID` and `valueType` (and `items_type`, for a list), marked retired:
+
+```json
+"legacy_field": { "attributeID": 9, "valueType": "text", "retired": true }
+```
+
+This is the one hand-edit the ledger sanctions, and it is not the unsupported
+case described above: the schema no longer declares the property, so the next
+`generate-attributes` run finds nothing to re-add and keeps the marker. Once the
+entry exists, the reuse guard protects the id and
+`validate-schema-consistency` reclassifies its preserved rows as informational
+(`#341`).
+
+Two things to expect. The entry is now subject to full-ledger validation, so if
+that `attributeID` was already handed to a different attribute during the
+pre-`#342` era, startup will fail naming both — that is pre-existing corruption
+surfacing, not a regression, and the fix is to give the *newer* attribute an
+unused id. And the `valueType` you record must be the one the stored rows
+actually carry: get it wrong and a future re-add restores values through the
+wrong physical column.
+
 ### Storage-column mismatches
 
 Example validator output:
@@ -400,18 +453,16 @@ LIMIT 50;
 
 - database backup taken
 - `scripts/validate_schema_consistency.sql` returns no duplicate schema IDs
-- `make validate-schema-consistency` returns success — except that on deployments
-  whose schemas have had attributes **retired**, unknown-attrID findings for
-  exactly those attributes are **expected** (`#294` tolerate-and-preserve) and
-  are **not** a deployment blocker. With the shipped ledgers this now includes
-  `attr_id` 25 on the `visit` schema and `attr_id` 29 on `visit_full`, which the
-  validator will flag on **every** deployment that holds rows under those ids.
-  The tool does not yet classify preserved rows separately
-  from genuinely orphaned ones, so confirm the reported `attr_id`s against the
-  retired entries in `<schema>_attributes.json` — and, for ledgers generated
-  before `#342`, against the attributes removed in the schema files' version
-  history, since a hand-deleted entry left no retired marker to cross-check —
-  then proceed (follow-up tracked on the PR).
+- `make validate-schema-consistency` returns success. Deployments whose schemas
+  have had attributes **retired** will see those rows listed in the
+  informational block — expected `#294` tolerate-and-preserve state, not a
+  deployment blocker, and not part of the exit code (`#341`). With the shipped
+  ledgers this covers `attr_id` 25 on `visit` and `attr_id` 29 on `visit_full`.
+  A remaining `unknown attribute IDs` **failure** means one of two things: rows
+  that were never legitimate, or an attribute retired before `#342` whose ledger
+  entry is missing. Resolve it with
+  [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav) — do not wave it
+  through.
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - no active attribute reuses a `retired` attributeID, main-column binding, or folded parquet column (`#342` startup check)
 - hardened release deployed
@@ -424,7 +475,10 @@ If deploy fails because of newly enforced checks:
 
 1. restore the previous server binary or image
 2. keep the database unchanged unless you already applied manual cleanup SQL
-3. fix the reported metadata or EAV inconsistencies
+3. fix the reported metadata or EAV inconsistencies — this never includes
+   deleting EAV rows the validator reports in the informational block. Those are
+   `#294`-preserved rows; deleting them is irreversible. See
+   [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav).
 4. re-run the validator
 5. retry the upgrade
 
