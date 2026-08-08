@@ -81,7 +81,9 @@ Error messages must name the logical value type, the offending column/attribute,
 
 ## Specs and Design Docs
 
-Planning artifacts — specs, design docs, implementation plans — are not committed to the repo (`docs/superpowers/` is gitignored). Post them to the GitHub issue they serve instead: once a spec or design is approved, add its full content as a comment on the relevant issue so the issue carries the complete decision record. This covers per-issue planning artifacts only; reference designs that document the system itself (e.g. `docs/federated-query/design.md`) live in `docs/` as before.
+Every non-code artifact produced while working an issue goes to that issue as a comment — never into the repo (`docs/superpowers/` is gitignored). This covers design drafts, specs, implementation plans, investigation and verification notes, and rulings made mid-execution. Post the full content, not a summary, and post it when it is produced: a design draft goes up as a draft (say so), a plan goes up when written, a mid-execution decision goes up at the moment it is taken. The issue is the complete decision record; nothing load-bearing may live only in a chat transcript or a local file.
+
+Scope: per-issue artifacts only. Reference documentation of the system itself (e.g. `docs/federated-query/design.md`) lives in `docs/` and is committed as before. Review artifacts belong on the PR — see Pull Request Rules.
 
 ## Pull Request Rules
 
