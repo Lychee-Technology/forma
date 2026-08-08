@@ -6,18 +6,22 @@ This guide covers the upgrade to the schema/metadata consistency hardening intro
 
 Older releases tolerated several schema and metadata inconsistencies by logging warnings or silently skipping bad records. The hardened release turns those cases into startup or request-time errors.
 
-The new checks fail on:
+The checks `#121` introduced fail on:
 
 - duplicate `schema_id` values in the schema registry table
 - duplicate `attributeID` values inside a single `<schema>_attributes.json`
 - duplicate hot-column bindings inside a single `<schema>_attributes.json`
-- EAV rows whose `attr_id` is not present in metadata for that schema — as
-  originally shipped in `#121`. Since `#294` the runtime path no longer errors
-  on these: it skips them on read and preserves them on write. See
-  [Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav) for what the
-  validator does with them today.
+- EAV rows whose `attr_id` is not present in metadata for that schema — **since
+  superseded, see below**
 - EAV rows whose value is stored in the wrong physical column (`value_text` vs `value_numeric`)
 - writes that reference attributes not defined in schema metadata
+
+**Superseded since `#294`.** The runtime path no longer errors on EAV rows whose
+`attr_id` is absent from metadata: it skips them on read and preserves them on
+write. Since `#341` the validator likewise reports the ones a `retired` ledger
+entry accounts for as informational rather than as failures. Only that one
+bullet changed; the rest of the list still fails as written. See
+[Unknown attribute IDs in EAV](#unknown-attribute-ids-in-eav).
 
 A later release (`#314`) adds one more startup check and one more request-time check:
 
@@ -197,8 +201,10 @@ that should describe it is simply missing. The determination is yours whenever
 the validator reports a **failure** rather than an informational finding, and
 three possibilities remain at that point: the rows were never legitimate (case
 (i)), the attribute was retired **before** `#342` so no `retired` entry records
-it and the validator can only see an unledgered id (case (ii)), or legitimate
-metadata was lost by accident and must be restored (case (iii)).
+it and the validator can only see an unledgered id (case (ii), *unledgered
+variant* — the ledgered majority of case (ii) never reaches you as a failure at
+all), or legitimate metadata was lost by accident and must be restored
+(case (iii)).
 
 **Case (i) — never legitimate.** The rows came from a bad deployment, a
 mis-mapped import, or leftover test data: no schema generation ever defined that
