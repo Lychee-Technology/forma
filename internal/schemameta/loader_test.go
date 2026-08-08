@@ -411,6 +411,32 @@ func TestLoadMetadataCacheFieldsAreIndependent(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestRegisterSchemaCacheFieldsAreIndependent is the RegisterSchema sibling of
+// TestLoadMetadataCacheFieldsAreIndependent: the field-independence invariant on
+// MetadataCache binds every writer, so the registration path must store
+// attributeMetadata and schemaCaches on two independent maps too — deep copy of
+// *MainColumnBinding included. A bare map[string]forma.AttributeMetadata(...)
+// conversion of the stored snapshot aliases and fails both legs below.
+func TestRegisterSchemaCacheFieldsAreIndependent(t *testing.T) {
+	mc := NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("user", 1, forma.SchemaAttributeCache{
+		"name": {
+			AttributeID:   1,
+			ValueType:     forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")},
+		},
+	}))
+
+	mc.attributeMetadata[1]["injected"] = forma.AttributeMetadata{AttributeID: 99}
+	mc.attributeMetadata[1]["name"].ColumnBinding.ColumnName = forma.MainColumn("text_09")
+
+	schemaCache, ok := mc.GetSchemaCacheByID(1)
+	require.True(t, ok)
+	assert.NotContains(t, schemaCache, "injected", "the two fields must not share one map")
+	assert.Equal(t, forma.MainColumn("text_01"), schemaCache["name"].ColumnBinding.ColumnName,
+		"the column binding must be deep-copied, not shared by pointer")
+}
+
 func TestSchemaFingerprintTracksContent(t *testing.T) {
 	mcA := NewMetadataCache()
 	require.NoError(t, mcA.RegisterSchema("s", 1, forma.SchemaAttributeCache{

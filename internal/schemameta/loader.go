@@ -26,6 +26,15 @@ type MetadataCache struct {
 	schemaNameToID map[string]int16
 	schemaIDToName map[int16]string
 
+	// Field-independence invariant, held by EVERY writer of the two fields
+	// below (RegisterSchema and loadAttributeMetadataFromFiles): for a given
+	// schema id they never share one map. The two are handed to different
+	// consumers — attributeMetadata directly, schemaCaches via GetSchemaCache /
+	// GetSchemaCacheByID — so a mutation reaching one must not be observable
+	// through the other. Note a map[string]forma.AttributeMetadata(...)
+	// conversion of a SchemaAttributeCache is NOT a copy and would alias;
+	// copySchemaAttributeCache is, and it deep-copies *MainColumnBinding too.
+
 	// Attribute mappings: (schema_id, attr_name) -> AttributeMeta
 	attributeMetadata map[int16]map[string]forma.AttributeMetadata
 
@@ -65,14 +74,18 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
 		return fmt.Errorf("register schema id %d: %w", schemaID, err)
 	}
-	// Store a private copy: the caller keeps ownership of its map, so later
+	// First copy — caller ownership: the caller keeps its map, so later
 	// caller-side mutations cannot silently invalidate cached plans (#142).
 	// Retired entries are a validation-only ledger and never reach consumers (#342).
 	snapshot := activeAttributeCache(copySchemaAttributeCache(cache))
 	mc.schemaNameToID[schemaName] = schemaID
 	mc.schemaIDToName[schemaID] = schemaName
 	mc.schemaCaches[schemaID] = snapshot
-	mc.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(snapshot)
+	// Second copy — field independence, a different guarantee from the first and
+	// not redundant with it: the first severs the caller from what is stored,
+	// this one severs the two stored fields from each other. See the invariant
+	// on MetadataCache's field declarations.
+	mc.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(snapshot))
 	mc.fingerprints[schemaID] = fingerprintSchema(schemaName, snapshot)
 	return nil
 }
@@ -321,10 +334,8 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 		active := activeAttributeCache(schemaCache)
 
-		// The two fields never share one map: each is handed out separately
-		// (attributeMetadata directly, schemaCaches via GetSchemaCache), so a
-		// mutation reaching one map must not be observable through the other.
-		// copySchemaAttributeCache also deep-copies *MainColumnBinding.
+		// Copy so the two fields stay independent — see the invariant on
+		// MetadataCache's field declarations.
 		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
 		cache.schemaCaches[schemaID] = active
 

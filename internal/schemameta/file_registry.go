@@ -61,8 +61,16 @@ func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schem
 	return registry, nil
 }
 
+// attributesFilePath returns the on-disk path of a schema's attribute metadata
+// file. Single source for the path so every error that names it — read, parse,
+// and validation wraps alike — names the same exact file rather than the
+// directory it lives in.
+func (r *fileSchemaRegistry) attributesFilePath(schemaName string) string {
+	return filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+}
+
 func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int16) (forma.SchemaAttributeCache, *forma.JSONSchema, error) {
-	attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+	attributesFile := r.attributesFilePath(schemaName)
 	attributeData, err := os.ReadFile(attributesFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
@@ -182,7 +190,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 		}
 		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
-			return fmt.Errorf("attribute metadata in %s: %w", r.schemaDir, err)
+			return fmt.Errorf("attributes file %s: %w", r.attributesFilePath(schemaName), err)
 		}
 		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
 			return fmt.Errorf("register schema id %d: %w", schemaID, err)
@@ -379,7 +387,7 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 		}
 		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
-			return fmt.Errorf("attribute metadata in %s: %w", r.schemaDir, err)
+			return fmt.Errorf("attributes file %s: %w", r.attributesFilePath(schemaName), err)
 		}
 		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
 			return fmt.Errorf("register schema id %d: %w", schemaID, err)
