@@ -26,9 +26,20 @@ type schemaConsistencyValidator struct {
 	out         io.Writer
 }
 
+// issueSeverity separates findings that must block a pre-flight from findings
+// the operator only needs to know about. severityError is the zero value, so
+// every existing construction site stays a failure by default.
+type issueSeverity int
+
+const (
+	severityError issueSeverity = iota
+	severityInfo
+)
+
 type validationIssue struct {
 	category string
 	details  string
+	severity issueSeverity
 }
 
 func runValidateSchemaConsistency(ctx context.Context, args []string) error {
@@ -113,15 +124,49 @@ func (v schemaConsistencyValidator) run(ctx context.Context) error {
 		return err
 	}
 
-	if len(issues) == 0 {
-		fmt.Fprintf(v.out, "schema consistency checks passed for %d schema(s)\n", len(cache.ListSchemas()))
+	failures, notices := partitionIssues(issues)
+	v.report(failures, notices, len(cache.ListSchemas()))
+	if len(failures) == 0 {
 		return nil
 	}
+	return fmt.Errorf("schema consistency validation failed with %d issue(s)", len(failures))
+}
 
+// partitionIssues splits collectIssues' sorted output into the two report
+// blocks while preserving order inside each.
+func partitionIssues(issues []validationIssue) (failures, notices []validationIssue) {
 	for _, issue := range issues {
+		if issue.severity == severityInfo {
+			notices = append(notices, issue)
+			continue
+		}
+		failures = append(failures, issue)
+	}
+	return failures, notices
+}
+
+// report prints failures first, then the informational block. Informational
+// findings are EAV rows #294 preserves under a retired attribute: a supported
+// steady state, so they are surfaced for awareness and never gate the exit
+// code (#341).
+func (v schemaConsistencyValidator) report(failures, notices []validationIssue, schemaCount int) {
+	if len(failures) == 0 {
+		fmt.Fprintf(v.out, "schema consistency checks passed for %d schema(s)", schemaCount)
+		if len(notices) > 0 {
+			fmt.Fprintf(v.out, ", %d informational finding(s)", len(notices))
+		}
+		fmt.Fprintln(v.out)
+	}
+	for _, issue := range failures {
 		fmt.Fprintf(v.out, "- %s: %s\n", issue.category, issue.details)
 	}
-	return fmt.Errorf("schema consistency validation failed with %d issue(s)", len(issues))
+	if len(notices) == 0 {
+		return
+	}
+	fmt.Fprintln(v.out, "informational (not a failure):")
+	for _, issue := range notices {
+		fmt.Fprintf(v.out, "- %s: %s\n", issue.category, issue.details)
+	}
 }
 
 func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
@@ -148,8 +193,17 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *sc
 	return issues, nil
 }
 
-func (v schemaConsistencyValidator) checkUnknownAttributeIDs(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
-	knownAttrIDs := make(map[int16]map[int16]struct{})
+// schemaLedger is the per-schema view checkUnknownAttributeIDs classifies
+// against: the active attributeIDs, the retired ledger #342 records, and the
+// schema name for the report line.
+type schemaLedger struct {
+	name    string
+	active  map[int16]struct{}
+	retired map[int16]string
+}
+
+func buildSchemaLedgers(cache *schemameta.MetadataCache) map[int16]schemaLedger {
+	ledgers := make(map[int16]schemaLedger)
 	for _, schemaName := range cache.ListSchemas() {
 		schemaID, ok := cache.GetSchemaID(schemaName)
 		if !ok {
@@ -159,12 +213,21 @@ func (v schemaConsistencyValidator) checkUnknownAttributeIDs(ctx context.Context
 		if !ok {
 			continue
 		}
-		ids := make(map[int16]struct{}, len(schemaCache))
+		active := make(map[int16]struct{}, len(schemaCache))
 		for _, meta := range schemaCache {
-			ids[meta.AttributeID] = struct{}{}
+			active[meta.AttributeID] = struct{}{}
 		}
-		knownAttrIDs[schemaID] = ids
+		ledgers[schemaID] = schemaLedger{
+			name:    schemaName,
+			active:  active,
+			retired: cache.RetiredAttributeIDs(schemaID),
+		}
 	}
+	return ledgers
+}
+
+func (v schemaConsistencyValidator) checkUnknownAttributeIDs(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
+	ledgers := buildSchemaLedgers(cache)
 
 	query := fmt.Sprintf(`
 SELECT e.schema_id, e.attr_id, COUNT(*) AS record_count
@@ -185,20 +248,38 @@ ORDER BY e.schema_id, e.attr_id`, quoteIdentifier(v.eavTable))
 		if err := rows.Scan(&schemaID, &attrID, &count); err != nil {
 			return nil, fmt.Errorf("scan unknown attribute ids: %w", err)
 		}
-		if ids, ok := knownAttrIDs[schemaID]; ok {
-			if _, exists := ids[attrID]; exists {
-				continue
-			}
+		// A schema_id absent from the registry yields the zero ledger: both maps
+		// are nil, so the row falls through to the failure branch as before.
+		ledger := ledgers[schemaID]
+		if _, exists := ledger.active[attrID]; exists {
+			continue
 		}
-		issues = append(issues, validationIssue{
-			category: "unknown attribute IDs in " + v.eavTable,
-			details:  fmt.Sprintf("schema_id=%d attr_id=%d rows=%d", schemaID, attrID, count),
-		})
+		issues = append(issues, classifyUndecodableRows(v.eavTable, ledger, schemaID, attrID, count))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate unknown attribute ids: %w", err)
 	}
 	return issues, nil
+}
+
+// classifyUndecodableRows splits EAV rows current metadata cannot decode into
+// the two cases the migration guide names. Rows under a retired ledger entry
+// were preserved by an attribute removal (#294) — an expected, supported steady
+// state, reported informationally. Everything else is genuinely orphaned and
+// still fails the pre-flight (#341).
+func classifyUndecodableRows(eavTable string, ledger schemaLedger, schemaID, attrID int16, count int64) validationIssue {
+	if attrName, ok := ledger.retired[attrID]; ok {
+		return validationIssue{
+			category: "preserved EAV rows for retired attributes in " + eavTable,
+			details: fmt.Sprintf("schema=%s schema_id=%d attr_id=%d attribute=%s rows=%d",
+				ledger.name, schemaID, attrID, attrName, count),
+			severity: severityInfo,
+		}
+	}
+	return validationIssue{
+		category: "unknown attribute IDs in " + eavTable,
+		details:  fmt.Sprintf("schema_id=%d attr_id=%d rows=%d", schemaID, attrID, count),
+	}
 }
 
 func (v schemaConsistencyValidator) checkStorageMismatches(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
