@@ -119,11 +119,24 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 	}
 	mustFlush(ctx, t, env) // delta #1: A@t1
 
+	// t1 < t2 < t3 < t4 must hold STRICTLY, and every leg here is CROSS-ROW,
+	// which #274's per-row monotonicity cannot order: b and c are different rows
+	// (applied one per ApplyEvents call precisely so each lands on its own
+	// millisecond — one batch would let two independent clock reads tie), and
+	// upd is compared against c. The cursor below is pinned to c.ChangedAt with
+	// B expected to qualify strictly below it, so a tie does not merely weaken
+	// the probe, it changes what it asserts (#276).
+	waitClockPast(t, a)
 	b := CreateEvent(wide, map[string]any{"title": "ca-b", "count": float64(400)})
-	c := CreateEvent(wide, map[string]any{"title": "ca-c", "count": float64(600)})
-	if err := env.ApplyEvents(ctx, b, c); err != nil {
-		t.Fatalf("apply creates b, c: %v", err)
+	if err := env.ApplyEvents(ctx, b); err != nil {
+		t.Fatalf("apply create b: %v", err)
 	}
+	waitClockPast(t, b)
+	c := CreateEvent(wide, map[string]any{"title": "ca-c", "count": float64(600)})
+	if err := env.ApplyEvents(ctx, c); err != nil {
+		t.Fatalf("apply create c: %v", err)
+	}
+	waitClockPast(t, c)
 	upd := UpdateEvent(wide, a.RowID, map[string]any{"count": float64(100)})
 	if err := env.ApplyEvents(ctx, upd); err != nil {
 		t.Fatalf("apply update: %v", err)

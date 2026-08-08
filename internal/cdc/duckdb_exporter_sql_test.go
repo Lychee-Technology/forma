@@ -1,6 +1,7 @@
 package cdc
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -208,4 +209,30 @@ func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
 		t.Fatalf("eav query not using custom table name: %s", eQuery)
 	}
 	_ = sql
+}
+
+// TestExportToTmpWrapsPlanErrors pins the caller-side context on both export
+// entry points: a plan failure must name the operation the caller was
+// performing, not arrive as a bare pass-through (#276, coding-standard.md).
+// Empty rowIDs is the cheapest plan failure — it returns before any DB or S3
+// use, so a zero-value DuckExporter is enough.
+func TestExportToTmpWrapsPlanErrors(t *testing.T) {
+	exporter := &DuckExporter{}
+	cfg := CDCConfig{}
+
+	t.Run("snapshot export", func(t *testing.T) {
+		err := exporter.ExportSnapshotToTmp(context.Background(), cfg,
+			"postgres://user@host/db", "s3://bucket/7/_tmp/f.parquet", 7, 0, nil, testAttrCache())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "export snapshot to tmp for schema 7")
+		require.Contains(t, err.Error(), "no row ids provided")
+	})
+
+	t.Run("base export", func(t *testing.T) {
+		err := exporter.ExportBaseFileToTmp(context.Background(), cfg,
+			"postgres://user@host/db", "s3://bucket/base/7/_tmp/f.parquet", 7, nil, testAttrCache())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "export base file to tmp for schema 7")
+		require.Contains(t, err.Error(), "no row ids provided")
+	})
 }

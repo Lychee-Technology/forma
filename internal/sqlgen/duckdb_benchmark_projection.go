@@ -304,7 +304,8 @@ func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs .
 }
 
 // benchmarkScalarJSONObject renders the single json_object for one scalar
-// benchmark EAV attribute (array_indices '' — scalars carry no position).
+// benchmark EAV attribute (array_indices is the empty string — scalars carry
+// no position).
 func benchmarkScalarJSONObject(targetSchemaID int16, a eavJSONAttr) string {
 	valColumn := "value_text"
 	nullColumn := "value_numeric"

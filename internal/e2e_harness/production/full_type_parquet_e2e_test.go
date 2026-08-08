@@ -342,7 +342,7 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 
 // systemCols is one parquet row's scanned system columns.
 type systemCols struct {
-	schema                                                     sql.NullInt16
+	schema                                                      sql.NullInt16
 	changedAt, deletedAt, createdAt, updatedAt, ltbaseDeletedAt sql.NullInt64
 }
 

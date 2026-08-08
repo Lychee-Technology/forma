@@ -173,7 +173,7 @@ func buildBoundaryEvents(wide SchemaRef) (nullRow, zeroRow, maxRow, minRow *Even
 		"ref": maxUUID, "token": maxUUID,
 		"rank": float64(32767), "count": float64(2147483647),
 		"amount": maxBoundBigint,
-		"score": math.MaxFloat64, "level": float64(32767),
+		"score":  math.MaxFloat64, "level": float64(32767),
 		"qty": float64(2147483647), "total": maxEAVInt,
 		"ratio": float64(1048576.25), "active": true,
 		"born": "9999-12-31", "joined": "9999-12-31",
@@ -183,7 +183,7 @@ func buildBoundaryEvents(wide SchemaRef) (nullRow, zeroRow, maxRow, minRow *Even
 		"title": "b-min", "note": "b-min",
 		"rank": float64(-32768), "count": float64(-2147483648),
 		"amount": -maxBoundBigint,
-		"score": -math.MaxFloat64, "level": float64(-32768),
+		"score":  -math.MaxFloat64, "level": float64(-32768),
 		"qty": float64(-2147483648), "total": -maxEAVInt,
 		"ratio": float64(-1048576.25), "active": false,
 		// pre-epoch: negative epoch-ms must survive every tier

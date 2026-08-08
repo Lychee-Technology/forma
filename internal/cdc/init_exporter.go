@@ -14,7 +14,7 @@ import (
 func (e *DuckExporter) ExportBaseFileToTmp(ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
 	sql, mQuery, eQuery, err := buildBaseExportSQL(pgConnStr, s3TmpPath, cfg, schemaID, rowIDs, attrCache)
 	if err != nil {
-		return err
+		return fmt.Errorf("export base file to tmp for schema %d: %w", schemaID, err)
 	}
 
 	return e.executeExportSQL(ctx, cfg, "duckdb base export sql", "duckdb base copy exec", sql, "", mQuery, eQuery)

@@ -73,8 +73,12 @@ func TestRedactConnStr_HostilePasswordEscapedQuoted(t *testing.T) {
 	require.Contains(t, redacted, "sslmode=''")
 }
 
-// TestRedactConnStr_EmptyPasswordRawQuoted pins that an empty password (raw
-// password='') does not derail redaction of surrounding keys.
+// TestRedactConnStr_EmptyPasswordRawQuoted pins that an empty password does
+// not derail redaction of surrounding keys. The raw-quoted form is (kept in a
+// code block because gofmt rewrites doubled single quotes into a typographic
+// quote when they sit in comment prose, #276):
+//
+//	password=''
 func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
 	p := redactTestParams()
 	p.Password = ""
@@ -84,8 +88,10 @@ func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
 	require.Contains(t, redacted, "sslmode=")
 }
 
-// TestRedactConnStr_EmptyPasswordEscapedQuoted pins the doubled-quote empty form
-// (password='''') — the branch-1 fallback must not swallow the trailing keys.
+// TestRedactConnStr_EmptyPasswordEscapedQuoted pins the doubled-quote empty
+// form — the branch-1 fallback must not swallow the trailing keys:
+//
+//	password=''''
 func TestRedactConnStr_EmptyPasswordEscapedQuoted(t *testing.T) {
 	p := redactTestParams()
 	p.Password = ""
@@ -98,8 +104,10 @@ func TestRedactConnStr_EmptyPasswordEscapedQuoted(t *testing.T) {
 // TestRedactConnStr_EscapedQuotedDSN pins the #290 regression: the flusher/init
 // feed BuildPGDSN's quoted DSN through sqlutil.EscapeLiteral (doubling single quotes)
 // into a DuckDB ATTACH literal, then log it via redactConnStr. The doubled-quote
-// form (password=''secret'') must still be fully redacted — the old regex
-// matched the empty string between the doubled quotes and leaked the password.
+// form must still be fully redacted — the old regex matched the empty string
+// between the doubled quotes and leaked the password:
+//
+//	password=''secret''
 func TestRedactConnStr_EscapedQuotedDSN(t *testing.T) {
 	sqlLiteral := sqlutil.EscapeLiteral(BuildPGDSN(redactTestParams()))
 	require.Contains(t, sqlLiteral, "password=''"+redactSecret+"''",
