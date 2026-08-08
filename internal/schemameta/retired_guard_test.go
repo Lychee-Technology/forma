@@ -187,3 +187,64 @@ func TestLoadMetadata_StripsRetiredFromFileCache(t *testing.T) {
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestMetadataCacheRetiredAttributeIDs_LedgerVisibleToTooling pins #341: the
+// retired ledger stays reachable for validation tooling while remaining absent
+// from every consumer-facing cache. The accessor is the single sanctioned
+// exception to activeAttributeCache's "no consumer may see them".
+func TestMetadataCacheRetiredAttributeIDs_LedgerVisibleToTooling(t *testing.T) {
+	mc := NewMetadataCache()
+	require.NoError(t, mc.RegisterSchema("user", 100, forma.SchemaAttributeCache{
+		"name":    {AttributeName: "name", AttributeID: 1, ValueType: forma.ValueTypeText},
+		"old_col": {AttributeName: "old_col", AttributeID: 3, ValueType: forma.ValueTypeText, Retired: true},
+	}), "RegisterSchema")
+
+	assert.Equal(t, map[int16]string{3: "old_col"}, mc.RetiredAttributeIDs(100),
+		"retired ledger must expose attribute id 3")
+
+	cache, ok := mc.GetSchemaCacheByID(100)
+	require.True(t, ok, "GetSchemaCacheByID")
+	assert.NotContains(t, cache, "old_col",
+		"the ledger accessor must not re-expose retired entries to consumers")
+
+	// Copy-on-read: a tooling-side mutation must not corrupt the registry ledger.
+	tampered := mc.RetiredAttributeIDs(100)
+	tampered[3] = "tampered"
+	assert.Equal(t, "old_col", mc.RetiredAttributeIDs(100)[3], "accessor must return a copy")
+
+	assert.Nil(t, mc.RetiredAttributeIDs(999), "unknown schema id has no ledger")
+	assert.NotContains(t, mc.RetiredAttributeIDs(100), int16(1), "an active attribute id is not in the ledger")
+}
+
+// TestLoadMetadata_RetiredLedgerPopulatedFromFiles covers the path
+// validate-schema-consistency actually uses: attribute metadata read from
+// <schema>_attributes.json must record the ledger even though the active cache
+// strips it (#341). Its sibling TestLoadMetadata_StripsRetiredFromFileCache
+// pins the strip; this pins that the strip is no longer lossy for tooling.
+func TestLoadMetadata_RetiredLedgerPopulatedFromFiles(t *testing.T) {
+	ctx := context.Background()
+
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	dir := t.TempDir()
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("user", int16(7))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("test_registry"))).WillReturnRows(rows)
+
+	writeJSONFile(t, filepath.Join(dir, "user_attributes.json"), map[string]any{
+		"name":    map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"old_col": map[string]any{"attributeID": float64(3), "valueType": "text", "retired": true},
+	})
+
+	cache, err := NewMetadataLoader(mock, "test_registry", dir).LoadMetadata(ctx)
+	require.NoError(t, err, "LoadMetadata")
+
+	assert.Equal(t, map[int16]string{3: "old_col"}, cache.RetiredAttributeIDs(7),
+		"file-loaded metadata must record the retired ledger")
+	active, ok := cache.GetSchemaCache("user")
+	require.True(t, ok, "GetSchemaCache")
+	assert.NotContains(t, active, "old_col", "the active cache must still strip retired entries")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}

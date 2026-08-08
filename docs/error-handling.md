@@ -326,7 +326,10 @@ a retired attributeID, a retired main-column binding, or a retired attribute's
 folded parquet column. `MetadataCache.RegisterSchema` applies the same
 validation but has no production callers; it is defence in depth for
 programmatic registration. Retired entries are stripped only after that check
-and never reach a consumer, so a retired attribute reads, writes, flushes, and
+and never reach a consumer — with one sanctioned exception,
+`schemameta.MetadataCache.RetiredAttributeIDs`, which hands validation tooling
+attributeID → attribute name only (no `forma.AttributeMetadata`, and not the
+live attribute map), so a retired attribute still reads, writes, flushes, and
 projects exactly as if its entry were absent — the #294 skip-and-preserve
 behavior above is unchanged. Re-adding the same name with the same `valueType`
 and `items_type` clears the marker and restores the preserved values **for rows

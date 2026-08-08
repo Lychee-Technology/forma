@@ -203,3 +203,176 @@ func writeSchemaConsistencyArtifacts(t *testing.T, dir, schemaName, schemaJSON, 
 		t.Fatalf("write attrs: %v", err)
 	}
 }
+
+// newSchemaConsistencyMock wires the four queries validator.run issues, in
+// order: the schema registry, the attr_id census, then the two storage-column
+// censuses. Only the attr_id census varies across the #341 classification
+// tests, so the rest is fixed here.
+func newSchemaConsistencyMock(t *testing.T, attrCensus *pgxmock.Rows) pgxmock.PgxPoolIface {
+	t.Helper()
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("create mock pool: %v", err)
+	}
+	t.Cleanup(mock.Close)
+
+	mock.ExpectQuery(`SELECT schema_name, schema_id FROM "schema_registry_dev"`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("contact", int16(100)))
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e`).
+		WillReturnRows(attrCensus)
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_text IS NOT NULL`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_numeric IS NOT NULL`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	return mock
+}
+
+// retiredLedgerSchemaDir writes a contact schema whose ledger has one active
+// attribute (id 1) and one retired entry, legacy (id 9) — the #342 shape.
+func retiredLedgerSchemaDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeSchemaConsistencyArtifacts(t, dir, "contact",
+		`{"type":"object","properties":{"id":{"type":"string"}}}`,
+		`{"id":{"attributeID":1,"valueType":"text"},"legacy":{"attributeID":9,"valueType":"text","retired":true}}`)
+	return dir
+}
+
+func attrCensusRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"})
+}
+
+// TestValidateSchemaConsistencyClassifiesRetiredAttrRows pins the #341
+// contract: EAV rows whose attr_id belongs to a retired ledger entry are the
+// #294 tolerate-and-preserve steady state, so they report as informational and
+// leave the pre-flight green.
+func TestValidateSchemaConsistencyClassifiesRetiredAttrRows(t *testing.T) {
+	mock := newSchemaConsistencyMock(t, attrCensusRows().AddRow(int16(100), int16(9), int64(12)))
+
+	var out strings.Builder
+	validator := schemaConsistencyValidator{
+		pool:        mock,
+		schemaDir:   retiredLedgerSchemaDir(t),
+		schemaTable: "schema_registry_dev",
+		eavTable:    "eav_data_dev",
+		out:         &out,
+	}
+
+	if err := validator.run(context.Background()); err != nil {
+		t.Fatalf("preserved rows must not fail the run: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "unknown attribute IDs") {
+		t.Fatalf("preserved rows must not be reported as unknown attribute IDs, got %q", got)
+	}
+	for _, want := range []string{
+		"informational (not a failure):",
+		"preserved EAV rows for retired attributes in eav_data_dev",
+		"schema=contact", "attr_id=9", "attribute=legacy", "rows=12",
+		"schema consistency checks passed for 1 schema(s), 1 informational finding(s)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q, got %q", want, got)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet db expectations: %v", err)
+	}
+}
+
+// TestValidateSchemaConsistencyFailsUnledgeredAttrID pins that classification
+// is per attributeID, not a per-schema amnesty: a schema that owns a retired
+// entry still fails for a different, unledgered id.
+func TestValidateSchemaConsistencyFailsUnledgeredAttrID(t *testing.T) {
+	mock := newSchemaConsistencyMock(t, attrCensusRows().AddRow(int16(100), int16(99), int64(2)))
+
+	var out strings.Builder
+	validator := schemaConsistencyValidator{
+		pool:        mock,
+		schemaDir:   retiredLedgerSchemaDir(t),
+		schemaTable: "schema_registry_dev",
+		eavTable:    "eav_data_dev",
+		out:         &out,
+	}
+
+	err := validator.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected one failure for the unledgered attr_id, got %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=2") {
+		t.Fatalf("expected the orphan finding, got %q", got)
+	}
+	if strings.Contains(got, "informational") {
+		t.Fatalf("an unledgered attr_id must not be softened to informational, got %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet db expectations: %v", err)
+	}
+}
+
+// TestValidateSchemaConsistencyFailsUnknownSchemaID pins that the ledger lookup
+// is scoped per schema: attr_id 9 is retired on schema 100, and that must not
+// excuse rows carrying schema_id 200, which the registry does not know at all.
+func TestValidateSchemaConsistencyFailsUnknownSchemaID(t *testing.T) {
+	mock := newSchemaConsistencyMock(t, attrCensusRows().AddRow(int16(200), int16(9), int64(4)))
+
+	var out strings.Builder
+	validator := schemaConsistencyValidator{
+		pool:        mock,
+		schemaDir:   retiredLedgerSchemaDir(t),
+		schemaTable: "schema_registry_dev",
+		eavTable:    "eav_data_dev",
+		out:         &out,
+	}
+
+	err := validator.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected a failure for the unknown schema_id, got %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "schema_id=200 attr_id=9 rows=4") ||
+		strings.Contains(got, "informational") {
+		t.Fatalf("unknown schema_id must stay a failure, got %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet db expectations: %v", err)
+	}
+}
+
+// TestValidateSchemaConsistencyReportsBothBlocks pins that a run carrying both
+// kinds prints both, counts only the failure, and still exits non-zero.
+func TestValidateSchemaConsistencyReportsBothBlocks(t *testing.T) {
+	mock := newSchemaConsistencyMock(t, attrCensusRows().
+		AddRow(int16(100), int16(9), int64(12)).
+		AddRow(int16(100), int16(99), int64(2)))
+
+	var out strings.Builder
+	validator := schemaConsistencyValidator{
+		pool:        mock,
+		schemaDir:   retiredLedgerSchemaDir(t),
+		schemaTable: "schema_registry_dev",
+		eavTable:    "eav_data_dev",
+		out:         &out,
+	}
+
+	err := validator.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("the error count must exclude informational findings, got %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "schema consistency checks passed") {
+		t.Fatalf("a failing run must not print the success line, got %q", got)
+	}
+	for _, want := range []string{
+		"unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=2",
+		"informational (not a failure):",
+		"attribute=legacy",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q, got %q", want, got)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet db expectations: %v", err)
+	}
+}
