@@ -54,9 +54,22 @@ test-e2e-production:
 # //go:build e2e harness files, where 3 of this issue's 7 drifted files lived.
 # gofmt -l is purely syntactic and therefore tag-agnostic, so it is the only
 # check that covers the whole tree. CI runs this exact target.
+#
+# The file list comes from git, not a directory walk: tracked files plus
+# untracked ones git would not ignore. Walking the checkout would also inspect
+# gitignored directories (docs/superpowers/, build/, .gocache/), so a local run
+# could fail on scratch files that do not exist in CI's fresh checkout —
+# breaking the local/CI parity this gate exists to protect. Untracked-but-not-
+# ignored files stay in scope so a new file is caught before it is committed;
+# CI has none, so the two runs see the same set.
 fmt-check:
 	@echo "Checking gofmt..."
-	@unformatted=$$(gofmt -l .); \
+	@files=$$(git ls-files --cached --others --exclude-standard '*.go'); \
+	if [ -z "$$files" ]; then \
+		echo "fmt-check found no Go files — not a git checkout?"; \
+		exit 1; \
+	fi; \
+	unformatted=$$(gofmt -l $$files); \
 	if [ -n "$$unformatted" ]; then \
 		echo "Not gofmt-clean:"; \
 		echo "$$unformatted"; \

@@ -10,6 +10,7 @@ Forma is a general-purpose data management system on PostgreSQL. Entities are de
 
 ```bash
 make test          # unit tests (wraps: go test . ./cdc ./cmd/... ./factory ./internal/...)
+make fmt-check     # gofmt gate over git-listed Go files — CI runs it ahead of the linter
 make lint          # golangci-lint, pinned to v1.64.8 — same as CI; do not upgrade the pin
 make coverage      # unit tests + coverage report in build/
 make build-all     # build server/tools/sample into build/ with platform symlinks
