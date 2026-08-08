@@ -377,6 +377,40 @@ func TestRegisterSchemaCopiesInput(t *testing.T) {
 	require.Equal(t, forma.MainColumn("text_01"), snap["name"].ColumnBinding.ColumnName)
 }
 
+// TestLoadMetadataCacheFieldsAreIndependent pins that the file path stores
+// attributeMetadata and schemaCaches on two independent maps, deep copy
+// included: the two fields are handed to different consumers, so a mutation
+// reaching one must never be observable through the other.
+func TestLoadMetadataCacheFieldsAreIndependent(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	dir := t.TempDir()
+	rows := pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("user", int16(1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("test_registry"))).WillReturnRows(rows)
+	writeJSONFile(t, filepath.Join(dir, "user_attributes.json"), map[string]any{
+		"name": map[string]any{
+			"attributeID":    float64(1),
+			"valueType":      "text",
+			"column_binding": map[string]any{"col_name": "text_01"},
+		},
+	})
+
+	cache, err := NewMetadataLoader(mock, "test_registry", dir).LoadMetadata(context.Background())
+	require.NoError(t, err)
+
+	cache.attributeMetadata[1]["injected"] = forma.AttributeMetadata{AttributeID: 99}
+	cache.attributeMetadata[1]["name"].ColumnBinding.ColumnName = forma.MainColumn("text_09")
+
+	schemaCache, ok := cache.GetSchemaCacheByID(1)
+	require.True(t, ok)
+	assert.NotContains(t, schemaCache, "injected", "the two fields must not share one map")
+	assert.Equal(t, forma.MainColumn("text_01"), schemaCache["name"].ColumnBinding.ColumnName,
+		"the column binding must be deep-copied, not shared by pointer")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSchemaFingerprintTracksContent(t *testing.T) {
 	mcA := NewMetadataCache()
 	require.NoError(t, mcA.RegisterSchema("s", 1, forma.SchemaAttributeCache{

@@ -8,7 +8,9 @@ import (
 )
 
 // parseAttributeMetadata converts raw JSON metadata into forma.AttributeMetadata structs reused
-// by loaders, registries, and repositories. The source argument is used for readable errors.
+// by loaders, registries, and repositories. The source argument is used for readable errors:
+// every error ends with "in <source>", so callers return it unwrapped rather than repeating
+// the attribute name or the file it came from.
 func parseAttributeMetadata(attrName string, attrData map[string]any, source string) (forma.AttributeMetadata, error) {
 	meta := forma.AttributeMetadata{AttributeName: attrName}
 

@@ -318,9 +318,10 @@ type).
 Since #342 that rule is enforced. `generate-attributes` keeps the removed
 attribute's entry in `<schema>_attributes.json` marked `"retired": true` and
 forced optional — the file is the attributeID ledger, not just the active
-attribute list. The two production registration paths — the file registry and
-the DB-backed loader — validate the **full** cache with retired entries
-included, and fail when an active attribute rebinds
+attribute list. Every production registration path — the DB-backed
+`MetadataLoader` file path, and the file registry in both its registry-table
+and directory modes (`cmd/sample` uses the latter) — validates the **full**
+cache with retired entries included, and fails when an active attribute rebinds
 a retired attributeID, a retired main-column binding, or a retired attribute's
 folded parquet column. `MetadataCache.RegisterSchema` applies the same
 validation but has no production callers; it is defence in depth for

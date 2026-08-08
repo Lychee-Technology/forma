@@ -59,11 +59,11 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	if existingID, exists := mc.schemaNameToID[schemaName]; exists && existingID != schemaID {
 		return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
 	}
-	// Validate the FULL cache before stripping: without this the strip below
-	// would swallow a retired/active attributeID or binding collision, silently
-	// dropping the retired entry and rebinding its id to the active one (#342).
+	// Validate the FULL cache before stripping — see activeAttributeCache (#342).
+	// The wrap adds the numeric schema id the validation error cannot know: it
+	// sees the name only, while the id is the physical EAV/registry key.
 	if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
-		return fmt.Errorf("register schema %s: %w", schemaName, err)
+		return fmt.Errorf("register schema id %d: %w", schemaID, err)
 	}
 	// Store a private copy: the caller keeps ownership of its map, so later
 	// caller-side mutations cannot silently invalidate cached plans (#142).
@@ -315,14 +315,17 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			}
 			schemaCache[attrName] = meta
 		}
-		// Validate on the FULL cache (retired entries included) and only then
-		// strip them: the retired ledger guards id/binding reuse (#342).
+		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCache(schemaName, schemaCache); err != nil {
-			return err
+			return fmt.Errorf("attributes file %s: %w", attributesFile, err)
 		}
 		active := activeAttributeCache(schemaCache)
 
-		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(active)
+		// The two fields never share one map: each is handed out separately
+		// (attributeMetadata directly, schemaCaches via GetSchemaCache), so a
+		// mutation reaching one map must not be observable through the other.
+		// copySchemaAttributeCache also deep-copies *MainColumnBinding.
+		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
 		cache.schemaCaches[schemaID] = active
 
 		zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)

@@ -22,6 +22,11 @@ func parseAttributeID(raw any, attrName, source string) (int16, error) {
 	return int16(id), nil
 }
 
+// validateSchemaAttributeCache rejects attributeID, main-column, and folded
+// parquet-column collisions across the FULL cache, retired entries included.
+// Every error it returns begins with "schema <name>", so callers wrap it with
+// what it cannot know — the location the metadata came from (attributes file or
+// schema directory), or the numeric schema id — never with the name again.
 func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttributeCache) error {
 	seenAttrIDs := make(map[int16]string, len(cache))
 	seenBindings := make(map[forma.MainColumn]string)
