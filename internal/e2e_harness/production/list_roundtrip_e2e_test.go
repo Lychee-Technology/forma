@@ -129,9 +129,10 @@ func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 }
 
 // TestEmptyListRoundTrip pins the #204 empty-list contract across tiers: an
-// explicit `"tags": []` persists a single marker EAV row (array_indices '',
-// both value columns NULL), exports as an empty (non-NULL) parquet LIST, and
-// survives the federated read as the marker — distinguishable at every hop
+// explicit `"tags": []` persists a single marker EAV row (array_indices the
+// empty string, both value columns NULL), exports as an empty (non-NULL)
+// parquet LIST, and survives the federated read as the marker —
+// distinguishable at every hop
 // from an absent attribute. Under merge-update semantics `"tags": []` is the
 // only way to clear a list (omit preserves, null is rejected), so the clear
 // gesture must not be lossy.
@@ -224,8 +225,8 @@ func TestEmptyListRoundTrip(t *testing.T) {
 	}
 }
 
-// assertEmptyListMarker requires exactly one marker row: array_indices ''
-// with both value columns NULL.
+// assertEmptyListMarker requires exactly one marker row: array_indices the
+// empty string with both value columns NULL.
 func assertEmptyListMarker(t *testing.T, label string, rows []eavRow) {
 	t.Helper()
 	if len(rows) != 1 {

@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-production lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production fmt-check lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -48,6 +48,21 @@ test-unit:
 test-e2e-production:
 	@echo "Running production E2E harness tests..."
 	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
+
+# Formatter gate (#276). golangci-lint's default linter set carries no
+# formatter, and its gofmt linter is build-tag scoped: it never loads the
+# //go:build e2e harness files, where 3 of this issue's 7 drifted files lived.
+# gofmt -l is purely syntactic and therefore tag-agnostic, so it is the only
+# check that covers the whole tree. CI runs this exact target.
+fmt-check:
+	@echo "Checking gofmt..."
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		echo "Fix with: gofmt -w ."; \
+		exit 1; \
+	fi
 
 # Run linter (same as CI lint job)
 lint:

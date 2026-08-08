@@ -23,7 +23,7 @@ func TestBenchmarkEAVJSONArrayScalarShapeUnchanged(t *testing.T) {
 // TestBenchmarkEAVJSONArrayListAttrPositionalIndices: if a benchmark shape
 // ever declares a list attribute, it must reconstruct positional
 // array_indices exactly like the production projection (#204) instead of the
-// hardcoded ''.
+// hardcoded empty string.
 func TestBenchmarkEAVJSONArrayListAttrPositionalIndices(t *testing.T) {
 	got := benchmarkEAVJSONArray(102, 102, "",
 		eavJSONAttr{id: 8, name: "exchange", type_: "text"},

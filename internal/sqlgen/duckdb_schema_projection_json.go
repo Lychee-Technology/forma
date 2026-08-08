@@ -64,7 +64,8 @@ func (sp *SchemaProjection) buildAttributesJSONExpr(schemaID int16, sortedAttrs 
 }
 
 // scalarEAVJSONObject renders the single CASE ... END object for one scalar
-// EAV attribute (array_indices is '' — scalars have no element position).
+// EAV attribute (array_indices is the empty string — scalars have no element
+// position).
 func (sp *SchemaProjection) scalarEAVJSONObject(schemaID int16, attr string) string {
 	unified := ParquetAttrColumn(attr)
 	valueText, valueNumeric := "NULL", "NULL"
@@ -87,8 +88,9 @@ func (sp *SchemaProjection) scalarEAVJSONObject(schemaID int16, attr string) str
 // element. The 1-based lambda index i becomes the 0-based array_indices, so
 // the parquet LIST position round-trips the original element index. An
 // explicit empty list ([] column, non-NULL) emits the marker object —
-// array_indices '' with both value columns NULL — which the transform layer
-// materializes back into an empty array; NULL (absent) emits nothing (#204).
+// array_indices the empty string with both value columns NULL — which the
+// transform layer materializes back into an empty array; NULL (absent) emits
+// nothing (#204).
 func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string {
 	unified := ParquetAttrColumn(attr)
 	itemsVT := sp.itemsTypes[attr]
