@@ -80,7 +80,7 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, 
 func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
 	sql, clQuery, mQuery, eQuery, err := buildExportSQL(pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return err
+		return fmt.Errorf("export snapshot to tmp for schema %d: %w", schemaID, err)
 	}
 
 	return e.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", sql, clQuery, mQuery, eQuery)
