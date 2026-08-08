@@ -45,6 +45,12 @@ type MetadataCache struct {
 	// registration; plan caches key on it so metadata content changes orphan
 	// stale entries (#142).
 	fingerprints map[int16]string
+
+	// retiredAttrIDs is the ledger view the strip above discards: schema id →
+	// attributeID → attribute name for entries marked retired (#342). Nothing on
+	// the read/write path consults it; RetiredAttributeIDs is its only reader,
+	// and exists for validation tooling alone (#341).
+	retiredAttrIDs map[int16]map[int16]string
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -55,6 +61,7 @@ func NewMetadataCache() *MetadataCache {
 		attributeMetadata: make(map[int16]map[string]forma.AttributeMetadata),
 		schemaCaches:      make(map[int16]forma.SchemaAttributeCache),
 		fingerprints:      make(map[int16]string),
+		retiredAttrIDs:    make(map[int16]map[int16]string),
 	}
 }
 
@@ -87,6 +94,7 @@ func (mc *MetadataCache) RegisterSchema(schemaName string, schemaID int16, cache
 	// on MetadataCache's field declarations.
 	mc.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(snapshot))
 	mc.fingerprints[schemaID] = fingerprintSchema(schemaName, snapshot)
+	mc.retiredAttrIDs[schemaID] = retiredAttributeIDs(cache)
 	return nil
 }
 
@@ -187,6 +195,26 @@ func (mc *MetadataCache) GetSchemaCacheByID(schemaID int16) (forma.SchemaAttribu
 	defer mc.mu.RUnlock()
 	cache, ok := mc.schemaCaches[schemaID]
 	return cache, ok
+}
+
+// RetiredAttributeIDs returns the schema's retired ledger entries as
+// attributeID → attribute name (#341). Validation tooling only: it hands back
+// neither forma.AttributeMetadata nor the live map, so it cannot become a read,
+// write, flush, or projection path for a retired attribute — the invariant
+// activeAttributeCache states. Returns nil for an unknown schema or one with no
+// retired entries.
+func (mc *MetadataCache) RetiredAttributeIDs(schemaID int16) map[int16]string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	retired := mc.retiredAttrIDs[schemaID]
+	if len(retired) == 0 {
+		return nil
+	}
+	out := make(map[int16]string, len(retired))
+	for id, name := range retired {
+		out[id] = name
+	}
+	return out
 }
 
 // ListSchemas returns all schema names (thread-safe)
@@ -338,6 +366,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		// MetadataCache's field declarations.
 		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
 		cache.schemaCaches[schemaID] = active
+		cache.retiredAttrIDs[schemaID] = retiredAttributeIDs(schemaCache)
 
 		zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)
 	}

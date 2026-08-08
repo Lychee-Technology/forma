@@ -73,6 +73,27 @@ func activeAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttribut
 	return active
 }
 
+// retiredAttributeIDs is activeAttributeCache's counterpart: it keeps the books
+// the strip discards. The result is the attributeID ledger of removed
+// attributes (#342) — id → name — which validation tooling needs to tell an EAV
+// row #294 preserved from a genuinely orphaned one (#341). Like its
+// counterpart, callers must invoke it strictly after
+// validateSchemaAttributeCache, which is what makes the id key unambiguous:
+// that guard has already rejected any duplicate attributeID in the file.
+func retiredAttributeIDs(cache forma.SchemaAttributeCache) map[int16]string {
+	var retired map[int16]string
+	for name, meta := range cache {
+		if !meta.Retired {
+			continue
+		}
+		if retired == nil {
+			retired = make(map[int16]string)
+		}
+		retired[meta.AttributeID] = name
+	}
+	return retired
+}
+
 // attrIDCollisionError names the retired side of an attributeID collision.
 // AttributeIDs are physical EAV keys: an id freed by attribute removal is
 // still bound to preserved rows, so rebinding it to a different attribute
