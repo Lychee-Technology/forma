@@ -20,7 +20,12 @@ A later release (`#314`) adds one more startup check and one more request-time c
 - any schema registered in `schema_registry` whose `<schema>.json` cannot be loaded and resolved fails **server startup**
 - create payloads that violate their entity's JSON Schema are rejected with `400`
 
-Both are covered below.
+A later release (`#342`) adds one more startup check:
+
+- any active attribute that rebinds a **retired** attributeID, main-column
+  binding, or folded parquet column fails **server startup**
+
+All three are covered below.
 
 ## Recommended Migration Flow
 
@@ -164,7 +169,152 @@ That means the table contains rows that current metadata cannot decode. There ar
 
 If you cannot establish which case applies, treat the rows as case (ii) and leave them alone; keeping undecodable rows costs storage, deleting recoverable ones costs the data.
 
-Whichever case applies, an `attributeID` freed by removing an attribute must never be reused for a different attribute: the preserved rows would silently bind to the new attribute's name, or make the row unreadable with a storage type mismatch.
+Whichever case applies, an `attributeID` freed by removing an attribute must never be reused for a different attribute: the preserved rows would silently bind to the new attribute's name, or make the row unreadable with a storage type mismatch. Since `#342` that is enforced at startup rather than left to convention — see [Removing an attribute](#removing-an-attribute-342) below.
+
+### Removing an attribute (`#342`)
+
+**The blessed workflow is: delete the property from `<schema>.json`, then run
+`generate-attributes`. Never hand-delete an entry from
+`<schema>_attributes.json`.** The attributes file is the schema's attributeID
+ledger, not just its list of active attributes. The generator keeps the dropped
+attribute's entry, marks it `"retired": true`, and forces its required policy to
+optional — so the `attributeID`, any `column_binding`, and the attribute's
+folded parquet column all stay reserved against the EAV rows `#294` preserved.
+
+Retired entries are ledger-only. Every metadata registration path validates the
+**full** file — retired entries included — and strips them only afterwards, so a
+retired attribute reads, writes, flushes, and projects exactly as if its entry
+were absent.
+
+The `retired` marker is **generator-owned**: it records that
+`generate-attributes` no longer produces the entry. Hand-setting it on an
+attribute the schema still declares is not a supported way to hide a live
+attribute — the next `generate-attributes` run finds the property, sees the
+type is unchanged, and silently clears the marker again. To retire an
+attribute, remove it from `<schema>.json` and regenerate.
+
+**Startup guard.** Handing a retired `attributeID` to a different attribute
+aborts startup:
+
+```text
+schema contact reuses attribute id 7: retired attribute phone (valueType text) still owns preserved EAV rows and cannot be rebound to mobile; re-add the original name and valueType to restore it, or assign a new id
+```
+
+The main-column analogue fires when an active attribute claims a retired
+attribute's hot column:
+
+```text
+schema contact reuses main column text_01: retired attribute phone (valueType text) still owns its stored values and cannot share the column with mobile; keep the binding retired or assign a new column
+```
+
+A folded-parquet-column collision with a retired attribute is rejected the same
+way: already-flushed parquet files still carry that column. In every case the
+fix is to give the **new** attribute an unused id/column — never to delete the
+retired entry.
+
+**Re-adding.** Putting the property back into `<schema>.json` under the same
+name, the same `valueType` **and** the same `items_type`, then re-running
+`generate-attributes`, clears the `retired` marker; the preserved EAV rows
+become visible again — **but only for rows that have not yet been flushed to
+the lakehouse.** The CDC export builds its `attr_id IN (...)` filter from the
+*active* attribute cache, which no longer contains the retired entry
+(`internal/cdc/export_sql_builder.go`), so a retired attribute's values are
+never written to delta or base parquet. Once a row has flushed
+(`change_log.flushed_at != 0`) it is served from the warm/cold tier, where that
+column simply does not exist, and the preserved Postgres EAV row is unreachable
+by federated reads. **On a CDC-enabled (lakehouse) deployment, treat retirement
+as effectively irreversible for already-flushed rows**; un-retiring restores
+values only for rows still resident in the hot tier.
+
+The asymmetry cuts the other way too. Because the Postgres EAV row survives, an
+unrelated later update makes that row hot again, and the *next* flush exports
+the re-added attribute — resurrecting per row a value that read `NULL` while
+the attribute was retired. Plan a retirement on the assumption that the value
+disappears from reads immediately and may reappear row-by-row on subsequent
+writes. This is inherited `#294` tolerate-and-preserve behavior, not something
+`#342` introduced; `#342` only makes the retirement explicit in the ledger.
+
+Re-adding under a different `valueType` or `items_type` is
+a generator error naming the attribute and both the old and the new
+type/items — the stored rows carry the old physical type and would be
+unreadable. Renaming an attribute is *not* a re-add: it needs a fresh
+`attributeID`, and the old entry stays retired. Note the boundary: this type
+check fires **only** on retired entries. Changing the `valueType` of a *live*
+attribute is still written straight through by `generate-attributes`, which
+leaves that attribute's existing EAV rows in the wrong physical column — the
+condition the next section tells you to repair. Treat a live type change as a
+remove-then-add-under-a-new-name, not an edit.
+
+**Shipped schemas already carrying the marker.** Two entries are now
+`retired: true`, for different reasons — in both cases because
+`generate-attributes` no longer *produces* the entry, which is what the marker
+records:
+
+- `visit_full_attributes.json` `logs` (`attributeID` 29) — the `logs` property
+  was removed from `visit_full.json`. This is the ordinary removal case, and it
+  is the **breaking** one of the two.
+- `visit_attributes.json` `contactSnapshot` (`attributeID` 25) — the
+  `contactSnapshot` property is still declared in `visit.json`, but as a `$ref`
+  to `lead.json#/properties/contact`, which is an **object**. The generator now
+  resolves that `$ref` and traverses into it, emitting one entry per leaf
+  (`contactSnapshot.annualIncome`, `contactSnapshot.birthday`, …) and no bare
+  `contactSnapshot` entry. The `attributeID` 25 entry is a leftover from when
+  `$ref`s were not followed and the node was recorded as a single `text` value.
+
+In both cases the EAV rows under those ids flip from visible to skipped-on-read,
+and the rows themselves are preserved (`#294`). **The operational impact of the
+two is not symmetric**, so assess them separately:
+
+- **`logs` (29) is write-breaking, not merely read-affecting.**
+  `visit_full.json` declares no `logs` property *and* sets no
+  `additionalProperties`, so JSON Schema validation lets the extra key through:
+  before this change **both** payload shapes reached `attributeID` 29. `logs`
+  was declared an *array of strings* until it was removed, and the transformer
+  recurses into an array under the *bare* attribute name — one EAV row per
+  element, distinguished only by `array_indices` — while a scalar payload lands
+  on the same name with empty `array_indices`. Either shape resolved through the
+  attribute cache, so id 29 was written and read back. After this change the
+  attribute is stripped from the active cache, so a write carrying `logs` in any
+  shape is rejected with `400 attribute 'logs' is not defined for this schema`,
+  and any values already stored under id 29 disappear from reads. If any client
+  was writing `logs` to `visit_full`, this is a breaking API change for that
+  client, and — unlike an ordinary retirement — **`attributeID` 29 cannot be
+  restored under its original shape**:
+  - Re-adding the original array declaration makes `generate-attributes` emit
+    `valueType: list` / `items_type: text` (the shape `attendees` carries in the
+    same ledger). Entry 29 is recorded `valueType: text`, so the retired-re-add
+    type check refuses it and tells the operator to "restore the original type
+    or use a new attribute name" — a demand the original type cannot satisfy.
+  - Re-adding it as a scalar `text` property does pass that check and un-retires
+    29, but it does not repair the break: since `#314`, JSON Schema validation
+    rejects the array payload a legacy client sends, and the preserved rows
+    carry `array_indices`, so reads materialize an array under a property the
+    schema now declares a string.
+
+  So there are two honest paths, and neither restores id 29 to service:
+  - Accept the break: update clients to stop sending `logs`. Values under id 29
+    stay preserved on disk but unreadable.
+  - Declare a **new** property under a different name as an array of strings.
+    `generate-attributes` treats an unseen name as new, assigns it a fresh
+    `attributeID` above the current maximum with `valueType: list` /
+    `items_type: text`, and leaves entry 29 retired with its rows untouched. The
+    old values do not migrate themselves — copy them across if they matter.
+- **`contactSnapshot` (25) is practically inert.** Reaching the bare
+  `attributeID` 25 leaf requires the client to send `contactSnapshot` as a
+  *scalar*: an object payload recurses through the map branch of the
+  transformer's flattening and lands on `contactSnapshot.<leaf>` entries, never
+  on the bare name. Since `#314`, JSON Schema validation rejects a scalar there
+  anyway, because the `$ref` resolves to an object. So rows under id 25 can only
+  exist if some client once wrote a scalar, and no supported write path can
+  produce new ones. `contactSnapshot` also has no property to re-add — it would
+  un-retire only if that node ever resolved to a scalar again, which is not an
+  operator action; treat `attributeID` 25 as permanently reserved.
+
+**Residual gap.** An attribute whose ledger entry was hand-deleted *before*
+`#342` leaves no record at all, so the guard cannot see it and its
+`attributeID` looks free. For those schemas the never-reuse rule is still
+documentation-only: check the schema files' version history before assigning any
+`attributeID` that no current entry claims.
 
 ### Storage-column mismatches
 
@@ -251,12 +401,19 @@ LIMIT 50;
 - database backup taken
 - `scripts/validate_schema_consistency.sql` returns no duplicate schema IDs
 - `make validate-schema-consistency` returns success — except that on deployments
-  whose schemas have had attributes removed, unknown-attrID findings for exactly
-  those attributes are **expected** (`#294` tolerate-and-preserve) and are **not**
-  a deployment blocker. The tool does not yet classify preserved rows separately
+  whose schemas have had attributes **retired**, unknown-attrID findings for
+  exactly those attributes are **expected** (`#294` tolerate-and-preserve) and
+  are **not** a deployment blocker. With the shipped ledgers this now includes
+  `attr_id` 25 on the `visit` schema and `attr_id` 29 on `visit_full`, which the
+  validator will flag on **every** deployment that holds rows under those ids.
+  The tool does not yet classify preserved rows separately
   from genuinely orphaned ones, so confirm the reported `attr_id`s against the
-  removed attributes and proceed (follow-up tracked on the PR).
+  retired entries in `<schema>_attributes.json` — and, for ledgers generated
+  before `#342`, against the attributes removed in the schema files' version
+  history, since a hand-deleted entry left no retired marker to cross-check —
+  then proceed (follow-up tracked on the PR).
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
+- no active attribute reuses a `retired` attributeID, main-column binding, or folded parquet column (`#342` startup check)
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas
@@ -270,5 +427,13 @@ If deploy fails because of newly enforced checks:
 3. fix the reported metadata or EAV inconsistencies
 4. re-run the validator
 5. retry the upgrade
+
+**Rolling back past `#342`.** Binaries older than `#342` do not know the
+`retired` key: they parse the entry as an ordinary attribute and load it
+**active**. Rolling the server back against retired-marked attributes files
+therefore makes those attributes — and the values `#294` preserved under
+them — visible again, and drops the reuse guard entirely. If you must roll back
+that far, either accept the re-exposure or revert the attributes files to their
+pre-`#342` state alongside the binary.
 
 The validator is safe to run repeatedly and is intended to be part of your pre-upgrade checklist.

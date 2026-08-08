@@ -1,0 +1,161 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// #342: an attribute dropped from the schema keeps its ledger entry, but the
+// generator must brand it retired so the freed attributeID stays bound to the
+// EAV rows it already owns instead of being handed to a new attribute.
+func TestGenerateAttributes_RemovalMarksRetired(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":    { "attributeID": 1, "valueType": "text" },
+	  "old_col": { "attributeID": 3, "valueType": "text", "required_policy": "required_always" }
+	}`)
+
+	if err := generateAttributesJSON(schema, out, false); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	attrs := readGeneratedAttributes(t, out)
+	oldCol, exists := attrs["old_col"]
+	if !exists {
+		t.Fatalf("removed attribute must stay in the ledger")
+	}
+	if retired, _ := oldCol["retired"].(bool); !retired {
+		t.Fatalf("removed attribute must be marked retired, got %v", oldCol)
+	}
+	if id, _ := oldCol["attributeID"].(float64); id != 3 {
+		t.Fatalf("retired attributeID changed: %v", oldCol["attributeID"])
+	}
+	if _, ok := oldCol["required_policy"]; ok {
+		t.Fatalf("retired attribute must be forced optional, got %v", oldCol["required_policy"])
+	}
+}
+
+// #342: re-adding a retired name with the identical physical type restores the
+// preserved rows, so the retired marker must be cleared and the original
+// attributeID kept.
+func TestGenerateAttributes_ReAddSameTypeClearsRetired(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_col":{"type":"string"}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":    { "attributeID": 1, "valueType": "text" },
+	  "old_col": { "attributeID": 3, "valueType": "text", "retired": true }
+	}`)
+
+	if err := generateAttributesJSON(schema, out, false); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	attrs := readGeneratedAttributes(t, out)
+	oldCol := attrs["old_col"]
+	if _, exists := oldCol["retired"]; exists {
+		t.Fatalf("re-added attribute must lose the retired marker: %v", oldCol)
+	}
+	if id, _ := oldCol["attributeID"].(float64); id != 3 {
+		t.Fatalf("re-add must keep attributeID 3, got %v", oldCol["attributeID"])
+	}
+}
+
+// #342: re-adding a retired name under a different physical type would leave
+// the preserved rows unreadable, so the generator must refuse and say so.
+func TestGenerateAttributes_ReAddDifferentTypeRejected(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_col":{"type":"number"}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":    { "attributeID": 1, "valueType": "text" },
+	  "old_col": { "attributeID": 3, "valueType": "text", "retired": true }
+	}`)
+
+	err := generateAttributesJSON(schema, out, false)
+	if err == nil {
+		t.Fatalf("expected type-mismatch error on re-add")
+	}
+	for _, want := range []string{"old_col", "text", "numeric"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err.Error(), want)
+		}
+	}
+}
+
+// #342: a list attribute keeps its element type in items_type, so a re-add
+// that preserves valueType "list" but swaps the element type is just as
+// destructive as a scalar type change and must be refused too. This pins the
+// items_type leg of the guard, which the valueType cases cannot reach: both
+// sides here are "list", so only the items_type comparison can fail.
+func TestGenerateAttributes_ReAddDifferentItemsTypeRejected(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_list":{"type":"array","items":{"type":"number"}}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":     { "attributeID": 1, "valueType": "text" },
+	  "old_list": { "attributeID": 3, "valueType": "list", "items_type": "text", "retired": true }
+	}`)
+
+	err := generateAttributesJSON(schema, out, false)
+	if err == nil {
+		t.Fatalf("expected items_type-mismatch error on re-add")
+	}
+	// "text" is the retired element type, "numeric" the one the schema now asks
+	// for; naming both is what tells the operator which rows are at stake.
+	for _, want := range []string{"old_list", "text", "numeric"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err.Error(), want)
+		}
+	}
+}
+
+// #342: a legacy ledger entry may record a list without any items_type, which
+// the runtime reads as text (forma.AttributeMetadata.EffectiveItemsType). The
+// re-add guard must compare effective types, not literal strings: refusing this
+// re-add would hand the operator an instruction they cannot satisfy, since the
+// generator never writes items_type "text" back as an empty field.
+func TestGenerateAttributes_ReAddListWithoutItemsTypeClearsRetired(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"old_list":{"type":"array","items":{"type":"string"}}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":     { "attributeID": 1, "valueType": "text" },
+	  "old_list": { "attributeID": 3, "valueType": "list", "retired": true }
+	}`)
+
+	if err := generateAttributesJSON(schema, out, false); err != nil {
+		t.Fatalf("re-add of a legacy items_type-less list must be accepted: %v", err)
+	}
+	attrs := readGeneratedAttributes(t, out)
+	oldList := attrs["old_list"]
+	if _, exists := oldList["retired"]; exists {
+		t.Fatalf("re-added attribute must lose the retired marker: %v", oldList)
+	}
+	if id, _ := oldList["attributeID"].(float64); id != 3 {
+		t.Fatalf("re-add must keep attributeID 3, got %v", oldList["attributeID"])
+	}
+	if items, _ := oldList["items_type"].(string); items != "text" {
+		t.Fatalf("re-add must record the now-explicit element type text, got %v", oldList["items_type"])
+	}
+}
+
+// #342: a retired entry still occupies its attributeID, so a genuinely new
+// attribute must be numbered above it rather than reusing the freed id.
+func TestGenerateAttributes_NewAttributeDoesNotReuseRetiredID(t *testing.T) {
+	dir := t.TempDir()
+	schema := writeSchemaFixture(t, dir, "user.json",
+		`{"type":"object","properties":{"name":{"type":"string"},"nickname":{"type":"string"}}}`)
+	out := writeSchemaFixture(t, dir, "user_attributes.json", `{
+	  "name":    { "attributeID": 1, "valueType": "text" },
+	  "old_col": { "attributeID": 3, "valueType": "text", "retired": true }
+	}`)
+
+	if err := generateAttributesJSON(schema, out, false); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	attrs := readGeneratedAttributes(t, out)
+	if id, _ := attrs["nickname"]["attributeID"].(float64); id != 4 {
+		t.Fatalf("new attribute must get maxID+1=4 (retired id 3 reserved), got %v", id)
+	}
+}

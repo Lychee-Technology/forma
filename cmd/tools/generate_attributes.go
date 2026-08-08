@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/lychee-technology/forma"
 )
 
 type attributeSpec struct {
@@ -124,24 +126,10 @@ func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error 
 		newIDMap[name] = maxID + i + 1
 	}
 
-	// Build the result
-	// First, preserve ALL existing attributes (even if they are removed from schema)
-	for name, existingData := range existingAttrs {
-		if spec, exists := newAttributes[name]; exists {
-			// Attribute still exists in schema: update valueType if changed
-			existingData["valueType"] = spec.ValueType
-			if spec.ItemsType != "" {
-				existingData["items_type"] = spec.ItemsType
-			} else {
-				delete(existingData, "items_type")
-			}
-			applyRequiredPolicy(existingData, spec.RequiredPolicy)
-		} else {
-			// Attribute no longer exists in schema path; it must not stay required.
-			applyRequiredPolicy(existingData, requiredPolicyOptional)
-		}
-		// Keep the attribute regardless of whether it exists in the new schema
-		result[name] = existingData
+	// Build the result. First, preserve ALL existing attributes (even ones the
+	// schema dropped): this file is the attributeID ledger (#342).
+	if err := mergeExistingAttributes(existingAttrs, newAttributes, result); err != nil {
+		return fmt.Errorf("merge existing attributes from %s: %w", outputPath, err)
 	}
 
 	// Then, add new attributes from the schema
@@ -165,6 +153,77 @@ func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error 
 
 	fmt.Printf("Generated attributes total: %d, new: %d, maxID: %d\n", len(result), len(newAttrNames), maxID+len(newAttrNames))
 	return nil
+}
+
+// mergeExistingAttributes folds every existing ledger entry into result.
+// Entries still present in the schema get their type and required policy
+// refreshed (and a retired marker cleared when the re-add is type-compatible);
+// entries the schema dropped are branded retired so their attributeID stays
+// bound to the EAV rows it already owns instead of being handed to a later
+// attribute (#342), and forced optional so no reader requires a value that can
+// no longer be written.
+func mergeExistingAttributes(
+	existingAttrs map[string]map[string]any,
+	newAttributes map[string]attributeSpec,
+	result map[string]map[string]any,
+) error {
+	for name, existingData := range existingAttrs {
+		spec, stillInSchema := newAttributes[name]
+		if !stillInSchema {
+			existingData["retired"] = true
+			applyRequiredPolicy(existingData, requiredPolicyOptional)
+			result[name] = existingData
+			continue
+		}
+
+		if err := clearRetiredOnReAdd(name, existingData, spec); err != nil {
+			return fmt.Errorf("re-add retired attribute: %w", err)
+		}
+		existingData["valueType"] = spec.ValueType
+		if spec.ItemsType != "" {
+			existingData["items_type"] = spec.ItemsType
+		} else {
+			delete(existingData, "items_type")
+		}
+		applyRequiredPolicy(existingData, spec.RequiredPolicy)
+		result[name] = existingData
+	}
+
+	return nil
+}
+
+// clearRetiredOnReAdd un-retires an attribute the schema has re-added under
+// its original physical type, which restores the preserved EAV rows. A
+// re-add under a different type is refused: the stored rows carry the old
+// type and would become unreadable (#342).
+func clearRetiredOnReAdd(name string, existingData map[string]any, spec attributeSpec) error {
+	if retired, _ := existingData["retired"].(bool); !retired {
+		return nil
+	}
+
+	oldType, _ := existingData["valueType"].(string)
+	oldItems, _ := existingData["items_type"].(string)
+	if oldType != spec.ValueType || effectiveItemsType(oldItems) != effectiveItemsType(spec.ItemsType) {
+		return fmt.Errorf(
+			"attribute %s is retired with valueType %s/items_type %q but re-added as %s/%q: preserved EAV rows store the old type and would become unreadable; restore the original type or use a new attribute name",
+			name, oldType, oldItems, spec.ValueType, spec.ItemsType)
+	}
+
+	// Same name, same type: the re-add restores the preserved values.
+	delete(existingData, "retired")
+	return nil
+}
+
+// effectiveItemsType resolves an omitted items_type the way the runtime does:
+// forma.AttributeMetadata.EffectiveItemsType treats an empty items_type as
+// text. A legacy ledger entry stored as a bare `list` therefore describes the
+// same physical rows as one written `list`/`text`, and re-adding it must not be
+// refused for a difference that does not exist on disk (#342).
+func effectiveItemsType(itemsType string) string {
+	if itemsType == "" {
+		return string(forma.ValueTypeText)
+	}
+	return itemsType
 }
 
 // loadExistingAttributes reads an existing attributes file and returns its contents.

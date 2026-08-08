@@ -134,7 +134,8 @@
   },
   "logs": {
     "attributeID": 29,
-    "valueType": "text"
+    "valueType": "text",
+    "retired": true
   },
   "nextFollowUpAt": {
     "attributeID": 30,

@@ -319,3 +319,41 @@ func TestNormalizeColumnEncoding(t *testing.T) {
 	assert.Equal(t, forma.MainColumnEncodingDefault, normalizeColumnEncoding(""))
 	assert.Equal(t, forma.MainColumnEncodingUnixMs, normalizeColumnEncoding(" unix_ms "))
 }
+
+func TestParseAttributeMetadata_RetiredFlag(t *testing.T) {
+	meta, err := parseAttributeMetadata("old_col", map[string]any{
+		"attributeID": float64(3),
+		"valueType":   "text",
+		"retired":     true,
+	}, "test.json")
+	if err != nil {
+		t.Fatalf("parse retired attribute: %v", err)
+	}
+	if !meta.Retired {
+		t.Fatalf("Retired = false, want true")
+	}
+}
+
+func TestParseAttributeMetadata_RetiredAbsentDefaultsFalse(t *testing.T) {
+	meta, err := parseAttributeMetadata("name", map[string]any{
+		"attributeID": float64(1),
+		"valueType":   "text",
+	}, "test.json")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if meta.Retired {
+		t.Fatalf("Retired = true, want false")
+	}
+}
+
+func TestParseAttributeMetadata_RetiredNonBoolRejected(t *testing.T) {
+	_, err := parseAttributeMetadata("old_col", map[string]any{
+		"attributeID": float64(3),
+		"valueType":   "text",
+		"retired":     "yes",
+	}, "test.json")
+	if err == nil {
+		t.Fatalf("expected error for non-bool retired flag")
+	}
+}

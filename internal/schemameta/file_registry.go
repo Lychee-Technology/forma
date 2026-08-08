@@ -61,8 +61,16 @@ func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schem
 	return registry, nil
 }
 
+// attributesFilePath returns the on-disk path of a schema's attribute metadata
+// file. Single source for the path so every error that names it — read, parse,
+// and validation wraps alike — names the same exact file rather than the
+// directory it lives in.
+func (r *fileSchemaRegistry) attributesFilePath(schemaName string) string {
+	return filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+}
+
 func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int16) (forma.SchemaAttributeCache, *forma.JSONSchema, error) {
-	attributesFile := filepath.Join(r.schemaDir, schemaName+"_attributes.json")
+	attributesFile := r.attributesFilePath(schemaName)
 	attributeData, err := os.ReadFile(attributesFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
@@ -98,6 +106,11 @@ func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int
 	return cache, &jsonSchema, nil
 }
 
+// registerSchema indexes one schema. Its only error comes from
+// buildAttrIDToName, which names the schema and both colliding attributes but
+// not the schema id — so both load paths wrap it with that id: it is the
+// physical key the attributes are indexed under and, in directory mode, is
+// auto-assigned and otherwise invisible to the operator.
 func (r *fileSchemaRegistry) registerSchema(schemaName string, schemaID int16, cache forma.SchemaAttributeCache, schema *forma.JSONSchema) error {
 	attrIDToName, err := buildAttrIDToName(schemaName, cache)
 	if err != nil {
@@ -173,13 +186,14 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 
 		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
 		}
+		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
-			return err
+			return fmt.Errorf("attributes file %s: %w", r.attributesFilePath(schemaName), err)
 		}
-		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
-			return err
+		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
+			return fmt.Errorf("register schema id %d: %w", schemaID, err)
 		}
 	}
 
@@ -369,13 +383,14 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 
 		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to load schema %s discovered in schema directory: %w", schemaName, err)
 		}
+		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCache(schemaName, cache); err != nil {
-			return err
+			return fmt.Errorf("attributes file %s: %w", r.attributesFilePath(schemaName), err)
 		}
-		if err := r.registerSchema(schemaName, schemaID, cache, schema); err != nil {
-			return err
+		if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
+			return fmt.Errorf("register schema id %d: %w", schemaID, err)
 		}
 		nextSchemaID++
 	}
