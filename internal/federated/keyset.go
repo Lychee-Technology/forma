@@ -58,3 +58,78 @@ func validateKeysetTiebreak(cursor *model.KeysetCursor) error {
 	}
 	return nil
 }
+
+// hasKeysetCursor reports whether the query carries an ACTIVE keyset cursor.
+// A nil cursor or an empty column list is the open first page, which carries
+// no continuation obligation — the same no-op contract validateKeysetTiebreak
+// applies.
+func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
+	return fq != nil && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0
+}
+
+// rejectKeysetOnPostgresOnly fails a cursor-bearing request that reached the
+// Postgres-only path. Keyset SQL generation exists only for the DuckDB
+// federated template (sqlgen/keyset_where.go); the Postgres-only path has no
+// keyset support at all, so honouring the cursor there is impossible and
+// dropping it answers an unfiltered first page the caller has already
+// consumed (#354).
+//
+// The guard sits on queryPostgresOnly rather than on any one routing gate
+// deliberately: that function is the single confluence of every route to the
+// Postgres-only path — the hot-only gate, the routing decision, and the
+// degraded fallback — so a Postgres-only route added later cannot bypass this
+// check. It is NOT a guard on every route that reaches Postgres at all: the
+// federated merge path also reads Postgres through RunOptimizedQuery
+// (pagination.go) and is not covered here.
+//
+// Known consequence of guarding at the confluence rather than at each gate:
+// both recordHotOnlyGatePlan (the hot-only gate) and recordRoutedPostgresSource
+// (the routing decision) have already written a postgres source into
+// opts.ExecutionPlan by the time this rejects, so a caller that inspects the
+// plan after the error reads "postgres served this query" for a query that
+// never ran. Inert on the response path — the page is nil on error, so
+// attachExecutionPlan never stitches the plan onto anything — but it does dent
+// the "the plan reflects actual access" contract those recorders exist for
+// (#243/#185). Accepted over duplicating this guard at every gate, which would
+// trade the single confluence for a set of checks that must be kept in sync.
+//
+// A plain read-path error mirroring validateKeysetTiebreak: the submitted
+// cursor is well-formed, it is the route that cannot serve it.
+func rejectKeysetOnPostgresOnly(fq *model.FederatedAttributeQuery) error {
+	if !hasKeysetCursor(fq) {
+		return nil
+	}
+	last := fq.KeysetCursor.Columns[len(fq.KeysetCursor.Columns)-1].Attribute
+	return fmt.Errorf("keyset cursor over %d column(s) ending at %q cannot be served: this request routed to the postgres-only path, which applies no cursor predicate; reach the federated path instead (drop PreferHot and any hot-only PreferredTiers, and enable DuckDB) or paginate with limit/offset: %w",
+		len(fq.KeysetCursor.Columns), last, ErrKeysetUnsupportedOnPostgres)
+}
+
+// mayDegradeToPostgres reports whether a DuckDB-path failure may be absorbed
+// by the Postgres-only fallback. Beyond the error-class exemptions in
+// degradableFederatedError, an active keyset cursor disqualifies the fallback
+// outright: the fallback IS the Postgres-only path, which applies no cursor
+// predicate (#354), so degrading would answer an unfiltered first page — the
+// same silent-loss bargain those exemptions exist to refuse.
+func mayDegradeToPostgres(fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, err error) bool {
+	return opts != nil && opts.AllowPartialDegradedMode &&
+		degradableFederatedError(err) && !hasKeysetCursor(fq)
+}
+
+// explainDeclinedDegradation annotates a failure the caller asked to have
+// absorbed (AllowPartialDegradedMode) but which the keyset cursor
+// disqualified. Without it, an operator sees an unexplained failure on a
+// request they configured never to fail. The underlying cause is preserved in
+// the wrap chain, so errors.Is on the original classification still holds.
+//
+// The guard is the exact complement of mayDegradeToPostgres, so the annotation
+// fires only when the cursor is the SOLE disqualifier. When the error class
+// itself is non-degradable (degradableFederatedError), dropping the cursor
+// would not make the request degrade either, so blaming the cursor would hand
+// the operator a remedy that cannot work — that failure surfaces unannotated,
+// exactly as it did before #354.
+func explainDeclinedDegradation(fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, err error) error {
+	if opts == nil || !opts.AllowPartialDegradedMode || !hasKeysetCursor(fq) || !degradableFederatedError(err) {
+		return err
+	}
+	return fmt.Errorf("degraded postgres-only fallback declined: the request carries a keyset cursor the postgres-only path cannot apply (#354); retry without a cursor to allow degradation: %w", err)
+}

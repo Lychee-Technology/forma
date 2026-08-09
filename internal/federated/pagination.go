@@ -33,7 +33,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		offset = 0
 	}
 
-	if opts != nil && opts.KeysetEnabled && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
+	if opts != nil && opts.KeysetEnabled && hasKeysetCursor(fq) {
 		return e.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
 	}
 

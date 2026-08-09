@@ -136,8 +136,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
 	// lacking the trailing row_id tiebreak here, before it can silently skip a
-	// boundary tie group (#183).
-	if fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
+	// boundary tie group (#183). hasKeysetCursor (keyset.go) is the shared
+	// spelling of "carries an active cursor", so this gate, the postgres-only
+	// guard and the degrade refusal cannot drift apart.
+	if hasKeysetCursor(fq) {
 		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
 			return nil, fmt.Errorf("validate keyset cursor: %w", err)
 		}
@@ -147,7 +149,9 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// service layer and the template's HasHot derivation use) and flows into
 	// EvaluateRoutingPolicy, whose default decision already carries all three
 	// tiers — a direct engine caller must not silently lose warm/cold (#184).
-	if fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
+	// isHotOnlyRequest (routing.go) is the shared spelling of this predicate,
+	// so this gate and the #354 cursor override cannot drift apart.
+	if isHotOnlyRequest(fq) {
 		recordHotOnlyGatePlan(opts, tables)
 		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}
@@ -170,10 +174,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
-		if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(err) {
+		if mayDegradeToPostgres(fq, opts, err) {
 			return e.degradeToPostgresOnly(ctx, tables, fq, opts, err)
 		}
-		return nil, fmt.Errorf("duckdb federated query: %w", err)
+		return nil, fmt.Errorf("duckdb federated query: %w", explainDeclinedDegradation(fq, opts, err))
 	}
 
 	// The template carries COUNT(*) OVER() on the data rows, so a page at or
@@ -187,10 +191,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			// degrades under the same policy and the same exceptions: a
 			// transient failure here must not fail a request the degraded
 			// mode contract promises to serve Postgres-only.
-			if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(cerr) {
+			if mayDegradeToPostgres(fq, opts, cerr) {
 				return e.degradeToPostgresOnly(ctx, tables, fq, opts, cerr)
 			}
-			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
+			return nil, fmt.Errorf("compute empty-page federated count: %w", explainDeclinedDegradation(fq, opts, cerr))
 		}
 		totalRecords = countTotal
 	}
@@ -349,6 +353,9 @@ func degradableFederatedError(err error) bool {
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {
+	if err := rejectKeysetOnPostgresOnly(fq); err != nil {
+		return nil, fmt.Errorf("validate keyset cursor routing: %w", err)
+	}
 	page, err := e.pgSource.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:          tables,
 		SchemaID:        fq.SchemaID,
