@@ -109,8 +109,15 @@ func mayDegradeToPostgres(fq *model.FederatedAttributeQuery, opts *model.Federat
 // disqualified. Without it, an operator sees an unexplained failure on a
 // request they configured never to fail. The underlying cause is preserved in
 // the wrap chain, so errors.Is on the original classification still holds.
+//
+// The guard is the exact complement of mayDegradeToPostgres, so the annotation
+// fires only when the cursor is the SOLE disqualifier. When the error class
+// itself is non-degradable (degradableFederatedError), dropping the cursor
+// would not make the request degrade either, so blaming the cursor would hand
+// the operator a remedy that cannot work — that failure surfaces unannotated,
+// exactly as it did before #354.
 func explainDeclinedDegradation(fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, err error) error {
-	if opts == nil || !opts.AllowPartialDegradedMode || !hasKeysetCursor(fq) {
+	if opts == nil || !opts.AllowPartialDegradedMode || !hasKeysetCursor(fq) || !degradableFederatedError(err) {
 		return err
 	}
 	return fmt.Errorf("degraded postgres-only fallback declined: the request carries a keyset cursor the postgres-only path cannot apply (#354); retry without a cursor to allow degradation: %w", err)

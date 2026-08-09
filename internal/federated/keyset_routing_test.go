@@ -289,6 +289,88 @@ func TestQueryWithKeysetCursorDoesNotDegradeToPostgres(t *testing.T) {
 		"the real cause must surface rather than be replaced by the refusal")
 	require.Contains(t, err.Error(), "declined",
 		"an operator who set AllowPartialDegradedMode must be told why it did not apply")
-	require.Zero(t, pg.queryCalls,
-		"the fallback must not run: it would answer an unfiltered first page")
+	// The assertions above pin the prose; these pin the wrap chain. Under a
+	// %w -> %v mutation in explainDeclinedDegradation a caller still reads the
+	// right words while every downstream sentinel discriminator is gone
+	// (ErrFederatedReadFailed, forma.ErrInvalidInput and its 400,
+	// ErrParquetSetInconsistent and httpapi's key redaction), so prose alone
+	// cannot be the contract in a repo that matches with errors.Is.
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
+	require.NotErrorIs(t, err, ErrKeysetUnsupportedOnPostgres,
+		"the fallback must not have been entered: its guard's rejection must not appear")
+	// A cheap cross-task tripwire, not a measure of whether the fallback ran:
+	// for a cursor query this counter stays 0 either way, because Task 1's
+	// guard is the first statement of queryPostgresOnly. It goes red only if
+	// that guard is ever weakened. NotErrorIs above is what pins "never
+	// entered".
+	require.Zero(t, pg.queryCalls, "postgres must not be queried on this route")
+}
+
+// TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure pins door 3 at its
+// SECOND site: the empty-page recount (#181) is a DuckDB query with its own
+// degrade branch, so a cursor query deep enough to trigger a recount reaches
+// the same fallback by a different route. Without this test the recount site
+// can be reverted alone and the whole package stays green — reinstating the
+// exact defect, with the fallback running, the misdirecting "enable DuckDB"
+// remediation back, and the recount failure dropped from the chain.
+func TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &sequencedDuckDBExecutor{
+		rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
+		errs: []error{nil, fmt.Errorf("forced recount failure")},
+	}
+	var built []model.FederatedAttributeQuery
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 7}}
+	engine := newEmptyPageTestEngine(t, pg, duck, &built)
+
+	// An empty first page at offset 50 is what reaches the recount; warm+cold
+	// tiers keep the hybrid strategy on DuckDB regardless of page size.
+	page, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		&model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
+			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
+			KeysetCursor:   keysetCursorAfterCreatedAt(),
+		},
+		&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.Nil(t, page)
+	require.ErrorContains(t, err, "forced recount failure",
+		"the real cause must surface rather than be replaced by the refusal")
+	require.ErrorContains(t, err, "declined")
+	require.NotErrorIs(t, err, ErrKeysetUnsupportedOnPostgres,
+		"the fallback must not have been entered at the recount site either")
+	require.Zero(t, pg.queryCalls, "postgres must not be queried on this route")
+}
+
+// TestQueryWithKeysetCursorLeavesNonDegradableFailureUnannotated pins the
+// complement: when the error CLASS already disqualifies degradation, the
+// cursor is not the reason and must not be blamed. Annotating it would tell an
+// operator to "retry without a cursor to allow degradation" — an action that
+// cannot work, since degradableFederatedError refuses this class with or
+// without a cursor.
+func TestQueryWithKeysetCursorLeavesNonDegradableFailureUnannotated(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	duck := &fakeDuckDBExecutor{err: fmt.Errorf("unrenderable path template: %w", forma.ErrInvalidInput)}
+	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		testMetadataCacheSchema7(t), "", withTestParquetPath())
+
+	page, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav"},
+		&model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+			PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
+			KeysetCursor:   keysetCursorAfterCreatedAt(),
+		},
+		&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.Nil(t, page)
+	require.ErrorIs(t, err, forma.ErrInvalidInput,
+		"the class that refused the degrade must reach the caller unchanged")
+	require.NotContains(t, err.Error(), "declined",
+		"the cursor is not why this failed, so it must not be offered as the thing to drop")
+	require.Zero(t, pg.queryCalls)
 }
