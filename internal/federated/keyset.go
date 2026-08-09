@@ -82,6 +82,17 @@ func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
 // federated merge path also reads Postgres through RunOptimizedQuery
 // (pagination.go) and is not covered here.
 //
+// Known consequence of guarding at the confluence rather than at each gate:
+// both recordHotOnlyGatePlan (the hot-only gate) and recordRoutedPostgresSource
+// (the routing decision) have already written a postgres source into
+// opts.ExecutionPlan by the time this rejects, so a caller that inspects the
+// plan after the error reads "postgres served this query" for a query that
+// never ran. Inert on the response path — the page is nil on error, so
+// attachExecutionPlan never stitches the plan onto anything — but it does dent
+// the "the plan reflects actual access" contract those recorders exist for
+// (#243/#185). Accepted over duplicating this guard at every gate, which would
+// trade the single confluence for a set of checks that must be kept in sync.
+//
 // A plain read-path error mirroring validateKeysetTiebreak: the submitted
 // cursor is well-formed, it is the route that cannot serve it.
 func rejectKeysetOnPostgresOnly(fq *model.FederatedAttributeQuery) error {
