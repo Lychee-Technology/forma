@@ -5,6 +5,7 @@ package production
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	forma "github.com/lychee-technology/forma"
@@ -59,11 +60,23 @@ func TestKeysetUnderProductionRoutingDefaults(t *testing.T) {
 			t.Fatalf("a cursor query must be rerouted onto the federated path; got UseDuckDB=false, reason=%q",
 				page.Plan.Routing.Reason)
 		}
+		// UseDuckDB alone would also pass if the hybrid arm had chosen DuckDB on
+		// its own, so pin the postgres-only decision the override actually
+		// reversed: if the < 1000 threshold ever moves, this must go red rather
+		// than stay green while no longer exercising that route. A plan
+		// diagnostic, not an error — errors.Is is not the tool here.
+		if !strings.Contains(page.Plan.Routing.Reason, "hybrid small result set") {
+			t.Fatalf("the overridden decision must still name the postgres-only rule it reversed; reason=%q",
+				page.Plan.Routing.Reason)
+		}
 	})
 
 	t.Run("prefer_hot_fails_closed", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
+		// The strategy is inert here: PreferHot short-circuits at the hot-only
+		// gate (engine.go) before EvaluateRoutingPolicy runs, so no hybrid rule
+		// is under test — only the fail-closed guard is.
 		env := NewEnv(t, cluster, WithRoutingStrategy(forma.RoutingStrategyHybrid))
 
 		a := CreateEvent(wide, map[string]any{"title": "ks-hot-a", "count": float64(100)})

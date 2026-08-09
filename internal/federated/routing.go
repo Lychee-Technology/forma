@@ -58,7 +58,12 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 	//                           it keeps the suffix off reasons that already
 	//                           chose DuckDB on their own, so the plan never
 	//                           claims an override that did not happen.
-	//   !isHotOnlyRequest(fq) — load-bearing. A hot-only request is the
+	//   !isHotOnlyRequest(fq) — load-bearing for this exported function's
+	//                           standalone contract only; through engine.Query
+	//                           it is as unreachable as cfg.Enabled, since the
+	//                           gate at engine.go:152 intercepts hot-only
+	//                           before EvaluateRoutingPolicy is called. A
+	//                           hot-only request is the
 	//                           caller's semantic choice, not a cost hint, so
 	//                           it is never silently reinterpreted; the engine
 	//                           rejects it instead. Both spellings count, which

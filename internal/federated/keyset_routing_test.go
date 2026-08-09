@@ -340,6 +340,13 @@ func TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure(t *testing.T) {
 	require.ErrorContains(t, err, "forced recount failure",
 		"the real cause must surface rather than be replaced by the refusal")
 	require.ErrorContains(t, err, "declined")
+	// Prose alone cannot be the contract here any more than at the page-fetch
+	// site above: a %w -> %v mutation in the recount site's own wrap
+	// (engine.go, "compute empty-page federated count") still reads correctly
+	// while flattening the chain, so ErrFederatedReadFailed, forma.ErrInvalidInput
+	// (and its 400), ErrParquetSetInconsistent and ErrNoParquetPaths all stop
+	// matching for every failure arriving through this door.
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.NotErrorIs(t, err, ErrKeysetUnsupportedOnPostgres,
 		"the fallback must not have been entered at the recount site either")
 	require.Zero(t, pg.queryCalls, "postgres must not be queried on this route")
