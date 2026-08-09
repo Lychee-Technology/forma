@@ -121,16 +121,26 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		}
 		return valStr, nil
 
-	case forma.ValueTypeNumeric, forma.ValueTypeBigInt:
+	case forma.ValueTypeNumeric, forma.ValueTypeBigInt,
+		forma.ValueTypeSmallInt, forma.ValueTypeInteger:
 		// Integral literals in ANY accepted spelling — bare, decimal or
 		// exponent — bind as exact int64 (#281, #357) via the same
-		// TryParseNumber the two Postgres predicate paths use, so all three
-		// emitters agree on the value. ToDuckDBParam renders int64 via %d, so
-		// a bigint predicate above 2^53 — legal column state since #205 —
+		// TryParseNumber the two Postgres predicate paths and the batch
+		// attr-value anchor use (#355), so every emitter agrees on the value.
+		// A bigint predicate above 2^53 — legal column state since #205 —
 		// compares exactly instead of riding float64 + %.15g. Fractional
 		// literals keep float64, the numeric family's storage contract.
 		// EAV-only bigints round at write (2^53 ceiling), so exact binds above
 		// it miss on every tier alike — tier parity preserved.
+		//
+		// integer/smallint joined this arm in #355 purely to end the binder
+		// divergence: it changes no query result. Below 2^31, int64 and float64
+		// denote the same number, so comparisons are identical. Above it, both
+		// parameter types raise the same conversion error from CAST(? AS
+		// INTEGER), so queries fail identically either way. On the column side
+		// (independent of the parameter), an EAV-only integer attribute's stored
+		// value outside the 32-bit range is projected to NULL on every DuckDB tier
+		// via TRY_CAST; that is a separate defect tracked in #384.
 		switch v := numutil.TryParseNumber(valStr).(type) {
 		case int64:
 			return v, nil
@@ -139,14 +149,6 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		default:
 			return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
 		}
-
-	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
-		// Stays float64: INTEGER/SMALLINT ranges end at 2^31/2^15, float64 is
-		// exact through 2^53, and ToDuckDBParam's integer arm takes float64.
-		if f, e := strconv.ParseFloat(valStr, 64); e == nil {
-			return f, nil
-		}
-		return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Epoch-ms int64: date columns in the federated CTEs are BIGINT (#200).

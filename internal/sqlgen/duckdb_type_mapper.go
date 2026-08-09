@@ -121,6 +121,14 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 			return nil, fmt.Errorf("cannot convert %T to BOOLEAN param", value)
 		}
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// An exact int64 from parseDuckDBRawParam binds through unchanged
+		// (#355). Without this the float64 funnel below would undo the
+		// int64-first parse one call later, at predicate_normalizer.go's
+		// ToDuckDBParam hop. Everything else keeps the funnel: INTEGER and
+		// SMALLINT ranges end at 2^31/2^15 and float64 is exact well past both.
+		if exact, ok := value.(int64); ok {
+			return exact, nil
+		}
 		numeric, isNil, err := toOptionalFloat64Param(value)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert %T to numeric param", value)
