@@ -51,12 +51,12 @@ func TestStripKeepsSamePrefixSibling(t *testing.T) {
 	require.Equal(t, map[string]any{"contactSnapshotX": "keep", "contactSnapshot2": "keep"}, out)
 }
 
-// TestStripLeavesNothingCoveredForTheValidator is the premise the deleted
-// normalization carve-out rested on. #314 taught NormalizeDottedKeys to skip
-// dotted keys beneath a relation root because the exact-key strip left them
-// behind; with the subtree strip nothing survives for it to skip, so the branch
-// went away. If this ever fails, that skip has to come back before the strip is
-// weakened.
+// TestStripLeavesNothingCoveredForTheValidator is the premise for removing the
+// normalization carve-out. #314 taught NormalizeDottedKeys to skip dotted keys
+// beneath a relation root (shouldExpand, transform/normalize_keys.go) because
+// the exact-key strip left them behind; with the subtree strip nothing survives
+// for it to skip, so that skip can go away. It is still there today. If this
+// test ever fails, the skip has to come back before the strip is weakened.
 func TestStripLeavesNothingCoveredForTheValidator(t *testing.T) {
 	idx := stripIndex(t)
 	roots := idx.RelationRoots("visit")
@@ -76,14 +76,22 @@ func TestStripLeavesNothingCoveredForTheValidator(t *testing.T) {
 	require.Contains(t, out, "propertySnapshot.code", "only the relation subtree is removed")
 }
 
-// TestStripIgnoresSchemasWithoutRelations and the nil receiver: both early-return
-// the caller's own map, which several write sites rely on to avoid a copy.
+// TestStripIgnoresSchemasWithoutRelations covers the two pass-through guards: a
+// schema declaring no x-relation, and a nil receiver. Both leave the payload
+// untouched, dotted key included — the same key the strip removes under a schema
+// that does declare the relation.
+//
+// The expectation is a separately built map, not in. The guards return the
+// caller's own map, so comparing the result against in would compare a map with
+// itself and stay green even if the strip began deleting keys from the caller's
+// map in place.
 func TestStripIgnoresSchemasWithoutRelations(t *testing.T) {
 	idx := stripIndex(t)
 	in := map[string]any{"contactSnapshot.name": "Ada"}
+	want := map[string]any{"contactSnapshot.name": "Ada"}
 
-	require.Equal(t, in, idx.StripComputedFields("lead", in))
+	require.Equal(t, want, idx.StripComputedFields("lead", in))
 
 	var nilIdx *RelationIndex
-	require.Equal(t, in, nilIdx.StripComputedFields("visit", in))
+	require.Equal(t, want, nilIdx.StripComputedFields("visit", in))
 }
