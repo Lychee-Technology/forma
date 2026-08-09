@@ -66,11 +66,16 @@ func CastExpression(columnOrExpr string, v forma.ValueType) string {
 	return fmt.Sprintf("CAST(%s AS %s)", columnOrExpr, MapValueTypeToDuckDBType(v))
 }
 
-// ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for the given value type.
-// Examples:
+// ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for
+// the given value type. The predicate normalizer binds this result, not
+// parseDuckDBRawParam's, so each numeric arm's output type is load-bearing:
 //   - uuid.UUID -> string
 //   - time.Time -> int64 epoch-ms (BIGINT)
-//   - numeric types -> float64
+//   - smallint/integer -> an int64 passes through unchanged (#355); every other
+//     accepted input widens to float64
+//   - bigint/numeric -> a decimal string, never a number (see
+//     toDuckDBDecimalParam): exact for int/int64/string inputs, while a float64
+//     input is rendered by decimalString's %.15g
 func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	if value == nil {
 		return nil, nil
@@ -121,6 +126,14 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 			return nil, fmt.Errorf("cannot convert %T to BOOLEAN param", value)
 		}
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// An exact int64 from parseDuckDBRawParam binds through unchanged
+		// (#355). Without this the float64 funnel below would undo the
+		// int64-first parse one call later, at predicate_normalizer.go's
+		// ToDuckDBParam hop. Everything else keeps the funnel: INTEGER and
+		// SMALLINT ranges end at 2^31/2^15 and float64 is exact well past both.
+		if exact, ok := value.(int64); ok {
+			return exact, nil
+		}
 		numeric, isNil, err := toOptionalFloat64Param(value)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert %T to numeric param", value)
