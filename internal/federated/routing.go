@@ -106,6 +106,26 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 		dec.Reason = "unknown strategy - default"
 	}
 
+	// A keyset cursor can only be applied by the DuckDB federated template
+	// (sqlgen/keyset_where.go); the Postgres-only path has no keyset support
+	// and pre-#354 dropped the cursor silently. The strategy rules above are
+	// COST heuristics — advisory — so a cursor outranks them and reroutes the
+	// query onto the federated path. Three conjuncts, each load-bearing:
+	// !hotOnly keeps an explicit hot-only request (the caller's semantic
+	// choice) from being silently reinterpreted — the engine rejects those
+	// instead; cfg.Enabled avoids rerouting onto an engine that is not there,
+	// leaving the engine's postgres-only guard to fail the request; and the
+	// reason string keeps the reroute visible in the execution plan.
+	//
+	// No tier repair is needed: the block below collapses dec.Tiers only when
+	// the decision stays postgres-only, and the DuckDB path derives its tier
+	// set from fq.PreferredTiers (duckdb_query_helpers.go, duckdb_template_renderer.go),
+	// not from dec.Tiers, which is plan bookkeeping.
+	if hasKeysetCursor(fq) && !dec.UseDuckDB && !hotOnly && cfg.Enabled {
+		dec.UseDuckDB = true
+		dec.Reason += " (overridden: keyset cursor requires the federated path, #354)"
+	}
+
 	// If DuckDB is disabled by decision, ensure tiers reflect that
 	if !dec.UseDuckDB {
 		dec.Tiers = []model.DataTier{model.DataTierHot}
