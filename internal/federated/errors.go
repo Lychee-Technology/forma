@@ -32,6 +32,14 @@ var ErrFederatedReadFailed = errors.New("federated read failed")
 // here.
 var ErrPostgresReadFailed = errors.New("postgres read failed")
 
+// ErrKeysetUnsupportedOnPostgres marks a request that carries a keyset cursor
+// and routed to the Postgres-only path. That path builds a
+// model.PersistentRecordQuery, which has no cursor field, so it can neither
+// apply nor reject the cursor itself: pre-#354 it silently answered an
+// unfiltered first page and pagination never advanced. Not degradable — the
+// degraded fallback IS the Postgres-only path.
+var ErrKeysetUnsupportedOnPostgres = errors.New("keyset cursor unsupported on the postgres-only path")
+
 // ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public
 // root package and re-exported here for internal call sites. They must be
 // matchable by embedders that reach the engine through factory.NewEntityManager*

@@ -349,6 +349,9 @@ func degradableFederatedError(err error) bool {
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {
+	if err := rejectKeysetOnPostgresOnly(fq); err != nil {
+		return nil, fmt.Errorf("validate keyset cursor routing: %w", err)
+	}
 	page, err := e.pgSource.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
 		Tables:          tables,
 		SchemaID:        fq.SchemaID,

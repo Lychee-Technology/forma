@@ -58,3 +58,37 @@ func validateKeysetTiebreak(cursor *model.KeysetCursor) error {
 	}
 	return nil
 }
+
+// hasKeysetCursor reports whether the query carries an ACTIVE keyset cursor.
+// A nil cursor or an empty column list is the open first page, which carries
+// no continuation obligation — the same no-op contract validateKeysetTiebreak
+// applies.
+func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
+	return fq != nil && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0
+}
+
+// rejectKeysetOnPostgresOnly fails a cursor-bearing request that reached the
+// Postgres-only path. Keyset SQL generation exists only for the DuckDB
+// federated template (sqlgen/keyset_where.go); the Postgres-only path has no
+// keyset support at all, so honouring the cursor there is impossible and
+// dropping it answers an unfiltered first page the caller has already
+// consumed (#354).
+//
+// The guard sits on queryPostgresOnly rather than on any one routing gate
+// deliberately: that function is the single confluence of every route to the
+// Postgres-only path — the hot-only gate, the routing decision, and the
+// degraded fallback — so a Postgres-only route added later cannot bypass this
+// check. It is NOT a guard on every route that reaches Postgres at all: the
+// federated merge path also reads Postgres through RunOptimizedQuery
+// (pagination.go) and is not covered here.
+//
+// A plain read-path error mirroring validateKeysetTiebreak: the submitted
+// cursor is well-formed, it is the route that cannot serve it.
+func rejectKeysetOnPostgresOnly(fq *model.FederatedAttributeQuery) error {
+	if !hasKeysetCursor(fq) {
+		return nil
+	}
+	last := fq.KeysetCursor.Columns[len(fq.KeysetCursor.Columns)-1].Attribute
+	return fmt.Errorf("keyset cursor over %d column(s) ending at %q cannot be served: this request routed to the postgres-only path, which applies no cursor predicate; reach the federated path instead (drop PreferHot and any hot-only PreferredTiers, and enable DuckDB) or paginate with limit/offset: %w",
+		len(fq.KeysetCursor.Columns), last, ErrKeysetUnsupportedOnPostgres)
+}
