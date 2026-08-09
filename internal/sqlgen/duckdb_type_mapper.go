@@ -66,15 +66,16 @@ func CastExpression(columnOrExpr string, v forma.ValueType) string {
 	return fmt.Sprintf("CAST(%s AS %s)", columnOrExpr, MapValueTypeToDuckDBType(v))
 }
 
-// ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for the given value type.
-// Examples:
-// Three binders depend on this contract, so state each numeric arm exactly:
+// ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for
+// the given value type. The predicate normalizer binds this result, not
+// parseDuckDBRawParam's, so each numeric arm's output type is load-bearing:
 //   - uuid.UUID -> string
 //   - time.Time -> int64 epoch-ms (BIGINT)
 //   - smallint/integer -> an int64 passes through unchanged (#355); every other
 //     accepted input widens to float64
-//   - bigint/numeric -> an exact-precision decimal string, never a number
-//     (see toDuckDBDecimalParam)
+//   - bigint/numeric -> a decimal string, never a number (see
+//     toDuckDBDecimalParam): exact for int/int64/string inputs, while a float64
+//     input is rendered by decimalString's %.15g
 func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	if value == nil {
 		return nil, nil
