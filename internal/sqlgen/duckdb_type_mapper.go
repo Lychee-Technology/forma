@@ -68,9 +68,13 @@ func CastExpression(columnOrExpr string, v forma.ValueType) string {
 
 // ToDuckDBParam converts a Go value to the form expected by DuckDB drivers for the given value type.
 // Examples:
+// Three binders depend on this contract, so state each numeric arm exactly:
 //   - uuid.UUID -> string
 //   - time.Time -> int64 epoch-ms (BIGINT)
-//   - numeric types -> float64
+//   - smallint/integer -> an int64 passes through unchanged (#355); every other
+//     accepted input widens to float64
+//   - bigint/numeric -> an exact-precision decimal string, never a number
+//     (see toDuckDBDecimalParam)
 func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	if value == nil {
 		return nil, nil

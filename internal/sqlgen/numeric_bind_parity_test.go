@@ -7,16 +7,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNumericBinderTypeParity pins the invariant #355 establishes: for the
-// whole numeric family, one literal yields one Go type on every binder. Before
-// this, the integer/smallint arm of parseDuckDBRawParam kept float64 while
-// ConvertPgMainValue went int64-first, so the two Postgres/DuckDB legs of the
-// same predicate carried different values for the same input string.
+// TestNumericBinderTypeParity pins the invariant #355 establishes on the two
+// binders this table exercises — ConvertPgMainValue and parseDuckDBRawParam:
+// across the whole numeric family, one literal parses to one Go type on both.
+// The package's third numeric binder, parsePgEavValue, is pinned by the
+// characterization matrix's PgArgs expectations in
+// predicate_characterization_test.go. The claim is about the parse rule only:
+// for bigint/numeric the value ultimately bound to DuckDB is an exact decimal
+// string, produced downstream by ToDuckDBParam's toDuckDBDecimalParam.
 //
-// This changes no query result. Below 2^31, int64 and float64 denote the same
-// number so comparisons are identical. Above it, both parameter types raise the
-// same conversion error from CAST(? AS INTEGER), so queries fail identically
-// either way. What is fixed here is the divergence itself.
+// Before this, the integer/smallint arm of parseDuckDBRawParam kept float64
+// while ConvertPgMainValue went int64-first, so the two Postgres/DuckDB legs of
+// the same predicate carried different values for the same input string.
+//
+// This changes no query result. Below the bound of the arm's own cast — 2^31
+// for CAST(? AS INTEGER), 2^15 for CAST(? AS SMALLINT) — int64 and float64
+// denote the same number so comparisons are identical. Above it, both parameter
+// types raise the same class of conversion error from that cast (DuckDB words
+// the int64 and the float64 case differently), so queries fail either way. What
+// is fixed here is the divergence itself.
 func TestNumericBinderTypeParity(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -55,24 +64,14 @@ func TestNumericBinderTypeParity(t *testing.T) {
 // so an exact int64 was converted straight back to float64 one call later
 // (predicate_normalizer.go binds the result of ToDuckDBParam, not of
 // parseDuckDBRawParam). The bigint/numeric arm never hit this because it exits
-// through toDuckDBDecimalParam instead.
+// through toDuckDBDecimalParam instead. The passthrough is deliberately narrow —
+// int, int16 and int32 still take the float64 funnel, which the pre-existing
+// TestToDuckDBParam_Numeric_FromInt, _FromInt16 and _FromInt32 in
+// duckdb_type_mapper_test.go pin.
 func TestToDuckDBParamIntegerArmPassesInt64Through(t *testing.T) {
 	for _, vt := range []forma.ValueType{forma.ValueTypeInteger, forma.ValueTypeSmallInt} {
 		got, err := ToDuckDBParam(int64(9007199254740993), vt)
 		require.NoError(t, err)
 		require.Equal(t, int64(9007199254740993), got, "value type %s", vt)
 	}
-}
-
-// TestToDuckDBParamIntegerArmStillWidensOtherIntegerTypes pins that the
-// passthrough is narrow: int/int16/int32 and float64 inputs keep the existing
-// float64 conversion, which callers other than the predicate path rely on.
-func TestToDuckDBParamIntegerArmStillWidensOtherIntegerTypes(t *testing.T) {
-	got, err := ToDuckDBParam(int32(42), forma.ValueTypeInteger)
-	require.NoError(t, err)
-	require.Equal(t, float64(42), got)
-
-	got, err = ToDuckDBParam(int16(7), forma.ValueTypeSmallInt)
-	require.NoError(t, err)
-	require.Equal(t, float64(7), got)
 }

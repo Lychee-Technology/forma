@@ -134,10 +134,12 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		// it miss on every tier alike — tier parity preserved.
 		//
 		// integer/smallint joined this arm in #355 purely to end the binder
-		// divergence: it changes no query result. Below 2^31, int64 and float64
-		// denote the same number, so comparisons are identical. Above it, both
-		// parameter types raise the same conversion error from CAST(? AS
-		// INTEGER), so queries fail identically either way. On the column side
+		// divergence: it changes no query result. Below the bound of the arm's
+		// own cast — 2^31 for CAST(? AS INTEGER), 2^15 for CAST(? AS SMALLINT) —
+		// int64 and float64 denote the same number, so comparisons are identical.
+		// Above it, both parameter types raise the same class of conversion error
+		// from that cast (DuckDB words the int64 and the float64 case
+		// differently), so queries fail either way. On the column side
 		// (independent of the parameter), an EAV-only integer attribute's stored
 		// value outside the 32-bit range is projected to NULL on every DuckDB tier
 		// via TRY_CAST; that is a separate defect tracked in #384.
