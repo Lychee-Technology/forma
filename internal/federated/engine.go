@@ -147,7 +147,9 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// service layer and the template's HasHot derivation use) and flows into
 	// EvaluateRoutingPolicy, whose default decision already carries all three
 	// tiers — a direct engine caller must not silently lose warm/cold (#184).
-	if fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot) {
+	// isHotOnlyRequest (routing.go) is the shared spelling of this predicate,
+	// so this gate and the #354 cursor override cannot drift apart.
+	if isHotOnlyRequest(fq) {
 		recordHotOnlyGatePlan(opts, tables)
 		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}

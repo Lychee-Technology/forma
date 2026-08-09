@@ -144,26 +144,57 @@ func TestEvaluateRoutingPolicyKeysetCursorOverridesCostHeuristic(t *testing.T) {
 }
 
 // TestEvaluateRoutingPolicyKeysetCursorDoesNotOverrideExplicitHotOnly pins the
-// intent split: PreferHot is the caller's SEMANTIC declaration, which the
-// engine rejects (Task 1) rather than silently reinterprets. EvaluateRoutingPolicy
-// is exported, so it must hold this on its own rather than relying on the
-// engine gate intercepting first.
+// intent split: a hot-only request is the caller's SEMANTIC declaration, which
+// the engine rejects (Task 1) rather than silently reinterprets.
+// EvaluateRoutingPolicy is exported, so it must hold this on its own rather
+// than relying on the engine gate intercepting first.
+//
+// Both spellings of hot-only are covered. The PreferredTiers form is the one
+// the local hotOnly variable (routing.go, PreferHot only) does NOT see, so
+// without the shared isHotOnlyRequest helper the override fires and reroutes
+// an explicitly hot-only request.
 func TestEvaluateRoutingPolicyKeysetCursorDoesNotOverrideExplicitHotOnly(t *testing.T) {
-	cfg := forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
-	fq := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
-		PreferHot:      true,
-		KeysetCursor:   keysetCursorAfterCreatedAt(),
+	for _, tc := range []struct {
+		name string
+		fq   *model.FederatedAttributeQuery
+	}{
+		{"prefer_hot_flag", &model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+			PreferHot:      true,
+			KeysetCursor:   keysetCursorAfterCreatedAt(),
+		}},
+		{"hot_only_preferred_tiers", &model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+			PreferredTiers: []model.DataTier{model.DataTierHot},
+			KeysetCursor:   keysetCursorAfterCreatedAt(),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
+
+			dec := EvaluateRoutingPolicy(cfg, tc.fq, nil)
+
+			require.False(t, dec.UseDuckDB, "an explicit hot-only request must never be silently rerouted")
+			require.NotContains(t, dec.Reason, "keyset cursor",
+				"the plan must not report an override that must never happen for a hot-only request")
+		})
 	}
-
-	dec := EvaluateRoutingPolicy(cfg, fq, nil)
-
-	require.False(t, dec.UseDuckDB, "an explicit hot-only request must never be silently rerouted")
 }
 
 // TestEvaluateRoutingPolicyKeysetCursorDoesNotOverrideDisabledDuckDB pins door
 // 2b at the policy level: with DuckDB disabled there is nothing to override
 // onto, and the engine guard fails the request instead.
+//
+// The Reason assertion is what gives this test teeth, though not in the way
+// one might expect. UseDuckDB is already false via the !cfg.Enabled early
+// return no matter what the override clause does, so the UseDuckDB assertion
+// alone cannot fail. Pinning the reason catches a real and distinct mutation:
+// degrading that early return into a plain assignment (dropping its `return`)
+// lets the strategy heuristics run and rewrite Reason to "hybrid small result
+// set" while UseDuckDB stays false — verified by mutation. So this test pins
+// "the disabled verdict is final and returns immediately", NOT the override
+// clause's cfg.Enabled conjunct; that conjunct is unreachable in every
+// ordering reachable today and no mutation of it alone turns this test red.
 func TestEvaluateRoutingPolicyKeysetCursorDoesNotOverrideDisabledDuckDB(t *testing.T) {
 	cfg := forma.DuckDBConfig{Enabled: false, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
 	fq := &model.FederatedAttributeQuery{
@@ -173,7 +204,29 @@ func TestEvaluateRoutingPolicyKeysetCursorDoesNotOverrideDisabledDuckDB(t *testi
 
 	dec := EvaluateRoutingPolicy(cfg, fq, nil)
 
-	require.False(t, dec.UseDuckDB)
+	require.False(t, dec.UseDuckDB, "a disabled engine must never be routed onto")
+	require.Equal(t, "duckdb disabled", dec.Reason,
+		"the reason must stay the disabled verdict, unmodified by the override clause")
+}
+
+// TestEvaluateRoutingPolicyKeysetCursorLeavesAlreadyFederatedReasonIntact pins
+// the override clause's !dec.UseDuckDB conjunct. Dropping it changes no
+// routing — a cold-only query is federated either way — but it appends the
+// override suffix to a decision that was never overridden, so the execution
+// plan would report a reroute that did not happen.
+func TestEvaluateRoutingPolicyKeysetCursorLeavesAlreadyFederatedReasonIntact(t *testing.T) {
+	cfg := forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
+		KeysetCursor:   keysetCursorAfterCreatedAt(),
+	}
+
+	dec := EvaluateRoutingPolicy(cfg, fq, nil)
+
+	require.True(t, dec.UseDuckDB, "a cold-only query is federated on its own merits")
+	require.Equal(t, "hybrid cold only", dec.Reason,
+		"a decision that already chose DuckDB was not overridden, so the plan must not say it was")
 }
 
 // TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit is the same door at
