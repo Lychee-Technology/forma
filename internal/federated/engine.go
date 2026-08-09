@@ -172,10 +172,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
-		if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(err) {
+		if mayDegradeToPostgres(fq, opts, err) {
 			return e.degradeToPostgresOnly(ctx, tables, fq, opts, err)
 		}
-		return nil, fmt.Errorf("duckdb federated query: %w", err)
+		return nil, fmt.Errorf("duckdb federated query: %w", explainDeclinedDegradation(fq, opts, err))
 	}
 
 	// The template carries COUNT(*) OVER() on the data rows, so a page at or
@@ -189,10 +189,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 			// degrades under the same policy and the same exceptions: a
 			// transient failure here must not fail a request the degraded
 			// mode contract promises to serve Postgres-only.
-			if opts != nil && opts.AllowPartialDegradedMode && degradableFederatedError(cerr) {
+			if mayDegradeToPostgres(fq, opts, cerr) {
 				return e.degradeToPostgresOnly(ctx, tables, fq, opts, cerr)
 			}
-			return nil, fmt.Errorf("compute empty-page federated count: %w", cerr)
+			return nil, fmt.Errorf("compute empty-page federated count: %w", explainDeclinedDegradation(fq, opts, cerr))
 		}
 		totalRecords = countTotal
 	}

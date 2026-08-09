@@ -92,3 +92,26 @@ func rejectKeysetOnPostgresOnly(fq *model.FederatedAttributeQuery) error {
 	return fmt.Errorf("keyset cursor over %d column(s) ending at %q cannot be served: this request routed to the postgres-only path, which applies no cursor predicate; reach the federated path instead (drop PreferHot and any hot-only PreferredTiers, and enable DuckDB) or paginate with limit/offset: %w",
 		len(fq.KeysetCursor.Columns), last, ErrKeysetUnsupportedOnPostgres)
 }
+
+// mayDegradeToPostgres reports whether a DuckDB-path failure may be absorbed
+// by the Postgres-only fallback. Beyond the error-class exemptions in
+// degradableFederatedError, an active keyset cursor disqualifies the fallback
+// outright: the fallback IS the Postgres-only path, which applies no cursor
+// predicate (#354), so degrading would answer an unfiltered first page — the
+// same silent-loss bargain those exemptions exist to refuse.
+func mayDegradeToPostgres(fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, err error) bool {
+	return opts != nil && opts.AllowPartialDegradedMode &&
+		degradableFederatedError(err) && !hasKeysetCursor(fq)
+}
+
+// explainDeclinedDegradation annotates a failure the caller asked to have
+// absorbed (AllowPartialDegradedMode) but which the keyset cursor
+// disqualified. Without it, an operator sees an unexplained failure on a
+// request they configured never to fail. The underlying cause is preserved in
+// the wrap chain, so errors.Is on the original classification still holds.
+func explainDeclinedDegradation(fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, err error) error {
+	if opts == nil || !opts.AllowPartialDegradedMode || !hasKeysetCursor(fq) {
+		return err
+	}
+	return fmt.Errorf("degraded postgres-only fallback declined: the request carries a keyset cursor the postgres-only path cannot apply (#354); retry without a cursor to allow degradation: %w", err)
+}

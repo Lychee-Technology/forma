@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -256,4 +257,38 @@ func TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit(t *testing.T) {
 	require.Contains(t, page.ExecutionPlan.Routing.Reason, "keyset cursor")
 	require.Len(t, built, 1)
 	require.NotNil(t, built[0].KeysetCursor, "the cursor must survive into the DuckDB builder")
+}
+
+// TestQueryWithKeysetCursorDoesNotDegradeToPostgres pins door 3 of #354. The
+// degraded fallback IS the Postgres-only path, so absorbing a DuckDB failure
+// for a cursor-bearing request would answer an unfiltered first page —
+// precisely the silent wrong answer the degraded-mode contract exists to
+// avoid. This mirrors the five error-class exemptions degradableFederatedError
+// already carries for the same reason.
+func TestQueryWithKeysetCursorDoesNotDegradeToPostgres(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
+	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
+	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		testMetadataCacheSchema7(t), "", withTestParquetPath())
+
+	page, err := engine.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav"},
+		&model.FederatedAttributeQuery{
+			// Limit 2000 keeps the hybrid cost rule on the DuckDB side, so this
+			// test isolates the degrade decision from Task 2's override.
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
+			PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
+			KeysetCursor:   keysetCursorAfterCreatedAt(),
+		},
+		&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+	require.Nil(t, page)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forced duck failure",
+		"the real cause must surface rather than be replaced by the refusal")
+	require.Contains(t, err.Error(), "declined",
+		"an operator who set AllowPartialDegradedMode must be told why it did not apply")
+	require.Zero(t, pg.queryCalls,
+		"the fallback must not run: it would answer an unfiltered first page")
 }
