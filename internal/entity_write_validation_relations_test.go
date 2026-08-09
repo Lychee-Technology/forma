@@ -49,30 +49,32 @@ func validVisit() map[string]any {
 	}
 }
 
-// TestCreateAcceptsDottedKeyUnderRelationRoot pins the relation-strip seam.
+// TestCreateDropsDottedKeyBeneathRelationRoot pins the #318 rule: nothing at or
+// beneath an x-relation property is caller-writable, in either spelling.
 //
-// StripComputedFields removes a relation root by *exact* key, so the registered
-// attribute contactSnapshot.name survives the strip. Expanding it afterwards
-// rebuilds the very object that was just removed — as a partial one — and
-// visit.json resolves contactSnapshot to lead.json#/properties/contact, which
-// requires isAnonymous. The result was a 400 on a payload that was accepted and
-// persisted before #314, and unfixably so: sending the whole nested object does
-// not help, because the strip removes it and the dotted key rebuilds it.
+// Before #318 StripComputedFields matched by exact key, so the nested spelling
+// {"contactSnapshot": {...}} was discarded while the registered dotted
+// descendant contactSnapshot.name survived and was persisted. That value was
+// never readable — relation enrichment replaces the whole contactSnapshot object
+// with the parent's fragment — and the next update deleted it, because the
+// update path rebuilds the dotted name into a nested object that the strip then
+// removes.
 //
-// The value must still be persisted exactly as before. It is simply not
-// schema-validated, the same shape as the documented array gap.
-func TestCreateAcceptsDottedKeyUnderRelationRoot(t *testing.T) {
+// Dropping stays silent. The nested spelling has always been dropped without a
+// rejection; the dotted spelling merely joins it, so no payload accepted before
+// #318 starts failing.
+func TestCreateDropsDottedKeyBeneathRelationRoot(t *testing.T) {
 	manager, spy := newShippedSchemaHarness(t)
 
 	data := validVisit()
 	data["contactSnapshot.name"] = "Ada"
 
 	_, err := manager.Create(context.Background(), createVisitOp(data))
-	require.NoError(t, err, "a dotted key under a stripped relation root must not be rebuilt into a partial object")
+	require.NoError(t, err, "a dotted key beneath a relation root is dropped, not rejected")
 
 	require.Len(t, spy.seen, 1)
-	require.Contains(t, spy.seen[0].keys, "contactSnapshot.name",
-		"the value must keep reaching storage under the caller's own spelling")
+	require.NotContains(t, spy.seen[0].keys, "contactSnapshot.name",
+		"the relation subtree must not reach storage under any spelling")
 }
 
 // TestCreateStillValidatesDottedKeyOutsideRelationRoot is the other half of the

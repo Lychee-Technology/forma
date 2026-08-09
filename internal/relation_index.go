@@ -144,7 +144,18 @@ func (idx *RelationIndex) Relations(schema string) []RelationDescriptor {
 	return idx.bySchema[schema]
 }
 
-// StripComputedFields removes relation-backed attributes from the payload before persistence.
+// StripComputedFields removes the relation subtree from the payload before it is
+// validated and persisted: the property carrying x-relation and everything
+// beneath it, in either spelling.
+//
+// The subtree is derived on read from the parent entity
+// (entityRelationService.enrichDataRecords), which replaces it wholesale, so a
+// caller-written value there is unreadable wherever enrichment applies.
+// Enrichment does skip a record whose foreign key is missing or empty, whose
+// parent row is not found, or whose parent fragment is nil, and a persisted
+// value would survive those reads — but a caller cannot rely on that, and the
+// next update deletes the value anyway. Dropping is silent — see
+// TestCreateDropsDottedKeyBeneathRelationRoot.
 func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any) map[string]any {
 	if idx == nil || len(idx.bySchema) == 0 || data == nil {
 		return data
@@ -156,7 +167,7 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 
 	result := make(map[string]any, len(data))
 	for k, v := range data {
-		if idx.isRelationRoot(schema, k) {
+		if idx.coversRelationSubtree(schema, k) {
 			continue
 		}
 		result[k] = v
@@ -184,9 +195,24 @@ func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {
 	return roots
 }
 
-func (idx *RelationIndex) isRelationRoot(schema, key string) bool {
+// coversRelationSubtree reports whether key names a relation root or anything
+// beneath it.
+//
+// The "." in root+"." is load-bearing. A bare HasPrefix would also delete a
+// sibling attribute whose name merely starts with the root's — contactSnapshotX
+// alongside contactSnapshot — silently dropping an ordinary caller attribute.
+// Pinned by TestStripKeepsSamePrefixSibling.
+//
+// For dotted descendants this is the same prefix rule
+// transform.RelationRoots.Covers applies on the read path for #315's
+// required-policy carve-out. The two differ on the bare root, and deliberately:
+// Covers excludes a name that *is* a root, while this predicate must match it —
+// the root is the nested spelling the strip has always removed. #318 was this
+// predicate lagging behind that prefix rule by an exact-key match, which let the
+// dotted spelling persist what the nested spelling discarded.
+func (idx *RelationIndex) coversRelationSubtree(schema, key string) bool {
 	for _, rel := range idx.bySchema[schema] {
-		if rel.ChildPath == key {
+		if key == rel.ChildPath || strings.HasPrefix(key, rel.ChildPath+".") {
 			return true
 		}
 	}
