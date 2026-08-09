@@ -136,8 +136,10 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
 	// lacking the trailing row_id tiebreak here, before it can silently skip a
-	// boundary tie group (#183).
-	if fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0 {
+	// boundary tie group (#183). hasKeysetCursor (keyset.go) is the shared
+	// spelling of "carries an active cursor", so this gate, the postgres-only
+	// guard and the degrade refusal cannot drift apart.
+	if hasKeysetCursor(fq) {
 		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
 			return nil, fmt.Errorf("validate keyset cursor: %w", err)
 		}
