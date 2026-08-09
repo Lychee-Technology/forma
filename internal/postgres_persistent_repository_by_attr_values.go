@@ -3,10 +3,10 @@ package internal
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/numutil"
 )
 
 // QueryPersistentRecordsByAttrValues fetches full records whose attribute
@@ -85,17 +85,29 @@ func buildAttrValuesAnchor(attr string, meta forma.AttributeMetadata, values []s
 
 	switch meta.ValueType {
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		numeric := make([]float64, 0, len(values))
+		// Per-element typing, mirroring ConvertPgMainValue and
+		// parseDuckDBRawParam (#281, #357): one literal must mean one Go value
+		// on every binder, or the same operand can match under a filter and
+		// miss under relation enrichment (#355). Integral literals in any
+		// accepted spelling bind as exact int64; genuinely fractional ones stay
+		// float64, which is what the write path's own float64 hop stored.
+		// Collapsing the slice to a single element type is not equivalent:
+		// []float64 loses exactness above 2^53, and rendering exact decimals
+		// into a ::numeric[] cast would stop matching stored fractional values.
+		operands := make([]any, 0, len(values))
 		for _, v := range values {
-			parsed, err := strconv.ParseFloat(v, 64)
-			if err != nil {
+			switch parsed := numutil.TryParseNumber(v).(type) {
+			case int64:
+				operands = append(operands, parsed)
+			case float64:
+				operands = append(operands, parsed)
+			default:
 				return "", nil, false, fmt.Errorf(
-					"invalid value %q for %s attribute %q: not parseable as float64 (expected a decimal value_numeric operand): %w",
-					v, meta.ValueType, attr, err)
+					"invalid value %q for %s attribute %q: not a numeric-family literal (expected a decimal value_numeric operand)",
+					v, meta.ValueType, attr)
 			}
-			numeric = append(numeric, parsed)
 		}
-		return "t.attr_id = $2 AND t.value_numeric = ANY($3)", []any{meta.AttributeID, numeric}, false, nil
+		return "t.attr_id = $2 AND t.value_numeric = ANY($3)", []any{meta.AttributeID, operands}, false, nil
 	default:
 		return "", nil, false, fmt.Errorf(
 			"unsupported value_type %s for attribute %q: no batch value column (expected text, uuid, or a numeric family type)",
