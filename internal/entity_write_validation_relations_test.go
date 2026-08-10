@@ -171,6 +171,9 @@ func TestBatchCreateAtomicDropsRelationSubtree(t *testing.T) {
 	require.NotContains(t, h.spy.seen[0].keys, "contactSnapshot.name")
 }
 
+// TestBatchUpdateAtomicDropsRelationSubtree is the update half named above: it
+// pins that the atomic batch update strips the pre-existing dotted value the row
+// already holds, not only the one the caller just sent.
 func TestBatchUpdateAtomicDropsRelationSubtree(t *testing.T) {
 	h := newShippedSchemaHarness(t)
 
