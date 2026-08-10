@@ -141,6 +141,12 @@ func (e *Env) EntityManager() forma.EntityManager {
 	if err != nil {
 		e.T.Fatalf("build schema validator over %s: %v", schemaDir, err)
 	}
+	// The harness constructs the manager directly instead of through the factory,
+	// so it has to run the factory's relation guard itself or it is not modelling
+	// production startup (#318).
+	if err := internal.ValidateRelationSchemas(schemaDir); err != nil {
+		e.T.Fatalf("validate schema relations over %s: %v", schemaDir, err)
+	}
 	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator)
 	return e.manager
 }

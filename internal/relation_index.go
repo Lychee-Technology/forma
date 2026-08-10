@@ -53,6 +53,20 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 	return idx, nil
 }
 
+// ValidateRelationSchemas fails closed on relation declarations the write path
+// cannot honour, for callers that build the manager themselves.
+//
+// It exists because NewEntityManager cannot enforce this: it swallows a
+// LoadRelationIndex failure into a warning and continues with a nil index, which
+// disables stripping altogether rather than stopping. The composition root calls
+// this first, at a position where returning an error aborts startup (#318).
+func ValidateRelationSchemas(schemaDir string) error {
+	if _, err := LoadRelationIndex(schemaDir); err != nil {
+		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
+	}
+	return nil
+}
+
 func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) error {
 	filePath := filepath.Join(schemaDir, schemaName+".json")
 	raw, err := os.ReadFile(filePath)
@@ -128,6 +142,19 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 			ParentIDAttr:       parentIDAttr,
 			ForeignKeyRequired: fkRequired,
 		})
+	}
+
+	// Rejected here, after the loop, rather than at the x-relation marker: only a
+	// property that reached the relations slice is one StripComputedFields
+	// removes. A property whose $ref, key_property, or foreign-key attribute did
+	// not resolve is never stripped, so requiring it is harmless and must not
+	// abort startup (#318).
+	for _, rel := range relations {
+		if _, isRequired := requiredSet[rel.ChildPath]; isRequired {
+			return fmt.Errorf(
+				"schema %s lists relation root %q in \"required\": a relation root is stripped from every payload before validation, so every create and update would fail with a missing-required error the caller cannot fix; remove it from \"required\" or drop its x-relation marker",
+				schemaName, rel.ChildPath)
+		}
 	}
 
 	if len(relations) > 0 {

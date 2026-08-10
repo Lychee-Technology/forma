@@ -152,6 +152,19 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, fmt.Errorf("failed to build schema validator: %w", err)
 	}
 
+	// Relation declarations are checked at the same fail-closed position and for
+	// the same reason: a relation root listed in "required" makes its entity
+	// unwritable at runtime, because the root is stripped from every payload
+	// before the validator sees it (#318). NewEntityManager cannot enforce this —
+	// it swallows a relation-index load failure into a warning and continues with
+	// stripping disabled — so it has to happen here, where startup fails.
+	//
+	// This step opens no client, pool, or handle, so it respects the placement
+	// rule stated above and has nothing to leak on its error return.
+	if err := internal.ValidateRelationSchemas(effectiveConfig.Entity.SchemaDirectory); err != nil {
+		return nil, fmt.Errorf("failed to validate schema relations: %w", err)
+	}
+
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
