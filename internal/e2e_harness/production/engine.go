@@ -143,7 +143,10 @@ func (e *Env) EntityManager() forma.EntityManager {
 	}
 	// The harness constructs the manager directly instead of through the factory,
 	// so it has to run the factory's relation guard itself or it is not modelling
-	// production startup (#318).
+	// production startup (#318). It also has to keep the factory's order: the
+	// guard tolerates a .json file it cannot parse precisely because
+	// schemavalidate.New above has already refused startup for any *registered*
+	// schema that will not parse.
 	if err := internal.ValidateRelationSchemas(schemaDir); err != nil {
 		e.T.Fatalf("validate schema relations over %s: %v", schemaDir, err)
 	}

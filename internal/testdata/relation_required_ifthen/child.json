@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "parentId"],
+  "if": {"properties": {"kind": {"const": "snapshot"}}, "required": ["kind"]},
+  "then": {"required": ["contactSnapshot"]},
+  "else": {"required": ["fallback"]},
+  "properties": {
+    "id": {"type": "string"},
+    "parentId": {"type": "string"},
+    "kind": {"type": "string"},
+    "fallback": {"type": "string"},
+    "contactSnapshot": {
+      "$ref": "parent.json#/properties/contact",
+      "x-relation": {"key_property": "parentId"}
+    }
+  }
+}

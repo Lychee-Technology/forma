@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "parent.json",
+  "type": "object",
+  "required": ["id", "parentId"],
+  "properties": {
+    "id": {"type": "string"},
+    "parentId": {"type": "string"},
+    "contactSnapshot": {"$ref": "parent.json#/properties/contact"}
+  }
+}

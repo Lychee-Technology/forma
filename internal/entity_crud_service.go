@@ -83,7 +83,8 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// beneath a relation root reaches the validator in either spelling — pinned
 	// by TestStripLeavesNothingCoveredForTheValidator.
 	//
-	// Hazard, now foreclosed: a schema listing a relation root in "required"
+	// Hazard, now foreclosed: a schema that requires a relation root — via the
+	// root "required" array or via any applicator that lands on the root object —
 	// would make its entity unwritable, and unfixably so — the root is stripped
 	// before the validator sees it, so sending it does not help. Every create
 	// would fail, and every update would too with strict update validation on.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/transform"
+	"go.uber.org/zap"
 )
 
 // RelationDescriptor captures how a child schema derives fields from a parent schema.
@@ -67,17 +68,20 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // unguarded caller loses stripping for every schema, not just the offender. Any
 // new construction site must call this too.
 //
-// The reach is wider than the declaration guard this was added for, because it
-// surfaces every LoadRelationIndex failure: an unreadable or missing schemaDir,
-// or any non-ledger .json file in it that does not parse as a JSON object,
-// aborts startup as well. One non-object document is exempt — a file holding
-// exactly
+// What aborts startup, exactly:
 //
-//	null
+//   - a schemaDir that cannot be listed, which is a misconfiguration of the
+//     server rather than a fault in one file;
+//   - a schema that declares a relation root the validator would demand, or
+//     whose root requirements cannot be determined (see
+//     checkRelationRootsWritable).
 //
-// which json.Unmarshal decodes into a nil map[string]any without error, after
-// which loadSchemaRelations finds no properties and returns nil. An empty
-// schemaDir stays a no-op, not an error.
+// A .json file that does not parse as a JSON object does not. It is skipped with
+// a warning, because both call sites run schemavalidate.New first — over every
+// name registry.ListSchemas returns, failing closed on any document that will
+// not parse — so a document this loader cannot parse is not a registered entity
+// schema, and refusing to boot over it would abort startup for a file nothing
+// reads. An empty schemaDir stays a no-op, not an error.
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
@@ -94,16 +98,12 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 
 	var schema map[string]any
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		return fmt.Errorf("parse schema %s: %w", filePath, err)
-	}
-
-	requiredSet := make(map[string]struct{})
-	if reqRaw, ok := schema["required"].([]any); ok {
-		for _, r := range reqRaw {
-			if s, ok := r.(string); ok {
-				requiredSet[s] = struct{}{}
-			}
-		}
+		// Skipped, not fatal — see ValidateRelationSchemas for why a document this
+		// loader cannot parse is never a registered entity schema. Still logged:
+		// an unreadable file in SCHEMA_DIR is worth an operator's attention.
+		zap.S().Warnw("skipping unparseable file in schema directory",
+			"path", filePath, "error", err)
+		return nil
 	}
 
 	props, ok := schema["properties"].(map[string]any)
@@ -111,80 +111,94 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 		return nil
 	}
 
+	relations := collectRelations(schemaName, props, declaredRootRequired(schema))
+	// Guarded here, after collection, rather than at the x-relation marker: only a
+	// property that reached the relations slice is one StripComputedFields
+	// removes. A property whose $ref, key_property, or foreign-key attribute did
+	// not resolve is never stripped, so requiring it is harmless and must not
+	// abort startup (#318).
+	if len(relations) == 0 {
+		return nil
+	}
+	if err := checkRelationRootsWritable(schemaName, schema, relations); err != nil {
+		return fmt.Errorf("unhonourable relation declaration in %s: %w", filePath, err)
+	}
+
+	idx.bySchema[schemaName] = append(idx.bySchema[schemaName], relations...)
+	return nil
+}
+
+// collectRelations builds a descriptor for every property of props carrying a
+// usable x-relation marker, skipping the ones that do not resolve.
+//
+// declaredRequired is the root object's literal "required" set and feeds only
+// RelationDescriptor.ForeignKeyRequired; the guard's own, wider notion of
+// "required" lives in relation_required.go and deliberately differs.
+func collectRelations(
+	schemaName string, props map[string]any, declaredRequired map[string]struct{},
+) []RelationDescriptor {
 	var relations []RelationDescriptor
 	for childProp, rawProp := range props {
 		propMap, ok := rawProp.(map[string]any)
 		if !ok {
 			continue
 		}
-
-		refStr, _ := propMap["$ref"].(string)
-		if refStr == "" || !strings.Contains(refStr, ".json") {
+		rel, ok := relationDescriptor(schemaName, childProp, propMap, declaredRequired)
+		if !ok {
 			continue
 		}
+		relations = append(relations, rel)
+	}
+	return relations
+}
 
-		var fkPointer string
-		if relMap, ok := propMap["x-relation"].(map[string]any); ok {
-			fkPointer = firstNonEmpty(
-				stringValue(relMap["key_property"]),
-			)
-		}
-		// Backward compatibility: support legacy marker if present.
-		if fkPointer == "" {
-			continue
-		}
-
-		parentSchema, parentPath := parseRef(refStr)
-		if parentSchema == "" {
-			continue
-		}
-
-		fkAttr := pointerToAttrName(fkPointer)
-		if fkAttr == "" {
-			continue
-		}
-
-		parentIDAttr := "id"
-		if tail := pointerToAttrName(extractFragment(refStr)); tail == "id" {
-			parentIDAttr = tail
-		}
-
-		_, fkRequired := requiredSet[fkAttr]
-
-		relations = append(relations, RelationDescriptor{
-			ChildSchema:        schemaName,
-			ChildPath:          childProp,
-			ParentSchema:       parentSchema,
-			ParentPath:         parentPath,
-			ForeignKeyAttr:     fkAttr,
-			ParentIDAttr:       parentIDAttr,
-			ForeignKeyRequired: fkRequired,
-		})
+// relationDescriptor derives one property's descriptor, answering false when the
+// property is not a usable relation root. Every early return is a property
+// StripComputedFields will not strip, which is why none of them is an error.
+func relationDescriptor(
+	schemaName, childProp string, propMap map[string]any, declaredRequired map[string]struct{},
+) (RelationDescriptor, bool) {
+	refStr, _ := propMap["$ref"].(string)
+	if refStr == "" || !strings.Contains(refStr, ".json") {
+		return RelationDescriptor{}, false
 	}
 
-	// Rejected here, after the loop, rather than at the x-relation marker: only a
-	// property that reached the relations slice is one StripComputedFields
-	// removes. A property whose $ref, key_property, or foreign-key attribute did
-	// not resolve is never stripped, so requiring it is harmless and must not
-	// abort startup (#318).
-	//
-	// Reach, stated: requiredSet above is built from the schema's root-level
-	// "required" alone. A relation root made mandatory through allOf/$ref
-	// composition would still be enforced by the validator and missed here. No
-	// shipped schema composes "required" — none uses allOf, anyOf or oneOf at
-	// all — so the guard covers every schema it has to protect today.
-	for _, rel := range relations {
-		if _, isRequired := requiredSet[rel.ChildPath]; isRequired {
-			return fmt.Errorf(
-				"schema %s lists relation root %q in \"required\": a relation root is stripped from every payload before validation, so every create fails with a missing-required error the caller cannot fix, as does every update when strict update validation is on; remove it from \"required\" or drop its x-relation marker",
-				schemaName, rel.ChildPath)
-		}
+	var fkPointer string
+	if relMap, ok := propMap["x-relation"].(map[string]any); ok {
+		fkPointer = firstNonEmpty(
+			stringValue(relMap["key_property"]),
+		)
+	}
+	if fkPointer == "" {
+		return RelationDescriptor{}, false
 	}
 
-	if len(relations) > 0 {
-		idx.bySchema[schemaName] = append(idx.bySchema[schemaName], relations...)
+	parentSchema, parentPath := parseRef(refStr)
+	if parentSchema == "" {
+		return RelationDescriptor{}, false
 	}
-	return nil
+
+	fkAttr := pointerToAttrName(fkPointer)
+	if fkAttr == "" {
+		return RelationDescriptor{}, false
+	}
+
+	parentIDAttr := "id"
+	if tail := pointerToAttrName(extractFragment(refStr)); tail == "id" {
+		parentIDAttr = tail
+	}
+
+	_, fkRequired := declaredRequired[fkAttr]
+
+	return RelationDescriptor{
+		ChildSchema:        schemaName,
+		ChildPath:          childProp,
+		ParentSchema:       parentSchema,
+		ParentPath:         parentPath,
+		ForeignKeyAttr:     fkAttr,
+		ParentIDAttr:       parentIDAttr,
+		ForeignKeyRequired: fkRequired,
+	}, true
 }
 
 // Relations returns descriptors for a child schema.
