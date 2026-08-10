@@ -25,12 +25,18 @@ type rootRequiredWalk struct {
 // against the *same* instance location as the schema carrying them. A "required"
 // inside one of them therefore constrains the root object's own properties.
 //
-// "if" is in this list even though a failing "if" invalidates nothing. It is
-// collected deliberately, for a different reason than the others: a relation
-// root is stripped from every payload, so an "if" that tests for it can never be
-// satisfied, which silently makes "then" dead and "else" unconditional. That is
-// a schema doing something other than what it says, and an operator should hear
-// about it at startup.
+// "if" is in this list even though a failing "if" invalidates nothing on its
+// own. It is collected deliberately, and for a different reason than the others:
+// a relation root never reaches the validator, so an "if" that turns on the
+// presence of one is being decided against a property no payload can carry, and
+// the branch the author meant to select may be permanently dead. That is a
+// schema doing something other than what it says, and an operator should hear
+// about it at startup rather than discover it as a mis-validated document.
+//
+// This over-approximates — an "if" could also be satisfiable by some other
+// disjunct it contains — which is the intended direction: the guard refuses a
+// suspect schema instead of booting a broken one. Widening it costs nothing
+// today (no shipped schema uses "if" at all).
 var sameLocationBranchKeywords = []string{"if", "then", "else"}
 
 // sameLocationListKeywords are the same-instance-location applicators whose

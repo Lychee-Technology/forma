@@ -54,8 +54,8 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 	return idx, nil
 }
 
-// ValidateRelationSchemas fails closed on anything that stops the relation index
-// from loading, for callers that build the manager themselves.
+// ValidateRelationSchemas fails closed on a relation declaration the runtime
+// cannot honour, for callers that build the manager themselves.
 //
 // It exists because NewEntityManager cannot enforce this: it swallows a
 // LoadRelationIndex failure into a warning and continues with a nil index, which
@@ -76,12 +76,21 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 //     whose root requirements cannot be determined (see
 //     checkRelationRootsWritable).
 //
-// A .json file that does not parse as a JSON object does not. It is skipped with
-// a warning, because both call sites run schemavalidate.New first — over every
-// name registry.ListSchemas returns, failing closed on any document that will
-// not parse — so a document this loader cannot parse is not a registered entity
-// schema, and refusing to boot over it would abort startup for a file nothing
-// reads. An empty schemaDir stays a no-op, not an error.
+// A .json file that will not decode into a JSON object does not. It is skipped
+// with a warning naming the path, because both call sites run schemavalidate.New
+// first — over every name registry.ListSchemas returns, failing closed on any
+// document that will not parse — so a document this loader cannot parse is not a
+// registered entity schema, and refusing to boot over it would abort startup for
+// a file nothing reads.
+//
+// One non-object document is skipped without a warning rather than with one: a
+// file holding exactly
+//
+//	null
+//
+// which json.Unmarshal decodes into a nil map[string]any without error, so it
+// reaches the ordinary "declares no properties" exit instead. An empty schemaDir
+// stays a no-op, not an error.
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
@@ -99,8 +108,10 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 	var schema map[string]any
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		// Skipped, not fatal — see ValidateRelationSchemas for why a document this
-		// loader cannot parse is never a registered entity schema. Still logged:
-		// an unreadable file in SCHEMA_DIR is worth an operator's attention.
+		// loader cannot decode is never a registered entity schema. Still logged:
+		// an undecodable file in SCHEMA_DIR is worth an operator's attention, and
+		// nothing else reports it. The read failure above stays fatal, because a
+		// file present but unreadable points at the deployment, not at the file.
 		zap.S().Warnw("skipping unparseable file in schema directory",
 			"path", filePath, "error", err)
 		return nil
