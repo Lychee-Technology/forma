@@ -27,8 +27,10 @@ type RelationIndex struct {
 	bySchema map[string][]RelationDescriptor
 }
 
-// LoadRelationIndex parses JSON schema files in schemaDir and builds a relation index.
-// If the directory is missing or no relations are found, it returns an empty index.
+// LoadRelationIndex parses JSON schema files in schemaDir and builds a relation
+// index. An unset schemaDir, or one holding no relations, yields an empty index
+// and no error. A schemaDir that cannot be listed is an error — see
+// ValidateRelationSchemas for the full list of what fails and why.
 func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 	idx := &RelationIndex{bySchema: make(map[string][]RelationDescriptor)}
 	if schemaDir == "" {
@@ -72,16 +74,29 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 //
 //   - a schemaDir that cannot be listed, which is a misconfiguration of the
 //     server rather than a fault in one file;
+//   - a .json entry that lists but cannot be read. Measured: a broken symlink
+//     answers "no such file or directory", a mode-000 file "permission denied",
+//     and both abort. This one is a judgement call rather than a necessity — see
+//     the read-failure branch in loadSchemaRelations for why it is not treated
+//     like a decode failure;
 //   - a schema that declares a relation root the validator would demand, or
 //     whose root requirements cannot be determined (see
 //     checkRelationRootsWritable).
 //
-// A .json file that will not decode into a JSON object does not. It is skipped
-// with a warning naming the path, because both call sites run schemavalidate.New
-// first — over every name registry.ListSchemas returns, failing closed on any
-// document that will not parse — so a document this loader cannot parse is not a
-// registered entity schema, and refusing to boot over it would abort startup for
-// a file nothing reads.
+// A .json file that will not decode into a JSON object does not abort. It is
+// skipped with a warning naming the path, and skipping it is self-contained: the
+// schema is then absent from the index entirely, so Relations answers nil for it,
+// StripComputedFields removes nothing from its payloads, and any property it
+// requires stays satisfiable by sending it. The hazard this guard exists to catch
+// cannot arise for a schema that is not indexed.
+//
+// Secondarily — and this part is contingent, so do not lean on it alone — both
+// call sites run schemavalidate.New first, over every name
+// registry.ListSchemas returns, failing closed on any document that will not
+// parse. So an undecodable file is, in the shipped configuration, not a
+// registered entity schema either. That argument assumes the registry serves the
+// same bytes as the file on disk, which internal/schemameta's file registry does
+// but the forma.SchemaRegistry interface does not require.
 //
 // One non-object document is skipped without a warning rather than with one: a
 // file holding exactly
@@ -107,11 +122,16 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 
 	var schema map[string]any
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		// Skipped, not fatal — see ValidateRelationSchemas for why a document this
-		// loader cannot decode is never a registered entity schema. Still logged:
-		// an undecodable file in SCHEMA_DIR is worth an operator's attention, and
-		// nothing else reports it. The read failure above stays fatal, because a
-		// file present but unreadable points at the deployment, not at the file.
+		// Skipped, not fatal: the schema is then absent from the index, so nothing
+		// is stripped for it and no requirement of its becomes unsatisfiable — the
+		// hazard this guard exists for cannot arise. See ValidateRelationSchemas.
+		// Still logged, because nothing else reports it.
+		//
+		// The read failure above stays fatal instead, and the asymmetry is
+		// deliberate: an entry the directory listing produced but that cannot be
+		// opened describes the deployment (a broken symlink, a bad mode), not the
+		// document, and the same fault could equally be hiding a schema that does
+		// declare relations.
 		zap.S().Warnw("skipping unparseable file in schema directory",
 			"path", filePath, "error", err)
 		return nil

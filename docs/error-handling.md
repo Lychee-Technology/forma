@@ -164,18 +164,31 @@ A second fail-closed check sits beside validator construction in the factory:
 `internal.ValidateRelationSchemas` aborts startup for a schema that requires a
 relation root — see "Relation subtrees are never caller-writable".
 
-It aborts startup for two things, and only two:
+It aborts startup for three things, and only three:
 
 1. a schema that declares a relation root the validator would demand — through
    the root's own `required` **or** through any applicator that lands on the
    root object (`allOf`/`anyOf`/`oneOf`, `if`/`then`/`else`,
-   `dependentRequired`, `dependentSchemas`), because the validator resolves
-   composition and the loader has to match what it will enforce;
+   `dependentRequired`, `dependentSchemas`, and draft-07's `dependencies`),
+   because the validator resolves composition and the loader has to match what it
+   will enforce;
 2. a `SCHEMA_DIR` that cannot be listed, which is a misconfiguration of the
-   server rather than a fault in one file.
+   server rather than a fault in one file;
+3. a `.json` entry that appears in the listing but cannot be read — a broken
+   symlink, a mode-000 file. That describes the deployment rather than the
+   document, and the same fault could be hiding a schema that *does* declare
+   relations, so it is not treated like the decode failure below.
 
-A schema that declares a relation root **and** applies a `$ref` to its own root
-object is refused under (1) too. The loader does not resolve references, and
+`dependencies` is in list (1) because forma accepts draft-07
+(`internal/schemavalidate/schema_check.go`), and under draft-07 the library
+enforces this rule from `dependencies` alone — `jsonschema-go` splits it into
+`DependencyStrings`/`DependencySchemas` at unmarshal and reads the 2020-12
+spellings only in 2020-12 mode. A draft-07 schema using it is otherwise a silent
+bypass of the whole check.
+
+A schema that declares a relation root **and** applies a `$ref` to the root
+instance — at the document root, or inside any of the applicators in (1) — is
+refused under (1) too. The loader does not resolve references, and
 `jsonschema.Resolved` offers no resolved-reference graph to borrow either — its
 only schema accessor is `Schema()`, which after `Resolve` still answers the root
 with `Ref` set to the unresolved string it was parsed from — so the loader
@@ -183,17 +196,29 @@ cannot tell whether the reference makes a relation root mandatory, and
 refusing beats guessing. A `$ref` on a *property* is the normal shape
 (`visit.json`'s `contactSnapshot`) and is untouched. So is a `required` inside a
 property's own subschema, which constrains that child object's members rather
-than the root's, and a `required` under `not`, which can never make a property
-mandatory.
+than the root's; a `required` under `not`, which can never make a property
+mandatory; and a `then`/`else` with no `if`, or an `if` with neither branch,
+which the validator ignores.
 
 **A stray malformed `.json` left in `SCHEMA_DIR` is not fatal.** It is skipped
-with a warning naming the path, and the schemas around it still index. Both call
-sites (`factory/factory.go`, `internal/e2e_harness/production/engine.go`) run
-validator construction first, and that has already parsed every name
-`registry.ListSchemas()` returns and failed closed on any that would not — so a
-document the relation loader cannot parse is not a registered entity schema, and
-refusing to boot over it would abort startup for a file nothing reads. An
-unconfigured (empty) `Entity.SchemaDirectory` is still not an error.
+with a warning naming the path, and the schemas around it still index.
+
+Skipping is safe on its own terms: the schema is then absent from the relation
+index, so `StripComputedFields` removes nothing from its payloads and any
+property it requires stays satisfiable by sending it. The hazard this check
+exists to catch cannot arise for a schema that is not indexed.
+
+A second argument points the same way but is contingent, so do not lean on it
+alone: both call sites (`factory/factory.go`,
+`internal/e2e_harness/production/engine.go`) run validator construction first,
+and that has already parsed every name `registry.ListSchemas()` returns and
+failed closed on any that would not — so in the shipped configuration an
+undecodable file is not a registered entity schema either. That step reads the
+document the *registry* serves, which `internal/schemameta`'s file registry takes
+from the same file on disk, but which the `forma.SchemaRegistry` interface does
+not require any implementation to do.
+
+An unconfigured (empty) `Entity.SchemaDirectory` is still not an error.
 
 ### Validation gap: a dotted key written above a schema array
 
@@ -318,19 +343,28 @@ Because the subtree never reaches the validator, constraints declared under an
 parent entity, where the data actually lives.
 
 **A schema that requires a relation root is rejected at startup.** The root is
-stripped from every payload before validation, so the entity would fail every
-create and update with a missing-required error that the caller cannot fix by
+stripped from every payload before validation, so a write that has to satisfy
+that requirement fails with a missing-required error the caller cannot fix by
 sending the field. `internal.ValidateRelationSchemas` — called before a manager
 is built by both the composition root (the factory, alongside the schema
 validator) and the production e2e harness — refuses to start, naming the schema
 and the property.
 
+How much of the entity that breaks depends on the requirement. An *unconditional*
+one — the root `required` array, or an `allOf` branch — fails every create and
+update. A *conditional* one — `anyOf`/`oneOf`, `if`/`then`/`else`,
+`dependentRequired`/`dependentSchemas`/`dependencies` — fails only the documents
+that take that branch; the others validate normally. Both are refused: a schema
+with no writable path for some of its documents is still a schema an operator
+must fix, and it is far cheaper to say so at startup than to have callers
+discover it as an unfixable 400.
+
 "Requires" means what the validator will enforce, not what the root `required`
 array literally says: the check also walks `allOf`/`anyOf`/`oneOf`,
-`if`/`then`/`else`, `dependentRequired` and `dependentSchemas`, and refuses a
-relation-declaring schema that applies a `$ref` to its own root object because it
-cannot follow one. See "Startup fails closed" for the full boundary, including
-what is deliberately *not* collected.
+`if`/`then`/`else`, `dependentRequired`, `dependentSchemas` and draft-07's
+`dependencies`, and refuses a relation-declaring schema that applies a `$ref` to
+the root instance because it cannot follow one. See "Startup fails closed" for
+the full boundary, including what is deliberately *not* collected.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata

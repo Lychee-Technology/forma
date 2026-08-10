@@ -160,11 +160,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// stripping disabled — so it has to happen here, where startup fails.
 	//
 	// This step opens no client, pool, or handle, so it respects the placement
-	// rule stated above and has nothing to leak on its error return. Running
-	// *after* schemavalidate.New is load-bearing for a second reason, stated at
-	// ValidateRelationSchemas: that call has already refused startup for any
-	// registered schema that will not parse, which is what lets the relation
-	// loader skip an unparseable file instead of aborting over it.
+	// rule stated above and has nothing to leak on its error return.
+	//
+	// The guard skips a .json file it cannot decode; what makes that safe is
+	// self-contained and stated at ValidateRelationSchemas (an unindexed schema
+	// has nothing stripped from its payloads). Running after schemavalidate.New
+	// adds a second, contingent reassurance — it is not what the skip rests on.
 	if err := internal.ValidateRelationSchemas(effectiveConfig.Entity.SchemaDirectory); err != nil {
 		return nil, fmt.Errorf("failed to validate schema relations: %w", err)
 	}

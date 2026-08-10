@@ -84,10 +84,12 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// by TestStripLeavesNothingCoveredForTheValidator.
 	//
 	// Hazard, now foreclosed: a schema that requires a relation root — via the
-	// root "required" array or via any applicator that lands on the root object —
-	// would make its entity unwritable, and unfixably so — the root is stripped
-	// before the validator sees it, so sending it does not help. Every create
-	// would fail, and every update would too with strict update validation on.
+	// root "required" array or via any applicator that lands on the root object,
+	// including draft-07's "dependencies" — would make its entity unwritable, and
+	// unfixably so: the root is stripped before the validator sees it, so sending
+	// it does not help. Unconditionally required, that is every create and (with
+	// strict update validation on) every update; conditionally required, it is
+	// every document that takes the branch.
 	// ValidateRelationSchemas (relation_index.go) rejects such a schema at
 	// startup, and it is called before a manager is built by both the composition
 	// root (factory) and the production e2e harness, so it no longer reaches this
