@@ -2,8 +2,6 @@ package factory
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -82,36 +80,18 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 			"a missing schema document from an unparseable one")
 }
 
-// writeRequiredRelationRootSchemas fills dir with a two-schema pair whose child
+// requiredRelationRootSchemaDir is the committed two-schema pair whose child
 // lists its x-relation property in root-level "required" — the shape
-// internal.ValidateRelationSchemas refuses. It mirrors the fixture in
-// internal/relation_index_guard_test.go, which cannot be shared across packages.
-func writeRequiredRelationRootSchemas(t *testing.T, dir string) {
-	t.Helper()
-
-	parent := `{
-	  "type": "object",
-	  "properties": {
-	    "id": {"type": "string"},
-	    "contact": {"type": "object", "properties": {"name": {"type": "string"}}}
-	  }
-	}`
-	child := `{
-	  "type": "object",
-	  "required": ["id", "parentId", "contactSnapshot"],
-	  "properties": {
-	    "id": {"type": "string"},
-	    "parentId": {"type": "string"},
-	    "contactSnapshot": {
-	      "$ref": "parent.json#/properties/contact",
-	      "x-relation": {"key_property": "parentId"}
-	    }
-	  }
-	}`
-
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "parent.json"), []byte(parent), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.json"), []byte(child), 0o600))
-}
+// internal.ValidateRelationSchemas refuses. It is the same directory
+// internal/relation_index_guard_test.go asserts the rule against, read here by
+// relative path so the two packages cannot drift apart (the same way
+// internal/entity_write_validation_relations_test.go reads
+// ../cmd/server/schemas).
+//
+// The mock registry serves its own document and never references this directory,
+// so pointing Entity.SchemaDirectory at it does not disturb validator
+// construction — only the relation guard reads it.
+const requiredRelationRootSchemaDir = "../internal/testdata/relation_required_root"
 
 // TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins the
 // factory's call to internal.ValidateRelationSchemas — the wiring that makes the
@@ -126,7 +106,7 @@ func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *test
 	t.Parallel()
 
 	config := validatorTestConfig(t, newMockSchemaRegistry())
-	writeRequiredRelationRootSchemas(t, config.Entity.SchemaDirectory)
+	config.Entity.SchemaDirectory = requiredRelationRootSchemaDir
 
 	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
