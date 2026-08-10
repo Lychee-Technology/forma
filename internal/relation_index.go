@@ -73,8 +73,8 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 //   - a schema that declares a relation root the validator would demand, or
 //     whose root requirements cannot be determined (see
 //     checkRelationRootsWritable);
-//   - a schema the registry lists but cannot then serve, or whose document is
-//     not syntactically valid JSON.
+//   - a schema the registry lists but cannot then serve, or whose document does
+//     not decode into any (see loadSchemaRelations for the decode).
 //
 // The second cause is fatal rather than skipped because every name walked here
 // came from ListSchemas: it names a schema the runtime resolves, validates
@@ -82,21 +82,43 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 // read at all is therefore a fault in the registry itself, not a stray file left
 // beside the ones that matter.
 //
-// The boundary is JSON *syntax*, not JSON shape, and that is deliberate: a
-// document that parses but is not an object is accepted, because it declares no
-// properties and so has no relation roots (see loadSchemaRelations). Drawing the
-// line at "not an object" instead made booleans fatal, which was wrong — a
-// boolean is a legal JSON Schema.
+// The boundary is the decode into any, stated exactly that way because the two
+// looser descriptions of it are both wrong. It is not JSON *shape*: a document
+// that decodes but is not an object is accepted, since it declares no properties
+// and so has no relation roots, and drawing the line there made booleans fatal —
+// a boolean is a legal JSON Schema. Nor is it JSON *syntax*, which is narrower
+// than what actually fails:
+//
+//	{"properties":{"a":{"type":"string"},"b":{"const":1e999}}}
+//
+// is well-formed JSON — json.Valid answers true, and RFC 8259 puts no bound on a
+// number's magnitude — yet decoding it into any fails with "cannot unmarshal
+// number 1e999 into Go value of type float64". So the fatal class is syntax
+// errors *plus* numbers outside float64's range.
 //
 // Observation, not justification: schemavalidate.New rejects every document this
 // cause is fatal on, and both shipped call sites run it first, so in the shipped
-// ordering the cause is unreachable. That holds by construction rather than by
-// coincidence — json.Unmarshal runs checkValid over the whole input before
-// decoding anything (encoding/json/decode.go), so a syntax error fails
-// unmarshalling into *any* target type, jsonschema.Schema included. It does not
-// depend on the two targets agreeing about shape, which is exactly the
-// assumption the boolean case broke. The reason to refuse remains that the
-// schema is registered.
+// ordering the cause is unreachable. Measured for both halves, and it holds for
+// the whole class rather than for the cases someone thought to try:
+//
+//   - Syntax errors are target-independent. json.Unmarshal runs checkValid over
+//     the whole input before decoding anything (encoding/json/decode.go), so a
+//     malformed document fails unmarshalling into any target type.
+//   - Overflow is caught because jsonschema.Schema decodes the same bytes the
+//     same way this loader does. Schema.UnmarshalJSON tries a bool first
+//     (schema.go:379, which is why booleans are legal schemas) and otherwise
+//     calls unmarshalStructWithMap, which decodes the document twice: into its
+//     own struct, and into a map[string]any (util.go:367 and :372). A JSON object
+//     therefore passes every value through the same any decode this loader
+//     performs, so a value that fails here fails there — in the struct pass for a
+//     keyword the library models ("properties", "enum"), in the map pass for one
+//     it does not ("x-junk"). A document that is neither an object nor a boolean
+//     is rejected outright by the struct pass, which is why "[1,2,3]" and "\"x\""
+//     are refused by the validator even though this loader accepts them.
+//
+// The relationship is one-directional and deliberately so: this loader's fatal
+// class is a strict subset of what schemavalidate.New refuses. The reason to
+// refuse remains that the schema is registered.
 //
 // A registry that lists no schemas, and a nil registry, are both no-ops rather
 // than errors.
@@ -122,10 +144,15 @@ func ValidateRelationSchemas(registry forma.SchemaRegistry) error {
 // schemavalidate.New accepts — pinned by
 // TestLoadRelationIndexAcceptsNonObjectDocuments.
 //
-// Any document that is valid JSON but not an object — true, false, an array, a
+// Any document that decodes but is not an object — true, false, an array, a
 // string, null — declares no properties, so it has no relation roots, nothing is
 // stripped for it, and there is nothing here to guard. It takes the same exit a
 // property-less object takes.
+//
+// "Decodes", not "is valid JSON": the two differ. "[1e999]" is well-formed JSON
+// and not an object, yet it never reaches that exit, because the decode below
+// fails on the number first. See ValidateRelationSchemas for what that costs and
+// why it is safe.
 func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, schemaName string) error {
 	_, registered, err := registry.GetSchemaByName(schemaName)
 	if err != nil {

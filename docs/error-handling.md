@@ -185,26 +185,49 @@ It aborts startup for two things, and only two:
    `if`, `dependentRequired`, `dependentSchemas`, and draft-07's
    `dependencies`), because the validator resolves composition and the loader has
    to match what it will enforce;
-2. a schema the registry lists but cannot then serve, or whose document is not
-   syntactically valid JSON. Every name walked came from `ListSchemas`, so such a
-   schema is one the runtime resolves and validates writes against: a document
-   that cannot be read at all is a fault in the registry, not a stray file.
+2. a schema the registry lists but cannot then serve, or whose document does not
+   decode into `any`. Every name walked came from `ListSchemas`, so such a schema
+   is one the runtime resolves and validates writes against: a document that
+   cannot be read at all is a fault in the registry, not a stray file.
 
-The boundary in (2) is JSON **syntax**, not JSON shape. A document that parses
-but is not an object — `true`, `false`, an array, a string, `null` — is
-*accepted*: it declares no properties, so it has no relation roots, so nothing
-is stripped for it and there is nothing to guard. Drawing the line at "not an
-object" instead made booleans fatal, which was wrong twice over: a JSON boolean
-is a legal JSON Schema, and `jsonschema-go` resolves and validates one happily,
-so the guard would have aborted startup for a registry the validator accepts.
+The boundary in (2) is **the decode into `any`**, and it is worth stating that
+precisely, because both looser summaries of it are wrong.
 
-Validator construction rejects every document (2) is fatal on, and runs first at
-both call sites, so in practice that cause is reached only by a caller that skips
-it. That holds by construction, not by coincidence: `json.Unmarshal` runs
-`checkValid` over the whole input before decoding anything
-(`encoding/json/decode.go`), so a syntax error fails unmarshalling into *any*
-target type — it does not depend on `jsonschema.Schema` and `map[string]any`
-agreeing about shape, which is the assumption the boolean case broke.
+It is not JSON *shape*. A document that decodes but is not an object — `true`,
+`false`, an array, a string, `null` — is *accepted*: it declares no properties,
+so it has no relation roots, so nothing is stripped for it and there is nothing
+to guard. Drawing the line at "not an object" made booleans fatal, which was
+wrong twice over: a JSON boolean is a legal JSON Schema, and `jsonschema-go`
+resolves and validates one happily, so the guard aborted startup for a registry
+the validator accepts.
+
+It is not JSON *syntax* either, which is narrower than what actually fails.
+`{"properties":{"a":{"type":"string"},"b":{"const":1e999}}}` is well-formed JSON
+— `json.Valid` answers true, and RFC 8259 puts no bound on a number's magnitude
+— yet decoding it into `any` fails with `cannot unmarshal number 1e999 into Go
+value of type float64`. The fatal class is syntax errors **plus** numbers outside
+`float64`'s range.
+
+Validator construction rejects every document in that class, and runs first at
+both call sites, so in practice the cause is reached only by a caller that skips
+it. That is measured for both halves and holds for the whole class:
+
+- syntax errors are target-independent — `json.Unmarshal` runs `checkValid` over
+  the whole input before decoding anything (`encoding/json/decode.go`), so a
+  malformed document fails unmarshalling into any target type;
+- overflow is caught because `jsonschema.Schema` decodes the same bytes the same
+  way. `Schema.UnmarshalJSON` tries a `bool` first — which is why booleans are
+  legal schemas — and otherwise calls `unmarshalStructWithMap`, which decodes the
+  document *twice*: into its own struct, and into a `map[string]any`. A JSON
+  object therefore passes every value through the same `any` decode this loader
+  performs, so a value that fails here fails there: in the struct pass for a
+  keyword the library models (`properties`, `enum`), in the map pass for one it
+  does not (`x-junk`).
+
+A document that is neither an object nor a boolean is rejected outright by that
+struct pass, which is why the validator refuses `[1,2,3]` and `"x"` even though
+this loader accepts them. The relationship is one-directional by design: the
+loader's fatal class is a strict subset of what validator construction refuses.
 
 `dependencies` is in list (1) because forma accepts draft-07
 (`internal/schemavalidate/schema_check.go`), and under draft-07 the library

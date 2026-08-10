@@ -200,7 +200,10 @@ func TestLoadRelationIndexFailsOnUnservableSchema(t *testing.T) {
 }
 
 // TestLoadRelationIndexFailsOnUndecodableDocument is the other half: a listed
-// schema whose document is not syntactically valid JSON.
+// schema whose document does not decode into any. "{" is the malformed-JSON form
+// of that; a number outside float64's range is the other, and the same branch
+// covers both — see ValidateRelationSchemas for why that is the boundary and why
+// it stays a subset of what the validator refuses.
 //
 // The message names the schema rather than a path, because a registry need not
 // have one — it may serve the document from a database or from memory.
