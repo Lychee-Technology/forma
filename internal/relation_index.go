@@ -70,7 +70,14 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // The reach is wider than the declaration guard this was added for, because it
 // surfaces every LoadRelationIndex failure: an unreadable or missing schemaDir,
 // or any non-ledger .json file in it that does not parse as a JSON object,
-// aborts startup as well. An empty schemaDir stays a no-op, not an error.
+// aborts startup as well. One non-object document is exempt — a file holding
+// exactly
+//
+//	null
+//
+// which json.Unmarshal decodes into a nil map[string]any without error, after
+// which loadSchemaRelations finds no properties and returns nil. An empty
+// schemaDir stays a no-op, not an error.
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)

@@ -169,8 +169,10 @@ load failure, so an unreadable or missing `SCHEMA_DIR`, or any `.json` file in
 it other than the `*_attributes.json` ledgers that does not parse as a JSON
 object, now aborts startup as well — where `NewEntityManager` previously logged
 a warning and continued with relation stripping disabled. **A stray malformed
-`.json` left in `SCHEMA_DIR` is therefore fatal.** An unconfigured (empty)
-`Entity.SchemaDirectory` is still not an error.
+`.json` left in `SCHEMA_DIR` is therefore fatal.** One non-object document is
+exempt: a file holding exactly `null`, which `json.Unmarshal` decodes into a nil
+`map[string]any` without error, so the load finds no `properties` and skips that
+schema. An unconfigured (empty) `Entity.SchemaDirectory` is still not an error.
 
 ### Validation gap: a dotted key written above a schema array
 
@@ -298,8 +300,9 @@ parent entity, where the data actually lives.
 startup.** The root is stripped from every payload before validation, so the
 entity would fail every create and update with a missing-required error that the
 caller cannot fix by sending the field. `internal.ValidateRelationSchemas` —
-called from the factory alongside the schema validator — refuses to start,
-naming the schema and the property.
+called before a manager is built by both the composition root (the factory,
+alongside the schema validator) and the production e2e harness — refuses to
+start, naming the schema and the property.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
