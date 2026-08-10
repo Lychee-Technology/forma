@@ -2,6 +2,8 @@ package factory
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -78,6 +80,64 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 	assert.ErrorIs(t, err, forma.ErrNotFound,
 		"the registry's not-found cause must survive wrapping so the operator can tell "+
 			"a missing schema document from an unparseable one")
+}
+
+// writeRequiredRelationRootSchemas fills dir with a two-schema pair whose child
+// lists its x-relation property in root-level "required" — the shape
+// internal.ValidateRelationSchemas refuses. It mirrors the fixture in
+// internal/relation_index_guard_test.go, which cannot be shared across packages.
+func writeRequiredRelationRootSchemas(t *testing.T, dir string) {
+	t.Helper()
+
+	parent := `{
+	  "type": "object",
+	  "properties": {
+	    "id": {"type": "string"},
+	    "contact": {"type": "object", "properties": {"name": {"type": "string"}}}
+	  }
+	}`
+	child := `{
+	  "type": "object",
+	  "required": ["id", "parentId", "contactSnapshot"],
+	  "properties": {
+	    "id": {"type": "string"},
+	    "parentId": {"type": "string"},
+	    "contactSnapshot": {
+	      "$ref": "parent.json#/properties/contact",
+	      "x-relation": {"key_property": "parentId"}
+	    }
+	  }
+	}`
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "parent.json"), []byte(parent), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.json"), []byte(child), 0o600))
+}
+
+// TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins the
+// factory's call to internal.ValidateRelationSchemas — the wiring that makes the
+// #318 guard a *startup* guard rather than a function nobody runs.
+//
+// internal/relation_index_guard_test.go covers the rule itself, but it calls
+// LoadRelationIndex and ValidateRelationSchemas directly: deleting the call from
+// factory.go left the whole suite green, and with it the promise
+// entity_crud_service.go makes to future readers ("the guard handles it") would
+// have silently become false. This test fails when that call is removed.
+func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	config := validatorTestConfig(t, newMockSchemaRegistry())
+	writeRequiredRelationRootSchemas(t, config.Entity.SchemaDirectory)
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.Error(t, err)
+	assert.Nil(t, em, "no manager may be returned when a relation declaration is unhonourable")
+	assert.Contains(t, err.Error(), "failed to validate schema relations",
+		"the failure must come from the factory's relation guard, not from another check")
+	// The offending schema and property must be named, so an operator can act.
+	assert.Contains(t, err.Error(), "child")
+	assert.Contains(t, err.Error(), "contactSnapshot")
 }
 
 // TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface pins the
