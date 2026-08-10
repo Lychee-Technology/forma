@@ -130,8 +130,11 @@ func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *test
 	assert.Contains(t, err.Error(), "failed to validate schema relations",
 		"the failure must come from the factory's relation guard, not from another check")
 	// The offending schema and property must be named, so an operator can act.
-	assert.Contains(t, err.Error(), "test")
-	assert.Contains(t, err.Error(), "contactSnapshot")
+	// Asserted on the full phrase rather than the bare name "test": that substring
+	// also occurs in the fixture paths this test hands the factory, so it would
+	// pass on an error that never identified a schema at all.
+	assert.Contains(t, err.Error(), "registered schema test")
+	assert.Contains(t, err.Error(), `requires relation root "contactSnapshot"`)
 }
 
 // TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded is the

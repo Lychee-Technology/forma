@@ -73,20 +73,30 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 //   - a schema that declares a relation root the validator would demand, or
 //     whose root requirements cannot be determined (see
 //     checkRelationRootsWritable);
-//   - a schema the registry lists but cannot then serve, or whose document will
-//     not decode into a JSON object.
+//   - a schema the registry lists but cannot then serve, or whose document is
+//     not syntactically valid JSON.
 //
 // The second cause is fatal rather than skipped because every name walked here
 // came from ListSchemas: it names a schema the runtime resolves, validates
 // writes against, and strips relation subtrees for. A document that cannot be
-// read is therefore a fault in the registry itself, not a stray file left beside
-// the ones that matter, and there is no reading of it under which this loader
-// could tell whether it declares a relation root.
+// read at all is therefore a fault in the registry itself, not a stray file left
+// beside the ones that matter.
 //
-// Observation, not justification: schemavalidate.New refuses the very same
-// documents for the very same reasons, and both shipped call sites run it over
-// the same registry first, so in the shipped ordering that cause is unreachable
-// here. The reason to refuse is that the schema is registered.
+// The boundary is JSON *syntax*, not JSON shape, and that is deliberate: a
+// document that parses but is not an object is accepted, because it declares no
+// properties and so has no relation roots (see loadSchemaRelations). Drawing the
+// line at "not an object" instead made booleans fatal, which was wrong — a
+// boolean is a legal JSON Schema.
+//
+// Observation, not justification: schemavalidate.New rejects every document this
+// cause is fatal on, and both shipped call sites run it first, so in the shipped
+// ordering the cause is unreachable. That holds by construction rather than by
+// coincidence — json.Unmarshal runs checkValid over the whole input before
+// decoding anything (encoding/json/decode.go), so a syntax error fails
+// unmarshalling into *any* target type, jsonschema.Schema included. It does not
+// depend on the two targets agreeing about shape, which is exactly the
+// assumption the boolean case broke. The reason to refuse remains that the
+// schema is registered.
 //
 // A registry that lists no schemas, and a nil registry, are both no-ops rather
 // than errors.
@@ -103,18 +113,33 @@ func ValidateRelationSchemas(registry forma.SchemaRegistry) error {
 // registry sets it straight from the file bytes (schemameta/schema_parser.go) —
 // so this decodes exactly what schemavalidate.New unmarshals.
 //
-// A document holding literally "null" decodes into a nil map without error and
-// falls out at the "declares no properties" exit below, which is the right
-// answer for it: a schema with no properties has no relation roots.
+// The document is decoded into any, not straight into map[string]any, and the
+// difference is load-bearing rather than stylistic. A JSON boolean is a legal
+// JSON Schema: for "true" and "false", json.Unmarshal into jsonschema.Schema,
+// checkSchemaSupported and Resolve all succeed, while json.Unmarshal of the same
+// bytes into map[string]any answers "cannot unmarshal bool". Decoding into a map
+// and calling the failure fatal therefore aborted startup for a registry
+// schemavalidate.New accepts — pinned by
+// TestLoadRelationIndexAcceptsNonObjectDocuments.
+//
+// Any document that is valid JSON but not an object — true, false, an array, a
+// string, null — declares no properties, so it has no relation roots, nothing is
+// stripped for it, and there is nothing here to guard. It takes the same exit a
+// property-less object takes.
 func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, schemaName string) error {
-	_, doc, err := registry.GetSchemaByName(schemaName)
+	_, registered, err := registry.GetSchemaByName(schemaName)
 	if err != nil {
 		return fmt.Errorf("read registered schema %s from the schema registry: %w", schemaName, err)
 	}
 
-	var schema map[string]any
-	if err := json.Unmarshal([]byte(doc.Schema), &schema); err != nil {
+	var doc any
+	if err := json.Unmarshal([]byte(registered.Schema), &doc); err != nil {
 		return fmt.Errorf("decode the document registered for schema %s: %w", schemaName, err)
+	}
+
+	schema, ok := doc.(map[string]any)
+	if !ok {
+		return nil
 	}
 
 	props, ok := schema["properties"].(map[string]any)

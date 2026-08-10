@@ -185,14 +185,26 @@ It aborts startup for two things, and only two:
    `if`, `dependentRequired`, `dependentSchemas`, and draft-07's
    `dependencies`), because the validator resolves composition and the loader has
    to match what it will enforce;
-2. a schema the registry lists but cannot then serve, or whose document will not
-   decode into a JSON object. Every name walked came from `ListSchemas`, so such
-   a schema is one the runtime resolves and validates writes against: an
-   unreadable document is a fault in the registry, not a stray file, and there is
-   no reading of it under which the loader could tell whether it declares a
-   relation root. Validator construction rejects the same documents for the same
-   reasons and runs first at both call sites, so in practice this cause is
-   reached only by a caller that skips it.
+2. a schema the registry lists but cannot then serve, or whose document is not
+   syntactically valid JSON. Every name walked came from `ListSchemas`, so such a
+   schema is one the runtime resolves and validates writes against: a document
+   that cannot be read at all is a fault in the registry, not a stray file.
+
+The boundary in (2) is JSON **syntax**, not JSON shape. A document that parses
+but is not an object — `true`, `false`, an array, a string, `null` — is
+*accepted*: it declares no properties, so it has no relation roots, so nothing
+is stripped for it and there is nothing to guard. Drawing the line at "not an
+object" instead made booleans fatal, which was wrong twice over: a JSON boolean
+is a legal JSON Schema, and `jsonschema-go` resolves and validates one happily,
+so the guard would have aborted startup for a registry the validator accepts.
+
+Validator construction rejects every document (2) is fatal on, and runs first at
+both call sites, so in practice that cause is reached only by a caller that skips
+it. That holds by construction, not by coincidence: `json.Unmarshal` runs
+`checkValid` over the whole input before decoding anything
+(`encoding/json/decode.go`), so a syntax error fails unmarshalling into *any*
+target type — it does not depend on `jsonschema.Schema` and `map[string]any`
+agreeing about shape, which is the assumption the boolean case broke.
 
 `dependencies` is in list (1) because forma accepts draft-07
 (`internal/schemavalidate/schema_check.go`), and under draft-07 the library
@@ -228,7 +240,9 @@ guards against: `internal/schemameta`'s file registry reads
 where the table supplies only the name-to-id mapping. The gap is in the
 `forma.SchemaRegistry` contract, not in a shipped implementation.
 
-An unconfigured (empty) `Entity.SchemaDirectory` is still not an error.
+A registry that lists no schemas is not an error, and neither is an absent one:
+both yield an empty relation index. `Entity.SchemaDirectory` no longer takes part
+in this check at all.
 
 ### Validation gap: a dotted key written above a schema array
 

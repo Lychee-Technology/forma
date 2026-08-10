@@ -151,11 +151,19 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 // shipped schema uses allOf/anyOf/oneOf/if/dependentRequired or a root-level
 // $ref either, so the composition walk adds no rejection here.
 //
-// Driven through the directory registry the server itself builds, so the guard
-// sees exactly the set of names production registers — which excludes the
-// *_full.json documents beside them. None of those carries x-relation, so that
-// exclusion changes no verdict here; it is stated because the previous
-// directory-scanning loader did read them.
+// Driven through the *directory* registry, which is not what the server builds:
+// cmd/server and cmd/lambda both construct the database-backed registry
+// (schemameta.NewFileSchemaRegistryContext), and cmd/tools' init-db seeds
+// schema_registry with every .json except *_attributes.json — so production's
+// ListSchemas does include visit_full, lead_full and the rest, which
+// NewFileSchemaRegistryFromDirectory excludes (file_registry.go, the
+// *_full.json test). This test therefore covers the directory-mode name set,
+// which is cmd/sample's shape, not the set the production registry hands the
+// guard.
+//
+// That gap changes no verdict today, because no *_full.json carries x-relation
+// and the guard only looks at schemas that declare one. It is written down
+// because the difference is invisible from here.
 func TestValidateRelationSchemasAcceptsShippedSchemas(t *testing.T) {
 	for _, dir := range []string{shippedSchemaDir, "../cmd/sample/schemas"} {
 		registry, err := schemameta.NewFileSchemaRegistryFromDirectory(dir)
@@ -163,6 +171,16 @@ func TestValidateRelationSchemasAcceptsShippedSchemas(t *testing.T) {
 		require.NoError(t, ValidateRelationSchemas(registry), "guard over %s", dir)
 	}
 	require.NoError(t, ValidateRelationSchemas(nil), "an absent registry is not an error")
+
+	// Without this the test would pass over a registry that registered nothing
+	// relation-bearing at all, which is the one way "the guard accepts the
+	// shipped schemas" can be true and worthless.
+	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(shippedSchemaDir)
+	require.NoError(t, err)
+	idx, err := LoadRelationIndex(registry)
+	require.NoError(t, err)
+	require.NotEmpty(t, idx.Relations("visit"),
+		"visit must carry a relation, or this test accepts an empty index")
 }
 
 // TestLoadRelationIndexFailsOnUnservableSchema pins one half of the second abort
@@ -182,7 +200,7 @@ func TestLoadRelationIndexFailsOnUnservableSchema(t *testing.T) {
 }
 
 // TestLoadRelationIndexFailsOnUndecodableDocument is the other half: a listed
-// schema whose document will not decode into a JSON object.
+// schema whose document is not syntactically valid JSON.
 //
 // The message names the schema rather than a path, because a registry need not
 // have one — it may serve the document from a database or from memory.
@@ -194,4 +212,41 @@ func TestLoadRelationIndexFailsOnUndecodableDocument(t *testing.T) {
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "child")
+}
+
+// TestLoadRelationIndexAcceptsNonObjectDocuments is the boundary between those
+// two: a document that parses as JSON but is not an object declares no
+// properties, so it has no relation roots, so there is nothing for this guard to
+// strip or to refuse.
+//
+// "true" and "false" are the cases that matter, because they are legal JSON
+// Schemas and the validator accepts them: jsonschema.Schema unmarshals, resolves
+// and validates a boolean document, while json.Unmarshal into map[string]any
+// answers "cannot unmarshal bool". Treating that as fatal would abort startup
+// for a deployment the validator is perfectly happy with — and did, until this
+// test.
+//
+// "[1,2,3]", `"x"` and "null" ride along. The first two are not legal schemas at
+// all and schemavalidate.New refuses them; refusing them a second time here
+// would only split one fault across two checks.
+func TestLoadRelationIndexAcceptsNonObjectDocuments(t *testing.T) {
+	docs := readSchemaDocs(t, relationFixtureDir("relation_ok_not"))
+	for name, body := range map[string]string{
+		"boolean_true":  `true`,
+		"boolean_false": `false`,
+		"array_doc":     `[1,2,3]`,
+		"string_doc":    `"x"`,
+		"null_doc":      `null`,
+	} {
+		docs[name] = body
+	}
+
+	idx, err := LoadRelationIndex(newDocSchemaRegistry(docs))
+
+	require.NoError(t, err)
+	require.Len(t, idx.Relations("child"), 1,
+		"the schemas beside a non-object document must still index")
+	for _, name := range []string{"boolean_true", "boolean_false", "array_doc", "string_doc", "null_doc"} {
+		require.Empty(t, idx.Relations(name), "%s declares no properties, so no relation roots", name)
+	}
 }
