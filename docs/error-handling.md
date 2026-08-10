@@ -160,6 +160,10 @@ The operator preflight is one sentence: **every schema name registered in
 column is involved — `schema_registry` holds only `schema_id` and `schema_name`;
 the document lives on disk.
 
+A second fail-closed check sits beside validator construction in the factory:
+`internal.ValidateRelationSchemas` aborts startup for a schema that lists a
+relation root in `required` — see "Relation subtrees are never caller-writable".
+
 ### Validation gap: a dotted key written above a schema array
 
 A literal dotted key naming an attribute that lies **under a schema array** is
@@ -288,6 +292,24 @@ caller cannot fix by sending the field. `internal.ValidateRelationSchemas` —
 called from the factory alongside the schema validator — refuses to start,
 naming the schema and the property.
 
+**A `required_always` attribute policy beneath a relation root breaks the entity
+the same way, and this one is *not* caught at startup.** The attribute-metadata
+required check that runs on write — `validateRequiredAttributesFromInput`,
+called from `transform`'s `ToAttributes` immediately after the strip — walks the
+whole attribute cache with no relation carve-out, so it looks for the value the
+strip has just removed and answers `400 missing required attribute '<name>'` on
+every create and update, again unfixably by sending the field.
+`ValidateRelationSchemas` cannot see this one: it reads the schema's `required`
+list and never the `<name>_attributes.json` ledger. Note the asymmetry with the
+read path, which *does* carve relation roots out of the same check
+(`AttributeConverter.FromEAVRecords`, #315). This is pre-existing behaviour, not
+something #318 introduced.
+
+The shipped schemas are safe. The only policy beneath `contactSnapshot` is
+`contactSnapshot.isAnonymous`, and it is `required_if_parent_present` — with the
+parent stripped away it reports nothing missing. `required_always` is the shape
+to keep out from under a relation root.
+
 Only `visit.json`'s `contactSnapshot` carries `x-relation` today.
 
 #### Behaviour change (#318): the dotted spelling no longer persists
@@ -311,9 +333,10 @@ knows about relations.
 If an operator wants them gone sooner, the cleanup must go **through the write
 path** — an update per row. A direct `DELETE` against `eav_data` writes no
 `change_log` row: nothing but the repository's own write paths writes one, and
-there are no database triggers. A row already flushed to S3 therefore never
-re-enters the federated dirty set, and DuckDB keeps serving the stale copy from
-`/delta/` or `/base/` while PostgreSQL-only reads see the value gone.
+there are no database triggers. So a row whose **latest** `change_log` entry is
+already flushed does not re-enter the federated dirty set on a hand-delete, and
+DuckDB keeps serving the stale copy from `/delta/` or `/base/` while
+PostgreSQL-only reads see the value gone.
 
 ## Read-path consistency errors
 

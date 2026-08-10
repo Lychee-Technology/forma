@@ -364,15 +364,18 @@ two is not symmetric**, so assess them separately:
   `attributeID` 25 leaf requires the client to send `contactSnapshot` as a
   *scalar*: an object payload recurses through the map branch of the
   transformer's flattening and lands on `contactSnapshot.<leaf>` entries, never
-  on the bare name. Since `#318` neither shape reaches the writer at all:
-  `contactSnapshot` carries `x-relation`, and `RelationIndex.StripComputedFields`
-  removes the root and every dotted descendant from the payload before validation
-  and before persistence — silently, not as a rejection (see
-  `docs/error-handling.md`, "Relation subtrees are never caller-writable"). So
-  rows under id 25 can only exist if some client once wrote a scalar, and no
-  supported write path can produce new ones. `contactSnapshot` also has no property to re-add — it would
-  un-retire only if that node ever resolved to a scalar again, which is not an
-  operator action; treat `attributeID` 25 as permanently reserved.
+  on the bare name. Neither shape reaches the writer today.
+  `contactSnapshot` carries `x-relation`, and
+  `RelationIndex.StripComputedFields` has always removed the bare root from the
+  payload whatever the type of its value, so a scalar has not been written since
+  the strip existed; `#318` extended the strip to the dotted descendants too.
+  Both are removed before validation and before persistence, and silently rather
+  than as a rejection (see `docs/error-handling.md`, "Relation subtrees are
+  never caller-writable"). So rows under id 25 can only exist if some client
+  wrote a scalar before that, and no supported write path can produce new ones.
+  `contactSnapshot` also has no property to re-add — it would un-retire only if
+  that node ever resolved to a scalar again, which is not an operator action;
+  treat `attributeID` 25 as permanently reserved.
 
 **Residual gap.** An attribute whose ledger entry was hand-deleted *before*
 `#342` leaves no record at all, so the guard cannot see it and its
