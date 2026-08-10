@@ -36,14 +36,33 @@ func TestLoadRelationIndexRejectsRequiredRelationRoot(t *testing.T) {
 
 // TestLoadRelationIndexRejectsComposedRequiredRelationRoot covers the bypass the
 // root-level-"required" read left open: the validator resolves composition, so a
-// relation root made mandatory through any applicator that lands on the root
-// object is enforced at runtime even though the root's own "required" array
-// never names it.
+// relation root can be made mandatory by an applicator that lands on the root
+// object even though the root's own "required" array never names it.
 //
-// Each vector was confirmed against the library before the guard was widened:
-// for the allOf case the parsed root's Required is empty while
-// Resolved.Validate({"id":"x"}) answers `validating /allOf/0: required: missing
-// properties: ["contactSnapshot"]`.
+// How much each vector is really enforced differs, and the list is not uniform.
+// Measured by resolving each child.json and validating the payloads a caller can
+// still send once the strip has removed contactSnapshot:
+//
+//   - allof, allof_nested, dependent, dependent_schema, dependencies_list and
+//     dependencies_schema reject every such payload. The dependent* and
+//     dependencies* keywords are conditional in general; these fixtures trigger
+//     on "parentId", which they also list in root "required", so the branch is
+//     universal here.
+//   - oneof and ifthen reject only some. oneof accepts
+//     {"id","parentId","fallback"}, whose other disjunct is satisfied, and
+//     ifthen accepts the same payload, because without "kind" its "if" fails and
+//     "else" asks only for "fallback".
+//   - if_only rejects none of them. Stripping contactSnapshot makes its "if"
+//     fail permanently, so "then" never applies and nothing is demanded. It is
+//     refused anyway, as the deliberate over-approximation documented at
+//     conditionalKeywords in relation_required.go — not because the validator
+//     would reject a write.
+//
+// So this test asserts what the guard refuses, which is deliberately a superset
+// of what the validator enforces. For the allOf case, where the two coincide,
+// the parsed root's Required is empty while Resolved.Validate({"id":"x"})
+// answers `validating /allOf/0: required: missing properties:
+// ["contactSnapshot"]`.
 //
 // The two "dependencies" vectors are draft-07, which forma accepts
 // (schemavalidate's supportedSchemaVersions). Under draft-07 the library

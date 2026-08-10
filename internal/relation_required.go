@@ -68,8 +68,15 @@ var sameLocationListKeywords = []string{"allOf", "anyOf", "oneOf"}
 // All three are collected regardless of the document's declared draft, rather
 // than switching on $schema. That over-approximates by exactly one case: a
 // keyword written in the draft that does not define it — "dependencies" in a
-// 2020-12 document, or the 2020-12 pair in a draft-07 one — is an unknown
-// keyword the validator ignores, and collecting it can refuse a schema the
+// 2020-12 document, or the 2020-12 pair in a draft-07 one — is still recognised
+// and populated, and merely never consulted. UnmarshalJSON splits "dependencies"
+// into DependencyStrings/DependencySchemas with no draft test at all
+// (schema.go:448-467), and the 2020-12 pair has ordinary json tags; what decides
+// whether either is honoured is the draft gate in validate.go, which reads the
+// draft-07 fields only under draft7 (:569) and the 2020-12 fields only under
+// draft2020 (:589). It is a known keyword the gate declines to read, not an
+// unknown one the parser discards — which is why the warning below is about
+// getting the *draft* wrong. Collecting the ungated one can refuse a schema the
 // validator would not have constrained. The trade is deliberate and one-sided:
 // the cost is a startup message telling an operator to delete a keyword that was
 // already doing nothing, while getting the draft detection wrong in the other
