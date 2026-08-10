@@ -43,9 +43,9 @@ func requiredRelationRootDir(t *testing.T) string {
 //
 // A relation root is removed from every payload before the validator runs, so a
 // schema that also demands it produces a missing-required rejection on every
-// create and update, and the caller cannot fix it by sending the field. The
-// failure has to happen at startup, where an operator sees it, rather than as a
-// 4xx storm in production.
+// create — and on every update when strict update validation is on — which the
+// caller cannot fix by sending the field. The failure has to happen at startup,
+// where an operator sees it, rather than as a 4xx storm in production.
 func TestLoadRelationIndexRejectsRequiredRelationRoot(t *testing.T) {
 	_, err := LoadRelationIndex(requiredRelationRootDir(t))
 

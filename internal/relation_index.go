@@ -61,6 +61,11 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // disables stripping altogether rather than stopping. The composition root calls
 // this before it builds the manager, at a position where returning an error
 // aborts startup (#318).
+//
+// That swallow predates the required-relation-root guard, but its blast radius
+// does not: one offending schema now fails the whole directory load, so an
+// unguarded caller loses stripping for every schema, not just the offender. Any
+// new construction site must call this too.
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
@@ -153,7 +158,7 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 	for _, rel := range relations {
 		if _, isRequired := requiredSet[rel.ChildPath]; isRequired {
 			return fmt.Errorf(
-				"schema %s lists relation root %q in \"required\": a relation root is stripped from every payload before validation, so every create and update would fail with a missing-required error the caller cannot fix; remove it from \"required\" or drop its x-relation marker",
+				"schema %s lists relation root %q in \"required\": a relation root is stripped from every payload before validation, so every create fails with a missing-required error the caller cannot fix, as does every update when strict update validation is on; remove it from \"required\" or drop its x-relation marker",
 				schemaName, rel.ChildPath)
 		}
 	}

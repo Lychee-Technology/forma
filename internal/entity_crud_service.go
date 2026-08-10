@@ -85,12 +85,15 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// contactSnapshot.name behind: expanding one would rebuild the very root that
 	// was just removed. See NormalizeDottedKeys and docs/error-handling.md.
 	//
-	// Hazard: a schema that lists a relation root in "required" becomes
-	// unwritable, and unfixably so — the field is stripped before the validator
-	// sees it, so sending it does not help. No shipped schema does this
-	// (x-relation occurs once, visit.json's contactSnapshot, and is not
-	// required), but a new one that did would reject every create and update to
-	// it. Validate before stripping if that ever happens.
+	// Hazard, now foreclosed: a schema listing a relation root in "required"
+	// would make its entity unwritable, and unfixably so — the root is stripped
+	// before the validator sees it, so sending it does not help. Every create
+	// would fail, and every update would too with strict update validation on.
+	// ValidateRelationSchemas (relation_index.go) rejects such a schema at
+	// startup, and both the composition root and the production harness call it
+	// before building a manager, so it no longer reaches this path through either
+	// production entry point (#318). Do not resolve it here by validating before
+	// stripping: that defeats the guard and judges a document no row will hold.
 	if err := validateWritePayload(writeValidation{
 		validator:  s.validator,
 		schemaID:   schemaID,
