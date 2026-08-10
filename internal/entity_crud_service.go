@@ -88,9 +88,9 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// before the validator sees it, so sending it does not help. Every create
 	// would fail, and every update would too with strict update validation on.
 	// ValidateRelationSchemas (relation_index.go) rejects such a schema at
-	// startup, and both the composition root and the production harness call it
-	// before building a manager, so it no longer reaches this path through either
-	// production entry point (#318). Do not resolve it here by validating before
+	// startup, and it is called before a manager is built by both the composition
+	// root (factory) and the production e2e harness, so it no longer reaches this
+	// path through either (#318). Do not resolve it here by validating before
 	// stripping: that defeats the guard and judges a document no row will hold.
 	if err := validateWritePayload(writeValidation{
 		validator:  s.validator,

@@ -8,11 +8,18 @@ package transform
 // package. The set's element type is unnamed, so internal can build one and
 // assign it without a conversion.
 //
-// The write path does not consult this set: it removes the whole relation
-// subtree from the payload before validating (RelationIndex.StripComputedFields)
-// because it is derived on read and never persisted. This set is what the *read*
-// path consults, to skip required-policy enforcement beneath a relation root
-// (AttributeConverter.FromEAVRecords, #315).
+// The payload strip does not consult this set. RelationIndex.StripComputedFields
+// applies its own subtree predicate (RelationIndex.coversRelationSubtree) to drop
+// the whole relation subtree before validation, because it is derived on read and
+// never persisted.
+//
+// What consults this set is one check: the required-policy check in
+// AttributeConverter.FromEAVRecords, which skips policies beneath a relation root
+// (#315). That check is not read-only — ToAttributes runs FromEAVRecords on every
+// create and update (transformer.go), and FromPersistentRecord runs it on read —
+// so a transformer that only ever serves writes still needs the set installed.
+// The write path's other required check, validateRequiredAttributesFromInput
+// (transformer.go), has no such carve-out and never consults this set.
 type RelationRoots map[string]struct{}
 
 // Covers reports whether name lies strictly beneath a relation root.

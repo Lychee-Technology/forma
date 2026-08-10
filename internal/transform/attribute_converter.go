@@ -236,10 +236,11 @@ func (c *AttributeConverter) checkRequiredAttributes(
 		// attributes (#315 resolved contactSnapshot's $ref) turns payloads #314
 		// ruled acceptable into 400s.
 		//
-		// The carve-out is the read path's alone: the write path's own required
-		// check (validateRequiredAttributesFromInput, transformer.go) has none,
-		// so a required_always beneath a root still rejects the stripped payload
-		// there. Documented in docs/error-handling.md.
+		// The carve-out belongs to this check, not to the read path: ToAttributes
+		// reaches FromEAVRecords on every create and update (transformer.go). The
+		// write path's own required check (validateRequiredAttributesFromInput,
+		// transformer.go) has none, so a required_always beneath a root still
+		// rejects the stripped payload there. Documented in docs/error-handling.md.
 		if relationRoots.Covers(attrName) {
 			continue
 		}

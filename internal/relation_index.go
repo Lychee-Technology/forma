@@ -53,8 +53,8 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 	return idx, nil
 }
 
-// ValidateRelationSchemas fails closed on relation declarations the write path
-// cannot honour, for callers that build the manager themselves.
+// ValidateRelationSchemas fails closed on anything that stops the relation index
+// from loading, for callers that build the manager themselves.
 //
 // It exists because NewEntityManager cannot enforce this: it swallows a
 // LoadRelationIndex failure into a warning and continues with a nil index, which
@@ -66,6 +66,11 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // does not: one offending schema now fails the whole directory load, so an
 // unguarded caller loses stripping for every schema, not just the offender. Any
 // new construction site must call this too.
+//
+// The reach is wider than the declaration guard this was added for, because it
+// surfaces every LoadRelationIndex failure: an unreadable or missing schemaDir,
+// or any non-ledger .json file in it that does not parse as a JSON object,
+// aborts startup as well. An empty schemaDir stays a no-op, not an error.
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
@@ -155,6 +160,12 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 	// removes. A property whose $ref, key_property, or foreign-key attribute did
 	// not resolve is never stripped, so requiring it is harmless and must not
 	// abort startup (#318).
+	//
+	// Reach, stated: requiredSet above is built from the schema's root-level
+	// "required" alone. A relation root made mandatory through allOf/$ref
+	// composition would still be enforced by the validator and missed here. No
+	// shipped schema composes "required" — none uses allOf, anyOf or oneOf at
+	// all — so the guard covers every schema it has to protect today.
 	for _, rel := range relations {
 		if _, isRequired := requiredSet[rel.ChildPath]; isRequired {
 			return fmt.Errorf(
@@ -209,8 +220,10 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 }
 
 // RelationRoots returns schema's relation root names, as the set
-// transform.AttributeConverter.FromEAVRecords consults on the read path to skip
-// required-policy enforcement beneath a relation root (#315).
+// transform.AttributeConverter.FromEAVRecords consults to skip required-policy
+// enforcement beneath a relation root (#315). That check is not read-only —
+// transform.ToAttributes reaches it on every create and update — so this is not
+// read-path-only state.
 //
 // It answers the roots alone, which is less than StripComputedFields removes:
 // the strip also takes every dotted descendant of each root, by the prefix rule
@@ -245,8 +258,8 @@ func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {
 // Pinned by TestStripKeepsSamePrefixSibling.
 //
 // For dotted descendants this is the same prefix rule
-// transform.RelationRoots.Covers applies on the read path for #315's
-// required-policy carve-out. The two differ on the bare root, and deliberately:
+// transform.RelationRoots.Covers applies for #315's required-policy carve-out.
+// The two differ on the bare root, and deliberately:
 // Covers excludes a name that *is* a root, while this predicate must match it —
 // the root is the nested spelling the strip has always removed. #318 was this
 // predicate lagging behind that prefix rule by an exact-key match, which let the

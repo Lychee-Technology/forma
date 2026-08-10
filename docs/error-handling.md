@@ -164,6 +164,14 @@ A second fail-closed check sits beside validator construction in the factory:
 `internal.ValidateRelationSchemas` aborts startup for a schema that lists a
 relation root in `required` — see "Relation subtrees are never caller-writable".
 
+Its reach is wider than that one rule. It propagates **every** relation-index
+load failure, so an unreadable or missing `SCHEMA_DIR`, or any `.json` file in
+it other than the `*_attributes.json` ledgers that does not parse as a JSON
+object, now aborts startup as well — where `NewEntityManager` previously logged
+a warning and continued with relation stripping disabled. **A stray malformed
+`.json` left in `SCHEMA_DIR` is therefore fatal.** An unconfigured (empty)
+`Entity.SchemaDirectory` is still not an error.
+
 ### Validation gap: a dotted key written above a schema array
 
 A literal dotted key naming an attribute that lies **under a schema array** is
@@ -276,10 +284,11 @@ checked is what is stored. The values are derived on read from the parent
 entity, which replaces the whole subtree, so a caller-written value there is
 unreadable wherever that enrichment applies.
 
-Dropping is silent. Neither spelling produces a `4xx`: the nested spelling has
-always been dropped without a rejection, and #318 brought the dotted spelling
-into line rather than adding a new rejection to payloads that were accepted
-before.
+Dropping is silent — unless an attribute policy beneath the root demands the
+value; see below. Short of that, neither spelling produces a `4xx`: the nested
+spelling has always been dropped without a rejection, and #318 brought the
+dotted spelling into line rather than adding a new rejection to payloads that
+were accepted before.
 
 Because the subtree never reaches the validator, constraints declared under an
 `x-relation` `$ref` are **decorative on the child**. They still apply on the
@@ -295,15 +304,20 @@ naming the schema and the property.
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
 required check that runs on write — `validateRequiredAttributesFromInput`,
-called from `transform`'s `ToAttributes` immediately after the strip — walks the
-whole attribute cache with no relation carve-out, so it looks for the value the
-strip has just removed and answers `400 missing required attribute '<name>'` on
-every create and update, again unfixably by sending the field.
-`ValidateRelationSchemas` cannot see this one: it reads the schema's `required`
-list and never the `<name>_attributes.json` ledger. Note the asymmetry with the
-read path, which *does* carve relation roots out of the same check
-(`AttributeConverter.FromEAVRecords`, #315). This is pre-existing behaviour, not
-something #318 introduced.
+called from `transform`'s `ToAttributes` after the strip and after JSON Schema
+validation — walks the whole attribute cache with no relation carve-out, so it
+looks for the value the strip has just removed and answers
+`400 missing required attribute '<name>'` on every create and update, again
+unfixably by sending the field. `ValidateRelationSchemas` cannot see this one:
+it reads the schema's `required` list and never the `<name>_attributes.json`
+ledger.
+
+Note the asymmetry with the *other* required check on the same write.
+`ToAttributes` also runs `AttributeConverter.FromEAVRecords` over the flattened
+records, and that check *does* carve relation roots out (#315). The carve-out
+belongs to that check, not to the read path: `FromEAVRecords` runs on both
+paths — `ToAttributes` on every create and update, `FromPersistentRecord` on
+read. This is pre-existing behaviour, not something #318 introduced.
 
 The shipped schemas are safe. The only policy beneath `contactSnapshot` is
 `contactSnapshot.isAnonymous`, and it is `required_if_parent_present` — with the
