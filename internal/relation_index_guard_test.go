@@ -51,18 +51,20 @@ func TestLoadRelationIndexRejectsRequiredRelationRoot(t *testing.T) {
 //   - oneof and ifthen reject only some. oneof accepts
 //     {"id","parentId","fallback"}, whose other disjunct is satisfied, and
 //     ifthen accepts the same payload, because without "kind" its "if" fails and
-//     "else" asks only for "fallback".
-//   - if_only rejects none of them. Stripping contactSnapshot makes its "if"
-//     fail permanently, so "then" never applies and nothing is demanded. It is
-//     refused anyway, as the deliberate over-approximation documented at
-//     conditionalKeywords in relation_required.go — not because the validator
-//     would reject a write.
+//     "else" asks only for "fallback". Both are refused whole: the guard cannot
+//     decide which documents take which branch, and a schema unwritable for some
+//     of its documents is still one an operator must fix.
 //
-// So this test asserts what the guard refuses, which is deliberately a superset
-// of what the validator enforces. For the allOf case, where the two coincide,
-// the parsed root's Required is empty while Resolved.Validate({"id":"x"})
-// answers `validating /allOf/0: required: missing properties:
-// ["contactSnapshot"]`.
+// So this test asserts what the guard refuses, which for the branching fixtures
+// is deliberately a superset of the documents the validator would reject. It is
+// not a superset of the *schemas* it would reject: every fixture here has at
+// least one post-strip payload the validator refuses. The fixture that had none
+// — relation_required_if_only, whose "if" turns on the stripped property — moved
+// to TestLoadRelationIndexAcceptsRequiredOutsideRootScope.
+//
+// For the allOf case, where guard and validator coincide exactly, the parsed
+// root's Required is empty while Resolved.Validate({"id":"x"}) answers
+// `validating /allOf/0: required: missing properties: ["contactSnapshot"]`.
 //
 // The two "dependencies" vectors are draft-07, which forma accepts
 // (schemavalidate's supportedSchemaVersions). Under draft-07 the library
@@ -78,7 +80,6 @@ func TestLoadRelationIndexRejectsComposedRequiredRelationRoot(t *testing.T) {
 		"relation_required_allof_nested",
 		"relation_required_oneof",
 		"relation_required_ifthen",
-		"relation_required_if_only",
 		"relation_required_dependent",
 		"relation_required_dependent_schema",
 		"relation_required_dependencies_list",
@@ -118,11 +119,16 @@ func TestLoadRelationIndexRefusesRootRefBesideRelation(t *testing.T) {
 //     never make the property mandatory.
 //   - relation_ok_root_ref_no_relation carries a root $ref but declares no
 //     x-relation, so nothing is stripped and there is nothing to refuse.
-//   - relation_ok_then_without_if and relation_ok_if_without_branches carry an
-//     inert conditional. "then"/"else" without an "if" are ignored by the
-//     validator — measured: such a schema validates {"id":"x"} as nil — and an
-//     "if" with neither branch has no outcome to select, so neither can make a
-//     property mandatory.
+//   - relation_ok_then_without_if carries a "then" with no "if". The validator
+//     ignores it — pinned by TestConditionalFixturesAgainstTheValidator — which
+//     is what walkConditional's gate encodes.
+//   - relation_ok_if_without_branches and relation_required_if_only put the
+//     relation root inside an "if". "if" asserts nothing about the instance, it
+//     only selects a branch, so it can never make a property mandatory however
+//     it comes out. if_only goes further and shows the consequence: its "if"
+//     names the stripped property, so on every payload a caller can still send
+//     the condition fails, "then" never applies, and the validator accepts —
+//     also pinned by TestConditionalFixturesAgainstTheValidator.
 func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 	for _, fixture := range []string{
 		"relation_ok_property_required",
@@ -130,6 +136,7 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 		"relation_ok_root_ref_no_relation",
 		"relation_ok_then_without_if",
 		"relation_ok_if_without_branches",
+		"relation_required_if_only",
 	} {
 		t.Run(fixture, func(t *testing.T) {
 			require.NoError(t, ValidateRelationSchemas(relationFixtureDir(fixture)))

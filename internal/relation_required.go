@@ -22,23 +22,20 @@ type rootRequiredWalk struct {
 	unfollowedRef string
 }
 
-// conditionalKeywords are the "if"/"then"/"else" trio. They are walked as a
-// group, and only when the group can affect validation at all — see
-// walkConditional.
+// conditionalBranchKeywords are the two halves of the "if"/"then"/"else" trio
+// that assert anything. "if" is deliberately absent: in JSON Schema it
+// contributes no assertions to the instance, it only selects which branch
+// applies, so a "required" written there can never make a property mandatory.
+// Collecting from it would be a false rejection, not a conservative
+// approximation — measured on relation_required_if_only, whose post-strip
+// payloads the resolved validator accepts
+// (TestConditionalFixturesAgainstTheValidator).
 //
-// "if" is collected along with its branches even though a failing "if"
-// invalidates nothing on its own, and for a different reason than the others: a
-// relation root never reaches the validator, so an "if" that turns on the
-// presence of one is being decided against a property no payload can carry, and
-// the branch the author meant to select may be permanently dead. That is a
-// schema doing something other than what it says, and an operator should hear
-// about it at startup rather than discover it as a mis-validated document.
-//
-// This over-approximates — an "if" could also be satisfiable by some other
-// disjunct it contains — which is the intended direction: the guard refuses a
-// suspect schema instead of booting a broken one. Widening it costs nothing
-// today (no shipped schema uses "if" at all).
-var conditionalKeywords = []string{"if", "then", "else"}
+// Both branches are collected whenever an "if" is present, without asking which
+// one a payload would take. That direction is deliberate: the guard cannot
+// decide satisfiability in general, and a schema whose branch demands a stripped
+// property is genuinely unwritable for the documents that take it.
+var conditionalBranchKeywords = []string{"then", "else"}
 
 // sameLocationListKeywords are the same-instance-location applicators whose
 // value is an array of subschemas.
@@ -89,7 +86,7 @@ var dependentKeywords = []string{"dependentRequired", "dependentSchemas", "depen
 // on the root object.
 //
 // It walks only applicators that assert against the root instance, recursively.
-// Two exclusions are load-bearing:
+// Three exclusions are load-bearing, and each is a false rejection avoided:
 //
 //   - "properties" (and patternProperties/additionalProperties/items/$defs) are
 //     not walked. A "required" there constrains a *child* object's members, not
@@ -98,6 +95,8 @@ var dependentKeywords = []string{"dependentRequired", "dependentSchemas", "depen
 //   - "not" is not walked. A "required" beneath it asserts the opposite and can
 //     never make a property mandatory, so ignoring it is sound and collecting it
 //     would be a false rejection.
+//   - "if" is not walked, only its "then"/"else" branches are. "if" contributes
+//     no assertions; it selects a branch. See conditionalBranchKeywords.
 //
 // The document is a decoded JSON tree, so it has no cycles and the recursion
 // terminates on depth alone.
@@ -133,27 +132,29 @@ func (w *rootRequiredWalk) walk(node map[string]any, path string) {
 	}
 }
 
-// walkConditional walks "if"/"then"/"else", but only when that trio has some
-// validation effect.
+// walkConditional walks "then" and "else", and only when an "if" is there to
+// select between them.
 //
-// The gate is what keeps this from rejecting writable schemas. "then" and "else"
-// are inert without an "if" — measured: a schema whose only conditional keyword
-// is then:{"required":["contactSnapshot"]} validates {"id":"x"} as nil — and an
-// "if" with neither branch is inert in turn, since there is nothing for its
-// outcome to select. Collecting from an inert trio would refuse a schema the
-// validator never constrains, which is the one failure mode this guard must not
-// have.
+// The gate is what keeps this from rejecting writable schemas: without an "if",
+// "then" and "else" are inert and the validator ignores them — measured on
+// relation_ok_then_without_if, whose only conditional keyword is
+// then:{"required":["contactSnapshot"]} and which validates {"id":"x"} as nil
+// (TestConditionalFixturesAgainstTheValidator). Collecting from an inert branch
+// would refuse a schema the validator never constrains, which is the one failure
+// mode this guard must not have.
+//
+// "if" itself is never walked — see conditionalBranchKeywords. That also means a
+// $ref inside "if" is not noted as unfollowable, which is sound for the same
+// reason: whatever it resolves to asserts nothing, and both branches are
+// collected regardless of how the condition would come out.
 func (w *rootRequiredWalk) walkConditional(node map[string]any, path string) {
 	// Presence is tested on the key, not on its decoded shape, so that a boolean
 	// schema ("if": true, which makes "then" unconditional) still opens the gate.
-	_, hasIf := node["if"]
-	_, hasThen := node["then"]
-	_, hasElse := node["else"]
-	if !hasIf || (!hasThen && !hasElse) {
+	if _, hasIf := node["if"]; !hasIf {
 		return
 	}
 
-	for _, kw := range conditionalKeywords {
+	for _, kw := range conditionalBranchKeywords {
 		if sub, ok := node[kw].(map[string]any); ok {
 			w.walk(sub, path+"/"+kw)
 		}
@@ -268,7 +269,7 @@ func checkRelationRootsWritable(schemaName string, schema map[string]any, relati
 			"schema %s requires relation root %q: a relation root is stripped from every payload before validation, so a write "+
 				"that has to satisfy that requirement fails with a missing-required error the caller cannot fix by sending the "+
 				"field — every create and update when the requirement is unconditional (the root \"required\" array, or an allOf "+
-				"branch), and every document that takes the branch when it is conditional (anyOf/oneOf/if/then/else/"+
+				"branch), and every document that takes the branch when it is conditional (anyOf/oneOf/then/else/"+
 				"dependentRequired/dependentSchemas/dependencies); remove it from every \"required\" that names it, or drop its "+
 				"x-relation marker",
 			schemaName, rel.ChildPath)

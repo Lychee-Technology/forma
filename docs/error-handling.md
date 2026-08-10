@@ -168,10 +168,10 @@ It aborts startup for three things, and only three:
 
 1. a schema that declares a relation root the validator would demand — through
    the root's own `required` **or** through any applicator that lands on the
-   root object (`allOf`/`anyOf`/`oneOf`, `if`/`then`/`else`,
-   `dependentRequired`, `dependentSchemas`, and draft-07's `dependencies`),
-   because the validator resolves composition and the loader has to match what it
-   will enforce;
+   root object (`allOf`/`anyOf`/`oneOf`, the `then`/`else` branches of an
+   `if`, `dependentRequired`, `dependentSchemas`, and draft-07's
+   `dependencies`), because the validator resolves composition and the loader has
+   to match what it will enforce;
 2. a `SCHEMA_DIR` that cannot be listed, which is a misconfiguration of the
    server rather than a fault in one file;
 3. a `.json` entry that appears in the listing but cannot be read — a broken
@@ -197,8 +197,9 @@ refusing beats guessing. A `$ref` on a *property* is the normal shape
 (`visit.json`'s `contactSnapshot`) and is untouched. So is a `required` inside a
 property's own subschema, which constrains that child object's members rather
 than the root's; a `required` under `not`, which can never make a property
-mandatory; and a `then`/`else` with no `if`, or an `if` with neither branch,
-which the validator ignores.
+mandatory; a `then`/`else` with no `if`, which the validator ignores; and a
+`required` inside an `if` itself, which asserts nothing about the instance and
+only selects which branch applies.
 
 **A stray malformed `.json` left in `SCHEMA_DIR` is not fatal.** It is skipped
 with a warning naming the path, and the schemas around it still index.
@@ -352,7 +353,7 @@ and the property.
 
 How much of the entity that breaks depends on the requirement. An *unconditional*
 one — the root `required` array, or an `allOf` branch — fails every create and
-update. A *conditional* one — `anyOf`/`oneOf`, `if`/`then`/`else`,
+update. A *conditional* one — `anyOf`/`oneOf`, an `if`'s `then`/`else`,
 `dependentRequired`/`dependentSchemas`/`dependencies` — fails only the documents
 that take that branch; the others validate normally. Both are refused: a schema
 with no writable path for some of its documents is still a schema an operator
@@ -360,11 +361,13 @@ must fix, and it is far cheaper to say so at startup than to have callers
 discover it as an unfixable 400.
 
 "Requires" means what the validator will enforce, not what the root `required`
-array literally says: the check also walks `allOf`/`anyOf`/`oneOf`,
-`if`/`then`/`else`, `dependentRequired`, `dependentSchemas` and draft-07's
-`dependencies`, and refuses a relation-declaring schema that applies a `$ref` to
-the root instance because it cannot follow one. See "Startup fails closed" for
-the full boundary, including what is deliberately *not* collected.
+array literally says: the check also walks `allOf`/`anyOf`/`oneOf`, the
+`then`/`else` branches of an `if`, `dependentRequired`, `dependentSchemas` and
+draft-07's `dependencies`, and refuses a relation-declaring schema that applies a
+`$ref` to the root instance because it cannot follow one. It does **not** collect
+from the `if` predicate itself: in JSON Schema `if` contributes no assertions, so
+a `required` there can never make a property mandatory. See "Startup fails
+closed" for the full boundary, including what is deliberately *not* collected.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
