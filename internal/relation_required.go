@@ -13,7 +13,8 @@ import (
 // validator demand this property?" — from a raw map[string]any. The validator
 // resolves composition, so reading the root's "required" array alone misses a
 // relation root made mandatory through allOf/oneOf/if-then/dependent* and boots
-// a schema whose every create then fails.
+// a schema whose writes then fail — always for an unconditional requirement,
+// and for the documents that take the branch for a conditional one.
 type rootRequiredWalk struct {
 	required map[string]struct{}
 	// unfollowedRef is the keyword path of the first $ref/$dynamicRef found on a
@@ -21,13 +22,13 @@ type rootRequiredWalk struct {
 	unfollowedRef string
 }
 
-// sameLocationBranchKeywords are the applicators whose subschemas are asserted
-// against the *same* instance location as the schema carrying them. A "required"
-// inside one of them therefore constrains the root object's own properties.
+// conditionalKeywords are the "if"/"then"/"else" trio. They are walked as a
+// group, and only when the group can affect validation at all — see
+// walkConditional.
 //
-// "if" is in this list even though a failing "if" invalidates nothing on its
-// own. It is collected deliberately, and for a different reason than the others:
-// a relation root never reaches the validator, so an "if" that turns on the
+// "if" is collected along with its branches even though a failing "if"
+// invalidates nothing on its own, and for a different reason than the others: a
+// relation root never reaches the validator, so an "if" that turns on the
 // presence of one is being decided against a property no payload can carry, and
 // the branch the author meant to select may be permanently dead. That is a
 // schema doing something other than what it says, and an operator should hear
@@ -37,7 +38,7 @@ type rootRequiredWalk struct {
 // disjunct it contains — which is the intended direction: the guard refuses a
 // suspect schema instead of booting a broken one. Widening it costs nothing
 // today (no shipped schema uses "if" at all).
-var sameLocationBranchKeywords = []string{"if", "then", "else"}
+var conditionalKeywords = []string{"if", "then", "else"}
 
 // sameLocationListKeywords are the same-instance-location applicators whose
 // value is an array of subschemas.
@@ -48,6 +49,34 @@ var sameLocationBranchKeywords = []string{"if", "then", "else"}
 // satisfy the branch. Refusing the whole schema is the intended outcome — do not
 // "fix" this by restricting collection to allOf.
 var sameLocationListKeywords = []string{"allOf", "anyOf", "oneOf"}
+
+// dependentKeywords are the three spellings of "these names become required once
+// this trigger property is present". Each is asserted against the same instance
+// location as the schema carrying it.
+//
+// "dependencies" is draft-07's spelling, and including it is not optional:
+// internal/schemavalidate accepts draft-07 (schema_check.go's
+// supportedSchemaVersions, pinned by TestNewAcceptsSupportedSchemaVersions), and
+// under draft-07 the library enforces the rule from "dependencies" alone.
+// jsonschema-go@v0.4.2 splits that keyword into DependencyStrings and
+// DependencySchemas while unmarshalling (schema.go:448-467), and validate.go
+// reads only those two when the draft is draft7, reading
+// DependentRequired/DependentSchemas only when it is draft2020
+// (validate.go:569-613). Omitting it left the #318 bypass alive under another
+// name.
+//
+// All three are collected regardless of the document's declared draft, rather
+// than switching on $schema. That over-approximates by exactly one case: a
+// keyword written in the draft that does not define it — "dependencies" in a
+// 2020-12 document, or the 2020-12 pair in a draft-07 one — is an unknown
+// keyword the validator ignores, and collecting it can refuse a schema the
+// validator would not have constrained. The trade is deliberate and one-sided:
+// the cost is a startup message telling an operator to delete a keyword that was
+// already doing nothing, while getting the draft detection wrong in the other
+// direction reinstates a silent bypass. Do not "optimise" this into a
+// draft-conditional lookup without re-deriving which draft the library picks for
+// a document with no $schema, which supportedSchemaVersions permits.
+var dependentKeywords = []string{"dependentRequired", "dependentSchemas", "dependencies"}
 
 // analyzeRootRequired walks schema for every property name it can make required
 // on the root object.
@@ -90,28 +119,57 @@ func (w *rootRequiredWalk) walk(node map[string]any, path string) {
 		}
 	}
 
-	for _, kw := range sameLocationBranchKeywords {
+	w.walkConditional(node, path)
+
+	for _, kw := range dependentKeywords {
+		w.walkDependent(node, path, kw)
+	}
+}
+
+// walkConditional walks "if"/"then"/"else", but only when that trio has some
+// validation effect.
+//
+// The gate is what keeps this from rejecting writable schemas. "then" and "else"
+// are inert without an "if" — measured: a schema whose only conditional keyword
+// is then:{"required":["contactSnapshot"]} validates {"id":"x"} as nil — and an
+// "if" with neither branch is inert in turn, since there is nothing for its
+// outcome to select. Collecting from an inert trio would refuse a schema the
+// validator never constrains, which is the one failure mode this guard must not
+// have.
+func (w *rootRequiredWalk) walkConditional(node map[string]any, path string) {
+	// Presence is tested on the key, not on its decoded shape, so that a boolean
+	// schema ("if": true, which makes "then" unconditional) still opens the gate.
+	_, hasIf := node["if"]
+	_, hasThen := node["then"]
+	_, hasElse := node["else"]
+	if !hasIf || (!hasThen && !hasElse) {
+		return
+	}
+
+	for _, kw := range conditionalKeywords {
 		if sub, ok := node[kw].(map[string]any); ok {
 			w.walk(sub, path+"/"+kw)
 		}
 	}
+}
 
-	// dependentRequired maps a trigger property to names required whenever the
-	// trigger is present. Every listed name is a root requirement for some
-	// document, so all of them count.
-	if deps, ok := node["dependentRequired"].(map[string]any); ok {
-		for _, names := range deps {
-			collectNameList(names, w.required)
-		}
+// walkDependent walks one trigger-keyed keyword. Each value is either a name
+// list — draft-07's "dependencies" allows the array form, and
+// "dependentRequired" only that — or a subschema asserted against the same
+// instance location, which "dependencies" also allows and "dependentSchemas"
+// requires. Both shapes are accepted for every keyword so that neither draft's
+// spelling can slip past on a shape technicality.
+func (w *rootRequiredWalk) walkDependent(node map[string]any, path, keyword string) {
+	deps, ok := node[keyword].(map[string]any)
+	if !ok {
+		return
 	}
-
-	// dependentSchemas is the schema-valued form of the same rule: each value is
-	// asserted against the root instance when its trigger property is present.
-	if deps, ok := node["dependentSchemas"].(map[string]any); ok {
-		for trigger, sub := range deps {
-			if subMap, ok := sub.(map[string]any); ok {
-				w.walk(subMap, path+"/dependentSchemas/"+trigger)
-			}
+	for trigger, value := range deps {
+		switch v := value.(type) {
+		case []any:
+			collectNameList(v, w.required)
+		case map[string]any:
+			w.walk(v, path+"/"+keyword+"/"+trigger)
 		}
 	}
 }
@@ -200,10 +258,12 @@ func checkRelationRootsWritable(schemaName string, schema map[string]any, relati
 			continue
 		}
 		return fmt.Errorf(
-			"schema %s requires relation root %q: a relation root is stripped from every payload before validation, so every "+
-				"create fails with a missing-required error the caller cannot fix, as does every update when strict update "+
-				"validation is on; remove it from \"required\" (including any allOf/anyOf/oneOf/if/then/else/dependentRequired/"+
-				"dependentSchemas branch that names it) or drop its x-relation marker",
+			"schema %s requires relation root %q: a relation root is stripped from every payload before validation, so a write "+
+				"that has to satisfy that requirement fails with a missing-required error the caller cannot fix by sending the "+
+				"field — every create and update when the requirement is unconditional (the root \"required\" array, or an allOf "+
+				"branch), and every document that takes the branch when it is conditional (anyOf/oneOf/if/then/else/"+
+				"dependentRequired/dependentSchemas/dependencies); remove it from every \"required\" that names it, or drop its "+
+				"x-relation marker",
 			schemaName, rel.ChildPath)
 	}
 	return nil

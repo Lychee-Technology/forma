@@ -44,6 +44,15 @@ func TestLoadRelationIndexRejectsRequiredRelationRoot(t *testing.T) {
 // for the allOf case the parsed root's Required is empty while
 // Resolved.Validate({"id":"x"}) answers `validating /allOf/0: required: missing
 // properties: ["contactSnapshot"]`.
+//
+// The two "dependencies" vectors are draft-07, which forma accepts
+// (schemavalidate's supportedSchemaVersions). Under draft-07 the library
+// enforces this rule from "dependencies" and ignores the 2020-12 spellings
+// entirely, so these were a live bypass of the first widening: both returned nil
+// from ValidateRelationSchemas while the resolved validator answered
+// `dependentRequired["parentId"]: missing properties ["contactSnapshot"]` (array
+// form) and `validating /dependencies/parentId: required: missing properties:
+// ["contactSnapshot"]` (schema form) on the post-strip payload.
 func TestLoadRelationIndexRejectsComposedRequiredRelationRoot(t *testing.T) {
 	for _, fixture := range []string{
 		"relation_required_allof",
@@ -53,6 +62,8 @@ func TestLoadRelationIndexRejectsComposedRequiredRelationRoot(t *testing.T) {
 		"relation_required_if_only",
 		"relation_required_dependent",
 		"relation_required_dependent_schema",
+		"relation_required_dependencies_list",
+		"relation_required_dependencies_schema",
 	} {
 		t.Run(fixture, func(t *testing.T) {
 			_, err := LoadRelationIndex(relationFixtureDir(fixture))
@@ -88,11 +99,18 @@ func TestLoadRelationIndexRefusesRootRefBesideRelation(t *testing.T) {
 //     never make the property mandatory.
 //   - relation_ok_root_ref_no_relation carries a root $ref but declares no
 //     x-relation, so nothing is stripped and there is nothing to refuse.
+//   - relation_ok_then_without_if and relation_ok_if_without_branches carry an
+//     inert conditional. "then"/"else" without an "if" are ignored by the
+//     validator — measured: such a schema validates {"id":"x"} as nil — and an
+//     "if" with neither branch has no outcome to select, so neither can make a
+//     property mandatory.
 func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 	for _, fixture := range []string{
 		"relation_ok_property_required",
 		"relation_ok_not",
 		"relation_ok_root_ref_no_relation",
+		"relation_ok_then_without_if",
+		"relation_ok_if_without_branches",
 	} {
 		t.Run(fixture, func(t *testing.T) {
 			require.NoError(t, ValidateRelationSchemas(relationFixtureDir(fixture)))
@@ -130,6 +148,23 @@ func TestLoadRelationIndexSkipsUnparseableFile(t *testing.T) {
 	require.NoError(t, err, "a stray malformed .json must not abort startup")
 	require.Len(t, idx.Relations("child"), 1,
 		"the schemas beside the malformed file must still index")
+}
+
+// TestLoadRelationIndexFailsOnUnreadableEntry pins the third abort cause. A
+// .json the directory listing produced but that cannot be opened describes the
+// deployment, not the document, and the same fault could equally be hiding a
+// schema that does declare relations — so unlike a decode failure it is not
+// skipped. A broken symlink is the deterministic form; a mode-000 file behaves
+// the same but would not be a fault when the test runs as root.
+func TestLoadRelationIndexFailsOnUnreadableEntry(t *testing.T) {
+	dir := t.TempDir()
+	copyFixture(t, relationFixtureDir("relation_ok_not"), dir)
+	require.NoError(t, os.Symlink(filepath.Join(dir, "gone.json"), filepath.Join(dir, "broken.json")))
+
+	err := ValidateRelationSchemas(dir)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "broken.json")
 }
 
 // TestLoadRelationIndexFailsOnUnreadableDir pins the half that stays fatal. A
