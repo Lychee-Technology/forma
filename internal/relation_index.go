@@ -59,7 +59,8 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // It exists because NewEntityManager cannot enforce this: it swallows a
 // LoadRelationIndex failure into a warning and continues with a nil index, which
 // disables stripping altogether rather than stopping. The composition root calls
-// this first, at a position where returning an error aborts startup (#318).
+// this before it builds the manager, at a position where returning an error
+// aborts startup (#318).
 func ValidateRelationSchemas(schemaDir string) error {
 	if _, err := LoadRelationIndex(schemaDir); err != nil {
 		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
