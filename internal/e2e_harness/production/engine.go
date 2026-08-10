@@ -143,12 +143,10 @@ func (e *Env) EntityManager() forma.EntityManager {
 	}
 	// The harness constructs the manager directly instead of through the factory,
 	// so it has to run the factory's relation guard itself or it is not modelling
-	// production startup (#318). It keeps the factory's order too, so that the
-	// contingent half of the skip argument at ValidateRelationSchemas holds here
-	// as well — the load-bearing half, that an unindexed schema has nothing
-	// stripped from its payloads, does not depend on the order.
-	if err := internal.ValidateRelationSchemas(schemaDir); err != nil {
-		e.T.Fatalf("validate schema relations over %s: %v", schemaDir, err)
+	// production startup (#318). Over the same registry the validator was built
+	// from, for the same reason the factory does it that way.
+	if err := internal.ValidateRelationSchemas(e.Registry); err != nil {
+		e.T.Fatalf("validate schema relations over the registry for %s: %v", schemaDir, err)
 	}
 	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator)
 	return e.manager

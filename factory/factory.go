@@ -162,11 +162,11 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// This step opens no client, pool, or handle, so it respects the placement
 	// rule stated above and has nothing to leak on its error return.
 	//
-	// The guard skips a .json file it cannot decode; what makes that safe is
-	// self-contained and stated at ValidateRelationSchemas (an unindexed schema
-	// has nothing stripped from its payloads). Running after schemavalidate.New
-	// adds a second, contingent reassurance — it is not what the skip rests on.
-	if err := internal.ValidateRelationSchemas(effectiveConfig.Entity.SchemaDirectory); err != nil {
+	// It reads the registry, not SCHEMA_DIR, so it analyses the same documents
+	// schemavalidate.New just resolved. Handing it the directory instead would let
+	// a registry that does not serve the files on disk boot with an index built
+	// from one document and a validator built from another.
+	if err := internal.ValidateRelationSchemas(registry); err != nil {
 		return nil, fmt.Errorf("failed to validate schema relations: %w", err)
 	}
 

@@ -3,6 +3,7 @@ package internal
 import (
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/stretchr/testify/require"
 )
 
@@ -10,7 +11,9 @@ import (
 // visit.contactSnapshot is the only x-relation property in the repository.
 func stripIndex(t *testing.T) *RelationIndex {
 	t.Helper()
-	idx, err := LoadRelationIndex(shippedSchemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(shippedSchemaDir)
+	require.NoError(t, err)
+	idx, err := LoadRelationIndex(registry)
 	require.NoError(t, err)
 	require.NotEmpty(t, idx.Relations("visit"), "visit must carry a relation for this test to mean anything")
 	return idx

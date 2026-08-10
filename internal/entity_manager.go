@@ -99,16 +99,22 @@ func NewEntityManager(
 		zap.S().Warn("entity manager config is nil; falling back to default config")
 	}
 
+	// Gated on the registry because the registry is what the index is built from
+	// (LoadRelationIndex). It used to be gated on config.Entity.SchemaDirectory,
+	// which stopped being the source: an embedder who registers a schema carrying
+	// x-relation but leaves SchemaDirectory empty now gets stripping, enrichment
+	// and the #315 carve-out, all of which that schema asks for and none of which
+	// an unrelated path setting should have been deciding.
 	var relationIdx *RelationIndex
-	if config.Entity.SchemaDirectory != "" {
-		idx, err := LoadRelationIndex(config.Entity.SchemaDirectory)
+	if registry != nil {
+		idx, err := LoadRelationIndex(registry)
 		if err != nil {
 			zap.S().Warnw("failed to load schema relations", "error", err)
 		} else {
 			relationIdx = idx
 		}
 	}
-	// The relation index is loaded here, from config, so the transformer this
+	// The relation index is loaded here, from the registry, so the transformer this
 	// manager was handed predates it. Install the roots now: without them the
 	// EAV required-policy check enforces policies on relation-root children,
 	// which #314 ruled must never gate a write (#315).

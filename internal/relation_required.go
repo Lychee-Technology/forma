@@ -256,8 +256,8 @@ func checkRelationRootsWritable(schemaName string, schema map[string]any, relati
 		return fmt.Errorf(
 			"schema %s declares a relation root and applies %q to its root object: this loader cannot follow a reference, "+
 				"so it cannot tell whether the reference makes a relation root mandatory — and a mandatory relation root makes "+
-				"every write fail, because the root is stripped before validation; inline the referenced constraints into %s.json "+
-				"or move the reference onto a property",
+				"every write fail, because the root is stripped before validation; inline the referenced constraints into the "+
+				"document registered for %s, or move the reference onto a property",
 			schemaName, analysis.unfollowedRef, schemaName)
 	}
 

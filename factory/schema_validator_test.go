@@ -2,6 +2,8 @@ package factory
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -80,33 +82,45 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 			"a missing schema document from an unparseable one")
 }
 
-// requiredRelationRootSchemaDir is the committed two-schema pair whose child
-// lists its x-relation property in root-level "required" — the shape
-// internal.ValidateRelationSchemas refuses. It is the same directory
+// relationFixtureChild reads one committed fixture's child.json. The fixtures
+// live in internal/testdata and are the same bytes
 // internal/relation_index_guard_test.go asserts the rule against, read here by
 // relative path so the two packages cannot drift apart (the same way
 // internal/entity_write_validation_relations_test.go reads
 // ../cmd/server/schemas).
-//
-// The mock registry serves its own document and never references this directory,
-// so pointing Entity.SchemaDirectory at it does not disturb validator
-// construction — only the relation guard reads it.
-const requiredRelationRootSchemaDir = "../internal/testdata/relation_required_root"
+func relationFixtureChild(t *testing.T, fixture string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "internal", "testdata", fixture, "child.json"))
+	require.NoError(t, err)
+	return string(body)
+}
 
-// TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins the
-// factory's call to internal.ValidateRelationSchemas — the wiring that makes the
-// #318 guard a *startup* guard rather than a function nobody runs.
+// TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins two
+// things at once: that the factory calls internal.ValidateRelationSchemas at
+// all, and that it hands it the *registry*.
 //
-// internal/relation_index_guard_test.go covers the rule itself, but it calls
-// LoadRelationIndex and ValidateRelationSchemas directly: deleting the call from
-// factory.go left the whole suite green, and with it the promise
-// entity_crud_service.go makes to future readers ("the guard handles it") would
-// have silently become false. This test fails when that call is removed.
+// The wiring half matters because internal/relation_index_guard_test.go calls
+// the guard directly — deleting the call from factory.go left the whole suite
+// green, and with it the promise entity_crud_service.go makes to future readers
+// ("the guard handles it") would silently have become false.
+//
+// The byte-source half is the divergence itself. The registry serves a child
+// document that lists its x-relation property in root "required"; SCHEMA_DIR
+// holds a *different* child, declaring the same relation without requiring it.
+// Analysing the directory passes and boots a deployment whose every write is
+// then rejected by a validator built from the other document. Only reading the
+// registry catches it.
+//
+// SCHEMA_DIR still has to hold the fixture's parent.json, because that is where
+// the served document's "$ref": "parent.json#/..." resolves from.
 func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	config := validatorTestConfig(t, newMockSchemaRegistry())
-	config.Entity.SchemaDirectory = requiredRelationRootSchemaDir
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = relationFixtureChild(t, "relation_required_root")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_ok_not"
 
 	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
@@ -116,8 +130,33 @@ func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *test
 	assert.Contains(t, err.Error(), "failed to validate schema relations",
 		"the failure must come from the factory's relation guard, not from another check")
 	// The offending schema and property must be named, so an operator can act.
-	assert.Contains(t, err.Error(), "child")
+	assert.Contains(t, err.Error(), "test")
 	assert.Contains(t, err.Error(), "contactSnapshot")
+}
+
+// TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded is the
+// converse, and the reason the guard must not scan SCHEMA_DIR: a document
+// sitting in that directory under a name the registry never registers is read by
+// nothing — not the validator, not the manager — so refusing to boot over it
+// aborts startup for a file that has no effect on any write.
+//
+// The offending document here is the very one the test above proves fatal when
+// it is registered.
+func TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "unregistered.json"),
+		[]byte(relationFixtureChild(t, "relation_required_root")), 0o600))
+
+	config := validatorTestConfig(t, newMockSchemaRegistry())
+	config.Entity.SchemaDirectory = dir
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.NoError(t, err)
+	assert.NotNil(t, em)
 }
 
 // TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface pins the

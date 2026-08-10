@@ -1,10 +1,11 @@
 package internal
 
 import (
-	"os"
+	"errors"
 	"path/filepath"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,7 +27,7 @@ func relationFixtureDir(name string) string {
 // caller cannot fix by sending the field. The failure has to happen at startup,
 // where an operator sees it, rather than as a 4xx storm in production.
 func TestLoadRelationIndexRejectsRequiredRelationRoot(t *testing.T) {
-	_, err := LoadRelationIndex(relationFixtureDir("relation_required_root"))
+	_, err := LoadRelationIndex(relationFixtureRegistry(t, "relation_required_root"))
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "child")
@@ -86,7 +87,7 @@ func TestLoadRelationIndexRejectsComposedRequiredRelationRoot(t *testing.T) {
 		"relation_required_dependencies_schema",
 	} {
 		t.Run(fixture, func(t *testing.T) {
-			_, err := LoadRelationIndex(relationFixtureDir(fixture))
+			_, err := LoadRelationIndex(relationFixtureRegistry(t, fixture))
 
 			require.Error(t, err)
 			require.ErrorContains(t, err, "child")
@@ -102,7 +103,7 @@ func TestLoadRelationIndexRejectsComposedRequiredRelationRoot(t *testing.T) {
 // Schema(), still answers the root with Ref set to the unresolved string after
 // Resolve. Guessing would be worse than refusing.
 func TestLoadRelationIndexRefusesRootRefBesideRelation(t *testing.T) {
-	_, err := LoadRelationIndex(relationFixtureDir("relation_root_ref"))
+	_, err := LoadRelationIndex(relationFixtureRegistry(t, "relation_root_ref"))
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "child")
@@ -139,7 +140,7 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 		"relation_required_if_only",
 	} {
 		t.Run(fixture, func(t *testing.T) {
-			require.NoError(t, ValidateRelationSchemas(relationFixtureDir(fixture)))
+			require.NoError(t, ValidateRelationSchemas(relationFixtureRegistry(t, fixture)))
 		})
 	}
 }
@@ -149,75 +150,48 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 // the repository carrying x-relation, and contactSnapshot is not required. No
 // shipped schema uses allOf/anyOf/oneOf/if/dependentRequired or a root-level
 // $ref either, so the composition walk adds no rejection here.
-func TestValidateRelationSchemasAcceptsShippedSchemas(t *testing.T) {
-	require.NoError(t, ValidateRelationSchemas(shippedSchemaDir))
-	require.NoError(t, ValidateRelationSchemas("../cmd/sample/schemas"))
-	require.NoError(t, ValidateRelationSchemas(""), "an unconfigured schema directory is not an error")
-}
-
-// TestLoadRelationIndexSkipsUnparseableFile pins the narrowed startup contract.
 //
-// By the time ValidateRelationSchemas runs, schemavalidate.New has already
-// parsed every *registered* schema and failed closed on any that would not — so
-// a document in SCHEMA_DIR that this loader cannot parse is not a registered
-// entity schema at all, and refusing to boot over it would abort startup for a
-// file nothing reads. It is skipped with a warning instead, and the schemas
-// around it still index.
-func TestLoadRelationIndexSkipsUnparseableFile(t *testing.T) {
-	dir := t.TempDir()
-	copyFixture(t, relationFixtureDir("relation_ok_not"), dir)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "stray.json"), []byte(`{`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "notobject.json"), []byte(`[1,2,3]`), 0o600))
-
-	idx, err := LoadRelationIndex(dir)
-
-	require.NoError(t, err, "a stray malformed .json must not abort startup")
-	require.Len(t, idx.Relations("child"), 1,
-		"the schemas beside the malformed file must still index")
-}
-
-// TestLoadRelationIndexFailsOnUnreadableEntry pins the third abort cause. A
-// .json the directory listing produced but that cannot be opened describes the
-// deployment, not the document, and the same fault could equally be hiding a
-// schema that does declare relations — so unlike a decode failure it is not
-// skipped. A broken symlink is the deterministic form; a mode-000 file behaves
-// the same but would not be a fault when the test runs as root.
-func TestLoadRelationIndexFailsOnUnreadableEntry(t *testing.T) {
-	dir := t.TempDir()
-	copyFixture(t, relationFixtureDir("relation_ok_not"), dir)
-	require.NoError(t, os.Symlink(filepath.Join(dir, "gone.json"), filepath.Join(dir, "broken.json")))
-
-	err := ValidateRelationSchemas(dir)
-
-	require.Error(t, err)
-	require.ErrorContains(t, err, "broken.json")
-}
-
-// TestLoadRelationIndexFailsOnUnreadableDir pins the half that stays fatal. A
-// SCHEMA_DIR that cannot be listed is a misconfiguration of the server itself,
-// not a stray file in an otherwise valid directory, and silently indexing
-// nothing would disable relation stripping for every schema.
-func TestLoadRelationIndexFailsOnUnreadableDir(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such-dir")
-
-	err := ValidateRelationSchemas(missing)
-
-	require.Error(t, err)
-	require.ErrorContains(t, err, missing)
-}
-
-// copyFixture copies a committed fixture directory's .json files into dst, so a
-// test can add files beside them without mutating the fixture.
-func copyFixture(t *testing.T, src, dst string) {
-	t.Helper()
-	entries, err := os.ReadDir(src)
-	require.NoError(t, err)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(src, e.Name()))
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(dst, e.Name()), body, 0o600))
+// Driven through the directory registry the server itself builds, so the guard
+// sees exactly the set of names production registers — which excludes the
+// *_full.json documents beside them. None of those carries x-relation, so that
+// exclusion changes no verdict here; it is stated because the previous
+// directory-scanning loader did read them.
+func TestValidateRelationSchemasAcceptsShippedSchemas(t *testing.T) {
+	for _, dir := range []string{shippedSchemaDir, "../cmd/sample/schemas"} {
+		registry, err := schemameta.NewFileSchemaRegistryFromDirectory(dir)
+		require.NoError(t, err, "registry over %s", dir)
+		require.NoError(t, ValidateRelationSchemas(registry), "guard over %s", dir)
 	}
+	require.NoError(t, ValidateRelationSchemas(nil), "an absent registry is not an error")
+}
+
+// TestLoadRelationIndexFailsOnUnservableSchema pins one half of the second abort
+// cause. A registry that lists a name it cannot then serve is broken about a
+// schema the runtime resolves and validates writes against, so there is nothing
+// to skip past — and no way to tell whether that schema declares a relation
+// root.
+func TestLoadRelationIndexFailsOnUnservableSchema(t *testing.T) {
+	registry := relationFixtureRegistry(t, "relation_ok_not")
+	registry.docErr["child"] = errors.New("backing store unavailable")
+
+	err := ValidateRelationSchemas(registry)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "child")
+	require.ErrorContains(t, err, "backing store unavailable")
+}
+
+// TestLoadRelationIndexFailsOnUndecodableDocument is the other half: a listed
+// schema whose document will not decode into a JSON object.
+//
+// The message names the schema rather than a path, because a registry need not
+// have one — it may serve the document from a database or from memory.
+func TestLoadRelationIndexFailsOnUndecodableDocument(t *testing.T) {
+	registry := relationFixtureRegistry(t, "relation_ok_not")
+	registry.docs["child"] = `{`
+
+	err := ValidateRelationSchemas(registry)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "child")
 }

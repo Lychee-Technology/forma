@@ -164,7 +164,20 @@ A second fail-closed check sits beside validator construction in the factory:
 `internal.ValidateRelationSchemas` aborts startup for a schema that requires a
 relation root — see "Relation subtrees are never caller-writable".
 
-It aborts startup for three things, and only three:
+It reads the **schema registry**, not `SCHEMA_DIR`: one document per name in
+`registry.ListSchemas()`, taken from `GetSchemaByName`. That is the same pair of
+accessors validator construction uses, so the two can never analyse different
+bytes for the same schema. `forma.SchemaRegistry` is a public extension point —
+an implementation may serve documents from files, a database, or memory — and
+only what it registers is ever resolved, validated, or written to. Two
+consequences follow, and both are deliberate:
+
+- a valid document left in `SCHEMA_DIR` under a name the registry does not
+  register is **not** analysed, because nothing else reads it either;
+- a registry that does not serve the file on disk is analysed as it actually
+  is, rather than as `SCHEMA_DIR` suggests.
+
+It aborts startup for two things, and only two:
 
 1. a schema that declares a relation root the validator would demand — through
    the root's own `required` **or** through any applicator that lands on the
@@ -172,12 +185,14 @@ It aborts startup for three things, and only three:
    `if`, `dependentRequired`, `dependentSchemas`, and draft-07's
    `dependencies`), because the validator resolves composition and the loader has
    to match what it will enforce;
-2. a `SCHEMA_DIR` that cannot be listed, which is a misconfiguration of the
-   server rather than a fault in one file;
-3. a `.json` entry that appears in the listing but cannot be read — a broken
-   symlink, a mode-000 file. That describes the deployment rather than the
-   document, and the same fault could be hiding a schema that *does* declare
-   relations, so it is not treated like the decode failure below.
+2. a schema the registry lists but cannot then serve, or whose document will not
+   decode into a JSON object. Every name walked came from `ListSchemas`, so such
+   a schema is one the runtime resolves and validates writes against: an
+   unreadable document is a fault in the registry, not a stray file, and there is
+   no reading of it under which the loader could tell whether it declares a
+   relation root. Validator construction rejects the same documents for the same
+   reasons and runs first at both call sites, so in practice this cause is
+   reached only by a caller that skips it.
 
 `dependencies` is in list (1) because forma accepts draft-07
 (`internal/schemavalidate/schema_check.go`), and under draft-07 the library
@@ -201,23 +216,17 @@ mandatory; a `then`/`else` with no `if`, which the validator ignores; and a
 `required` inside an `if` itself, which asserts nothing about the instance and
 only selects which branch applies.
 
-**A stray malformed `.json` left in `SCHEMA_DIR` is not fatal.** It is skipped
-with a warning naming the path, and the schemas around it still index.
+Both call sites — `factory/factory.go` and
+`internal/e2e_harness/production/engine.go` — pass the same registry they built
+the validator from. Any new construction site must do the same;
+`internal.NewEntityManager` cannot enforce this, because it swallows a relation
+index load failure into a warning and continues with stripping disabled.
 
-Skipping is safe on its own terms: the schema is then absent from the relation
-index, so `StripComputedFields` removes nothing from its payloads and any
-property it requires stays satisfiable by sending it. The hazard this check
-exists to catch cannot arise for a schema that is not indexed.
-
-A second argument points the same way but is contingent, so do not lean on it
-alone: both call sites (`factory/factory.go`,
-`internal/e2e_harness/production/engine.go`) run validator construction first,
-and that has already parsed every name `registry.ListSchemas()` returns and
-failed closed on any that would not — so in the shipped configuration an
-undecodable file is not a registered entity schema either. That step reads the
-document the *registry* serves, which `internal/schemameta`'s file registry takes
-from the same file on disk, but which the `forma.SchemaRegistry` interface does
-not require any implementation to do.
+Note that no registry this repository ships can exhibit the divergence this
+guards against: `internal/schemameta`'s file registry reads
+`<schemaDir>/<name>.json` in both its modes, including the database-backed one,
+where the table supplies only the name-to-id mapping. The gap is in the
+`forma.SchemaRegistry` contract, not in a shipped implementation.
 
 An unconfigured (empty) `Entity.SchemaDirectory` is still not an error.
 

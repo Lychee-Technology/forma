@@ -3,12 +3,11 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/transform"
-	"go.uber.org/zap"
 )
 
 // RelationDescriptor captures how a child schema derives fields from a parent schema.
@@ -27,28 +26,27 @@ type RelationIndex struct {
 	bySchema map[string][]RelationDescriptor
 }
 
-// LoadRelationIndex parses JSON schema files in schemaDir and builds a relation
-// index. An unset schemaDir, or one holding no relations, yields an empty index
-// and no error. A schemaDir that cannot be listed is an error — see
-// ValidateRelationSchemas for the full list of what fails and why.
-func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
+// LoadRelationIndex builds a relation index from the schema documents the
+// registry serves, one per name in registry.ListSchemas().
+//
+// The registry, not SCHEMA_DIR, is the source, and that is the whole point: the
+// runtime validator is built from the same pair of accessors
+// (schemavalidate.New), so the index and the validator can never disagree about
+// a schema's bytes. forma.SchemaRegistry is a public extension point whose
+// implementations may load from files, a database, or anything else, and only
+// what it registers is ever validated or written to.
+//
+// A nil registry, or one whose schemas declare no relations, yields an empty
+// index and no error. Everything that is an error is listed at
+// ValidateRelationSchemas.
+func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 	idx := &RelationIndex{bySchema: make(map[string][]RelationDescriptor)}
-	if schemaDir == "" {
+	if registry == nil {
 		return idx, nil
 	}
 
-	entries, err := os.ReadDir(schemaDir)
-	if err != nil {
-		return idx, fmt.Errorf("read schema dir: %w", err)
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, "_attributes.json") {
-			continue
-		}
-		schemaName := strings.TrimSuffix(name, ".json")
-		if err := idx.loadSchemaRelations(schemaDir, schemaName); err != nil {
+	for _, schemaName := range registry.ListSchemas() {
+		if err := idx.loadSchemaRelations(registry, schemaName); err != nil {
 			return nil, err
 		}
 	}
@@ -66,75 +64,57 @@ func LoadRelationIndex(schemaDir string) (*RelationIndex, error) {
 // aborts startup (#318).
 //
 // That swallow predates the required-relation-root guard, but its blast radius
-// does not: one offending schema now fails the whole directory load, so an
+// does not: one offending schema now fails the whole registry load, so an
 // unguarded caller loses stripping for every schema, not just the offender. Any
 // new construction site must call this too.
 //
 // What aborts startup, exactly:
 //
-//   - a schemaDir that cannot be listed, which is a misconfiguration of the
-//     server rather than a fault in one file;
-//   - a .json entry that lists but cannot be read. Measured: a broken symlink
-//     answers "no such file or directory", a mode-000 file "permission denied",
-//     and both abort. This one is a judgement call rather than a necessity — see
-//     the read-failure branch in loadSchemaRelations for why it is not treated
-//     like a decode failure;
 //   - a schema that declares a relation root the validator would demand, or
 //     whose root requirements cannot be determined (see
-//     checkRelationRootsWritable).
+//     checkRelationRootsWritable);
+//   - a schema the registry lists but cannot then serve, or whose document will
+//     not decode into a JSON object.
 //
-// A .json file that will not decode into a JSON object does not abort. It is
-// skipped with a warning naming the path, and skipping it is self-contained: the
-// schema is then absent from the index entirely, so Relations answers nil for it,
-// StripComputedFields removes nothing from its payloads, and any property it
-// requires stays satisfiable by sending it. The hazard this guard exists to catch
-// cannot arise for a schema that is not indexed.
+// The second cause is fatal rather than skipped because every name walked here
+// came from ListSchemas: it names a schema the runtime resolves, validates
+// writes against, and strips relation subtrees for. A document that cannot be
+// read is therefore a fault in the registry itself, not a stray file left beside
+// the ones that matter, and there is no reading of it under which this loader
+// could tell whether it declares a relation root.
 //
-// Secondarily — and this part is contingent, so do not lean on it alone — both
-// call sites run schemavalidate.New first, over every name
-// registry.ListSchemas returns, failing closed on any document that will not
-// parse. So an undecodable file is, in the shipped configuration, not a
-// registered entity schema either. That argument assumes the registry serves the
-// same bytes as the file on disk, which internal/schemameta's file registry does
-// but the forma.SchemaRegistry interface does not require.
+// Observation, not justification: schemavalidate.New refuses the very same
+// documents for the very same reasons, and both shipped call sites run it over
+// the same registry first, so in the shipped ordering that cause is unreachable
+// here. The reason to refuse is that the schema is registered.
 //
-// One non-object document is skipped without a warning rather than with one: a
-// file holding exactly
-//
-//	null
-//
-// which json.Unmarshal decodes into a nil map[string]any without error, so it
-// reaches the ordinary "declares no properties" exit instead. An empty schemaDir
-// stays a no-op, not an error.
-func ValidateRelationSchemas(schemaDir string) error {
-	if _, err := LoadRelationIndex(schemaDir); err != nil {
-		return fmt.Errorf("validate schema relations in %q: %w", schemaDir, err)
+// A registry that lists no schemas, and a nil registry, are both no-ops rather
+// than errors.
+func ValidateRelationSchemas(registry forma.SchemaRegistry) error {
+	if _, err := LoadRelationIndex(registry); err != nil {
+		return fmt.Errorf("validate schema relations: %w", err)
 	}
 	return nil
 }
 
-func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) error {
-	filePath := filepath.Join(schemaDir, schemaName+".json")
-	raw, err := os.ReadFile(filePath)
+// loadSchemaRelations indexes one registered schema's relation roots.
+//
+// forma.JSONSchema.Schema is the registry's raw document text — the shipped file
+// registry sets it straight from the file bytes (schemameta/schema_parser.go) —
+// so this decodes exactly what schemavalidate.New unmarshals.
+//
+// A document holding literally "null" decodes into a nil map without error and
+// falls out at the "declares no properties" exit below, which is the right
+// answer for it: a schema with no properties has no relation roots.
+func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, schemaName string) error {
+	_, doc, err := registry.GetSchemaByName(schemaName)
 	if err != nil {
-		return fmt.Errorf("read schema %s: %w", filePath, err)
+		return fmt.Errorf("read registered schema %s from the schema registry: %w", schemaName, err)
 	}
 
 	var schema map[string]any
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		// Skipped, not fatal: the schema is then absent from the index, so nothing
-		// is stripped for it and no requirement of its becomes unsatisfiable — the
-		// hazard this guard exists for cannot arise. See ValidateRelationSchemas.
-		// Still logged, because nothing else reports it.
-		//
-		// The read failure above stays fatal instead, and the asymmetry is
-		// deliberate: an entry the directory listing produced but that cannot be
-		// opened describes the deployment (a broken symlink, a bad mode), not the
-		// document, and the same fault could equally be hiding a schema that does
-		// declare relations.
-		zap.S().Warnw("skipping unparseable file in schema directory",
-			"path", filePath, "error", err)
-		return nil
+	if err := json.Unmarshal([]byte(doc.Schema), &schema); err != nil {
+		return fmt.Errorf("decode the document registered for schema %s: %w", schemaName, err)
 	}
 
 	props, ok := schema["properties"].(map[string]any)
@@ -152,7 +132,7 @@ func (idx *RelationIndex) loadSchemaRelations(schemaDir, schemaName string) erro
 		return nil
 	}
 	if err := checkRelationRootsWritable(schemaName, schema, relations); err != nil {
-		return fmt.Errorf("unhonourable relation declaration in %s: %w", filePath, err)
+		return fmt.Errorf("unhonourable relation declaration in registered schema %s: %w", schemaName, err)
 	}
 
 	idx.bySchema[schemaName] = append(idx.bySchema[schemaName], relations...)
