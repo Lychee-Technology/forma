@@ -32,11 +32,8 @@ type writeValidation struct {
 	schemaName string
 	rowID      uuid.UUID
 	cache      forma.SchemaAttributeCache
-	// relations is the set of relation roots StripComputedFields removed from
-	// data, which normalization must not rebuild (see NormalizeDottedKeys).
-	relations transform.RelationRoots
-	data      map[string]any
-	enforce   bool
+	data       map[string]any
+	enforce    bool
 }
 
 // validateWritePayload validates a write payload against the JSON Schema
@@ -76,7 +73,7 @@ func validateWritePayload(v writeValidation) error {
 		return nil
 	}
 
-	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID), v.relations)
+	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID))
 	err := v.validator.Validate(v.schemaID, normalized)
 	if err == nil {
 		return nil

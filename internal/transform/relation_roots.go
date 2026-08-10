@@ -8,22 +8,26 @@ package transform
 // package. The set's element type is unnamed, so internal can build one and
 // assign it without a conversion.
 //
-// The write path removes these properties from the payload before validating
-// (RelationIndex.StripComputedFields) because they are derived on read and never
-// persisted. NormalizeDottedKeys needs the same set so it does not rebuild what
-// the strip just removed.
+// The write path does not consult this set: it removes the whole relation
+// subtree from the payload before validating (RelationIndex.StripComputedFields)
+// because it is derived on read and never persisted. This set is what the *read*
+// path consults, to skip required-policy enforcement beneath a relation root
+// (AttributeConverter.FromEAVRecords, #315).
 type RelationRoots map[string]struct{}
 
 // Covers reports whether name lies strictly beneath a relation root.
 //
 // The question is asked about the absolute attribute name, with no positional
-// prefix — unlike ArrayPaths.CrossesBelow. Relation roots are top-level
-// properties of the entity schema and the strip removes them at the document
-// root, so "beneath a relation root" is a property of the name alone.
+// prefix. Relation roots are top-level properties of the entity schema, and the
+// names asked about are the metadata cache's absolute attribute names, so
+// "beneath a relation root" is a property of the name alone.
 //
-// A name that *is* a relation root is not covered. It never reaches this check
-// in production (the strip deleted it) and it is not dotted, so expansion does
-// not apply to it either way.
+// A name that *is* a relation root is not covered: this reports names strictly
+// beneath one, so the root's own required policy stays enforced — pinned by
+// TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself. The write path's
+// strip predicate (RelationIndex.coversRelationSubtree) deliberately differs
+// there and matches the bare root as well, because the root is the nested
+// spelling the strip removes.
 func (r RelationRoots) Covers(name string) bool {
 	if len(r) == 0 {
 		return false

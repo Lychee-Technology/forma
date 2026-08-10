@@ -49,23 +49,16 @@ import (
 // holds unconditionally on the shipped schemas only because none of them nests
 // an array inside an array.
 //
-// A dotted key is not expanded when it lies beneath a relation root either, for
-// a different reason: the caller's payload has already had relation roots
-// removed by RelationIndex.StripComputedFields, which matches by *exact* key and
-// so leaves registered dotted descendants like contactSnapshot.name behind.
-// Expanding one rebuilds the root that was just removed, as a partial object —
-// and visit.json resolves contactSnapshot to lead.json#/properties/contact,
-// which requires isAnonymous, so the rebuild fails validation on a payload that
-// was accepted and persisted before #314. Sending the whole nested object does
-// not help: the strip removes it and the dotted key rebuilds it anyway. Such a
-// value is therefore not validated, exactly like the array case above; the
-// writer still persists it unchanged.
+// Relation roots need no rule here. RelationIndex.StripComputedFields deletes
+// the whole relation subtree from the payload before this runs — the root and
+// every dotted descendant such as contactSnapshot.name (#318) — so no name
+// beneath a relation root is present to expand. Pinned by
+// TestStripLeavesNothingCoveredForTheValidator.
 //
 // arrays comes from schemavalidate, the only place that knows which paths are
 // arrays; the metadata cache records requirement.areas.city and contact.email
-// identically. relations comes from RelationIndex, the only place that knows
-// which properties carry x-relation. Passing a nil set is safe for either and
-// means "nothing known to be an array" / "no relation roots".
+// identically. Passing a nil set is safe and means "nothing known to be an
+// array".
 //
 // When both spellings are present the literal wins, matching encoding/json's
 // duplicate-key semantics. Keys are applied in sorted order, and for any dotted
@@ -84,7 +77,6 @@ func NormalizeDottedKeys(
 	data map[string]any,
 	cache forma.SchemaAttributeCache,
 	arrays schemavalidate.ArrayPaths,
-	relations RelationRoots,
 ) map[string]any {
 	if data == nil {
 		// A nil document is returned unchanged rather than as an empty map, so
@@ -97,16 +89,15 @@ func NormalizeDottedKeys(
 		// which one passes and the other does not.
 		return nil
 	}
-	return normalizeMap(data, "", schemaView{cache: cache, arrays: arrays, relations: relations})
+	return normalizeMap(data, "", schemaView{cache: cache, arrays: arrays})
 }
 
-// schemaView bundles the three schema-derived inputs the walk consults. All
-// three are fixed for a whole document, so grouping them keeps the recursion's
-// parameters about position in the document rather than about configuration.
+// schemaView bundles the schema-derived inputs the walk consults. Both are fixed
+// for a whole document, so grouping them keeps the recursion's parameters about
+// position in the document rather than about configuration.
 type schemaView struct {
-	cache     forma.SchemaAttributeCache
-	arrays    schemavalidate.ArrayPaths
-	relations RelationRoots
+	cache  forma.SchemaAttributeCache
+	arrays schemavalidate.ArrayPaths
 }
 
 // normalizeMap rebuilds src with dotted keys expanded, where prefix is the
@@ -182,14 +173,13 @@ func joinName(prefix, key string) string {
 	return prefix + "." + key
 }
 
-// shouldExpand gates expansion on four independent questions, each answered by
+// shouldExpand gates expansion on three independent questions, each answered by
 // one predicate and nothing else:
 //
 //   - is the key dotted at all, and does the schema know the name;
 //   - does the schema declare an array between this node and the key's leaf
 //     (arrays.CrossesBelow);
-//   - does the payload itself already hold an array above it (arrayOnPath);
-//   - does the name lie beneath a relation root (relations.Covers).
+//   - does the payload itself already hold an array above it (arrayOnPath).
 //
 // Both array questions are asked about the key's own position, not the absolute
 // attribute name. Inside an element of a schema array the surrounding array is
@@ -201,15 +191,10 @@ func joinName(prefix, key string) string {
 // and the payload check is the only way to catch an array the derivation cannot
 // see — one declared behind a $ref, or one the caller sent where the schema says
 // object.
-//
-// The relation check is the odd one out and is deliberately absolute: relation
-// roots are top-level properties, and the reason to skip is that the root has
-// already been deleted from this very document (see NormalizeDottedKeys).
 func shouldExpand(dst map[string]any, parts []string, prefix, name string, view schemaView) bool {
 	return len(parts) > 1 &&
 		isKnownAttributeOrParent(name, view.cache) &&
 		!view.arrays.CrossesBelow(prefix, name) &&
-		!view.relations.Covers(name) &&
 		!arrayOnPath(dst, parts)
 }
 

@@ -77,13 +77,11 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	}
 
 	// Creates always enforce. Validated after stripping so that what is checked
-	// is what is stored: computed relation fields are derived on read and never
-	// persisted, so validating them would judge a document no row will hold.
-	//
-	// The relation roots go to the validation step as well, because the strip
-	// matches by exact key and leaves registered dotted descendants like
-	// contactSnapshot.name behind: expanding one would rebuild the very root that
-	// was just removed. See NormalizeDottedKeys and docs/error-handling.md.
+	// is what is stored: the relation subtree is derived on read and never
+	// persisted, so validating it would judge a document no row will hold. The
+	// strip removes the root and every dotted descendant (#318), so nothing
+	// beneath a relation root reaches the validator in either spelling — pinned
+	// by TestStripLeavesNothingCoveredForTheValidator.
 	//
 	// Hazard, now foreclosed: a schema listing a relation root in "required"
 	// would make its entity unwritable, and unfixably so — the root is stripped
@@ -100,7 +98,6 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		schemaName: req.SchemaName,
 		rowID:      rowID,
 		cache:      schemaCache,
-		relations:  s.relations.RelationRoots(req.SchemaName),
 		data:       inputData,
 		enforce:    true,
 	}); err != nil {
@@ -229,7 +226,6 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		schemaName: req.SchemaName,
 		rowID:      req.RowID,
 		cache:      schemaCache,
-		relations:  s.relations.RelationRoots(req.SchemaName),
 		data:       mergedData,
 		enforce:    s.validateUpdatesStrict,
 	}); err != nil {

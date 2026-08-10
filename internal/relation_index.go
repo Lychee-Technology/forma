@@ -209,10 +209,10 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 }
 
 // RelationRoots returns the property names StripComputedFields removes for
-// schema, as the set transform.NormalizeDottedKeys consults so it does not
-// rebuild a stripped root out of a surviving dotted descendant. A nil receiver
-// or a schema with no relations answers nil, which that set reads as "no
-// relation roots".
+// schema, as the set transform.AttributeConverter.FromEAVRecords consults on the
+// read path to skip required-policy enforcement beneath a relation root (#315).
+// A nil receiver or a schema with no relations answers nil, which that set reads
+// as "no relation roots".
 func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {
 	if idx == nil {
 		return nil

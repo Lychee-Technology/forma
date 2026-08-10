@@ -51,12 +51,12 @@ func TestStripKeepsSamePrefixSibling(t *testing.T) {
 	require.Equal(t, map[string]any{"contactSnapshotX": "keep", "contactSnapshot2": "keep"}, out)
 }
 
-// TestStripLeavesNothingCoveredForTheValidator is the premise for removing the
-// normalization carve-out. #314 taught NormalizeDottedKeys to skip dotted keys
-// beneath a relation root (shouldExpand, transform/normalize_keys.go) because
-// the exact-key strip left them behind; with the subtree strip nothing survives
-// for it to skip, so that skip can go away. It is still there today. If this
-// test ever fails, the skip has to come back before the strip is weakened.
+// TestStripLeavesNothingCoveredForTheValidator is what the removal of the
+// normalization carve-out rests on. #314 taught NormalizeDottedKeys to skip
+// dotted keys beneath a relation root (shouldExpand, transform/normalize_keys.go)
+// because the exact-key strip left them behind; the subtree strip leaves nothing
+// for it to skip, so that skip is gone (#318). If this test ever fails, the skip
+// has to come back before the strip is weakened.
 func TestStripLeavesNothingCoveredForTheValidator(t *testing.T) {
 	idx := stripIndex(t)
 	roots := idx.RelationRoots("visit")

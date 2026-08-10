@@ -103,7 +103,7 @@ func TestCreateDropsDottedKeyBeneathRelationRoot(t *testing.T) {
 }
 
 // TestCreateStillValidatesDottedKeyOutsideRelationRoot is the other half of the
-// skip: it must not widen into "dotted keys are not validated". propertySnapshot
+// drop: it must not widen into "dotted keys are not validated". propertySnapshot
 // is an ordinary object on visit.json, not a relation root, and its price
 // declares minimum 0.
 func TestCreateStillValidatesDottedKeyOutsideRelationRoot(t *testing.T) {

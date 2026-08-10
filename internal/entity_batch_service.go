@@ -224,7 +224,6 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			schemaName: op.SchemaName,
 			rowID:      rowID,
 			cache:      schemaCache,
-			relations:  s.relations.RelationRoots(op.SchemaName),
 			data:       inputData,
 			enforce:    true,
 		}); err != nil {
@@ -314,7 +313,6 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			schemaName: op.SchemaName,
 			rowID:      op.RowID,
 			cache:      schemaCache,
-			relations:  s.relations.RelationRoots(op.SchemaName),
 			data:       mergedData,
 			enforce:    s.validateUpdatesStrict,
 		}); err != nil {
