@@ -49,11 +49,19 @@ import (
 // holds unconditionally on the shipped schemas only because none of them nests
 // an array inside an array.
 //
-// Relation roots need no rule here. RelationIndex.StripComputedFields deletes
-// the whole relation subtree from the payload before this runs — the root and
-// every dotted descendant such as contactSnapshot.name (#318) — so no name
-// beneath a relation root is present to expand. Pinned by
+// Relation roots need no rule here, because the write paths hand this function a
+// payload RelationIndex.StripComputedFields has already emptied of them: the
+// strip deletes the whole relation subtree — the root and every dotted
+// descendant such as contactSnapshot.name (#318) — so no name beneath a relation
+// root is left to expand. Pinned by
 // TestStripLeavesNothingCoveredForTheValidator.
+//
+// That is a statement about those callers, not a guarantee this package can
+// make. Each strip site is guarded on the caller holding a relation index
+// (entity_crud_service.go, entity_batch_service.go), and a caller that skips the
+// strip reaches this function with contactSnapshot.name still present, where the
+// ordinary rule expands it like any other known dotted name. That expansion is
+// what #314 carved out against, and the carve-out is gone (#318).
 //
 // arrays comes from schemavalidate, the only place that knows which paths are
 // arrays; the metadata cache records requirement.areas.city and contact.email

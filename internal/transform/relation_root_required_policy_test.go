@@ -5,7 +5,8 @@ package transform
 // These tests drive AttributeConverter.FromEAVRecords directly, which is the
 // seam where required policies are enforced against attribute metadata. The
 // integration halves live in package internal
-// (TestCreateAcceptsDottedKeyUnderRelationRoot and its "outside" twin).
+// (TestCreateDropsDottedKeyBeneathRelationRoot and its "outside" twin,
+// TestCreateStillValidatesDottedKeyOutsideRelationRoot).
 
 import (
 	"strings"

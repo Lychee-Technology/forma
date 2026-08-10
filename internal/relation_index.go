@@ -208,9 +208,17 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 	return result
 }
 
-// RelationRoots returns the property names StripComputedFields removes for
-// schema, as the set transform.AttributeConverter.FromEAVRecords consults on the
-// read path to skip required-policy enforcement beneath a relation root (#315).
+// RelationRoots returns schema's relation root names, as the set
+// transform.AttributeConverter.FromEAVRecords consults on the read path to skip
+// required-policy enforcement beneath a relation root (#315).
+//
+// It answers the roots alone, which is less than StripComputedFields removes:
+// the strip also takes every dotted descendant of each root, by the prefix rule
+// in coversRelationSubtree. Do not read this set as the strip's reach. A caller
+// that needs the reach has to apply that prefix rule itself —
+// transform.RelationRoots.Covers applies it for names strictly beneath a root,
+// and deliberately excludes a name that is itself a root.
+//
 // A nil receiver or a schema with no relations answers nil, which that set reads
 // as "no relation roots".
 func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {

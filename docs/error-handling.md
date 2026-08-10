@@ -55,7 +55,8 @@ lead's pattern at all: before #314 the reference could not be loaded, so
 It does **not** mean `visit.json`'s `contactSnapshot`
 (`lead.json#/properties/contact`) is checked against lead's contact object.
 `contactSnapshot` carries `x-relation`, and relation-backed properties are not
-validated in any spelling — see "Relation roots are never validated" below.
+validated in any spelling — see "Relation subtrees are never caller-writable"
+below.
 
 **This is in addition to `required_policy`, which is a separate mechanism and
 still applies independently.** `required_policy` lives in
@@ -90,9 +91,11 @@ Literal dotted keys are why that distinction matters. Attribute names in this
 system are dotted, so a caller may spell `contact.email` either nested or as one
 literal key, and a literal key is an unknown property to JSON Schema.
 `transform.NormalizeDottedKeys` expands literal dotted keys into their nested
-paths before validating, so their values *are* checked — except in the two
-documented gaps below (a dotted key written above a schema array, and anything
-beneath a relation root).
+paths before validating, so their values *are* checked — except for a dotted key
+written above a schema array, the one documented gap below. Anything at or
+beneath a relation root is not validated either, but it is not stored unchecked:
+the whole subtree is removed from the payload before either step (see "Relation
+subtrees are never caller-writable").
 
 Normalization errs in the other direction in one case: at an array it can check
 slightly *more* than the writer stores, and so reject a value the write would
@@ -257,42 +260,60 @@ while `watch_attributes.json` marks nothing required. Before #314 the schema's
 accepted; it is now rejected on create. The bundled CSV importer supplies all
 three, so nothing shipped breaks.
 
-### Relation roots are never validated
+### Relation subtrees are never caller-writable
 
-**The rule: nothing at or beneath an `x-relation` property is schema-validated,
-in either spelling.**
+**The rule: nothing at or beneath an `x-relation` property is written by the
+caller or schema-validated, in either spelling.**
 
-Creates and updates validate **after** `RelationIndex.StripComputedFields`
-removes `x-relation` properties, so that what is checked is what is stored —
-computed relation fields are derived on read and never persisted. So the nested
-spelling, `{"contactSnapshot": {...}}`, is gone before the validator runs.
+`RelationIndex.StripComputedFields` removes the relation root and every dotted
+descendant from the payload — `{"contactSnapshot": {...}}` and
+`"contactSnapshot.name"` alike — before creates and updates validate, so what is
+checked is what is stored. The values are derived on read from the parent
+entity, which replaces the whole subtree, so a caller-written value there is
+unreadable wherever that enrichment applies.
 
-The dotted spelling is exempted deliberately, and this is the part that is easy
-to get wrong. The strip matches by **exact key**, so a registered dotted
-descendant such as `contactSnapshot.name`
-(`cmd/server/schemas/visit_attributes.json`) survives it. Expanding that key
-would *rebuild* the root the strip had just removed, as a partial object — and
-`visit.json` resolves `contactSnapshot` to `lead.json#/properties/contact`,
-which requires `isAnonymous`. The result would be a `400` on a payload that was
-accepted and persisted before #314, unfixably so: sending the whole nested
-object does not help, because the strip removes it and the dotted key rebuilds
-it. `transform.NormalizeDottedKeys` therefore takes the schema's relation roots
-(`RelationIndex.RelationRoots`) and leaves any dotted key beneath one literal.
-JSON Schema then sees an unknown property and never inspects the value — the
-same shape as the array gap above. The writer stores it unchanged.
+Dropping is silent. Neither spelling produces a `4xx`: the nested spelling has
+always been dropped without a rejection, and #318 brought the dotted spelling
+into line rather than adding a new rejection to payloads that were accepted
+before.
 
-Two consequences for schema authors:
+Because the subtree never reaches the validator, constraints declared under an
+`x-relation` `$ref` are **decorative on the child**. They still apply on the
+parent entity, where the data actually lives.
 
-- **Never mark a relation root `required`.** It makes the entity **unwritable,
-  and unfixably so**: every create and update fails with a missing-required
-  error, and sending the field does not help because it is stripped before the
-  validator sees it. A schema that needs this would have to move validation to
-  before the strip.
-- **Constraints declared under an `x-relation` `$ref` are decorative on the
-  child.** They still apply on the parent entity, where the data actually lives.
+**A relation root listed in the schema's root-level `required` is rejected at
+startup.** The root is stripped from every payload before validation, so the
+entity would fail every create and update with a missing-required error that the
+caller cannot fix by sending the field. `internal.ValidateRelationSchemas` —
+called from the factory alongside the schema validator — refuses to start,
+naming the schema and the property.
 
-Only `visit.json`'s `contactSnapshot` carries `x-relation` today, and it is not
-required.
+Only `visit.json`'s `contactSnapshot` carries `x-relation` today.
+
+#### Behaviour change (#318): the dotted spelling no longer persists
+
+Before #318 the strip matched by exact key, so `{"contactSnapshot.name": "Ada"}`
+survived it and was written to the EAV table while the nested spelling was
+discarded. That value was unreadable wherever relation enrichment applied — it
+replaces the whole `contactSnapshot` object with the parent's fragment — and the
+next update deleted it: the update path rebuilds the dotted attribute name into
+a nested object (`FromPersistentRecord` → `FromAttributes`), the strip removes
+that object from the merged document, and the update's scoped EAV replace
+deletes every attribute id registered for the schema before writing back only
+what survived. It is now dropped on write, like the nested spelling.
+
+Rows written before #318 keep whatever `contactSnapshot.*` values they hold. No
+migration is performed. They are not returned wherever relation enrichment
+applies, and they are removed the next time the row is updated; until then they
+remain visible to attribute filters and to Parquet exports, neither of which
+knows about relations.
+
+If an operator wants them gone sooner, the cleanup must go **through the write
+path** — an update per row. A direct `DELETE` against `eav_data` writes no
+`change_log` row: nothing but the repository's own write paths writes one, and
+there are no database triggers. A row already flushed to S3 therefore never
+re-enters the federated dirty set, and DuckDB keeps serving the stale copy from
+`/delta/` or `/base/` while PostgreSQL-only reads see the value gone.
 
 ## Read-path consistency errors
 
