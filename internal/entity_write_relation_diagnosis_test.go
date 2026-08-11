@@ -100,6 +100,42 @@ func TestWriteDiagnosisIsWithheldFromThePublishedMessage(t *testing.T) {
 		"the published message must be byte-identical to the undecorated validator's")
 }
 
+// TestBatchResultPublishesOnlyThePublishedMessage is the leak guard for the one
+// write surface that has no HTTP boundary in front of it.
+//
+// forma.OperationError.Error is an exported, JSON-serialised field
+// (types.go), and a best-effort batch is the only path that fills it: the
+// atomic paths return the error itself, and internal/httpapi resolves the
+// published message for every single-operation response. So the batch result is
+// where the operator-only explanation this branch attaches would be published
+// verbatim, x-relation and all.
+//
+// Driven through the real fixture rather than a hand-built error, so it fails
+// for the reason the reviewer's reproduction failed: relation_required_double_not
+// really does boot, really does strip the root, and really does carry the
+// diagnosis by the time the batch records it.
+func TestBatchResultPublishesOnlyThePublishedMessage(t *testing.T) {
+	manager := buildFixtureManager(t, "relation_required_double_not")
+	op := createChild()
+
+	result, err := manager.BatchCreate(context.Background(),
+		&forma.BatchOperation{Operations: []forma.EntityOperation{*op}})
+
+	require.NoError(t, err, "a best-effort batch reports per-operation failures in its result")
+	require.Len(t, result.Failed, 1)
+	require.NotContains(t, result.Failed[0].Error, "x-relation",
+		"the operator-only explanation must not reach an exported result field")
+	require.NotContains(t, result.Failed[0].Error, "#318")
+
+	// And it carries exactly what the single-operation path would publish, so the
+	// two surfaces answer the same body for the same failure.
+	_, singleErr := manager.Create(context.Background(), createChild())
+	require.Error(t, singleErr)
+	published, ok := forma.ResolvePublicMessage(singleErr)
+	require.True(t, ok)
+	require.Equal(t, published, result.Failed[0].Error)
+}
+
 // TestWriteDiagnosisIsSilentWithoutRelationRoots pins the gate. A schema that
 // declares no relation root strips nothing, so there is nothing to explain and
 // nothing may be attached — otherwise every 4xx in the system would grow a
