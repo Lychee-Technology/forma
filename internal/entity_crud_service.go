@@ -71,10 +71,10 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	}
 
 	rowID := uuid.Must(uuid.NewV7())
-	inputData := req.Data
-	if s.relations != nil {
-		inputData = s.relations.StripComputedFields(req.SchemaName, req.Data)
-	}
+	// No nil guard: the RelationIndex methods are nil-receiver-safe, and
+	// StripComputedFields answers the very map it was handed, so a manager without
+	// an index hands the writer the caller's own map, as #312 requires.
+	inputData := s.relations.StripComputedFields(req.SchemaName, req.Data)
 
 	// Creates always enforce. Validated after stripping so that what is checked
 	// is what is stored: the relation subtree is derived on read and never
@@ -222,10 +222,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
 
-	mergedData := mergeMaps(existingData, req.Updates)
-	if s.relations != nil {
-		mergedData = s.relations.StripComputedFields(req.SchemaName, mergedData)
-	}
+	mergedData := s.relations.StripComputedFields(req.SchemaName, mergeMaps(existingData, req.Updates))
 
 	// The *merged* document is what gets validated: a partial update that does
 	// not mention a required attribute must still succeed. The relation-root

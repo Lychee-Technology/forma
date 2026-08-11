@@ -241,3 +241,54 @@ func TestRelationRootNamesAreSortedAndNilSafe(t *testing.T) {
 	var nilIdx *RelationIndex
 	require.Nil(t, nilIdx.RelationRootNames("child"))
 }
+
+// TestRelationRootMemoAnswersLikeTheIndex pins the batch memo against the thing
+// it caches. A memo that drifts from RelationIndex.RelationRootNames would feed
+// the diagnosis a stale or wrong root list for every operation after the first.
+func TestRelationRootMemoAnswersLikeTheIndex(t *testing.T) {
+	idx, err := LoadRelationIndex(serveRelationFixture(t, "relation_required_double_not"))
+	require.NoError(t, err)
+
+	memo := newRelationRootMemo(idx)
+	for range 3 {
+		require.Equal(t, idx.RelationRootNames("child"), memo.resolve("child"))
+		require.Equal(t, idx.RelationRootNames("parent"), memo.resolve("parent"))
+	}
+
+	// A manager built without a registry has no index at all, and the memo must
+	// survive that rather than being guarded at every call site.
+	var nilIdx *RelationIndex
+	require.Nil(t, newRelationRootMemo(nilIdx).resolve("child"))
+}
+
+// TestRelationRootMemoLooksUpEachSchemaOnce is the half the answers cannot show:
+// a cache hit and a recomputation return the same list, so only counting the
+// lookups distinguishes them.
+//
+// The nil answer is the case that matters. A schema with no relation roots
+// answers nil, and that is the common case in a batch — so a memo keyed on "is
+// the cached value non-nil" rather than on key presence would look it up again
+// for every single operation, allocating and sorting nothing to no purpose,
+// which is precisely the cost the memo was added to remove.
+func TestRelationRootMemoLooksUpEachSchemaOnce(t *testing.T) {
+	calls := map[string]int{}
+	memo := &relationRootMemo{
+		byName: make(map[string][]string),
+		lookup: func(schema string) []string {
+			calls[schema]++
+			if schema == "child" {
+				return []string{"contactSnapshot"}
+			}
+			return nil
+		},
+	}
+
+	for range 5 {
+		require.Equal(t, []string{"contactSnapshot"}, memo.resolve("child"))
+		require.Nil(t, memo.resolve("parent"))
+	}
+
+	require.Equal(t, 1, calls["child"])
+	require.Equal(t, 1, calls["parent"],
+		"a nil answer must be cached as computed, or every operation re-runs the lookup")
+}

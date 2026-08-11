@@ -197,6 +197,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 	persistentRecords := make([]*model.PersistentRecord, len(req.Operations))
 	successful := make([]*forma.DataRecord, len(req.Operations))
 
+	relationRoots := newRelationRootMemo(s.relations)
 	for i, op := range req.Operations {
 		if op.SchemaName == "" {
 			return nil, forma.InvalidInputf("operation[%d]: schema name is required", i)
@@ -211,10 +212,10 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 		}
 
 		rowID := uuid.Must(uuid.NewV7())
-		inputData := op.Data
-		if s.relations != nil {
-			inputData = s.relations.StripComputedFields(op.SchemaName, op.Data)
-		}
+		// No nil guard: both RelationIndex methods are nil-receiver-safe, and
+		// StripComputedFields answers the very map it was handed, so a manager
+		// without an index writes exactly what the caller sent.
+		inputData := s.relations.StripComputedFields(op.SchemaName, op.Data)
 
 		// Creates always enforce, and this batch is atomic: one violation fails
 		// the whole request before anything is written.
@@ -226,7 +227,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			cache:         schemaCache,
 			data:          inputData,
 			enforce:       true,
-			relationRoots: s.relations.RelationRootNames(op.SchemaName),
+			relationRoots: relationRoots.resolve(op.SchemaName),
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -272,6 +273,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	persistentRecords := make([]*model.PersistentRecord, len(req.Operations))
 	successful := make([]*forma.DataRecord, len(req.Operations))
 
+	relationRoots := newRelationRootMemo(s.relations)
 	for i, op := range req.Operations {
 		if op.SchemaName == "" {
 			return nil, forma.InvalidInputf("operation[%d]: schema name is required", i)
@@ -301,10 +303,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform existing record: %w", err), "operation[%d]", i)
 		}
 
-		mergedData := mergeMaps(existingData, op.Updates)
-		if s.relations != nil {
-			mergedData = s.relations.StripComputedFields(op.SchemaName, mergedData)
-		}
+		mergedData := s.relations.StripComputedFields(op.SchemaName, mergeMaps(existingData, op.Updates))
 
 		// The *merged* document is what gets validated, so a partial update that
 		// does not mention a required attribute still succeeds.
@@ -316,7 +315,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			cache:         schemaCache,
 			data:          mergedData,
 			enforce:       s.validateUpdatesStrict,
-			relationRoots: s.relations.RelationRootNames(op.SchemaName),
+			relationRoots: relationRoots.resolve(op.SchemaName),
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -405,4 +404,43 @@ func (s *entityBatchService) resolveTables() model.StorageTables {
 		return model.StorageTables{}
 	}
 	return s.storageTables()
+}
+
+// relationRootMemo answers a schema's relation root names once per batch.
+//
+// RelationRootNames allocates and sorts on every call, and a batch is usually
+// one schema repeated, so calling it per operation redoes identical work for
+// every row. The memo is per batch rather than per manager on purpose: the index
+// itself is fixed for the manager's lifetime, but a memo shared across
+// concurrent batches would need a lock to be safe, and this one is confined to a
+// single call stack and needs none.
+//
+// lookup is a field rather than a *RelationIndex so the caching itself is
+// testable: the answers alone cannot distinguish a hit from a recomputation,
+// since both produce the same list.
+type relationRootMemo struct {
+	lookup func(string) []string
+	byName map[string][]string
+}
+
+// newRelationRootMemo memoises idx's relation roots. A nil index is fine —
+// RelationRootNames is nil-receiver-safe, and a method value taken from a nil
+// pointer receiver is legal Go, so the nil is simply carried into the call.
+func newRelationRootMemo(idx *RelationIndex) *relationRootMemo {
+	return &relationRootMemo{lookup: idx.RelationRootNames, byName: make(map[string][]string)}
+}
+
+// resolve answers schema's relation roots, computing them at most once.
+//
+// Keyed on presence, not on the value being non-nil: a schema with no relations
+// answers nil, and that nil has to count as computed or it would be looked up
+// again for every operation — which is the majority case in a batch and the
+// exact cost this memo exists to remove.
+func (m *relationRootMemo) resolve(schema string) []string {
+	if roots, computed := m.byName[schema]; computed {
+		return roots
+	}
+	roots := m.lookup(schema)
+	m.byName[schema] = roots
+	return roots
 }
