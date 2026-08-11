@@ -98,6 +98,17 @@ func TestStripLeavesNothingCoveredForTheValidator(t *testing.T) {
 //     follows a reference; only the bytes the registry serves under that name are
 //     read.
 //
+// What the "$ref" fixture stands for, and what it does not — stated so a reader
+// does not over-read it. Its target is a *registered* schema, the control below.
+// That makes the point sharper than production does: the declaring bytes are
+// reachable by this very loader, under another name, and still are not composed
+// into the referring document. What it does not reproduce is the production
+// shape, where a root "$ref" names a file in SCHEMA_DIR — LoadRelationIndex
+// reads only what the registry serves and never opens the file system, so that
+// case is a strictly easier one that never arises here. The fixture therefore
+// pins "a reference is not followed", not "a file on disk is not read". The
+// "allOf" case carries no such gap.
+//
 // The third schema is the control, and the test is worthless without it: the
 // same marker, in the same spelling, declared on a root property *is* found. So
 // a failure to find it above is about position, not about a typo'd fixture.

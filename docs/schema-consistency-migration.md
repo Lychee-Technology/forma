@@ -436,8 +436,12 @@ Fix by rewriting the bad rows into the correct column and clearing the wrong one
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
-Symptom: the server refuses to start with `failed to build schema validator:
-failed to load schema "<name>" for validation: schema data not found: <name>`.
+Symptom: the server refuses to start with `failed to build the schema guards
+over <SCHEMA_DIR>: failed to build schema validator: failed to load schema
+"<name>" for validation: schema data not found: <name>`. When
+`Entity.SchemaDirectory` is unset the leading clause reads `failed to build the
+schema guards (Entity.SchemaDirectory is unset)` instead; everything after it is
+the same.
 
 The file registry deliberately tolerates a schema whose `<name>_attributes.json`
 exists while `<name>.json` does not — it registers the attribute cache and

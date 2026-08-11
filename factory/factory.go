@@ -141,8 +141,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	schemaValidator, relationIndex, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build the schema guards over %s: %w",
-			effectiveConfig.Entity.SchemaDirectory, err)
+		return nil, schemaGuardError(effectiveConfig.Entity.SchemaDirectory, err)
 	}
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
@@ -232,6 +231,28 @@ func buildSchemaGuards(
 	}
 
 	return schemaValidator, relationIndex, nil
+}
+
+// schemaGuardError adds the call-site context to a buildSchemaGuards failure:
+// the schema directory both guards were built over.
+//
+// An empty directory gets its own wording rather than being interpolated. It is
+// a reachable state, not a defensive branch — Entity.SchemaDirectory is declared
+// with no non-empty guard and defaultEntityConfig leaves it unset (forma's
+// config.go), and nothing rejects it on the way here. It does not fail on its
+// own either: schemavalidate.New starts with filepath.Abs(schemaDir), and
+// filepath.Abs("") answers the process working directory (measured), so the
+// guards run against wherever the server happens to have been started from.
+// Interpolating it would render "over : …", which reads as a truncated path
+// rather than as the misconfiguration it usually is.
+//
+// This only changes how the failure reads. It adds no new startup rejection: an
+// unset directory that resolves anyway still boots, exactly as before.
+func schemaGuardError(schemaDir string, err error) error {
+	if schemaDir == "" {
+		return fmt.Errorf("failed to build the schema guards (Entity.SchemaDirectory is unset): %w", err)
+	}
+	return fmt.Errorf("failed to build the schema guards over %s: %w", schemaDir, err)
 }
 
 // requireCoreTables fails closed when any of the three tables the manager
