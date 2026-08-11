@@ -265,11 +265,16 @@ func TestRelationRootMemoAnswersLikeTheIndex(t *testing.T) {
 // a cache hit and a recomputation return the same list, so only counting the
 // lookups distinguishes them.
 //
-// The nil answer is the case that matters. A schema with no relation roots
-// answers nil, and that is the common case in a batch — so a memo keyed on "is
-// the cached value non-nil" rather than on key presence would look it up again
-// for every single operation, allocating and sorting nothing to no purpose,
-// which is precisely the cost the memo was added to remove.
+// The two schemas pin different things, and only one of them is about cost:
+//
+//   - "child" declares a relation root, so RelationRootNames allocates and sorts
+//     on every call. Looking it up once per batch instead of once per operation
+//     is the saving the memo exists for.
+//   - "parent" declares none and answers nil. Re-deriving that costs one map
+//     lookup, the same as the cache probe, so caching it saves nothing. It is
+//     asserted because presence-keying is a deliberate uniformity choice — every
+//     schema resolved once, whatever it answers — and a memo keyed on "is the
+//     cached value non-nil" would quietly drop the nil half of that rule.
 func TestRelationRootMemoLooksUpEachSchemaOnce(t *testing.T) {
 	calls := map[string]int{}
 	memo := &relationRootMemo{
