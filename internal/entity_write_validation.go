@@ -36,10 +36,11 @@ type writeValidation struct {
 	enforce    bool
 	// relationRoots names the schema's relation roots, sorted
 	// (RelationIndex.RelationRootNames). It is diagnostic input and nothing else:
-	// it decorates a validation error that has already been decided, and no
-	// branch below reads it to choose what to validate, what to normalize, or
-	// what to write. Empty for a schema declaring no relations, and for a manager
-	// built without a relation index.
+	// it decorates a validation error that has already been decided, and the one
+	// branch that reads it decides only whether that decoration applies — nothing
+	// below chooses what to validate, what to normalize, or what to write from
+	// it. Empty for a schema declaring no relations, and for a manager built
+	// without a relation index.
 	//
 	// It is emphatically NOT the normalization carve-out this struct used to
 	// carry. That field existed so NormalizeDottedKeys could leave relation
@@ -93,7 +94,13 @@ func validateWritePayload(v writeValidation) error {
 	if err == nil {
 		return nil
 	}
-	err = explainStrippedRelationRoots(err, v.schemaName, v.relationRoots)
+	// The gate lives here rather than inside the decorator: a schema declaring no
+	// relation root strips nothing, so there is nothing to explain, and asking
+	// explainStrippedRelationRoots to decide that would make it a function that
+	// sometimes hands its own input straight back.
+	if len(v.relationRoots) > 0 {
+		err = explainStrippedRelationRoots(err, v.schemaName, v.relationRoots)
+	}
 	if v.enforce || !errors.Is(err, forma.ErrInvalidInput) {
 		return fmt.Errorf("failed to validate payload against schema %d: %w", v.schemaID, err)
 	}
@@ -168,30 +175,29 @@ func validateWritePayload(v writeValidation) error {
 //     explanation — it has to clear the production Info threshold to be of any
 //     use — and accepted noise everywhere else.
 //
-// # Why the "no roots" return is bare, and stays bare
+// # The caller owns the gate
 //
-// The early return hands err straight back, which is the shape the wrapping rule
-// forbids — with a stated exception here, because nothing is being propagated.
-// There is no callee: err is this function's own input, and the gate has just
-// decided that nothing about relation roots applies to it. Wrapping would add a
-// prefix about a mechanism that has no part in the failure, to every validation
-// error on every schema that declares no relation — which is most of them — and
-// the caller immediately wraps the result with the context that does apply
-// (validateWritePayload, "failed to validate payload against schema %d").
-// Identity in and identity out is the contract, and
-// TestExplainStrippedRelationRootsNamesEveryRootOnce asserts it with
-// require.Same.
+// relationRoots is non-empty by precondition: validateWritePayload calls this
+// only when the schema declares at least one root, so every call has an
+// explanation to attach and the attachment is unconditional here. The gate used
+// to live in this function as an early `return err`, and a helper that sometimes
+// answers its own input is the shape the wrapping rule forbids — there is no
+// callee to wrap, so there is no context to add. Moving the test to the one call
+// site removes the shape rather than excusing it. What the property protected is
+// unchanged: a validation error on a schema with no relations must not grow a
+// paragraph about a mechanism it has no part in, and
+// TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots pins that where it
+// now holds, at validateWritePayload.
 //
 // One narrowing does come for free, and is not a special case here:
 // forma.WithOperatorDetail returns its input unchanged when that input publishes
 // nothing (client_error.go), and schemavalidate.Validate answers a plain error
 // rather than an ErrInvalidInput carrier for everything that is not a caller
 // violation — a missing resolved schema, a payload that will not marshal. Those
-// are operator faults bound for a 500 and they pass through untouched.
+// are operator faults bound for a 500 and they pass through untouched, which is
+// the surviving require.Same in
+// TestExplainStrippedRelationRootsNamesEveryRootOnce.
 func explainStrippedRelationRoots(err error, schemaName string, relationRoots []string) error {
-	if len(relationRoots) == 0 {
-		return err
-	}
 	return forma.WithOperatorDetail(err, fmt.Errorf(
 		"schema %s declares relation root(s) %q, and every one of them is removed from the payload — the root and its "+
 			"dotted descendants alike — before this validation runs (#318); if the violation above is that one of them "+

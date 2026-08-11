@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/schemavalidate"
@@ -256,11 +257,45 @@ func TestExplainStrippedRelationRootsNamesEveryRootOnce(t *testing.T) {
 	require.Contains(t, decorated.Error(), `["alpha" "beta"]`)
 	require.Contains(t, decorated.Error(), "child")
 
-	require.Same(t, base, explainStrippedRelationRoots(base, "child", nil),
-		"no relation roots means no decoration at all")
-
 	plain := errors.New("not a caller violation")
-	require.Same(t, plain, explainStrippedRelationRoots(plain, "child", []string{"alpha"}))
+	require.Same(t, plain, explainStrippedRelationRoots(plain, "child", []string{"alpha"}),
+		"a non-publishing error is returned unchanged, and that is forma.WithOperatorDetail's decision")
+}
+
+// TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots pins the gate where
+// it lives: at the call site, not inside the decorator.
+//
+// A schema that declares no relation root strips nothing, so there is nothing to
+// explain and nothing may be attached — otherwise every validation error in the
+// system would grow a paragraph about a mechanism it has no part in. The
+// assertion is textual identity with the validator's own verdict under
+// validateWritePayload's own wrap: any decoration at all would show up as extra
+// text, which is the same property the old require.Same on the decorator
+// asserted by reference.
+//
+// relation_required_double_not is the same fixture the decorated case uses, so
+// the two differ only in whether the root list is supplied.
+func TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots(t *testing.T) {
+	validator, schemaID := resolveFixtureValidator(t, "relation_required_double_not")
+	payload := map[string]any{"id": "x", "parentId": "p"}
+
+	bare := validator.Validate(schemaID, payload)
+	require.Error(t, bare, "the fixture must fail validation for this to say anything")
+
+	err := validateWritePayload(writeValidation{
+		validator:  validator,
+		schemaID:   schemaID,
+		schemaName: "child",
+		data:       payload,
+		enforce:    true,
+	})
+
+	require.Error(t, err)
+	require.False(t, forma.HasOperatorDetail(err))
+	require.Equal(t,
+		fmt.Sprintf("failed to validate payload against schema %d: %s", schemaID, bare.Error()),
+		err.Error(),
+		"with no relation roots the error carries the validator's verdict and the caller's wrap, and nothing else")
 }
 
 // TestRelationRootNamesAreSortedAndNilSafe pins the input the diagnosis is built
