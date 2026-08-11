@@ -168,6 +168,20 @@ func validateWritePayload(v writeValidation) error {
 //     explanation — it has to clear the production Info threshold to be of any
 //     use — and accepted noise everywhere else.
 //
+// # Why the "no roots" return is bare, and stays bare
+//
+// The early return hands err straight back, which is the shape the wrapping rule
+// forbids — with a stated exception here, because nothing is being propagated.
+// There is no callee: err is this function's own input, and the gate has just
+// decided that nothing about relation roots applies to it. Wrapping would add a
+// prefix about a mechanism that has no part in the failure, to every validation
+// error on every schema that declares no relation — which is most of them — and
+// the caller immediately wraps the result with the context that does apply
+// (validateWritePayload, "failed to validate payload against schema %d").
+// Identity in and identity out is the contract, and
+// TestExplainStrippedRelationRootsNamesEveryRootOnce asserts it with
+// require.Same.
+//
 // One narrowing does come for free, and is not a special case here:
 // forma.WithOperatorDetail returns its input unchanged when that input publishes
 // nothing (client_error.go), and schemavalidate.Validate answers a plain error

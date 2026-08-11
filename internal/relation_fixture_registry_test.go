@@ -71,7 +71,7 @@ func (r *docSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma
 
 func (r *docSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
 	if err, ok := r.docErr[name]; ok {
-		return 0, forma.JSONSchema{}, err
+		return 0, forma.JSONSchema{}, fmt.Errorf("serve the registered document for schema %s: %w", name, err)
 	}
 	id, ok := r.nameToID[name]
 	if !ok {

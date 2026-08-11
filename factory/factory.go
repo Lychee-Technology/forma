@@ -141,7 +141,8 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	schemaValidator, relationIndex, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to build the schema guards over %s: %w",
+			effectiveConfig.Entity.SchemaDirectory, err)
 	}
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)

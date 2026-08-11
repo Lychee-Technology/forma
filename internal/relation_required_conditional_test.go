@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,13 @@ func validateFixtureChild(t *testing.T, fixture string, payload map[string]any) 
 	childID, _, err := registry.GetSchemaByName("child")
 	require.NoError(t, err)
 
-	return validator.Validate(childID, payload)
+	if err := validator.Validate(childID, payload); err != nil {
+		// A plain wrap: it adds the fixture the verdict came from, and leaves the
+		// published message and the ErrInvalidInput classification alone, which
+		// TestWriteDiagnosisIsWithheldFromThePublishedMessage compares against.
+		return fmt.Errorf("validate the payload against fixture %s: %w", fixture, err)
+	}
+	return nil
 }
 
 // buildStrippedPayload is the document a caller of one of these fixtures can still
@@ -61,9 +68,19 @@ func TestGuardNeverRefusesASchemaTheValidatorAccepts(t *testing.T) {
 
 	for _, fixture := range fixtures {
 		t.Run(fixture, func(t *testing.T) {
-			if _, err := LoadRelationIndex(serveRelationFixture(t, fixture)); err == nil {
+			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
+			if err == nil {
 				return
 			}
+			// Only a relation-root refusal is evidence for the implication. The
+			// guard's other abort causes — a registry that lists a name it cannot
+			// serve, a document that does not decode — say nothing about what the
+			// validator demands, so accepting one as a refusal would let a broken
+			// fixture stand in for the property under test and pass whatever the
+			// validator did.
+			require.ErrorContains(t, err, "requires relation root",
+				"%s failed the guard for a reason that is not a relation-root refusal, "+
+					"so this test can draw no conclusion from it", fixture)
 			require.Error(t, validateFixtureChild(t, fixture, buildStrippedPayload()),
 				"the guard refused %s, so the validator must reject the post-strip payload; "+
 					"a guard that refuses a schema the validator accepts is unfixable at startup", fixture)
