@@ -83,26 +83,33 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// beneath a relation root reaches the validator in either spelling — pinned
 	// by TestStripLeavesNothingCoveredForTheValidator.
 	//
-	// Hazard, now foreclosed: a schema that requires a relation root — via the
-	// root "required" array or via any applicator that lands on the root object,
-	// including draft-07's "dependencies" — would make its entity unwritable, and
-	// unfixably so: the root is stripped before the validator sees it, so sending
-	// it does not help. Unconditionally required, that is every create and (with
-	// strict update validation on) every update; conditionally required, it is
-	// every document that takes the branch.
-	// ValidateRelationSchemas (relation_index.go) rejects such a schema at
-	// startup, and it is called before a manager is built by both the composition
-	// root (factory) and the production e2e harness, so it no longer reaches this
-	// path through either (#318). Do not resolve it here by validating before
-	// stripping: that defeats the guard and judges a document no row will hold.
+	// Hazard, partly foreclosed: a schema that requires a relation root makes its
+	// entity unwritable, and unfixably so — the root is stripped before the
+	// validator sees it, so sending it does not help.
+	//
+	// The startup guard catches only the part of that which can be decided by
+	// inspection: a "required" naming the root in the root object's own array or
+	// in an allOf chain, where the requirement holds on every document
+	// (collectUnconditionalRootRequired). A schema that demands the root through
+	// "not", "anyOf"/"oneOf", an "if"'s branches, the dependent* family or a
+	// "$ref" boots instead, because deciding what those demand is a satisfiability
+	// question and guessing at it refused schemas that write perfectly well.
+	//
+	// What covers the rest is the failure itself: validateWritePayload attaches an
+	// operator-facing explanation naming the schema's relation roots to the
+	// violation it reports (explainStrippedRelationRoots), so an operator reads
+	// why the 4xx cannot be answered rather than inferring it. Do not resolve the
+	// hazard by validating before stripping: that defeats the guard and judges a
+	// document no row will hold.
 	if err := validateWritePayload(writeValidation{
-		validator:  s.validator,
-		schemaID:   schemaID,
-		schemaName: req.SchemaName,
-		rowID:      rowID,
-		cache:      schemaCache,
-		data:       inputData,
-		enforce:    true,
+		validator:     s.validator,
+		schemaID:      schemaID,
+		schemaName:    req.SchemaName,
+		rowID:         rowID,
+		cache:         schemaCache,
+		data:          inputData,
+		enforce:       true,
+		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
@@ -224,13 +231,14 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	// not mention a required attribute must still succeed. The relation-root
 	// hazard noted in Create applies here too.
 	if err := validateWritePayload(writeValidation{
-		validator:  s.validator,
-		schemaID:   schemaID,
-		schemaName: req.SchemaName,
-		rowID:      req.RowID,
-		cache:      schemaCache,
-		data:       mergedData,
-		enforce:    s.validateUpdatesStrict,
+		validator:     s.validator,
+		schemaID:      schemaID,
+		schemaName:    req.SchemaName,
+		rowID:         req.RowID,
+		cache:         schemaCache,
+		data:          mergedData,
+		enforce:       s.validateUpdatesStrict,
+		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}

@@ -219,13 +219,14 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 		// Creates always enforce, and this batch is atomic: one violation fails
 		// the whole request before anything is written.
 		if err := validateWritePayload(writeValidation{
-			validator:  s.validator,
-			schemaID:   schemaID,
-			schemaName: op.SchemaName,
-			rowID:      rowID,
-			cache:      schemaCache,
-			data:       inputData,
-			enforce:    true,
+			validator:     s.validator,
+			schemaID:      schemaID,
+			schemaName:    op.SchemaName,
+			rowID:         rowID,
+			cache:         schemaCache,
+			data:          inputData,
+			enforce:       true,
+			relationRoots: s.relations.RelationRootNames(op.SchemaName),
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -308,13 +309,14 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		// The *merged* document is what gets validated, so a partial update that
 		// does not mention a required attribute still succeeds.
 		if err := validateWritePayload(writeValidation{
-			validator:  s.validator,
-			schemaID:   schemaID,
-			schemaName: op.SchemaName,
-			rowID:      op.RowID,
-			cache:      schemaCache,
-			data:       mergedData,
-			enforce:    s.validateUpdatesStrict,
+			validator:     s.validator,
+			schemaID:      schemaID,
+			schemaName:    op.SchemaName,
+			rowID:         op.RowID,
+			cache:         schemaCache,
+			data:          mergedData,
+			enforce:       s.validateUpdatesStrict,
+			relationRoots: s.relations.RelationRootNames(op.SchemaName),
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
