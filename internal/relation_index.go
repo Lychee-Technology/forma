@@ -28,7 +28,14 @@ type RelationIndex struct {
 }
 
 // LoadRelationIndex builds a relation index from the schema documents the
-// registry serves, one per name in registry.ListSchemas().
+// registry serves, one per name in registry.ListSchemas(), and fails closed on a
+// relation declaration the runtime cannot honour.
+//
+// Building and validating are one call because they are one walk: the guard's
+// question — does this schema require a property the strip removes? — can only be
+// asked of the descriptors the walk has just built. There is no separate
+// validate-only entry point, and a caller that wants the check runs this and
+// keeps the index (see WithRelationIndex for why keeping it matters).
 //
 // The registry, not SCHEMA_DIR, is the source, and that is the point: the
 // runtime validator is built from the same pair of accessors
@@ -46,43 +53,14 @@ type RelationIndex struct {
 // consistent view; keeping the validator and the manager on that same load is
 // the caller's job.
 //
-// A nil registry, or one whose schemas declare no relations, yields an empty
-// index and no error. Everything that is an error is listed at
-// ValidateRelationSchemas.
-func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
-	idx := &RelationIndex{bySchema: make(map[string][]RelationDescriptor)}
-	if registry == nil {
-		return idx, nil
-	}
-
-	for _, schemaName := range registry.ListSchemas() {
-		if err := idx.loadSchemaRelations(registry, schemaName); err != nil {
-			return nil, fmt.Errorf("build the relation index from the schema registry: %w", err)
-		}
-	}
-
-	return idx, nil
-}
-
-// ValidateRelationSchemas fails closed on a relation declaration the runtime
-// cannot honour, discarding the index it had to build to find out.
-//
-// It exists because NewEntityManager cannot enforce this: it swallows a
-// LoadRelationIndex failure into a warning and continues with a nil index, which
-// disables stripping altogether rather than stopping (#318, #388). That swallow
-// predates the required-relation-root guard, but its blast radius does not: one
-// offending schema fails the whole registry load, so an unguarded caller loses
-// stripping for every schema, not just the offender.
-//
-// Neither shipped construction site calls it. The factory and the production e2e
-// harness call LoadRelationIndex directly and hand the result to
-// NewEntityManager (WithRelationIndex), because building the index twice is what
-// lets a registry serve the manager something the guard never approved. This
-// remains for a caller that wants the check without the index — and any such
-// caller has to run it, since nothing downstream will.
-//
-// Everything below describes LoadRelationIndex's failures, which are the only
-// ones this can report.
+// NewEntityManager cannot enforce any of this itself: it swallows a failure here
+// into a warning and continues with a nil index, which disables stripping
+// altogether rather than stopping (#318, #388). That swallow predates the
+// required-relation-root guard, but its blast radius does not — one offending
+// schema fails the whole registry load, so an unguarded caller loses stripping
+// for every schema, not just the offender. Both shipped construction sites (the
+// factory and the production e2e harness) therefore call this at a position
+// where returning an error aborts startup, and pass the result forward.
 //
 // What aborts startup, exactly:
 //
@@ -144,13 +122,21 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 // class is a strict subset of what schemavalidate.New refuses. The reason to
 // refuse remains that the schema is registered.
 //
-// A registry that lists no schemas, and a nil registry, are both no-ops rather
-// than errors.
-func ValidateRelationSchemas(registry forma.SchemaRegistry) error {
-	if _, err := LoadRelationIndex(registry); err != nil {
-		return fmt.Errorf("validate schema relations: %w", err)
+// A registry that lists no schemas, and a nil registry, both yield an empty index
+// and no error.
+func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
+	idx := &RelationIndex{bySchema: make(map[string][]RelationDescriptor)}
+	if registry == nil {
+		return idx, nil
 	}
-	return nil
+
+	for _, schemaName := range registry.ListSchemas() {
+		if err := idx.loadSchemaRelations(registry, schemaName); err != nil {
+			return nil, fmt.Errorf("build the relation index from the schema registry: %w", err)
+		}
+	}
+
+	return idx, nil
 }
 
 // loadSchemaRelations indexes one registered schema's relation roots.
@@ -175,7 +161,7 @@ func ValidateRelationSchemas(registry forma.SchemaRegistry) error {
 //
 // "Decodes", not "is valid JSON": the two differ. "[1e999]" is well-formed JSON
 // and not an object, yet it never reaches that exit, because the decode below
-// fails on the number first. See ValidateRelationSchemas for what that costs and
+// fails on the number first. See LoadRelationIndex for what that costs and
 // why it is safe.
 func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, schemaName string) error {
 	_, registered, err := registry.GetSchemaByName(schemaName)

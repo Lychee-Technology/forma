@@ -61,7 +61,7 @@ func TestGuardNeverRefusesASchemaTheValidatorAccepts(t *testing.T) {
 
 	for _, fixture := range fixtures {
 		t.Run(fixture, func(t *testing.T) {
-			if ValidateRelationSchemas(serveRelationFixture(t, fixture)) == nil {
+			if _, err := LoadRelationIndex(serveRelationFixture(t, fixture)); err == nil {
 				return
 			}
 			require.Error(t, validateFixtureChild(t, fixture, buildStrippedPayload()),
@@ -100,8 +100,8 @@ func listRelationFixtures(t *testing.T) []string {
 // explanation naming the stripped root (see
 // TestWriteDiagnosisExplainsAStrippedRelationRoot).
 func TestGuardIsSilentOnADoubleNegatedRequirement(t *testing.T) {
-	require.NoError(t, ValidateRelationSchemas(serveRelationFixture(t, "relation_required_double_not")),
-		"the guard does not judge \"not\", so it must boot this schema")
+	_, err := LoadRelationIndex(serveRelationFixture(t, "relation_required_double_not"))
+	require.NoError(t, err, "the guard does not judge \"not\", so it must boot this schema")
 
 	require.Error(t, validateFixtureChild(t, "relation_required_double_not", buildStrippedPayload()),
 		"and the validator does demand the stripped root, which is what makes this a false negative")
@@ -139,10 +139,10 @@ func TestFixturesTheGuardDeliberatelyDoesNotJudge(t *testing.T) {
 		"relation_required_dependencies_schema": true,
 	} {
 		t.Run(fixture, func(t *testing.T) {
-			require.NoError(t, ValidateRelationSchemas(serveRelationFixture(t, fixture)),
-				"the guard does not judge this shape, so startup must succeed")
+			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
+			require.NoError(t, err, "the guard does not judge this shape, so startup must succeed")
 
-			err := validateFixtureChild(t, fixture, buildStrippedPayload())
+			err = validateFixtureChild(t, fixture, buildStrippedPayload())
 			if validatorRejects {
 				require.Error(t, err)
 			} else {

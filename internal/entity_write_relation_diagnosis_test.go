@@ -59,7 +59,8 @@ func createChild() *forma.EntityOperation {
 func TestWriteDiagnosisExplainsAStrippedRelationRoot(t *testing.T) {
 	// The whole story in one place: this schema really does boot, so the failing
 	// write below is what an operator meets rather than a hypothetical.
-	require.NoError(t, ValidateRelationSchemas(serveRelationFixture(t, "relation_required_double_not")))
+	_, bootErr := LoadRelationIndex(serveRelationFixture(t, "relation_required_double_not"))
+	require.NoError(t, bootErr)
 
 	manager := buildFixtureManager(t, "relation_required_double_not")
 

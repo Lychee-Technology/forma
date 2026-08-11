@@ -75,12 +75,13 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 		"relation_ok_if_without_branches",
 	} {
 		t.Run(fixture, func(t *testing.T) {
-			require.NoError(t, ValidateRelationSchemas(serveRelationFixture(t, fixture)))
+			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
+			require.NoError(t, err)
 		})
 	}
 }
 
-// TestValidateRelationSchemasAcceptsShippedSchemas is the other half: the guard
+// TestLoadRelationIndexAcceptsShippedSchemas is the other half: the guard
 // must not reject anything that ships today. visit.json is the only schema in
 // the repository carrying x-relation, and contactSnapshot is not required — not
 // in the root array and not in any allOf, which is all the guard reads.
@@ -98,13 +99,15 @@ func TestLoadRelationIndexAcceptsRequiredOutsideRootScope(t *testing.T) {
 // That gap changes no verdict today, because no *_full.json carries x-relation
 // and the guard only looks at schemas that declare one. It is written down
 // because the difference is invisible from here.
-func TestValidateRelationSchemasAcceptsShippedSchemas(t *testing.T) {
+func TestLoadRelationIndexAcceptsShippedSchemas(t *testing.T) {
 	for _, dir := range []string{shippedSchemaDir, "../cmd/sample/schemas"} {
 		registry, err := schemameta.NewFileSchemaRegistryFromDirectory(dir)
 		require.NoError(t, err, "registry over %s", dir)
-		require.NoError(t, ValidateRelationSchemas(registry), "guard over %s", dir)
+		_, err = LoadRelationIndex(registry)
+		require.NoError(t, err, "guard over %s", dir)
 	}
-	require.NoError(t, ValidateRelationSchemas(nil), "an absent registry is not an error")
+	_, err := LoadRelationIndex(nil)
+	require.NoError(t, err, "an absent registry is not an error")
 
 	// Without this the test would pass over a registry that registered nothing
 	// relation-bearing at all, which is the one way "the guard accepts the
@@ -126,7 +129,7 @@ func TestLoadRelationIndexFailsOnUnservableSchema(t *testing.T) {
 	registry := serveRelationFixture(t, "relation_ok_not")
 	registry.docErr["child"] = errors.New("backing store unavailable")
 
-	err := ValidateRelationSchemas(registry)
+	_, err := LoadRelationIndex(registry)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "child")
@@ -136,7 +139,7 @@ func TestLoadRelationIndexFailsOnUnservableSchema(t *testing.T) {
 // TestLoadRelationIndexFailsOnUndecodableDocument is the other half: a listed
 // schema whose document does not decode into any. "{" is the malformed-JSON form
 // of that; a number outside float64's range is the other, and the same branch
-// covers both — see ValidateRelationSchemas for why that is the boundary and why
+// covers both — see LoadRelationIndex for why that is the boundary and why
 // it stays a subset of what the validator refuses.
 //
 // The message names the schema rather than a path, because a registry need not
@@ -145,7 +148,7 @@ func TestLoadRelationIndexFailsOnUndecodableDocument(t *testing.T) {
 	registry := serveRelationFixture(t, "relation_ok_not")
 	registry.docs["child"] = `{`
 
-	err := ValidateRelationSchemas(registry)
+	_, err := LoadRelationIndex(registry)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "child")
