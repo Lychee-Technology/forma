@@ -141,7 +141,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	schemaValidator, relationIndex, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
-		return nil, schemaGuardError(effectiveConfig.Entity.SchemaDirectory, err)
+		return nil, wrapSchemaGuardError(effectiveConfig.Entity.SchemaDirectory, err)
 	}
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
@@ -233,7 +233,7 @@ func buildSchemaGuards(
 	return schemaValidator, relationIndex, nil
 }
 
-// schemaGuardError adds the call-site context to a buildSchemaGuards failure:
+// wrapSchemaGuardError adds the call-site context to a buildSchemaGuards failure:
 // the schema directory both guards were built over.
 //
 // An empty directory gets its own wording rather than being interpolated. It is
@@ -248,7 +248,7 @@ func buildSchemaGuards(
 //
 // This only changes how the failure reads. It adds no new startup rejection: an
 // unset directory that resolves anyway still boots, exactly as before.
-func schemaGuardError(schemaDir string, err error) error {
+func wrapSchemaGuardError(schemaDir string, err error) error {
 	if schemaDir == "" {
 		return fmt.Errorf("failed to build the schema guards (Entity.SchemaDirectory is unset): %w", err)
 	}
