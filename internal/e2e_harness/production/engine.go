@@ -145,9 +145,17 @@ func (e *Env) EntityManager() forma.EntityManager {
 	// so it has to run the factory's relation guard itself or it is not modelling
 	// production startup (#318). Over the same registry the validator was built
 	// from, for the same reason the factory does it that way.
-	if err := internal.ValidateRelationSchemas(e.Registry); err != nil {
+	//
+	// The index is built once and handed to the manager, again as the factory does
+	// it. Two independent loads of one registry are not guaranteed to agree, and
+	// the manager's own load answers a warning rather than a failure — so a
+	// harness that approved one index and then ran on another would be modelling
+	// the wrong startup.
+	relationIndex, err := internal.LoadRelationIndex(e.Registry)
+	if err != nil {
 		e.T.Fatalf("validate schema relations over the registry for %s: %v", schemaDir, err)
 	}
-	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator)
+	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator,
+		internal.WithRelationIndex(relationIndex))
 	return e.manager
 }

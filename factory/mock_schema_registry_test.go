@@ -23,6 +23,12 @@ type mockSchemaRegistry struct {
 	// a schema_registry row that has <name>_attributes.json on disk but no
 	// <name>.json (schemameta/file_registry.go loadSchemaArtifacts).
 	schemaDocMissing bool
+
+	// getSchemaByNameCalls counts document reads. Two independent readers of the
+	// same registry can be handed two different documents by an implementation
+	// that serves them from a database, so how many times the registry is read
+	// for the same purpose is a property worth pinning (#318 review).
+	getSchemaByNameCalls int
 }
 
 // mockSchemaBody is the JSON Schema document the mock registry serves. It has to
@@ -74,6 +80,7 @@ func (m *mockSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, form
 }
 
 func (m *mockSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+	m.getSchemaByNameCalls++
 	id, ok := m.nameToID[name]
 	if !ok {
 		return 0, forma.JSONSchema{}, fmt.Errorf("schema not found: %s", name)

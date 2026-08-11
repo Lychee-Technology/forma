@@ -139,35 +139,9 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Initialize transformer
 	transformer := transform.NewPersistentRecordTransformer(registry)
 
-	// Resolve every registered schema before opening any read surface. This fails
-	// closed, so a schema that cannot resolve aborts startup rather than silently
-	// losing validation at runtime (#314).
-	//
-	// The position is load-bearing: nothing above owns a closable resource, so this
-	// failure return has nothing to leak. Queries have already run (collectTables,
-	// LoadMetadata) — this is pre-read-surface, not pre-I/O. Never move a step that
-	// opens a client, pool, or handle above this line.
-	schemaValidator, err := schemavalidate.New(registry, effectiveConfig.Entity.SchemaDirectory)
+	schemaValidator, relationIndex, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build schema validator: %w", err)
-	}
-
-	// Relation declarations are checked at the same fail-closed position and for
-	// the same reason: a schema that requires a relation root makes its entity
-	// unwritable at runtime, because the root is stripped from every payload
-	// before the validator sees it (#318). NewEntityManager cannot enforce this —
-	// it swallows a relation-index load failure into a warning and continues with
-	// stripping disabled — so it has to happen here, where startup fails.
-	//
-	// This step opens no client, pool, or handle, so it respects the placement
-	// rule stated above and has nothing to leak on its error return.
-	//
-	// It reads the registry, not SCHEMA_DIR, so it analyses the same documents
-	// schemavalidate.New just resolved. Handing it the directory instead would let
-	// a registry that does not serve the files on disk boot with an index built
-	// from one document and a validator built from another.
-	if err := internal.ValidateRelationSchemas(registry); err != nil {
-		return nil, fmt.Errorf("failed to validate schema relations: %w", err)
+		return nil, err
 	}
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
@@ -181,13 +155,59 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
 	// WithCloser's nil check.
-	var managerOpts []internal.EntityManagerOption
+	// The relation index is the one built above, not a fresh load: the manager
+	// must strip with exactly the declarations the guard just approved (#318
+	// review). Not nil-guarded, because buildSchemaGuards returns a non-nil index
+	// on its success path, and WithRelationIndex ignores a nil anyway.
+	managerOpts := []internal.EntityManagerOption{internal.WithRelationIndex(relationIndex)}
 	if duckClient != nil {
 		managerOpts = append(managerOpts, internal.WithCloser(duckClient))
 	}
 	// Create and return entity manager
 	return internal.NewEntityManager(
 		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...), nil
+}
+
+// buildSchemaGuards runs both fail-closed schema checks and returns what each
+// one produced: the resolved validator, and the relation index.
+//
+// They belong together because they sit at the same position and answer the same
+// kind of question about the same documents. Resolving every registered schema
+// fails closed so that one which cannot resolve aborts startup rather than
+// silently losing validation at runtime (#314); checking relation declarations
+// fails closed so that a schema requiring a relation root aborts startup rather
+// than making its entity unwritable, since the root is stripped from every
+// payload before the validator sees it (#318).
+//
+// The position is load-bearing, and this function preserves it: neither step
+// opens a client, pool, or handle, so both failure returns have nothing to leak.
+// Queries have already run (collectTables, LoadMetadata) — this is
+// pre-read-surface, not pre-I/O. Never move a step that opens a client, pool, or
+// handle above the call site.
+//
+// Both read the registry, not SCHEMA_DIR, so they analyse the same documents.
+// Handing the directory to either would let a registry that does not serve the
+// files on disk boot with an index built from one document and a validator built
+// from another.
+//
+// The index is returned rather than discarded. LoadRelationIndex does the
+// validating, so building it here and passing it to the manager is what makes
+// "the manager strips with the declarations the guard approved" true rather than
+// merely likely — see internal.WithRelationIndex.
+func buildSchemaGuards(
+	registry forma.SchemaRegistry, schemaDir string,
+) (*schemavalidate.Validator, *internal.RelationIndex, error) {
+	schemaValidator, err := schemavalidate.New(registry, schemaDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build schema validator: %w", err)
+	}
+
+	relationIndex, err := internal.LoadRelationIndex(registry)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to validate schema relations: %w", err)
+	}
+
+	return schemaValidator, relationIndex, nil
 }
 
 // requireCoreTables fails closed when any of the three tables the manager

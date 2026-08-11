@@ -82,13 +82,13 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 			"a missing schema document from an unparseable one")
 }
 
-// relationFixtureChild reads one committed fixture's child.json. The fixtures
+// readRelationFixtureChild reads one committed fixture's child.json. The fixtures
 // live in internal/testdata and are the same bytes
 // internal/relation_index_guard_test.go asserts the rule against, read here by
 // relative path so the two packages cannot drift apart (the same way
 // internal/entity_write_validation_relations_test.go reads
 // ../cmd/server/schemas).
-func relationFixtureChild(t *testing.T, fixture string) string {
+func readRelationFixtureChild(t *testing.T, fixture string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("..", "internal", "testdata", fixture, "child.json"))
 	require.NoError(t, err)
@@ -117,7 +117,7 @@ func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *test
 	t.Parallel()
 
 	registry := newMockSchemaRegistry()
-	registry.schemaBody = relationFixtureChild(t, "relation_required_root")
+	registry.schemaBody = readRelationFixtureChild(t, "relation_required_root")
 
 	config := validatorTestConfig(t, registry)
 	config.Entity.SchemaDirectory = "../internal/testdata/relation_ok_not"
@@ -150,7 +150,7 @@ func TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded(t *t
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "unregistered.json"),
-		[]byte(relationFixtureChild(t, "relation_required_root")), 0o600))
+		[]byte(readRelationFixtureChild(t, "relation_required_root")), 0o600))
 
 	config := validatorTestConfig(t, newMockSchemaRegistry())
 	config.Entity.SchemaDirectory = dir
@@ -192,4 +192,39 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 	assert.False(t, duckDBFactoryCalled,
 		"schema validation must fail closed before any read surface is opened, so the "+
 			"failure path holds no resources to leak")
+}
+
+// TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce pins the wiring the
+// #318 review asked for: the factory builds the relation index once and hands
+// that instance to the manager, instead of validating one and letting
+// NewEntityManager load a second.
+//
+// Two loads were not merely wasteful. forma.SchemaRegistry is a public extension
+// point that may serve documents from a database or over a network, so the
+// second read can answer differently or fail outright — and when it fails
+// NewEntityManager warns and continues with a nil index, leaving stripping off
+// for the process lifetime behind a preflight that passed.
+//
+// Counted rather than observed through behaviour, because the manager exposes no
+// way to ask which index it holds. Exactly two readers of the document remain,
+// and both are named here so a future change to either is visible: schema
+// validator construction (schemavalidate.New) and this single relation-index
+// build. A third read means the manager started loading its own again.
+func TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce(t *testing.T) {
+	t.Parallel()
+
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = readRelationFixtureChild(t, "relation_ok_not")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_ok_not"
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.NoError(t, err)
+	require.NotNil(t, em)
+	assert.Equal(t, 2, registry.getSchemaByNameCalls,
+		"the registered document may be read once by the validator and once for the relation "+
+			"index; a third read means the manager is loading an index of its own again")
 }
