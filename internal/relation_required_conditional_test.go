@@ -177,34 +177,59 @@ func TestConditionalFixturesAgainstTheValidator(t *testing.T) {
 	})
 }
 
-// TestValidatorDoesNotNameTheMissingRootUnderEveryApplicator is the measurement
+// TestValidatorNamesTheMissingRootUnderOnlySomeApplicators is the measurement
 // that decided how the runtime diagnosis is gated (see
 // explainStrippedRelationRoots).
 //
-// The obvious gate would be "fire when the validator's message names a relation
-// root as a missing required property". This test shows that gate would go
-// silent on exactly the shapes the startup guard now declines to judge — which
-// is where the diagnosis is the only backstop there is. Under "not" the library
-// reports `not: validated against <anonymous schema>` and under "oneOf"
-// `oneOf: did not validate against any of [...]`; neither text contains the
-// property name.
+// The narrower gate would be "fire only when the validator's message names a
+// relation root as a missing required property". The question is whether that
+// gate would cover the shapes the startup guard no longer judges, and the answer
+// is: some of them, not all. Measured here over every unjudged fixture, on the
+// post-strip payload:
 //
-// If jsonschema-go ever starts naming the property in those messages, this test
-// fails, and a narrower gate becomes worth revisiting.
-func TestValidatorDoesNotNameTheMissingRootUnderEveryApplicator(t *testing.T) {
-	for _, fixture := range []string{"relation_required_double_not", "relation_required_oneof"} {
+//   - the dependent* family names the property — `dependentRequired["parentId"]:
+//     missing properties ["contactSnapshot"]` and the /dependencies/ and
+//     /dependentSchemas/ spellings alike — so a message-shape gate would fire on
+//     all four of those;
+//   - "not", "oneOf" and the "if"/"else" form do not name it. The first two
+//     render the offending branch anonymously (`not: validated against
+//     <anonymous schema>`, `oneOf: did not validate against any of [...]`), and
+//     the third reports whichever *other* branch the document actually took, so
+//     its text is about "fallback" and never mentions the relation root at all.
+//
+// Three shapes with no message to key on is why the gate is deliberately widened
+// to "the schema declares relation roots" rather than made a hybrid: a hybrid
+// would have to recognise the anonymous forms by their prose, which is fragile,
+// and would still miss any applicator not on the list.
+//
+// Both halves are pinned, not just the convenient one. If jsonschema-go starts
+// naming the property under "not"/"oneOf"/"else", or stops naming it under
+// dependent*, this test fails and the trade is worth re-deriving.
+func TestValidatorNamesTheMissingRootUnderOnlySomeApplicators(t *testing.T) {
+	for fixture, namesTheRoot := range map[string]bool{
+		"relation_required_double_not":          false,
+		"relation_required_oneof":               false,
+		"relation_required_ifthen":              false,
+		"relation_required_dependent":           true,
+		"relation_required_dependent_schema":    true,
+		"relation_required_dependencies_list":   true,
+		"relation_required_dependencies_schema": true,
+	} {
 		t.Run(fixture, func(t *testing.T) {
 			err := validateFixtureChild(t, fixture, buildStrippedPayload())
-
 			require.Error(t, err)
+
+			if namesTheRoot {
+				require.ErrorContains(t, err, "contactSnapshot",
+					"a message-shape gate would fire here")
+				return
+			}
 			require.NotContains(t, err.Error(), "contactSnapshot",
-				"a message-shape gate would not fire here, which is why the diagnosis does not use one")
+				"a message-shape gate would stay silent here, which is why the diagnosis does not use one")
 		})
 	}
 
-	// The counterpart: inside the analysed fragment the property *is* named. So
-	// the message shape is not uniformly useless — it is useless precisely where
-	// the guard has stopped looking.
+	// The counterpart inside the analysed fragment, where guard and message agree.
 	err := validateFixtureChild(t, "relation_required_root", buildStrippedPayload())
 	require.ErrorContains(t, err, "contactSnapshot")
 }

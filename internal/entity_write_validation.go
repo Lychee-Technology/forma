@@ -124,28 +124,49 @@ func validateWritePayload(v writeValidation) error {
 //
 // The error's class, status and published body are untouched. forma.Error() and
 // the log line grow the explanation; PublicMessage() does not, because that is
-// what WithOperatorDetail is for (docs/error-handling.md). One visible
-// consequence: internal/httpapi logs a disclosed 4xx at Warnw rather than Debugw
-// once operator detail is present, which is the intended effect — the
-// explanation must clear the production Info threshold to be of any use.
+// what WithOperatorDetail is for (docs/error-handling.md).
 //
 // # Why the gate is "the schema declares relation roots", and not the message
 //
 // The narrower gate would be to fire only when the validator's message names a
-// relation root as a missing required property. That gate was measured and
-// rejected: it goes silent on exactly the cases this function exists for. For
-// {"not":{"not":{"required":["contactSnapshot"]}}} jsonschema-go reports
-// `not: validated against <anonymous schema>`, and for a oneOf
-// `oneOf: did not validate against any of [<anonymous schema> …]` — neither text
-// contains the property name, and both are shapes the startup guard now declines
-// to judge, so the diagnosis is the only backstop there is. Pinned by
-// TestValidatorDoesNotNameTheMissingRootUnderEveryApplicator, which fails if the
-// library ever starts naming the property and a narrower gate becomes viable.
+// relation root as a missing required property. Measured over every shape the
+// startup guard no longer judges, that gate covers *some* of them:
 //
-// The cost is that an unrelated violation on a relation-declaring schema also
-// carries the note. The wording is therefore conditional — it states the
-// mechanism and lets the reader decide whether it applies — rather than
-// asserting a cause it has not established.
+//   - it would fire for the dependent* family. jsonschema-go names the property
+//     in all four spellings, e.g. `dependentRequired["parentId"]: missing
+//     properties ["contactSnapshot"]`;
+//   - it would stay silent for "not", "oneOf" and the "if"/"else" form. The
+//     first two render the offending branch anonymously (`not: validated against
+//     <anonymous schema>`, `oneOf: did not validate against any of [...]`), and
+//     the third reports whichever *other* branch the document took, so its text
+//     names "fallback" and never the relation root.
+//
+// So this is a choice rather than a forced move. The gate is deliberately
+// widened to "the schema declares relation roots", accepting that the
+// explanation is attached to unrelated validation failures on those schemas too,
+// because the wide gate never misses. The hybrid — message shape, falling back
+// to the wide gate for the anonymous forms — was rejected: recognising those
+// forms means keying on library prose, which is fragile, and it would still miss
+// any applicator not on the list. Guaranteed coverage is worth more here than
+// quiet logs, because the failure being explained is one the caller cannot fix
+// and the operator cannot otherwise diagnose.
+//
+// Both halves of that measurement are pinned by
+// TestValidatorNamesTheMissingRootUnderOnlySomeApplicators, so a library change
+// in either direction re-opens the trade.
+//
+// The costs of the wide gate, stated plainly:
+//
+//   - an unrelated violation on a relation-declaring schema also carries the
+//     note. The wording is therefore conditional — it states the mechanism and
+//     lets the reader decide whether it applies — rather than asserting a cause
+//     it has not established;
+//   - internal/httpapi keys a log level on forma.HasOperatorDetail
+//     (error_response.go), so *every* disclosed 4xx on a relation-declaring
+//     schema now logs at Warnw rather than Debugw, not only the ones the strip
+//     caused. That is the intended effect where the note is the real
+//     explanation — it has to clear the production Info threshold to be of any
+//     use — and accepted noise everywhere else.
 //
 // One narrowing does come for free, and is not a special case here:
 // forma.WithOperatorDetail returns its input unchanged when that input publishes

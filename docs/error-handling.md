@@ -430,14 +430,41 @@ schema validation for a schema that declares relation roots, the error carries a
 operator-facing explanation naming those roots and stating that they are removed
 before validation runs. It rides `forma.WithOperatorDetail`, so it reaches
 `Error()` and the log line and never the response body — the caller's `400` is
-byte-identical to what it was. The gate is the schema declaring relation roots at
-all, not the wording of the validator's message: `jsonschema-go` reports
-`not: validated against <anonymous schema>` and `oneOf: did not validate against
-any of [...]` without naming the property, so a message-shape gate would go
-silent on exactly the shapes the startup check no longer judges. The cost of the
-wider gate is that an unrelated violation on a relation-declaring schema also
-carries the note, which is why the note states the mechanism conditionally rather
-than asserting a cause.
+byte-identical to what it was.
+
+The gate is the schema declaring relation roots at all, rather than the wording of
+the validator's message, and that is a **choice** rather than something the
+library forced. Measured over every shape the startup check no longer judges, a
+message-shape gate would cover some of them and not others:
+
+- it would fire for the `dependent*` family, where `jsonschema-go` does name the
+  property — `dependentRequired["parentId"]: missing properties
+  ["contactSnapshot"]`, and likewise for the `/dependencies/` and
+  `/dependentSchemas/` spellings;
+- it would stay silent for `not`, `oneOf` and the `if`/`else` form. The first two
+  render the offending branch anonymously (`not: validated against <anonymous
+  schema>`, `oneOf: did not validate against any of [...]`), and the third reports
+  whichever *other* branch the document took, so its text names `fallback` and
+  never the relation root.
+
+Three shapes with nothing to key on is why the gate was widened rather than made
+a hybrid: recognising the anonymous forms means matching library prose, which is
+fragile, and it would still miss any applicator not on the list. The wide gate
+never misses, and guaranteed coverage is worth more than quiet logs for a failure
+the caller cannot fix and the operator cannot otherwise diagnose.
+
+Two costs come with that, and both are deliberate:
+
+- an unrelated violation on a relation-declaring schema also carries the note,
+  which is why the note states the mechanism conditionally rather than asserting a
+  cause;
+- **log levels shift.** `internal/httpapi` logs a disclosed `4xx` at `Warnw`
+  instead of `Debugw` when the chain holds withheld operator detail
+  (`forma.HasOperatorDetail`), so *every* disclosed `4xx` on a relation-declaring
+  schema now logs at `Warn` — not only the ones the strip caused. That is intended
+  where the note is the real explanation, since it has to clear the production
+  `Info` threshold to be read at all. Today `visit` is the only shipped schema
+  with a relation root, so that is the only entity affected.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
