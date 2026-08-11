@@ -65,18 +65,24 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 }
 
 // ValidateRelationSchemas fails closed on a relation declaration the runtime
-// cannot honour, for callers that build the manager themselves.
+// cannot honour, discarding the index it had to build to find out.
 //
 // It exists because NewEntityManager cannot enforce this: it swallows a
 // LoadRelationIndex failure into a warning and continues with a nil index, which
-// disables stripping altogether rather than stopping. The composition root calls
-// this before it builds the manager, at a position where returning an error
-// aborts startup (#318).
+// disables stripping altogether rather than stopping (#318, #388). That swallow
+// predates the required-relation-root guard, but its blast radius does not: one
+// offending schema fails the whole registry load, so an unguarded caller loses
+// stripping for every schema, not just the offender.
 //
-// That swallow predates the required-relation-root guard, but its blast radius
-// does not: one offending schema now fails the whole registry load, so an
-// unguarded caller loses stripping for every schema, not just the offender. Any
-// new construction site must call this too.
+// Neither shipped construction site calls it. The factory and the production e2e
+// harness call LoadRelationIndex directly and hand the result to
+// NewEntityManager (WithRelationIndex), because building the index twice is what
+// lets a registry serve the manager something the guard never approved. This
+// remains for a caller that wants the check without the index — and any such
+// caller has to run it, since nothing downstream will.
+//
+// Everything below describes LoadRelationIndex's failures, which are the only
+// ones this can report.
 //
 // What aborts startup, exactly:
 //

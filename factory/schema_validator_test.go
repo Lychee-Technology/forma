@@ -96,8 +96,9 @@ func readRelationFixtureChild(t *testing.T, fixture string) string {
 }
 
 // TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins two
-// things at once: that the factory calls internal.ValidateRelationSchemas at
-// all, and that it hands it the *registry*.
+// things at once: that the factory runs the relation guard
+// (internal.LoadRelationIndex, which validates as it builds) at all, and that it
+// reads the *registry*.
 //
 // The wiring half matters because internal/relation_index_guard_test.go calls
 // the guard directly — deleting the call from factory.go left the whole suite

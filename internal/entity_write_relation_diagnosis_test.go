@@ -57,6 +57,10 @@ func createChild() *forma.EntityOperation {
 // The diagnosis rides forma.WithOperatorDetail: it reaches Error() and the log
 // and never the published body.
 func TestWriteDiagnosisExplainsAStrippedRelationRoot(t *testing.T) {
+	// The whole story in one place: this schema really does boot, so the failing
+	// write below is what an operator meets rather than a hypothetical.
+	require.NoError(t, ValidateRelationSchemas(serveRelationFixture(t, "relation_required_double_not")))
+
 	manager := buildFixtureManager(t, "relation_required_double_not")
 
 	_, err := manager.Create(context.Background(), createChild())
