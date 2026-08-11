@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 
@@ -130,11 +131,19 @@ func TestBatchResultPublishesOnlyThePublishedMessage(t *testing.T) {
 
 	// And it carries exactly what the single-operation path would publish, so the
 	// two surfaces answer the same body for the same failure.
+	//
+	// Scrubbed on both sides: resolveBatchErrorMessage passes the publication
+	// through redact.ConnStringPassword, exactly as internal/httpapi does before
+	// writing one. This fixture's message holds no credential, so the two forms
+	// are equal here — comparing against the scrubbed form is what keeps the
+	// assertion true by construction rather than by what the fixture happens to
+	// contain, and stops a future credential-carrying fixture turning this pin
+	// into a contradiction of the scrub.
 	_, singleErr := manager.Create(context.Background(), createChild())
 	require.Error(t, singleErr)
 	published, ok := forma.ResolvePublicMessage(singleErr)
 	require.True(t, ok)
-	require.Equal(t, published, result.Failed[0].Error)
+	require.Equal(t, redact.ConnStringPassword(published), result.Failed[0].Error)
 }
 
 // TestWriteDiagnosisIsSilentWithoutRelationRoots pins the gate. A schema that
@@ -279,7 +288,13 @@ func TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots(t *testing.T) {
 	validator, schemaID := resolveFixtureValidator(t, "relation_required_double_not")
 	payload := map[string]any{"id": "x", "parentId": "p"}
 
-	bare := validator.Validate(schemaID, payload)
+	// Validated over the same document validateWritePayload builds, not over the
+	// raw payload: it normalizes dotted keys first (entity_write_validation.go),
+	// and the assertion below is textual. This payload has no dotted key, so the
+	// two documents are equal today — normalizing here is what stops that
+	// coincidence being load-bearing.
+	bare := validator.Validate(schemaID,
+		transform.NormalizeDottedKeys(payload, nil, validator.ArrayPaths(schemaID)))
 	require.Error(t, bare, "the fixture must fail validation for this to say anything")
 
 	err := validateWritePayload(writeValidation{
