@@ -207,10 +207,11 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 // for the process lifetime behind a preflight that passed.
 //
 // Counted rather than observed through behaviour, because the manager exposes no
-// way to ask which index it holds. Exactly two readers of the document remain,
-// and both are named here so a future change to either is visible: schema
-// validator construction (schemavalidate.New) and this single relation-index
-// build. A third read means the manager started loading its own again.
+// way to ask which index it holds. One read of the document remains for the
+// whole of startup — buildSchemaGuards snapshots the registry and builds both
+// the validator and the relation index from that snapshot — so a second read
+// means either the snapshot stopped covering a consumer or the manager started
+// loading an index of its own again.
 func TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce(t *testing.T) {
 	t.Parallel()
 
@@ -225,7 +226,47 @@ func TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, em)
-	assert.Equal(t, 2, registry.getSchemaByNameCalls,
-		"the registered document may be read once by the validator and once for the relation "+
-			"index; a third read means the manager is loading an index of its own again")
+	assert.Equal(t, 1, registry.getSchemaByNameCalls,
+		"the registered document is read once, into the snapshot both schema guards are built "+
+			"from; a second read means two guards can be handed two different documents")
+}
+
+// TestNewEntityManagerWithConfig_Unit_SchemaGuardsShareOneRegistryRead is the
+// hazard the snapshot exists for, driven through a registry that answers
+// differently on its second read.
+//
+// forma.SchemaRegistry is a public extension point and promises nothing about
+// repeated reads: an implementation serving documents from a database can hand
+// two callers two different documents, and the two callers here are the schema
+// validator and the relation guard. Building them from independent reads makes
+// this state reachable, and it is the exact state the guard exists to refuse:
+//
+//   - read one requires the x-relation property "contactSnapshot", so the
+//     validator demands it on every write;
+//   - read two declares the same relation without requiring it, so the guard
+//     approves, and the relation index built from it strips "contactSnapshot"
+//     from every payload before that validator ever sees it.
+//
+// Before the snapshot this combination booted cleanly and made the entity
+// unwritable — a missing-required error the caller cannot fix by sending the
+// field, on every create and update, for the process lifetime. With one read
+// feeding both, the requiring document is what the guard judges, and startup
+// stops.
+func TestNewEntityManagerWithConfig_Unit_SchemaGuardsShareOneRegistryRead(t *testing.T) {
+	t.Parallel()
+
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = readRelationFixtureChild(t, "relation_required_root")
+	registry.laterSchemaBody = readRelationFixtureChild(t, "relation_ok_not")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_required_root"
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.Error(t, err, "the document the validator was built from requires a stripped relation root")
+	assert.Nil(t, em)
+	assert.Contains(t, err.Error(), "failed to validate schema relations")
+	assert.Contains(t, err.Error(), `requires relation root "contactSnapshot"`)
 }

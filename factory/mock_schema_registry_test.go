@@ -24,6 +24,13 @@ type mockSchemaRegistry struct {
 	// <name>.json (schemameta/file_registry.go loadSchemaArtifacts).
 	schemaDocMissing bool
 
+	// laterSchemaBody, when non-empty, is the document served by every
+	// GetSchemaByName call after the first. It models the one thing
+	// forma.SchemaRegistry does not promise and a database-backed implementation
+	// cannot give for free: that two reads of the same name answer the same bytes
+	// (#318 review).
+	laterSchemaBody string
+
 	// getSchemaByNameCalls counts document reads. Two independent readers of the
 	// same registry can be handed two different documents by an implementation
 	// that serves them from a database, so how many times the registry is read
@@ -88,7 +95,11 @@ func (m *mockSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSche
 	if m.schemaDocMissing {
 		return 0, forma.JSONSchema{}, fmt.Errorf("schema data not found: %s: %w", name, forma.ErrNotFound)
 	}
-	return id, forma.JSONSchema{ID: id, Name: name, Schema: m.body()}, nil
+	body := m.body()
+	if m.laterSchemaBody != "" && m.getSchemaByNameCalls > 1 {
+		body = m.laterSchemaBody
+	}
+	return id, forma.JSONSchema{ID: id, Name: name, Schema: body}, nil
 }
 
 func (m *mockSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {

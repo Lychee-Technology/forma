@@ -395,6 +395,22 @@ before a manager is built by both the composition root (the factory, alongside
 the schema validator) and the production e2e harness — refuses to start, naming
 the schema and the property.
 
+Both call sites build the validator and the relation index from **one snapshot**
+of the registry's documents (`internal.SnapshotSchemaDocuments`), not from two
+independent reads. `forma.SchemaRegistry` is a public extension point and
+promises nothing about repeated reads, so a registry serving documents from a
+database can hand the two consumers two different documents — and the pairing
+that produces is exactly the one the guard exists to refuse: a validator
+demanding a relation root beside an index that strips it, booted cleanly and
+unwritable for the process lifetime. The snapshot covers the **registry's
+documents only**. The validator also resolves cross-file `$ref`s by reading
+sibling files out of `SCHEMA_DIR`, and nothing freezes the file system, so this
+is one consistent view of the registry rather than of everything the validator is
+built from. The manager keeps the caller's own registry: the disagreement being
+closed is between two startup consumers, and freezing what the manager reads on
+every write (attribute caches) would be a larger change than the one that is
+needed.
+
 "Unconditionally" is the whole of it, and the boundary is deliberately narrow.
 The startup check reads exactly two things:
 

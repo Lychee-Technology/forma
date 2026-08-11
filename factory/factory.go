@@ -190,6 +190,27 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 // files on disk boot with an index built from one document and a validator built
 // from another.
 //
+// Same accessors is not enough on its own, which is why they are built from a
+// snapshot rather than from the registry directly. forma.SchemaRegistry promises
+// nothing about repeated reads, so two independent reads can answer two
+// different documents, and this pair is where that costs the most: a validator
+// demanding a relation root beside an index that strips it boots cleanly and
+// makes the entity unwritable (#318 review, and see SnapshotSchemaDocuments).
+// One capture, both consumers.
+//
+// The snapshot covers the registry's *documents*. schemavalidate.New also
+// resolves cross-file "$ref"s against schemaDir by reading sibling files, and
+// nothing here freezes the file system — so this is one consistent view of the
+// registry, not of everything the validator is built from.
+//
+// The snapshot deliberately stops here rather than becoming the manager's
+// registry. The disagreement being closed is between two startup consumers of
+// the same documents; the manager reads the registry for something else
+// entirely (attribute caches, on every write) and may be given an
+// implementation that reloads. Handing it a snapshot would freeze that for the
+// process lifetime to fix a startup-time problem, so NewEntityManager keeps the
+// caller's registry.
+//
 // The index is returned rather than discarded. LoadRelationIndex does the
 // validating, so building it here and passing it to the manager is what makes
 // "the manager strips with the declarations the guard approved" true rather than
@@ -197,12 +218,14 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 func buildSchemaGuards(
 	registry forma.SchemaRegistry, schemaDir string,
 ) (*schemavalidate.Validator, *internal.RelationIndex, error) {
-	schemaValidator, err := schemavalidate.New(registry, schemaDir)
+	documents := internal.SnapshotSchemaDocuments(registry)
+
+	schemaValidator, err := schemavalidate.New(documents, schemaDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build schema validator: %w", err)
 	}
 
-	relationIndex, err := internal.LoadRelationIndex(registry)
+	relationIndex, err := internal.LoadRelationIndex(documents)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to validate schema relations: %w", err)
 	}
