@@ -118,9 +118,10 @@ func readSchemaDocs(t *testing.T, dir string) map[string]string {
 	return docs
 }
 
-// relationFixtureRegistry serves the documents of one committed fixture
-// directory, so a test drives the guard over the same bytes the fixture holds.
-func relationFixtureRegistry(t *testing.T, fixture string) *docSchemaRegistry {
+// serveRelationFixture builds a registry over the documents of one committed
+// fixture directory, so a test drives the guard over the same bytes the fixture
+// holds.
+func serveRelationFixture(t *testing.T, fixture string) *docSchemaRegistry {
 	t.Helper()
-	return newDocSchemaRegistry(readSchemaDocs(t, relationFixtureDir(fixture)))
+	return newDocSchemaRegistry(readSchemaDocs(t, resolveRelationFixtureDir(fixture)))
 }

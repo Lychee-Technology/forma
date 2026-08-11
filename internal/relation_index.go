@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -29,12 +30,21 @@ type RelationIndex struct {
 // LoadRelationIndex builds a relation index from the schema documents the
 // registry serves, one per name in registry.ListSchemas().
 //
-// The registry, not SCHEMA_DIR, is the source, and that is the whole point: the
+// The registry, not SCHEMA_DIR, is the source, and that is the point: the
 // runtime validator is built from the same pair of accessors
-// (schemavalidate.New), so the index and the validator can never disagree about
-// a schema's bytes. forma.SchemaRegistry is a public extension point whose
-// implementations may load from files, a database, or anything else, and only
-// what it registers is ever validated or written to.
+// (schemavalidate.New), so neither is reading a document the other cannot see.
+// forma.SchemaRegistry is a public extension point whose implementations may
+// load from files, a database, or anything else, and only what it registers is
+// ever validated or written to.
+//
+// Same accessors is not the same as same bytes, and the difference is why the
+// factory builds this index exactly once and hands it to NewEntityManager
+// (WithRelationIndex). A registry is free to answer differently on a later call
+// — it may be reading a database — so two independent loads can disagree, and
+// the losing one would be the manager's, silently disabling stripping after a
+// successful preflight. What this function guarantees is that one *load* sees a
+// consistent view; keeping the validator and the manager on that same load is
+// the caller's job.
 //
 // A nil registry, or one whose schemas declare no relations, yields an empty
 // index and no error. Everything that is an error is listed at
@@ -47,7 +57,7 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 
 	for _, schemaName := range registry.ListSchemas() {
 		if err := idx.loadSchemaRelations(registry, schemaName); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("build the relation index from the schema registry: %w", err)
 		}
 	}
 
@@ -70,11 +80,19 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 //
 // What aborts startup, exactly:
 //
-//   - a schema that declares a relation root the validator would demand, or
-//     whose root requirements cannot be determined (see
-//     checkRelationRootsWritable);
+//   - a schema that declares a relation root the analysed fragment shows is
+//     required on every document — the root's own "required", or one in an allOf
+//     chain (see collectUnconditionalRootRequired for the fragment and why it is
+//     that small);
 //   - a schema the registry lists but cannot then serve, or whose document does
 //     not decode into any (see loadSchemaRelations for the decode).
+//
+// Nothing is refused for being unanalysable. Outside the fragment the walk has
+// no opinion, and a schema is booted whether or not it composes its root object
+// out of "not", "anyOf", "oneOf", "if"/"then"/"else", the dependent* family or a
+// root "$ref". Some of those really do demand a stripped relation root, and
+// those writes fail at runtime with an operator-facing explanation attached
+// (explainStrippedRelationRoots) rather than at startup.
 //
 // The second cause is fatal rather than skipped because every name walked here
 // came from ListSchemas: it names a schema the runtime resolves, validates
@@ -174,7 +192,7 @@ func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, sch
 		return nil
 	}
 
-	relations := collectRelations(schemaName, props, declaredRootRequired(schema))
+	relations := collectRelations(schemaName, props, readDeclaredRootRequired(schema))
 	// Guarded here, after collection, rather than at the x-relation marker: only a
 	// property that reached the relations slice is one StripComputedFields
 	// removes. A property whose $ref, key_property, or foreign-key attribute did
@@ -195,8 +213,9 @@ func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, sch
 // usable x-relation marker, skipping the ones that do not resolve.
 //
 // declaredRequired is the root object's literal "required" set and feeds only
-// RelationDescriptor.ForeignKeyRequired; the guard's own, wider notion of
-// "required" lives in relation_required.go and deliberately differs.
+// RelationDescriptor.ForeignKeyRequired. The guard reads a slightly wider set —
+// the same array plus any reached through an allOf chain — and the two are kept
+// apart deliberately; see readDeclaredRootRequired for why.
 func collectRelations(
 	schemaName string, props map[string]any, declaredRequired map[string]struct{},
 ) []RelationDescriptor {
@@ -206,7 +225,7 @@ func collectRelations(
 		if !ok {
 			continue
 		}
-		rel, ok := relationDescriptor(schemaName, childProp, propMap, declaredRequired)
+		rel, ok := deriveRelationDescriptor(schemaName, childProp, propMap, declaredRequired)
 		if !ok {
 			continue
 		}
@@ -215,10 +234,10 @@ func collectRelations(
 	return relations
 }
 
-// relationDescriptor derives one property's descriptor, answering false when the
+// deriveRelationDescriptor derives one property's descriptor, answering false when the
 // property is not a usable relation root. Every early return is a property
 // StripComputedFields will not strip, which is why none of them is an error.
-func relationDescriptor(
+func deriveRelationDescriptor(
 	schemaName, childProp string, propMap map[string]any, declaredRequired map[string]struct{},
 ) (RelationDescriptor, bool) {
 	refStr, _ := propMap["$ref"].(string)
@@ -331,6 +350,32 @@ func (idx *RelationIndex) RelationRoots(schema string) transform.RelationRoots {
 		roots[rel.ChildPath] = struct{}{}
 	}
 	return roots
+}
+
+// RelationRootNames returns schema's relation root names in sorted order, as
+// diagnostic input for the write path (explainStrippedRelationRoots).
+//
+// Sorted because bySchema is built by ranging a map of properties, so descriptor
+// order is randomised per process; an operator comparing two log lines needs the
+// list to be the same list.
+//
+// It answers the roots alone, which is less than StripComputedFields removes —
+// see RelationRoots for that distinction, which applies here identically. A nil
+// receiver or a schema with no relations answers nil.
+func (idx *RelationIndex) RelationRootNames(schema string) []string {
+	if idx == nil {
+		return nil
+	}
+	rels := idx.bySchema[schema]
+	if len(rels) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		names = append(names, rel.ChildPath)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // coversRelationSubtree reports whether key names a relation root or anything
