@@ -1303,6 +1303,50 @@ out to need operator correlation in practice, adding `error_id` to disclosed
 bodies is a separate contract change — recorded as a follow-up candidate, not
 done here.
 
+### The best-effort batch result is a second publication surface (#318)
+
+`forma.OperationError.Error` is an exported, JSON-serialised field, and
+`executeBestEffortBatch` (`internal/entity_batch_service.go`) is the only place
+in the tree that fills it — the atomic batch paths return the error itself, and
+every single-operation response goes through `internal/httpapi`. So that field
+crosses the Go API boundary and the HTTP one *without* passing
+`respondErrorWithStatus`, and it has to apply the same rule itself.
+`resolveBatchErrorMessage` (`internal/entity_batch_error.go`) does:
+
+- an error that **publishes** answers `forma.ResolvePublicMessage`, scrubbed
+  through the same `internal/redact` matcher the boundary uses. The scrub is not
+  ceremonial here: the registry's not-found carrier publishes the caller's own
+  schema name, so a caller can put a DSN into a published batch message. Pinned
+  by `TestBatchResultScrubsCredentialsFromAPublishedMessage`;
+- everything else answers the fixed string **`internal error`** — the same
+  wording `publicErrorMessage` writes for an undisclosed failure. Pinned by
+  `TestBatchResultWithholdsAnUnpublishedFailure`.
+
+**Contract change.** A best-effort batch used to render `err.Error()` whenever
+no published message resolved, so a storage or driver failure published the
+write path's internal wraps and whatever the driver put inside them — including
+a libpq connection string, password and all, for a failed insert. Those
+operations now report `internal error` instead. A caller that parses this field
+for internal failures sees different text; the machine-readable classification
+it should key on is unchanged and sits beside it in `OperationError.Code`
+(`CREATE_FAILED`, `UPDATE_FAILED`, `DELETE_FAILED`). Published failures — an
+unknown schema, a schema violation, a missing required attribute — are
+unaffected and still carry their authored message.
+
+The single-operation path is untouched: bodies written by
+`respondErrorWithStatus` are byte-identical to before.
+
+`publicErrorMessage`'s other wording, `internal read error`, is deliberately not
+reproduced in the batch path. It is reserved for the three federated read-path
+carriers `errorClass` recognises, all constructed in `internal/federated` and
+`internal/manifest`; the batch executors are the CRUD service's `Create`,
+`Update` and `Delete`, none of which reads through the federated engine — that
+service's only enrichment call is in `Get`.
+
+Still open on this surface, tracked by #396: the failure log line
+(`zap.S().Warnw(operationName+" operation failed", "operation", op, …)`) records
+the caller's whole payload, which is entity content.
+
 ### Known gap
 
 Credentials still reach error strings *inside* the process. `redactCredentials`

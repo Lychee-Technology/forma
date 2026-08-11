@@ -160,7 +160,7 @@ func (s *entityBatchService) executeBestEffortBatch(
 			zap.S().Warnw(operationName+" operation failed", "operation", op, "error", err)
 			failed = append(failed, forma.OperationError{
 				Operation: op,
-				Error:     batchErrorMessage(err),
+				Error:     resolveBatchErrorMessage(err),
 				Code:      errorCode,
 			})
 			continue
