@@ -163,6 +163,21 @@ func LoadRelationIndex(registry forma.SchemaRegistry) (*RelationIndex, error) {
 // and not an object, yet it never reaches that exit, because the decode below
 // fails on the number first. See LoadRelationIndex for what that costs and
 // why it is safe.
+//
+// # Where a marker is looked for
+//
+// One place: this document's own top-level "properties" object. The lookup is
+// the literal map read below — no applicator is composed and no reference is
+// followed — so an x-relation declared inside an "allOf" branch, or in a
+// document reached by a root "$ref", is not discovered at all.
+//
+// Nothing is stripped for such a property and nothing is derived on read: it
+// behaves as an ordinary caller-written attribute. That is the feature silently
+// not applying, which is a different thing from the unwritable-entity hazard the
+// guard below refuses — a schema whose marker was never seen writes and reads
+// perfectly well, just not as a relation. Pinned, control included, by
+// TestRelationDeclarationsAreFoundOnlyInRootProperties, and written down for
+// schema authors in docs/error-handling.md.
 func (idx *RelationIndex) loadSchemaRelations(registry forma.SchemaRegistry, schemaName string) error {
 	_, registered, err := registry.GetSchemaByName(schemaName)
 	if err != nil {

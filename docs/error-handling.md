@@ -387,6 +387,18 @@ Because the subtree never reaches the validator, constraints declared under an
 `x-relation` `$ref` are **decorative on the child**. They still apply on the
 parent entity, where the data actually lives.
 
+**Declare `x-relation` on a root property: that is the only place it is found.**
+`internal.LoadRelationIndex` reads the registered document's own top-level
+`properties` object and looks for the marker there. It composes no applicators
+and follows no references, so an `x-relation` declared inside an `allOf` branch,
+or in a document reached by a root `$ref`, is never discovered. Nothing is
+stripped for that property and nothing is derived on read for it: it stays an
+ordinary caller-written attribute, validated and persisted like any other. The
+schema is not refused and the entity is perfectly writable — the relation simply
+does not exist as far as the runtime is concerned, which is easy to miss because
+the document reads as though it does. Pinned, control included, by
+`TestRelationDeclarationsAreFoundOnlyInRootProperties`.
+
 **A schema that *unconditionally* requires a relation root is rejected at
 startup.** The root is stripped from every payload before validation, so a write
 that has to satisfy that requirement fails with a missing-required error the
