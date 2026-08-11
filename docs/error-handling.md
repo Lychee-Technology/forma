@@ -161,15 +161,24 @@ column is involved — `schema_registry` holds only `schema_id` and `schema_name
 the document lives on disk.
 
 A second fail-closed check sits beside validator construction in the factory:
-`internal.ValidateRelationSchemas` aborts startup for a schema that requires a
-relation root — see "Relation subtrees are never caller-writable".
+`internal.LoadRelationIndex` aborts startup for a schema that requires a relation
+root — see "Relation subtrees are never caller-writable".
 
 It reads the **schema registry**, not `SCHEMA_DIR`: one document per name in
 `registry.ListSchemas()`, taken from `GetSchemaByName`. That is the same pair of
-accessors validator construction uses, so the two can never analyse different
-bytes for the same schema. `forma.SchemaRegistry` is a public extension point —
-an implementation may serve documents from files, a database, or memory — and
-only what it registers is ever resolved, validated, or written to. Two
+accessors validator construction uses, so neither is reading a document the other
+cannot see. It is *not* a guarantee that the two see the same bytes:
+`forma.SchemaRegistry` is a public extension point — an implementation may serve
+documents from files, a database, or memory — and nothing in its contract stops
+it answering differently on a later call. What the factory guarantees instead is
+that only **one** relation-index load happens: it builds the index, and passes
+that instance to `internal.NewEntityManager` through
+`internal.WithRelationIndex`. Before that, the manager loaded a second index of
+its own, and a registry that changed or failed in between left the process
+stripping with an index the guard never approved — or, since the manager's own
+load only warns, with no index at all.
+
+Only what the registry registers is ever resolved, validated, or written to. Two
 consequences follow, and both are deliberate:
 
 - a valid document left in `SCHEMA_DIR` under a name the registry does not
@@ -179,12 +188,11 @@ consequences follow, and both are deliberate:
 
 It aborts startup for two things, and only two:
 
-1. a schema that declares a relation root the validator would demand — through
-   the root's own `required` **or** through any applicator that lands on the
-   root object (`allOf`/`anyOf`/`oneOf`, the `then`/`else` branches of an
-   `if`, `dependentRequired`, `dependentSchemas`, and draft-07's
-   `dependencies`), because the validator resolves composition and the loader has
-   to match what it will enforce;
+1. a schema that declares a relation root the analysed fragment shows is required
+   on **every** document — the root object's own `required`, or a `required`
+   reached through a chain of `allOf` branches. Nothing else is judged, and
+   nothing is refused for being unanalysable; see "Relation subtrees are never
+   caller-writable" for the fragment and for what covers the rest;
 2. a schema the registry lists but cannot then serve, or whose document does not
    decode into `any`. Every name walked came from `ListSchemas`, so such a schema
    is one the runtime resolves and validates writes against: a document that
@@ -229,33 +237,23 @@ struct pass, which is why the validator refuses `[1,2,3]` and `"x"` even though
 this loader accepts them. The relationship is one-directional by design: the
 loader's fatal class is a strict subset of what validator construction refuses.
 
-`dependencies` is in list (1) because forma accepts draft-07
-(`internal/schemavalidate/schema_check.go`), and under draft-07 the library
-enforces this rule from `dependencies` alone — `jsonschema-go` splits it into
-`DependencyStrings`/`DependencySchemas` at unmarshal and reads the 2020-12
-spellings only in 2020-12 mode. A draft-07 schema using it is otherwise a silent
-bypass of the whole check.
+Nothing is refused for being **unanalysable**, and an earlier round of this
+change was wrong to do so. A relation-declaring schema that applies a `$ref` to
+its root instance boots; so does one built out of `not`, `anyOf`, `oneOf`,
+`if`/`then`/`else`, `dependentRequired`, `dependentSchemas` or draft-07's
+`dependencies`. The loader neither collects a `required` from any of them nor
+treats their presence as a fault.
 
-A schema that declares a relation root **and** applies a `$ref` to the root
-instance — at the document root, or inside any of the applicators in (1) — is
-refused under (1) too. The loader does not resolve references, and
-`jsonschema.Resolved` offers no resolved-reference graph to borrow either — its
-only schema accessor is `Schema()`, which after `Resolve` still answers the root
-with `Ref` set to the unresolved string it was parsed from — so the loader
-cannot tell whether the reference makes a relation root mandatory, and
-refusing beats guessing. A `$ref` on a *property* is the normal shape
-(`visit.json`'s `contactSnapshot`) and is untouched. So is a `required` inside a
-property's own subschema, which constrains that child object's members rather
-than the root's; a `required` under `not`, which can never make a property
-mandatory; a `then`/`else` with no `if`, which the validator ignores; and a
-`required` inside an `if` itself, which asserts nothing about the instance and
-only selects which branch applies.
+A `$ref` on a *property* is the normal shape (`visit.json`'s `contactSnapshot`)
+and was always untouched. So is a `required` inside a property's own subschema,
+which constrains that child object's members rather than the root's.
 
 Both call sites — `factory/factory.go` and
 `internal/e2e_harness/production/engine.go` — pass the same registry they built
-the validator from. Any new construction site must do the same;
-`internal.NewEntityManager` cannot enforce this, because it swallows a relation
-index load failure into a warning and continues with stripping disabled.
+the validator from, and both hand the index they built to the manager rather than
+letting it load another. Any new construction site must do the same;
+`internal.NewEntityManager` cannot enforce it, because its own load swallows a
+failure into a warning and continues with stripping disabled.
 
 Note that no registry this repository ships can exhibit the divergence this
 guards against: `internal/schemameta`'s file registry reads
@@ -389,31 +387,57 @@ Because the subtree never reaches the validator, constraints declared under an
 `x-relation` `$ref` are **decorative on the child**. They still apply on the
 parent entity, where the data actually lives.
 
-**A schema that requires a relation root is rejected at startup.** The root is
-stripped from every payload before validation, so a write that has to satisfy
-that requirement fails with a missing-required error the caller cannot fix by
-sending the field. `internal.ValidateRelationSchemas` — called before a manager
-is built by both the composition root (the factory, alongside the schema
-validator) and the production e2e harness — refuses to start, naming the schema
-and the property.
+**A schema that *unconditionally* requires a relation root is rejected at
+startup.** The root is stripped from every payload before validation, so a write
+that has to satisfy that requirement fails with a missing-required error the
+caller cannot fix by sending the field. `internal.LoadRelationIndex` — called
+before a manager is built by both the composition root (the factory, alongside
+the schema validator) and the production e2e harness — refuses to start, naming
+the schema and the property.
 
-How much of the entity that breaks depends on the requirement. An *unconditional*
-one — the root `required` array, or an `allOf` branch — fails every create and
-update. A *conditional* one — `anyOf`/`oneOf`, an `if`'s `then`/`else`,
-`dependentRequired`/`dependentSchemas`/`dependencies` — fails only the documents
-that take that branch; the others validate normally. Both are refused: a schema
-with no writable path for some of its documents is still a schema an operator
-must fix, and it is far cheaper to say so at startup than to have callers
-discover it as an unfixable 400.
+"Unconditionally" is the whole of it, and the boundary is deliberately narrow.
+The startup check reads exactly two things:
 
-"Requires" means what the validator will enforce, not what the root `required`
-array literally says: the check also walks `allOf`/`anyOf`/`oneOf`, the
-`then`/`else` branches of an `if`, `dependentRequired`, `dependentSchemas` and
-draft-07's `dependencies`, and refuses a relation-declaring schema that applies a
-`$ref` to the root instance because it cannot follow one. It does **not** collect
-from the `if` predicate itself: in JSON Schema `if` contributes no assertions, so
-a `required` there can never make a property mandatory. See "Startup fails
-closed" for the full boundary, including what is deliberately *not* collected.
+- the root object's own `required`;
+- a `required` reached through a chain of `allOf` branches, recursively.
+
+Everything else is **not judged**: `not`, `anyOf`, `oneOf`, `if`/`then`/`else`,
+`dependentRequired`, `dependentSchemas`, draft-07's `dependencies`, `$ref` and
+`$dynamicRef` neither contribute a name nor make a schema unbootable. A name
+collected inside the fragment holds whatever sits beside it — `allOf: [{"required":
+["x"]}, {"not": …}]` still yields `x` — because no link on that chain is
+conditional.
+
+The reason for the narrowness is that the general question is undecidable by
+inspection. Whether arbitrary schema logic ends up demanding a property is a
+satisfiability question, and a static walk that tries to answer it gets both
+directions wrong. Measured, on committed fixtures:
+
+- `{"not": {"not": {"required": ["contactSnapshot"]}}}` is equivalent to
+  requiring the property, and a walk that skips `not` misses it — a **false
+  negative**;
+- `anyOf: [true, {"required": ["contactSnapshot"]}]` is satisfied by its first
+  branch whatever the second asks, and `if: false` never selects its `then`. A
+  walk that collected from either refused a schema whose writes are perfectly
+  fine — a **false positive**, and an unfixable one, because the deployment
+  cannot boot at all.
+
+The trade is one-sided on purpose: false negatives cost an explained runtime
+failure, false positives cost a system that will not start.
+
+**What covers the false negatives is on the write path.** When a write fails
+schema validation for a schema that declares relation roots, the error carries an
+operator-facing explanation naming those roots and stating that they are removed
+before validation runs. It rides `forma.WithOperatorDetail`, so it reaches
+`Error()` and the log line and never the response body — the caller's `400` is
+byte-identical to what it was. The gate is the schema declaring relation roots at
+all, not the wording of the validator's message: `jsonschema-go` reports
+`not: validated against <anonymous schema>` and `oneOf: did not validate against
+any of [...]` without naming the property, so a message-shape gate would go
+silent on exactly the shapes the startup check no longer judges. The cost of the
+wider gate is that an unrelated violation on a relation-declaring schema also
+carries the note, which is why the note states the mechanism conditionally rather
+than asserting a cause.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
@@ -422,7 +446,7 @@ called from `transform`'s `ToAttributes` after the strip and after JSON Schema
 validation — walks the whole attribute cache with no relation carve-out, so it
 looks for the value the strip has just removed and answers
 `400 missing required attribute '<name>'` on every create and update, again
-unfixably by sending the field. `ValidateRelationSchemas` cannot see this one:
+unfixably by sending the field. The startup check cannot see this one:
 it reads the JSON Schema document and never the `<name>_attributes.json` ledger,
 which is where the `required_always` policy lives.
 
