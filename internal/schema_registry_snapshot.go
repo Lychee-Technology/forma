@@ -95,6 +95,25 @@ func (s *schemaDocumentSnapshot) ListSchemas() []string {
 	return slices.Clone(s.names)
 }
 
+// GetSchemaByName answers the read captured for that name — document, id and
+// error alike — and delegates any other name to the wrapped registry, which is
+// not a failure here: nothing was captured for a name ListSchemas never
+// reported, so there is nothing to replay.
+//
+// The captured error is returned exactly as captured: not wrapped, not reworded.
+// That is a deliberate exception to this repository's rule that an error gains
+// context as it crosses a boundary, and the exception is what makes the proxy a
+// proxy. A wrap would put this type into a message an operator reads as the
+// registry's own, and it would hand the caller an error one level removed from
+// the one the registry produced. Identity is being preserved on purpose: a
+// consumer matching the registry's own error with errors.Is still matches
+// through the snapshot — pinned by
+// TestSnapshotSchemaDocumentsReplaysTheRegistrysFailure, which asserts ErrorIs
+// against the registry's cause on every replayed read.
+//
+// The delegating branch adds nothing for the same reason: it is the registry's
+// own call made on the caller's behalf, and each consumer wraps what it gets
+// with its own context on the way out (schemavalidate.New, LoadRelationIndex).
 func (s *schemaDocumentSnapshot) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
 	if read, captured := s.byName[name]; captured {
 		return read.id, read.doc, read.err
@@ -102,6 +121,10 @@ func (s *schemaDocumentSnapshot) GetSchemaByName(name string) (int16, forma.JSON
 	return s.registry.GetSchemaByName(name)
 }
 
+// GetSchemaByID answers the same captured reads keyed the other way, and
+// delegates an id that was never captured — which includes every id whose read
+// failed, since a failed read carries no usable id (SnapshotSchemaDocuments).
+// Errors are replayed verbatim, for the reasons given on GetSchemaByName.
 func (s *schemaDocumentSnapshot) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
 	if read, captured := s.byID[id]; captured {
 		return read.name, read.doc, read.err
@@ -109,10 +132,16 @@ func (s *schemaDocumentSnapshot) GetSchemaByID(id int16) (string, forma.JSONSche
 	return s.registry.GetSchemaByID(id)
 }
 
+// GetSchemaAttributeCacheByName answers nothing of its own: attribute caches are
+// not captured, so every call is the wrapped registry's, returned as it came.
+// SnapshotSchemaDocuments states why they are left out — neither startup
+// consumer of this snapshot reads them.
 func (s *schemaDocumentSnapshot) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	return s.registry.GetSchemaAttributeCacheByName(name)
 }
 
+// GetSchemaAttributeCacheByID is the id-keyed half of the same delegation, with
+// the same reasons.
 func (s *schemaDocumentSnapshot) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
 	return s.registry.GetSchemaAttributeCacheByID(id)
 }
