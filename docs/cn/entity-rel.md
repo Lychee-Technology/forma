@@ -70,3 +70,9 @@
 ``` 
 
 在上述示例中，`Book`实体通过`author_id`字段与`Author`实体建立了一对多关系。`author_name`字段使用了`x-relation`扩展属性，指定了关联的键属性为`author_id`。这样，当查询`Book`实体时，Forma会自动加载对应的`Author`实体的名称。
+
+### `x-relation`只在根级`properties`中被识别
+
+Forma只读取schema文档自身顶层`properties`对象里的`x-relation`标记：它不会展开`allOf`等组合关键字，也不会跟随`$ref`去别的文档里找。因此写在`allOf`分支里的、或写在根级`$ref`所指向的文档里的`x-relation`，Forma根本不会发现——该属性不会被剥离，读取时也不会由父实体填充，它就是一个普通的、由调用方写入并持久化的属性。
+
+这种情况不会导致启动失败，实体也照样可读可写；关系只是没有生效，而文档看上去却像是声明了关系，所以很容易被忽略。请把`x-relation`直接声明在根级`properties`的属性上。

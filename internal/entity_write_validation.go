@@ -32,11 +32,24 @@ type writeValidation struct {
 	schemaName string
 	rowID      uuid.UUID
 	cache      forma.SchemaAttributeCache
-	// relations is the set of relation roots StripComputedFields removed from
-	// data, which normalization must not rebuild (see NormalizeDottedKeys).
-	relations transform.RelationRoots
-	data      map[string]any
-	enforce   bool
+	data       map[string]any
+	enforce    bool
+	// relationRoots names the schema's relation roots, sorted
+	// (RelationIndex.RelationRootNames). It is diagnostic input and nothing else:
+	// it decorates a validation error that has already been decided, and the one
+	// branch that reads it decides only whether that decoration applies — nothing
+	// below chooses what to validate, what to normalize, or what to write from
+	// it. Empty for a schema declaring no relations, and for a manager built
+	// without a relation index.
+	//
+	// It is emphatically NOT the normalization carve-out this struct used to
+	// carry. That field existed so NormalizeDottedKeys could leave relation
+	// subtrees alone, and it became unreachable once StripComputedFields started
+	// removing the whole subtree — root and dotted descendants — before
+	// normalization runs (#318). Nothing under a relation root reaches the
+	// validator any more, so there is nothing left to carve out; do not
+	// reintroduce that use through this field.
+	relationRoots []string
 }
 
 // validateWritePayload validates a write payload against the JSON Schema
@@ -76,10 +89,17 @@ func validateWritePayload(v writeValidation) error {
 		return nil
 	}
 
-	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID), v.relations)
+	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID))
 	err := v.validator.Validate(v.schemaID, normalized)
 	if err == nil {
 		return nil
+	}
+	// The gate lives here rather than inside the decorator: a schema declaring no
+	// relation root strips nothing, so there is nothing to explain, and asking
+	// explainStrippedRelationRoots to decide that would make it a function that
+	// sometimes hands its own input straight back.
+	if len(v.relationRoots) > 0 {
+		err = explainStrippedRelationRoots(err, v.schemaName, v.relationRoots)
 	}
 	if v.enforce || !errors.Is(err, forma.ErrInvalidInput) {
 		return fmt.Errorf("failed to validate payload against schema %d: %w", v.schemaID, err)
@@ -92,4 +112,96 @@ func validateWritePayload(v writeValidation) error {
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
 		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "error", err.Error())
 	return nil
+}
+
+// explainStrippedRelationRoots attaches operator-only detail to a failed
+// validation of a schema that declares relation roots, naming them and saying
+// that they are removed before this validation runs.
+//
+// It exists because the startup guard is deliberately incomplete. That guard
+// only judges an unconditional "required" (the root's own array, or one in an
+// allOf chain — see collectUnconditionalRootRequired); a schema that demands a
+// relation root through "not", "oneOf", "then", "dependentRequired" or a "$ref"
+// boots cleanly and then fails every affected write. Without this, the operator
+// sees a 4xx complaining about a property, retries with the property, and gets
+// the same 4xx forever, because the strip removes it again each time. The
+// explanation is the thing that makes that loop diagnosable.
+//
+// # What it changes
+//
+// The error's class, status and published body are untouched. forma.Error() and
+// the log line grow the explanation; PublicMessage() does not, because that is
+// what WithOperatorDetail is for (docs/error-handling.md).
+//
+// # Why the gate is "the schema declares relation roots", and not the message
+//
+// The narrower gate would be to fire only when the validator's message names a
+// relation root as a missing required property. Measured over every shape the
+// startup guard no longer judges, that gate covers *some* of them:
+//
+//   - it would fire for the dependent* family. jsonschema-go names the property
+//     in all four spellings, e.g. `dependentRequired["parentId"]: missing
+//     properties ["contactSnapshot"]`;
+//   - it would stay silent for "not", "oneOf" and the "if"/"else" form. The
+//     first two render the offending branch anonymously (`not: validated against
+//     <anonymous schema>`, `oneOf: did not validate against any of [...]`), and
+//     the third reports whichever *other* branch the document took, so its text
+//     names "fallback" and never the relation root.
+//
+// So this is a choice rather than a forced move. The gate is deliberately
+// widened to "the schema declares relation roots", accepting that the
+// explanation is attached to unrelated validation failures on those schemas too,
+// because the wide gate never misses. The hybrid — message shape, falling back
+// to the wide gate for the anonymous forms — was rejected: recognising those
+// forms means keying on library prose, which is fragile, and it would still miss
+// any applicator not on the list. Guaranteed coverage is worth more here than
+// quiet logs, because the failure being explained is one the caller cannot fix
+// and the operator cannot otherwise diagnose.
+//
+// Both halves of that measurement are pinned by
+// TestValidatorNamesTheMissingRootUnderOnlySomeApplicators, so a library change
+// in either direction re-opens the trade.
+//
+// The costs of the wide gate, stated plainly:
+//
+//   - an unrelated violation on a relation-declaring schema also carries the
+//     note. The wording is therefore conditional — it states the mechanism and
+//     lets the reader decide whether it applies — rather than asserting a cause
+//     it has not established;
+//   - internal/httpapi keys a log level on forma.HasOperatorDetail
+//     (error_response.go), so *every* disclosed 4xx on a relation-declaring
+//     schema now logs at Warnw rather than Debugw, not only the ones the strip
+//     caused. That is the intended effect where the note is the real
+//     explanation — it has to clear the production Info threshold to be of any
+//     use — and accepted noise everywhere else.
+//
+// # The caller owns the gate
+//
+// relationRoots is non-empty by precondition: validateWritePayload calls this
+// only when the schema declares at least one root, so every call has an
+// explanation to attach and the attachment is unconditional here. The gate used
+// to live in this function as an early `return err`, and a helper that sometimes
+// answers its own input is the shape the wrapping rule forbids — there is no
+// callee to wrap, so there is no context to add. Moving the test to the one call
+// site removes the shape rather than excusing it. What the property protected is
+// unchanged: a validation error on a schema with no relations must not grow a
+// paragraph about a mechanism it has no part in, and
+// TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots pins that where it
+// now holds, at validateWritePayload.
+//
+// One narrowing does come for free, and is not a special case here:
+// forma.WithOperatorDetail returns its input unchanged when that input publishes
+// nothing (client_error.go), and schemavalidate.Validate answers a plain error
+// rather than an ErrInvalidInput carrier for everything that is not a caller
+// violation — a missing resolved schema, a payload that will not marshal. Those
+// are operator faults bound for a 500 and they pass through untouched, which is
+// the surviving require.Same in
+// TestExplainStrippedRelationRootsNamesEveryRootOnce.
+func explainStrippedRelationRoots(err error, schemaName string, relationRoots []string) error {
+	return forma.WithOperatorDetail(err, fmt.Errorf(
+		"schema %s declares relation root(s) %q, and every one of them is removed from the payload — the root and its "+
+			"dotted descendants alike — before this validation runs (#318); if the violation above is that one of them "+
+			"is missing, the caller cannot fix it by sending the field, and the schema must stop requiring it or drop "+
+			"its x-relation marker",
+		schemaName, relationRoots))
 }

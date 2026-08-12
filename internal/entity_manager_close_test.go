@@ -35,7 +35,7 @@ func newTestEntityManagerForClose(t *testing.T, opts ...EntityManagerOption) for
 	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	return NewEntityManager(transformer, mockRepo, nil, registry, config, nil, opts...)
+	return mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil, opts...)
 }
 
 // TestEntityManagerClose_ClosesRegisteredResourcesOnce pins the lifecycle

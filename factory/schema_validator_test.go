@@ -2,6 +2,8 @@ package factory
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -80,6 +82,87 @@ func TestNewEntityManagerWithConfig_Unit_MissingSchemaDocumentFailsClosed(t *tes
 			"a missing schema document from an unparseable one")
 }
 
+// readRelationFixtureChild reads one committed fixture's child.json. The fixtures
+// live in internal/testdata and are the same bytes
+// internal/relation_index_guard_test.go asserts the rule against, read here by
+// relative path so the two packages cannot drift apart (the same way
+// internal/entity_write_validation_relations_test.go reads
+// ../cmd/server/schemas).
+func readRelationFixtureChild(t *testing.T, fixture string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "internal", "testdata", fixture, "child.json"))
+	require.NoError(t, err)
+	return string(body)
+}
+
+// TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed pins two
+// things at once: that the factory runs the relation guard
+// (internal.LoadRelationIndex, which validates as it builds) at all, and that it
+// reads the *registry*.
+//
+// The wiring half matters because internal/relation_index_guard_test.go calls
+// the guard directly — deleting the call from factory.go left the whole suite
+// green, and with it the promise entity_crud_service.go makes to future readers
+// ("the guard handles it") would silently have become false.
+//
+// The byte-source half is the divergence itself. The registry serves a child
+// document that lists its x-relation property in root "required"; SCHEMA_DIR
+// holds a *different* child, declaring the same relation without requiring it.
+// Analysing the directory passes and boots a deployment whose every write is
+// then rejected by a validator built from the other document. Only reading the
+// registry catches it.
+//
+// SCHEMA_DIR still has to hold the fixture's parent.json, because that is where
+// the served document's "$ref": "parent.json#/..." resolves from.
+func TestNewEntityManagerWithConfig_Unit_RequiredRelationRootFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = readRelationFixtureChild(t, "relation_required_root")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_ok_not"
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.Error(t, err)
+	assert.Nil(t, em, "no manager may be returned when a relation declaration is unhonourable")
+	assert.Contains(t, err.Error(), "failed to validate schema relations",
+		"the failure must come from the factory's relation guard, not from another check")
+	// The offending schema and property must be named, so an operator can act.
+	// Asserted on the full phrase rather than the bare name "test": that substring
+	// also occurs in the fixture paths this test hands the factory, so it would
+	// pass on an error that never identified a schema at all.
+	assert.Contains(t, err.Error(), "registered schema test")
+	assert.Contains(t, err.Error(), `requires relation root "contactSnapshot"`)
+}
+
+// TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded is the
+// converse, and the reason the guard must not scan SCHEMA_DIR: a document
+// sitting in that directory under a name the registry never registers is read by
+// nothing — not the validator, not the manager — so refusing to boot over it
+// aborts startup for a file that has no effect on any write.
+//
+// The offending document here is the very one the test above proves fatal when
+// it is registered.
+func TestNewEntityManagerWithConfig_Unit_UnregisteredSchemaFileIsNotGuarded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "unregistered.json"),
+		[]byte(readRelationFixtureChild(t, "relation_required_root")), 0o600))
+
+	config := validatorTestConfig(t, newMockSchemaRegistry())
+	config.Entity.SchemaDirectory = dir
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.NoError(t, err)
+	assert.NotNil(t, em)
+}
+
 // TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface pins the
 // ordering that keeps fail-closed leak-free. The validator is built before the
 // DuckDB client is opened, so its failure path owns no resources and cannot leak
@@ -110,4 +193,81 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 	assert.False(t, duckDBFactoryCalled,
 		"schema validation must fail closed before any read surface is opened, so the "+
 			"failure path holds no resources to leak")
+}
+
+// TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce pins the wiring the
+// #318 review asked for: the factory builds the relation index once and hands
+// that instance to the manager, instead of validating one and letting
+// NewEntityManager load a second.
+//
+// Two loads were not merely wasteful. forma.SchemaRegistry is a public extension
+// point that may serve documents from a database or over a network, so the
+// second read can answer differently or fail outright — leaving the process
+// stripping with declarations no preflight approved, or, now that the manager's
+// own load fails closed (#388), refusing to start over a registry the preflight
+// had just passed.
+//
+// Counted rather than observed through behaviour, because the manager exposes no
+// way to ask which index it holds. One read of the document remains for the
+// whole of startup — buildSchemaGuards snapshots the registry and builds both
+// the validator and the relation index from that snapshot — so a second read
+// means either the snapshot stopped covering a consumer or the manager started
+// loading an index of its own again.
+func TestNewEntityManagerWithConfig_Unit_RelationIndexBuiltOnce(t *testing.T) {
+	t.Parallel()
+
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = readRelationFixtureChild(t, "relation_ok_not")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_ok_not"
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.NoError(t, err)
+	require.NotNil(t, em)
+	assert.Equal(t, 1, registry.getSchemaByNameCalls,
+		"the registered document is read once, into the snapshot both schema guards are built "+
+			"from; a second read means two guards can be handed two different documents")
+}
+
+// TestNewEntityManagerWithConfig_Unit_SchemaGuardsShareOneRegistryRead is the
+// hazard the snapshot exists for, driven through a registry that answers
+// differently on its second read.
+//
+// forma.SchemaRegistry is a public extension point and promises nothing about
+// repeated reads: an implementation serving documents from a database can hand
+// two callers two different documents, and the two callers here are the schema
+// validator and the relation guard. Building them from independent reads makes
+// this state reachable, and it is the exact state the guard exists to refuse:
+//
+//   - read one requires the x-relation property "contactSnapshot", so the
+//     validator demands it on every write;
+//   - read two declares the same relation without requiring it, so the guard
+//     approves, and the relation index built from it strips "contactSnapshot"
+//     from every payload before that validator ever sees it.
+//
+// Before the snapshot this combination booted cleanly and made the entity
+// unwritable — a missing-required error the caller cannot fix by sending the
+// field, on every create and update, for the process lifetime. With one read
+// feeding both, the requiring document is what the guard judges, and startup
+// stops.
+func TestNewEntityManagerWithConfig_Unit_SchemaGuardsShareOneRegistryRead(t *testing.T) {
+	t.Parallel()
+
+	registry := newMockSchemaRegistry()
+	registry.schemaBody = readRelationFixtureChild(t, "relation_required_root")
+	registry.laterSchemaBody = readRelationFixtureChild(t, "relation_ok_not")
+
+	config := validatorTestConfig(t, registry)
+	config.Entity.SchemaDirectory = "../internal/testdata/relation_required_root"
+
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	require.Error(t, err, "the document the validator was built from requires a stripped relation root")
+	assert.Nil(t, em)
+	assert.Contains(t, err.Error(), "failed to validate schema relations")
+	assert.Contains(t, err.Error(), `requires relation root "contactSnapshot"`)
 }

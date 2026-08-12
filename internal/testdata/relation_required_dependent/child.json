@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "parentId"],
+  "dependentRequired": {"parentId": ["contactSnapshot"]},
+  "properties": {
+    "id": {"type": "string"},
+    "parentId": {"type": "string"},
+    "contactSnapshot": {
+      "$ref": "parent.json#/properties/contact",
+      "x-relation": {"key_property": "parentId"}
+    }
+  }
+}

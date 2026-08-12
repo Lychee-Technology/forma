@@ -42,7 +42,7 @@ func TestEntityManager_Create(t *testing.T) {
 	// Create mock repository
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Test data
 	testData := map[string]any{
@@ -97,7 +97,7 @@ func TestEntityManager_Create_StripsRelationFields(t *testing.T) {
 	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	req := &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
@@ -166,7 +166,7 @@ func TestEntityManager_Get(t *testing.T) {
 	mockRepo := newMockPersistentRecordRepository()
 	mockRepo.storeRecord(testRecord)
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Execute
 	req := &forma.QueryRequest{
@@ -241,7 +241,7 @@ func TestEntityManager_Get_EnrichesFromParent(t *testing.T) {
 		"status":           "scheduled",
 	}))
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	req := &forma.QueryRequest{SchemaName: "visit", RowID: &visitRowID}
 	record, err := em.Get(ctx, req)
@@ -282,7 +282,7 @@ func TestEntityManager_Delete(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	testRowID := uuid.New()
 
@@ -318,7 +318,7 @@ func TestEntityManager_QueryBuildsAttributeOrders(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	_, cache, err := registry.GetSchemaAttributeCacheByName("visit")
 	if err != nil {
@@ -372,7 +372,7 @@ func TestEntityManager_QueryInvalidSortAttribute(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	req := &forma.QueryRequest{
 		SchemaName:   "visit",
@@ -400,7 +400,7 @@ func TestEntityManager_QueryPropagatesCondition(t *testing.T) {
 	}
 	transformer := transform.NewPersistentRecordTransformer(reg)
 	mockRepo := newMockPersistentRecordRepository()
-	em := NewEntityManager(transformer, mockRepo, nil, reg, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, reg, config, nil)
 
 	condition := &forma.CompositeCondition{
 		Logic: forma.LogicAnd,
@@ -713,7 +713,7 @@ func TestEntityManager_CrossSchemaSearch(t *testing.T) {
 	// Create mock repository with multi-schema support
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Setup test data for multiple schemas
 	visitSchemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
@@ -783,7 +783,7 @@ func TestEntityManager_CrossSchemaSearch_ValidateSchemas(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Test with invalid schema name
 	req := &forma.CrossSchemaRequest{
@@ -812,7 +812,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySchemaNames(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Test with empty schema names
 	req := &forma.CrossSchemaRequest{
@@ -841,7 +841,7 @@ func TestEntityManager_CrossSchemaSearch_EmptySearchTerm(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Test with empty search term
 	req := &forma.CrossSchemaRequest{
@@ -875,7 +875,7 @@ func TestEntityManager_CrossSchemaSearch_Pagination(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	// Test with page 0 (should default to 1)
 	req := &forma.CrossSchemaRequest{
@@ -925,7 +925,7 @@ func TestEntityManager_QueryWithCondition(t *testing.T) {
 		"status":           "scheduled",
 	}))
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",
@@ -997,7 +997,7 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",
@@ -1052,7 +1052,7 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 		return &model.PersistentRecordPage{Records: []*model.PersistentRecord{record}, TotalRecords: 1, TotalPages: 1, CurrentPage: 1}, nil
 	}
 
-	em := NewEntityManager(transformer, mockRepo, mockEngine, registry, config, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, mockEngine, registry, config, nil)
 	req := &forma.QueryRequest{
 		SchemaName:   "visit",
 		Page:         1,
@@ -1114,7 +1114,7 @@ func TestEntityManager_QueryWithNilConfigUsesDefaults(t *testing.T) {
 	transformer := transform.NewPersistentRecordTransformer(registry)
 	mockRepo := newMockPersistentRecordRepository()
 
-	em := NewEntityManager(transformer, mockRepo, nil, registry, nil, nil)
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, nil, nil)
 
 	req := &forma.QueryRequest{
 		SchemaName: "visit",

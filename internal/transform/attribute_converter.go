@@ -230,10 +230,17 @@ func (c *AttributeConverter) checkRequiredAttributes(
 	missingRequired := make(map[int16]string)
 	for attrName, metadata := range cache {
 		// #314/#315: relation-root data is derived on read and never
-		// schema-validated on write (the documented #314 gap), so required
-		// policies beneath a root must follow the same rule — otherwise
-		// expanding a root's attributes (#315 resolved contactSnapshot's $ref)
-		// turns payloads #314 ruled acceptable into 400s.
+		// schema-validated on write — since #318 the whole subtree is stripped
+		// from the payload before validation — so required policies beneath a
+		// root must follow the same rule, otherwise expanding a root's
+		// attributes (#315 resolved contactSnapshot's $ref) turns payloads #314
+		// ruled acceptable into 400s.
+		//
+		// The carve-out belongs to this check, not to the read path: ToAttributes
+		// reaches FromEAVRecords on every create and update (transformer.go). The
+		// write path's own required check (validateRequiredAttributesFromInput,
+		// transformer.go) has none, so a required_always beneath a root still
+		// rejects the stripped payload there. Documented in docs/error-handling.md.
 		if relationRoots.Covers(attrName) {
 			continue
 		}

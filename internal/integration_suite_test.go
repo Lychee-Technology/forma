@@ -66,7 +66,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 
 	transformer := transform.NewPersistentRecordTransformer(registry)
 	repo := NewDBPersistentRecordRepository(pool, metadataCache)
-	manager := NewEntityManager(transformer, repo, nil, registry, config, nil)
+	manager := mustNewEntityManager(t, transformer, repo, nil, registry, config, nil)
 
 	return &integrationEnv{
 		ctx:          ctx,

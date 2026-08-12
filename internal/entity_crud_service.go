@@ -71,35 +71,45 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	}
 
 	rowID := uuid.Must(uuid.NewV7())
-	inputData := req.Data
-	if s.relations != nil {
-		inputData = s.relations.StripComputedFields(req.SchemaName, req.Data)
-	}
+	// No nil guard: the RelationIndex methods are nil-receiver-safe, and
+	// StripComputedFields answers the very map it was handed, so a manager without
+	// an index hands the writer the caller's own map, as #312 requires.
+	inputData := s.relations.StripComputedFields(req.SchemaName, req.Data)
 
 	// Creates always enforce. Validated after stripping so that what is checked
-	// is what is stored: computed relation fields are derived on read and never
-	// persisted, so validating them would judge a document no row will hold.
+	// is what is stored: the relation subtree is derived on read and never
+	// persisted, so validating it would judge a document no row will hold. The
+	// strip removes the root and every dotted descendant (#318), so nothing
+	// beneath a relation root reaches the validator in either spelling — pinned
+	// by TestStripLeavesNothingCoveredForTheValidator.
 	//
-	// The relation roots go to the validation step as well, because the strip
-	// matches by exact key and leaves registered dotted descendants like
-	// contactSnapshot.name behind: expanding one would rebuild the very root that
-	// was just removed. See NormalizeDottedKeys and docs/error-handling.md.
+	// Hazard, partly foreclosed: a schema that requires a relation root makes its
+	// entity unwritable, and unfixably so — the root is stripped before the
+	// validator sees it, so sending it does not help.
 	//
-	// Hazard: a schema that lists a relation root in "required" becomes
-	// unwritable, and unfixably so — the field is stripped before the validator
-	// sees it, so sending it does not help. No shipped schema does this
-	// (x-relation occurs once, visit.json's contactSnapshot, and is not
-	// required), but a new one that did would reject every create and update to
-	// it. Validate before stripping if that ever happens.
+	// The startup guard catches only the part of that which can be decided by
+	// inspection: a "required" naming the root in the root object's own array or
+	// in an allOf chain, where the requirement holds on every document
+	// (collectUnconditionalRootRequired). A schema that demands the root through
+	// "not", "anyOf"/"oneOf", an "if"'s branches, the dependent* family or a
+	// "$ref" boots instead, because deciding what those demand is a satisfiability
+	// question and guessing at it refused schemas that write perfectly well.
+	//
+	// What covers the rest is the failure itself: validateWritePayload attaches an
+	// operator-facing explanation naming the schema's relation roots to the
+	// violation it reports (explainStrippedRelationRoots), so an operator reads
+	// why the 4xx cannot be answered rather than inferring it. Do not resolve the
+	// hazard by validating before stripping: that defeats the guard and judges a
+	// document no row will hold.
 	if err := validateWritePayload(writeValidation{
-		validator:  s.validator,
-		schemaID:   schemaID,
-		schemaName: req.SchemaName,
-		rowID:      rowID,
-		cache:      schemaCache,
-		relations:  s.relations.RelationRoots(req.SchemaName),
-		data:       inputData,
-		enforce:    true,
+		validator:     s.validator,
+		schemaID:      schemaID,
+		schemaName:    req.SchemaName,
+		rowID:         rowID,
+		cache:         schemaCache,
+		data:          inputData,
+		enforce:       true,
+		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
@@ -212,23 +222,20 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
 
-	mergedData := mergeMaps(existingData, req.Updates)
-	if s.relations != nil {
-		mergedData = s.relations.StripComputedFields(req.SchemaName, mergedData)
-	}
+	mergedData := s.relations.StripComputedFields(req.SchemaName, mergeMaps(existingData, req.Updates))
 
 	// The *merged* document is what gets validated: a partial update that does
 	// not mention a required attribute must still succeed. The relation-root
 	// hazard noted in Create applies here too.
 	if err := validateWritePayload(writeValidation{
-		validator:  s.validator,
-		schemaID:   schemaID,
-		schemaName: req.SchemaName,
-		rowID:      req.RowID,
-		cache:      schemaCache,
-		relations:  s.relations.RelationRoots(req.SchemaName),
-		data:       mergedData,
-		enforce:    s.validateUpdatesStrict,
+		validator:     s.validator,
+		schemaID:      schemaID,
+		schemaName:    req.SchemaName,
+		rowID:         req.RowID,
+		cache:         schemaCache,
+		data:          mergedData,
+		enforce:       s.validateUpdatesStrict,
+		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}

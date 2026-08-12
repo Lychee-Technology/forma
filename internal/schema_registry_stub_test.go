@@ -13,6 +13,18 @@ type stubSchemaRegistry struct {
 	cache      forma.SchemaAttributeCache
 }
 
+// stubSchemaDocument is the schema document this registry serves.
+//
+// It has to be a real document rather than the empty string it used to be. An
+// empty string is not valid JSON, and no shipped registry produces that shape —
+// the file registry either serves the document text or answers ErrNotFound — so
+// serving "" only made NewEntityManager's relation-index load fail, which since
+// #388 fails the construction outright rather than logging a warning. It
+// declares no properties, so it carries no relation roots and the index stays
+// empty, which is what these tests already got back when the index was gated on
+// a schema directory they never set.
+const stubSchemaDocument = `{"type":"object"}`
+
 func newStubSchemaRegistry() forma.SchemaRegistry {
 	cache := forma.SchemaAttributeCache{
 		"name":               {AttributeID: 1, ValueType: forma.ValueTypeText},
@@ -54,12 +66,12 @@ func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSche
 	if name != s.schemaName {
 		return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
 	}
-	return s.schemaID, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+	return s.schemaID, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Schema: stubSchemaDocument}, nil
 }
 
 func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
 	if id != s.schemaID {
 		return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
 	}
-	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Schema: stubSchemaDocument}, nil
 }

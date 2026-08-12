@@ -137,10 +137,36 @@ func (e *Env) EntityManager() forma.EntityManager {
 
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
 	transformer := transform.NewPersistentRecordTransformer(e.Registry)
-	validator, err := schemavalidate.New(e.Registry, schemaDir)
+	// The harness constructs the manager directly instead of through the factory,
+	// so it has to run the factory's relation guard itself or it is not modelling
+	// production startup (#318). That means reproducing the factory's shape, not
+	// merely making its calls:
+	//
+	//   - both guards are built from one snapshot of the registry's documents, so
+	//     a registry that answers differently on a second read cannot hand the
+	//     validator and the index two different documents
+	//     (internal.SnapshotSchemaDocuments, factory.buildSchemaGuards);
+	//   - the index is built once and handed to the manager, because a harness that
+	//     approved one index and then let the manager load another would be
+	//     modelling the wrong startup. The manager's own load now fails closed
+	//     (#388), so what a second load could still cost is agreement, not the
+	//     guard;
+	//   - the manager keeps e.Registry rather than the snapshot, exactly as the
+	//     factory leaves the caller's registry in place.
+	documents := internal.SnapshotSchemaDocuments(e.Registry)
+	validator, err := schemavalidate.New(documents, schemaDir)
 	if err != nil {
 		e.T.Fatalf("build schema validator over %s: %v", schemaDir, err)
 	}
-	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator)
+	relationIndex, err := internal.LoadRelationIndex(documents)
+	if err != nil {
+		e.T.Fatalf("validate schema relations over the registry for %s: %v", schemaDir, err)
+	}
+	manager, err := internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator,
+		internal.WithRelationIndex(relationIndex))
+	if err != nil {
+		e.T.Fatalf("build entity manager over %s: %v", schemaDir, err)
+	}
+	e.manager = manager
 	return e.manager
 }

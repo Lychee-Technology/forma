@@ -8,22 +8,33 @@ package transform
 // package. The set's element type is unnamed, so internal can build one and
 // assign it without a conversion.
 //
-// The write path removes these properties from the payload before validating
-// (RelationIndex.StripComputedFields) because they are derived on read and never
-// persisted. NormalizeDottedKeys needs the same set so it does not rebuild what
-// the strip just removed.
+// The payload strip does not consult this set. RelationIndex.StripComputedFields
+// applies its own subtree predicate (RelationIndex.coversRelationSubtree) to drop
+// the whole relation subtree before validation, because it is derived on read and
+// never persisted.
+//
+// What consults this set is one check: the required-policy check in
+// AttributeConverter.FromEAVRecords, which skips policies beneath a relation root
+// (#315). That check is not read-only — ToAttributes runs FromEAVRecords on every
+// create and update (transformer.go), and FromPersistentRecord runs it on read —
+// so a transformer that only ever serves writes still needs the set installed.
+// The write path's other required check, validateRequiredAttributesFromInput
+// (transformer.go), has no such carve-out and never consults this set.
 type RelationRoots map[string]struct{}
 
 // Covers reports whether name lies strictly beneath a relation root.
 //
 // The question is asked about the absolute attribute name, with no positional
-// prefix — unlike ArrayPaths.CrossesBelow. Relation roots are top-level
-// properties of the entity schema and the strip removes them at the document
-// root, so "beneath a relation root" is a property of the name alone.
+// prefix. Relation roots are top-level properties of the entity schema, and the
+// names asked about are the metadata cache's absolute attribute names, so
+// "beneath a relation root" is a property of the name alone.
 //
-// A name that *is* a relation root is not covered. It never reaches this check
-// in production (the strip deleted it) and it is not dotted, so expansion does
-// not apply to it either way.
+// A name that *is* a relation root is not covered: this reports names strictly
+// beneath one, so the root's own required policy stays enforced — pinned by
+// TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself. The write path's
+// strip predicate (RelationIndex.coversRelationSubtree) deliberately differs
+// there and matches the bare root as well, because the root is the nested
+// spelling the strip removes.
 func (r RelationRoots) Covers(name string) bool {
 	if len(r) == 0 {
 		return false
@@ -49,9 +60,10 @@ type RelationRootsLookup func(schemaName string) RelationRoots
 // RelationRootsAware is implemented by the transformers in this package so the
 // relation roots can be installed after construction.
 //
-// NewEntityManager loads the relation index itself, from config, and by then
-// the transformer it was handed already exists — so the lookup is installed
-// once at wiring time rather than injected at construction. Install before the
+// NewEntityManager resolves the relation index — from the registry, or from the
+// one its caller hands in — after the transformer it was given already exists,
+// so the lookup is installed once at wiring time rather than injected at
+// construction. Install before the
 // transformer is used concurrently; nothing reads the field until then.
 type RelationRootsAware interface {
 	SetRelationRoots(lookup RelationRootsLookup)
