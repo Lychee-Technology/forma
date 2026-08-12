@@ -18,11 +18,11 @@ type stubSchemaRegistry struct {
 // It has to be a real document rather than the empty string it used to be. An
 // empty string is not valid JSON, and no shipped registry produces that shape —
 // the file registry either serves the document text or answers ErrNotFound — so
-// serving "" only made NewEntityManager's relation-index load fail and log a
-// warning in every test that used this stub. It declares no properties, so it
-// carries no relation roots and the index stays empty, which is what these tests
-// already got back when the index was gated on a schema directory they never
-// set.
+// serving "" only made NewEntityManager's relation-index load fail, which since
+// #388 fails the construction outright rather than logging a warning. It
+// declares no properties, so it carries no relation roots and the index stays
+// empty, which is what these tests already got back when the index was gated on
+// a schema directory they never set.
 const stubSchemaDocument = `{"type":"object"}`
 
 func newStubSchemaRegistry() forma.SchemaRegistry {

@@ -146,10 +146,11 @@ func (e *Env) EntityManager() forma.EntityManager {
 	//     a registry that answers differently on a second read cannot hand the
 	//     validator and the index two different documents
 	//     (internal.SnapshotSchemaDocuments, factory.buildSchemaGuards);
-	//   - the index is built once and handed to the manager, because the manager's
-	//     own load answers a warning rather than a failure — a harness that
-	//     approved one index and then ran on another would be modelling the wrong
-	//     startup;
+	//   - the index is built once and handed to the manager, because a harness that
+	//     approved one index and then let the manager load another would be
+	//     modelling the wrong startup. The manager's own load now fails closed
+	//     (#388), so what a second load could still cost is agreement, not the
+	//     guard;
 	//   - the manager keeps e.Registry rather than the snapshot, exactly as the
 	//     factory leaves the caller's registry in place.
 	documents := internal.SnapshotSchemaDocuments(e.Registry)
@@ -161,7 +162,11 @@ func (e *Env) EntityManager() forma.EntityManager {
 	if err != nil {
 		e.T.Fatalf("validate schema relations over the registry for %s: %v", schemaDir, err)
 	}
-	e.manager = internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator,
+	manager, err := internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator,
 		internal.WithRelationIndex(relationIndex))
+	if err != nil {
+		e.T.Fatalf("build entity manager over %s: %v", schemaDir, err)
+	}
+	e.manager = manager
 	return e.manager
 }

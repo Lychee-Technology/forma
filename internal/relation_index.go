@@ -53,13 +53,13 @@ type RelationIndex struct {
 // consistent view; keeping the validator and the manager on that same load is
 // the caller's job.
 //
-// NewEntityManager cannot enforce any of this itself: it swallows a failure here
-// into a warning and continues with a nil index, which disables stripping
-// altogether rather than stopping (#318, #388). That swallow predates the
-// required-relation-root guard, but its blast radius does not — one offending
-// schema fails the whole registry load, so an unguarded caller loses stripping
-// for every schema, not just the offender. Both shipped construction sites (the
-// factory and the production e2e harness) therefore call this at a position
+// A failure here reaches every construction site, because NewEntityManager
+// returns it rather than continuing with no index (#388, #318). It has to: one
+// offending schema fails the whole registry load, and a manager over a nil index
+// strips nothing for any schema, not just the offender. What NewEntityManager
+// still cannot enforce is that its load and the caller's preflight are the same
+// load — that is what WithRelationIndex is for. Both shipped construction sites
+// (the factory and the production e2e harness) therefore call this at a position
 // where returning an error aborts startup, and pass the result forward.
 //
 // What aborts startup, exactly:

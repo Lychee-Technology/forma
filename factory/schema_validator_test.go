@@ -202,9 +202,10 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 //
 // Two loads were not merely wasteful. forma.SchemaRegistry is a public extension
 // point that may serve documents from a database or over a network, so the
-// second read can answer differently or fail outright — and when it fails
-// NewEntityManager warns and continues with a nil index, leaving stripping off
-// for the process lifetime behind a preflight that passed.
+// second read can answer differently or fail outright — leaving the process
+// stripping with declarations no preflight approved, or, now that the manager's
+// own load fails closed (#388), refusing to start over a registry the preflight
+// had just passed.
 //
 // Counted rather than observed through behaviour, because the manager exposes no
 // way to ask which index it holds. One read of the document remains for the

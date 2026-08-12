@@ -19,9 +19,16 @@ import (
 // TestNewEntityManagerAcceptsNilValidator pins that validation is opt-in at the
 // wiring layer. Both e2e harnesses and every existing test construct a manager
 // without a validator, and none of them may start failing.
+//
+// Asserted on both return values rather than through mustNewEntityManager: the
+// claim is that a nil validator is neither a panic nor a construction failure,
+// and the only failure NewEntityManager has is the relation index (#388), which
+// a nil registry cannot produce.
 func TestNewEntityManagerAcceptsNilValidator(t *testing.T) {
 	require.NotPanics(t, func() {
-		_ = NewEntityManager(nil, nil, nil, nil, forma.DefaultConfig(nil), nil)
+		manager, err := NewEntityManager(nil, nil, nil, nil, forma.DefaultConfig(nil), nil)
+		require.NoError(t, err)
+		require.NotNil(t, manager)
 	})
 }
 
@@ -135,7 +142,7 @@ func newValidationHarness(
 
 	spy := &writeSpy{inner: transform.NewPersistentRecordTransformer(registry)}
 	repo := newMockPersistentRecordRepository()
-	manager := NewEntityManager(spy, repo, nil, registry, config, validator)
+	manager := mustNewEntityManager(t, spy, repo, nil, registry, config, validator)
 	return manager, repo, spy
 }
 
@@ -304,7 +311,7 @@ func TestReportOnlyUpdateRefusesToAbsorbConfigurationFault(t *testing.T) {
 	rowID := uuid.New()
 	repo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID, map[string]any{"name": "open"}))
 
-	manager := NewEntityManager(transformer, repo, nil, registry, config, validator)
+	manager := mustNewEntityManager(t, transformer, repo, nil, registry, config, validator)
 
 	_, err = manager.Update(context.Background(), updateOp(rowID, map[string]any{"name": "won"}))
 

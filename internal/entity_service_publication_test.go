@@ -31,7 +31,7 @@ func TestBatchCreateAtomicPublishesOperationIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	em := NewEntityManager(transform.NewPersistentRecordTransformer(registry),
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry),
 		newMockPersistentRecordRepository(), nil, registry, createTestConfig(), nil)
 
 	req := &forma.BatchOperation{
@@ -139,7 +139,7 @@ func TestBatchCreateAtomicPublishesWithoutPhaseNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
-	em := NewEntityManager(transform.NewPersistentRecordTransformer(registry),
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry),
 		newMockPersistentRecordRepository(), nil, registry, createTestConfig(), nil)
 
 	req := &forma.BatchOperation{

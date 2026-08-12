@@ -31,7 +31,7 @@ func buildFixtureManager(t *testing.T, fixture string) forma.EntityManager {
 	config := createTestConfig()
 	config.Entity.SchemaDirectory = resolveRelationFixtureDir(fixture)
 
-	return NewEntityManager(
+	return mustNewEntityManager(t,
 		transform.NewPersistentRecordTransformer(registry),
 		newMockPersistentRecordRepository(), nil, registry, config, validator)
 }

@@ -72,15 +72,16 @@ func WithCloser(c io.Closer) EntityManagerOption {
 // before it builds anything, and a second, independent load afterwards is not
 // guaranteed to see what the first one saw: forma.SchemaRegistry may serve
 // documents from a database or over a network, so it can change or fail between
-// the two reads. When it does, the manager's load is the one that loses —
-// NewEntityManager warns and continues with a nil index — leaving stripping off
-// for the process lifetime behind a preflight that passed. Handing the validated
-// instance forward removes the second read entirely (#318 review).
+// the two reads. When it does, the manager's own load is the one that fails, and
+// the caller is left holding a construction error over declarations its
+// preflight had already approved. Handing the validated instance forward removes
+// the second read entirely (#318 review).
 //
 // A nil index is ignored rather than installed, so the option cannot become a
 // way to switch stripping off by accident; the manager then self-loads as any
-// direct constructor does. This changes nothing about that self-load's error
-// contract, which still warns rather than failing (#388).
+// direct constructor does. That self-load fails closed — NewEntityManager
+// returns the error rather than warning and continuing with no index (#388) — so
+// the option changes which read decides, never whether stripping happens.
 func WithRelationIndex(idx *RelationIndex) EntityManagerOption {
 	return func(em *entityManager) {
 		if idx != nil {
@@ -108,7 +109,38 @@ func (em *entityManager) Close() error {
 	return em.closeErr
 }
 
-// NewEntityManager creates a new EntityManager instance
+// NewEntityManager creates a new EntityManager instance, or fails.
+//
+// The one failure it has is the relation index, and it is why this returns an
+// error at all (#388). A manager holding no index does not merely lose a
+// feature, and loses it for every schema rather than for the offending one:
+//
+//   - StripComputedFields is an identity function on a nil receiver, so the
+//     relation subtree becomes caller-writable and persistable again — the exact
+//     state #318 exists to remove — and nothing says so at any point afterwards;
+//   - RelationRoots answers nil on the same receiver, and the required-policy
+//     check reads an empty set as "this attribute is not beneath a relation
+//     root" (transform.RelationRoots.Covers, attribute_converter.go), so #315's
+//     carve-out stops applying and payloads #314 ruled acceptable begin failing
+//     with missing-required errors.
+//
+// Neither is visible to the caller on the returned manager, and both last for
+// the process lifetime. So a registry fault that used to become a warning now
+// becomes a refusal to build, and the caller decides what to do about it.
+//
+// A successfully built manager therefore always holds a non-nil index, from one
+// of two places: WithRelationIndex, when the caller has already built and
+// validated one (the composition root has), or a load of the registry performed
+// here. LoadRelationIndex answers an empty index rather than nil for a registry
+// that lists nothing and for a nil registry, so neither of those is a failure
+// and neither leaves the field nil.
+//
+// The load is gated on the registry because the registry is what the index is
+// built from. It used to be gated on config.Entity.SchemaDirectory, which
+// stopped being the source: an embedder who registers a schema carrying
+// x-relation but leaves SchemaDirectory empty gets stripping, enrichment and the
+// #315 carve-out, all of which that schema asks for and none of which an
+// unrelated path setting should have been deciding.
 func NewEntityManager(
 	transformer model.PersistentRecordTransformer,
 	repository model.PersistentRecordRepository,
@@ -117,7 +149,7 @@ func NewEntityManager(
 	config *forma.Config,
 	validator *schemavalidate.Validator,
 	opts ...EntityManagerOption,
-) forma.EntityManager {
+) (forma.EntityManager, error) {
 	if config == nil {
 		config = forma.DefaultConfig(registry)
 		zap.S().Warn("entity manager config is nil; falling back to default config")
@@ -141,7 +173,11 @@ func NewEntityManager(
 		opt(em)
 	}
 	if em.relations == nil {
-		em.relations = loadRelationIndexOrWarn(registry)
+		idx, err := LoadRelationIndex(registry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load schema relations: %w", err)
+		}
+		em.relations = idx
 	}
 	installRelationRoots(transformer, em.relations)
 
@@ -149,35 +185,7 @@ func NewEntityManager(
 	em.crud = newEntityCRUDService(em)
 	em.query = newEntityQueryService(em)
 	em.batch = newEntityBatchService(em, em.crud)
-	return em
-}
-
-// loadRelationIndexOrWarn is the manager's own fallback, for the direct
-// constructors that pass no WithRelationIndex — the e2e harnesses, embedders,
-// and every test that builds a manager by hand.
-//
-// It warns and answers nil rather than failing, which disables stripping for
-// every schema rather than stopping. That is a known hole (#388) and is
-// deliberately left alone here: the composition root closes it by validating up
-// front and handing the result in, and widening this to an error would change
-// NewEntityManager's signature and every direct caller with it.
-//
-// Gated on the registry because the registry is what the index is built from. It
-// used to be gated on config.Entity.SchemaDirectory, which stopped being the
-// source: an embedder who registers a schema carrying x-relation but leaves
-// SchemaDirectory empty now gets stripping, enrichment and the #315 carve-out,
-// all of which that schema asks for and none of which an unrelated path setting
-// should have been deciding.
-func loadRelationIndexOrWarn(registry forma.SchemaRegistry) *RelationIndex {
-	if registry == nil {
-		return nil
-	}
-	idx, err := LoadRelationIndex(registry)
-	if err != nil {
-		zap.S().Warnw("failed to load schema relations", "error", err)
-		return nil
-	}
-	return idx
+	return em, nil
 }
 
 // installRelationRoots hands the transformer the relation roots it needs for the

@@ -37,7 +37,7 @@ func newBatchErrorManager(t *testing.T, repository model.PersistentRecordReposit
 	t.Helper()
 	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	require.NoError(t, err)
-	return NewEntityManager(
+	return mustNewEntityManager(t,
 		transform.NewPersistentRecordTransformer(registry),
 		repository, nil, registry, createTestConfig(), nil)
 }

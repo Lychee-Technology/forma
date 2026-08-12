@@ -53,7 +53,7 @@ func newShippedSchemaHarness(t *testing.T) shippedHarness {
 	repo := newMockPersistentRecordRepository()
 
 	return shippedHarness{
-		manager:       NewEntityManager(spy, repo, nil, registry, config, validator),
+		manager:       mustNewEntityManager(t, spy, repo, nil, registry, config, validator),
 		spy:           spy,
 		repo:          repo,
 		transformer:   inner,

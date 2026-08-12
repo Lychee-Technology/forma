@@ -331,7 +331,14 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 		DuckDB: duckCfg,
 	}
 	transformer := transform.NewPersistentRecordTransformer(registry)
-	manager := internal.NewEntityManager(transformer, repo, engine, registry, config, nil)
+	// No WithRelationIndex here, so this is the manager's own relation-index load,
+	// and it now fails closed (#388). Reported as an error rather than absorbed:
+	// a benchmark that ran on with stripping disabled would be measuring a write
+	// and read path production does not have.
+	manager, err := internal.NewEntityManager(transformer, repo, engine, registry, config, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build benchmark entity manager: %w", err)
+	}
 	if req != nil && req.Federated != nil && req.Federated.Enabled {
 		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
 	}

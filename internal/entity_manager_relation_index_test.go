@@ -20,9 +20,10 @@ import (
 // The registry here serves its child document exactly once, then fails — which
 // is what a registry backed by a database or a network can do at any moment, and
 // is why two independent loads were a hazard rather than a tidiness question.
-// Under the self-load the second read fails, NewEntityManager warns and
-// continues with a nil index, and stripping is silently off for the life of the
-// process even though the preflight passed.
+// Under the self-load the second read fails, which since #388 is a construction
+// error rather than a warning. So the require.NoError below is itself part of
+// the pin: an ignored WithRelationIndex now reddens the construction, and the
+// write assertions that follow still say which index was used.
 //
 // Observed structurally rather than through the error text. relation_ok_not
 // says {"not": {"required": ["contactSnapshot"]}}, so a payload that still
@@ -43,8 +44,9 @@ func TestNewEntityManagerUsesTheSuppliedRelationIndex(t *testing.T) {
 	config := createTestConfig()
 	config.Entity.SchemaDirectory = resolveRelationFixtureDir("relation_ok_not")
 	spy := &writeSpy{inner: transform.NewPersistentRecordTransformer(registry)}
-	manager := NewEntityManager(spy, newMockPersistentRecordRepository(), nil,
+	manager, err := NewEntityManager(spy, newMockPersistentRecordRepository(), nil,
 		registry, config, validator, WithRelationIndex(idx))
+	require.NoError(t, err, "the supplied index must spare the manager a second, failing read")
 
 	_, _ = manager.Create(context.Background(), &forma.EntityOperation{
 		Type:             forma.OperationCreate,
@@ -69,8 +71,9 @@ func TestWithRelationIndexIgnoresNil(t *testing.T) {
 	config := createTestConfig()
 	config.Entity.SchemaDirectory = resolveRelationFixtureDir("relation_ok_not")
 	spy := &writeSpy{inner: transform.NewPersistentRecordTransformer(registry)}
-	manager := NewEntityManager(spy, newMockPersistentRecordRepository(), nil,
+	manager, err := NewEntityManager(spy, newMockPersistentRecordRepository(), nil,
 		registry, config, validator, WithRelationIndex(nil))
+	require.NoError(t, err)
 
 	_, _ = manager.Create(context.Background(), &forma.EntityOperation{
 		Type:             forma.OperationCreate,

@@ -163,9 +163,34 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	if duckClient != nil {
 		managerOpts = append(managerOpts, internal.WithCloser(duckClient))
 	}
-	// Create and return entity manager
-	return internal.NewEntityManager(
-		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...), nil
+	// Create and return entity manager. Its only failure is a relation-index load,
+	// which the index handed in above skips — but the error is wrapped and
+	// returned rather than asserted away, so an option or a caller that later
+	// stops supplying the index cannot go back to a silent nil index (#388).
+	manager, err := internal.NewEntityManager(
+		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...)
+	if err != nil {
+		discardDuckClient(duckClient)
+		return nil, fmt.Errorf("failed to build the entity manager: %w", err)
+	}
+	return manager, nil
+}
+
+// discardDuckClient releases a DuckDB client that was registered with a manager
+// which is never returned.
+//
+// It exists for the same reason newFederatedReadSurface closes the client on its
+// own fatal path: WithCloser made the manager the client's only owner, so on a
+// construction failure nothing else will ever call Close, and the handle and its
+// pool would be held for the process lifetime. Close is nil-receiver safe
+// (federated/duckdb_conn.go), which covers the DuckDB-off case. The failure to
+// close is logged rather than returned: the startup error the caller is about to
+// receive is the one that explains the abort.
+func discardDuckClient(duckClient *federated.DuckDBClient) {
+	if err := duckClient.Close(); err != nil {
+		zap.S().Warnw("failed to close the duckdb client after entity manager construction failed",
+			"error", err)
+	}
 }
 
 // buildSchemaGuards runs both fail-closed schema checks and returns what each

@@ -248,12 +248,21 @@ A `$ref` on a *property* is the normal shape (`visit.json`'s `contactSnapshot`)
 and was always untouched. So is a `required` inside a property's own subschema,
 which constrains that child object's members rather than the root's.
 
-Both call sites — `factory/factory.go` and
+The guard runs wherever a manager is built, whether or not the caller invokes it.
+`internal.NewEntityManager` loads the relation index itself when it is not handed
+one, and **returns that load's failure** instead of continuing without an index
+(#388) — a manager holding no index strips nothing, for any schema, so there is
+nothing safe to continue into. Every construction site turns the failure into a
+startup abort.
+
+What the constructor cannot enforce is that its load and the caller's preflight
+are *the same* load. Both shipped call sites — `factory/factory.go` and
 `internal/e2e_harness/production/engine.go` — pass the same registry they built
-the validator from, and both hand the index they built to the manager rather than
-letting it load another. Any new construction site must do the same;
-`internal.NewEntityManager` cannot enforce it, because its own load swallows a
-failure into a warning and continues with stripping disabled.
+the validator from, and hand the index they built to the manager
+(`internal.WithRelationIndex`) rather than letting it load a second one. Any new
+construction site should do the same: against a registry that answers differently
+on a second read, an independent load would either strip with declarations no
+preflight approved, or refuse to start over a registry that had just passed.
 
 Note that no registry this repository ships can exhibit the divergence this
 guards against: `internal/schemameta`'s file registry reads

@@ -60,9 +60,10 @@ type RelationRootsLookup func(schemaName string) RelationRoots
 // RelationRootsAware is implemented by the transformers in this package so the
 // relation roots can be installed after construction.
 //
-// NewEntityManager loads the relation index itself, from config, and by then
-// the transformer it was handed already exists — so the lookup is installed
-// once at wiring time rather than injected at construction. Install before the
+// NewEntityManager resolves the relation index — from the registry, or from the
+// one its caller hands in — after the transformer it was given already exists,
+// so the lookup is installed once at wiring time rather than injected at
+// construction. Install before the
 // transformer is used concurrently; nothing reads the field until then.
 type RelationRootsAware interface {
 	SetRelationRoots(lookup RelationRootsLookup)
