@@ -124,7 +124,12 @@ func (s *schemaDocumentSnapshot) GetSchemaByName(name string) (int16, forma.JSON
 // GetSchemaByID answers the same captured reads keyed the other way, and
 // delegates an id that was never captured — which includes every id whose read
 // failed, since a failed read carries no usable id (SnapshotSchemaDocuments).
-// Errors are replayed verbatim, for the reasons given on GetSchemaByName.
+//
+// So this method has no error to replay: byID is populated only under
+// err == nil, which leaves the captured branch unable to carry one. Every error
+// it can return therefore comes from the delegated branch, and is the wrapped
+// registry's own, passed through untouched for the reason GetSchemaByName gives
+// for its delegating branch.
 func (s *schemaDocumentSnapshot) GetSchemaByID(id int16) (string, forma.JSONSchema, error) {
 	if read, captured := s.byID[id]; captured {
 		return read.name, read.doc, read.err
