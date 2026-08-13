@@ -278,13 +278,16 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 	if err != nil {
 		// The caller's own payload cannot be encoded as JSON — math.NaN() or
 		// math.Inf() handed in by a Go embedder; no HTTP body can produce one
-		// (#322). That is caller input, so it carries the sentinel and publishes:
-		// encoding/json's text names the offending value ("json: unsupported
-		// value: NaN") and nothing of the rest of the payload. The transform
-		// layer independently rejects non-finite floats with the attribute name
-		// (finiteForEAV), which is what keeps report-only mode — which absorbs
-		// this carrier like any violation — from writing an unreadable row.
-		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", err)
+		// (#322). That is caller input, so it carries the sentinel and
+		// publishes. encoding/json's text names the offending value ("json:
+		// unsupported value: NaN") but not where it sits, so marshalRefusalError
+		// walks the payload to derive the attribute path the library does not
+		// carry, and falls back to that text when the walk explains nothing.
+		// The transform layer independently rejects non-finite floats with the
+		// attribute name (finiteForEAV), which is what keeps report-only mode —
+		// which absorbs this carrier like any violation — from writing an
+		// unreadable row.
+		return marshalRefusalError(doc, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
