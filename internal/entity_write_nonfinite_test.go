@@ -78,6 +78,9 @@ func TestCreateClassifiesEmbedderNaNAsInvalidInput(t *testing.T) {
 		createOp(map[string]any{"name": "x", "score": math.NaN()}))
 
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	// Pins the mechanism, not just the class: the 4xx must come from the
+	// validator's marshal step, which is the reclassification #322 made.
+	require.ErrorContains(t, err, "cannot be encoded as JSON")
 }
 
 // TestReportOnlyUpdateStillRejectsNonFinite pins the interaction that makes
