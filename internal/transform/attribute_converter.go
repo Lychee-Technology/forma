@@ -50,7 +50,14 @@ func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, er
 	return c.relationRoots(schemaName), nil
 }
 
-// ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord
+// ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord.
+//
+// Its conversion failures are plain errors and name the attribute by AttrID,
+// which is the EAV key and the only identity this layer holds — the attribute
+// name would need a metadata cache it does not take. The caller-facing carrier
+// that names the attribute and wraps forma.ErrInvalidInput is raised earlier,
+// at populateTypedValue (typed_value.go); reaching an error here on the write
+// path means the value got past it, so it is operator-visible by design.
 func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.UUID) (model.EAVRecord, error) {
 	record := model.EAVRecord{
 		SchemaID:     attr.SchemaID,
@@ -77,7 +84,7 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 			numVal, err = finiteForEAV(numVal)
 		}
 		if err != nil {
-			return record, fmt.Errorf("convert to numeric: %w", err)
+			return record, fmt.Errorf("convert to numeric for attrID %d: %w", attr.AttrID, err)
 		}
 		record.ValueNumeric = &numVal
 		if attr.ValueType == forma.ValueTypeBigInt {
@@ -107,7 +114,7 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 	case forma.ValueTypeBool:
 		boolVal, err := toBoolForEAV(attr.Value)
 		if err != nil {
-			return record, fmt.Errorf("convert to bool: %w", err)
+			return record, fmt.Errorf("convert to bool for attrID %d: %w", attr.AttrID, err)
 		}
 		floatBool := boolToFloat64(boolVal)
 		record.ValueNumeric = &floatBool

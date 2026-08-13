@@ -474,6 +474,8 @@ func TestToEAVRecordRejectsNonFiniteNumbers(t *testing.T) {
 			}, uuid.New())
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "non-finite")
+			require.Contains(t, err.Error(), "attrID 2",
+				"this layer holds no attribute name, so the EAV key is the identity the error owes")
 			require.Nil(t, record.ValueNumeric)
 		})
 	}
