@@ -243,9 +243,12 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 
 // Validate checks doc against the schema registered for schemaID.
 //
-// A violation wraps forma.ErrInvalidInput: it is caller input and must surface
-// as 4xx. A missing resolved schema does not — that is a server configuration
-// fault and must stay operator-visible (docs/error-handling.md).
+// A violation, or a payload json.Marshal refuses to encode, wraps
+// forma.ErrInvalidInput: both are caller input and must surface as 4xx. A
+// missing resolved schema does not — that is a server configuration fault and
+// must stay operator-visible (docs/error-handling.md). Neither does a decode
+// failure of the marshaller's own output: marshalling already succeeded, so
+// that is an internal fault, not something the caller handed in.
 //
 // doc is marshalled before validating. Native Go values do not carry their JSON
 // types: time.Time presents as an object and fails a "type":"string" property
@@ -267,7 +270,15 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 
 	raw, err := json.Marshal(doc)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload for schema %d: %w", schemaID, err)
+		// The caller's own payload cannot be encoded as JSON — math.NaN() or
+		// math.Inf() handed in by a Go embedder; no HTTP body can produce one
+		// (#322). That is caller input, so it carries the sentinel and publishes:
+		// encoding/json's text names the offending value ("json: unsupported
+		// value: NaN") and nothing of the rest of the payload. The transform
+		// layer independently rejects non-finite floats with the attribute name
+		// (finiteForEAV), which is what keeps report-only mode — which absorbs
+		// this carrier like any violation — from writing an unreadable row.
+		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
