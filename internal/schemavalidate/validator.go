@@ -246,9 +246,15 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 // A violation, or a payload json.Marshal refuses to encode, wraps
 // forma.ErrInvalidInput: both are caller input and must surface as 4xx. A
 // missing resolved schema does not — that is a server configuration fault and
-// must stay operator-visible (docs/error-handling.md). Neither does a decode
-// failure of the marshaller's own output: marshalling already succeeded, so
+// must stay operator-visible (docs/error-handling.md). Neither does a failure
+// to decode the marshaller's own output: marshalling already succeeded, so
 // that is an internal fault, not something the caller handed in.
+//
+// exactNumberInstance is the one honest gap. A literal that fits neither int64
+// nor float64 — {"score": 1e400}, which arrives intact because httpapi decodes
+// with UseNumber and json.Marshal re-emits a json.Number verbatim — is caller
+// input, yet it answers a plain error here and so a 500. That is a known
+// misclassification, tracked in #402, not a decision this comment is defending.
 //
 // doc is marshalled before validating. Native Go values do not carry their JSON
 // types: time.Time presents as an object and fails a "type":"string" property

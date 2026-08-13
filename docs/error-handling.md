@@ -135,11 +135,13 @@ payload.
   it at `Warn` and proceeding — safely even for the marshal case, because the
   transform layer independently rejects non-finite numbers with the attribute
   name before anything reaches storage.
-- **Everything else is returned regardless of enforcement** — in practice a
-  missing resolved schema. That is a plain error, therefore `500`, therefore
-  operator-visible. Absorbing it into report-only would write the document with
-  *zero* validation while a log line claimed it had merely failed a check, and
-  would blame the caller for a server fault.
+- **Everything else is returned regardless of enforcement** — a missing
+  resolved schema, plus the one caller-input case misfiled here (#402), both
+  enumerated under "Public HTTP error surface". Those are plain errors,
+  therefore `500`, therefore operator-visible. Absorbing them into report-only
+  would write the document with *zero* validation while a log line claimed it
+  had merely failed a check — and, for the missing schema, would blame the
+  caller for a server fault.
 
 ### Startup fails closed
 
@@ -805,9 +807,11 @@ Since #314 there is a **second** write-path validator on the same footing,
 for a payload `json.Marshal` refuses to encode (`NaN`/`Inf` from a Go
 embedder), which is caller input just the same. It is independent of the
 `required_policy` row above: the two check different things and both run. Its
-*remaining* errors deliberately stay plain, so a `500` — a missing resolved
-schema, and a numeric literal that fits neither `int64` nor `float64`; see
-"JSON Schema enforcement on write" for the split.
+*remaining* errors currently stay plain, so a `500` — a missing resolved
+schema, and a numeric literal that fits neither `int64` nor `float64`. Only the
+first of those is a deliberate `500`; the numeric literal is caller input
+misfiled on the operator side, a known gap tracked in #402. See "JSON Schema
+enforcement on write" for the split.
 
 Its published message deliberately includes the third-party `jsonschema-go`
 violation prose (decision recorded at the wrap site, `validator.go`): that text
