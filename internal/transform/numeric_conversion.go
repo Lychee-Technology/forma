@@ -72,3 +72,15 @@ func finiteForEAV(value float64) (float64, error) {
 	}
 	return value, nil
 }
+
+// finiteBoolInput guards the bool funnels, which reach storage through the same
+// ValueNumeric column as the numeric ones (boolToFloat64) and so need the same
+// rejection. Coercion cannot stand in for it: no non-finite has a truth value,
+// and the two funnels do not even agree on the one they invent — toBool's
+// `!= 0` turns NaN into true, toBoolForEAV's float64ToBool threshold turns the
+// same NaN into false. Absorbed under report-only mode that silently persisted
+// a bool the caller never wrote (#322, PR #403 review).
+func finiteBoolInput(value float64) error {
+	_, err := finiteForEAV(value)
+	return err
+}

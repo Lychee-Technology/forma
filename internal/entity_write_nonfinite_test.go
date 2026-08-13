@@ -20,8 +20,9 @@ type numericValidationRegistry struct{}
 const numericSchemaJSON = `{
   "type": "object",
   "properties": {
-    "name":  {"type": "string"},
-    "score": {"type": "number"}
+    "name":   {"type": "string"},
+    "score":  {"type": "number"},
+    "active": {"type": "boolean"}
   },
   "required": ["name"]
 }`
@@ -31,8 +32,9 @@ func (numericValidationRegistry) GetSchemaAttributeCacheByName(name string) (int
 		return 0, nil, fmt.Errorf("schema %s not found", name)
 	}
 	return 100, forma.SchemaAttributeCache{
-		"name":  {AttributeID: 1, ValueType: forma.ValueTypeText},
-		"score": {AttributeID: 2, ValueType: forma.ValueTypeNumeric},
+		"name":   {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"score":  {AttributeID: 2, ValueType: forma.ValueTypeNumeric},
+		"active": {AttributeID: 3, ValueType: forma.ValueTypeBool},
 	}, nil
 }
 
@@ -114,4 +116,26 @@ func TestReportOnlyUpdateStillRejectsNonFinite(t *testing.T) {
 		FromPersistentRecord(context.Background(), repo.records[100][created.RowID])
 	require.NoError(t, err)
 	require.EqualValues(t, 1.5, stored["score"], "the finite value must have survived both rejected updates")
+}
+
+// TestReportOnlyUpdateRejectsNonFiniteBool pins the P1 from PR #403's review:
+// a bool attribute's converter must not silently coerce an absorbed non-finite
+// (pre-#322 this write failed as a plain error; the reclassification made it
+// absorbable, so the transform guard has to cover bool funnels too).
+func TestReportOnlyUpdateRejectsNonFiniteBool(t *testing.T) {
+	manager, repo := newNumericValidatingManager(t, false)
+	created, err := manager.Create(context.Background(),
+		createOp(map[string]any{"name": "x", "active": true}))
+	require.NoError(t, err)
+
+	_, err = manager.Update(context.Background(),
+		updateOp(created.RowID, map[string]any{"active": math.NaN()}))
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Contains(t, err.Error(), "active")
+
+	stored, err := transform.NewPersistentRecordTransformer(numericValidationRegistry{}).
+		FromPersistentRecord(context.Background(), repo.records[100][created.RowID])
+	require.NoError(t, err)
+	require.Equal(t, true, stored["active"], "the stored bool must be untouched")
 }

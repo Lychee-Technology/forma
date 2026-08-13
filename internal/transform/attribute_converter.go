@@ -362,30 +362,42 @@ func toBoolForEAV(value any) (bool, error) {
 		}
 		return boolFromPositive(num), nil
 	case float32:
-		return float64ToBool(float64(v)), nil
+		return finiteFloat64ToBool(float64(v))
 	case *float32:
 		num, err := derefPointer(v, "float32")
 		if err != nil {
 			return false, err
 		}
-		return float64ToBool(float64(num)), nil
+		return finiteFloat64ToBool(float64(num))
 	case float64:
-		return float64ToBool(v), nil
+		return finiteFloat64ToBool(v)
 	case *float64:
 		num, err := derefPointer(v, "float64")
 		if err != nil {
 			return false, err
 		}
-		return float64ToBool(num), nil
+		return finiteFloat64ToBool(num)
 	case json.Number:
 		f, err := v.Float64()
 		if err != nil {
 			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
 		}
+		if err := finiteBoolInput(f); err != nil {
+			return false, err
+		}
 		return f != 0, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
+}
+
+// finiteFloat64ToBool is toBoolForEAV's float path: reject non-finite, then
+// apply the existing threshold coercion unchanged.
+func finiteFloat64ToBool(value float64) (bool, error) {
+	if err := finiteBoolInput(value); err != nil {
+		return false, err
+	}
+	return float64ToBool(value), nil
 }
 
 func derefPointer[T any](value *T, typeName string) (T, error) {
@@ -446,11 +458,17 @@ func toBool(value any) (bool, error) {
 	case int64:
 		return v != 0, nil
 	case float64:
+		if err := finiteBoolInput(v); err != nil {
+			return false, err
+		}
 		return v != 0, nil
 	case json.Number:
 		f, err := v.Float64()
 		if err != nil {
 			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
+		}
+		if err := finiteBoolInput(f); err != nil {
+			return false, err
 		}
 		return f != 0, nil
 	default:
