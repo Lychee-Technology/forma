@@ -64,18 +64,20 @@ type writeValidation struct {
 // map it built.
 //
 // enforce is true on create and follows Entity.ValidateUpdatesStrict on update.
-// It governs *violations only*. With enforcement off a violation is logged and
-// the write proceeds: rows written before #314 may already violate their schema,
-// and rejecting on update would leave them un-updatable over an unrelated field.
+// It governs *caller input only*. With enforcement off a violation is logged
+// and the write proceeds: rows written before #314 may already violate their
+// schema, and rejecting on update would leave them un-updatable over an
+// unrelated field.
 //
-// Anything that is not a violation is returned regardless of enforce. Validate
-// distinguishes the two by wrapping forma.ErrInvalidInput for a genuine
-// violation (→4xx) and returning a plain error otherwise — a missing resolved
-// schema, or a payload that will not marshal (NaN/Inf). Those must not be
-// absorbed by report-only mode: the document would be written with *zero*
-// validation while a log line claimed it had been checked and merely failed, and
-// the message would blame a caller violation for what is an operator fault
-// (docs/error-handling.md).
+// Anything that is not caller input is returned regardless of enforce. Validate
+// distinguishes the two by wrapping forma.ErrInvalidInput for caller input —
+// a genuine violation, or a payload json.Marshal refuses (NaN/Inf, #322) — and
+// returning a plain error otherwise, i.e. a missing resolved schema. The plain
+// case must not be absorbed by report-only mode: the document would be written
+// with *zero* validation while a log line claimed it had been checked and
+// merely failed (docs/error-handling.md). The absorbed marshal case cannot
+// write a non-finite row: transform's finiteForEAV independently rejects
+// NaN/Inf with the attribute name before anything is staged for storage.
 //
 // A nil validator means validation is unconfigured and both steps are skipped.
 // Validate on a nil validator returns an error rather than doing nothing, so
@@ -192,10 +194,9 @@ func validateWritePayload(v writeValidation) error {
 // One narrowing does come for free, and is not a special case here:
 // forma.WithOperatorDetail returns its input unchanged when that input publishes
 // nothing (client_error.go), and schemavalidate.Validate answers a plain error
-// rather than an ErrInvalidInput carrier for everything that is not a caller
-// violation — a missing resolved schema, a payload that will not marshal. Those
-// are operator faults bound for a 500 and they pass through untouched, which is
-// the surviving require.Same in
+// rather than an ErrInvalidInput carrier for everything that is not caller
+// input — a missing resolved schema — and it passes through untouched,
+// which is the surviving require.Same in
 // TestExplainStrippedRelationRootsNamesEveryRootOnce.
 func explainStrippedRelationRoots(err error, schemaName string, relationRoots []string) error {
 	return forma.WithOperatorDetail(err, fmt.Errorf(

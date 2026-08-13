@@ -129,14 +129,17 @@ payload.
 
 `validateWritePayload` splits on sentinel evidence, not on the enforce flag:
 
-- A genuine violation wraps `forma.ErrInvalidInput` → `400`. Report-only mode
-  absorbs exactly this case, logging it at `Warn` and proceeding.
-- **Everything else is returned regardless of enforcement** — a missing resolved
-  schema, or a payload that will not marshal (`NaN`/`Inf`). Those are plain
-  errors, therefore `500`, therefore operator-visible. Absorbing them into
-  report-only would write the document with *zero* validation while a log line
-  claimed it had merely failed a check, and would blame the caller for a server
-  fault.
+- A genuine violation wraps `forma.ErrInvalidInput` → `400`. So does a payload
+  `json.Marshal` refuses — `NaN`/`Inf` from a Go embedder (#322); no HTTP body
+  can encode one. Report-only mode absorbs exactly this carrier class, logging
+  it at `Warn` and proceeding — safely even for the marshal case, because the
+  transform layer independently rejects non-finite numbers with the attribute
+  name before anything reaches storage.
+- **Everything else is returned regardless of enforcement** — in practice a
+  missing resolved schema. That is a plain error, therefore `500`, therefore
+  operator-visible. Absorbing it into report-only would write the document with
+  *zero* validation while a log line claimed it had merely failed a check, and
+  would blame the caller for a server fault.
 
 ### Startup fails closed
 
