@@ -1,7 +1,9 @@
 package transform
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -61,4 +63,50 @@ func TestPopulateTypedValue_List(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, forma.ErrInvalidInput), "want ErrInvalidInput, got %v", err)
 	})
+}
+
+// TestPopulateTypedValueRejectsNonFiniteNumbers pins #322's transform-layer
+// guard. ValueNumeric feeds JSON read paths that cannot represent NaN/Inf
+// (json.Marshal fails), so a stored non-finite poisons every subsequent read
+// of the row. The string spellings matter: strconv.ParseFloat accepts them,
+// which made a report-only HTTP update able to store NaN before this guard.
+func TestPopulateTypedValueRejectsNonFiniteNumbers(t *testing.T) {
+	for _, valueType := range []forma.ValueType{
+		forma.ValueTypeNumeric, forma.ValueTypeBigInt, forma.ValueTypeInteger, forma.ValueTypeSmallInt,
+	} {
+		meta := forma.AttributeMetadata{AttributeID: 7, ValueType: valueType}
+		for name, value := range map[string]any{
+			"float64 NaN":     math.NaN(),
+			"float64 +Inf":    math.Inf(1),
+			"float32 -Inf":    float32(math.Inf(-1)),
+			"string NaN":      "NaN",
+			"string Infinity": "-Infinity",
+			"json.Number NaN": json.Number("NaN"),
+		} {
+			t.Run(string(valueType)+"/"+name, func(t *testing.T) {
+				var attr model.EAVRecord
+				_, err := populateTypedValue(&attr, "score", value, meta)
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				require.Contains(t, err.Error(), "score",
+					"the rejection must name the attribute — that is what makes it actionable")
+				require.Contains(t, err.Error(), "non-finite")
+				require.Nil(t, attr.ValueNumeric, "nothing may be staged for storage")
+			})
+		}
+	}
+}
+
+// TestPopulateTypedValueRejectsNonFiniteListElement pins the list funnel: array
+// elements recurse into populateTypedValue with the items type, and must hit
+// the same guard.
+func TestPopulateTypedValueRejectsNonFiniteListElement(t *testing.T) {
+	meta := forma.AttributeMetadata{
+		AttributeID: 7,
+		ValueType:   forma.ValueTypeList,
+		ItemsType:   forma.ValueTypeNumeric,
+	}
+	attr := model.EAVRecord{ArrayIndices: "0"}
+	_, err := populateTypedValue(&attr, "scores", math.NaN(), meta)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Contains(t, err.Error(), "non-finite")
 }

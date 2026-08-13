@@ -73,6 +73,9 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		numVal, err := toFloat64ForEAV(attr.Value)
+		if err == nil {
+			numVal, err = finiteForEAV(numVal)
+		}
 		if err != nil {
 			return record, fmt.Errorf("convert to numeric: %w", err)
 		}
@@ -289,33 +292,9 @@ func (c *AttributeConverter) checkRequiredAttributes(
 }
 
 // Helper functions for conversion
-
-func toFloat64ForEAV(value any) (float64, error) {
-	switch v := value.(type) {
-	case *float64:
-		return requiredFloat64FromPointer(v, "float64")
-	case *float32:
-		return requiredFloat64FromPointer(v, "float32")
-	case *int:
-		return requiredFloat64FromPointer(v, "int")
-	case *int16:
-		return requiredFloat64FromPointer(v, "int16")
-	case *int32:
-		return requiredFloat64FromPointer(v, "int32")
-	case *int64:
-		return requiredFloat64FromPointer(v, "int64")
-	case string:
-		return parseTrimmedFloat64(v)
-	case *string:
-		str, err := derefPointer(v, "string")
-		if err != nil {
-			return 0, err
-		}
-		return parseTrimmedFloat64(str)
-	default:
-		return numutil.Float64(value)
-	}
-}
+//
+// The numeric coercion helpers (toFloat64ForEAV, parseTrimmedFloat64) live in
+// numeric_conversion.go alongside the finiteForEAV guard they feed.
 
 func toTimeForEAV(value any) (time.Time, error) {
 	switch v := value.(type) {
@@ -427,18 +406,6 @@ func boolFromNonZero[T ~int32 | ~int64](value T) bool {
 
 func isTrueStringForEAV(value string) bool {
 	return strings.ToLower(value) == "true" || value == "1"
-}
-
-func parseTrimmedFloat64(value string) (float64, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, fmt.Errorf("empty string")
-	}
-	parsed, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parse float: %w", err)
-	}
-	return parsed, nil
 }
 
 func toTime(value any) (time.Time, error) {

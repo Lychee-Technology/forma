@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToFloat64ForEAV(t *testing.T) {
@@ -452,5 +454,27 @@ func TestAttributeConverterFromEAVRecords_SkippedUnknownDoesNotSatisfyRequired(t
 	}
 	if !strings.Contains(err.Error(), "missing required attribute 'id'") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestToEAVRecordRejectsNonFiniteNumbers pins the second numeric funnel
+// (#322): ToEAVRecord must refuse to build a ValueNumeric holding NaN/Inf.
+// Plain error on purpose — this converter's errors are all plain, and on the
+// main write path populateTypedValue has already answered the caller-facing
+// carrier before values get here.
+func TestToEAVRecordRejectsNonFiniteNumbers(t *testing.T) {
+	c := NewAttributeConverter(nil)
+	for name, value := range map[string]any{
+		"float64 NaN": math.NaN(),
+		"string Inf":  "Inf",
+	} {
+		t.Run(name, func(t *testing.T) {
+			record, err := c.ToEAVRecord(model.EntityAttribute{
+				SchemaID: 1, AttrID: 2, ValueType: forma.ValueTypeNumeric, Value: value,
+			}, uuid.New())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "non-finite")
+			require.Nil(t, record.ValueNumeric)
+		})
 	}
 }

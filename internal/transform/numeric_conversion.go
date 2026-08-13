@@ -1,6 +1,52 @@
 package transform
 
-import "github.com/lychee-technology/forma/internal/numutil"
+import (
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/lychee-technology/forma/internal/numutil"
+)
+
+func toFloat64ForEAV(value any) (float64, error) {
+	switch v := value.(type) {
+	case *float64:
+		return requiredFloat64FromPointer(v, "float64")
+	case *float32:
+		return requiredFloat64FromPointer(v, "float32")
+	case *int:
+		return requiredFloat64FromPointer(v, "int")
+	case *int16:
+		return requiredFloat64FromPointer(v, "int16")
+	case *int32:
+		return requiredFloat64FromPointer(v, "int32")
+	case *int64:
+		return requiredFloat64FromPointer(v, "int64")
+	case string:
+		return parseTrimmedFloat64(v)
+	case *string:
+		str, err := derefPointer(v, "string")
+		if err != nil {
+			return 0, err
+		}
+		return parseTrimmedFloat64(str)
+	default:
+		return numutil.Float64(value)
+	}
+}
+
+func parseTrimmedFloat64(value string) (float64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty string")
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse float: %w", err)
+	}
+	return parsed, nil
+}
 
 func requiredFloat64FromPointer[T numutil.NumericScalar](value *T, typeName string) (float64, error) {
 	scalar, err := derefPointer(value, typeName)
@@ -8,4 +54,21 @@ func requiredFloat64FromPointer[T numutil.NumericScalar](value *T, typeName stri
 		return 0, err
 	}
 	return numutil.Float64(scalar)
+}
+
+// finiteForEAV rejects NaN and ±Inf after any numeric coercion. ValueNumeric
+// feeds JSON read paths that cannot represent them — json.Marshal fails — so a
+// stored non-finite would 500 every subsequent read of the row (#322). The
+// guard sits after coercion because the spellings multiply before it:
+// strconv.ParseFloat accepts "NaN"/"Inf"/"Infinity" strings, and json.Number
+// can carry them too.
+//
+// It deliberately does not live inside numutil.Float64: that helper also
+// serves the DuckDB read/query path, and hardening a shared function for one
+// caller's write semantics is the #301 trap.
+func finiteForEAV(value float64) (float64, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("non-finite number %v is not storable; a finite value is required", value)
+	}
+	return value, nil
 }

@@ -37,6 +37,9 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		if err != nil {
 			return handleConversionError(err)
 		}
+		if numVal, err = finiteForEAV(numVal); err != nil {
+			return handleConversionError(err)
+		}
 		attr.ValueNumeric = &numVal
 		if meta.ValueType == forma.ValueTypeBigInt {
 			if exact, ok := numutil.Int64Exact(value); ok {
