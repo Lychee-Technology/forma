@@ -52,8 +52,9 @@ func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, er
 
 // ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord.
 //
-// Its conversion failures are plain errors and name the attribute by AttrID,
-// which is the EAV key and the only identity this layer holds — the attribute
+// Its conversion failures are plain errors; the numeric and bool cases name the
+// attribute by AttrID, the rest take their identity from ToEAVRecords' wrap.
+// AttrID is the EAV key and the only identity this layer holds — the attribute
 // name would need a metadata cache it does not take. The caller-facing carrier
 // that names the attribute and wraps forma.ErrInvalidInput is raised earlier,
 // at populateTypedValue (typed_value.go); reaching an error here on the write
