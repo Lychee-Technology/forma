@@ -72,12 +72,13 @@ type writeValidation struct {
 // Anything that is not caller input is returned regardless of enforce. Validate
 // distinguishes the two by wrapping forma.ErrInvalidInput for caller input —
 // a genuine violation, or a payload json.Marshal refuses (NaN/Inf, #322) — and
-// returning a plain error otherwise, i.e. a missing resolved schema. The plain
-// case must not be absorbed by report-only mode: the document would be written
-// with *zero* validation while a log line claimed it had been checked and
-// merely failed (docs/error-handling.md). The absorbed marshal case cannot
-// write a non-finite row: transform's finiteForEAV independently rejects
-// NaN/Inf with the attribute name before anything is staged for storage.
+// returning a plain error otherwise: a missing resolved schema, or a numeric
+// literal that fits neither int64 nor float64. Those must not be absorbed by
+// report-only mode: the document would be written with *zero* validation while
+// a log line claimed it had been checked and merely failed
+// (docs/error-handling.md). The absorbed marshal case cannot write a
+// non-finite row: transform's finiteForEAV independently rejects NaN/Inf with
+// the attribute name before anything is staged for storage.
 //
 // A nil validator means validation is unconfigured and both steps are skipped.
 // Validate on a nil validator returns an error rather than doing nothing, so
