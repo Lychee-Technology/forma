@@ -27,10 +27,13 @@ type nonFinitePath struct {
 // the same payload always produces the same message — with a count of the
 // rest, matching the precedent in transform's missing-required error.
 //
-// If the walk finds nothing the refusal came from something else (a cycle, a
-// failing json.Marshaler, an unsupported type such as a channel or func), and
-// the library's text is published unchanged: it is the only description of the
-// fault that exists.
+// If the walk comes back empty, the library's text is published unchanged: it
+// is then the only description of the fault that exists. That covers a failing
+// json.Marshaler and an unsupported type such as a channel or func — and a
+// cycle, which reaches this branch because the walk is depth-capped and gives
+// up on one rather than following it (see nonFinitePaths). Publishing "json:
+// unsupported value: encountered a cycle" is the honest answer there: no single
+// attribute is at fault.
 func marshalRefusalError(doc any, marshalErr error) error {
 	found := nonFinitePaths(doc)
 	if len(found) == 0 {
@@ -45,9 +48,23 @@ func marshalRefusalError(doc any, marshalErr error) error {
 		found[0].path, found[0].value, more)
 }
 
+// maxNonFiniteWalkDepth bounds the recursion below. Any real payload is far
+// shallower — an HTTP-decoded document is bounded by encoding/json's own
+// nesting limit long before this — so the cap only ever fires on a payload that
+// is pathological, which on this code path means a cyclic one.
+const maxNonFiniteWalkDepth = 1000
+
 // nonFinitePaths walks a document and returns every non-finite float in it,
 // sorted by path. It exists for one error path — json.Marshal has just refused
 // the payload — and is never on a successful write.
+//
+// The walk is depth-capped, and exceeding the cap abandons it entirely: nil
+// comes back, and the caller publishes the library's text. That is what makes
+// a cyclic payload safe here. json.Marshal detects a cycle and refuses, so this
+// walk runs precisely when a cycle is possible, and following one has no
+// natural end — the cap is the end. Abandoning rather than truncating is
+// deliberate: a partial walk cannot tell "no non-finite in this payload" from
+// "stopped looking", and only the first answer may be published.
 //
 // Only the shapes a payload is made of are walked: map[string]any, []any,
 // float64 and float32. Anything else either cannot hold the non-finite that
@@ -56,15 +73,33 @@ func marshalRefusalError(doc any, marshalErr error) error {
 // result falls back to. A non-finite at the document root is likewise left to
 // the library: there is no attribute to name.
 func nonFinitePaths(doc any) []nonFinitePath {
-	var found []nonFinitePath
-	collectNonFinite("", doc, &found)
-	slices.SortFunc(found, func(a, b nonFinitePath) int {
+	var walker nonFiniteWalker
+	walker.walk("", doc, 0)
+	if walker.aborted {
+		return nil
+	}
+	slices.SortFunc(walker.found, func(a, b nonFinitePath) int {
 		return strings.Compare(a.path, b.path)
 	})
-	return found
+	return walker.found
 }
 
-func collectNonFinite(path string, node any, found *[]nonFinitePath) {
+// nonFiniteWalker carries the walk's accumulated findings and its abort flag.
+// Once aborted, every pending frame returns without doing further work.
+type nonFiniteWalker struct {
+	found   []nonFinitePath
+	aborted bool
+}
+
+func (w *nonFiniteWalker) walk(path string, node any, depth int) {
+	if w.aborted {
+		return
+	}
+	if depth > maxNonFiniteWalkDepth {
+		w.aborted = true
+		return
+	}
+
 	switch v := node.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(v))
@@ -73,25 +108,25 @@ func collectNonFinite(path string, node any, found *[]nonFinitePath) {
 		}
 		slices.Sort(keys)
 		for _, key := range keys {
-			collectNonFinite(joinAttributePath(path, key), v[key], found)
+			w.walk(joinAttributePath(path, key), v[key], depth+1)
 		}
 	case []any:
 		for i, elem := range v {
-			collectNonFinite(fmt.Sprintf("%s[%d]", path, i), elem, found)
+			w.walk(fmt.Sprintf("%s[%d]", path, i), elem, depth+1)
 		}
 	case float64:
-		appendIfNonFinite(path, v, found)
+		w.appendIfNonFinite(path, v)
 	case float32:
-		appendIfNonFinite(path, float64(v), found)
+		w.appendIfNonFinite(path, float64(v))
 	}
 }
 
-func appendIfNonFinite(path string, value float64, found *[]nonFinitePath) {
+func (w *nonFiniteWalker) appendIfNonFinite(path string, value float64) {
 	if path == "" {
 		return
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		*found = append(*found, nonFinitePath{path: path, value: value})
+		w.found = append(w.found, nonFinitePath{path: path, value: value})
 	}
 }
 
