@@ -67,10 +67,17 @@ func requiredFloat64FromPointer[T numutil.NumericScalar](value *T, typeName stri
 // serves the DuckDB read/query path, and hardening a shared function for one
 // caller's write semantics is the #301 trap.
 func finiteForEAV(value float64) (float64, error) {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
+	if isNonFinite(value) {
 		return 0, fmt.Errorf("non-finite number %v is not storable; a finite value is required", value)
 	}
 	return value, nil
+}
+
+// isNonFinite is the shared predicate behind both guards below. They share the
+// test and deliberately not the prose: the two rejections are about different
+// things, and a caller reading one should not be handed the other's vocabulary.
+func isNonFinite(value float64) bool {
+	return math.IsNaN(value) || math.IsInf(value, 0)
 }
 
 // finiteBoolInput guards the bool funnels, which reach storage through the same
@@ -80,7 +87,15 @@ func finiteForEAV(value float64) (float64, error) {
 // `!= 0` turns NaN into true, toBoolForEAV's float64ToBool threshold turns the
 // same NaN into false. Absorbed under report-only mode that silently persisted
 // a bool the caller never wrote (#322, PR #403 review).
+//
+// The message is its own rather than finiteForEAV's: "is not storable" is
+// numeric prose, and the fault here is not that the value cannot be stored but
+// that it does not denote true or false. That reading also has to hold on the
+// read path — extractValueFromEAVRecord sends a stored ValueNumeric back
+// through toBoolForEAV — where the subject is a persisted value, not input.
 func finiteBoolInput(value float64) error {
-	_, err := finiteForEAV(value)
-	return err
+	if isNonFinite(value) {
+		return fmt.Errorf("non-finite value %v has no truth value; a finite value is required", value)
+	}
+	return nil
 }

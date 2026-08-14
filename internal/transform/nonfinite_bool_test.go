@@ -33,7 +33,8 @@ func TestPopulateTypedValueRejectsNonFiniteBool(t *testing.T) {
 			require.ErrorIs(t, err, forma.ErrInvalidInput)
 			require.Contains(t, err.Error(), "active",
 				"the rejection must name the attribute — that is what makes it actionable")
-			require.Contains(t, err.Error(), "non-finite")
+			require.Contains(t, err.Error(), "has no truth value",
+				"a bool rejection must keep its own prose, not the numeric guard's 'not storable'")
 			require.Nil(t, attr.ValueNumeric, "nothing may be staged for storage")
 		})
 	}
@@ -61,7 +62,8 @@ func TestToEAVRecordRejectsNonFiniteBool(t *testing.T) {
 				SchemaID: 1, AttrID: 3, ValueType: forma.ValueTypeBool, Value: value,
 			}, uuid.New())
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "non-finite")
+			require.Contains(t, err.Error(), "has no truth value",
+				"a bool rejection must keep its own prose, not the numeric guard's 'not storable'")
 			require.Contains(t, err.Error(), "attrID 3",
 				"this layer holds no attribute name, so the EAV key is the identity the error owes")
 			require.Nil(t, record.ValueNumeric, "nothing may be staged for storage")
