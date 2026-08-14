@@ -151,6 +151,21 @@ func TestNonFinitePathsAbortsBeyondDepthCap(t *testing.T) {
 		require.Nil(t, nonFinitePaths(doc))
 	})
 
+	// Abandon, do not truncate. This is the only case that can tell the two
+	// apart: "a" is found before "z" blows the cap (keys are walked sorted), so
+	// a walk that returned what it had would publish `attribute "a"` — a
+	// confident, singular answer produced by a search that silently stopped.
+	// The whole payload must be disowned instead. Without this the abort-return
+	// in nonFinitePaths is dead weight: every other cap test aborts having found
+	// nothing, so returning the accumulated slice looks identical to nil.
+	t.Run("a partial result is discarded, not published", func(t *testing.T) {
+		doc := map[string]any{
+			"a": math.NaN(),
+			"z": nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"deep": math.NaN()}),
+		}
+		require.Nil(t, nonFinitePaths(doc))
+	})
+
 	// The control: real payloads are nowhere near the cap and must still be
 	// walked in full, or the cap would have quietly disabled the feature.
 	t.Run("modest nesting is still walked", func(t *testing.T) {

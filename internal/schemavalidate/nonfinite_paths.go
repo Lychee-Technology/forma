@@ -33,9 +33,10 @@ type nonFinitePath struct {
 // is then the only description of the fault that exists. That covers a failing
 // json.Marshaler and an unsupported type such as a channel or func — and a
 // cycle, which reaches this branch because the walk is depth-capped and gives
-// up on one rather than following it (see nonFinitePaths). Publishing "json:
-// unsupported value: encountered a cycle" is the honest answer there: no single
-// attribute is at fault.
+// up on one rather than following it (see nonFinitePaths). There the library's
+// text begins "json: unsupported value: encountered a cycle" and goes on to
+// name the type it was found via; publishing it is the honest answer, because
+// no single attribute is at fault.
 func marshalRefusalError(doc any, marshalErr error) error {
 	found := nonFinitePaths(doc)
 	if len(found) == 0 {
@@ -50,10 +51,20 @@ func marshalRefusalError(doc any, marshalErr error) error {
 		found[0].path, found[0].value, more)
 }
 
-// maxNonFiniteWalkDepth bounds the recursion below. Any real payload is far
-// shallower — an HTTP-decoded document is bounded by encoding/json's own
-// nesting limit long before this — so the cap only ever fires on a payload that
-// is pathological, which on this code path means a cyclic one.
+// maxNonFiniteWalkDepth bounds the recursion below. Nothing upstream enforces a
+// shallower limit: encoding/json's decoder refuses nesting past 10000, ten times
+// this cap, so a decoded document can sit well beyond it.
+//
+// The cap therefore fires on two kinds of payload — a cyclic one, which has no
+// bottom to reach, and any acyclic payload nested deeper than 1000. Both are
+// treated identically: the walk abandons and the caller publishes the library's
+// text. That is a safe degradation rather than a wrong answer, and both cases
+// are pinned.
+//
+// What limits the cost of that degradation is the payload's provenance, not its
+// depth: JSON has no syntax for a non-finite, so an HTTP request can never
+// produce the refusal this walk exists to explain. Only a Go embedder can, which
+// makes a message degraded by this cap an embedder-only outcome.
 const maxNonFiniteWalkDepth = 1000
 
 // nonFinitePaths walks a document and returns every non-finite float in it,
@@ -62,11 +73,15 @@ const maxNonFiniteWalkDepth = 1000
 //
 // The walk is depth-capped, and exceeding the cap abandons it entirely: nil
 // comes back, and the caller publishes the library's text. That is what makes
-// a cyclic payload safe here. json.Marshal detects a cycle and refuses, so this
-// walk runs precisely when a cycle is possible, and following one has no
-// natural end — the cap is the end. Abandoning rather than truncating is
-// deliberate: a partial walk cannot tell "no non-finite in this payload" from
-// "stopped looking", and only the first answer may be published.
+// a cyclic payload safe here — json.Marshal detects a cycle and refuses, so
+// this walk runs precisely when a cycle is possible, and following one has no
+// natural end, so the cap is the end. A merely deep acyclic payload hits the
+// same cap and gets the same treatment (see maxNonFiniteWalkDepth).
+//
+// Abandoning rather than truncating is deliberate: a partial walk cannot tell
+// "no non-finite in this payload" from "stopped looking", and only the first
+// answer may be published. A payload with a shallow non-finite and a too-deep
+// branch is what distinguishes them, and is pinned.
 //
 // Only the shapes a payload is made of are walked: map[string]any, []any,
 // float64, float32, *float64, *float32 and json.Number. Every one of them can
@@ -82,9 +97,13 @@ const maxNonFiniteWalkDepth = 1000
 // such as "abc", which does cause one but is already named by the library's
 // own "invalid number literal" text.
 //
-// Everything else — structs, custom Marshalers, channels — yields nothing and
-// falls back to that library text. A non-finite at the document root is
-// likewise left to the library: there is no attribute to name.
+// Everything else yields nothing and falls back to that library text. That
+// includes shapes which do refuse and which an embedder could plausibly hand
+// in — a []float64 or map[string]float64 holding a non-finite refuses exactly
+// like []any would, but is not walked, because type-switching every concrete
+// numeric container is a losing game against a caller who can name any type.
+// Structs, custom Marshalers and channels land here too. A non-finite at the
+// document root is likewise left to the library: there is no attribute to name.
 func nonFinitePaths(doc any) []nonFinitePath {
 	var walker nonFiniteWalker
 	walker.walk("", doc, 0)
