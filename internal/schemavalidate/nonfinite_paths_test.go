@@ -1,6 +1,7 @@
 package schemavalidate
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -190,4 +191,91 @@ func TestValidateFallsBackBeyondDepthCap(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, msg, "unsupported value: NaN", "the library text is the fallback")
 	require.NotContains(t, msg, "attribute", "nothing may be named when the walk gave up")
+}
+
+// TestNonFinitePathsCoversPointerAndNumberSpellings pins PR #403 round-2's P2.
+// These three shapes all make json.Marshal refuse — probed, not assumed:
+// *float64/*float32 at a non-finite give "unsupported value: NaN", and a
+// json.Number carrying a non-finite spelling gives "invalid number literal".
+// The walk used to miss all three, so those refusals published the library text
+// with no attribute named.
+func TestNonFinitePathsCoversPointerAndNumberSpellings(t *testing.T) {
+	nan := math.NaN()
+	posInf32 := float32(math.Inf(1))
+
+	t.Run("*float64 NaN", func(t *testing.T) {
+		found := nonFinitePaths(map[string]any{"score": &nan})
+		require.Len(t, found, 1)
+		require.Equal(t, "score", found[0].path)
+	})
+
+	t.Run("*float32 +Inf", func(t *testing.T) {
+		found := nonFinitePaths(map[string]any{"ratio": &posInf32})
+		require.Len(t, found, 1)
+		require.Equal(t, "ratio", found[0].path)
+	})
+
+	t.Run("nested json.Number NaN", func(t *testing.T) {
+		found := nonFinitePaths(map[string]any{"a": map[string]any{"b": json.Number("NaN")}})
+		require.Len(t, found, 1)
+		require.Equal(t, "a.b", found[0].path)
+	})
+
+	// A nil pointer marshals as null, so it can never be what Marshal refused.
+	t.Run("nil pointers are skipped", func(t *testing.T) {
+		var nilFloat *float64
+		var nilFloat32 *float32
+		require.Empty(t, nonFinitePaths(map[string]any{"a": nilFloat, "b": nilFloat32}))
+	})
+}
+
+// TestNonFinitePathsIgnoresNonRefusingNumberLiterals guards the gate on the
+// json.Number case. 1e400 is the one that matters: ParseFloat reports it out of
+// range (and hands back +Inf), but it is valid JSON grammar and marshals fine,
+// so it is never the cause of a refusal and naming it would be a lie. "abc"
+// does cause a refusal, but the library's own text already names it.
+func TestNonFinitePathsIgnoresNonRefusingNumberLiterals(t *testing.T) {
+	for _, literal := range []string{"1e400", "-1e400", "abc", "", "1.5"} {
+		t.Run(literal, func(t *testing.T) {
+			require.Empty(t, nonFinitePaths(map[string]any{"score": json.Number(literal)}))
+		})
+	}
+}
+
+// TestValidateNamesNonFinitePointerAndNumber is the same coverage at the seam.
+func TestValidateNamesNonFinitePointerAndNumber(t *testing.T) {
+	const schema = `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
+	require.NoError(t, err)
+
+	nan := math.NaN()
+	for name, doc := range map[string]map[string]any{
+		"*float64":    {"score": &nan},
+		"json.Number": {"score": json.Number("Infinity")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := v.Validate(3, doc)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok)
+			require.Contains(t, msg, `"score"`, "the offending attribute must be named")
+			require.Contains(t, msg, "a finite number is required")
+		})
+	}
+}
+
+// TestValidateFallsBackOnInvalidNumberLiteral pins the boundary the json.Number
+// gate creates: a literal that is garbage rather than non-finite still refuses,
+// and must publish the library text, which already names it.
+func TestValidateFallsBackOnInvalidNumberLiteral(t *testing.T) {
+	const schema = `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
+	require.NoError(t, err)
+
+	err = v.Validate(3, map[string]any{"score": json.Number("abc")})
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok)
+	require.Contains(t, msg, "invalid number literal")
+	require.NotContains(t, msg, "non-finite", "nothing may be named when the walk found nothing")
 }

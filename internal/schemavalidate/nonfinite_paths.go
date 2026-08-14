@@ -1,9 +1,11 @@
 package schemavalidate
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -67,11 +69,22 @@ const maxNonFiniteWalkDepth = 1000
 // "stopped looking", and only the first answer may be published.
 //
 // Only the shapes a payload is made of are walked: map[string]any, []any,
-// float64 and float32. Anything else either cannot hold the non-finite that
-// made Marshal fail, or is exotic enough (a custom Marshaler, a struct) that
-// the caller is better served by the library's own text, which the empty
-// result falls back to. A non-finite at the document root is likewise left to
-// the library: there is no attribute to name.
+// float64, float32, *float64, *float32 and json.Number. Every one of them can
+// be what Marshal refused — a pointer at a non-finite gives "unsupported
+// value: NaN", and a json.Number spelled "NaN"/"Inf"/"Infinity" gives "invalid
+// number literal". A nil pointer is skipped: it marshals as null, so it is
+// never the cause.
+//
+// The json.Number case counts a literal only when it parses cleanly to a
+// non-finite. That gate excludes exactly the two kinds that must not be named:
+// "1e400", which ParseFloat reports out of range but which is valid JSON
+// grammar and marshals fine (so it never causes a refusal at all), and garbage
+// such as "abc", which does cause one but is already named by the library's
+// own "invalid number literal" text.
+//
+// Everything else — structs, custom Marshalers, channels — yields nothing and
+// falls back to that library text. A non-finite at the document root is
+// likewise left to the library: there is no attribute to name.
 func nonFinitePaths(doc any) []nonFinitePath {
 	var walker nonFiniteWalker
 	walker.walk("", doc, 0)
@@ -118,6 +131,21 @@ func (w *nonFiniteWalker) walk(path string, node any, depth int) {
 		w.appendIfNonFinite(path, v)
 	case float32:
 		w.appendIfNonFinite(path, float64(v))
+	case *float64:
+		if v != nil {
+			w.appendIfNonFinite(path, *v)
+		}
+	case *float32:
+		if v != nil {
+			w.appendIfNonFinite(path, float64(*v))
+		}
+	case json.Number:
+		// A non-nil err covers both literals that must not be named: 1e400,
+		// which is out of range but valid JSON that marshals fine, and garbage
+		// such as "abc", which the library's own text already names.
+		if parsed, err := strconv.ParseFloat(string(v), 64); err == nil {
+			w.appendIfNonFinite(path, parsed)
+		}
 	}
 }
 
