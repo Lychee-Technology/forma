@@ -47,7 +47,7 @@ func marshalRefusalError(doc any, marshalErr error) error {
 		more = fmt.Sprintf(" (and %d more)", len(found)-1)
 	}
 	return forma.InvalidInputf(
-		"payload cannot be encoded as JSON: attribute %q holds non-finite number %v; a finite number is required%s",
+		"payload cannot be encoded as JSON: attribute %q holds non-finite number %v; a finite value is required%s",
 		found[0].path, found[0].value, more)
 }
 

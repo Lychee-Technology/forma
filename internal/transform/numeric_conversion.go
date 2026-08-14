@@ -73,9 +73,10 @@ func finiteForEAV(value float64) (float64, error) {
 	return value, nil
 }
 
-// isNonFinite is the shared predicate behind both guards below. They share the
-// test and deliberately not the prose: the two rejections are about different
-// things, and a caller reading one should not be handed the other's vocabulary.
+// isNonFinite is the shared predicate behind both guards in this file. They
+// share the test and deliberately not the prose: the two rejections are about
+// different things, and a caller reading one should not be handed the other's
+// vocabulary.
 func isNonFinite(value float64) bool {
 	return math.IsNaN(value) || math.IsInf(value, 0)
 }

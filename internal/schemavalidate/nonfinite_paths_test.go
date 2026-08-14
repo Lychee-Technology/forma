@@ -97,7 +97,7 @@ func TestValidateNamesNonFiniteAttribute(t *testing.T) {
 			require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
 			require.Contains(t, msg, "payload cannot be encoded as JSON")
 			require.Contains(t, msg, tc.wantPath, "the offending attribute must be named")
-			require.Contains(t, msg, "a finite number is required", "the expected state must be stated")
+			require.Contains(t, msg, "a finite value is required", "the expected state must be stated")
 			if tc.wantMore {
 				require.Contains(t, msg, "(and 1 more)")
 			} else {
@@ -274,7 +274,7 @@ func TestValidateNamesNonFinitePointerAndNumber(t *testing.T) {
 			msg, ok := forma.ResolvePublicMessage(err)
 			require.True(t, ok)
 			require.Contains(t, msg, `"score"`, "the offending attribute must be named")
-			require.Contains(t, msg, "a finite number is required")
+			require.Contains(t, msg, "a finite value is required")
 		})
 	}
 }

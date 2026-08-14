@@ -246,7 +246,7 @@ func TestValidateUnknownSchemaIDIsNotClientError(t *testing.T) {
 // math.Inf(), reachable only from a Go embedder, since encoding/json cannot
 // decode those literals from an HTTP body — is the caller's fault, not the
 // operator's. It must carry forma.ErrInvalidInput and publish a message naming
-// the offending value, like any other fault in the caller's own input.
+// the offending value — since #403 that message is synthesized, not the library's.
 func TestValidateClassifiesUnmarshallablePayloadAsInvalidInput(t *testing.T) {
 	dir := t.TempDir()
 	schema := `{"type":"object","properties":{"score":{"type":"number"}}}`
@@ -263,7 +263,7 @@ func TestValidateClassifiesUnmarshallablePayloadAsInvalidInput(t *testing.T) {
 			require.ErrorIs(t, err, forma.ErrInvalidInput)
 			msg, ok := forma.ResolvePublicMessage(err)
 			require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
-			require.Contains(t, msg, name, "encoding/json names the offending value; publish it")
+			require.Contains(t, msg, name, "the published message names the offending value on either marshalRefusalError branch")
 		})
 	}
 }
