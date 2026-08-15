@@ -133,6 +133,15 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
+	// #348: the partial-scan out-parameter describes THIS call only. The
+	// DuckDB path resets it per pass and the degraded fallback clears it,
+	// but the hot-only gate and the routed postgres-only path below never
+	// reach a pass — without this entry reset, a caller reusing one options
+	// value across queries would read the previous call's marker after a
+	// postgres-only answer (PR #412 review).
+	if opts != nil {
+		opts.PartialScan = nil
+	}
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
 	// lacking the trailing row_id tiebreak here, before it can silently skip a

@@ -46,7 +46,10 @@ type FederatedQueryOptions struct {
 	// PartialScan is an engine out-parameter like ExecutionPlan, but NOT
 	// gated on IncludeExecutionPlan: the #348 public partial marker must
 	// reach callers that never asked for a plan. The last executed DuckDB
-	// pass overwrites it, so it describes the pass that produced the page.
+	// pass overwrites it, so it describes the pass that produced the page,
+	// and Query resets it at entry, so after any call — including a
+	// postgres-only answer that never runs a pass — it describes that call
+	// even when one options value is reused across queries.
 	// Being an out-parameter, it has nowhere to land when the caller passes
 	// nil options: such a call drops the marker, so a caller that needs it
 	// must pass a non-nil *FederatedQueryOptions.

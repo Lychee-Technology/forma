@@ -359,3 +359,30 @@ func TestCorruptRetryRewindPreservesPrePassPlan(t *testing.T) {
 	require.Equal(t, int64(7), opts.ExecutionPlan.Timings["caller_pre_pass"],
 		"a caller-recorded pre-pass timing must survive the snapshot-restore")
 }
+
+// TestPostgresOnlyAnswerClearsReusedPartialMarker pins the PR #412 review
+// observation: the hot-only gate never runs a DuckDB pass, so without the
+// Query entry reset a caller reusing one options value across queries would
+// read the PREVIOUS call's marker after a postgres-only answer.
+func TestPostgresOnlyAnswerClearsReusedPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+
+	opts := &model.FederatedQueryOptions{}
+	_, err := e.Query(context.Background(), tables, coldTierQuery(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, opts.PartialScan, "the corrupt-exclusion retry must set the out-parameter")
+
+	hotOnly := coldTierQuery()
+	hotOnly.PreferredTiers = []model.DataTier{model.DataTierHot}
+	page, err := e.Query(context.Background(), tables, hotOnly, opts)
+	require.NoError(t, err)
+	require.Nil(t, page.Partial, "a postgres-only page never carries the marker")
+	require.Nil(t, opts.PartialScan, "the out-parameter must describe THIS call, not the previous one")
+}
