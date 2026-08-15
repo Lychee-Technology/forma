@@ -289,3 +289,40 @@ func TestCorruptRetryTimingsDescribeOnlyTheRetryPass(t *testing.T) {
 	require.False(t, hitStamp, "the failed pass's cache-hit stamp must not survive the rewind")
 	require.True(t, missStamp, "the retry compiled a fresh plan for the remainder set")
 }
+
+// TestCorruptRetryRewindPreservesPrePassPlan pins #348 item 2: rewind is a
+// truncate-to-mark, and the strongest wrong implementation — rewinding to an
+// empty mark (executionPlanMark{}) — destroys what the CALLER recorded before
+// the first pass (e.g. the pagination path's postgres source, pagination.go).
+// Routing alone cannot catch that: rewind never touches Routing.
+func TestCorruptRetryRewindPreservesPrePassPlan(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+
+	opts := &model.FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan: &model.ExecutionPlan{
+			Timings: map[string]int64{"caller_pre_pass": 7},
+			Notes:   []string{"caller pre-pass note"},
+			Sources: []model.DataSourcePlan{{
+				Tier: model.DataTierHot, Engine: "postgres", Reason: "caller pre-pass source",
+			}},
+		},
+	}
+	_, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), opts)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, countSources(opts.ExecutionPlan, "caller pre-pass source"),
+		"a caller-recorded pre-pass source must survive the rewind")
+	require.Contains(t, opts.ExecutionPlan.Notes, "caller pre-pass note",
+		"a caller-recorded pre-pass note must survive the rewind")
+	require.Equal(t, int64(7), opts.ExecutionPlan.Timings["caller_pre_pass"],
+		"a caller-recorded pre-pass timing must survive the snapshot-restore")
+}
