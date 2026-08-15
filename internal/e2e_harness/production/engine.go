@@ -8,14 +8,16 @@ import (
 	"github.com/lychee-technology/forma/internal"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
 // Engine returns the Env's real federated query engine, assembling it on
 // first use: the production DBPersistentRecordRepository over the per-test
-// pool, the Postgres dirty-ID fetcher, the per-test DuckDB client, an
-// optional circuit breaker (WithBreaker), and the loaded metadata cache.
+// pool, the Postgres dirty-ID fetcher, the per-test DuckDB client, the
+// factory-shape shared plan cache (#345), an optional circuit breaker
+// (WithBreaker), and the loaded metadata cache.
 // This mirrors the production assembly used by the benchmark runner
 // (internal/e2e_harness/federated/benchmark/execute.go).
 func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
@@ -23,7 +25,13 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		return e.engine
 	}
 
-	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
+	// One plan cache per engine assembly, shared between the repository and
+	// the engine exactly as factory.newRepositoryAndEngine pairs them
+	// (#142/#345). Building it here rather than on the Env ties its lifetime
+	// to the memoized engine: EvolveSchema and ReopenDuckDB drop e.engine, so
+	// the cache is discarded with it, matching the cold restart both model.
+	planCache := queryplan.NewCache(4096)
+	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata, internal.WithPlanCache(planCache))
 	if e.breaker == nil && e.opts.breakerFailures > 0 {
 		// Built once per Env, not per engine assembly: breaker state must
 		// survive ReopenDuckDB/RestartPostgres handle rebuilds so #185
@@ -33,7 +41,10 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 
 	// The engine's logger carries the #256 stamp/footer cross-check warning,
 	// which has no other outlet — the read it observes succeeds.
-	opts := []fedengine.EngineOption{fedengine.WithLogger(e.logger)}
+	opts := []fedengine.EngineOption{
+		fedengine.WithLogger(e.logger),
+		fedengine.WithPlanCache(planCache),
+	}
 	if src := e.parquetSource(); src != nil {
 		if e.ParquetSourceWrap != nil {
 			src = e.ParquetSourceWrap(src)
