@@ -212,3 +212,42 @@ func TestCorruptRetryStopsAfterOneRetry(t *testing.T) {
 		"the wrap must carry the first pass's attribution")
 	require.Len(t, duck.mainSQL, 2, "exactly one retry: two main scans, never three")
 }
+
+// TestCorruptRetryPageCarriesPartialMarker pins the #348 engine seam of the
+// public partial contract: the page produced by the post-exclusion retry must
+// carry the excluded object set — and it must do so WITHOUT
+// IncludeExecutionPlan, because the public marker exists precisely for
+// callers that never asked for a plan.
+func TestCorruptRetryPageCarriesPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, page.Partial,
+		"a page answered from the readable remainder must be marked partial")
+	require.Equal(t, []string{retryCorruptPath1}, page.Partial.ExcludedObjects)
+}
+
+// TestCleanQueryPageHasNoPartialMarker is the negative leg: a scan over the
+// full resolved set must not be marked partial.
+func TestCleanQueryPageHasNoPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{{}}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryKeptPathB})
+
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{})
+	require.NoError(t, err)
+	require.Nil(t, page.Partial, "a full-set scan must not carry a partial marker")
+}

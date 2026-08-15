@@ -34,6 +34,7 @@ type PersistentRecordPage struct {
 	TotalPages    int
 	CurrentPage   int
 	ExecutionPlan *ExecutionPlan
+	Partial       *PartialScan
 }
 
 type PersistentRecordKey struct {

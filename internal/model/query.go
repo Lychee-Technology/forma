@@ -43,6 +43,22 @@ type FederatedQueryOptions struct {
 	IncludeExecutionPlan     bool
 	ExecutionPlan            *ExecutionPlan
 	ConsistencyMode          ConsistencyMode
+	// PartialScan is an engine out-parameter like ExecutionPlan, but NOT
+	// gated on IncludeExecutionPlan: the #348 public partial marker must
+	// reach callers that never asked for a plan. The last executed DuckDB
+	// pass overwrites it, so it describes the pass that produced the page.
+	PartialScan *PartialScan
+}
+
+// PartialScan reports that the DuckDB pass that answered this query ran over
+// a deliberately reduced object set: verification-confirmed corrupt parquet
+// objects (#251) were excluded and the page came from the readable remainder
+// plus the hot tier. Internal form — ExcludedObjects carries full storage
+// keys for embedders and operators; the public projection
+// (forma.QueryResult.Partial) surfaces only the reason and the count (#348,
+// #301/#306 boundary).
+type PartialScan struct {
+	ExcludedObjects []string
 }
 
 type RoutingDecision struct {

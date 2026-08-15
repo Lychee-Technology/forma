@@ -219,6 +219,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		TotalPages:    model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:   currentPage,
 		ExecutionPlan: execPlan,
+		Partial:       partialScanFromOpts(opts),
 	}, nil
 }
 
@@ -315,6 +316,17 @@ func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.Federated
 		return
 	}
 	page.ExecutionPlan = opts.ExecutionPlan
+}
+
+// partialScanFromOpts lifts the engine's partial-scan out-parameter onto the
+// page (#348). Postgres-only pages (hot-only gate, routed, degraded fallback)
+// never set it: the marker's scope is the #251 corrupt exclusion, and the
+// degraded fallback already signals through Routing.Reason.
+func partialScanFromOpts(opts *model.FederatedQueryOptions) *model.PartialScan {
+	if opts == nil {
+		return nil
+	}
+	return opts.PartialScan
 }
 
 // degradeToPostgresOnly serves the Postgres-only fallback for a degradable

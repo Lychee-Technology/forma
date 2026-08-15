@@ -209,6 +209,17 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// boundary (#301/#306).
 	planCtx.recordCorruptExclusion(src.excludedCorrupt)
 
+	// #348: the partial-scan marker is an out-parameter on opts, overwritten
+	// by every pass so it describes the pass that actually produced the
+	// returned page — the same truth-by-construction contract as the plan
+	// rewind. Deliberately not gated on IncludeExecutionPlan.
+	if opts != nil {
+		opts.PartialScan = nil
+		if len(src.excludedCorrupt) > 0 {
+			opts.PartialScan = &model.PartialScan{ExcludedObjects: src.excludedCorrupt}
+		}
+	}
+
 	// Fetch dirty IDs and record in execution plan
 	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
 	if err != nil {
