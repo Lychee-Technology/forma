@@ -129,14 +129,19 @@ payload.
 
 `validateWritePayload` splits on sentinel evidence, not on the enforce flag:
 
-- A genuine violation wraps `forma.ErrInvalidInput` → `400`. Report-only mode
-  absorbs exactly this case, logging it at `Warn` and proceeding.
-- **Everything else is returned regardless of enforcement** — a missing resolved
-  schema, or a payload that will not marshal (`NaN`/`Inf`). Those are plain
-  errors, therefore `500`, therefore operator-visible. Absorbing them into
-  report-only would write the document with *zero* validation while a log line
-  claimed it had merely failed a check, and would blame the caller for a server
-  fault.
+- A genuine violation wraps `forma.ErrInvalidInput` → `400`. So does a payload
+  `json.Marshal` refuses — `NaN`/`Inf` from a Go embedder (#322); no HTTP body
+  can encode one. Report-only mode absorbs exactly this carrier class, logging
+  it at `Warn` and proceeding — safely even for the marshal case, because the
+  transform layer independently rejects non-finite numbers with the attribute
+  name before anything reaches storage.
+- **Everything else is returned regardless of enforcement** — a missing
+  resolved schema, plus the one caller-input case misfiled here (#402), both
+  enumerated under "Public HTTP error surface". Those are plain errors,
+  therefore `500`, therefore operator-visible. Absorbing them into report-only
+  would write the document with *zero* validation while a log line claimed it
+  had merely failed a check — and, for the missing schema, would blame the
+  caller for a server fault.
 
 ### Startup fails closed
 
@@ -798,10 +803,15 @@ stay in `Error()` and in the chain for `errors.Is`/`As`, and never in
 Since #314 there is a **second** write-path validator on the same footing,
 `internal/schemavalidate`'s `Validator.Validate`, which builds an
 `InvalidInputf` carrier for a JSON Schema violation — `enum`, `pattern`,
-`type`, `minimum`/`maximum`, and the schema's own `required`. It is independent
-of the `required_policy` row above: the two check different things and both
-run. Its *non*-violation errors deliberately stay plain, so a `500`; see "JSON
-Schema enforcement on write" for the split.
+`type`, `minimum`/`maximum`, and the schema's own `required` — and, since #322,
+for a payload `json.Marshal` refuses to encode (`NaN`/`Inf` from a Go
+embedder), which is caller input just the same. It is independent of the
+`required_policy` row above: the two check different things and both run. Its
+*remaining* errors currently stay plain, so a `500` — a missing resolved
+schema, and a numeric literal that fits neither `int64` nor `float64`. Only the
+first of those is a deliberate `500`; the numeric literal is caller input
+misfiled on the operator side, a known gap tracked in #402. See "JSON Schema
+enforcement on write" for the split.
 
 Its published message deliberately includes the third-party `jsonschema-go`
 violation prose (decision recorded at the wrap site, `validator.go`): that text

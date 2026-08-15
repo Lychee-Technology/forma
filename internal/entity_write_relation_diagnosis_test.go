@@ -171,7 +171,7 @@ func TestWriteDiagnosisIsSilentWithoutRelationRoots(t *testing.T) {
 // gate, and it is not a special case in the code: forma.WithOperatorDetail
 // returns its input unchanged when that input publishes nothing
 // (client_error.go), and schemavalidate.Validate returns a plain error rather
-// than an ErrInvalidInput carrier for everything that is not a caller violation.
+// than an ErrInvalidInput carrier for every error outside the sentinel class.
 //
 // So a missing resolved schema — an operator fault that must surface as a 500,
 // not a 4xx — cannot pick up a diagnosis about relation roots on its way out.

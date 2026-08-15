@@ -50,7 +50,15 @@ func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, er
 	return c.relationRoots(schemaName), nil
 }
 
-// ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord
+// ToEAVRecord converts an model.EntityAttribute to an model.EAVRecord.
+//
+// Its conversion failures are plain errors; the numeric and bool cases name the
+// attribute by AttrID, the rest take their identity from ToEAVRecords' wrap.
+// AttrID is the EAV key and the only identity this layer holds — the attribute
+// name would need a metadata cache it does not take. The caller-facing carrier
+// that names the attribute and wraps forma.ErrInvalidInput is raised earlier,
+// at populateTypedValue (typed_value.go); reaching an error here on the write
+// path means the value got past it, so it is operator-visible by design.
 func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.UUID) (model.EAVRecord, error) {
 	record := model.EAVRecord{
 		SchemaID:     attr.SchemaID,
@@ -73,8 +81,11 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		numVal, err := toFloat64ForEAV(attr.Value)
+		if err == nil {
+			numVal, err = finiteForEAV(numVal)
+		}
 		if err != nil {
-			return record, fmt.Errorf("convert to numeric: %w", err)
+			return record, fmt.Errorf("convert to numeric for attrID %d: %w", attr.AttrID, err)
 		}
 		record.ValueNumeric = &numVal
 		if attr.ValueType == forma.ValueTypeBigInt {
@@ -104,7 +115,7 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 	case forma.ValueTypeBool:
 		boolVal, err := toBoolForEAV(attr.Value)
 		if err != nil {
-			return record, fmt.Errorf("convert to bool: %w", err)
+			return record, fmt.Errorf("convert to bool for attrID %d: %w", attr.AttrID, err)
 		}
 		floatBool := boolToFloat64(boolVal)
 		record.ValueNumeric = &floatBool
@@ -289,33 +300,9 @@ func (c *AttributeConverter) checkRequiredAttributes(
 }
 
 // Helper functions for conversion
-
-func toFloat64ForEAV(value any) (float64, error) {
-	switch v := value.(type) {
-	case *float64:
-		return requiredFloat64FromPointer(v, "float64")
-	case *float32:
-		return requiredFloat64FromPointer(v, "float32")
-	case *int:
-		return requiredFloat64FromPointer(v, "int")
-	case *int16:
-		return requiredFloat64FromPointer(v, "int16")
-	case *int32:
-		return requiredFloat64FromPointer(v, "int32")
-	case *int64:
-		return requiredFloat64FromPointer(v, "int64")
-	case string:
-		return parseTrimmedFloat64(v)
-	case *string:
-		str, err := derefPointer(v, "string")
-		if err != nil {
-			return 0, err
-		}
-		return parseTrimmedFloat64(str)
-	default:
-		return numutil.Float64(value)
-	}
-}
+//
+// The numeric coercion helpers (toFloat64ForEAV, parseTrimmedFloat64) live in
+// numeric_conversion.go alongside the finiteForEAV guard they feed.
 
 func toTimeForEAV(value any) (time.Time, error) {
 	switch v := value.(type) {
@@ -383,30 +370,42 @@ func toBoolForEAV(value any) (bool, error) {
 		}
 		return boolFromPositive(num), nil
 	case float32:
-		return float64ToBool(float64(v)), nil
+		return finiteFloat64ToBool(float64(v))
 	case *float32:
 		num, err := derefPointer(v, "float32")
 		if err != nil {
 			return false, err
 		}
-		return float64ToBool(float64(num)), nil
+		return finiteFloat64ToBool(float64(num))
 	case float64:
-		return float64ToBool(v), nil
+		return finiteFloat64ToBool(v)
 	case *float64:
 		num, err := derefPointer(v, "float64")
 		if err != nil {
 			return false, err
 		}
-		return float64ToBool(num), nil
+		return finiteFloat64ToBool(num)
 	case json.Number:
 		f, err := v.Float64()
 		if err != nil {
 			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
 		}
+		if err := finiteBoolInput(f); err != nil {
+			return false, err
+		}
 		return f != 0, nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to bool", value)
 	}
+}
+
+// finiteFloat64ToBool is toBoolForEAV's float path: reject non-finite, then
+// apply the existing threshold coercion unchanged.
+func finiteFloat64ToBool(value float64) (bool, error) {
+	if err := finiteBoolInput(value); err != nil {
+		return false, err
+	}
+	return float64ToBool(value), nil
 }
 
 func derefPointer[T any](value *T, typeName string) (T, error) {
@@ -427,18 +426,6 @@ func boolFromNonZero[T ~int32 | ~int64](value T) bool {
 
 func isTrueStringForEAV(value string) bool {
 	return strings.ToLower(value) == "true" || value == "1"
-}
-
-func parseTrimmedFloat64(value string) (float64, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, fmt.Errorf("empty string")
-	}
-	parsed, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parse float: %w", err)
-	}
-	return parsed, nil
 }
 
 func toTime(value any) (time.Time, error) {
@@ -479,11 +466,17 @@ func toBool(value any) (bool, error) {
 	case int64:
 		return v != 0, nil
 	case float64:
+		if err := finiteBoolInput(v); err != nil {
+			return false, err
+		}
 		return v != 0, nil
 	case json.Number:
 		f, err := v.Float64()
 		if err != nil {
 			return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", v.String(), err)
+		}
+		if err := finiteBoolInput(f); err != nil {
+			return false, err
 		}
 		return f != 0, nil
 	default:

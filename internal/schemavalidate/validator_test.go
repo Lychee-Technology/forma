@@ -2,6 +2,7 @@ package schemavalidate
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,6 +239,33 @@ func TestValidateUnknownSchemaIDIsNotClientError(t *testing.T) {
 	err = v.Validate(99, map[string]any{})
 	require.Error(t, err)
 	require.NotErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestValidateClassifiesUnmarshallablePayloadAsInvalidInput pins #322: a
+// payload the caller built that cannot be encoded as JSON — math.NaN()/
+// math.Inf(), reachable only from a Go embedder, since encoding/json cannot
+// decode those literals from an HTTP body — is the caller's fault, not the
+// operator's. It must carry forma.ErrInvalidInput and publish a message naming
+// the offending value — since #403 that message is synthesized, not the library's.
+func TestValidateClassifiesUnmarshallablePayloadAsInvalidInput(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	for name, value := range map[string]float64{
+		"NaN":  math.NaN(),
+		"+Inf": math.Inf(1),
+		"-Inf": math.Inf(-1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := v.Validate(3, map[string]any{"score": value})
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+			require.Contains(t, msg, name, "the published message names the offending value on either marshalRefusalError branch")
+		})
+	}
 }
 
 // TestValidateDoesNotReResolve pins that Validate reuses the schema resolved by

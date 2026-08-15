@@ -243,9 +243,18 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 
 // Validate checks doc against the schema registered for schemaID.
 //
-// A violation wraps forma.ErrInvalidInput: it is caller input and must surface
-// as 4xx. A missing resolved schema does not — that is a server configuration
-// fault and must stay operator-visible (docs/error-handling.md).
+// A violation, or a payload json.Marshal refuses to encode, wraps
+// forma.ErrInvalidInput: both are caller input and must surface as 4xx. A
+// missing resolved schema does not — that is a server configuration fault and
+// must stay operator-visible (docs/error-handling.md). Neither does a failure
+// to decode the marshaller's own output: marshalling already succeeded, so
+// that is an internal fault, not something the caller handed in.
+//
+// exactNumberInstance is the one honest gap. A literal that fits neither int64
+// nor float64 — {"score": 1e400}, which arrives intact because httpapi decodes
+// with UseNumber and json.Marshal re-emits a json.Number verbatim — is caller
+// input, yet it answers a plain error here and so a 500. That is a known
+// misclassification, tracked in #402, not a decision this comment is defending.
 //
 // doc is marshalled before validating. Native Go values do not carry their JSON
 // types: time.Time presents as an object and fails a "type":"string" property
@@ -267,7 +276,18 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 
 	raw, err := json.Marshal(doc)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload for schema %d: %w", schemaID, err)
+		// The caller's own payload cannot be encoded as JSON — math.NaN() or
+		// math.Inf() handed in by a Go embedder; no HTTP body can produce one
+		// (#322). That is caller input, so it carries the sentinel and
+		// publishes. encoding/json's text names the offending value ("json:
+		// unsupported value: NaN") but not where it sits, so marshalRefusalError
+		// walks the payload to derive the attribute path the library does not
+		// carry, and falls back to that text when the walk explains nothing.
+		// The transform layer independently rejects non-finite floats with the
+		// attribute name (finiteForEAV), which is what keeps report-only mode —
+		// which absorbs this carrier like any violation — from writing an
+		// unreadable row.
+		return marshalRefusalError(doc, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
