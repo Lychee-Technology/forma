@@ -47,6 +47,9 @@ type FederatedQueryOptions struct {
 	// gated on IncludeExecutionPlan: the #348 public partial marker must
 	// reach callers that never asked for a plan. The last executed DuckDB
 	// pass overwrites it, so it describes the pass that produced the page.
+	// Being an out-parameter, it has nowhere to land when the caller passes
+	// nil options: such a call drops the marker, so a caller that needs it
+	// must pass a non-nil *FederatedQueryOptions.
 	PartialScan *PartialScan
 }
 

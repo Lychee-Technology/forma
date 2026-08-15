@@ -237,6 +237,37 @@ func TestCorruptRetryPageCarriesPartialMarker(t *testing.T) {
 	require.Equal(t, []string{retryCorruptPath1}, page.Partial.ExcludedObjects)
 }
 
+// TestDegradedFallbackClearsPartialMarker pins the #348 out-parameter's
+// agreement with the page on the degraded path. The retry pass excludes the
+// first confirmed-corrupt object and therefore SETS opts.PartialScan; that
+// pass then fails too, and AllowPartialDegradedMode absorbs the failure into a
+// postgres-only answer. Because PartialScan is an out-parameter shared with the
+// caller, the marker left behind by the abandoned DuckDB pass would otherwise
+// describe a page that never scanned parquet at all — and the marker's scope
+// (#251 corrupt exclusion) never describes a postgres-only page.
+func TestDegradedFallbackClearsPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+		{midStreamFail: true, drainFails: []string{retryCorruptPath2}},
+	}}
+	e := newRetryEngine(t, duck,
+		[]string{retryKeptPathA, retryKeptPathB, retryCorruptPath1, retryCorruptPath2})
+
+	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), opts)
+	require.NoError(t, err, "degraded mode must absorb the second retryable failure")
+	require.Len(t, duck.mainSQL, 2, "the retry pass must have run and set the marker before degrading")
+
+	require.Nil(t, page.Partial, "a postgres-only page must not be marked partial")
+	require.Nil(t, opts.PartialScan,
+		"the out-parameter must agree with the page: the abandoned DuckDB pass's marker must be cleared")
+}
+
 // TestCleanQueryPageHasNoPartialMarker is the negative leg: a scan over the
 // full resolved set must not be marked partial.
 func TestCleanQueryPageHasNoPartialMarker(t *testing.T) {
@@ -318,6 +349,8 @@ func TestCorruptRetryRewindPreservesPrePassPlan(t *testing.T) {
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
 		coldTierQuery(), opts)
 	require.NoError(t, err)
+	require.Len(t, duck.mainSQL, 2,
+		"the failed pass plus one retry must have run — the rewind under test is only reached on the retry path")
 
 	require.Equal(t, 1, countSources(opts.ExecutionPlan, "caller pre-pass source"),
 		"a caller-recorded pre-pass source must survive the rewind")

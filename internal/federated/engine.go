@@ -334,6 +334,13 @@ func partialScanFromOpts(opts *model.FederatedQueryOptions) *model.PartialScan {
 // execution plan (#185 — the plan must reach callers that only see the page)
 // and stitches the plan onto the returned page.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, cause error) (*model.PersistentRecordPage, error) {
+	if opts != nil {
+		// The failed DuckDB pass may have recorded a #348 partial marker; the
+		// out-parameter must agree with the page this path returns, and the
+		// marker's scope (#251 corrupt exclusion) never describes a
+		// postgres-only answer.
+		opts.PartialScan = nil
+	}
 	recordDegradedFallbackPlan(opts, tables, cause)
 	page, perr := e.queryPostgresOnly(ctx, tables, fq)
 	if perr != nil {
