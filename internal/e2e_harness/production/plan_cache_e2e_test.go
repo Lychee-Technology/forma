@@ -134,4 +134,13 @@ func TestPlanCacheColdMissingRekeyEndToEnd(t *testing.T) {
 	post := queryTierRestricted(ctx, t, env, coldFilter, 3, "post-flush cold-only score filter")
 	assertUsesDuckDB(t, post)
 	assertPlanCacheNote(t, post, "plan_cache=miss")
+
+	// Standing guard on what the miss above means. Re-running the same shape
+	// must now hit: the post-flush miss produced a usable recompiled entry,
+	// and the cache itself survived the flush. Without this line a future
+	// harness change that discarded the engine (and with it the cache) during
+	// flush would make the miss trivially true — an empty cache rather than a
+	// re-key — and this probe would silently stop testing #255's keying.
+	post2 := queryTierRestricted(ctx, t, env, coldFilter, 3, "post-flush repeat is cache-served")
+	assertPlanCacheNote(t, post2, "plan_cache=hit")
 }

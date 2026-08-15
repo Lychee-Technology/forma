@@ -29,7 +29,7 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	// the engine exactly as factory.newRepositoryAndEngine pairs them
 	// (#142/#345). Building it here rather than on the Env ties its lifetime
 	// to the memoized engine: EvolveSchema and ReopenDuckDB drop e.engine, so
-	// the cache is discarded with it, matching the cold restart both model.
+	// the cache is discarded with it, matching the cold restart that both model.
 	planCache := queryplan.NewCache(4096)
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata, internal.WithPlanCache(planCache))
 	if e.breaker == nil && e.opts.breakerFailures > 0 {
