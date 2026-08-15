@@ -209,3 +209,20 @@ func assertCorruptExclusionNote(t *testing.T, res *QueryResult, key string) {
 	}
 	t.Errorf("plan notes lack the corrupt-exclusion marker for %s: %v", key, res.Plan.Notes)
 }
+
+// assertPartialMarker requires the page to carry the #348 partial marker
+// naming the excluded object — the page-level counterpart of
+// assertCorruptExclusionNote, and the source of the HTTP-visible
+// QueryResult.partial projection.
+func assertPartialMarker(t *testing.T, res *QueryResult, key string) {
+	t.Helper()
+	if res.Partial == nil {
+		t.Fatalf("page answered from a corrupt-excluded remainder must carry a partial marker")
+	}
+	for _, obj := range res.Partial.ExcludedObjects {
+		if strings.Contains(obj, key) {
+			return
+		}
+	}
+	t.Errorf("partial marker lacks excluded object %s: %v", key, res.Partial.ExcludedObjects)
+}

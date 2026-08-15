@@ -126,6 +126,7 @@ func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 		t.Errorf("partial read total = %d, want %d (page and count must agree)", res.Total, len(want))
 	}
 	assertCorruptExclusionNote(t, res, keys[1])
+	assertPartialMarker(t, res, keys[1])
 
 	// Second query answers from the exclusion cache without a failed scan —
 	// still partial, still loud.
@@ -135,6 +136,7 @@ func TestManifestConsistency_OneGoodOneBadFile(t *testing.T) {
 	}
 	assertIDSetEqual(t, resultRowIDSet(t, res2), want)
 	assertCorruptExclusionNote(t, res2, keys[1])
+	assertPartialMarker(t, res2, keys[1])
 
 	// A permanently corrupt object must not accumulate breaker failures:
 	// well past any failure threshold the route must still be DuckDB.
@@ -209,6 +211,7 @@ func TestManifestConsistency_OneGoodOneTruncatedFile(t *testing.T) {
 		t.Errorf("partial read total = %d, want %d (page and count must agree)", res.Total, len(want))
 	}
 	assertCorruptExclusionNote(t, res, keys[1])
+	assertPartialMarker(t, res, keys[1])
 
 	// Same partial answer from the exclusion cache with degraded mode OFF:
 	// exclusion is a property of the read path, not of the degraded flag.
@@ -221,4 +224,5 @@ func TestManifestConsistency_OneGoodOneTruncatedFile(t *testing.T) {
 		t.Fatalf("cached-exclusion query must stay duckdb-routed, got: %+v", res2.Plan.Routing)
 	}
 	assertCorruptExclusionNote(t, res2, keys[1])
+	assertPartialMarker(t, res2, keys[1])
 }
