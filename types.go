@@ -278,6 +278,11 @@ type QueryResult struct {
 	// actually took (DuckDB vs Postgres-only) and per-tier sources so callers
 	// can distinguish federated reads from hot-path reads without guessing.
 	ExecutionPlan *ExecutionPlan `json:"execution_plan,omitempty"`
+	// Partial marks a response answered from an incomplete data surface
+	// (#348); currently the only reason is the #251 corrupt-parquet
+	// exclusion. Nil/omitted for complete answers. Unlike ExecutionPlan it
+	// does not require federated.include_execution_plan.
+	Partial *PartialResultInfo `json:"partial,omitempty"`
 }
 
 // ExecutionPlan is the JSON-serializable projection of the engine's internal
@@ -325,6 +330,25 @@ type ExecutionMerge struct {
 	DedupKeys  []string `json:"dedup_keys,omitempty"`
 	DurationMs int64    `json:"duration_ms,omitempty"`
 }
+
+// PartialResultInfo marks a QueryResult whose page was answered from a
+// deliberately reduced data surface. It is the sanctioned HTTP-visible
+// partial signal (#348): the #251 corrupt-parquet exclusion note lives in
+// internal plan Notes, which never cross the HTTP boundary (#301/#306), so
+// without this field an API consumer sees fewer rows and a smaller
+// total_records with no explanation. Reason is a closed enum, not free text,
+// and the excluded objects are identified only by count — storage keys stay
+// internal. It is deliberately NOT Routing.Reason: the route does not change
+// on a partial read.
+type PartialResultInfo struct {
+	Reason              string `json:"reason"`
+	ExcludedObjectCount int    `json:"excluded_object_count,omitempty"`
+}
+
+// PartialReasonCorruptParquetExcluded reports a #251 partial read: one or
+// more verification-confirmed corrupt parquet objects were excluded and the
+// page was answered from the readable remainder plus the hot tier.
+const PartialReasonCorruptParquetExcluded = "corrupt_parquet_excluded"
 
 // CursorQueryResult represents cursor-based pagination results.
 type CursorQueryResult struct {

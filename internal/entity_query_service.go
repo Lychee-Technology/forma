@@ -129,6 +129,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		HasPrevious:   req.Page > 1,
 		ExecutionTime: time.Since(startTime),
 		ExecutionPlan: toExecutionPlan(page.ExecutionPlan),
+		Partial:       toPartialResult(page.Partial),
 	}, nil
 }
 
@@ -182,6 +183,20 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 	}
 
 	return out
+}
+
+// toPartialResult projects the engine's partial-scan report into the public
+// marker (#348). SECURITY: only the reason and the excluded-object COUNT
+// cross the boundary — the object keys are storage internals (#301/#306)
+// and stay on the internal plan Notes for embedders and operators.
+func toPartialResult(p *model.PartialScan) *forma.PartialResultInfo {
+	if p == nil || len(p.ExcludedObjects) == 0 {
+		return nil
+	}
+	return &forma.PartialResultInfo{
+		Reason:              forma.PartialReasonCorruptParquetExcluded,
+		ExcludedObjectCount: len(p.ExcludedObjects),
+	}
 }
 
 func tiersToStrings(tiers []model.DataTier) []string {
