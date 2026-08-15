@@ -97,14 +97,12 @@ func TestSchemaEvolutionNeverFlushedColumn(t *testing.T) {
 	// Scope note: this pair proves end-to-end pre/post-flush CORRECTNESS —
 	// the missing set is recomputed per query, so the same shape answers from
 	// the augmented scan before the flush and from the real column after it.
-	// It is NOT a plan-cache proof: the harness engine (production/engine.go)
-	// is built without WithPlanCache, unlike factory.NewEntityManager, so
-	// serveFromPlanCache returns ok=false on every query here and no skeleton
-	// is ever reused. (The harness Env is also manifest-wired, so a flush
-	// changes the resolved path list, which would re-key the scope hash via
-	// parquetPaths regardless.) The genuine re-key proof — same shape, same
-	// paths, cache HIT in between, missing set alone forcing a recompile —
-	// lives in federated.TestEngineColdMissingSetRekeysPlanCache.
+	// It is NOT a plan-cache proof: this Env is manifest-wired, so the flush
+	// changes the resolved path list and re-keys the scope hash regardless of
+	// the missing set (and the flush also empties the dirty set, which is a
+	// key component too). The genuine missing-set-alone re-key proof lives in
+	// TestPlanCacheColdMissingRekeyEndToEnd (glob Env, #345) and, at the
+	// engine seam, federated.TestEngineColdMissingSetRekeysPlanCache.
 	coldFilter := Query{
 		Schema: simple, PreferredTiers: coldTiers,
 		Filters: []Filter{{Attr: "score", Op: "gte", Value: "50"}},
