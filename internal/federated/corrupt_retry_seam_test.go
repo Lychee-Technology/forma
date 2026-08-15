@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/stretchr/testify/require"
 )
 
@@ -250,4 +251,41 @@ func TestCleanQueryPageHasNoPartialMarker(t *testing.T) {
 		coldTierQuery(), &model.FederatedQueryOptions{})
 	require.NoError(t, err)
 	require.Nil(t, page.Partial, "a full-set scan must not carry a partial marker")
+}
+
+// TestCorruptRetryTimingsDescribeOnlyTheRetryPass pins #348 item 1: Timings
+// IS projected through toExecutionPlan (unlike Notes), so stale keys from the
+// failed pass are publicly visible. The plan cache keys on the resolved path
+// set (#255), which makes the conflicting pair deterministic: request 1 warms
+// the cache for the full set, request 2's failed pass HITs that entry, and
+// its retry compiles the never-seen remainder set — a MISS. Without a
+// Timings rewind one request publicly reports both stamps.
+func TestCorruptRetryTimingsDescribeOnlyTheRetryPass(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{}, // request 1: clean full-set pass — warms the plan cache
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}}, // request 2, pass 1
+		{}, // request 2, retry over the remainder
+	}}
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
+		WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}),
+		WithPlanCache(queryplan.NewCache(64)))
+
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+	_, err := e.Query(context.Background(), tables, coldTierQuery(),
+		&model.FederatedQueryOptions{IncludeExecutionPlan: true})
+	require.NoError(t, err, "request 1 must succeed and warm the plan cache")
+
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	_, err = e.Query(context.Background(), tables, coldTierQuery(), opts)
+	require.NoError(t, err)
+	require.Len(t, duck.mainSQL, 3, "one clean scan, one failed scan, one retry")
+
+	_, hitStamp := opts.ExecutionPlan.Timings["plan_cache_hit"]
+	_, missStamp := opts.ExecutionPlan.Timings["plan_cache_miss"]
+	require.False(t, hitStamp, "the failed pass's cache-hit stamp must not survive the rewind")
+	require.True(t, missStamp, "the retry compiled a fresh plan for the remainder set")
 }

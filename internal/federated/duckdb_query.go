@@ -84,16 +84,27 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 type executionPlanMark struct {
 	sources int
 	notes   int
+	// timings snapshots the pre-pass Timings entries wholesale: Timings is a
+	// merged map, not an append log, so truncation cannot express "drop what
+	// the failed pass wrote" — and unlike Notes, Timings IS projected through
+	// toExecutionPlan, so a stale plan_cache_hit next to the retry's
+	// plan_cache_miss was publicly visible (#348 item 1).
+	timings map[string]int64
 }
 
-// markExecutionPlan snapshots the plan's length before the first pass.
+// markExecutionPlan snapshots the plan's length and timings before the first pass.
 func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
 	if opts == nil || opts.ExecutionPlan == nil {
 		return executionPlanMark{}
 	}
+	timings := make(map[string]int64, len(opts.ExecutionPlan.Timings))
+	for k, v := range opts.ExecutionPlan.Timings {
+		timings[k] = v
+	}
 	return executionPlanMark{
 		sources: len(opts.ExecutionPlan.Sources),
 		notes:   len(opts.ExecutionPlan.Notes),
+		timings: timings,
 	}
 }
 
@@ -106,9 +117,10 @@ func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
 // would explain the duplication never reach an API caller (toExecutionPlan
 // projects Routing, Timings, Sources and Merge, but drops Notes), so the plan
 // must be truthful by construction rather than by annotation. Rewind truncates
-// Sources and Notes only: Timings is a merged map, not an append log, and is
-// deliberately left as-is — it does cross the HTTP boundary, so a retried
-// request can report both plan_cache_hit and plan_cache_miss (follow-up #348).
+// Sources and Notes and restores the pre-pass Timings snapshot: Timings is a
+// merged map, not an append log, and it DOES cross the HTTP boundary —
+// leaving the failed pass's entries in place let one retried request publicly
+// report both plan_cache_hit and plan_cache_miss (#348 item 1).
 // Everything recorded BEFORE the first pass survives — the routing decision and
 // its note are the caller's, not the failed pass's. The retry re-records the
 // corrupt-exclusion note itself, via path resolution.
@@ -123,6 +135,11 @@ func (m executionPlanMark) rewind(opts *model.FederatedQueryOptions) {
 	if len(plan.Notes) > m.notes {
 		plan.Notes = plan.Notes[:m.notes]
 	}
+	restored := make(map[string]int64, len(m.timings))
+	for k, v := range m.timings {
+		restored[k] = v
+	}
+	plan.Timings = restored
 }
 
 // collectDuckDBFederatedQuery is one buffered pass of the streaming path; the
