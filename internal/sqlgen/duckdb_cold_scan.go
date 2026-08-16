@@ -31,10 +31,15 @@ type NullScanColumn struct {
 // object.
 //
 // Correlating a fired guard back to a specific object is the read path's job:
-// on a guard-classified failure, federated.identifyGuardViolations re-reads
-// each manifest-listed object through this same guarded source one file at a
-// time and names the violator(s) in the returned ParquetGuardViolationError
-// and the engine log (#351). Manual bisection (design.md §5) remains the
+// on a read failure that neither the missing-object classification (#187) nor
+// the corruption confirmation (#251) claims, federated.identifyGuardViolations
+// re-reads each manifest-listed object through this same guarded source one
+// file at a time and names the violator(s) in the returned
+// ParquetGuardViolationError and the engine log (#351). The trigger is
+// deliberately not a guard-specific classification: recognizing a fired guard
+// would mean matching error text, which misses the BIGINT CAST channel
+// entirely — its wording is DuckDB's own — so identification decides by
+// differential drain instead. Manual bisection (design.md §5) remains the
 // fallback for hint-authored path sets, which identification does not cover.
 const (
 	ParquetNullRowIDMessage     = "parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)"
