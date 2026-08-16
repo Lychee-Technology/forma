@@ -16,6 +16,12 @@ import (
 // that pre-existing integrity gap is documented in the #251 spike findings
 // and tracked in #347.
 //
+// The guarded sibling — identifyGuardViolations in parquet_guard_identify.go —
+// deliberately inverts this drain's blindness: it reads through the #256 scan
+// guard to NAME a schema-wrong object (#351), where this pass reads bare to
+// EXCLUDE a byte-corrupt one. Keep the two drains distinct: guarding this one
+// would auto-exclude schema-wrong objects, which #351 forbids.
+//
 // Confirmation requires TWO consecutive failed drains (#349 review R2-1):
 // deterministic corruption fails every drain — same bytes, same decode —
 // while a transient object-level fault (an S3 timeout, a reset connection)

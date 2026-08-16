@@ -503,7 +503,9 @@ Note that #251 verification drains `SELECT *` without the guard, so a
 schema-wrong (as opposed to byte-corrupt) object is never confirmed corrupt and
 never excluded — correct: exclusion is for unreadable bytes, while an
 export-schema violation is an operator-visible consistency fault, not something
-to route around.
+to route around. The guarded per-file identification pass (#351) is the
+deliberate counterpart: it uses the guard precisely to *name* such an object,
+while still never excluding it.
 
 **Trust boundary.** A stamp is trusted without reading bytes only because every
 object behind one was written by a Forma writer under manifest transactionality:
@@ -524,16 +526,35 @@ in the tool; and (c) the `deleted_at` presence channel, which stays gated at
 the read path until pre-#274 legacy delta objects are retired (#365) and is
 therefore reachable *only* through (b) until then.
 
-**Triage: the guard names the invariant, not the object.** When the guard fires,
-the operator gets the violated invariant and the offending column, but no path.
-Three things compound to that: the guard runs inside a single `union_by_name`
-scan over the whole resolved set, so DuckDB raises one error for the set rather
-than per file; the object *exists*, so nothing in the missing-key classification
-path speaks up; and the #251 drain above is unguarded, so its verify pass reads
-the file clean and excludes nothing. Until #351 adds guarded per-file
-identification, the triage path is manual bisection: list the schema's manifest
-paths, then run the guarded scan against one path at a time until the failing
-object is isolated.
+**Triage: the guard failure names its objects.** The set-scan error itself
+cannot name a path — the guard runs inside a single `union_by_name` scan over
+the whole resolved set, so DuckDB raises one error for the set — but on a
+guard-classified failure the engine now runs a guarded per-file drain over the
+manifest-listed set (#351): each object is re-read alone through the same
+guarded scan source, and an object whose guarded drain fails twice while its
+bare `SELECT *` drain reads clean is attributed as a schema-invariant violator.
+The differential is what separates the three failure families — byte
+corruption fails both drains (#251 territory), a missing object never gets
+here (#187 classification wins first), and only a schema-wrong object splits
+them. Attribution surfaces in two places: the returned
+`ParquetGuardViolationError` names the schema and the offending storage keys,
+and the engine logs an Error with the same paths — the log matters because
+under `AllowPartialDegradedMode` the error is absorbed by the postgres-only
+fallback. Identification never excludes: unlike byte corruption, a
+schema-wrong object may legitimately own rows that exclusion would silently
+drop once the object is repaired, so the retry-after-exclusion machinery
+stays #251-only. Note the deliberate breadth: a single-file guarded scan is
+strictly stricter than the set scan (a file missing only `deleted_at` fails
+alone but is tolerated in a set where a sibling carries the column), so the
+error's wording is an invariant statement — "fails the guarded single-file
+scan" — not a causation claim. Hint-authored path sets are not identified
+(no manifest vouches for them); for those the manual path remains: list the
+schema's manifest paths, then run the guarded scan against one path at a time.
+The cost envelope stays on the failure path: identification runs only when a
+read has already failed, adds at most ~3 drains per manifest-listed object
+(the guarded pair plus the bare confirmation) on top of #251's verification
+drains, runs the paths sequentially on the engine's DuckDB pool (one open
+connection by default, #285), and bails on context cancellation.
 
 **Cache invalidation.** The validator caches each path it validates, keyed by
 path **and by the stamp it was validated under** (nil for probe-validated). Path
