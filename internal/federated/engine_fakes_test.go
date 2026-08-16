@@ -65,12 +65,6 @@ type fakeDuckDBExecutor struct {
 	// test relies on: fixed system columns, unlistable globs.
 	globFiles    []string
 	describeCols map[string][][2]string
-
-	// drainCalls counts the per-file drains the failure path issues (#251
-	// verification and #351 guard identification). Counted separately from
-	// calls for the same reason describeCalls is: `calls`/`rows`/`err` model
-	// the MAIN scan, and every test that asserts on them means main scans.
-	drainCalls int
 }
 
 // isBareParquetDrainSQL / isGuardedParquetDrainSQL recognize the two per-file
@@ -136,7 +130,9 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 		return nil, fmt.Errorf("glob listing not faked")
 	}
 	if drained, ok := answerParquetDrainSQL(sql); ok {
-		f.drainCalls++
+		// Per-file drains (#251 verification, #351 identification) never touch
+		// calls/lastSQL/rows: those model the MAIN scan, and every test that
+		// asserts on them means main scans.
 		return drained, nil
 	}
 	f.calls++

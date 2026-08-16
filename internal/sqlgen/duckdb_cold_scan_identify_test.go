@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -40,26 +41,33 @@ func singleFileScanSource(path string) string {
 	return BuildParquetScanSource(fmt.Sprintf("'%s'", path), nil)
 }
 
+// drainQuery runs one query and iterates it to exhaustion, returning whichever
+// leg raised first: a guard can fire at open or mid-read, and the
+// identification pass treats both alike.
+func drainQuery(db *sql.DB, query string) error {
+	rows, err := db.Query(query)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+	}
+	return rows.Err()
+}
+
+// bareDrain is the differential's bare leg (parquet_verify.go, #251);
+// guardedDrain is its guarded leg (parquet_guard_identify.go, #351).
+func bareDrain(db *sql.DB, path string) error {
+	return drainQuery(db, fmt.Sprintf("SELECT * FROM read_parquet('%s')", path))
+}
+
+func guardedDrain(db *sql.DB, path string) error {
+	return drainQuery(db, "SELECT * FROM "+singleFileScanSource(path))
+}
+
 func TestSingleFileDifferentialDrainSplitsSchemaWrongFromHealthy(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
-
-	drain := func(query string) error {
-		rows, err := db.Query(query)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-		}
-		return rows.Err()
-	}
-	bare := func(path string) error {
-		return drain(fmt.Sprintf("SELECT * FROM read_parquet('%s')", path))
-	}
-	guarded := func(path string) error {
-		return drain("SELECT * FROM " + singleFileScanSource(path))
-	}
 
 	cases := []struct {
 		name, path string
@@ -74,9 +82,9 @@ func TestSingleFileDifferentialDrainSplitsSchemaWrongFromHealthy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, bare(tc.path),
+			require.NoError(t, bareDrain(db, tc.path),
 				"bare SELECT * must read the object clean — that is why #251 verify cannot attribute it")
-			gerr := guarded(tc.path)
+			gerr := guardedDrain(db, tc.path)
 			if tc.violates {
 				require.Error(t, gerr, "guarded single-file scan must fail a schema-wrong object")
 			} else {
@@ -86,29 +94,46 @@ func TestSingleFileDifferentialDrainSplitsSchemaWrongFromHealthy(t *testing.T) {
 	}
 }
 
-// TestSingleFileGuardedDrainRaisesNullPresenceMessage covers the error()
-// channel rather than the binder channel: a file that HAS the column but with
-// NULL values in it. Written inline because rows with row_id present-but-NULL
-// cannot come from guardFixtures (its rogue shapes drop columns outright). The
-// NULL literal must be typed so parquet keeps the column.
-func TestSingleFileGuardedDrainRaisesNullPresenceMessage(t *testing.T) {
+// TestSingleFileGuardedDrainRaisesNullPresenceMessages covers BOTH error()
+// presence channels rather than the binder channel: a file that HAS the column
+// but with NULL values in it. Written inline because rows with a
+// present-but-NULL row_id or changed_at cannot come from guardFixtures (its
+// rogue shapes drop columns outright). The NULL literal must be typed so
+// parquet keeps the column. Each case also asserts the bare leg reads clean,
+// so the differential identification relies on is characterized per channel,
+// not just the guarded half.
+func TestSingleFileGuardedDrainRaisesNullPresenceMessages(t *testing.T) {
 	db := guardDuckDB(t)
-	path := filepath.Join(t.TempDir(), "null_row_id.parquet")
-	_, err := db.Exec(fmt.Sprintf(
-		`COPY (SELECT CAST(NULL AS UUID) AS row_id, CAST(1 AS BIGINT) AS changed_at, `+
-			`CAST(0 AS BIGINT) AS deleted_at) TO '%s' (FORMAT PARQUET)`, path))
-	require.NoError(t, err)
+	dir := t.TempDir()
+	const liveRowID = `CAST('018f05c0-0000-7000-8000-00000000000a' AS UUID) AS row_id`
 
-	rows, qerr := db.Query("SELECT * FROM " + singleFileScanSource(path))
-	gerr := qerr
-	if qerr == nil {
-		defer func() { _ = rows.Close() }()
-		for rows.Next() {
-		}
-		gerr = rows.Err()
+	cases := []struct{ name, sel, message string }{
+		{
+			name: "null_row_id",
+			sel: `CAST(NULL AS UUID) AS row_id, CAST(1 AS BIGINT) AS changed_at, ` +
+				`CAST(0 AS BIGINT) AS deleted_at`,
+			message: ParquetNullRowIDMessage,
+		},
+		{
+			name: "null_changed_at",
+			sel: liveRowID + `, CAST(NULL AS BIGINT) AS changed_at, ` +
+				`CAST(0 AS BIGINT) AS deleted_at`,
+			message: ParquetNullChangedAtMessage,
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".parquet")
+			_, err := db.Exec(fmt.Sprintf(
+				"COPY (SELECT %s) TO '%s' (FORMAT PARQUET)", tc.sel, path))
+			require.NoError(t, err)
 
-	require.Error(t, gerr)
-	require.Contains(t, gerr.Error(), ParquetNullRowIDMessage,
-		"the presence channel must raise our authored message — the one text callers may quote in triage")
+			require.NoError(t, bareDrain(db, path),
+				"bare SELECT * must read the object clean — that is why #251 verify cannot attribute it")
+			gerr := guardedDrain(db, path)
+			require.Error(t, gerr)
+			require.Contains(t, gerr.Error(), tc.message,
+				"the presence channel must raise our authored message — the one text callers may quote in triage")
+		})
+	}
 }

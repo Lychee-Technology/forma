@@ -133,6 +133,14 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 	if errors.As(err, &retry) {
 		t.Fatal("every-object-unreadable is store/engine sickness, not per-file corruption")
 	}
+	// The #351 firewall: a sick store fails the guarded drain of every object,
+	// so identification must decline it too. It can only do so because it
+	// confirms the BARE drain succeeds before naming a path — delete that leg
+	// and every object in a sick store is misattributed as schema-wrong.
+	var viol *ParquetGuardViolationError
+	if errors.As(err, &viol) {
+		t.Fatalf("store/engine sickness must not be attributed to objects, got: %v", viol.Paths)
+	}
 	if !breaker.IsOpen() {
 		t.Fatal("store-wide failure must feed the breaker")
 	}

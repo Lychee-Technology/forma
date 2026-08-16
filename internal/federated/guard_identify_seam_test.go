@@ -92,7 +92,7 @@ func TestGuardFailureIdentifiesOffendingObject(t *testing.T) {
 
 	require.Error(t, err)
 	var viol *ParquetGuardViolationError
-	require.ErrorAs(t, err, &viol, "a guard-classified failure must carry per-file identification (#351)")
+	require.ErrorAs(t, err, &viol, "an unclaimed read failure must carry per-file identification (#351)")
 	require.Equal(t, []string{guardRoguePath}, viol.Paths)
 	require.Equal(t, int16(7), viol.SchemaID)
 	require.ErrorIs(t, err, ErrFederatedReadFailed, "classification chain unchanged")
