@@ -65,6 +65,44 @@ type fakeDuckDBExecutor struct {
 	// test relies on: fixed system columns, unlistable globs.
 	globFiles    []string
 	describeCols map[string][][2]string
+
+	// drainCalls counts the per-file drains the failure path issues (#251
+	// verification and #351 guard identification). Counted separately from
+	// calls for the same reason describeCalls is: `calls`/`rows`/`err` model
+	// the MAIN scan, and every test that asserts on them means main scans.
+	drainCalls int
+}
+
+// isBareParquetDrainSQL / isGuardedParquetDrainSQL recognize the two per-file
+// drain renderings by their SQL shape, never by driver text: verifyParquetPaths
+// (#251) drains `SELECT * FROM read_parquet('p')`, while identifyGuardViolations
+// (#351) drains through sqlgen.BuildParquetScanSource, which wraps the read in
+// the guarded `(SELECT * REPLACE (...) FROM ...) AS cold_scan` sub-select. A
+// rendered main scan is the advanced template (`WITH dirty_ids AS (...`) and
+// matches neither.
+func isBareParquetDrainSQL(sqlStr string) bool {
+	return strings.HasPrefix(sqlStr, "SELECT * FROM read_parquet(")
+}
+
+func isGuardedParquetDrainSQL(sqlStr string) bool {
+	return strings.HasPrefix(sqlStr, "SELECT * FROM (SELECT ") &&
+		strings.HasSuffix(sqlStr, ") AS cold_scan")
+}
+
+// answerParquetDrainSQL answers a per-file drain with a clean, BOUNDED
+// iterator and reports false for anything else. Every sequencing fake in this
+// package scripts MAIN scans; letting a drain consume the next scripted
+// outcome would both spend a slot the test never budgeted and risk spinning
+// forever, because a main-scan iterator may legitimately be unbounded
+// (failingScanRows.Next never returns false) while a drain iterates to
+// exhaustion. Clean is also the neutral answer: no test that merely fails a
+// main scan then acquires a corruption (#251) or guard-violation (#351)
+// verdict it never asked for.
+func answerParquetDrainSQL(sqlStr string) (duckDBRowsIterator, bool) {
+	if isBareParquetDrainSQL(sqlStr) || isGuardedParquetDrainSQL(sqlStr) {
+		return &verifyFakeRows{rowsLeft: 1}, true
+	}
+	return nil, false
 }
 
 func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
@@ -96,6 +134,10 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 			return &fakeStringRows{vals: f.globFiles}, nil
 		}
 		return nil, fmt.Errorf("glob listing not faked")
+	}
+	if drained, ok := answerParquetDrainSQL(sql); ok {
+		f.drainCalls++
+		return drained, nil
 	}
 	f.calls++
 	f.lastSQL = sql

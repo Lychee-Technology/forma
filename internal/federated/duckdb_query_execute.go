@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
+	"go.uber.org/zap"
 )
 
 // Execute-and-stream half of the DuckDB federated read path: running the
@@ -99,6 +100,11 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 // verification pass just read every other object through the same engine and
 // session, so it hands back the probe slot instead of recording a failure —
 // a permanently corrupt object must not hold the breaker open forever.
+// Last, a failure neither branch claimed runs the #351 guard identification:
+// the bare drains just read every object clean, so if a guarded single-file
+// drain fails deterministically the failure is a schema-invariant violation
+// and the error names the object(s). Identification decorates — it never
+// excludes, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
 	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
 	var inconsistent *ParquetSetInconsistentError
@@ -118,7 +124,34 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	if e.breaker != nil {
 		e.breaker.RecordFailure()
 	}
-	return fmt.Errorf("%s: %w: %w", op, classified, cause)
+	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
+	violating := e.identifyGuardViolationPaths(ctx, sc)
+	if len(violating) == 0 {
+		return wrapped
+	}
+	var schemaID int16
+	if q != nil {
+		schemaID = q.SchemaID
+	}
+	// Degraded mode absorbs this error and toExecutionPlan drops plan Notes,
+	// so the log is the only outlet that survives the fallback.
+	e.log().Error("parquet scan-guard failure attributed to objects",
+		zap.Int16("schema_id", schemaID),
+		zap.Strings("paths", violating))
+	return &ParquetGuardViolationError{SchemaID: schemaID, Paths: violating, cause: wrapped}
+}
+
+// identifyGuardViolationPaths gates the #351 identification the way
+// confirmCorruptPaths gates #251 verification: source-authored sets only —
+// hint-authored paths name objects no manifest vouches for, and the caller
+// pinned them deliberately. Unlike #251 it runs for single-path sets too:
+// verification needs a readable remainder to be worth confirming, whereas
+// naming the one object in the set is exactly what an operator needs.
+func (e *DBFederatedQueryEngine) identifyGuardViolationPaths(ctx context.Context, sc scan) []string {
+	if e == nil || e.duck == nil || !sc.pathsFromSource || len(sc.parquetPaths) == 0 {
+		return nil
+	}
+	return identifyGuardViolations(ctx, e.duck, sc.parquetPaths)
 }
 
 // confirmCorruptPaths runs per-file verification when the failed scan ran
