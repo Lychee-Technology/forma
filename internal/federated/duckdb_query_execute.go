@@ -129,16 +129,12 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	if len(violating) == 0 {
 		return wrapped
 	}
-	var schemaID int16
-	if q != nil {
-		schemaID = q.SchemaID
-	}
 	// Degraded mode absorbs this error and toExecutionPlan drops plan Notes,
 	// so the log is the only outlet that survives the fallback.
 	e.log().Error("parquet scan-guard failure attributed to objects",
-		zap.Int16("schema_id", schemaID),
+		zap.Int16("schema_id", q.SchemaID),
 		zap.Strings("paths", violating))
-	return &ParquetGuardViolationError{SchemaID: schemaID, Paths: violating, cause: wrapped}
+	return &ParquetGuardViolationError{SchemaID: q.SchemaID, Paths: violating, cause: wrapped}
 }
 
 // identifyGuardViolationPaths gates the #351 identification the way

@@ -39,7 +39,7 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 	}
 	var corrupt []string
 	for _, path := range paths {
-		if strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[") {
+		if unverifiablePath(path) {
 			continue
 		}
 		if err := drainParquet(ctx, duck, path); err != nil {
@@ -55,6 +55,15 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 		}
 	}
 	return corrupt
+}
+
+// unverifiablePath reports whether a path cannot be probed on its own: both
+// per-file drains interpolate it straight into SQL, so a quote-bearing entry
+// is unquotable and a glob names a set rather than one object. These are
+// exactly the entries the main scan keeps all-or-nothing behavior for —
+// unverifiable means neither excludable (#251) nor nameable (#351).
+func unverifiablePath(path string) bool {
+	return strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[")
 }
 
 // drainParquet opens one parquet object and iterates it to exhaustion.

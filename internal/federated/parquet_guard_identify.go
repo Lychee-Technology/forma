@@ -3,7 +3,6 @@ package federated
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
@@ -38,7 +37,7 @@ func identifyGuardViolations(ctx context.Context, duck DuckDBQueryExecutor, path
 	}
 	var violating []string
 	for _, path := range paths {
-		if strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[") {
+		if unverifiablePath(path) {
 			continue
 		}
 		if err := drainGuardedParquet(ctx, duck, path); err == nil {
@@ -85,8 +84,10 @@ func drainGuardedParquet(ctx context.Context, duck DuckDBQueryExecutor, path str
 	return nil
 }
 
-// ParquetGuardViolationError decorates a guard-classified read failure with
-// the objects identified by the guarded per-file drain (#351). Deliberate
+// ParquetGuardViolationError decorates a read failure that neither the
+// missing-object classification (#187) nor the corruption confirmation (#251)
+// claimed, with the objects identified by the guarded per-file drain (#351).
+// Deliberate
 // wording: the paths FAIL the guarded single-file scan — an invariant
 // statement, not a causation claim, because a single-file scan is strictly
 // stricter than the set scan (a file missing only deleted_at fails alone but
