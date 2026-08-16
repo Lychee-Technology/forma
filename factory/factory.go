@@ -305,9 +305,13 @@ func newRepositoryAndEngine(
 	planCache := queryplan.NewCache(4096)
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
 	// zap.L() is the same global the rest of this package logs through. It
-	// carries the federated validator's #256 stamp/footer cross-check, whose
-	// only surface is a log line: the read it observes succeeds, so no caller
-	// error and no execution plan would ever mention it.
+	// carries two log-only signals. The federated validator's #256
+	// stamp/footer cross-check, whose only surface is a log line: the read it
+	// observes succeeds, so no caller error and no execution plan would ever
+	// mention it. And the #351 guard-violation attribution: under
+	// AllowPartialDegradedMode the error naming the offending objects is
+	// absorbed into a Postgres-only answer and toExecutionPlan drops plan
+	// Notes, so the log line is the only surface that survives.
 	engineOpts := []federated.EngineOption{
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),

@@ -16,6 +16,12 @@ import (
 // that pre-existing integrity gap is documented in the #251 spike findings
 // and tracked in #347.
 //
+// The guarded sibling — identifyGuardViolations in parquet_guard_identify.go —
+// deliberately inverts this drain's blindness: it reads through the #256 scan
+// guard to NAME a schema-wrong object (#351), where this pass reads bare to
+// EXCLUDE a byte-corrupt one. Keep the two drains distinct: guarding this one
+// would auto-exclude schema-wrong objects, which #351 forbids.
+//
 // Confirmation requires TWO consecutive failed drains (#349 review R2-1):
 // deterministic corruption fails every drain — same bytes, same decode —
 // while a transient object-level fault (an S3 timeout, a reset connection)
@@ -33,7 +39,7 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 	}
 	var corrupt []string
 	for _, path := range paths {
-		if strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[") {
+		if unverifiablePath(path) {
 			continue
 		}
 		if err := drainParquet(ctx, duck, path); err != nil {
@@ -49,6 +55,15 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 		}
 	}
 	return corrupt
+}
+
+// unverifiablePath reports whether a path cannot be probed on its own: both
+// per-file drains interpolate it straight into SQL, so a quote-bearing entry
+// is unquotable and a glob names a set rather than one object. These are
+// exactly the entries the main scan keeps all-or-nothing behavior for —
+// unverifiable means neither excludable (#251) nor nameable (#351).
+func unverifiablePath(path string) bool {
+	return strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[")
 }
 
 // drainParquet opens one parquet object and iterates it to exhaustion.

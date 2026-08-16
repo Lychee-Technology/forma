@@ -32,14 +32,18 @@ func (f *failingScanRows) Scan(dest ...any) error { return fmt.Errorf("forced sc
 func (f *failingScanRows) Err() error             { return nil }
 func (f *failingScanRows) Close() error           { return nil }
 
-// scriptedDuckDBExecutor plays one prepared outcome per Query call and
-// repeats the last one when the script runs out.
+// scriptedDuckDBExecutor plays one prepared outcome per MAIN-scan Query call
+// and repeats the last one when the script runs out. Per-file drains are
+// answered clean off-script (see answerParquetDrainSQL).
 type scriptedDuckDBExecutor struct {
 	calls  int
 	script []func() (duckDBRowsIterator, error)
 }
 
 func (s *scriptedDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	if drained, ok := answerParquetDrainSQL(sql); ok {
+		return drained, nil
+	}
 	idx := s.calls
 	s.calls++
 	if idx >= len(s.script) {

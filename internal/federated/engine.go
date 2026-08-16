@@ -15,6 +15,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
+	"go.uber.org/zap"
 )
 
 // PostgresFederatedSource is the Postgres-side seam the federated engine
@@ -80,6 +81,14 @@ type DBFederatedQueryEngine struct {
 	// (#251) so resolveParquetPaths can exclude them. TTL-bounded — see
 	// corruptParquetCache. Only source-authored path sets consult it.
 	corruptPaths *corruptParquetCache
+	// logger is the engine's own operator outlet; zap.NewNop() when unset
+	// (see log(), in engine_options.go beside the option that sets this).
+	// Two writers use it: the pre-read validator's stamp cross-check (#256,
+	// via schemaValidator.logger, set together in WithLogger) and the
+	// guard-violation identification (#351), which needs a log precisely
+	// because in degraded mode its error is absorbed by the postgres-only
+	// fallback and plan Notes never reach API callers.
+	logger *zap.Logger
 }
 
 // flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the

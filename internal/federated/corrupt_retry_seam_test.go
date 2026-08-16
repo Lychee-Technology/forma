@@ -71,6 +71,14 @@ func (d *retryFakeDuck) Query(ctx context.Context, sql string, args ...any) (duc
 	if strings.HasPrefix(sql, "DESCRIBE ") || strings.HasPrefix(sql, "SELECT file FROM glob(") {
 		return d.fakeDuckDBExecutor.Query(ctx, sql, args...)
 	}
+	if isGuardedParquetDrainSQL(sql) {
+		// #351 guarded drains stay off both odometers: this fake scripts main
+		// scans and the bare #251 verification drains (drainsAtClose is the
+		// #285 ordering proof and counts exactly those). Without this branch a
+		// guarded drain would fall through to the main-scan arm and silently
+		// advance the pass index.
+		return &verifyFakeRows{rowsLeft: 1}, nil
+	}
 	if strings.HasPrefix(sql, "SELECT * FROM read_parquet(") {
 		d.drains++
 		for _, token := range d.pass().drainFails {

@@ -503,7 +503,9 @@ Note that #251 verification drains `SELECT *` without the guard, so a
 schema-wrong (as opposed to byte-corrupt) object is never confirmed corrupt and
 never excluded — correct: exclusion is for unreadable bytes, while an
 export-schema violation is an operator-visible consistency fault, not something
-to route around.
+to route around. The guarded per-file identification pass (#351) is the
+deliberate counterpart: it uses the guard precisely to *name* such an object,
+while still never excluding it.
 
 **Trust boundary.** A stamp is trusted without reading bytes only because every
 object behind one was written by a Forma writer under manifest transactionality:
@@ -524,16 +526,42 @@ in the tool; and (c) the `deleted_at` presence channel, which stays gated at
 the read path until pre-#274 legacy delta objects are retired (#365) and is
 therefore reachable *only* through (b) until then.
 
-**Triage: the guard names the invariant, not the object.** When the guard fires,
-the operator gets the violated invariant and the offending column, but no path.
-Three things compound to that: the guard runs inside a single `union_by_name`
-scan over the whole resolved set, so DuckDB raises one error for the set rather
-than per file; the object *exists*, so nothing in the missing-key classification
-path speaks up; and the #251 drain above is unguarded, so its verify pass reads
-the file clean and excludes nothing. Until #351 adds guarded per-file
-identification, the triage path is manual bisection: list the schema's manifest
-paths, then run the guarded scan against one path at a time until the failing
-object is isolated.
+**Triage: the guard failure names its objects.** The set-scan error itself
+cannot name a path — the guard runs inside a single `union_by_name` scan over
+the whole resolved set, so DuckDB raises one error for the set — but on a read
+failure that neither the missing-object classification (#187) nor the
+corruption confirmation (#251) claims, the engine now runs a guarded per-file
+drain over the manifest-listed set (#351): each object is re-read alone through
+the same guarded scan source, and an object whose guarded drain fails twice
+while its bare `SELECT *` drain reads clean is attributed as a schema-invariant
+violator. Note that the trigger is deliberately *not* a guard-specific
+classification — no such classification exists. Recognizing a fired guard would
+mean matching driver error text, which would miss the BIGINT `CAST` channel
+entirely, whose wording is DuckDB's own rather than one of the authored guard
+messages. Identification therefore runs on any unclaimed read failure and lets
+the differential decide; that same differential separates the three failure
+families — byte corruption fails both drains (#251 territory), a missing object
+never gets here (#187 classification wins first), and only a schema-wrong
+object splits them. On a failure no object owns, every guarded drain passes and
+nothing is attributed. Attribution surfaces in two places: the returned
+`ParquetGuardViolationError` names the schema and the offending storage keys,
+and the engine logs an Error with the same paths — the log matters because
+under `AllowPartialDegradedMode` the error is absorbed by the postgres-only
+fallback. Identification never excludes: unlike byte corruption, a
+schema-wrong object may legitimately own rows that exclusion would silently
+drop once the object is repaired, so the retry-after-exclusion machinery
+stays #251-only. Note the deliberate breadth: a single-file guarded scan is
+strictly stricter than the set scan (a file missing only `deleted_at` fails
+alone but is tolerated in a set where a sibling carries the column), so the
+error's wording is an invariant statement — "fails the guarded single-file
+scan" — not a causation claim. Hint-authored path sets are not identified
+(no manifest vouches for them); for those the manual path remains: list the
+schema's manifest paths, then run the guarded scan against one path at a time.
+The cost envelope stays on the failure path: identification runs only when a
+read has already failed, adds at most ~3 drains per manifest-listed object
+(the guarded pair plus the bare confirmation) on top of #251's verification
+drains, runs the paths sequentially on the engine's DuckDB pool (one open
+connection by default, #285), and bails on context cancellation.
 
 **Cache invalidation.** The validator caches each path it validates, keyed by
 path **and by the stamp it was validated under** (nil for probe-validated). Path
@@ -613,7 +641,7 @@ One unreadable parquet object no longer fails a whole manifest-authored scan. Th
 
 **Why a drain, not a footer probe.** DuckDB answers `DESCRIBE` and `COUNT(*)` from the Thrift footer and row-group metadata without touching data pages, so a footer probe passes cleanly on a page-corrupt object — the pre-read schema validator already footer-probes, and scenario 7 still failed. Only a drain reads the pages. A **solo drain reads a superset of the columns the scan projects**, so whatever per-file failure made the set scan fail is deterministically reproduced by the per-file pass; there is no failure that the set scan can detect and the verification pass cannot. That superset property is what makes attribution sound: an object is excluded because it was proven unreadable on its own, not because it was in the set when something went wrong.
 
-**Operator note — failure-path cost.** Verification drains every object of the failed set sequentially on the engine's single pooled connection (#285), and the retry then re-scans the remainder: for a tier of N listed objects, the first query after a corruption pays roughly N solo drains (one extra re-drain per failing object, for the two-failure confirmation) plus a second scan — and because cache entries expire, the same bill recurs on the first query of each retention window for as long as the corrupt object stays listed. This is the deliberate trade (cost bounded by failures, not by queries), but on large tiers it surfaces as a periodic latency blip, once per corrupt object per TTL window, until compaction or a manifest reconcile retires the object. A footer-probe pre-filter would not reduce it: footer-dead objects already fail the drain at open time (the drain's bind IS a footer read), and the dominant term — draining the healthy objects — cannot be certified by any metadata-only probe.
+**Operator note — failure-path cost.** Verification drains every object of the failed set sequentially on the engine's pooled connection (one open connection by default, #285), and the retry then re-scans the remainder: for a tier of N listed objects, the first query after a corruption pays roughly N solo drains (one extra re-drain per failing object, for the two-failure confirmation) plus a second scan — and because cache entries expire, the same bill recurs on the first query of each retention window for as long as the corrupt object stays listed. This is the deliberate trade (cost bounded by failures, not by queries), but on large tiers it surfaces as a periodic latency blip, once per corrupt object per TTL window, until compaction or a manifest reconcile retires the object. A footer-probe pre-filter would not reduce it: footer-dead objects already fail the drain at open time (the drain's bind IS a footer read), and the dominant term — draining the healthy objects — cannot be certified by any metadata-only probe.
 
 **Why not `ignore_errors`.** It does not exist. On the pinned engine (DuckDB **v1.4.5** via `github.com/duckdb/duckdb-go/v2`) `read_parquet(..., ignore_errors := true)` fails at bind time with `Binder Error: Invalid named parameter "ignore_errors" for function read_parquet`, and DuckDB enumerates the complete accepted parameter list — it contains no error-tolerance knob of any kind (`ignore_errors` is a `read_csv` parameter). The option therefore cannot be adopted today, and it would be rejected even if a later version added it: a reader-level skip is **silent** — no execution-plan marker, no classification, no per-object attribution — which recreates exactly the scenario-2 silent-loss class this subsystem exists to prevent. Depending on a flag whose appearance in a future upgrade would silently change read semantics is the wrong shape of dependency. See `docs/superpowers/plans/2026-08-02-issue-251-spike-findings.md` for the raw evidence.
 

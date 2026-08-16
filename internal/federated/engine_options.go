@@ -21,18 +21,33 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 
 // WithLogger gives the engine a logger; the default is zap.NewNop(). The
 // engine reports itself through returned errors and the execution plan, so
-// this is deliberately narrow: it carries the pre-read validator's
-// stamp-versus-footer cross-check (#256), which has no other outlet because
-// the read it observes SUCCEEDS. A manifest entry whose column stamp
-// contradicts the object's real footer is an operator's problem — no caller's
-// result would ever mention it.
+// this stays narrow — two outlets whose observations have nowhere else to go:
+// the pre-read validator's stamp-versus-footer cross-check (#256), invisible
+// because the read it observes SUCCEEDS (a manifest entry whose column stamp
+// contradicts the object's real footer is an operator's problem no caller's
+// result would ever mention), and the scan-guard violation identification
+// (#351), invisible under AllowPartialDegradedMode because the degraded
+// fallback absorbs the error and toExecutionPlan drops plan Notes.
 func WithLogger(l *zap.Logger) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
-		if l == nil || e.schemaValidator == nil {
+		if l == nil {
 			return
 		}
-		e.schemaValidator.logger = l
+		e.logger = l
+		if e.schemaValidator != nil {
+			e.schemaValidator.logger = l
+		}
 	}
+}
+
+// log is the nil-safe accessor for the engine's optional logger, mirroring
+// parquetSchemaValidator.log. It lives here, beside WithLogger, to keep
+// engine.go within the 500-line file limit.
+func (e *DBFederatedQueryEngine) log() *zap.Logger {
+	if e == nil || e.logger == nil {
+		return zap.NewNop()
+	}
+	return e.logger
 }
 
 // defaultCorruptPathRetention bounds how long a confirmed-corrupt parquet

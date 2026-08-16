@@ -24,6 +24,12 @@ type sequencedDuckDBExecutor struct {
 }
 
 func (f *sequencedDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	// Per-file drains are answered clean off-sequence: the sequence scripts
+	// main scans, and duck.calls is asserted as a main-scan odometer
+	// (see answerParquetDrainSQL).
+	if drained, ok := answerParquetDrainSQL(sql); ok {
+		return drained, nil
+	}
 	idx := f.calls
 	f.calls++
 	if idx < len(f.errs) && f.errs[idx] != nil {
