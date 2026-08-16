@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -191,6 +192,36 @@ func TestGuardIdentificationSkippedForHintAuthoredSet(t *testing.T) {
 	var viol *ParquetGuardViolationError
 	require.False(t, errors.As(err, &viol))
 	require.Empty(t, duck.drainSQL, "hint-authored sets must not be probed at all")
+}
+
+// TestGuardViolationStillFeedsTheBreaker pins the half of the classification
+// contract identification must NOT change. The pressure here is real, not
+// hypothetical: #351's own framing — a schema-wrong object is a file problem,
+// not engine sickness — is verbatim the argument #251 used two branches above
+// to justify handing back the probe slot INSTEAD of recording a failure. So
+// this branch ships with a standing invitation to make the same edit, and the
+// invitation must be declined: unlike a confirmed-corrupt object, a guard
+// violation is not contained by the objects it names — the set scan failed
+// outright, no rows were served, and nothing here proves the engine or store
+// is healthy. Move the violation return above RecordFailure, or swap
+// RecordFailure for ReleaseProbe, and this test goes red.
+func TestGuardViolationStillFeedsTheBreaker(t *testing.T) {
+	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
+	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: one RecordFailure opens it
+	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, hybridDuckConfig(), nil, "",
+		WithParquetSource(&fakeParquetSource{}))
+
+	sc := scan{parquetPaths: []string{guardHealthyPath, guardRoguePath}, pathsFromSource: true}
+	err := e.failDuckDBScan(context.Background(),
+		&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}, sc,
+		fmt.Errorf("scan: %w: guard fired", ErrFederatedReadFailed), "execute duckdb query")
+
+	var viol *ParquetGuardViolationError
+	require.ErrorAs(t, err, &viol,
+		"precondition: this must be the guard-violation branch, not one of the earlier ones")
+	require.Equal(t, []string{guardRoguePath}, viol.Paths)
+	require.True(t, breaker.IsOpen(),
+		"an identified guard violation is still a failed scan: the breaker must record it (#351 decorates, it does not reclassify)")
 }
 
 // TestGuardIdentificationRunsForSinglePathSet is the one place #351 is
