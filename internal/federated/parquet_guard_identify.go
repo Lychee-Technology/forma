@@ -87,20 +87,22 @@ func drainGuardedParquet(ctx context.Context, duck DuckDBQueryExecutor, path str
 // ParquetGuardViolationError decorates a read failure that neither the
 // missing-object classification (#187) nor the corruption confirmation (#251)
 // claimed, with the objects identified by the guarded per-file drain (#351).
-// Deliberate
-// wording: the paths FAIL the guarded single-file scan — an invariant
-// statement, not a causation claim, because a single-file scan is strictly
-// stricter than the set scan (a file missing only deleted_at fails alone but
-// is tolerated in a set where a sibling carries the column). Unwrap keeps the
-// original classification chain (ErrFederatedReadFailed): identification must
-// not change degradability, retry, or breaker behavior. Paths are full
-// storage URIs — operator detail; safe internally because httpapi redacts
-// non-published error text and toExecutionPlan drops Notes (#301/#306), the
-// same boundary contract corruptParquetRetryError relies on.
+// Deliberate wording: the paths FAIL the guarded single-file scan — an
+// invariant statement, not a causation claim, because a single-file scan is
+// strictly stricter than the set scan (a file missing only deleted_at fails
+// alone but is tolerated in a set where a sibling carries the column). Unwrap
+// keeps the original classification chain (ErrFederatedReadFailed):
+// identification must not change degradability, retry, or breaker behavior.
 type ParquetGuardViolationError struct {
+	// SchemaID is the schema the failed federated read was addressed to.
 	SchemaID int16
-	Paths    []string
-	cause    error
+	// Paths are the full storage URIs of the objects whose guarded
+	// single-file drain failed deterministically while their bare drain read
+	// clean. Operator detail; safe internally because httpapi redacts
+	// non-published error text and toExecutionPlan drops Notes (#301/#306),
+	// the same boundary contract corruptParquetRetryError relies on.
+	Paths []string
+	cause error
 }
 
 func (e *ParquetGuardViolationError) Error() string {

@@ -47,12 +47,15 @@ func singleFileScanSource(path string) string {
 func drainQuery(db *sql.DB, query string) error {
 	rows, err := db.Query(query)
 	if err != nil {
-		return err
+		return fmt.Errorf("query differential-drain SQL: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate differential-drain rows: %w", err)
+	}
+	return nil
 }
 
 // bareDrain is the differential's bare leg (parquet_verify.go, #251);
