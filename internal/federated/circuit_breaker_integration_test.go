@@ -254,3 +254,43 @@ func TestHalfOpenZeroPathStaysLoudForConsecutiveRequests(t *testing.T) {
 		"degraded mode must never answer a zero-path misconfiguration from Postgres alone")
 	require.Equal(t, 0, duck.calls)
 }
+
+// TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption pins #348 item 3 in
+// unit form (previously only the e2e exercised this trace): an open breaker
+// enters half-open, the probe query hits confirmed per-object corruption —
+// which is NOT engine sickness (verification just read every other object
+// through the same engine) — so failDuckDBScan hands the probe slot back via
+// ReleaseProbe instead of recording evidence. The retry's own Allow then
+// re-reserves the slot and its success closes the breaker. Delete the
+// corrupt branch's ReleaseProbe and the live reservation rejects the retry;
+// replace it with RecordFailure and the breaker re-opens — either mutation
+// fails this test.
+func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	breaker := NewCircuitBreaker(1, time.Minute, 50*time.Millisecond)
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
+		WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}))
+
+	breaker.RecordFailure() // threshold 1: opens
+	require.True(t, breaker.IsOpen())
+	time.Sleep(100 * time.Millisecond) // open period lapses → half-open
+
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), nil)
+	require.NoError(t, err, "probe released on confirmed corruption must admit the retry")
+	require.NotNil(t, page)
+	require.Len(t, duck.mainSQL, 2, "the failed probe pass plus exactly one admitted retry")
+
+	// RecordSuccess closed the breaker: only the closed state admits with the
+	// zero token (no probe reservation).
+	admitted, probe := breaker.Allow()
+	require.True(t, admitted, "breaker must be closed after the retry's success")
+	require.Zero(t, probe, "closed-state admission carries no probe reservation")
+}

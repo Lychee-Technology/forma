@@ -133,6 +133,15 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
+	// #348: the partial-scan out-parameter describes THIS call only. The
+	// DuckDB path resets it per pass and the degraded fallback clears it,
+	// but the hot-only gate and the routed postgres-only path below never
+	// reach a pass — without this entry reset, a caller reusing one options
+	// value across queries would read the previous call's marker after a
+	// postgres-only answer (PR #412 review).
+	if opts != nil {
+		opts.PartialScan = nil
+	}
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
 	// lacking the trailing row_id tiebreak here, before it can silently skip a
@@ -219,6 +228,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		TotalPages:    model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:   currentPage,
 		ExecutionPlan: execPlan,
+		Partial:       partialScanFromOpts(opts),
 	}, nil
 }
 
@@ -317,11 +327,29 @@ func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.Federated
 	page.ExecutionPlan = opts.ExecutionPlan
 }
 
+// partialScanFromOpts lifts the engine's partial-scan out-parameter onto the
+// page (#348). Postgres-only pages (hot-only gate, routed, degraded fallback)
+// never set it: the marker's scope is the #251 corrupt exclusion, and the
+// degraded fallback already signals through Routing.Reason.
+func partialScanFromOpts(opts *model.FederatedQueryOptions) *model.PartialScan {
+	if opts == nil {
+		return nil
+	}
+	return opts.PartialScan
+}
+
 // degradeToPostgresOnly serves the Postgres-only fallback for a degradable
 // DuckDB-path failure: it records the fallback decision and its cause on the
 // execution plan (#185 — the plan must reach callers that only see the page)
 // and stitches the plan onto the returned page.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, cause error) (*model.PersistentRecordPage, error) {
+	if opts != nil {
+		// The failed DuckDB pass may have recorded a #348 partial marker; the
+		// out-parameter must agree with the page this path returns, and the
+		// marker's scope (#251 corrupt exclusion) never describes a
+		// postgres-only answer.
+		opts.PartialScan = nil
+	}
 	recordDegradedFallbackPlan(opts, tables, cause)
 	page, perr := e.queryPostgresOnly(ctx, tables, fq)
 	if perr != nil {

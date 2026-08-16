@@ -62,6 +62,10 @@ type QueryResult struct {
 	CurrentPage int
 	Plan        *model.ExecutionPlan
 	FQ          *model.FederatedAttributeQuery
+	// Partial mirrors page.Partial (#348): the engine-internal record of a
+	// #251 corrupt-exclusion scan, carrying full storage keys — harness-side
+	// only, never serialized to an API consumer.
+	Partial *model.PartialScan
 }
 
 // ParquetGlob returns the production-layout parquet path template: one flat
@@ -99,6 +103,7 @@ func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 		CurrentPage: page.CurrentPage,
 		Plan:        opts.ExecutionPlan,
 		FQ:          fq,
+		Partial:     page.Partial,
 	}
 	e.queryN++
 	e.queries = append(e.queries, result)

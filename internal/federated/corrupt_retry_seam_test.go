@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/stretchr/testify/require"
 )
 
@@ -211,4 +212,177 @@ func TestCorruptRetryStopsAfterOneRetry(t *testing.T) {
 	require.Contains(t, err.Error(), retryCorruptPath1,
 		"the wrap must carry the first pass's attribution")
 	require.Len(t, duck.mainSQL, 2, "exactly one retry: two main scans, never three")
+}
+
+// TestCorruptRetryPageCarriesPartialMarker pins the #348 engine seam of the
+// public partial contract: the page produced by the post-exclusion retry must
+// carry the excluded object set — and it must do so WITHOUT
+// IncludeExecutionPlan, because the public marker exists precisely for
+// callers that never asked for a plan.
+func TestCorruptRetryPageCarriesPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, page.Partial,
+		"a page answered from the readable remainder must be marked partial")
+	require.Equal(t, []string{retryCorruptPath1}, page.Partial.ExcludedObjects)
+}
+
+// TestDegradedFallbackClearsPartialMarker pins the #348 out-parameter's
+// agreement with the page on the degraded path. The retry pass excludes the
+// first confirmed-corrupt object and therefore SETS opts.PartialScan; that
+// pass then fails too, and AllowPartialDegradedMode absorbs the failure into a
+// postgres-only answer. Because PartialScan is an out-parameter shared with the
+// caller, the marker left behind by the abandoned DuckDB pass would otherwise
+// describe a page that never scanned parquet at all — and the marker's scope
+// (#251 corrupt exclusion) never describes a postgres-only page.
+func TestDegradedFallbackClearsPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+		{midStreamFail: true, drainFails: []string{retryCorruptPath2}},
+	}}
+	e := newRetryEngine(t, duck,
+		[]string{retryKeptPathA, retryKeptPathB, retryCorruptPath1, retryCorruptPath2})
+
+	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), opts)
+	require.NoError(t, err, "degraded mode must absorb the second retryable failure")
+	require.Len(t, duck.mainSQL, 2, "the retry pass must have run and set the marker before degrading")
+
+	require.Nil(t, page.Partial, "a postgres-only page must not be marked partial")
+	require.Nil(t, opts.PartialScan,
+		"the out-parameter must agree with the page: the abandoned DuckDB pass's marker must be cleared")
+}
+
+// TestCleanQueryPageHasNoPartialMarker is the negative leg: a scan over the
+// full resolved set must not be marked partial.
+func TestCleanQueryPageHasNoPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{{}}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryKeptPathB})
+
+	page, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), &model.FederatedQueryOptions{})
+	require.NoError(t, err)
+	require.Nil(t, page.Partial, "a full-set scan must not carry a partial marker")
+}
+
+// TestCorruptRetryTimingsDescribeOnlyTheRetryPass pins #348 item 1: Timings
+// IS projected through toExecutionPlan (unlike Notes), so stale keys from the
+// failed pass are publicly visible. The plan cache keys on the resolved path
+// set (#255), which makes the conflicting pair deterministic: request 1 warms
+// the cache for the full set, request 2's failed pass HITs that entry, and
+// its retry compiles the never-seen remainder set — a MISS. Without a
+// Timings rewind one request publicly reports both stamps.
+func TestCorruptRetryTimingsDescribeOnlyTheRetryPass(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{}, // request 1: clean full-set pass — warms the plan cache
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}}, // request 2, pass 1
+		{}, // request 2, retry over the remainder
+	}}
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
+		WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}),
+		WithPlanCache(queryplan.NewCache(64)))
+
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+	_, err := e.Query(context.Background(), tables, coldTierQuery(),
+		&model.FederatedQueryOptions{IncludeExecutionPlan: true})
+	require.NoError(t, err, "request 1 must succeed and warm the plan cache")
+
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	_, err = e.Query(context.Background(), tables, coldTierQuery(), opts)
+	require.NoError(t, err)
+	require.Len(t, duck.mainSQL, 3, "one clean scan, one failed scan, one retry")
+
+	_, hitStamp := opts.ExecutionPlan.Timings["plan_cache_hit"]
+	_, missStamp := opts.ExecutionPlan.Timings["plan_cache_miss"]
+	require.False(t, hitStamp, "the failed pass's cache-hit stamp must not survive the rewind")
+	require.True(t, missStamp, "the retry compiled a fresh plan for the remainder set")
+}
+
+// TestCorruptRetryRewindPreservesPrePassPlan pins #348 item 2: rewind is a
+// truncate-to-mark, and the strongest wrong implementation — rewinding to an
+// empty mark (executionPlanMark{}) — destroys what the CALLER recorded before
+// the first pass (e.g. the pagination path's postgres source, pagination.go).
+// Routing alone cannot catch that: rewind never touches Routing.
+func TestCorruptRetryRewindPreservesPrePassPlan(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+
+	opts := &model.FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan: &model.ExecutionPlan{
+			Timings: map[string]int64{"caller_pre_pass": 7},
+			Notes:   []string{"caller pre-pass note"},
+			Sources: []model.DataSourcePlan{{
+				Tier: model.DataTierHot, Engine: "postgres", Reason: "caller pre-pass source",
+			}},
+		},
+	}
+	_, err := e.Query(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		coldTierQuery(), opts)
+	require.NoError(t, err)
+	require.Len(t, duck.mainSQL, 2,
+		"the failed pass plus one retry must have run — the rewind under test is only reached on the retry path")
+
+	require.Equal(t, 1, countSources(opts.ExecutionPlan, "caller pre-pass source"),
+		"a caller-recorded pre-pass source must survive the rewind")
+	require.Contains(t, opts.ExecutionPlan.Notes, "caller pre-pass note",
+		"a caller-recorded pre-pass note must survive the rewind")
+	require.Equal(t, int64(7), opts.ExecutionPlan.Timings["caller_pre_pass"],
+		"a caller-recorded pre-pass timing must survive the snapshot-restore")
+}
+
+// TestPostgresOnlyAnswerClearsReusedPartialMarker pins the PR #412 review
+// observation: the hot-only gate never runs a DuckDB pass, so without the
+// Query entry reset a caller reusing one options value across queries would
+// read the PREVIOUS call's marker after a postgres-only answer.
+func TestPostgresOnlyAnswerClearsReusedPartialMarker(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1})
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+
+	opts := &model.FederatedQueryOptions{}
+	_, err := e.Query(context.Background(), tables, coldTierQuery(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, opts.PartialScan, "the corrupt-exclusion retry must set the out-parameter")
+
+	hotOnly := coldTierQuery()
+	hotOnly.PreferredTiers = []model.DataTier{model.DataTierHot}
+	page, err := e.Query(context.Background(), tables, hotOnly, opts)
+	require.NoError(t, err)
+	require.Nil(t, page.Partial, "a postgres-only page never carries the marker")
+	require.Nil(t, opts.PartialScan, "the out-parameter must describe THIS call, not the previous one")
 }
