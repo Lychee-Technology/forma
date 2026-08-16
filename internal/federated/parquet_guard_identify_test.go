@@ -6,8 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // identifyFakeDuck routes drains by SQL shape: a guarded drain contains the
@@ -111,4 +114,16 @@ func TestParquetGuardViolationErrorChain(t *testing.T) {
 		"identification must not change classification: still a degradable read failure")
 	require.Contains(t, err.Error(), "s3://b/rogue.parquet")
 	require.Contains(t, err.Error(), "schema 7")
+}
+
+func TestWithLoggerFeedsEngineAndValidator(t *testing.T) {
+	core, _ := observer.New(zap.WarnLevel)
+	l := zap.New(core)
+	e := NewDBFederatedQueryEngine(nil, nil, nil, nil, forma.DuckDBConfig{}, nil, "", WithLogger(l))
+	require.Same(t, l, e.logger, "WithLogger must feed the engine's own outlet (#351)")
+	require.Same(t, l, e.schemaValidator.logger, "…without dropping the validator outlet (#256)")
+
+	var nilEngine *DBFederatedQueryEngine
+	require.NotNil(t, nilEngine.log(), "log() must be nil-safe like the validator's")
+	require.NotNil(t, (&DBFederatedQueryEngine{}).log())
 }
