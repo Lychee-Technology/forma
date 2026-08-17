@@ -66,23 +66,9 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
-	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
+	clients, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
 	if err != nil {
 		return err
-	}
-
-	// Setup manifest store if configured
-	var manifestStore manifest.Store
-	var manifestResolver manifest.PathResolver
-	if cfg.ManifestTemplate != "" {
-		manifestStore = &manifest.S3Store{
-			Client: activeFullS3Client,
-			Bucket: cfg.S3Bucket,
-		}
-		manifestResolver = manifest.PathResolver{
-			Prefix:       cfg.ManifestPrefix,
-			PathTemplate: cfg.ManifestTemplate,
-		}
 	}
 
 	// Setup Postgres connection
@@ -106,31 +92,21 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer duck.DB.Close()
 
-	tableName := cfg.ChangeLogTable
-	if tableName == "" {
-		tableName = "change_log"
-	}
+	flushCtx := newSchemaFlushContext(flushContextParams{
+		cfg:            cfg,
+		db:             db,
+		duck:           duck,
+		clients:        clients,
+		pgPassword:     pgPassword,
+		dryRun:         dryRun,
+		logger:         logger,
+		schemaRegistry: schemaRegistry,
+	})
 
 	// Get schemas with unflushed rows
-	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, tableName)
+	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
 		return err
-	}
-
-	// Process each schema
-	flushCtx := &schemaFlushContext{
-		db:               db,
-		duck:             duck,
-		s3Client:         activeS3Client,
-		cfg:              cfg,
-		tableName:        tableName,
-		pgPassword:       pgPassword,
-		dryRun:           dryRun,
-		logger:           logger,
-		schemaRegistry:   schemaRegistry,
-		manifestStore:    manifestStore,
-		manifestResolver: manifestResolver,
-		checksumObject:   newChecksumSeam(activeFullS3Client, cfg.S3Bucket),
 	}
 
 	return flushCtx.processSchemas(ctx, schemaIDs)
@@ -172,50 +148,6 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	}
 
 	return awsCfg.Region, awsCfg.Credentials, fullClient, nil
-}
-
-func resolveS3Clients(
-	provided S3ObjectClient,
-	fallback S3FullClient,
-	requireFull bool,
-) (S3ObjectClient, S3FullClient, error) {
-	if provided == nil {
-		if fallback == nil {
-			return nil, nil, fmt.Errorf("s3 client is required")
-		}
-		return fallback, fallback, nil
-	}
-
-	fullClient, ok := provided.(S3FullClient)
-	if !ok {
-		if requireFull {
-			return nil, nil, fmt.Errorf("manifest requires S3FullClient when custom s3 client is provided")
-		}
-		return provided, nil, nil
-	}
-
-	return provided, fullClient, nil
-}
-
-// newChecksumSeam builds the executor's manifest content-hash seam over the
-// resolved full S3 client (#347). It returns a literal nil closure when no
-// usable client exists, so the executor's `checksumObject == nil` gate stays
-// honest and entries simply go unstamped.
-//
-// The nil judgment happens here, on the concrete client, rather than inside the
-// executor: resolveS3Clients hands back an S3FullClient interface, and an
-// interface holding a typed-nil pointer passes `!= nil` and would panic on the
-// first GetObject (#302).
-func newChecksumSeam(client S3FullClient, bucket string) func(ctx context.Context, key string) (string, error) {
-	if client == nil {
-		return nil
-	}
-	if c, ok := client.(*s3.Client); ok && c == nil {
-		return nil
-	}
-	return func(ctx context.Context, key string) (string, error) {
-		return ObjectSHA256(ctx, client, bucket, key)
-	}
 }
 
 // setupPostgresConnection creates a Postgres connection, potentially using IAM auth.

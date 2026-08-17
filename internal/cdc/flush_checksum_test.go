@@ -148,8 +148,9 @@ func TestExecuteFlushCarriesChecksumSeamToExecutor(t *testing.T) {
 		},
 		executeSingle: func(executor *flushBatchExecutor, _ []uuid.UUID) error {
 			require.NotNil(t, executor.checksumObject, "executeFlush dropped the run's checksum seam")
-			seen, err = executor.checksumObject(ctx, "cdc/7/delta-file.parquet")
-			return err
+			sum, hashErr := executor.checksumObject(ctx, "cdc/7/delta-file.parquet")
+			seen = sum
+			return hashErr
 		},
 	}
 

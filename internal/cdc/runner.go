@@ -11,7 +11,6 @@ import (
 	awsCreds "github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
 )
 
@@ -125,22 +124,9 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
-	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
+	clients, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
 	if err != nil {
 		return fmt.Errorf("resolve s3 clients: %w", err)
-	}
-
-	var manifestStore manifest.Store
-	var manifestResolver manifest.PathResolver
-	if cfg.ManifestTemplate != "" {
-		manifestStore = &manifest.S3Store{
-			Client: activeFullS3Client,
-			Bucket: cfg.S3Bucket,
-		}
-		manifestResolver = manifest.PathResolver{
-			Prefix:       cfg.ManifestPrefix,
-			PathTemplate: cfg.ManifestTemplate,
-		}
 	}
 
 	db, pgPassword, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
@@ -156,29 +142,20 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		return fmt.Errorf("prepare duck exporter: %w", err)
 	}
 
-	tableName := cfg.ChangeLogTable
-	if tableName == "" {
-		tableName = "change_log"
-	}
+	flushCtx := newSchemaFlushContext(flushContextParams{
+		cfg:            cfg,
+		db:             db,
+		duck:           duck,
+		clients:        clients,
+		pgPassword:     pgPassword,
+		dryRun:         dryRun,
+		logger:         r.logger,
+		schemaRegistry: schemaRegistry,
+	})
 
-	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, tableName)
+	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
 		return err
-	}
-
-	flushCtx := &schemaFlushContext{
-		db:               db,
-		duck:             duck,
-		s3Client:         activeS3Client,
-		cfg:              cfg,
-		tableName:        tableName,
-		pgPassword:       pgPassword,
-		dryRun:           dryRun,
-		logger:           r.logger,
-		schemaRegistry:   schemaRegistry,
-		manifestStore:    manifestStore,
-		manifestResolver: manifestResolver,
-		checksumObject:   newChecksumSeam(activeFullS3Client, cfg.S3Bucket),
 	}
 
 	// Delegate to processSchemas so the Runner path runs the same pre-flight
