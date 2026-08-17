@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -57,7 +56,7 @@ func parsePath(path string) (schemaName string, rowID string, err error) {
 	path = strings.Trim(path, "/")
 
 	if path == "" {
-		return "", "", fmt.Errorf("invalid path: empty schema name")
+		return "", "", forma.InvalidInputf("empty schema name")
 	}
 
 	parts := strings.Split(path, "/")
@@ -68,7 +67,7 @@ func parsePath(path string) (schemaName string, rowID string, err error) {
 	case 2:
 		return parts[0], parts[1], nil
 	default:
-		return "", "", fmt.Errorf("invalid path format")
+		return "", "", forma.InvalidInputf("invalid path format")
 	}
 }
 
@@ -103,7 +102,7 @@ func parseSortParams(queryParams url.Values) ([]string, forma.SortOrder, error) 
 
 	if !hasSort || len(rawSortBy) == 0 {
 		if sortOrderParam != "" {
-			return nil, "", fmt.Errorf("sort_order requires sort_by to be specified")
+			return nil, "", forma.InvalidInputf("sort_order requires sort_by to be specified")
 		}
 		return nil, "", nil
 	}
@@ -119,7 +118,7 @@ func parseSortParams(queryParams url.Values) ([]string, forma.SortOrder, error) 
 	}
 
 	if len(sortFields) == 0 {
-		return nil, "", fmt.Errorf("sort_by provided but contained no valid fields")
+		return nil, "", forma.InvalidInputf("sort_by provided but contained no valid fields")
 	}
 
 	if sortOrderParam == "" {
@@ -132,7 +131,7 @@ func parseSortParams(queryParams url.Values) ([]string, forma.SortOrder, error) 
 	case "desc":
 		return sortFields, forma.SortOrderDesc, nil
 	default:
-		return nil, "", fmt.Errorf("invalid sort_order: %s", sortOrderParam)
+		return nil, "", forma.InvalidInputf("invalid sort_order: %s", sortOrderParam)
 	}
 }
 
@@ -193,20 +192,20 @@ func parseCreateObjects(rawBody any) ([]map[string]any, bool, error) {
 		return []map[string]any{v}, true, nil
 	case []any:
 		if len(v) == 0 {
-			return nil, false, fmt.Errorf("empty array not allowed")
+			return nil, false, forma.InvalidInputf("empty array not allowed")
 		}
 
 		objects := make([]map[string]any, len(v))
 		for i, item := range v {
 			obj, ok := item.(map[string]any)
 			if !ok {
-				return nil, false, fmt.Errorf("body[%d] must be an object", i)
+				return nil, false, forma.InvalidInputf("body[%d] must be an object", i)
 			}
 			objects[i] = obj
 		}
 		return objects, false, nil
 	default:
-		return nil, false, fmt.Errorf("body must be an object or array")
+		return nil, false, forma.InvalidInputf("body must be an object or array")
 	}
 }
 
