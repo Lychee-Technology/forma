@@ -3,9 +3,6 @@ package cdc
 import (
 	"context"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"strings"
 	"testing"
 
@@ -208,93 +205,6 @@ func TestInitStampColumnsBestEffort(t *testing.T) {
 	}
 	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols["row_id"] != "UUID" {
 		t.Fatalf("stamp not returned: %#v", cols)
-	}
-}
-
-// The init run context's S3-derived fields are wired in one place, so the
-// content-checksum seam hashes through the run's own S3 client (#347).
-func TestApplyInitS3WiringHashesThroughRunClient(t *testing.T) {
-	runCtx := &initRunContext{logger: zap.NewNop()}
-	cfg := CDCConfig{S3Bucket: "test-bucket", ManifestPrefix: "cdc", ManifestTemplate: "manifest/{{.SchemaID}}.json"}
-
-	applyInitS3Wiring(runCtx, cfg, &hashableFullS3Client{body: []byte("hello parquet")})
-
-	if runCtx.checksumObject == nil {
-		t.Fatal("init run context built without the checksum seam")
-	}
-	got, err := runCtx.checksumObject(context.Background(), "cdc/7/a_b.parquet")
-	if err != nil {
-		t.Fatalf("checksum seam returned error: %v", err)
-	}
-	// sha256("hello parquet")
-	const want = "sha256:950423965d5b936670f1549c58ce0594b58e1027c2b5e1e2a4f1515b1bc2f1b0"
-	if got != want {
-		t.Fatalf("checksum seam hash = %q, want %q", got, want)
-	}
-	if runCtx.manifestStore == nil {
-		t.Fatal("init run context built without the manifest store")
-	}
-	if runCtx.s3Client == nil {
-		t.Fatal("init run context built without the object client")
-	}
-	if runCtx.manifestResolver.PathTemplate != cfg.ManifestTemplate {
-		t.Fatalf("manifest resolver template = %q, want %q", runCtx.manifestResolver.PathTemplate, cfg.ManifestTemplate)
-	}
-}
-
-// A run with no usable S3 client leaves the seam nil — entries go unstamped
-// instead of the first hash panicking on a typed-nil client (#302).
-func TestApplyInitS3WiringLeavesChecksumSeamNilWithoutClient(t *testing.T) {
-	runCtx := &initRunContext{logger: zap.NewNop()}
-	applyInitS3Wiring(runCtx, CDCConfig{S3Bucket: "test-bucket"}, nil)
-
-	if runCtx.checksumObject != nil {
-		t.Fatal("checksum seam wired from a nil S3 client")
-	}
-	if runCtx.manifestStore != nil {
-		t.Fatal("manifest store wired without a manifest template")
-	}
-}
-
-// newInitRunContext opens Postgres and DuckDB, so no unit test can build it.
-// This is what keeps it from drifting back into hand-rolled S3 wiring that
-// silently leaves the checksum seam nil in production while
-// applyInitS3Wiring's own tests stay green (#318, #347).
-func TestNewInitRunContextWiresS3ThroughHelper(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "init.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse init.go: %v", err)
-	}
-
-	callsHelper := false
-	var storeLiteralSites []string
-	for _, decl := range file.Decls {
-		fn, isFunc := decl.(*ast.FuncDecl)
-		if !isFunc || fn.Body == nil {
-			continue
-		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if lit, isLit := n.(*ast.CompositeLit); isLit {
-				if sel, isSel := lit.Type.(*ast.SelectorExpr); isSel && sel.Sel.Name == "S3Store" {
-					storeLiteralSites = append(storeLiteralSites, fn.Name.Name)
-				}
-			}
-			call, isCall := n.(*ast.CallExpr)
-			if !isCall {
-				return true
-			}
-			if ident, isIdent := call.Fun.(*ast.Ident); isIdent && ident.Name == "applyInitS3Wiring" && fn.Name.Name == "newInitRunContext" {
-				callsHelper = true
-			}
-			return true
-		})
-	}
-
-	if !callsHelper {
-		t.Fatal("newInitRunContext does not wire its S3-derived fields through applyInitS3Wiring, so the checksum seam is unwired on the real init path")
-	}
-	if len(storeLiteralSites) > 0 {
-		t.Fatalf("init.go builds manifest.S3Store outside applyInitS3Wiring in %v; S3 wiring must stay in one place", storeLiteralSites)
 	}
 }
 

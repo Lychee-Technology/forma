@@ -7,10 +7,11 @@ import (
 // applyInitS3Wiring sets every S3-derived field of an init run context: the
 // object client the export path copies and stats through, the manifest store
 // and resolver, and the content-checksum seam (#347). It is the one place
-// those fields are wired, so a field that exists only here cannot be live on
-// some construction paths and silently absent on others — newInitRunContext,
-// which opens Postgres and DuckDB and so cannot be exercised by a unit test,
-// carries no S3 wiring of its own.
+// those fields are wired: newInitRunContext carries no S3 wiring of its own,
+// so a field that exists only here cannot be live on some construction paths
+// and silently absent on others. That the real constructor still delegates
+// here, with the run's own client, is checked directly by
+// TestNewInitRunContextWiresChecksumSeamOnTheRealPath.
 //
 // The manifest store and resolver stay behind the template check: without a
 // configured template there is no manifest path to resolve, and
