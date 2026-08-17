@@ -130,6 +130,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		schemaRegistry:   schemaRegistry,
 		manifestStore:    manifestStore,
 		manifestResolver: manifestResolver,
+		checksumObject:   newChecksumSeam(activeFullS3Client, cfg.S3Bucket),
 	}
 
 	return flushCtx.processSchemas(ctx, schemaIDs)
@@ -196,6 +197,27 @@ func resolveS3Clients(
 	return provided, fullClient, nil
 }
 
+// newChecksumSeam builds the executor's manifest content-hash seam over the
+// resolved full S3 client (#347). It returns a literal nil closure when no
+// usable client exists, so the executor's `checksumObject == nil` gate stays
+// honest and entries simply go unstamped.
+//
+// The nil judgment happens here, on the concrete client, rather than inside the
+// executor: resolveS3Clients hands back an S3FullClient interface, and an
+// interface holding a typed-nil pointer passes `!= nil` and would panic on the
+// first GetObject (#302).
+func newChecksumSeam(client S3FullClient, bucket string) func(ctx context.Context, key string) (string, error) {
+	if client == nil {
+		return nil
+	}
+	if c, ok := client.(*s3.Client); ok && c == nil {
+		return nil
+	}
+	return func(ctx context.Context, key string) (string, error) {
+		return ObjectSHA256(ctx, client, bucket, key)
+	}
+}
+
 // setupPostgresConnection creates a Postgres connection, potentially using IAM auth.
 func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, credProvider aws.CredentialsProvider, logger *zap.Logger) (*sql.DB, string, error) {
 	pgPassword := cfg.PGPassword
@@ -260,10 +282,13 @@ type schemaFlushContext struct {
 	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
-	tryLock          func(context.Context, *sql.DB, int16) (bool, func(), error)
-	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
-	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
-	processSchemaFn  func(context.Context, int16) error
+	// checksumObject is the executor's content-hash seam (#347), resolved once
+	// per run from the full S3 client; nil leaves manifest entries unstamped.
+	checksumObject  func(ctx context.Context, key string) (string, error)
+	tryLock         func(context.Context, *sql.DB, int16) (bool, func(), error)
+	executeSingle   func(*flushBatchExecutor, []uuid.UUID) error
+	executeInChunks func(*flushBatchExecutor, []uuid.UUID, int) error
+	processSchemaFn func(context.Context, int16) error
 }
 
 func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int64) error {
@@ -398,6 +423,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		logger:           c.logger,
 		manifestStore:    c.manifestStore,
 		manifestResolver: c.manifestResolver,
+		checksumObject:   c.checksumObject,
 		executeSingle:    c.executeSingle,
 		executeInChunks:  c.executeInChunks,
 	}

@@ -178,6 +178,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		schemaRegistry:   schemaRegistry,
 		manifestStore:    manifestStore,
 		manifestResolver: manifestResolver,
+		checksumObject:   newChecksumSeam(activeFullS3Client, cfg.S3Bucket),
 	}
 
 	// Delegate to processSchemas so the Runner path runs the same pre-flight
