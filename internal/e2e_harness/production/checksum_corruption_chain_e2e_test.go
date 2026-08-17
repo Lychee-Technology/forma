@@ -124,13 +124,18 @@ func assertScrubReportsOnlyDivergence(ctx context.Context, t *testing.T, env *En
 		t.Errorf("scrub skipped %d unstamped entries; the clean verdict on the rest is not full coverage",
 			s.SkippedUnstamped)
 	}
-	// The other discrepancy classes must be empty, so the residual verdict
-	// below is attributable to the checksum divergence by assertion rather
-	// than by construction: any of these would raise it on its own.
-	if len(s.DeltaOrphans) != 0 || len(s.Dangling) != 0 || len(s.StampDivergences) != 0 {
+	// Every other class Residual() counts must be empty, so the residual
+	// verdict below is attributable to the checksum divergence by assertion
+	// rather than by construction: any of these would raise it on its own.
+	// (Residual's remaining two inputs, Skipped and Err, are already excluded
+	// above — a skipped or failed schema could not have produced the single
+	// divergence just asserted.)
+	if len(s.DeltaOrphans) != 0 || len(s.BaseOrphans) != 0 || len(s.TmpOrphans) != 0 ||
+		len(s.Unknown) != 0 || len(s.Dangling) != 0 || len(s.StampDivergences) != 0 {
 		t.Fatalf("scrub found other discrepancies, so the residual verdict is not the checksum's:"+
-			" delta orphans %v, dangling %v, stamp divergences %v",
-			s.DeltaOrphans, s.Dangling, s.StampDivergences)
+			" delta orphans %v, base orphans %v, tmp orphans %v, unknown %v, dangling %v,"+
+			" stamp divergences %v",
+			s.DeltaOrphans, s.BaseOrphans, s.TmpOrphans, s.Unknown, s.Dangling, s.StampDivergences)
 	}
 	if !report.HasResidualDiscrepancies() {
 		t.Error("a checksum divergence must make the run discrepant (non-zero exit)")
@@ -275,9 +280,12 @@ func fetchObjectBytes(ctx context.Context, t *testing.T, env *Env, key string) [
 
 // putObjectBytes writes raw bytes back under an existing key: a plain body
 // with no content encoding of its own, with a read-back guard proving what
-// the store returns later is byte-identical to what was sent. Every write in
-// this package's fault vectors goes through here, overwriteObjectBytes
-// included.
+// the store returns later is byte-identical to what was sent. Every overwrite
+// of a published object in this package's fault vectors goes through here,
+// overwriteObjectBytes included. The package's other direct writers
+// (putJunkObject, putGarbageObject) are not overwrites — they plant new
+// objects no manifest lists, so nothing downstream compares their bytes to an
+// expected value and they need no byte-identity guard.
 func putObjectBytes(ctx context.Context, t *testing.T, env *Env, key string, data []byte) {
 	t.Helper()
 	if _, err := env.Cluster.S3.PutObject(ctx, &s3.PutObjectInput{
