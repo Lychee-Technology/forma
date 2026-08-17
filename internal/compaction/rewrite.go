@@ -26,6 +26,8 @@ func (c *Compactor) canRewrite() bool {
 //
 // Ordering is what makes this safe under manifest-driven reads
 // (manifest ⊆ live objects, internal/manifest/query_source.go):
+//  0. verify every stamped source still hashes to its manifest checksum and
+//     refuse the whole pass otherwise (#347),
 //  1. merge to a _tmp key (never listed),
 //  2. copy to a UUID-named final base key (never reused, so no listed object
 //     is ever overwritten),
@@ -48,6 +50,13 @@ func (c *Compactor) runRewrite(
 	sources []manifest.FileEntry,
 	analysis CompactionResult,
 ) (CompactionResult, error) {
+	// Fail closed before anything is merged: past this point the sources are
+	// folded into one object and then deleted, so a corrupt input would be
+	// laundered into the new base and lose its name (#347).
+	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
+		return CompactionResult{}, err
+	}
+
 	sourceURIs := make([]string, 0, len(sources))
 	sourcePaths := make(map[string]bool, len(sources))
 	for _, f := range sources {

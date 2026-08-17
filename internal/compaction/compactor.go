@@ -143,7 +143,10 @@ func computeBackoff(attempt int, base, max time.Duration) time.Duration {
 	return time.Duration(float64(backoff) * jitter)
 }
 
-// isRetryable determines if an error warrants a retry.
+// isRetryable determines if an error warrants a retry. It is an allowlist,
+// and that shape is load-bearing: everything not named here — including
+// ErrSourceChecksumMismatch (#347) — is terminal for the pass, so a corrupt
+// rewrite source is refused once instead of re-probed under backoff.
 func isRetryable(err error) bool {
 	// Concurrent modification is retryable (optimistic concurrency conflict)
 	if errors.Is(err, ErrConcurrentModification) {

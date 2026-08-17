@@ -62,6 +62,7 @@ type fakeObjectS3 struct {
 
 	objects map[string][]byte // bucket-relative key -> stored bytes
 	getErr  error             // when set, every GetObject fails with it
+	gets    []string          // keys GetObject was called with, in order
 }
 
 // putObject stages bytes under a bucket-relative key (what a writer would have
@@ -92,6 +93,7 @@ func (f *fakeObjectS3) DeleteObject(_ context.Context, in *s3.DeleteObjectInput,
 }
 
 func (f *fakeObjectS3) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	f.gets = append(f.gets, aws.ToString(in.Key))
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
