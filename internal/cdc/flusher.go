@@ -106,7 +106,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	// Get schemas with unflushed rows
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
-		return err
+		return fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
 
 	return flushCtx.processSchemas(ctx, schemaIDs)

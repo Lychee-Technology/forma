@@ -155,7 +155,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
-		return err
+		return fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
 
 	// Delegate to processSchemas so the Runner path runs the same pre-flight
