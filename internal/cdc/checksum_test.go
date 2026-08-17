@@ -25,6 +25,12 @@ func (f *fakeGetClient) GetObject(ctx context.Context, params *s3.GetObjectInput
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(f.body))}, nil
 }
 
+type nilBodyClient struct{}
+
+func (n *nilBodyClient) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	return &s3.GetObjectOutput{}, nil // nil Body
+}
+
 func TestObjectSHA256HashesBytes(t *testing.T) {
 	client := &fakeGetClient{body: []byte("hello parquet")}
 	got, err := ObjectSHA256(context.Background(), client, "b", "k/file.parquet")
@@ -43,8 +49,8 @@ func TestObjectSHA256HashesBytes(t *testing.T) {
 
 func TestObjectSHA256WrapsGetFailure(t *testing.T) {
 	client := &fakeGetClient{err: fmt.Errorf("boom")}
-	_, err := ObjectSHA256(context.Background(), client, "b", "k")
-	if err == nil || !strings.Contains(err.Error(), "k") {
+	_, err := ObjectSHA256(context.Background(), client, "b", "k/file.parquet")
+	if err == nil || !strings.Contains(err.Error(), "get object k/file.parquet for checksum") {
 		t.Fatalf("want wrapped error naming the key, got %v", err)
 	}
 }
@@ -52,5 +58,18 @@ func TestObjectSHA256WrapsGetFailure(t *testing.T) {
 func TestObjectSHA256NilClient(t *testing.T) {
 	if _, err := ObjectSHA256(context.Background(), nil, "b", "k"); err == nil {
 		t.Fatal("want error for nil client")
+	}
+}
+
+func TestObjectSHA256NilBody(t *testing.T) {
+	_, err := ObjectSHA256(context.Background(), &nilBodyClient{}, "b", "k/file.parquet")
+	if err == nil {
+		t.Fatal("want error for nil body")
+	}
+	if !strings.Contains(err.Error(), "empty response body for object") {
+		t.Fatalf("error message should mention 'empty response body', got %v", err)
+	}
+	if !strings.Contains(err.Error(), "k/file.parquet") {
+		t.Fatalf("error message should contain the key, got %v", err)
 	}
 }

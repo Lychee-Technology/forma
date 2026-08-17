@@ -31,6 +31,9 @@ func ObjectSHA256(ctx context.Context, client S3GetClient, bucket, key string) (
 	if err != nil {
 		return "", fmt.Errorf("get object %s for checksum: %w", key, err)
 	}
+	if out == nil || out.Body == nil {
+		return "", fmt.Errorf("empty response body for object %s: no bytes to checksum", key)
+	}
 	defer func() { _ = out.Body.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, out.Body); err != nil {
