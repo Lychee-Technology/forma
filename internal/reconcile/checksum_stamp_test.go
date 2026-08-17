@@ -111,6 +111,35 @@ func TestRepairChecksum_NilObjectReaderSkipsStamping(t *testing.T) {
 	require.Zero(t, logs.Len(), "an absent reader is a configuration choice, not a failure")
 }
 
+func TestRepairChecksum_ETagRetryDoesNotReReadTheObject(t *testing.T) {
+	// A 412 changes the manifest, not the parquet bytes, so the recomputed
+	// entry — checksum included — is reused across the retry. Without the
+	// entry cache the adopted object would be downloaded once per attempt.
+	body := []byte("adopted delta bytes")
+	orphanKey := "data/7/" + uuidA + ".parquet"
+	objects := &fakeObjects{bodies: map[string][]byte{orphanKey: body}}
+	r, manifests, _ := repairOrphanFixture(t, objects)
+	manifests.saveErrs = []error{errTestConflict}
+	manifests.onSaveConflict = func(f *fakeManifests) {
+		// The winning writer added an unrelated entry; the orphan is still
+		// missing from the reloaded manifest, so the retry re-appends it.
+		f.manifests[7] = &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+			{Tier: "delta", Path: "data/7/" + uuidB + ".parquet"},
+		}}
+		f.etags[7] = "etag-7-concurrent"
+	}
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{orphanKey}, report.Schemas[0].Repaired)
+	require.Len(t, manifests.saves, 1, "retry after 412 must land exactly one save")
+	require.GreaterOrEqual(t, manifests.loads, 2, "the conflict must have forced a reload")
+	require.Equal(t, []string{orphanKey}, objects.gets,
+		"the adopted object must be read exactly once across the retry")
+	require.Equal(t, wantChecksum(body), manifests.saves[0].m.Files[1].Checksum,
+		"the cached entry keeps its stamp through the retry")
+}
+
 // promoteOrphanFixture wires the two-file init orphan set promoteReconciler
 // describes, with the given object reader.
 func promoteOrphanFixture(t *testing.T, objects ObjectReader) (*Reconciler, *fakeManifests, string, string) {
@@ -169,6 +198,72 @@ func TestPromoteChecksum_ProbeFailureLeavesEntryUnstamped(t *testing.T) {
 	require.Empty(t, stamped[file1], "a failed hash leaves that entry unstamped")
 	require.Equal(t, wantChecksum(body2), stamped[file2], "its sibling still gets stamped")
 	requireStampWarn(t, logs, promotionStampWarn, file1, "s3 unavailable")
+}
+
+func TestPromoteChecksum_ETagRetryDoesNotReReadObjects(t *testing.T) {
+	// Same shape as TestPromote_RetriesOnETagConflict, with the object reader
+	// wired: the retry re-proves the inventory guards against the reloaded
+	// manifest but must not re-download the init set to re-stamp it.
+	lister, stats, live, file1, file2 := completeInitSet()
+	concurrentDelta := "data/7/" + uuidB + ".parquet"
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: concurrentDelta, Size: 1, LastModified: preInitClock()})
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}})
+	manifests.saveErrs = []error{errTestConflict}
+	manifests.onSaveConflict = func(f *fakeManifests) {
+		f.manifests[7] = &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+			{Tier: "delta", Path: concurrentDelta},
+		}}
+		f.etags[7] = "etag-7-concurrent"
+	}
+	body1, body2 := []byte("init file one"), []byte("init file two")
+	objects := &fakeObjects{bodies: map[string][]byte{file1: body1, file2: body2}}
+	r := promoteReconciler(t, lister, manifests, stats, live)
+	r.Objects = objects
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{file1, file2}, report.Schemas[0].PromotedBase)
+	require.Len(t, manifests.saves, 1, "retry after 412 must land exactly one save")
+	require.GreaterOrEqual(t, manifests.loads, 2, "the conflict must have forced a reload")
+	require.ElementsMatch(t, []string{file1, file2}, objects.gets,
+		"each promoted object must be read exactly once across the retry")
+
+	stamped := map[string]string{}
+	for _, f := range manifests.saves[0].m.Files {
+		stamped[f.Path] = f.Checksum
+	}
+	require.Equal(t, wantChecksum(body1), stamped[file1], "the stamp taken before the conflict survives it")
+	require.Equal(t, wantChecksum(body2), stamped[file2])
+}
+
+func TestPromoteChecksum_RefusedPromotionReadsNoObjects(t *testing.T) {
+	// The stamps are the only full-object reads this pass does, so they sit
+	// BEHIND verifyReplacementSafety: a set the eviction proof refuses must
+	// cost footer probes and stats queries, never a download of the whole
+	// init export. Same fixture as TestPromote_RefusesWhenConflictRevealsUnsafeEviction,
+	// but the unsafe base entry is already listed at attempt 0.
+	lister, stats, live, _, _ := completeInitSet()
+	mergedKey := "data/7/base-" + uuidB + ".parquet"
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: mergedKey, Size: 1, LastModified: preInitClock()})
+	stats.uncoveredVs = map[string][]compaction.UncoveredRow{mergedKey: {{RowID: rid1}}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "base", Path: mergedKey},
+	}})
+	objects := &fakeObjects{bodies: map[string][]byte{
+		initKey(rid1, rid2): []byte("init file one"),
+		initKey(rid3, rid3): []byte("init file two"),
+	}}
+	r := promoteReconciler(t, lister, manifests, stats, live)
+	r.Objects = objects
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, report.Schemas[0].PromotedBase)
+	require.Contains(t, report.Schemas[0].InitPromotionRefusal, "would lose")
+	require.Empty(t, manifests.saves)
+	require.Empty(t, objects.gets, "a refused promotion must not download the set it is refusing")
 }
 
 func TestPromoteChecksum_NilObjectReaderSkipsStamping(t *testing.T) {

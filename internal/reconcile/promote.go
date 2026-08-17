@@ -179,6 +179,28 @@ func (r *Reconciler) promotionColumns(ctx context.Context, schemaID int16, key s
 	return cols
 }
 
+// stampPromotedEntries puts the #256 column set and the #347 content checksum
+// on every entry about to be spliced into the base tier. Both stamps are
+// best-effort and independent: either may fail without costing the entry the
+// other, or the set its promotion.
+//
+// WHERE this runs is load-bearing, not incidental. The checksum stamp is a
+// FULL GET of every object in the init export set — the most expensive thing
+// this pass does — so it runs only on an attempt that has already cleared
+// verifyReplacementSafety: a promotion the survivor fence, the eviction proof,
+// or the resurrection guard refuses downloads nothing at all. The caller's
+// once-guard covers the other side: an etag conflict changes the manifest, not
+// the parquet objects these stamps describe, so a retry re-proves the
+// inventory guards but never re-reads the bytes (the same reasoning as
+// repair's entryCache).
+func (r *Reconciler) stampPromotedEntries(ctx context.Context, schemaID int16, entries []manifest.FileEntry) {
+	for i := range entries {
+		entries[i].Columns = r.promotionColumns(ctx, schemaID, entries[i].Path)
+		entries[i].Checksum = r.stampChecksum(ctx, schemaID, entries[i].Path,
+			"failed to checksum promoted orphan; entry stays unstamped")
+	}
+}
+
 // promotionResult is promoteInitOrphans' per-schema outcome: either every
 // orphan promoted, or none plus the refusal reason.
 type promotionResult struct {
@@ -194,9 +216,12 @@ type promotionResult struct {
 // the #290 GC path and the reason is reported. Runs under the schema
 // advisory lock; the save still goes through etag optimistic concurrency
 // because compaction does not take the lock. Eviction safety is re-proven
-// on every retry: a 412 means the inventory changed under us. Returns the
-// (possibly reloaded) manifest and etag so the delta-repair pass that
-// follows works against the post-promotion inventory.
+// on every retry: a 412 means the inventory changed under us. The entry
+// stamps (stampPromotedEntries) are taken lazily instead — once, on the first
+// attempt that clears those proofs — so a refused promotion pays no object
+// reads and a retry does not re-read them. Returns the (possibly reloaded)
+// manifest and etag so the delta-repair pass that follows works against the
+// post-promotion inventory.
 func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string, orphans []ObjectInfo, listed map[string]ObjectInfo) (promotionResult, *manifest.Manifest, string, error) {
 	if r.Stats == nil || r.LiveRows == nil {
 		return promotionResult{}, nil, "", fmt.Errorf(
@@ -218,21 +243,16 @@ func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *
 		return promotionResult{refusal: refusal}, m, etag, nil
 	}
 
-	// Stamp the column set and the content checksum on each entry now that
-	// verifyInitCoverage has confirmed the set is promotable. Both stamps are
-	// best-effort and independent: either may fail without costing the entry
-	// the other, or the set its promotion.
-	for i := range cov.entries {
-		cov.entries[i].Columns = r.promotionColumns(ctx, schemaID, cov.entries[i].Path)
-		cov.entries[i].Checksum = r.stampChecksum(ctx, schemaID, cov.entries[i].Path,
-			"failed to checksum promoted orphan; entry stays unstamped")
-	}
-
+	stamped := false
 	for attempt := 0; ; attempt++ {
 		if refusal := r.verifyReplacementSafety(ctx, m, cov, rc); refusal != "" {
 			r.Logger.Warn("refusing init orphan promotion; set stays GC-eligible",
 				zap.Int16("schema_id", schemaID), zap.String("reason", refusal))
 			return promotionResult{refusal: refusal}, m, etag, nil
+		}
+		if !stamped {
+			r.stampPromotedEntries(ctx, schemaID, cov.entries)
+			stamped = true
 		}
 		manifest.SpliceTierFiles(m, "base", cov.entries)
 		newETag, err := r.Manifests.Save(ctx, schemaID, m, etag)
