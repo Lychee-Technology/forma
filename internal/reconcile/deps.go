@@ -33,6 +33,14 @@ type ObjectDeleter interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
+// ObjectReader streams an object's raw bytes — the surface the #347 checksum
+// scrub re-hashes through cdc.ObjectSHA256. It is declared here rather than
+// reused from cdc so the reconciler names its own dependency; *s3.Client
+// satisfies it, as does cdc.S3GetClient's shape.
+type ObjectReader interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
 // s3ObjectAPI is the slice of *s3.Client the reconciler consumes. None of
 // the production S3 interfaces (cdc.S3ObjectClient, manifest.S3Client)
 // expose ListObjectsV2, so the tool declares its own.

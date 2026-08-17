@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 
@@ -43,6 +44,7 @@ type reconcileOptions struct {
 	repair          bool
 	gc              bool
 	verifyStamps    bool
+	verifyChecksums bool
 	gcGrace         time.Duration
 	etagRetries     int
 	duck            duckExportFlags
@@ -91,6 +93,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans and promote complete init-shaped base orphan sets (coverage + eviction-safety verified)")
 	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
 	verifyStamps := fs.Bool("verify-stamps", false, "Compare every listed entry's column stamp against the parquet footer (byte-truth check for the #256 stamp trust)")
+	verifyChecksums := fs.Bool("verify-checksums", false, "Re-hash every checksum-stamped object and compare with the manifest stamp (#347 byte-integrity scrub; one full GET per stamped entry)")
 	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")
 	etagRetries := fs.Int("etag-retries", 3, "Manifest save retries on optimistic-concurrency conflict")
 	opts.duck.register(fs, duckExportFlagOptions{memLimitDefault: "4GB", queryTimeout: 5 * time.Minute})
@@ -124,6 +127,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	opts.repair = *repair
 	opts.gc = *gc
 	opts.verifyStamps = *verifyStamps
+	opts.verifyChecksums = *verifyChecksums
 	opts.gcGrace = *gcGrace
 	opts.etagRetries = *etagRetries
 	return opts, nil
@@ -157,33 +161,14 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 
-	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
-	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
-	resolver := manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate}
-	r := &reconcile.Reconciler{
-		Lister:     objectStore,
-		Deleter:    objectStore,
-		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
-		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
-		Locker:     &reconcile.PGAdvisoryLocker{DB: db},
-		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID},
-		Now:        time.Now,
-		Bucket:     opts.s3.bucket,
-		DataPrefix: opts.dataPrefix,
-		Logger:     logger,
-		Opts: reconcile.Options{
-			Repair:         opts.repair,
-			GC:             opts.gc,
-			GCGrace:        opts.gcGrace,
-			VerifyStamps:   opts.verifyStamps,
-			MaxETagRetries: opts.etagRetries,
-		},
-	}
+	r := newReconciler(opts, s3Client, db, logger)
 
 	// Both the repair guards and --verify-stamps read parquet through the
 	// DuckDB stats engine; only repair needs the Postgres liveness surface,
 	// so LiveRows stays under its own gate to keep the "may be nil unless
-	// Opts.Repair" contract on the field honest.
+	// Opts.Repair" contract on the field honest. --verify-checksums needs
+	// neither: it hashes raw bytes straight off the S3 client, so it costs no
+	// DuckDB session at all.
 	if opts.repair || opts.verifyStamps {
 		exporter, err := openReconcileStatsEngine(ctx, opts, logger)
 		if err != nil {
@@ -201,7 +186,8 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		zap.String("data_prefix", opts.dataPrefix),
 		zap.Bool("repair", opts.repair),
 		zap.Bool("gc", opts.gc),
-		zap.Bool("verify_stamps", opts.verifyStamps))
+		zap.Bool("verify_stamps", opts.verifyStamps),
+		zap.Bool("verify_checksums", opts.verifyChecksums))
 
 	report, err := r.Run(ctx)
 	if err != nil {
@@ -209,6 +195,41 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	}
 	report.Render(os.Stdout)
 	return reconcileExitError(report)
+}
+
+// newReconciler assembles the Reconciler from parsed flags and the opened
+// clients. It is a separate function so the flag → behavior wiring is
+// unit-testable without Postgres or S3: everything below is pure
+// construction, and a dropped assignment here is otherwise invisible until
+// production (Objects in particular — verifyChecksums would then answer a
+// configuration error instead of scrubbing).
+func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logger *zap.Logger) *reconcile.Reconciler {
+	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
+	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
+	resolver := manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate}
+	return &reconcile.Reconciler{
+		Lister:    objectStore,
+		Deleter:   objectStore,
+		Objects:   s3Client, // raw byte reads: the #347 checksum scrub
+		Manifests: &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
+		GCStates:  &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
+		Locker:    &reconcile.PGAdvisoryLocker{DB: db},
+		Schemas: &reconcile.RegistrySchemaEnumerator{
+			DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID,
+		},
+		Now:        time.Now,
+		Bucket:     opts.s3.bucket,
+		DataPrefix: opts.dataPrefix,
+		Logger:     logger,
+		Opts: reconcile.Options{
+			Repair:          opts.repair,
+			GC:              opts.gc,
+			GCGrace:         opts.gcGrace,
+			VerifyStamps:    opts.verifyStamps,
+			VerifyChecksums: opts.verifyChecksums,
+			MaxETagRetries:  opts.etagRetries,
+		},
+	}
 }
 
 // reconcileExitError maps a rendered report to the process outcome:
