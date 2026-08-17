@@ -87,7 +87,8 @@ type CompactionConfig struct {
 	// sources and then deletes them, so the gate is the last moment silent
 	// corruption is both detectable and attributable to a named object, and
 	// that has to hold for deployments that never set this struct field.
-	// Setting it true trades that detection for one GET per stamped source.
+	// Setting it true trades that detection away to save one GET per stamped
+	// source.
 	SkipInputChecksumVerify bool
 
 	// Backoff parameters for S3/manifest operations

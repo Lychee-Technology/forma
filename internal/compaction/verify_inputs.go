@@ -58,7 +58,7 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 
 // bucketRelativeKey resolves a manifest path to a key inside the compactor's
 // bucket, reporting false for an absolute URI naming a different bucket. It
-// combines the two path rules already in this file: objectURI's leading-slash
+// combines the two path rules already in rewrite.go: objectURI's leading-slash
 // trim for relative paths, and deleteObjects' foreign-bucket rejection.
 func (c *Compactor) bucketRelativeKey(path string) (string, bool) {
 	if !strings.HasPrefix(path, "s3://") {

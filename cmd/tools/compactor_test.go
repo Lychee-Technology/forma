@@ -37,6 +37,36 @@ func setStaticS3Env(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "env-token")
 }
 
+// TestParseCompactorFlags_InputChecksumVerify pins the flag→config plumbing of
+// the #347 escape hatch. The gate is fail-closed by default, so the default
+// case is the load-bearing half: deleting the SkipInputChecksumVerify field
+// from the CompactionConfig literal in parseCompactorFlags turns the opt-in
+// case red, and flipping the flag's default to true turns the default case red.
+func TestParseCompactorFlags_InputChecksumVerify(t *testing.T) {
+	base := []string{"--schema-id", "7", "--s3-bucket", "bkt"}
+
+	opts, err := parseCompactorFlags(base)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if opts.compact.SkipInputChecksumVerify {
+		t.Fatal("SkipInputChecksumVerify must default to false: the #347 pre-merge gate verifies unless opted out")
+	}
+
+	opts, err = parseCompactorFlags(append(append([]string{}, base...), "--skip-input-checksum-verify"))
+	if err != nil {
+		t.Fatalf("parse with --skip-input-checksum-verify: %v", err)
+	}
+	if !opts.compact.SkipInputChecksumVerify {
+		t.Fatal("--skip-input-checksum-verify must reach CompactionConfig.SkipInputChecksumVerify")
+	}
+	// WithDefaults() runs on that literal; a future zero-value normalization of
+	// the bool would silently re-arm the gate an operator asked to bypass.
+	if opts.compact.MaxRetries == 0 {
+		t.Fatal("WithDefaults did not run; the assertion above no longer covers the post-defaults value")
+	}
+}
+
 // TestOpenMergeEngine_DoesNotConsultCredentialChain pins the deliberate
 // narrowing of #329: the merge engine resolves credentials through the shared
 // cdc.ResolveStaticS3Credentials rule (explicit config, else the environment

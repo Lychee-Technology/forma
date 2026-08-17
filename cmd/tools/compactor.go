@@ -41,6 +41,11 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	maxDeltaSizeMB := fs.Int("max-delta-size-mb", 50, "Maximum delta size in MB")
 	dirtyRatioPct := fs.Int("dirty-ratio-pct", 5, "Dirty ratio percentage threshold")
 
+	skipInputChecksumVerify := fs.Bool("skip-input-checksum-verify", false,
+		"Skip the #347 pre-merge integrity gate on rewrite inputs. Verification is on by default; "+
+			"use this flag only to unwedge compaction when a stamped source is known-corrupt and the "+
+			"corruption has been triaged")
+
 	maxRetries := fs.Int("max-retries", 5, "Maximum retry attempts")
 	baseBackoffMs := fs.Int("base-backoff-ms", 100, "Base backoff in milliseconds")
 	maxBackoffMs := fs.Int("max-backoff-ms", 10000, "Maximum backoff in milliseconds")
@@ -66,13 +71,14 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	}
 
 	opts.compact = cdc.CompactionConfig{
-		SchemaID:         int16(*schemaID),
-		TargetBaseSizeMB: *targetBaseSizeMB,
-		MaxDeltaSizeMB:   *maxDeltaSizeMB,
-		DirtyRatioPct:    *dirtyRatioPct,
-		MaxRetries:       *maxRetries,
-		BaseBackoff:      time.Duration(*baseBackoffMs) * time.Millisecond,
-		MaxBackoff:       time.Duration(*maxBackoffMs) * time.Millisecond,
+		SchemaID:                int16(*schemaID),
+		TargetBaseSizeMB:        *targetBaseSizeMB,
+		MaxDeltaSizeMB:          *maxDeltaSizeMB,
+		DirtyRatioPct:           *dirtyRatioPct,
+		SkipInputChecksumVerify: *skipInputChecksumVerify,
+		MaxRetries:              *maxRetries,
+		BaseBackoff:             time.Duration(*baseBackoffMs) * time.Millisecond,
+		MaxBackoff:              time.Duration(*maxBackoffMs) * time.Millisecond,
 	}.WithDefaults()
 	opts.manifest = cdc.ManifestConfig{
 		Bucket:       opts.s3.bucket,

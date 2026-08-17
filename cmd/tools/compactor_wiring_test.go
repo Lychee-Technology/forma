@@ -44,6 +44,14 @@ func TestCompactorWiringSetsObjectReader(t *testing.T) {
 				t.Errorf("%s:%d builds a compaction.Compactor whose ObjectReader is not the run's s3Client; merged base entries would go unstamped (#347)",
 					name, fset.Position(lit.Pos()).Line)
 			}
+			// The parsed flags are the only carrier of
+			// --skip-input-checksum-verify; a Compactor built with a Config
+			// from anywhere else would silently ignore the operator's opt-out
+			// while TestParseCompactorFlags_InputChecksumVerify stayed green.
+			if !litSetsFieldToSelector(lit, "Config", "opts", "compact") {
+				t.Errorf("%s:%d builds a compaction.Compactor whose Config is not opts.compact; the parsed compactor flags would not reach compaction (#347)",
+					name, fset.Position(lit.Pos()).Line)
+			}
 			return true
 		})
 	}
@@ -62,6 +70,28 @@ func isCompactionCompactor(expr ast.Expr) bool {
 	}
 	pkg, isIdent := sel.X.(*ast.Ident)
 	return isIdent && pkg.Name == "compaction"
+}
+
+// litSetsFieldToSelector is litSetsFieldToIdent for a `recv.field` value, e.g.
+// `Config: opts.compact`.
+func litSetsFieldToSelector(lit *ast.CompositeLit, field, wantRecv, wantField string) bool {
+	for _, elt := range lit.Elts {
+		kv, isKV := elt.(*ast.KeyValueExpr)
+		if !isKV {
+			continue
+		}
+		key, isKeyIdent := kv.Key.(*ast.Ident)
+		if !isKeyIdent || key.Name != field {
+			continue
+		}
+		sel, isSel := kv.Value.(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != wantField {
+			return false
+		}
+		recv, isRecvIdent := sel.X.(*ast.Ident)
+		return isRecvIdent && recv.Name == wantRecv
+	}
+	return false
 }
 
 // litSetsFieldToIdent reports whether a keyed composite literal assigns the

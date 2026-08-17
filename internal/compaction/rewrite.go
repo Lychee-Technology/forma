@@ -27,7 +27,10 @@ func (c *Compactor) canRewrite() bool {
 // Ordering is what makes this safe under manifest-driven reads
 // (manifest ⊆ live objects, internal/manifest/query_source.go):
 //  0. verify every stamped source still hashes to its manifest checksum and
-//     refuse the whole pass otherwise (#347),
+//     refuse the whole pass otherwise (#347) — subject to the exceptions on
+//     verifySourceChecksums' godoc: it covers stamped sources inside this
+//     compactor's own bucket, and does nothing when the config opts out or no
+//     ObjectReader is wired,
 //  1. merge to a _tmp key (never listed),
 //  2. copy to a UUID-named final base key (never reused, so no listed object
 //     is ever overwritten),
