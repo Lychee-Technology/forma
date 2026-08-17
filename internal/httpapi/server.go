@@ -169,7 +169,11 @@ func writeSuccess(w http.ResponseWriter, statusCode int, data any) error {
 	return writeJSON(w, statusCode, data)
 }
 
-// parseUUID parses a UUID string.
+// parseUUID parses a UUID string. Its error is google/uuid's own prose about
+// the malformed literal the caller sent — caller-addressed parse feedback
+// carrying no operator data — so call sites publish it deliberately via
+// forma.InvalidInputf("%v", err) and route it through respondError (#360); the
+// gate's scrub still applies to it.
 func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
 }
@@ -178,6 +182,11 @@ func parseUUID(s string) (uuid.UUID, error) {
 // decode as json.Number so integer attribute values above 2^53 reach any-typed
 // sinks (entity data maps) undamaged (#205, #282); decoding into typed struct
 // fields is unaffected by UseNumber.
+//
+// Its error is encoding/json's own prose — caller-addressed parse feedback
+// carrying no operator data — so call sites publish it deliberately via
+// forma.InvalidInputf("%v", err) and route it through respondError (#360); the
+// gate's scrub still applies to it.
 func readJSONBody(r *http.Request, v any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
