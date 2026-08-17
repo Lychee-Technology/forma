@@ -138,6 +138,10 @@ func (c *Compactor) runRewrite(
 // reported and leaves the entry unstamped (verification skips empty
 // checksums), never fails the rewrite. Nil ObjectReader means no stamping.
 func (c *Compactor) stampChecksum(ctx context.Context, schemaID int16, finalKey string) string {
+	// This plain nil check needs no typed-nil companion (#302): both Compactor
+	// construction sites assign the same client value to S3 and to ObjectReader,
+	// and the CopyTmpToFinal call above already dispatched on c.S3 — a nil
+	// pointer behind that interface faults there, before this line runs.
 	if c.ObjectReader == nil {
 		return ""
 	}

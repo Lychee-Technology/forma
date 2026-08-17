@@ -15,7 +15,7 @@ import (
 // ObjectReader assignment could be deleted and every merged base would silently
 // go unstamped in production while internal/compaction's own tests stayed green
 // (#318). The guard is over the source: every compaction.Compactor literal this
-// command builds must set the field.
+// command builds must set the field to the run's own s3Client.
 func TestCompactorWiringSetsObjectReader(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -40,8 +40,8 @@ func TestCompactorWiringSetsObjectReader(t *testing.T) {
 				return true
 			}
 			sites++
-			if !litSetsField(lit, "ObjectReader") {
-				t.Errorf("%s:%d builds a compaction.Compactor without ObjectReader; merged base entries would go unstamped (#347)",
+			if !litSetsFieldToIdent(lit, "ObjectReader", "s3Client") {
+				t.Errorf("%s:%d builds a compaction.Compactor whose ObjectReader is not the run's s3Client; merged base entries would go unstamped (#347)",
 					name, fset.Position(lit.Pos()).Line)
 			}
 			return true
@@ -64,16 +64,22 @@ func isCompactionCompactor(expr ast.Expr) bool {
 	return isIdent && pkg.Name == "compaction"
 }
 
-// litSetsField reports whether a keyed composite literal assigns the field.
-func litSetsField(lit *ast.CompositeLit, field string) bool {
+// litSetsFieldToIdent reports whether a keyed composite literal assigns the
+// named identifier to the field. Presence alone is too weak a pin: `ObjectReader:
+// nil` compiles and would keep this guard green while shipping unstamped bases,
+// so the value is checked too (mirrors internal/cdc's callPassesOptsS3Client).
+func litSetsFieldToIdent(lit *ast.CompositeLit, field, want string) bool {
 	for _, elt := range lit.Elts {
 		kv, isKV := elt.(*ast.KeyValueExpr)
 		if !isKV {
 			continue
 		}
-		if key, isIdent := kv.Key.(*ast.Ident); isIdent && key.Name == field {
-			return true
+		key, isKeyIdent := kv.Key.(*ast.Ident)
+		if !isKeyIdent || key.Name != field {
+			continue
 		}
+		value, isValueIdent := kv.Value.(*ast.Ident)
+		return isValueIdent && value.Name == want
 	}
 	return false
 }
