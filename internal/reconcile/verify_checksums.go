@@ -58,7 +58,7 @@ func (r *Reconciler) verifyChecksums(ctx context.Context, schemaID int16, m *man
 
 	for _, f := range m.Files {
 		if f.Checksum == "" {
-			skippedUnstamped++ // legacy entry: stamping is never backfilled
+			skippedUnstamped++ // no checksum to compare against: legacy, or a best-effort write-side hash that failed
 			continue
 		}
 		key, ok := normalizeKey(r.Bucket, f.Path)

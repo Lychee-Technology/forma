@@ -222,7 +222,6 @@ func TestVerifyChecksums_MissingObjectReaderFailsSchema(t *testing.T) {
 	key := "data/7/" + uuidA + ".parquet"
 	lister, manifests := listedChecksumEntry(key, wantChecksum([]byte("x")))
 	r := checksumReconciler(t, lister, manifests, nil)
-	r.Objects = nil
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)

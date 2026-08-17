@@ -287,9 +287,9 @@ func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffRes
 // It returns both verdicts the probe actually establishes: confirmed (still
 // listed in the reloaded manifest, object provably gone) and present (still
 // listed, object provably THERE — a stale-listing race, not drift at all).
-// present is what lets --verify-stamps keep covering those entries: a
-// candidate whose bytes this run already proved reachable is not a probe
-// hazard, so skipping it would forfeit coverage for no reason.
+// present is what lets --verify-stamps and --verify-checksums keep covering
+// those entries: a candidate whose bytes this run already proved reachable is
+// not a probe hazard, so skipping it would forfeit coverage for no reason.
 func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) (confirmed, present []string, err error) {
 	if len(dangling) == 0 {
 		return nil, nil, nil
@@ -330,8 +330,8 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 }
 
 // unprovenDangling narrows a dangling candidate list to the entries this run
-// did NOT prove present — the only ones --verify-stamps must skip. Candidates
-// confirmDangling probed and found alive keep their stamp coverage.
+// did NOT prove present — the only ones --verify-stamps and --verify-checksums
+// must skip. Candidates confirmDangling probed and found alive keep their coverage.
 func unprovenDangling(candidates, present []string) []string {
 	if len(present) == 0 {
 		return candidates
