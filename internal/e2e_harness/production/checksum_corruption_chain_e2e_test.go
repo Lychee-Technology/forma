@@ -30,8 +30,9 @@ import (
 // The corruption model is #251's, applied at rest: a 64-byte XOR span in the
 // middle of a published delta. Nothing about the manifest, the listing, or
 // the parquet footer changes — which is precisely why every shape-level
-// check (the #189 system-column invariant, the #256 column stamp) still
-// passes and only a byte hash can tell.
+// check (the #189 system-column invariant, the #256 column stamp) would
+// still pass: they read only the intact footer and manifest. This scenario
+// does not exercise them; only a byte hash can tell.
 //
 // The stamp assertions here are wiring pins, not decoration: the delta stamp
 // proves the cdc flush's checksum seam is really wired in RunOnce, the base
@@ -123,6 +124,14 @@ func assertScrubReportsOnlyDivergence(ctx context.Context, t *testing.T, env *En
 		t.Errorf("scrub skipped %d unstamped entries; the clean verdict on the rest is not full coverage",
 			s.SkippedUnstamped)
 	}
+	// The other discrepancy classes must be empty, so the residual verdict
+	// below is attributable to the checksum divergence by assertion rather
+	// than by construction: any of these would raise it on its own.
+	if len(s.DeltaOrphans) != 0 || len(s.Dangling) != 0 || len(s.StampDivergences) != 0 {
+		t.Fatalf("scrub found other discrepancies, so the residual verdict is not the checksum's:"+
+			" delta orphans %v, dangling %v, stamp divergences %v",
+			s.DeltaOrphans, s.Dangling, s.StampDivergences)
+	}
 	if !report.HasResidualDiscrepancies() {
 		t.Error("a checksum divergence must make the run discrepant (non-zero exit)")
 	}
@@ -184,6 +193,12 @@ func assertCompactionRefusesCorruptSource(ctx context.Context, t *testing.T, env
 func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 	schema SchemaRef, deltaKey, deltaPath string, pristine []byte) {
 	t.Helper()
+	// pristine is captured by the first subtest. Running this one in isolation
+	// would restore an empty body — and an empty put survives its own read-back
+	// guard — so the divergence staged below would be a lie. Say so loudly.
+	if len(pristine) == 0 {
+		t.Fatal("pristine delta bytes not captured; run the full scenario, not an isolated subtest")
+	}
 	putObjectBytes(ctx, t, env, deltaKey, pristine)
 	poisonManifestChecksum(ctx, t, env, schema, deltaPath)
 
@@ -258,9 +273,11 @@ func fetchObjectBytes(ctx context.Context, t *testing.T, env *Env, key string) [
 	return data
 }
 
-// putObjectBytes writes raw bytes back under an existing key, the same way
-// overwriteObjectBytes does: a plain body with no content encoding of its
-// own, so what the store returns later is byte-identical to what was sent.
+// putObjectBytes writes raw bytes back under an existing key: a plain body
+// with no content encoding of its own, with a read-back guard proving what
+// the store returns later is byte-identical to what was sent. Every write in
+// this package's fault vectors goes through here, overwriteObjectBytes
+// included.
 func putObjectBytes(ctx context.Context, t *testing.T, env *Env, key string, data []byte) {
 	t.Helper()
 	if _, err := env.Cluster.S3.PutObject(ctx, &s3.PutObjectInput{

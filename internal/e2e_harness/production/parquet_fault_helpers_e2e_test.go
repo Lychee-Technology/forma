@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"testing"
@@ -42,29 +41,14 @@ func schemaParquetKeys(ctx context.Context, t *testing.T, env *Env, schema Schem
 // silently pass otherwise).
 func overwriteObjectBytes(ctx context.Context, t *testing.T, env *Env, key string, mutate func([]byte) []byte) {
 	t.Helper()
-	obj, err := env.Cluster.S3.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(env.Cluster.Bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		t.Fatalf("get object %s: %v", key, err)
-	}
-	data, err := io.ReadAll(obj.Body)
-	_ = obj.Body.Close()
-	if err != nil {
-		t.Fatalf("read object %s: %v", key, err)
-	}
+	data := fetchObjectBytes(ctx, t, env, key)
 	mutated := mutate(data)
 	if bytes.Equal(mutated, data) {
 		t.Fatalf("mutation left object %s unchanged (%d bytes)", key, len(data))
 	}
-	if _, err := env.Cluster.S3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(env.Cluster.Bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(mutated),
-	}); err != nil {
-		t.Fatalf("overwrite object %s: %v", key, err)
-	}
+	// putObjectBytes carries the read-back guard, so the corrupting write is
+	// held to the same byte-identity bar as the restoring one.
+	putObjectBytes(ctx, t, env, key, mutated)
 }
 
 // corruptMidFile flips a 64-byte span in the middle of the file: the parquet
