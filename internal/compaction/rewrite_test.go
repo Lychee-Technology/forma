@@ -1,8 +1,11 @@
 package compaction
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -17,34 +20,87 @@ import (
 	"go.uber.org/zap"
 )
 
-// fakeMerger records the requested merge and returns canned stats.
+// fakeMerger records the requested merge and returns canned stats. When stage
+// is set it also writes payload at the tmp key, modeling a merge that produces
+// real bytes for the rewrite to promote.
 type fakeMerger struct {
 	stats   MergeStats
 	sources [][]string
 	tmpURIs []string
+
+	stage   *fakeObjectS3
+	payload []byte
 }
 
 func (f *fakeMerger) MergeToTmp(_ context.Context, sourceURIs []string, tmpURI string) (MergeStats, error) {
 	f.sources = append(f.sources, sourceURIs)
 	f.tmpURIs = append(f.tmpURIs, tmpURI)
+	if f.stage != nil {
+		f.stage.putObject(keyFromURI(tmpURI), f.payload)
+	}
 	return f.stats, nil
 }
 
-// fakeObjectS3 records copy/delete keys; HeadObject reports a fixed size.
+// keyFromURI strips the s3://<bucket>/ prefix, yielding the bucket-relative
+// key the S3 client would have been called with.
+func keyFromURI(uri string) string {
+	rest := strings.TrimPrefix(uri, "s3://")
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[idx+1:]
+	}
+	return rest
+}
+
+// fakeObjectS3 records copy/delete keys; HeadObject reports a fixed size. It
+// also keeps a tiny object store so the checksum tests can hash what the
+// rewrite actually published: CopyObject moves bytes from the CopySource key
+// to the destination key, DeleteObject drops them, and GetObject serves them.
 type fakeObjectS3 struct {
 	copies  []string // final keys
 	deletes []string
 	size    int64
+
+	objects map[string][]byte // bucket-relative key -> stored bytes
+	getErr  error             // when set, every GetObject fails with it
+}
+
+// putObject stages bytes under a bucket-relative key (what a writer would have
+// produced before the rewrite promotes it).
+func (f *fakeObjectS3) putObject(key string, body []byte) {
+	if f.objects == nil {
+		f.objects = map[string][]byte{}
+	}
+	f.objects[key] = body
 }
 
 func (f *fakeObjectS3) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	f.copies = append(f.copies, aws.ToString(in.Key))
+	key := aws.ToString(in.Key)
+	f.copies = append(f.copies, key)
+	// CopySource is "<bucket>/<key>"; carry the bytes over when we hold them.
+	src := strings.TrimPrefix(aws.ToString(in.CopySource), aws.ToString(in.Bucket)+"/")
+	if body, ok := f.objects[src]; ok {
+		f.putObject(key, body)
+	}
 	return &s3.CopyObjectOutput{}, nil
 }
 
 func (f *fakeObjectS3) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	f.deletes = append(f.deletes, aws.ToString(in.Key))
+	key := aws.ToString(in.Key)
+	f.deletes = append(f.deletes, key)
+	delete(f.objects, key)
 	return &s3.DeleteObjectOutput{}, nil
+}
+
+func (f *fakeObjectS3) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	key := aws.ToString(in.Key)
+	body, ok := f.objects[key]
+	if !ok {
+		return nil, fmt.Errorf("fake s3: no such key %q", key)
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(body))}, nil
 }
 
 func (f *fakeObjectS3) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

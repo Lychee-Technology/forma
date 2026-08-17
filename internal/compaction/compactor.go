@@ -80,6 +80,10 @@ type Compactor struct {
 	Bucket     string
 	DataPrefix string // root prefix for parquet files
 	Resolver   manifest.PathResolver
+
+	// ObjectReader hashes published objects for manifest checksum stamping
+	// and pre-merge input verification (#347). Nil disables both.
+	ObjectReader cdc.S3GetClient
 }
 
 // RunOnce executes compaction for a schema and returns a typed result.

@@ -73,6 +73,8 @@ func (c *Compactor) runRewrite(
 			zap.Int16("schema_id", schemaID), zap.String("final_key", finalKey), zap.Error(err))
 	}
 
+	checksum := c.stampChecksum(ctx, schemaID, finalKey)
+
 	spliceManifest(m, sourcePaths, manifest.FileEntry{
 		Tier:       "base",
 		Path:       finalKey,
@@ -83,6 +85,7 @@ func (c *Compactor) runRewrite(
 		CreatedMax: stats.CreatedMax,
 		SizeBytes:  sizeBytes,
 		Columns:    stats.Columns,
+		Checksum:   checksum,
 	})
 
 	if _, err := c.saveManifestChecked(ctx, schemaID, m, etag); err != nil {
@@ -126,6 +129,25 @@ func (c *Compactor) runRewrite(
 	result.RowsOut = stats.RowsOut
 	result.NewBaseKey = finalKey
 	return result, nil
+}
+
+// stampChecksum hashes the object the rewrite just published so the manifest
+// entry can carry a content checksum a later verification pass compares
+// against (#347). It hashes the FINAL key — the tmp object is gone by now —
+// and is best-effort under the same policy as the flush stamp: a failure is
+// reported and leaves the entry unstamped (verification skips empty
+// checksums), never fails the rewrite. Nil ObjectReader means no stamping.
+func (c *Compactor) stampChecksum(ctx context.Context, schemaID int16, finalKey string) string {
+	if c.ObjectReader == nil {
+		return ""
+	}
+	sum, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, finalKey)
+	if err != nil {
+		c.Logger.Warn("failed to checksum merged base; manifest entry stays unstamped",
+			zap.Int16("schema_id", schemaID), zap.String("final_key", finalKey), zap.Error(err))
+		return ""
+	}
+	return sum
 }
 
 // spliceManifest removes exactly the merged entries by path and appends the

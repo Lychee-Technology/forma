@@ -194,6 +194,9 @@ func runCompactor(ctx context.Context, args []string) error {
 		S3:         s3Client,
 		Bucket:     opts.s3.bucket,
 		DataPrefix: opts.dataPrefix,
+		// The same concrete *s3.Client, read back through its GetObject: it
+		// stamps the merged base's content hash into the manifest entry (#347).
+		ObjectReader: s3Client,
 	}
 
 	logger.Info("starting compaction",

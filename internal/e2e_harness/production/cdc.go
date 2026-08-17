@@ -210,11 +210,16 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 			TargetBaseSizeBytes: ov.TargetBaseSizeBytes,
 			DirtyRatioPct:       ov.DirtyRatioPct,
 		},
-		Provider:   provider,
-		Merger:     &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
-		S3:         s3Client,
-		Bucket:     e.Cluster.Bucket,
-		DataPrefix: e.S3Prefix,
+		Provider: provider,
+		Merger:   &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
+		S3:       s3Client,
+		// S3FullClient carries GetObject, so the harness stamps merged base
+		// entries exactly as the production tool does (#347). An injected
+		// decorator (ov.S3) reads through the same seam: a fault that fails
+		// GetObject leaves the entry unstamped rather than failing the pass.
+		ObjectReader: s3Client,
+		Bucket:       e.Cluster.Bucket,
+		DataPrefix:   e.S3Prefix,
 		Resolver: manifest.PathResolver{
 			Prefix:       e.CDC.ManifestPrefix,
 			PathTemplate: e.CDC.ManifestTemplate,
