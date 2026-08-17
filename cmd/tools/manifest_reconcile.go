@@ -202,7 +202,8 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 // unit-testable without Postgres or S3: everything below is pure
 // construction, and a dropped assignment here is otherwise invisible until
 // production (Objects in particular — verifyChecksums would then answer a
-// configuration error instead of scrubbing).
+// configuration error instead of scrubbing, and --repair would silently
+// publish its adopted and promoted entries unstamped).
 func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logger *zap.Logger) *reconcile.Reconciler {
 	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
 	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
@@ -210,7 +211,7 @@ func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logg
 	return &reconcile.Reconciler{
 		Lister:    objectStore,
 		Deleter:   objectStore,
-		Objects:   s3Client, // raw byte reads: the #347 checksum scrub
+		Objects:   s3Client, // raw byte reads: the #347 checksum scrub and repair/promotion stamping
 		Manifests: &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
 		GCStates:  &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
 		Locker:    &reconcile.PGAdvisoryLocker{DB: db},

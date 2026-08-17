@@ -218,10 +218,14 @@ func (r *Reconciler) promoteInitOrphans(ctx context.Context, schemaID int16, m *
 		return promotionResult{refusal: refusal}, m, etag, nil
 	}
 
-	// Stamp the column set on each entry now that verifyInitCoverage has
-	// confirmed the set is promotable.
+	// Stamp the column set and the content checksum on each entry now that
+	// verifyInitCoverage has confirmed the set is promotable. Both stamps are
+	// best-effort and independent: either may fail without costing the entry
+	// the other, or the set its promotion.
 	for i := range cov.entries {
 		cov.entries[i].Columns = r.promotionColumns(ctx, schemaID, cov.entries[i].Path)
+		cov.entries[i].Checksum = r.stampChecksum(ctx, schemaID, cov.entries[i].Path,
+			"failed to checksum promoted orphan; entry stays unstamped")
 	}
 
 	for attempt := 0; ; attempt++ {

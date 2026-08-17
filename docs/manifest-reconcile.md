@@ -72,6 +72,11 @@ entity_main 且 `ltbase_deleted_at IS NULL`。
 `delta leftover`），在 `--repair --gc` 同时开启时按下述两阶段删除；混杂 → 拒绝自动
 补录与自动删除，留人工处置（保持非零退出码）。
 
+补录条目的 #347 内容校验和是 **best-effort**：领养时对该对象做一次全量 GET 取 SHA-256
+盖在条目上（因此这里祝福的是**领养那一刻**存储里的字节）；GET 失败只打一条
+`failed to checksum adopted orphan; entry stays unstamped` 的 WARN，条目照常补录为无校验和，
+绝不因此放弃这次恢复。成本是每个被补录对象一次全量 GET——只作用于孤儿，不是全清单扫描。
+
 ## `--repair` 的 init 形态晋升守卫（#292）
 
 cdc-init 是一次全量重导出，因此**一组完整的 init 输出本身就是 base 层的规范清单**——正是
@@ -105,6 +110,9 @@ base 层（`SpliceTierFiles`：整个 base 层被这组条目替换，其他 tie
 
 条目元数据（行数、row_id / created_at 区间、大小）全部从 parquet 内容与对象本身重算。
 #256 的列集印章是 best-effort 探测：探不到只是条目不带印章（读侧回落到探测），不阻塞晋升。
+#347 的内容校验和同样是 best-effort，且与列集印章彼此独立：晋升时对每个对象做一次全量 GET
+取 SHA-256，失败只打一条 `failed to checksum promoted orphan; entry stays unstamped` 的 WARN，
+该条目发布为无校验和（被 `--verify-checksums` 计入未覆盖），既不影响它的兄弟条目，也不阻塞晋升。
 
 **2. 复活守卫**（证明晋升不会让已删除的行复活）
 
@@ -333,18 +341,21 @@ base 对象（以及压根不再参与合并的历史对象）不在其覆盖内
 
 - **存量条目**：印章不做回填，存量对象在被 compaction 重写、或被重跑的 cdc-init 取代之前
   始终无印章。这条成因下计数是**存量退役进度**的直接读数，随合并推进单调走低；
-- **写侧盖章失败**：三条盖章路径（flush / cdc-init / compaction rewrite）都是 **best-effort**
-  ——哈希失败只打一条 WARN、条目照常发布为无印章，绝不因此让导出失败。这条成因下计数在一个
-  早已完成存量退役的集群上**不降反升**，说明写侧正在丢覆盖，须查对应导出器日志里的
-  `manifest entry stays unstamped` 告警，而不是等它自己好转。
+- **盖章失败**：五条盖章路径——写侧三条（flush / cdc-init / compaction rewrite）加上本工具
+  自己创建条目的两条（`--repair` 领养 delta 孤儿、#292 init 孤儿晋升进 base 层）——**全部**是
+  **best-effort**：哈希失败只打一条 WARN、条目照常发布为无印章，绝不因此让导出或这次修复失败。
+  这条成因下计数在一个早已完成存量退役的集群上**不降反升**，说明正在丢覆盖，须查对应
+  导出器（或本工具上一轮）日志里的 `entry stays unstamped` 告警，而不是等它自己好转。
 
 **退出语义。** 与 `--verify-stamps` 完全对齐：发现分歧 → 计入残余差异 → 退出码 **2**
 （报告里逐条打印 `checksum divergence: <key>: checksum stamp <stamped> vs bytes <actual>`）；
 GET 本身失败（S3 不可达、连接中断）→ 算**工具故障**退出 **1**，绝不伪装成"字节被改写"的判决。
 
 **成本画像。** 每个**已盖章**条目一次**全量 GET**——不是读 footer，是把对象整个下载下来做流式
-哈希。这是本工具里最贵的一次巡检：代价与所有已盖章条目的字节数成正比（delta 与 base 层均包含，base 层通常主导），且产生等量的 S3 出流量。
-（相比之下 `--verify-stamps` 只做 footer 探测，`--repair` 只做统计查询。）与 `--verify-stamps`
+哈希。这是本工具里最贵的一次巡检：代价与所有已盖章条目的字节数成正比（delta 与 base 层
+均包含，base 层通常主导），且产生等量的 S3 出流量。
+（相比之下 `--verify-stamps` 只做 footer 探测；`--repair` 除统计查询外只对**被它补录或晋升的
+孤儿**各做一次 GET，不碰在册清单。）与 `--verify-stamps`
 不同的是，本扫描**不需要 DuckDB 会话**：它直接用 S3 客户端读原始字节，因此不受 DuckDB
 内存/线程配置影响。
 

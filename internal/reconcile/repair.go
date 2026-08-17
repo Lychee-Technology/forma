@@ -38,8 +38,8 @@ func (r *Reconciler) repairSchema(ctx context.Context, schemaID int16, m *manife
 		return repairOutcome{}, fmt.Errorf("repair requested for schema %d but stats reader or live-row checker is not configured", schemaID)
 	}
 
-	// Stats survive across etag retries: a conflict changes the manifest,
-	// not the parquet contents.
+	// Cached entries survive across etag retries: a conflict changes the
+	// manifest, not the parquet contents the stats and checksum describe.
 	entryCache := make(map[string]manifest.FileEntry, len(orphans))
 
 	for attempt := 0; ; attempt++ {
@@ -132,6 +132,8 @@ func (r *Reconciler) buildRepairEntry(ctx context.Context, schemaID int16, obj O
 		CreatedMax: stats.CreatedMax,
 		RowCount:   stats.RowsOut,
 		SizeBytes:  obj.Size,
+		Checksum: r.stampChecksum(ctx, schemaID, obj.Key,
+			"failed to checksum adopted orphan; entry stays unstamped"),
 	}
 	entryCache[obj.Key] = entry
 	return entry, true

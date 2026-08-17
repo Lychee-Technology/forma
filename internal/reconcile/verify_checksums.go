@@ -29,9 +29,11 @@ import (
 //   - entries with an empty Checksum, so there is nothing to compare against
 //     (field presence IS the format version signal, the same rule #256 set for
 //     Columns). Two causes, both legitimate: the entry predates stamping and
-//     is never backfilled, OR its write-side hash failed — all three stamping
-//     paths are best-effort and publish unstamped after a WARN rather than
-//     failing the export. These are counted and reported: the count is how
+//     is never backfilled, OR its hash failed — all five stamping paths (cdc
+//     flush, cdc-init, compaction rewrite, and this tool's own --repair
+//     adoption and init-orphan promotion) are best-effort and publish
+//     unstamped after a WARN rather than failing the export or the recovery
+//     that created the entry. These are counted and reported: the count is how
 //     much of the manifest this scrub cannot cover, which is the coverage
 //     signal an operator needs to read the clean verdict correctly;
 //   - paths normalizeKey cannot resolve, and keys outside this schema's data

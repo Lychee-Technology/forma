@@ -92,7 +92,7 @@ type Reconciler struct {
 	Lister     ObjectLister
 	Deleter    ObjectDeleter
 	Manifests  ManifestStore
-	Objects    ObjectReader   // may be nil unless Opts.VerifyChecksums
+	Objects    ObjectReader   // required by Opts.VerifyChecksums; nil also leaves repaired and promoted entries unstamped
 	Stats      StatsReader    // may be nil unless Opts.Repair or Opts.VerifyStamps
 	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
 	Locker     Locker
