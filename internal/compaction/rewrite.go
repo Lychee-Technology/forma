@@ -26,6 +26,11 @@ func (c *Compactor) canRewrite() bool {
 //
 // Ordering is what makes this safe under manifest-driven reads
 // (manifest ⊆ live objects, internal/manifest/query_source.go):
+//  0. verify every stamped source still hashes to its manifest checksum and
+//     refuse the whole pass otherwise (#347) — subject to the exceptions on
+//     verifySourceChecksums' godoc: it covers stamped sources inside this
+//     compactor's own bucket, and does nothing when the config opts out or no
+//     ObjectReader is wired,
 //  1. merge to a _tmp key (never listed),
 //  2. copy to a UUID-named final base key (never reused, so no listed object
 //     is ever overwritten),
@@ -48,6 +53,13 @@ func (c *Compactor) runRewrite(
 	sources []manifest.FileEntry,
 	analysis CompactionResult,
 ) (CompactionResult, error) {
+	// Fail closed before anything is merged: past this point the sources are
+	// folded into one object and then deleted, so a corrupt input would be
+	// laundered into the new base and lose its name (#347).
+	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
+		return CompactionResult{}, err
+	}
+
 	sourceURIs := make([]string, 0, len(sources))
 	sourcePaths := make(map[string]bool, len(sources))
 	for _, f := range sources {
@@ -73,6 +85,8 @@ func (c *Compactor) runRewrite(
 			zap.Int16("schema_id", schemaID), zap.String("final_key", finalKey), zap.Error(err))
 	}
 
+	checksum := c.stampChecksum(ctx, schemaID, finalKey)
+
 	spliceManifest(m, sourcePaths, manifest.FileEntry{
 		Tier:       "base",
 		Path:       finalKey,
@@ -83,6 +97,7 @@ func (c *Compactor) runRewrite(
 		CreatedMax: stats.CreatedMax,
 		SizeBytes:  sizeBytes,
 		Columns:    stats.Columns,
+		Checksum:   checksum,
 	})
 
 	if _, err := c.saveManifestChecked(ctx, schemaID, m, etag); err != nil {
@@ -126,6 +141,29 @@ func (c *Compactor) runRewrite(
 	result.RowsOut = stats.RowsOut
 	result.NewBaseKey = finalKey
 	return result, nil
+}
+
+// stampChecksum hashes the object the rewrite just published so the manifest
+// entry can carry a content checksum a later verification pass compares
+// against (#347). It hashes the FINAL key — the tmp object is gone by now —
+// and is best-effort under the same policy as the flush stamp: a failure is
+// reported and leaves the entry unstamped (verification skips empty
+// checksums), never fails the rewrite. Nil ObjectReader means no stamping.
+func (c *Compactor) stampChecksum(ctx context.Context, schemaID int16, finalKey string) string {
+	// This plain nil check needs no typed-nil companion (#302): both Compactor
+	// construction sites assign the same client value to S3 and to ObjectReader,
+	// and the CopyTmpToFinal call above already dispatched on c.S3 — a nil
+	// pointer behind that interface faults there, before this line runs.
+	if c.ObjectReader == nil {
+		return ""
+	}
+	sum, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, finalKey)
+	if err != nil {
+		c.Logger.Warn("failed to checksum merged base; manifest entry stays unstamped",
+			zap.Int16("schema_id", schemaID), zap.String("final_key", finalKey), zap.Error(err))
+		return ""
+	}
+	return sum
 }
 
 // spliceManifest removes exactly the merged entries by path and appends the

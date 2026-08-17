@@ -1,0 +1,105 @@
+package cdc
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+)
+
+// Checksum stamping is best-effort, so its failure must never fail the run —
+// but it must not vanish either. An unstamped entry silently costs a later
+// verification pass its ability to detect mutation on that file, and a
+// GetObject failing on bytes the export just published is a signal about the
+// store. Under zap.NewNop() a swallowed error and a reported one look
+// identical, so these tests observe the log (#347).
+
+// requireStampWarn asserts the single WARN a failed checksum stamp must emit.
+func requireStampWarn(t *testing.T, logs *observer.ObservedLogs, message, errKey, finalKey string) {
+	t.Helper()
+
+	entries := logs.All()
+	require.Len(t, entries, 1, "the discarded checksum error must be reported exactly once")
+	require.Equal(t, message, entries[0].Message)
+
+	fields := entries[0].ContextMap()
+	require.Equal(t, int16(7), fields["schema_id"], "the warning must name the schema whose entry went unstamped")
+	require.Equal(t, finalKey, fields["final_key"], "the warning must name the object that went unstamped")
+	require.Contains(t, fmt.Sprint(fields[errKey]), "get object failed",
+		"the cause must survive into the log, not just the fact of failure")
+}
+
+func TestInitStampChecksumWarnsWhenHashFails(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	runCtx := &initRunContext{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		logger:        zap.New(core),
+		manifestStore: &memManifestStore{},
+		checksumObject: func(context.Context, string) (string, error) {
+			return "sha256:partial", errors.New("get object failed")
+		},
+	}
+
+	got := initStampChecksum(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"})
+	require.Empty(t, got, "a failed hash leaves the entry unstamped")
+
+	requireStampWarn(t, logs, "failed to checksum final base object; manifest entry stays unstamped",
+		"error", "base/7/x.parquet")
+}
+
+// The warning above is only meaningful if the healthy path is genuinely quiet.
+func TestInitStampChecksumStaysSilentOnSuccess(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	runCtx := &initRunContext{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		logger:        zap.New(core),
+		manifestStore: &memManifestStore{},
+		checksumObject: func(context.Context, string) (string, error) {
+			return "sha256:deadbeef", nil
+		},
+	}
+
+	got := initStampChecksum(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"})
+	require.Equal(t, "sha256:deadbeef", got)
+	require.Zero(t, logs.Len(), "nothing to report when the hash succeeds")
+}
+
+func TestFlushStampChecksumWarnsWhenHashFails(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	executor := &flushBatchExecutor{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		schemaID:      7,
+		logger:        zap.New(core),
+		manifestStore: &memManifestStore{},
+		checksumObject: func(context.Context, string) (string, error) {
+			return "sha256:partial", errors.New("get object failed")
+		},
+	}
+
+	got := executor.stampChecksum(context.Background(), "cdc/7/delta-x.parquet")
+	require.Empty(t, got, "a failed hash leaves the entry unstamped")
+
+	requireStampWarn(t, logs, "failed to checksum final delta object; manifest entry stays unstamped",
+		"err", "cdc/7/delta-x.parquet")
+}
+
+func TestFlushStampChecksumStaysSilentOnSuccess(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	executor := &flushBatchExecutor{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		schemaID:      7,
+		logger:        zap.New(core),
+		manifestStore: &memManifestStore{},
+		checksumObject: func(context.Context, string) (string, error) {
+			return "sha256:deadbeef", nil
+		},
+	}
+
+	got := executor.stampChecksum(context.Background(), "cdc/7/delta-x.parquet")
+	require.Equal(t, "sha256:deadbeef", got)
+	require.Zero(t, logs.Len(), "nothing to report when the hash succeeds")
+}

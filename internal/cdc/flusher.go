@@ -66,23 +66,9 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
-	activeS3Client, activeFullS3Client, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
+	clients, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
 	if err != nil {
 		return err
-	}
-
-	// Setup manifest store if configured
-	var manifestStore manifest.Store
-	var manifestResolver manifest.PathResolver
-	if cfg.ManifestTemplate != "" {
-		manifestStore = &manifest.S3Store{
-			Client: activeFullS3Client,
-			Bucket: cfg.S3Bucket,
-		}
-		manifestResolver = manifest.PathResolver{
-			Prefix:       cfg.ManifestPrefix,
-			PathTemplate: cfg.ManifestTemplate,
-		}
 	}
 
 	// Setup Postgres connection
@@ -106,30 +92,21 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer duck.DB.Close()
 
-	tableName := cfg.ChangeLogTable
-	if tableName == "" {
-		tableName = "change_log"
-	}
+	flushCtx := newSchemaFlushContext(flushContextParams{
+		cfg:            cfg,
+		db:             db,
+		duck:           duck,
+		clients:        clients,
+		pgPassword:     pgPassword,
+		dryRun:         dryRun,
+		logger:         logger,
+		schemaRegistry: schemaRegistry,
+	})
 
 	// Get schemas with unflushed rows
-	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, tableName)
+	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
-		return err
-	}
-
-	// Process each schema
-	flushCtx := &schemaFlushContext{
-		db:               db,
-		duck:             duck,
-		s3Client:         activeS3Client,
-		cfg:              cfg,
-		tableName:        tableName,
-		pgPassword:       pgPassword,
-		dryRun:           dryRun,
-		logger:           logger,
-		schemaRegistry:   schemaRegistry,
-		manifestStore:    manifestStore,
-		manifestResolver: manifestResolver,
+		return fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
 
 	return flushCtx.processSchemas(ctx, schemaIDs)
@@ -171,29 +148,6 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	}
 
 	return awsCfg.Region, awsCfg.Credentials, fullClient, nil
-}
-
-func resolveS3Clients(
-	provided S3ObjectClient,
-	fallback S3FullClient,
-	requireFull bool,
-) (S3ObjectClient, S3FullClient, error) {
-	if provided == nil {
-		if fallback == nil {
-			return nil, nil, fmt.Errorf("s3 client is required")
-		}
-		return fallback, fallback, nil
-	}
-
-	fullClient, ok := provided.(S3FullClient)
-	if !ok {
-		if requireFull {
-			return nil, nil, fmt.Errorf("manifest requires S3FullClient when custom s3 client is provided")
-		}
-		return provided, nil, nil
-	}
-
-	return provided, fullClient, nil
 }
 
 // setupPostgresConnection creates a Postgres connection, potentially using IAM auth.
@@ -260,10 +214,13 @@ type schemaFlushContext struct {
 	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
-	tryLock          func(context.Context, *sql.DB, int16) (bool, func(), error)
-	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
-	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
-	processSchemaFn  func(context.Context, int16) error
+	// checksumObject is the executor's content-hash seam (#347), resolved once
+	// per run from the full S3 client; nil leaves manifest entries unstamped.
+	checksumObject  func(ctx context.Context, key string) (string, error)
+	tryLock         func(context.Context, *sql.DB, int16) (bool, func(), error)
+	executeSingle   func(*flushBatchExecutor, []uuid.UUID) error
+	executeInChunks func(*flushBatchExecutor, []uuid.UUID, int) error
+	processSchemaFn func(context.Context, int16) error
 }
 
 func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int64) error {
@@ -398,6 +355,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		logger:           c.logger,
 		manifestStore:    c.manifestStore,
 		manifestResolver: c.manifestResolver,
+		checksumObject:   c.checksumObject,
 		executeSingle:    c.executeSingle,
 		executeInChunks:  c.executeInChunks,
 	}

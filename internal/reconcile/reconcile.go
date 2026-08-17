@@ -76,8 +76,13 @@ type Options struct {
 	// VerifyStamps compares every listed entry's #256 column stamp against
 	// the object footer; divergence is the byte-truth breach the read-path
 	// stamp short-circuit cannot see.
-	VerifyStamps   bool
-	MaxETagRetries int // manifest save retries on optimistic-concurrency conflict
+	VerifyStamps bool
+	// VerifyChecksums re-hashes every stamped entry's object and compares the
+	// digest with its #347 content stamp — the byte-integrity layer under
+	// VerifyStamps' shape check, and the only offline detector of silent
+	// parquet mis-decode corruption. One full GET per stamped entry.
+	VerifyChecksums bool
+	MaxETagRetries  int // manifest save retries on optimistic-concurrency conflict
 }
 
 // Reconciler diffs S3 parquet objects against per-schema manifests and
@@ -87,6 +92,7 @@ type Reconciler struct {
 	Lister     ObjectLister
 	Deleter    ObjectDeleter
 	Manifests  ManifestStore
+	Objects    ObjectReader   // required by Opts.VerifyChecksums; nil also leaves repaired and promoted entries unstamped
 	Stats      StatsReader    // may be nil unless Opts.Repair or Opts.VerifyStamps
 	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
 	Locker     Locker
@@ -160,13 +166,12 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 	s.Dangling = confirmed
 
-	if r.Opts.VerifyStamps {
+	if r.Opts.VerifyStamps || r.Opts.VerifyChecksums {
 		// The skip set is the candidates this run did NOT prove present —
 		// neither the confirmed-dangling list alone nor the raw candidate
-		// list (see verifyStamps).
-		s.StampDivergences, err = r.verifyStamps(ctx, schemaID, m, unprovenDangling(d.dangling, present))
-		if err != nil {
-			s.Err = fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
+		// list (see verifyStamps). Both passes share it.
+		if err := r.runVerifications(ctx, schemaID, m, unprovenDangling(d.dangling, present), &s); err != nil {
+			s.Err = err
 			return s
 		}
 	}
@@ -183,6 +188,31 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 		}
 	}
 	return s
+}
+
+// runVerifications is reconcileSchema's read-only byte-truth half: the #256
+// stamp comparison and the #347 checksum scrub, each behind its own flag.
+// Both run BEFORE any repair mutates the manifest, and both treat a failed
+// probe as a tool failure that aborts this schema — so a probe outage under
+// --repair stops the run rather than repairing against unverified inventory.
+func (r *Reconciler) runVerifications(ctx context.Context, schemaID int16, m *manifest.Manifest,
+	unproven []string, s *SchemaReport) error {
+	if r.Opts.VerifyStamps {
+		divergences, err := r.verifyStamps(ctx, schemaID, m, unproven)
+		if err != nil {
+			return fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
+		}
+		s.StampDivergences = divergences
+	}
+	if r.Opts.VerifyChecksums {
+		divergences, skipped, err := r.verifyChecksums(ctx, schemaID, m, unproven)
+		if err != nil {
+			return fmt.Errorf("verify schema %d content checksums: %w", schemaID, err)
+		}
+		s.ChecksumDivergences = divergences
+		s.SkippedUnstamped = skipped
+	}
+	return nil
 }
 
 // runRepairs is reconcileSchema's --repair half: promote a provably complete
@@ -257,9 +287,9 @@ func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffRes
 // It returns both verdicts the probe actually establishes: confirmed (still
 // listed in the reloaded manifest, object provably gone) and present (still
 // listed, object provably THERE — a stale-listing race, not drift at all).
-// present is what lets --verify-stamps keep covering those entries: a
-// candidate whose bytes this run already proved reachable is not a probe
-// hazard, so skipping it would forfeit coverage for no reason.
+// present is what lets --verify-stamps and --verify-checksums keep covering
+// those entries: a candidate whose bytes this run already proved reachable is
+// not a probe hazard, so skipping it would forfeit coverage for no reason.
 func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) (confirmed, present []string, err error) {
 	if len(dangling) == 0 {
 		return nil, nil, nil
@@ -300,8 +330,8 @@ func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangli
 }
 
 // unprovenDangling narrows a dangling candidate list to the entries this run
-// did NOT prove present — the only ones --verify-stamps must skip. Candidates
-// confirmDangling probed and found alive keep their stamp coverage.
+// did NOT prove present — the only ones --verify-stamps and --verify-checksums
+// must skip. Candidates confirmDangling probed and found alive keep their coverage.
 func unprovenDangling(candidates, present []string) []string {
 	if len(present) == 0 {
 		return candidates

@@ -82,6 +82,15 @@ type CompactionConfig struct {
 	TempPrefix          string        // temp path prefix for rewrites
 	MaxParallelFiles    int           // optional parallelism for rewrites
 
+	// SkipInputChecksumVerify opts out of the pre-merge verification of
+	// rewrite inputs (#347). The zero value verifies: a rewrite merges its
+	// sources and then deletes them, so the gate is the last moment silent
+	// corruption is both detectable and attributable to a named object, and
+	// that has to hold for deployments that never set this struct field.
+	// Setting it true trades that detection away to save one GET per stamped
+	// source.
+	SkipInputChecksumVerify bool
+
 	// Backoff parameters for S3/manifest operations
 	MaxRetries  int           // default 5
 	BaseBackoff time.Duration // default 100ms

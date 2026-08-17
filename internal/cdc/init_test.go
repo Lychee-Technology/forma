@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
 )
@@ -172,9 +173,12 @@ func TestRecordSchemaBatchResultCarriesStamp(t *testing.T) {
 	state := &schemaInitState{schemaID: 7}
 	batch := schemaBatchExport{finalKey: "base/7/x.parquet"}
 	cols := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}
-	recordSchemaBatchResult(state, batch, 123, 456, cols)
+	recordSchemaBatchResult(state, batch, 123, 456, cols, "sha256:abc")
 	if got := state.fileEntries[0].Columns["row_id"]; got != "UUID" {
 		t.Fatalf("base entry not stamped: %#v", state.fileEntries[0].Columns)
+	}
+	if got := state.fileEntries[0].Checksum; got != "sha256:abc" {
+		t.Fatalf("base entry checksum = %q, want sha256:abc", got)
 	}
 }
 
@@ -201,6 +205,118 @@ func TestInitStampColumnsBestEffort(t *testing.T) {
 	}
 	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols["row_id"] != "UUID" {
 		t.Fatalf("stamp not returned: %#v", cols)
+	}
+}
+
+// newChecksumInitContext builds the exportSchemaBatch fixture the init
+// checksum tests share: a stubbed base export (no DuckDB or Postgres), a mock
+// S3 client for the tmp->final copy and the size stat, a manifest store so
+// stamping is enabled, and the caller's checksum seam.
+func newChecksumInitContext(checksumObject func(ctx context.Context, key string) (string, error)) (*initRunContext, *schemaInitState) {
+	runCtx := &initRunContext{
+		cfg:            CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		s3Client:       &objectOnlyS3Client{},
+		logger:         zap.NewNop(),
+		manifestStore:  &memManifestStore{},
+		checksumObject: checksumObject,
+		describeColumns: func(context.Context, string) (map[string]string, error) {
+			return map[string]string{"row_id": "UUID"}, nil
+		},
+		exportBaseFile: func(context.Context, *schemaInitState, schemaBatchExport) error { return nil },
+	}
+	return runCtx, &schemaInitState{schemaID: 7}
+}
+
+func initBatchRowIDs() []uuid.UUID {
+	return []uuid.UUID{uuid.MustParse("018f05c0-0000-7000-8000-000000000001")}
+}
+
+// The published base object's content hash is stamped into the manifest entry
+// so a later verification pass can detect mutation without re-reading the tier
+// (#347).
+func TestExportSchemaBatchStampsChecksumOnBaseEntry(t *testing.T) {
+	var seenKey string
+	runCtx, state := newChecksumInitContext(func(_ context.Context, key string) (string, error) {
+		seenKey = key
+		return "sha256:deadbeef", nil
+	})
+
+	if err := exportSchemaBatch(context.Background(), runCtx, state, initBatchRowIDs()); err != nil {
+		t.Fatalf("exportSchemaBatch: %v", err)
+	}
+
+	if len(state.fileEntries) != 1 {
+		t.Fatalf("recorded %d file entries, want 1", len(state.fileEntries))
+	}
+	entry := state.fileEntries[0]
+	if entry.Checksum != "sha256:deadbeef" {
+		t.Fatalf("base entry checksum = %q, want the seam's hash", entry.Checksum)
+	}
+	// The hash must bless the published object, not the tmp one the export wrote.
+	if seenKey != entry.Path {
+		t.Fatalf("hashed key %q, want the entry's final key %q", seenKey, entry.Path)
+	}
+	if strings.Contains(seenKey, "_tmp") {
+		t.Fatalf("hashed the tmp object %q instead of the final one", seenKey)
+	}
+}
+
+// A failed hash must not fail the init run and must leave the entry unstamped —
+// verification passes skip an empty Checksum (stampColumns/SizeBytes
+// precedent).
+func TestExportSchemaBatchChecksumFailureLeavesEntryUnstamped(t *testing.T) {
+	// The seam returns a value alongside the error — a partial hash over a
+	// truncated read is exactly what must never reach the manifest, so the
+	// error, not the emptiness of the value, has to be what discards it.
+	runCtx, state := newChecksumInitContext(func(context.Context, string) (string, error) {
+		return "sha256:partial", errors.New("get object failed")
+	})
+
+	if err := exportSchemaBatch(context.Background(), runCtx, state, initBatchRowIDs()); err != nil {
+		t.Fatalf("checksum failure must not fail the init run: %v", err)
+	}
+
+	entry := state.fileEntries[0]
+	if entry.Checksum != "" {
+		t.Fatalf("base entry checksum = %q, want unstamped", entry.Checksum)
+	}
+	// The rest of the entry is unaffected: only the checksum is best-effort.
+	if entry.RowCount != 1 || entry.Columns["row_id"] != "UUID" {
+		t.Fatalf("failed checksum damaged the entry: %#v", entry)
+	}
+	if state.rowsExported != 1 || state.filesCreated != 1 {
+		t.Fatalf("rowsExported=%d filesCreated=%d, want 1/1", state.rowsExported, state.filesCreated)
+	}
+}
+
+// Deployments without the seam wired (no full S3 client) keep the pre-#347
+// behavior: the entry is recorded, just unstamped.
+func TestExportSchemaBatchWithoutChecksumSeamLeavesEntryUnstamped(t *testing.T) {
+	runCtx, state := newChecksumInitContext(nil)
+
+	if err := exportSchemaBatch(context.Background(), runCtx, state, initBatchRowIDs()); err != nil {
+		t.Fatalf("exportSchemaBatch: %v", err)
+	}
+	if got := state.fileEntries[0].Checksum; got != "" {
+		t.Fatalf("base entry checksum = %q, want unstamped", got)
+	}
+}
+
+// initStampChecksum short-circuits when manifestStore is nil: the fileEntries
+// are never persisted (updateSchemaManifest no-ops), so hashing would be a
+// discarded full-object S3 read per batch.
+func TestInitStampChecksumShortCircuitWhenNoManifestStore(t *testing.T) {
+	runCtx := &initRunContext{
+		cfg:           CDCConfig{S3Bucket: "b"},
+		logger:        zap.NewNop(),
+		manifestStore: nil,
+		checksumObject: func(context.Context, string) (string, error) {
+			t.Fatal("checksum must not be computed when manifestStore is nil")
+			return "", nil
+		},
+	}
+	if got := initStampChecksum(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); got != "" {
+		t.Fatalf("manifest store nil must yield no checksum, got %q", got)
 	}
 }
 

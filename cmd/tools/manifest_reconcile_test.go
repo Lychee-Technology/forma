@@ -8,8 +8,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.uber.org/zap"
+
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
+
+// TestNewReconciler_WiresVerificationPasses pins the flag → Reconciler wiring
+// the flag parser alone cannot prove: --verify-checksums must reach Opts AND
+// the byte reader must be attached, or the scrub answers a configuration
+// error at run time instead of scrubbing.
+func TestNewReconciler_WiresVerificationPasses(t *testing.T) {
+	client := &s3.Client{}
+	logger := zap.NewNop()
+
+	off := newReconciler(&reconcileOptions{}, client, nil, logger)
+	if off.Opts.VerifyChecksums || off.Opts.VerifyStamps {
+		t.Fatalf("verification must stay off when the flags are not set: %+v", off.Opts)
+	}
+
+	on := newReconciler(&reconcileOptions{
+		verifyChecksums: true,
+		verifyStamps:    true,
+		etagRetries:     3,
+	}, client, nil, logger)
+	if !on.Opts.VerifyChecksums {
+		t.Fatal("--verify-checksums must reach reconcile.Options")
+	}
+	if !on.Opts.VerifyStamps {
+		t.Fatal("--verify-stamps must reach reconcile.Options")
+	}
+	if on.Objects == nil {
+		t.Fatal("the scrub's byte reader must be wired, else verifyChecksums fails as misconfigured")
+	}
+}
 
 func TestRunToolMain_ManifestReconcileExitCodes(t *testing.T) {
 	old := runManifestReconcileFn
@@ -109,8 +141,8 @@ func TestParseReconcileFlags_Defaults(t *testing.T) {
 	if opts.etagRetries != 3 {
 		t.Fatalf("etagRetries = %d, want 3", opts.etagRetries)
 	}
-	if opts.repair || opts.gc || opts.verifyStamps {
-		t.Fatalf("repair/gc/verify-stamps must default to false")
+	if opts.repair || opts.gc || opts.verifyStamps || opts.verifyChecksums {
+		t.Fatalf("repair/gc/verify-stamps/verify-checksums must default to false")
 	}
 	if opts.schemaID != 0 {
 		t.Fatalf("schemaID = %d, want 0 (all schemas)", opts.schemaID)
@@ -129,7 +161,7 @@ func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
 		"--s3-bucket", "bkt",
 		"--schema-registry-table", "t",
 		"--schema-id", "7",
-		"--repair", "--gc", "--gc-grace", "1m", "--verify-stamps",
+		"--repair", "--gc", "--gc-grace", "1m", "--verify-stamps", "--verify-checksums",
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -139,6 +171,9 @@ func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
 	}
 	if !opts.verifyStamps {
 		t.Fatalf("--verify-stamps not parsed: %+v", opts)
+	}
+	if !opts.verifyChecksums {
+		t.Fatalf("--verify-checksums not parsed: %+v", opts)
 	}
 
 	opts, err = parseReconcileFlags([]string{"--help"})

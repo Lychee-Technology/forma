@@ -20,7 +20,10 @@ const (
 	S3OpCopy S3Op = "CopyObject"
 	// S3OpDelete matches DeleteObject (flush step 4: tmp cleanup).
 	S3OpDelete S3Op = "DeleteObject"
-	// S3OpGet matches GetObject (flush step 6: manifest load).
+	// S3OpGet matches GetObject, which flush issues twice: the content hash of
+	// the just-published final delta object (#347), then the manifest load
+	// (flush step 6). KeyContains separates them — the manifest read is the
+	// only one whose key is under the manifest prefix.
 	S3OpGet S3Op = "GetObject"
 	// S3OpPut matches PutObject (flush step 7: manifest save).
 	S3OpPut S3Op = "PutObject"

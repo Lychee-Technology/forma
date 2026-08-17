@@ -27,6 +27,7 @@ func TestUpdateManifest_NilStore(t *testing.T) {
 		1700000000000,
 		0,
 		nil,
+		"",
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -57,6 +58,7 @@ func TestUpdateManifest_AppendsEntryWithRowBounds(t *testing.T) {
 		createdAt,
 		4096,
 		nil,
+		"",
 		zap.NewNop(),
 	)
 	require.NoError(t, err)
@@ -96,6 +98,7 @@ func TestUpdateManifest_ResolverError(t *testing.T) {
 		1700000000000,
 		0,
 		nil,
+		"",
 		zap.NewNop(),
 	)
 	require.Error(t, err)
@@ -117,6 +120,7 @@ func TestUpdateManifest_AppendError(t *testing.T) {
 		1700000000000,
 		0,
 		nil,
+		"",
 		zap.NewNop(),
 	)
 	require.Error(t, err)

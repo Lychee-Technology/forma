@@ -21,27 +21,27 @@ func TestRunOnce_RequiresSchemaRegistry(t *testing.T) {
 func TestResolveS3Clients_UsesFallbackWhenCustomClientNotProvided(t *testing.T) {
 	fallback := &fullS3ClientMock{}
 
-	objectClient, fullClient, err := resolveS3Clients(nil, fallback, false)
+	clients, err := resolveS3Clients(nil, fallback, false)
 	require.NoError(t, err)
-	require.Same(t, fallback, objectClient)
-	require.Same(t, fallback, fullClient)
+	require.Same(t, fallback, clients.object)
+	require.Same(t, fallback, clients.full)
 }
 
 func TestResolveS3Clients_AcceptsObjectOnlyClientWhenFullNotRequired(t *testing.T) {
 	customObjectClient := &objectOnlyS3Client{}
 	fallback := &fullS3ClientMock{}
 
-	objectClient, fullClient, err := resolveS3Clients(customObjectClient, fallback, false)
+	clients, err := resolveS3Clients(customObjectClient, fallback, false)
 	require.NoError(t, err)
-	require.Same(t, customObjectClient, objectClient)
-	require.Nil(t, fullClient)
+	require.Same(t, customObjectClient, clients.object)
+	require.Nil(t, clients.full)
 }
 
 func TestResolveS3Clients_RejectsObjectOnlyClientWhenFullRequired(t *testing.T) {
 	customObjectClient := &objectOnlyS3Client{}
 	fallback := &fullS3ClientMock{}
 
-	_, _, err := resolveS3Clients(customObjectClient, fallback, true)
+	_, err := resolveS3Clients(customObjectClient, fallback, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "manifest requires S3FullClient")
 }
@@ -50,10 +50,10 @@ func TestResolveS3Clients_UsesCustomFullClientWhenProvided(t *testing.T) {
 	customFullClient := &fullS3ClientMock{}
 	fallback := &fullS3ClientMock{}
 
-	objectClient, fullClient, err := resolveS3Clients(customFullClient, fallback, true)
+	clients, err := resolveS3Clients(customFullClient, fallback, true)
 	require.NoError(t, err)
-	require.Same(t, customFullClient, objectClient)
-	require.Same(t, customFullClient, fullClient)
+	require.Same(t, customFullClient, clients.object)
+	require.Same(t, customFullClient, clients.full)
 }
 
 func TestSetupPostgresConnection_UsesIAMToken(t *testing.T) {

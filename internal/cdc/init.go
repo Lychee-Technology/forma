@@ -53,6 +53,12 @@ type initRunContext struct {
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
 	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
+	// checksumObject is the run's content-hash seam (#347); nil skips
+	// stamping. applyInitS3Wiring builds the real one over the run's S3 client.
+	checksumObject func(ctx context.Context, key string) (string, error)
+	// exportBaseFile is a test seam for the DuckDB base-file export (nil uses
+	// the exporter), mirroring the flusher's exportSnapshot seam.
+	exportBaseFile func(ctx context.Context, state *schemaInitState, batch schemaBatchExport) error
 }
 
 // normalizeInitOptions applies the same config defaults as Runner.RunOnce.
@@ -114,24 +120,13 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		cfg:                  cfg,
 		db:                   db,
 		duck:                 duck,
-		s3Client:             opts.S3Client,
 		schemaRegistry:       opts.SchemaRegistry,
 		logger:               opts.Logger,
 		dryRun:               opts.DryRun,
 		autoEstimateRowBytes: opts.AutoEstimateRowBytes,
 		pgConnStr:            pgConnStr,
 	}
-
-	if cfg.ManifestTemplate != "" {
-		runCtx.manifestStore = &manifest.S3Store{
-			Client: opts.S3Client,
-			Bucket: cfg.S3Bucket,
-		}
-		runCtx.manifestResolver = manifest.PathResolver{
-			Prefix:       cfg.ManifestPrefix,
-			PathTemplate: cfg.ManifestTemplate,
-		}
-	}
+	applyInitS3Wiring(runCtx, cfg, opts.S3Client)
 
 	return runCtx, nil
 }
@@ -340,7 +335,7 @@ func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowI
 	}
 }
 
-func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64, sizeBytes int64, columns map[string]string) {
+func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, createdAt int64, sizeBytes int64, columns map[string]string, checksum string) {
 	state.fileEntries = append(state.fileEntries, manifest.FileEntry{
 		Tier:       "base",
 		Path:       batch.finalKey,
@@ -351,9 +346,20 @@ func recordSchemaBatchResult(state *schemaInitState, batch schemaBatchExport, cr
 		CreatedMax: createdAt,
 		SizeBytes:  sizeBytes,
 		Columns:    columns,
+		Checksum:   checksum,
 	})
 	state.rowsExported += int64(len(batch.rowIDs))
 	state.filesCreated++
+}
+
+// exportBaseFileForBatch writes the batch's rows to the tmp object, through the
+// run's export seam when one is installed (tests) and the DuckDB exporter
+// otherwise.
+func exportBaseFileForBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, batch schemaBatchExport) error {
+	if runCtx.exportBaseFile != nil {
+		return runCtx.exportBaseFile(ctx, state, batch)
+	}
+	return runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.cfg, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache)
 }
 
 func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {
@@ -374,7 +380,7 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 		return nil
 	}
 
-	if err := runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.cfg, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache); err != nil {
+	if err := exportBaseFileForBatch(ctx, runCtx, state, batch); err != nil {
 		return fmt.Errorf("export batch: %w", err)
 	}
 	if err := CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, batch.tmpKey, batch.finalKey, runCtx.logger); err != nil {
@@ -390,7 +396,9 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 			zap.Error(err))
 	}
 
-	recordSchemaBatchResult(state, batch, time.Now().UnixMilli(), sizeBytes, initStampColumns(ctx, runCtx, state.schemaID, batch))
+	recordSchemaBatchResult(state, batch, time.Now().UnixMilli(), sizeBytes,
+		initStampColumns(ctx, runCtx, state.schemaID, batch),
+		initStampChecksum(ctx, runCtx, state.schemaID, batch))
 
 	runCtx.logger.Info("batch completed",
 		zap.Int16("schema_id", state.schemaID),

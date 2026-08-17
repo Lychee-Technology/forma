@@ -79,6 +79,14 @@ func EmitCompactionRewritePending(ctx context.Context, schemaID int16) {
 	currentEmitter()(ctx, "compaction_rewrite_pending_total", labels, int64(1))
 }
 
+// EmitParquetChecksumMismatch records a parquet object whose bytes no longer
+// hash to the checksum its manifest entry carries (#347).
+// name: "parquet_checksum_mismatch_total" with label {"schema_id": "<id>"}
+func EmitParquetChecksumMismatch(ctx context.Context, schemaID int16) {
+	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
+	currentEmitter()(ctx, "parquet_checksum_mismatch_total", labels, int64(1))
+}
+
 // EmitCompactionRewriteApplied records a committed dirty-ratio rewrite (#188).
 // name: "compaction_rewrite_applied_total" with label {"schema_id": "<id>"}
 func EmitCompactionRewriteApplied(ctx context.Context, schemaID int16) {
