@@ -40,3 +40,27 @@ func initStampColumns(ctx context.Context, runCtx *initRunContext, schemaID int1
 	}
 	return cols
 }
+
+// initStampChecksum best-effort hashes the just-published base object for the
+// manifest content checksum (#347). Mirrors the flush path's stampChecksum:
+// tmp→final is a byte-identical CopyObject, so the final's bytes are the
+// export's bytes. A failed hash leaves the entry unstamped — verification
+// passes skip an empty Checksum — so stamping never fails the init run.
+//
+// Like initStampColumns it short-circuits without a manifest store: the
+// fileEntries are then never persisted, so the hash would be a discarded
+// full-object read per batch.
+func initStampChecksum(ctx context.Context, runCtx *initRunContext, schemaID int16, batch schemaBatchExport) string {
+	if runCtx.manifestStore == nil || runCtx.checksumObject == nil {
+		return ""
+	}
+	sum, err := runCtx.checksumObject(ctx, batch.finalKey)
+	if err != nil {
+		runCtx.logger.Warn("failed to checksum final base object; manifest entry stays unstamped",
+			zap.Int16("schema_id", schemaID),
+			zap.String("final_key", batch.finalKey),
+			zap.Error(err))
+		return ""
+	}
+	return sum
+}
