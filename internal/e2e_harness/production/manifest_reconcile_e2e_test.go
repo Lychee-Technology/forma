@@ -20,10 +20,10 @@ import (
 )
 
 // newReconcileHarness wires a real reconcile.Reconciler the way the
-// manifest-reconcile tool does: real S3 listing/deletion, etag manifest
-// store, the flusher's advisory lock over a database/sql handle, registry
-// enumeration, and (when withStats) a DuckDB stats engine reading parquet
-// through httpfs. The returned cleanup closes both handles.
+// manifest-reconcile tool does: real S3 listing/deletion, raw object reads,
+// etag manifest store, the flusher's advisory lock over a database/sql
+// handle, registry enumeration, and (when withStats) a DuckDB stats engine
+// reading parquet through httpfs. The returned cleanup closes both handles.
 func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, opts reconcile.Options, withStats bool) (*reconcile.Reconciler, func()) {
 	t.Helper()
 
@@ -38,8 +38,13 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 	manifestStore := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
 	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
 	r := &reconcile.Reconciler{
-		Lister:     store,
-		Deleter:    store,
+		Lister:  store,
+		Deleter: store,
+		// Raw byte reads, wired unconditionally the way cmd/tools'
+		// newReconciler wires them: without Objects the #347 checksum scrub
+		// answers a configuration error instead of scrubbing, and --repair
+		// publishes its adopted and promoted entries unstamped.
+		Objects:    env.Cluster.S3,
 		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
 		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
 		Locker:     &reconcile.PGAdvisoryLocker{DB: db},

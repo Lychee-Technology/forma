@@ -174,6 +174,11 @@ type CompactionOverrides struct {
 	TargetBaseSizeBytes int64
 	// DirtyRatioPct tunes the rewrite trigger (0: default 5).
 	DirtyRatioPct int
+	// SkipInputChecksumVerify opts the pass out of the #347 pre-merge
+	// verification of rewrite sources, exactly as the compactor tool's
+	// --skip-input-checksum-verify flag does. The zero value verifies, so
+	// every other harness scenario keeps the fail-closed default.
+	SkipInputChecksumVerify bool
 }
 
 // RunCompactionWith executes one real compaction pass with per-run overrides,
@@ -206,9 +211,10 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 	compactor := &compaction.Compactor{
 		Logger: e.logger,
 		Config: cdc.CompactionConfig{
-			SchemaID:            schema.ID,
-			TargetBaseSizeBytes: ov.TargetBaseSizeBytes,
-			DirtyRatioPct:       ov.DirtyRatioPct,
+			SchemaID:                schema.ID,
+			TargetBaseSizeBytes:     ov.TargetBaseSizeBytes,
+			DirtyRatioPct:           ov.DirtyRatioPct,
+			SkipInputChecksumVerify: ov.SkipInputChecksumVerify,
 		},
 		Provider: provider,
 		Merger:   &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
