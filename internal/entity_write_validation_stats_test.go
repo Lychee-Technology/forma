@@ -50,7 +50,7 @@ func TestClassifyViolationPinsLibraryProse(t *testing.T) {
 		{"missing required property", map[string]any{}, violationKindRequired},
 		{"dependentRequired counts as required", map[string]any{"name": "open", "email": "a@b.c"}, violationKindRequired},
 		{"enum violation is a constraint", map[string]any{"name": "banana"}, violationKindConstraint},
-		{"type violation is a constraint", map[string]any{"name": "open", "email": 7}, violationKindConstraint},
+		{"type violation is a constraint", map[string]any{"name": "open", "email": 7, "phone": "x"}, violationKindConstraint},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
