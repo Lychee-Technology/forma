@@ -1454,8 +1454,9 @@ it should key on is unchanged and sits beside it in `OperationError.Code`
 unknown schema, a schema violation, a missing required attribute — are
 unaffected and still carry their authored message.
 
-The single-operation path is untouched: bodies written by
-`respondErrorWithStatus` are byte-identical to before.
+By design, #318 left the single-operation path untouched: bodies written by
+`respondErrorWithStatus` were byte-identical before and after that change (#361
+later added `error_id` to withheld-detail disclosed bodies).
 
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
 reproduced in the batch path. It is reserved for the three federated read-path
