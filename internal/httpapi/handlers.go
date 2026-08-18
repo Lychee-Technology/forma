@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -30,20 +29,20 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	schemaName, _, err := parsePath(r.URL.Path)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		respondError(w, "invalid path", err)
 		return
 	}
 	zap.S().Infow("create request received", "schema", schemaName)
 
 	var rawBody any
 	if err := readJSONBody(r, &rawBody); err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
 		return
 	}
 
 	jsonObjects, isSingleObject, err := parseCreateObjects(rawBody)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, err.Error())
+		respondError(w, "invalid json body", err)
 		return
 	}
 	zap.S().Debugw("create payload parsed", "schema", schemaName, "records", len(jsonObjects))
@@ -93,7 +92,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		respondError(w, "invalid path", err)
 		return
 	}
 
@@ -105,7 +104,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+		respondError(w, "invalid row_id", forma.InvalidInputf("%v", err))
 		return
 	}
 
@@ -149,14 +148,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		respondError(w, "invalid path", err)
 		return
 	}
 
 	if rowIDStr != "" {
 		rowID, err := parseUUID(rowIDStr)
 		if err != nil {
-			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+			respondError(w, "invalid row_id", forma.InvalidInputf("%v", err))
 			return
 		}
 		zap.S().Infow("get request received", "schema", schemaName, "rowID", rowIDStr)
@@ -169,7 +168,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	sortFields, sortOrder, err := parseSortParams(queryParams)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort parameters: %v", err))
+		respondError(w, "invalid sort parameters", err)
 		return
 	}
 
@@ -207,7 +206,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	schemaName, rowIDStr, err := parsePath(r.URL.Path)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		respondError(w, "invalid path", err)
 		return
 	}
 
@@ -219,13 +218,13 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	rowID, err := parseUUID(rowIDStr)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+		respondError(w, "invalid row_id", forma.InvalidInputf("%v", err))
 		return
 	}
 
 	var body map[string]any
 	if err := readJSONBody(r, &body); err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
 		return
 	}
 
@@ -283,13 +282,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	schemaName, _, err := parsePath(r.URL.Path)
 	if err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+		respondError(w, "invalid path", err)
 		return
 	}
 
 	var rowIDStrs []string
 	if err := readJSONBody(r, &rowIDStrs); err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
 		return
 	}
 
@@ -303,7 +302,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	for i, idStr := range rowIDStrs {
 		rowID, err := parseUUID(idStr)
 		if err != nil {
-			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id at index %d: %v", i, err))
+			respondError(w, "invalid row_id", forma.InvalidInputf("index %d: %v", i, err))
 			return
 		}
 
@@ -383,7 +382,7 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 
 	var payload forma.QueryRequest
 	if err := readJSONBody(r, &payload); err != nil {
-		_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
 		return
 	}
 
@@ -424,14 +423,14 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		schemaName, rowIDStr, err := parsePath(path)
 		if err != nil {
-			_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid path: %v", err))
+			respondError(w, "invalid path", err)
 			return
 		}
 
 		if rowIDStr != "" {
 			rowID, err := parseUUID(rowIDStr)
 			if err != nil {
-				_ = writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid row_id: %v", err))
+				respondError(w, "invalid row_id", forma.InvalidInputf("%v", err))
 				return
 			}
 			s.handleSingleDelete(w, r, schemaName, rowID)

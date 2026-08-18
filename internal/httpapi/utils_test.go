@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -182,5 +183,52 @@ func TestReadJSONBodyDecodesNumbersExactly(t *testing.T) {
 	got := decoded["n"]
 	if want := json.Number("9007199254740993"); got != want {
 		t.Fatalf("decoded[n] = %#v (%T), want %#v", got, got, want)
+	}
+}
+
+// TestParseHelpersPublishInvalidInput pins #360: every error a
+// carrier-authoring parse helper (parsePath, parseSortParams,
+// parseCreateObjects) returns must carry forma.ErrInvalidInput and publish
+// its whole message, because handlers route it through the disclosure gate —
+// an unpublished error would keep its 400 but answer a redacted body. The
+// other two parse helpers, readJSONBody and parseUUID, return the library's
+// raw error with no sentinel; their call sites author the carrier instead
+// (forma.InvalidInputf("%v", err)), covered by the handler-level tests.
+func TestParseHelpersPublishInvalidInput(t *testing.T) {
+	_, _, pathEmptyErr := parsePath("/api/v1/")
+	_, _, pathFormatErr := parsePath("/api/v1/a/b/c")
+	_, _, orderErr := parseSortParams(url.Values{"sort_by": {"age"}, "sort_order": {"up"}})
+	_, _, danglingErr := parseSortParams(url.Values{"sort_order": {"desc"}})
+	_, _, noFieldsErr := parseSortParams(url.Values{"sort_by": {" , "}})
+	_, _, emptyArrErr := parseCreateObjects([]any{})
+	_, _, nonObjErr := parseCreateObjects([]any{42})
+	_, _, scalarErr := parseCreateObjects("bad")
+
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"path empty schema":      {pathEmptyErr, "empty schema name"},
+		"path format":            {pathFormatErr, "invalid path format"},
+		"sort order":             {orderErr, "invalid sort_order: up"},
+		"sort order without by":  {danglingErr, "sort_order requires sort_by to be specified"},
+		"sort by without fields": {noFieldsErr, "sort_by provided but contained no valid fields"},
+		"create empty array":     {emptyArrErr, "empty array not allowed"},
+		"create non-object":      {nonObjErr, "body[0] must be an object"},
+		"create scalar":          {scalarErr, "body must be an object or array"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !errors.Is(tc.err, forma.ErrInvalidInput) {
+				t.Fatalf("error does not carry ErrInvalidInput: %v", tc.err)
+			}
+			msg, ok := forma.ResolvePublicMessage(tc.err)
+			if !ok {
+				t.Fatalf("error publishes nothing: %v", tc.err)
+			}
+			if msg != tc.want {
+				t.Fatalf("published %q, want %q", msg, tc.want)
+			}
+		})
 	}
 }

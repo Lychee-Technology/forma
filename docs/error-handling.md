@@ -717,18 +717,43 @@ being read. It is raised before any path reaches a scan.
 split follows the two error classes above, and is enforced by
 `respondErrorWithStatus` in `internal/httpapi/error_response.go`. That is the
 only gate **for manager-layer errors**: `respondError` merely classifies and
-delegates to it, and `executeGet` (`internal/httpapi/server.go:175`) calls
+delegates to it, and `executeGet` (`internal/httpapi/handlers.go`) calls
 `respondErrorWithStatus` directly so it can choose its own 404 wording.
 
-Handlers also call `writeError` directly — 33 sites in `server.go` — and those
-bodies are verbatim without passing the gate. They are safe because every one of
-them reports a request-parsing failure (`parsePath`, `readJSONBody`,
-`parseUUID`, `parseCreateObjects`, `parseSortParams`); none touches the manager,
-the engine, S3, or `PG_CONN`. What holds that line is the source-level guard
-`TestWriteErrorAlwaysCarriesALiteral4xxStatus`
-(`internal/httpapi/error_leak_test.go`), which fails the build unless every
-direct site passes a literal 4xx constant from an allowlist — so a new handler
-cannot echo a runtime-classified status without going through `respondError`.
+Handlers also call `writeError` directly — the fixed-literal sites in
+`handlers.go` (`"method not allowed"`, `"row_id is required"`, `"condition is
+required"`, …) — and those bodies are verbatim without passing the gate. Since
+#360 they are safe *structurally*, not by convention: a request-parsing failure,
+whose message embeds parser prose about what the caller sent, is built as a
+`forma.InvalidInputf` carrier and routed through `respondError`, so its text
+crosses as a published message — scrubbed and logged like every other disclosed
+4xx. `parsePath`, `parseSortParams` and `parseCreateObjects`
+(`internal/httpapi/server.go`) author that carrier themselves; `readJSONBody` and
+`parseUUID` return `encoding/json`'s and `google/uuid`'s own prose, which each
+call site publishes deliberately as `forma.InvalidInputf("%v", err)` — batch
+delete adds the offending element's position, `forma.InvalidInputf("index %d:
+%v", i, err)`. No direct `writeError` message is derived from a request or a
+runtime error at all, so none can carry the manager, the engine, S3, or
+`PG_CONN`.
+
+Two source-level guards in `internal/httpapi/error_leak_test.go` hold that line
+over the package's non-test sources, each with the same single sanctioned
+exception — `respondErrorWithStatus`, whose status and message are both
+constrained at runtime by the gate itself:
+
+- `TestWriteErrorAlwaysCarriesALiteral4xxStatus` fails the build unless every
+  direct site passes a literal 4xx constant from an allowlist
+  (`http.StatusBadRequest`, `http.StatusMethodNotAllowed`) — so a new handler
+  cannot echo a runtime-classified status without going through `respondError`;
+- `TestWriteErrorMessageIsAlwaysALiteral` closes the axis the status guard
+  leaves unchecked, failing the build unless every direct site's message is a
+  string literal — so a handler that needs dynamic text has exactly one road, a
+  published carrier through `respondError`.
+
+Neither guard is allowed to go quiet: a call site the status guard's receiver
+pattern cannot parse, and a `writeError` arity the message guard does not
+expect, are each reported as a failure rather than skipped, so reshaping the
+call or the signature cannot silently drop sites out of the scan.
 
 **The status is decided by sentinel evidence and by nothing else.**
 `classifyManagerError` matches `errors.Is` against `forma.ErrNotFound` (404),
@@ -762,8 +787,13 @@ errors that wrapped no sentinel. It was removed for two reasons:
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that
 had been relying on it — every one of them now builds a `forma.InvalidInputf`
-carrier, and the message each publishes is the same human-authored text it
-always rendered:
+carrier publishing the same human-authored text it always rendered. The table
+below is the maintained list of the carrier sites that answer a caller mistake,
+and it is no longer only that sweep: the `internal/httpapi` row was added by
+#360 and never depended on the heuristic (see below the table).
+`classifyManagerError`'s doc comment
+(`internal/httpapi/error_response.go:148-192`) enumerates the sweep, and counts
+only it.
 
 | site | caller mistake |
 | --- | --- |
@@ -772,11 +802,64 @@ always rendered:
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
+| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360) |
 
 The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
 The `sqlgen`/`conditionexpr` group is reachable through `POST
 /api/v1/advanced_query`, whose `condition` payload is entirely caller-supplied.
+
+The `httpapi` entry joined later and for a different reason. Those sites never
+relied on the heuristic — they always named a literal `400` — but their bodies
+reached the client through `writeError`, outside the gate. #360 republished them
+as carriers, so the same prose now passes `resolvePublicMessage` and
+`redactCredentials` like everything else in this table. The prose is the same;
+the exact body is not always byte-identical to what #360 replaced, because the
+operation name is now prefixed uniformly by the gate: a malformed create payload
+answers `invalid json body: body must be an object or array` where it used to
+answer the bare message, a bad `row_id` in a batch delete answers `invalid
+row_id: index 0: …` rather than `invalid row_id at index 0: …`, and a path with
+no schema name lost its doubled prefix (`invalid path: invalid path: empty
+schema name` → `invalid path: empty schema name`). This is one more reason for
+the standing advice below: key on the status code, never on full body text.
+
+Several of these sites publish prose that was not written at the wrap site —
+`encoding/json`'s decode error, `google/uuid`'s parse error, and (on `POST
+/api/v1/advanced_query`, whose body decodes through
+`forma.QueryRequest.UnmarshalJSON`) `forma`'s own condition-decoding errors from
+`types.go`: `composite condition missing logic`, `unknown logic: <the caller's
+value>`, `invalid condition payload: expected 'logic' or 'attr'`. All of them
+are flattened into the published message by the same
+`forma.InvalidInputf("%v", err)` wrap, and all stand on the same footing as
+`schemavalidate`'s `jsonschema-go` prose below, for the same reason: what is
+rendered comes from the caller's own request and from compile-time identifiers,
+never from server state.
+
+`encoding/json` reports the JSON kind the caller sent plus **the Go type it was
+decoding into** — either a bare type (`json: cannot unmarshal array into Go
+value of type map[string]interface {}` for a `PUT` body that is not an object)
+or a struct field keyed by the caller's own JSON name (`json: cannot unmarshal
+number into Go struct field Alias.schema_name of type string` for
+`{"schema_name": 5}`). That Go type name is an internal detail leaking as noise
+— `Alias` is the local alias `forma.QueryRequest.UnmarshalJSON` decodes through
+— but it is a static identifier, not caller data or environment.
+
+`uuid.Parse` usually reports only the offending literal's length or that its
+format is wrong (`invalid UUID length: 3`), without echoing it — but not
+always: a 45-character `row_id` is read as the `urn:uuid:…` form, and if its
+first nine characters are not that prefix, `google/uuid` v1.6.0 answers
+`invalid urn prefix: "<those nine characters>"` — quoting the caller's own input
+back. That is caller data rather than server state, and `redactCredentials` runs
+on it like every other published message, so it stays within the rule.
+
+No paths, keys, or credentials are reachable through any of these. If that ever
+stops holding for a decode target, the fix is not a wrapper around the same text
+— today's `forma.InvalidInputf("%v", err)` has already flattened the library
+prose into the published message. The site must be restructured so the
+publication and the detail are separate errors:
+`forma.WithOperatorDetail(forma.InvalidInputf("<generic message>"), err)`, which
+publishes the generic message and keeps the library's text in `Error()` and the
+log — exactly as recorded for the `jsonschema-go` prose.
 
 **The sentinel suffix no longer reaches bodies — #309's clause is overturned by
 #313.** `Error()` still renders `<message>: invalid input` (likewise
