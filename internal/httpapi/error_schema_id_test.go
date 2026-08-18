@@ -218,12 +218,13 @@ func TestRedactedBodyOmitsSchemaIDWithoutACarrier(t *testing.T) {
 
 // TestPublished4xxBodyCarriesNoSchemaID pins that the schema-id reversal is
 // confined to the redacted branch. A published client error keeps a body of
-// message only: no correlation fields, no schema id — even when the chain
-// deliberately carries a ParquetSetInconsistentError that errorSchemaID
-// *would* resolve, attached as operator detail. The test fails if the field
-// is populated before the disclosure gate instead of after it, and the
+// message only: no correlation fields (except error_id when detail is withheld),
+// no schema id — even when the chain deliberately carries a ParquetSetInconsistentError
+// that errorSchemaID *would* resolve, attached as operator detail. The test fails if
+// the field is populated before the disclosure gate instead of after it, and the
 // object-key assertion makes it strictly stronger than its pre-#313 version:
-// the detail's text must not surface either.
+// the detail's text must not surface either. #361: withheld detail generates an
+// error_id for the Warnw line.
 func TestPublished4xxBodyCarriesNoSchemaID(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
@@ -239,10 +240,20 @@ func TestPublished4xxBodyCarriesNoSchemaID(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, forbidden := range []string{"schema_id", "error_class", "error_id", canaryKey} {
+	for _, forbidden := range []string{"schema_id", "error_class", canaryKey} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("published 4xx body carried %q; body: %s", forbidden, body)
 		}
+	}
+	var resp APIResponse
+	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+		t.Fatalf("body is not valid JSON: %v", uerr)
+	}
+	// #361: the chain withholds operator detail, so the body carries an
+	// error_id for the Warnw line — and still none of the redacted-branch
+	// fields above.
+	if _, perr := uuid.Parse(resp.ErrorID); perr != nil {
+		t.Fatalf("withheld-detail 4xx error_id %q is not a UUID: %v", resp.ErrorID, perr)
 	}
 	if !strings.Contains(body, "bad filter") {
 		t.Fatalf("expected the published message, got %s", body)

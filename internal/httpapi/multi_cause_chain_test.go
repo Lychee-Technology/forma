@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
@@ -149,7 +150,8 @@ func TestClientErrorPublishesItsMessage(t *testing.T) {
 // unrenderable caller-supplied path template: a carrier with the render error
 // attached as operator detail. Pre-#313 this chain collapsed to an opaque
 // redacted 400; now the caller learns what to fix while the operator cause
-// stays out of the body.
+// stays out of the body. #361: withheld detail generates an error_id for the
+// Warnw line.
 func TestMixedChainPublishesClientTextOnly(t *testing.T) {
 	restore := zap.ReplaceGlobals(zap.NewNop())
 	defer restore()
@@ -179,9 +181,12 @@ func TestMixedChainPublishesClientTextOnly(t *testing.T) {
 	if strings.Contains(resp.Error, "unclosed action") {
 		t.Fatalf("text/template internals leaked into the 400 body: %q", resp.Error)
 	}
-	if resp.ErrorClass != "" || resp.ErrorID != "" {
-		t.Fatalf("a published 400 must not emit correlation fields, got class=%q id=%q",
-			resp.ErrorClass, resp.ErrorID)
+	if resp.ErrorClass != "" {
+		t.Fatalf("a published 400 must not emit error_class, got %q", resp.ErrorClass)
+	}
+	// #361: operator detail (the render error) was withheld, so an error_id rides along.
+	if _, perr := uuid.Parse(resp.ErrorID); perr != nil {
+		t.Fatalf("withheld-detail 400 error_id %q is not a UUID: %v", resp.ErrorID, perr)
 	}
 }
 
