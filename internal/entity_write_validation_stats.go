@@ -29,10 +29,12 @@ const (
 //
 // It classifies one error, and the validator hands it the first failure only —
 // so a document that both omits a required property and carries an illegal
-// value is counted once, as "required". The split is therefore a triage hint
-// and not a census: "required: N, constraint: 0" means no violation has yet
-// surfaced as a constraint, not that the constraint work is done. Expect
-// constraint counts to appear as the required backfill lands.
+// value is counted once, as "constraint": jsonschema-go reports the
+// properties-level failure before the root "required" one, so the constraint
+// masks the required. The split is therefore a triage hint and not a census:
+// "constraint: N, required: 0" means no violation has yet surfaced as
+// required, not that the backfill work is done. Expect required counts to
+// appear as the constraint repairs land.
 //
 // Its input must be the validator's own error, undecorated: see the classify
 // site in validateWritePayload for why.
