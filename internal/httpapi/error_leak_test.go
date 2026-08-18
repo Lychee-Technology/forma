@@ -398,6 +398,15 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 // go/ast rather than the regex above: an argument expression can contain
 // commas and nested calls a regex cannot parse, and go/parser fails loudly on
 // what it cannot read instead of skipping it.
+//
+// A call is counted the moment its name matches, before its shape is examined,
+// and any arity other than (w, status, message) is reported rather than
+// skipped. Skipping would be the same silent-vacuity hole the status guard
+// reconciles against: if writeError ever became variadic
+// (format string, args ...any), 4-argument calls would drop out of the scan
+// while the surviving 3-argument ones kept calls > 0, so the vacuity Fatal
+// would not fire and the guard would report green for precisely the dynamic
+// message it exists to forbid.
 func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
@@ -409,6 +418,7 @@ func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
 
 	calls := 0
 	var dynamic []string
+	var unchecked []string
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
 			ast.Inspect(file, func(n ast.Node) bool {
@@ -423,10 +433,14 @@ func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
 				case *ast.SelectorExpr:
 					name = fun.Sel.Name
 				}
-				if name != "writeError" || len(call.Args) != 3 {
+				if name != "writeError" {
 					return true
 				}
 				calls++
+				if len(call.Args) != 3 {
+					unchecked = append(unchecked, fset.Position(call.Pos()).String())
+					return true
+				}
 				if lit, ok := call.Args[2].(*ast.BasicLit); ok && lit.Kind == token.STRING {
 					return true
 				}
@@ -438,6 +452,12 @@ func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
 
 	if calls == 0 {
 		t.Fatalf("guard matched no writeError call sites — it would pass vacuously")
+	}
+	if len(unchecked) > 0 {
+		t.Errorf("writeError call sites with unexpected arity, so their message went unchecked: %v\n"+
+			"writeError takes exactly (w, status, message); a variadic or reshaped signature must not "+
+			"be introduced without extending this guard (#360)", unchecked)
+		return
 	}
 	if len(dynamic) != 1 {
 		t.Errorf("expected exactly 1 writeError site with a non-literal message "+
