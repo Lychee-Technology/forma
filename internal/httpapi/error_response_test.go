@@ -197,15 +197,24 @@ func TestRespondError4xxPublishesOnlyTheCarriersMessage(t *testing.T) {
 	if strings.Contains(rec.Body.String(), canaryKey) {
 		t.Fatalf("operator detail leaked into the 400 body: %s", rec.Body.String())
 	}
-	if resp.ErrorClass != "" || resp.ErrorID != "" {
-		t.Fatalf("4xx must not emit correlation fields, got class=%q id=%q", resp.ErrorClass, resp.ErrorID)
+	if resp.ErrorClass != "" {
+		t.Fatalf("disclosed 4xx must not carry error_class, got %q", resp.ErrorClass)
+	}
+	// #361: the boundary just withheld detail whose only copy is the Warnw line,
+	// so the body carries an error_id the caller can quote back.
+	if _, perr := uuid.Parse(resp.ErrorID); perr != nil {
+		t.Fatalf("withheld-detail 4xx error_id %q is not a UUID: %v", resp.ErrorID, perr)
 	}
 
 	entries := logs.All()
 	if len(entries) != 1 || entries[0].Level != zap.WarnLevel {
 		t.Fatalf("withheld operator detail must log at WARN, got %d entries %v", len(entries), entries)
 	}
-	logged, _ := entries[0].ContextMap()["error"].(string)
+	fields := entries[0].ContextMap()
+	if fields["error_id"] != resp.ErrorID {
+		t.Fatalf("Warnw error_id %v does not match body %q", fields["error_id"], resp.ErrorID)
+	}
+	logged, _ := fields["error"].(string)
 	if !strings.Contains(logged, canaryKey) {
 		t.Fatalf("operator log lost the withheld detail; logged: %s", logged)
 	}
@@ -326,7 +335,7 @@ func TestUnknownSortAttributeIs400AndPublished(t *testing.T) {
 		t.Fatalf("the sentinel suffix must stay out of the body (#313), got %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
-		t.Fatalf("a published 400 must not emit correlation fields, got class=%q id=%q",
+		t.Fatalf("a detail-less published 400 must not emit correlation fields, got class=%q id=%q",
 			resp.ErrorClass, resp.ErrorID)
 	}
 }

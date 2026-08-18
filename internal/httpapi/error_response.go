@@ -291,7 +291,7 @@ func resolvePublicMessage(err error) (string, bool) {
 // operator detail was withheld (forma.HasOperatorDetail): that line is the
 // only copy of the detail, so it must clear the Info threshold, without
 // inheriting Errorw's alerting weight for something a caller can trigger at
-// will.
+// will. The Warnw branch also mints an error_id shared by line and body (#361).
 func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
 	fields := make([]any, 0, len(logFields)+8)
 	fields = append(fields, logFields...)
@@ -307,13 +307,24 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	safe := redactCredentials(err.Error())
 
 	if msg, ok := resolvePublicMessage(err); ok && status < http.StatusInternalServerError && isClientError(err) {
-		fields = append(fields, "error", safe)
+		resp := APIResponse{
+			Success: false,
+			Error:   fmt.Sprintf("%s: %s", op, redactCredentials(msg)),
+		}
 		if forma.HasOperatorDetail(err) {
+			// #361: this Warnw line is the only remaining copy of the withheld
+			// detail, so the body carries an error_id the caller can quote back.
+			// The detail-less branch stays id-free: its Debugw line does not
+			// survive the production Info threshold, and an error_id that
+			// correlates to nothing is worse than none.
+			resp.ErrorID = uuid.NewString()
+			fields = append(fields, "error_id", resp.ErrorID, "error", safe)
 			zap.S().Warnw(op, fields...)
 		} else {
+			fields = append(fields, "error", safe)
 			zap.S().Debugw(op, fields...)
 		}
-		_ = writeError(w, status, fmt.Sprintf("%s: %s", op, redactCredentials(msg)))
+		_ = writeJSON(w, status, resp)
 		return
 	}
 
