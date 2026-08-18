@@ -790,9 +790,10 @@ had been relying on it — every one of them now builds a `forma.InvalidInputf`
 carrier publishing the same human-authored text it always rendered. The table
 below is the maintained list of the carrier sites that answer a caller mistake,
 and it is no longer only that sweep: the `internal/httpapi` row was added by
-#360 and never depended on the heuristic (see below the table). `respondError`'s
-own comment in `internal/httpapi/error_response.go` enumerates the sweep, and
-counts only it.
+#360 and never depended on the heuristic (see below the table).
+`classifyManagerError`'s doc comment
+(`internal/httpapi/error_response.go:148-192`) enumerates the sweep, and counts
+only it.
 
 | site | caller mistake |
 | --- | --- |
@@ -822,23 +823,43 @@ no schema name lost its doubled prefix (`invalid path: invalid path: empty
 schema name` → `invalid path: empty schema name`). This is one more reason for
 the standing advice below: key on the status code, never on full body text.
 
-Two of these sites publish third-party prose rather than human-authored text —
-`encoding/json`'s decode error and `google/uuid`'s parse error — on the same
-footing as `schemavalidate`'s `jsonschema-go` prose below, and the reason is the
-same: what those libraries render is derived from the caller's own request and
-from compile-time type names, never from server state. `uuid.Parse` reports the
-offending literal's length or that its format is wrong (`invalid UUID length:
-3`), without echoing it. `encoding/json` reports the JSON kind the caller sent
-plus **the Go type it was decoding into** — either a bare type (`json: cannot
-unmarshal array into Go value of type map[string]interface {}` for a `PUT` body
-that is not an object) or a struct field keyed by the caller's own JSON name
-(`json: cannot unmarshal number into Go struct field Alias.schema_name of type
-string` for `POST /api/v1/advanced_query` with `{"schema_name": 5}`). That Go
-type name is an internal detail leaking as noise — `Alias` is the local alias
-`forma.QueryRequest.UnmarshalJSON` decodes through — but it is a static
-identifier, not caller data or environment: no paths, keys, or credentials. If
-that ever stops holding for a decode target, the fix is `forma.WithOperatorDetail`
-at the wrap site, exactly as recorded for the `jsonschema-go` prose.
+Several of these sites publish prose that was not written at the wrap site —
+`encoding/json`'s decode error, `google/uuid`'s parse error, and (on `POST
+/api/v1/advanced_query`, whose body decodes through
+`forma.QueryRequest.UnmarshalJSON`) `forma`'s own condition-decoding errors from
+`types.go`: `composite condition missing logic`, `unknown logic: <the caller's
+value>`, `invalid condition payload: expected 'logic' or 'attr'`. All of them
+are flattened into the published message by the same
+`forma.InvalidInputf("%v", err)` wrap, and all stand on the same footing as
+`schemavalidate`'s `jsonschema-go` prose below, for the same reason: what is
+rendered comes from the caller's own request and from compile-time identifiers,
+never from server state.
+
+`encoding/json` reports the JSON kind the caller sent plus **the Go type it was
+decoding into** — either a bare type (`json: cannot unmarshal array into Go
+value of type map[string]interface {}` for a `PUT` body that is not an object)
+or a struct field keyed by the caller's own JSON name (`json: cannot unmarshal
+number into Go struct field Alias.schema_name of type string` for
+`{"schema_name": 5}`). That Go type name is an internal detail leaking as noise
+— `Alias` is the local alias `forma.QueryRequest.UnmarshalJSON` decodes through
+— but it is a static identifier, not caller data or environment.
+
+`uuid.Parse` usually reports only the offending literal's length or that its
+format is wrong (`invalid UUID length: 3`), without echoing it — but not
+always: a 45-character `row_id` is read as the `urn:uuid:…` form, and if its
+first nine characters are not that prefix, `google/uuid` v1.6.0 answers
+`invalid urn prefix: "<those nine characters>"` — quoting the caller's own input
+back. That is caller data rather than server state, and `redactCredentials` runs
+on it like every other published message, so it stays within the rule.
+
+No paths, keys, or credentials are reachable through any of these. If that ever
+stops holding for a decode target, the fix is not a wrapper around the same text
+— today's `forma.InvalidInputf("%v", err)` has already flattened the library
+prose into the published message. The site must be restructured so the
+publication and the detail are separate errors:
+`forma.WithOperatorDetail(forma.InvalidInputf("<generic message>"), err)`, which
+publishes the generic message and keeps the library's text in `Error()` and the
+log — exactly as recorded for the `jsonschema-go` prose.
 
 **The sentinel suffix no longer reaches bodies — #309's clause is overturned by
 #313.** `Error()` still renders `<message>: invalid input` (likewise
