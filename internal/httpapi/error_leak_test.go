@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -290,13 +294,16 @@ var writeErrorAllowed4xx = map[string]bool{
 // body-writing path was judged out of scope for #301; the boundary is recorded
 // so the next author trusts the guard for exactly what it checks.
 //
-// NOTE: the other unchecked axis is the message. This guard reads only the
-// *status* expression; it cannot tell whether the third argument is safe to
-// disclose. That judgement belongs to resolvePublicMessage inside
-// respondErrorWithStatus, and the direct call sites stay safe only because their
-// messages come from request parsing (parsePath, readJSONBody, parseUUID,
-// parseCreateObjects, parseSortParams), never from the manager, the engine, S3,
-// or PG_CONN.
+// NOTE: the message axis is checked by TestWriteErrorMessageIsAlwaysALiteral
+// below (#360): direct sites carry string literals only; anything dynamic must
+// arrive as a published carrier through respondError. This guard itself still
+// reads only the *status* expression and cannot tell whether the third argument
+// is safe to disclose. For the one site that builds its message at runtime,
+// respondErrorWithStatus, that judgement belongs to resolvePublicMessage. Every
+// other site is safe because its message is a fixed literal written into the
+// source — request text no longer reaches these calls at all, having moved to
+// published carriers under the gate (#360), so no direct message can carry the
+// manager, the engine, S3, or PG_CONN.
 func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 	// Captures the status expression of each call. The receiver pattern is
 	// deliberately narrow, so it does NOT match every legal Go expression —
@@ -375,5 +382,74 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 	if !strings.HasPrefix(unlisted[0], "error_response.go:") {
 		t.Errorf("the sanctioned non-literal writeError status moved out of error_response.go to %s; "+
 			"only respondErrorWithStatus may pass a runtime-classified status (#301)", unlisted[0])
+	}
+}
+
+// TestWriteErrorMessageIsAlwaysALiteral closes the axis the status guard above
+// documents as unchecked: the message. Every direct writeError call site must
+// pass an untyped string literal — never fmt.Sprintf, err.Error(), or any
+// other expression — with the same single sanctioned exception as the status
+// guard: respondErrorWithStatus in error_response.go, whose message is built
+// under the disclosure gate (isClientError + resolvePublicMessage +
+// redactCredentials, #313). Together the two guards make the disclosure rule
+// total for this write path (#360): a handler that needs dynamic text has
+// exactly one road, a published carrier through respondError.
+//
+// go/ast rather than the regex above: an argument expression can contain
+// commas and nested calls a regex cannot parse, and go/parser fails loudly on
+// what it cannot read instead of skipping it.
+func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+
+	calls := 0
+	var dynamic []string
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				var name string
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					name = fun.Name
+				case *ast.SelectorExpr:
+					name = fun.Sel.Name
+				}
+				if name != "writeError" || len(call.Args) != 3 {
+					return true
+				}
+				calls++
+				if lit, ok := call.Args[2].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					return true
+				}
+				dynamic = append(dynamic, fset.Position(call.Args[2].Pos()).String())
+				return true
+			})
+		}
+	}
+
+	if calls == 0 {
+		t.Fatalf("guard matched no writeError call sites — it would pass vacuously")
+	}
+	if len(dynamic) != 1 {
+		t.Errorf("expected exactly 1 writeError site with a non-literal message "+
+			"(respondErrorWithStatus in error_response.go), found %d: %v\n"+
+			"a handler must not build its own body text — publish it through a "+
+			"forma.InvalidInputf carrier and respondError instead (#360)",
+			len(dynamic), dynamic)
+		return
+	}
+	if !strings.HasPrefix(dynamic[0], "error_response.go:") {
+		t.Errorf("the sanctioned non-literal writeError message moved out of "+
+			"error_response.go to %s; only respondErrorWithStatus may write a "+
+			"runtime-built message (#360)", dynamic[0])
 	}
 }

@@ -68,6 +68,8 @@ func TestParseFailuresPublishThroughTheGate(t *testing.T) {
 			"invalid row_id: index 0: invalid UUID length: 1"},
 		{"advanced query bad json", http.MethodPost, "/api/v1/advanced_query", `{`,
 			"invalid json body: unexpected EOF"},
+		{"delete bad path", http.MethodDelete, "/api/v1/a/b/c", "",
+			"invalid path: invalid path format"},
 	}
 
 	for _, tc := range cases {
