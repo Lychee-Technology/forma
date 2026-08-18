@@ -720,20 +720,21 @@ only gate **for manager-layer errors**: `respondError` merely classifies and
 delegates to it, and `executeGet` (`internal/httpapi/handlers.go`) calls
 `respondErrorWithStatus` directly so it can choose its own 404 wording.
 
-Handlers also call `writeError` directly — 16 sites in `handlers.go`, each
-passing a fixed string literal (`"method not allowed"`, `"row_id is required"`,
-`"condition is required"`, …) — and those bodies are verbatim without passing
-the gate. Since #360 they are safe *structurally*, not by convention: a
-request-parsing failure, whose message embeds parser prose about what the caller
-sent, is built as a `forma.InvalidInputf` carrier and routed through
-`respondError`, so its text crosses as a published message — scrubbed and logged
-like every other disclosed 4xx. `parsePath`, `parseSortParams` and
-`parseCreateObjects` (`internal/httpapi/server.go`) author that carrier
-themselves; `readJSONBody` and `parseUUID` return `encoding/json`'s and
-`google/uuid`'s own prose, which each call site publishes deliberately as
-`forma.InvalidInputf("%v", err)`. No direct `writeError` message is derived from
-a request or a runtime error at all, so none can carry the manager, the engine,
-S3, or `PG_CONN`.
+Handlers also call `writeError` directly — the fixed-literal sites in
+`handlers.go` (`"method not allowed"`, `"row_id is required"`, `"condition is
+required"`, …) — and those bodies are verbatim without passing the gate. Since
+#360 they are safe *structurally*, not by convention: a request-parsing failure,
+whose message embeds parser prose about what the caller sent, is built as a
+`forma.InvalidInputf` carrier and routed through `respondError`, so its text
+crosses as a published message — scrubbed and logged like every other disclosed
+4xx. `parsePath`, `parseSortParams` and `parseCreateObjects`
+(`internal/httpapi/server.go`) author that carrier themselves; `readJSONBody` and
+`parseUUID` return `encoding/json`'s and `google/uuid`'s own prose, which each
+call site publishes deliberately as `forma.InvalidInputf("%v", err)` — batch
+delete adds the offending element's position, `forma.InvalidInputf("index %d:
+%v", i, err)`. No direct `writeError` message is derived from a request or a
+runtime error at all, so none can carry the manager, the engine, S3, or
+`PG_CONN`.
 
 Two source-level guards in `internal/httpapi/error_leak_test.go` hold that line
 over the package's non-test sources, each with the same single sanctioned
@@ -786,8 +787,12 @@ errors that wrapped no sentinel. It was removed for two reasons:
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that
 had been relying on it — every one of them now builds a `forma.InvalidInputf`
-carrier, and the message each publishes is the same human-authored text it
-always rendered:
+carrier publishing the same human-authored text it always rendered. The table
+below is the maintained list of the carrier sites that answer a caller mistake,
+and it is no longer only that sweep: the `internal/httpapi` row was added by
+#360 and never depended on the heuristic (see below the table). `respondError`'s
+own comment in `internal/httpapi/error_response.go` enumerates the sweep, and
+counts only it.
 
 | site | caller mistake |
 | --- | --- |
@@ -806,12 +811,34 @@ The `sqlgen`/`conditionexpr` group is reachable through `POST
 The `httpapi` entry joined later and for a different reason. Those sites never
 relied on the heuristic — they always named a literal `400` — but their bodies
 reached the client through `writeError`, outside the gate. #360 republished them
-as carriers so the same text now passes `resolvePublicMessage` and
-`redactCredentials` like everything else in this table. Two of them publish
-third-party prose rather than human-authored text — `encoding/json`'s decode
-error and `google/uuid`'s parse error, both of which describe only the literal
-the caller sent — on the same footing as `schemavalidate`'s `jsonschema-go`
-prose below.
+as carriers, so the same prose now passes `resolvePublicMessage` and
+`redactCredentials` like everything else in this table. The prose is the same;
+the exact body is not always byte-identical to what #360 replaced, because the
+operation name is now prefixed uniformly by the gate: a malformed create payload
+answers `invalid json body: body must be an object or array` where it used to
+answer the bare message, a bad `row_id` in a batch delete answers `invalid
+row_id: index 0: …` rather than `invalid row_id at index 0: …`, and a path with
+no schema name lost its doubled prefix (`invalid path: invalid path: empty
+schema name` → `invalid path: empty schema name`). This is one more reason for
+the standing advice below: key on the status code, never on full body text.
+
+Two of these sites publish third-party prose rather than human-authored text —
+`encoding/json`'s decode error and `google/uuid`'s parse error — on the same
+footing as `schemavalidate`'s `jsonschema-go` prose below, and the reason is the
+same: what those libraries render is derived from the caller's own request and
+from compile-time type names, never from server state. `uuid.Parse` reports the
+offending literal's length or that its format is wrong (`invalid UUID length:
+3`), without echoing it. `encoding/json` reports the JSON kind the caller sent
+plus **the Go type it was decoding into** — either a bare type (`json: cannot
+unmarshal array into Go value of type map[string]interface {}` for a `PUT` body
+that is not an object) or a struct field keyed by the caller's own JSON name
+(`json: cannot unmarshal number into Go struct field Alias.schema_name of type
+string` for `POST /api/v1/advanced_query` with `{"schema_name": 5}`). That Go
+type name is an internal detail leaking as noise — `Alias` is the local alias
+`forma.QueryRequest.UnmarshalJSON` decodes through — but it is a static
+identifier, not caller data or environment: no paths, keys, or credentials. If
+that ever stops holding for a decode target, the fix is `forma.WithOperatorDetail`
+at the wrap site, exactly as recorded for the `jsonschema-go` prose.
 
 **The sentinel suffix no longer reaches bodies — #309's clause is overturned by
 #313.** `Error()` still renders `<message>: invalid input` (likewise
