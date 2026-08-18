@@ -505,8 +505,9 @@ Two costs come with that, and both are deliberate:
   (`forma.HasOperatorDetail`), so *every* disclosed `4xx` on a relation-declaring
   schema now logs at `Warn` — not only the ones the strip caused. That is intended
   where the note is the real explanation, since it has to clear the production
-  `Info` threshold to be read at all. Today `visit` is the only shipped schema
-  with a relation root, so that is the only entity affected.
+  `Info` threshold to be read at all. Since #361 each of those bodies also
+  carries an `error_id` matching its `Warnw` line. Today `visit` is the only
+  shipped schema with a relation root, so that is the only entity affected.
 
 **A `required_always` attribute policy beneath a relation root breaks the entity
 the same way, and this one is *not* caught at startup.** The attribute-metadata
@@ -953,8 +954,10 @@ Status and disclosure are separately decided in a way that a client must not
 read as coupled: an error that carries a client sentinel but publishes nothing
 — a bare sentinel wrap, or a carrier-less mixed chain — classifies `4xx` on
 that sentinel and **still redacts**, producing a `400` body with `error_class`
-and `error_id`. Clients must key on `error_class`/`error_id` being present,
-never on the status, to know whether a body is redacted.
+and `error_id`. Clients must key on `error_class` being present, never on the
+status, to know whether a body is redacted. `error_id` is not a redaction
+signal: since #361 it also appears on a *disclosed* 4xx that withholds
+operator detail (see "Log levels are contract" below).
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 an `error_id`, and — when the chain holds a typed read-path carrier — a
@@ -1006,10 +1009,12 @@ message, so operator log queries filter on `schema_id` instead of parsing prose.
 It is omitted from the log line too when zero, so a log entry never asserts a
 schema the error did not name.
 
-Published 4xx bodies are unaffected: population happens on the redacted branch
-only, so a disclosed body carries message text and nothing else — even when the
-chain holds a resolvable carrier as operator detail. Pinned by
-`TestPublished4xxBodyCarriesNoSchemaID`.
+Published 4xx bodies are unaffected: `schema_id` population happens on the
+redacted branch only, so a disclosed body never carries `schema_id` or
+`error_class` — even when the chain holds a resolvable carrier as operator
+detail. (Since #361 such a withheld-detail disclosed body does carry an
+`error_id`; the carrier's schema id still stays out.) Pinned by
+`TestPublished4xxBodyCarriesNoSchemaID`, whose fixture is exactly that shape.
 
 ### Credentials are scrubbed before anything is written
 
@@ -1396,14 +1401,28 @@ Three levels, decided by what the body withheld (`respondErrorWithStatus`):
 | --- | --- | --- |
 | redacted (any status) | `Errorw` | the body carries no text; the log line is the operator's only copy, and production runs at Info (`cmd/server/main.go`) |
 | disclosed 4xx, no withheld detail | `Debugw` | the caller already has everything; client mistakes must not page anyone |
-| disclosed 4xx with withheld detail (`forma.HasOperatorDetail`) | `Warnw` | the boundary just withheld text whose only remaining copy is this line — it must clear the Info threshold, but `Errorw` would hand callers an alert trigger they can pull at will |
+| disclosed 4xx with withheld detail (`forma.HasOperatorDetail`) | `Warnw` | the boundary just withheld text whose only remaining copy is this line — it must clear the Info threshold, but `Errorw` would hand callers an alert trigger they can pull at will — and since #361 that line and the body share an `error_id` the caller can quote |
 
-The standing hazard this creates: a disclosed 4xx that withholds detail carries
-**no `error_id`** for the caller to quote back (correlation fields are a
-redacted-branch shape, pinned by six assertions). If withheld-detail 4xxs turn
-out to need operator correlation in practice, adding `error_id` to disclosed
-bodies is a separate contract change — recorded as a follow-up candidate, not
-done here.
+Since #361 the withheld-detail branch is also the one disclosed branch that
+emits a correlation field: the body carries an `error_id` matching the Warnw
+line. The detail-less branch stays id-free on purpose — its Debugw line does
+not survive the production Info threshold, so an id there would correlate to
+nothing. Correlation fields are therefore no longer a redacted-branch shape:
+`error_class` is, and it is the discriminator clients must key on.
+
+The withheld-detail shape — `error_id` present and matching the Warnw line, no
+`error_class`, no `schema_id` — is pinned by
+`TestRespondError4xxPublishesOnlyTheCarriersMessage`,
+`TestPublished4xxBodyCarriesNoSchemaID`, and
+`TestMixedChainPublishesClientTextOnly`. The detail-less id-free shape is
+pinned by six assertions of the form
+`resp.ErrorClass != "" || resp.ErrorID != ""`:
+`TestParseFailuresPublishThroughTheGate`,
+`TestCreateUnknownSchemaIs404AndVerbatim`,
+`TestUnknownSortAttributeIs400AndPublished`,
+`TestClientErrorPublishesItsMessage`,
+`TestCreateMissingRequiredAttributeIs400AndVerbatim`, and
+`TestAdvancedQueryOperatorWhitelistIs400AndVerbatim`.
 
 ### The best-effort batch result is a second publication surface (#318)
 

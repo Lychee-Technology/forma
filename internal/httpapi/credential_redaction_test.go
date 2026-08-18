@@ -122,9 +122,10 @@ func TestRedactCredentialsKnownGaps(t *testing.T) {
 
 // TestRedactCredentialsKeepsOperatorDetail is the other half of the contract and
 // the reason the pattern is narrow rather than a blanket scrub. A redacted
-// response leaves the operator with an error_id and a log line; if that line lost
-// the object key, the schema id, the endpoint, or the driver's own diagnosis,
-// there would be nothing to correlate the id against.
+// response — or, since #361, a withheld-detail disclosed 4xx — leaves the
+// operator with an error_id and a log line; if that line lost the object key,
+// the schema id, the endpoint, or the driver's own diagnosis, there would be
+// nothing to correlate the id against.
 func TestRedactCredentialsKeepsOperatorDetail(t *testing.T) {
 	in := `execute duckdb query: parquet set inconsistent for schema 22: manifest lists ` +
 		`base/schema_22/CANARY-KEY.parquet: HTTP Error: Unable to connect to URL ` +

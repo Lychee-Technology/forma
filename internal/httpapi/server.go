@@ -140,13 +140,16 @@ type APIResponse struct {
 	Success bool   `json:"success"`
 	Data    any    `json:"data,omitempty"`
 	Error   string `json:"error,omitempty"`
-	// ErrorClass and ErrorID are populated on every redacted response (#301):
-	// a stable machine token for client discrimination, and a correlation id
-	// echoed on the operator log line that holds the error chain. Since #313 a
-	// redacted response can be a 4xx as well as a 5xx: an error that carries a
-	// client sentinel but publishes no message (a bare sentinel wrap, or a
-	// carrier-less mixed chain) keeps its status and loses its body. Both are
-	// omitempty, so success bodies and published 4xx bodies are unchanged.
+	// ErrorClass is populated on every redacted response and only there (#301) —
+	// the stable machine token clients discriminate on. ErrorID, a correlation
+	// id echoed on the operator log line that holds the error chain, appears on
+	// every redacted response and, since #361, on a disclosed 4xx that withholds
+	// operator detail (forma.HasOperatorDetail), where it matches the Warnw line
+	// keeping the only copy of that detail. Since #313 a redacted response can
+	// be a 4xx as well as a 5xx: an error that carries a client sentinel but
+	// publishes no message (a bare sentinel wrap, or a carrier-less mixed chain)
+	// keeps its status and loses its body. Both fields are omitempty, so success
+	// bodies and detail-less published 4xx bodies are unchanged.
 	ErrorClass string `json:"error_class,omitempty"`
 	ErrorID    string `json:"error_id,omitempty"`
 	// SchemaID names the schema a redacted read failure was addressed to (#301,

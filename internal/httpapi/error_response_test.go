@@ -335,7 +335,7 @@ func TestUnknownSortAttributeIs400AndPublished(t *testing.T) {
 		t.Fatalf("the sentinel suffix must stay out of the body (#313), got %q", resp.Error)
 	}
 	if resp.ErrorClass != "" || resp.ErrorID != "" {
-		t.Fatalf("a published 400 must not emit correlation fields, got class=%q id=%q",
+		t.Fatalf("a detail-less published 400 must not emit correlation fields, got class=%q id=%q",
 			resp.ErrorClass, resp.ErrorID)
 	}
 }
