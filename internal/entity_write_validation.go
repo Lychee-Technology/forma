@@ -108,6 +108,15 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 	if err == nil {
 		return nil
 	}
+	// kind is a property of the schema violation itself, so it is classified
+	// here — before explainStrippedRelationRoots decorates the error below.
+	// classifyViolation sniffs a substring of err.Error(), and the diagnosis
+	// prose is repo-owned text that interpolates the schema's relation root
+	// names; classifying after the wrap would let that text, rather than the
+	// validator's verdict, decide the label. The enforce path computes it and
+	// never reads it, which is a string comparison's worth of waste in exchange
+	// for the classifier having exactly one possible input.
+	kind := classifyViolation(err)
 	// The gate lives here rather than inside the decorator: a schema declaring no
 	// relation root strips nothing, so there is nothing to explain, and asking
 	// explainStrippedRelationRoots to decide that would make it a function that
@@ -131,12 +140,16 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 	// counts only — no violation text, no payload — so they widen nothing.
 	//
 	// Volume is bounded by zap's production sampling, not by this code:
-	// cmd/server installs zap.NewProduction(), whose sampler passes the first
-	// 100 entries per second for an identical message and every 100th after.
-	// This message is constant, so a violation-heavy corpus is capped at that
-	// rate, and the milestone line carries cumulative counts so sampled-away
-	// per-write lines lose no aggregate information (#317).
-	kind := classifyViolation(err)
+	// cmd/server and cmd/lambda install zap.NewProduction(), whose sampler
+	// passes the first 100 entries per second for an identical message and every
+	// 100th after. This message is constant, so a violation-heavy corpus is
+	// capped at that rate, and the milestone line carries cumulative counts so
+	// sampled-away per-write lines lose no aggregate information, short of rates
+	// where the milestone line itself is sampled (~10k violations/sec for one
+	// schema, since it fires once per 100) (#317).
+	//
+	// kind was classified above, off the validator's own error, before the
+	// relation-root decoration could join the string.
 	telemetry.EmitReportOnlyValidationViolation(ctx, v.schemaID, v.schemaName, kind)
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
 		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "kind", kind, "error", err.Error())
