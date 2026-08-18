@@ -273,17 +273,17 @@ var writeErrorAllowed4xx = map[string]bool{
 // the build when a new handler reintroduces the #301 leak.
 //
 // The invariant: every writeError call in a non-test file passes a literal 4xx
-// http.Status* constant from writeErrorAllowed4xx, with exactly one sanctioned
-// exception — respondErrorWithStatus in error_response.go, which passes the
-// variable `status` under a runtime gate (isClientError + resolvePublicMessage,
-// #313) that is what actually constrains it. That exception is exempted by
-// asserting it is unique, so if it moves, multiplies, or reappears in another
-// file the guard fails.
+// http.Status* constant from writeErrorAllowed4xx, with no exceptions. Until
+// #361 there was exactly one — respondErrorWithStatus passed the variable
+// `status` under the disclosure gate (isClientError + resolvePublicMessage,
+// #313) — but the #361 review folded the disclosed write into writeJSON, so
+// writeError is handler-literal territory only, and any non-literal status
+// anywhere is a regression.
 //
 // It is an allowlist rather than a blocklist of bad statuses because a blocklist
 // can be spelled around, and the most likely regression shape spells around it
-// for free: copying error_response.go's own `writeError(w, status, ...)` line
-// into a handler yields a 500 body full of S3 keys that no pattern for
+// for free: hand-writing a `writeError(w, status, ...)` call with a
+// runtime-classified status in a handler yields a 500 body full of S3 keys that no pattern for
 // `http.StatusInternalServerError` would ever see. Deny-by-default also covers
 // non-500 5xx constants (503 on the degraded-mode path), bare numerics, and any
 // receiver name. Grep-gate precedent: #260.
@@ -371,27 +371,22 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 		return
 	}
 
-	if len(unlisted) != 1 {
-		t.Errorf("expected exactly 1 writeError site with a non-literal status "+
-			"(respondErrorWithStatus in error_response.go), found %d: %v\n"+
-			"every other site must pass a literal 4xx constant from writeErrorAllowed4xx; "+
+	if len(unlisted) != 0 {
+		t.Errorf("expected no writeError site with a non-literal status "+
+			"(the boundary writes through writeJSON since #361), found %d: %v\n"+
+			"every site must pass a literal 4xx constant from writeErrorAllowed4xx; "+
 			"anything classified at runtime must go through respondError instead (#301)",
 			len(unlisted), unlisted)
-		return
-	}
-	if !strings.HasPrefix(unlisted[0], "error_response.go:") {
-		t.Errorf("the sanctioned non-literal writeError status moved out of error_response.go to %s; "+
-			"only respondErrorWithStatus may pass a runtime-classified status (#301)", unlisted[0])
 	}
 }
 
 // TestWriteErrorMessageIsAlwaysALiteral closes the axis the status guard above
 // documents as unchecked: the message. Every direct writeError call site must
 // pass an untyped string literal — never fmt.Sprintf, err.Error(), or any
-// other expression — with the same single sanctioned exception as the status
-// guard: respondErrorWithStatus in error_response.go, whose message is built
-// under the disclosure gate (isClientError + resolvePublicMessage +
-// redactCredentials, #313). Together the two guards make the disclosure rule
+// other expression — with no exceptions: the one sanctioned site
+// (respondErrorWithStatus, whose message is built under the disclosure gate,
+// #313) stopped calling writeError when the #361 review folded the disclosed
+// write into writeJSON. Together the two guards make the disclosure rule
 // total for this write path (#360): a handler that needs dynamic text has
 // exactly one road, a published carrier through respondError.
 //
@@ -459,17 +454,11 @@ func TestWriteErrorMessageIsAlwaysALiteral(t *testing.T) {
 			"be introduced without extending this guard (#360)", unchecked)
 		return
 	}
-	if len(dynamic) != 1 {
-		t.Errorf("expected exactly 1 writeError site with a non-literal message "+
-			"(respondErrorWithStatus in error_response.go), found %d: %v\n"+
+	if len(dynamic) != 0 {
+		t.Errorf("expected no writeError site with a non-literal message "+
+			"(the boundary writes through writeJSON since #361), found %d: %v\n"+
 			"a handler must not build its own body text — publish it through a "+
 			"forma.InvalidInputf carrier and respondError instead (#360)",
 			len(dynamic), dynamic)
-		return
-	}
-	if !strings.HasPrefix(dynamic[0], "error_response.go:") {
-		t.Errorf("the sanctioned non-literal writeError message moved out of "+
-			"error_response.go to %s; only respondErrorWithStatus may write a "+
-			"runtime-built message (#360)", dynamic[0])
 	}
 }

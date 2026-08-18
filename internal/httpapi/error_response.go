@@ -307,25 +307,24 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	safe := redactCredentials(err.Error())
 
 	if msg, ok := resolvePublicMessage(err); ok && status < http.StatusInternalServerError && isClientError(err) {
+		resp := APIResponse{
+			Success: false,
+			Error:   fmt.Sprintf("%s: %s", op, redactCredentials(msg)),
+		}
 		if forma.HasOperatorDetail(err) {
 			// #361: this Warnw line is the only remaining copy of the withheld
 			// detail, so the body carries an error_id the caller can quote back.
-			// The detail-less branch below stays id-free: its Debugw line does
-			// not survive the production Info threshold, and an error_id that
+			// The detail-less branch stays id-free: its Debugw line does not
+			// survive the production Info threshold, and an error_id that
 			// correlates to nothing is worse than none.
-			errorID := uuid.NewString()
-			fields = append(fields, "error_id", errorID, "error", safe)
+			resp.ErrorID = uuid.NewString()
+			fields = append(fields, "error_id", resp.ErrorID, "error", safe)
 			zap.S().Warnw(op, fields...)
-			_ = writeJSON(w, status, APIResponse{
-				Success: false,
-				Error:   fmt.Sprintf("%s: %s", op, redactCredentials(msg)),
-				ErrorID: errorID,
-			})
-			return
+		} else {
+			fields = append(fields, "error", safe)
+			zap.S().Debugw(op, fields...)
 		}
-		fields = append(fields, "error", safe)
-		zap.S().Debugw(op, fields...)
-		_ = writeError(w, status, fmt.Sprintf("%s: %s", op, redactCredentials(msg)))
+		_ = writeJSON(w, status, resp)
 		return
 	}
 

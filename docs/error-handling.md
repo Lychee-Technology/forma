@@ -1412,9 +1412,12 @@ nothing. Correlation fields are therefore no longer a redacted-branch shape:
 
 The withheld-detail shape — `error_id` present and matching the Warnw line, no
 `error_class`, no `schema_id` — is pinned by
-`TestRespondError4xxPublishesOnlyTheCarriersMessage`,
-`TestPublished4xxBodyCarriesNoSchemaID`, and
-`TestMixedChainPublishesClientTextOnly`. The detail-less id-free shape is
+`TestRespondError4xxPublishesOnlyTheCarriersMessage` (the only one that
+asserts the body↔Warnw-line match, and the wiring's fail-closed guard),
+`TestPublished4xxBodyCarriesNoSchemaID` (the only one that asserts `schema_id`
+absence), and `TestMixedChainPublishesClientTextOnly` (id presence and
+`error_class` absence on a mixed chain); the shape holds collectively, not
+per-test. The detail-less id-free shape is
 pinned by six assertions of the form
 `resp.ErrorClass != "" || resp.ErrorID != ""`:
 `TestParseFailuresPublishThroughTheGate`,
