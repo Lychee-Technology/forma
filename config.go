@@ -65,6 +65,12 @@ type EntityConfig struct {
 	// their schema, and rejecting on update would make them un-updatable — a
 	// caller touching one unrelated field would be refused for a pre-existing
 	// violation elsewhere. Creates are always enforced; they have no legacy data.
+	//
+	// Whether it is safe to flip this yet is answered by the #317 aggregate:
+	// the "report-only schema validation violations reached a milestone" Warn
+	// line (per schema, at the 1st and every 100th accepted violation) and the
+	// entity_report_only_validation_violation_total telemetry counter. When a
+	// schema's milestones stop advancing, its rows are repaired.
 	ValidateUpdatesStrict bool `json:"validateUpdatesStrict"`
 }
 
