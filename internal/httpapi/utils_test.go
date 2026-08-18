@@ -186,10 +186,14 @@ func TestReadJSONBodyDecodesNumbersExactly(t *testing.T) {
 	}
 }
 
-// TestParseHelpersPublishInvalidInput pins #360: every error a parse helper
-// returns must carry forma.ErrInvalidInput and publish its whole message,
-// because handlers route it through the disclosure gate — an unpublished
-// error would keep its 400 but answer a redacted body.
+// TestParseHelpersPublishInvalidInput pins #360: every error a
+// carrier-authoring parse helper (parsePath, parseSortParams,
+// parseCreateObjects) returns must carry forma.ErrInvalidInput and publish
+// its whole message, because handlers route it through the disclosure gate —
+// an unpublished error would keep its 400 but answer a redacted body. The
+// other two parse helpers, readJSONBody and parseUUID, return the library's
+// raw error with no sentinel; their call sites author the carrier instead
+// (forma.InvalidInputf("%v", err)), covered by the handler-level tests.
 func TestParseHelpersPublishInvalidInput(t *testing.T) {
 	_, _, pathEmptyErr := parsePath("/api/v1/")
 	_, _, pathFormatErr := parsePath("/api/v1/a/b/c")
