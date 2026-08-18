@@ -295,12 +295,14 @@ var writeErrorAllowed4xx = map[string]bool{
 // so the next author trusts the guard for exactly what it checks.
 //
 // NOTE: the message axis is checked by TestWriteErrorMessageIsAlwaysALiteral
-// below (#360): direct sites carry string literals only; anything dynamic must
-// arrive as a published carrier through respondError. This guard itself still
-// reads only the *status* expression and cannot tell whether the third argument
-// is safe to disclose. For the one site that builds its message at runtime,
-// respondErrorWithStatus, that judgement belongs to resolvePublicMessage. Every
-// other site is safe because its message is a fixed literal written into the
+// below (#360): every site carries a string literal only; anything dynamic
+// must arrive as a published carrier through respondError. This guard itself
+// still reads only the *status* expression and cannot tell whether the third
+// argument is safe to disclose. Since the #361 review folded the boundary's
+// disclosed write into writeJSON, no writeError site builds its message at
+// runtime — the runtime judgement (resolvePublicMessage) lives entirely inside
+// respondErrorWithStatus, which this guard no longer sees. Every remaining
+// site is safe because its message is a fixed literal written into the
 // source — request text no longer reaches these calls at all, having moved to
 // published carriers under the gate (#360), so no direct message can carry the
 // manager, the engine, S3, or PG_CONN.
@@ -387,8 +389,10 @@ func TestWriteErrorAlwaysCarriesALiteral4xxStatus(t *testing.T) {
 // (respondErrorWithStatus, whose message is built under the disclosure gate,
 // #313) stopped calling writeError when the #361 review folded the disclosed
 // write into writeJSON. Together the two guards make the disclosure rule
-// total for this write path (#360): a handler that needs dynamic text has
-// exactly one road, a published carrier through respondError.
+// total for writeError call sites (#360) — the boundary itself
+// (respondErrorWithStatus, writing through writeJSON) is trusted, not
+// scanned: a handler that needs dynamic text has exactly one road, a
+// published carrier through respondError.
 //
 // go/ast rather than the regex above: an argument expression can contain
 // commas and nested calls a regex cannot parse, and go/parser fails loudly on
