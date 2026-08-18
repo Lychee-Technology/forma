@@ -60,3 +60,55 @@ func TestClassifyViolationPinsLibraryProse(t *testing.T) {
 		})
 	}
 }
+
+// TestReportOnlyStatsMilestones pins the milestone rule: the 1st accepted
+// violation fires (the operator learns the schema has violations at all), then
+// every 100th (the operator sees the trend without one line per write).
+func TestReportOnlyStatsMilestones(t *testing.T) {
+	stats := newReportOnlyStats()
+
+	milestone, total, required, constraint := stats.record(7, violationKindConstraint)
+	require.True(t, milestone, "the 1st violation must be a milestone")
+	require.EqualValues(t, 1, total)
+	require.EqualValues(t, 0, required)
+	require.EqualValues(t, 1, constraint)
+
+	for i := 2; i <= 99; i++ {
+		milestone, _, _, _ = stats.record(7, violationKindRequired)
+		require.False(t, milestone, "violation %d must not be a milestone", i)
+	}
+
+	milestone, total, required, constraint = stats.record(7, violationKindRequired)
+	require.True(t, milestone, "the 100th violation must be a milestone")
+	require.EqualValues(t, 100, total)
+	require.EqualValues(t, 99, required)
+	require.EqualValues(t, 1, constraint)
+}
+
+// TestReportOnlyStatsCountsPerSchema pins that milestones are per schema: the
+// flip decision is per deployment but the repair work is per schema, and one
+// noisy schema must not swallow another's first violation.
+func TestReportOnlyStatsCountsPerSchema(t *testing.T) {
+	stats := newReportOnlyStats()
+	stats.record(1, violationKindConstraint)
+
+	milestone, total, _, _ := stats.record(2, violationKindConstraint)
+
+	require.True(t, milestone, "schema 2's first violation is its own milestone")
+	require.EqualValues(t, 1, total)
+}
+
+// TestReportOnlyStatsNilReceiver pins that a manager constructed without stats
+// (embedders and tests building services directly) skips milestones instead of
+// panicking. Production wiring is pinned separately by
+// TestReportOnlyUpdateLogsMilestoneOnFirstViolation.
+func TestReportOnlyStatsNilReceiver(t *testing.T) {
+	var stats *reportOnlyStats
+
+	milestone, total, required, constraint := stats.record(1, violationKindConstraint)
+
+	require.False(t, milestone)
+	require.Zero(t, total)
+	require.Zero(t, required)
+	require.Zero(t, constraint)
+}
