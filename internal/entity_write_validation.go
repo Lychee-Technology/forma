@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
@@ -50,6 +52,12 @@ type writeValidation struct {
 	// validator any more, so there is nothing left to carve out; do not
 	// reintroduce that use through this field.
 	relationRoots []string
+	// stats aggregates accepted violations for the #317 milestone log line. It
+	// is nil-tolerant — embedders and tests constructing services directly get
+	// per-write telemetry and logging but no milestones — and the production
+	// wiring from NewEntityManager down is pinned by
+	// TestReportOnlyUpdateLogsMilestoneOnFirstViolation, so deleting it goes red.
+	stats *reportOnlyStats
 }
 
 // validateWritePayload validates a write payload against the JSON Schema
@@ -90,7 +98,7 @@ type writeValidation struct {
 //
 // It is a package-level function rather than a method so the CRUD and batch
 // services cannot drift apart on any of the above.
-func validateWritePayload(v writeValidation) error {
+func validateWritePayload(ctx context.Context, v writeValidation) error {
 	if v.validator == nil {
 		return nil
 	}
@@ -114,9 +122,29 @@ func validateWritePayload(v writeValidation) error {
 	// Report-only mode exists so an operator can find and repair violating rows
 	// before flipping VALIDATE_UPDATES_STRICT, which is impossible without the
 	// schema name and the row id. The payload itself is deliberately not logged:
-	// entity data is caller content and may be sensitive.
+	// entity data is caller content and may be sensitive. The violation text
+	// does embed the offending value ("enum: banana does not equal any of ..."),
+	// which for shipped schemas can mean an email or phone value reaches the
+	// log. That is the same deliberate disclosure #313 ruled for the published
+	// 400 body, confirmed for this log line in #317: the operator repairing the
+	// row needs to see what is wrong with it. The aggregate signals below carry
+	// counts only — no violation text, no payload — so they widen nothing.
+	//
+	// Volume is bounded by zap's production sampling, not by this code:
+	// cmd/server installs zap.NewProduction(), whose sampler passes the first
+	// 100 entries per second for an identical message and every 100th after.
+	// This message is constant, so a violation-heavy corpus is capped at that
+	// rate, and the milestone line carries cumulative counts so sampled-away
+	// per-write lines lose no aggregate information (#317).
+	kind := classifyViolation(err)
+	telemetry.EmitReportOnlyValidationViolation(ctx, v.schemaID, v.schemaName, kind)
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
-		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "error", err.Error())
+		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "kind", kind, "error", err.Error())
+	if milestone, total, required, constraint := v.stats.record(v.schemaID, kind); milestone {
+		zap.S().Warnw(reportOnlyMilestoneMessage,
+			"schemaName", v.schemaName, "schemaID", v.schemaID,
+			"total", total, "required", required, "constraint", constraint)
+	}
 	return nil
 }
 
