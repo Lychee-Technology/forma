@@ -26,6 +26,16 @@ const (
 // "missing properties" mislabels its increment — accepted at the same cost.
 // TestClassifyViolationPinsLibraryProse pins both halves against the real
 // validator, so a library upgrade re-opens this deliberately.
+//
+// It classifies one error, and the validator hands it the first failure only —
+// so a document that both omits a required property and carries an illegal
+// value is counted once, as "required". The split is therefore a triage hint
+// and not a census: "required: N, constraint: 0" means no violation has yet
+// surfaced as a constraint, not that the constraint work is done. Expect
+// constraint counts to appear as the required backfill lands.
+//
+// Its input must be the validator's own error, undecorated: see the classify
+// site in validateWritePayload for why.
 func classifyViolation(err error) string {
 	if err != nil && strings.Contains(err.Error(), "missing properties") {
 		return violationKindRequired
@@ -42,8 +52,10 @@ const reportOnlyMilestoneMessage = "report-only schema validation violations rea
 	"rows still violate their schema and VALIDATE_UPDATES_STRICT is not yet safe to flip"
 
 // reportOnlyMilestoneEvery is the milestone stride after the first violation.
-// 100 matches zap.NewProduction's sampling stride, so on the busiest corpus
-// roughly one milestone line survives per sampled bucket of per-write lines.
+// 100 is a round stride, chosen to echo zap.NewProduction's Thereafter value so
+// the two numbers read alike; the mechanisms are unrelated and the match buys
+// nothing. The sampler buckets per second over identical messages, this counts
+// per accepted violation over the process lifetime.
 const reportOnlyMilestoneEvery = 100
 
 // reportOnlyStats aggregates accepted violations per schema for the lifetime
@@ -55,12 +67,19 @@ type reportOnlyStats struct {
 	schemas map[int16]*reportOnlySchemaCounts
 }
 
+// reportOnlySchemaCounts is one schema's running tally. required and constraint
+// partition total: record classifies every violation into exactly one of them,
+// so required+constraint == total is an invariant of the type and is asserted
+// under -race by TestReportOnlyStatsRecordIsConcurrencySafe.
 type reportOnlySchemaCounts struct {
 	total      uint64
 	required   uint64
 	constraint uint64
 }
 
+// newReportOnlyStats builds the empty per-manager aggregate. The schema map is
+// allocated here rather than lazily in record, so record's nil check is about
+// the receiver — the optional-wiring case — and never about the map.
 func newReportOnlyStats() *reportOnlyStats {
 	return &reportOnlyStats{schemas: map[int16]*reportOnlySchemaCounts{}}
 }

@@ -69,8 +69,13 @@ type EntityConfig struct {
 	// Whether it is safe to flip this yet is answered by the #317 aggregate:
 	// the "report-only schema validation violations reached a milestone" Warn
 	// line (per schema, at the 1st and every 100th accepted violation) and the
-	// entity_report_only_validation_violation_total telemetry counter. When a
-	// schema's milestones stop advancing, its rows are repaired.
+	// entity_report_only_validation_violation_total telemetry counter. While
+	// those lines keep appearing for a schema, its rows are not yet repaired.
+	// Their absence is not proof of the converse: the signal fires only when a
+	// violating row is written, and only every 100th time thereafter within one
+	// process, so a schema whose bad rows are never updated stays silent.
+	// Confirm with an e2e pass over real data before flipping
+	// (docs/error-handling.md).
 	ValidateUpdatesStrict bool `json:"validateUpdatesStrict"`
 }
 
