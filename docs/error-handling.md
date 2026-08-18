@@ -130,7 +130,9 @@ payload-free. Every accepted violation increments the counter
 `entity_report_only_validation_violation_total`, labelled `schema_id`,
 `schema_name` and `kind`, where `kind` is `required` (a property is absent, so
 the repair is to backfill data) or `constraint` (a present value is illegal, so
-the repair is to fix the value). Because a deployment need not register a
+the repair is to fix the value); `kind` is read off the validator's message — a
+metric label is the one sanctioned prose key, carved out under "There is no
+substring heuristic" below. Because a deployment need not register a
 telemetry emitter, the same accounting also reaches the log: at a schema's 1st
 accepted violation and every 100th after, a `Warn` line — "report-only schema
 validation violations reached a milestone..." — carries the cumulative total and
@@ -803,6 +805,15 @@ errors that wrapped no sentinel. It was removed for two reasons:
   4xx.
 - **It was the last site classifying an error by string comparison**, which
   `AGENTS.md` forbids.
+
+One later arrival is deliberately outside that rule's blast radius, and it is
+the only one: `classifyViolation` (#317) reads the validator's message to pick
+the `required`-versus-`constraint` label on the report-only aggregate. It
+decides a metric label and nothing else — never a status, a body, or whether a
+write proceeds — so a wrong match cannot reproduce either failure above, and
+the prose it keys on is pinned against the real validator by
+`TestClassifyViolationPinsLibraryProse`. A prose key that feeds any *decision*
+remains forbidden.
 
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that
