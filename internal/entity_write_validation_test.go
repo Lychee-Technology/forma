@@ -289,6 +289,34 @@ func TestBatchUpdateAtomicStrictRejectsViolation(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
 
+// TestBatchUpdateReportOnlyLogsMilestoneOnFirstViolation pins the batch update
+// seam's stats wiring the way TestReportOnlyUpdateLogsMilestoneOnFirstViolation
+// pins the CRUD one: batchUpdateAtomic runs report-only in the shipped default
+// configuration, and before this test, deleting `stats: s.reportOnlyStats` from
+// that one call site left the whole suite green (PR #422 round-4 review).
+func TestBatchUpdateReportOnlyLogsMilestoneOnFirstViolation(t *testing.T) {
+	manager, _ := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	_, err = manager.BatchUpdate(context.Background(), &forma.BatchOperation{
+		Atomic:     true,
+		Operations: []forma.EntityOperation{*updateOp(created.RowID, map[string]any{"name": "banana"})},
+	})
+	require.NoError(t, err)
+
+	entries := logs.FilterMessage(reportOnlyMilestoneMessage).All()
+	require.Len(t, entries, 1, "the batch update seam must feed the same aggregate as CRUD update")
+	fields := entries[0].ContextMap()
+	require.Equal(t, "test", fields["schemaName"])
+	require.EqualValues(t, 1, fields["total"])
+	require.EqualValues(t, 1, fields["constraint"])
+}
+
 // TestReportOnlyUpdateRefusesToAbsorbConfigurationFault pins the boundary of
 // report-only mode: it forgives *violations*, not everything Validate can return.
 //
