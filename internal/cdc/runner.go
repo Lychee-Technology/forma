@@ -273,6 +273,9 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 	return runtime, nil
 }
 
+// getOrCreateDuckExporter returns the group's cached exporter (building and
+// caching one as needed) plus a release hook for the caller's hold: call it
+// exactly once, after the run finishes. The hook is nil when err is non-nil.
 func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3Runtime *cachedS3Runtime) (*DuckExporter, func(), error) {
 	key := duckExporterGroupKey{
 		dbPath:   cfg.DuckDBPath,
@@ -307,6 +310,8 @@ func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3R
 		closeExporterDB(exporter, r.logger)
 		return existing.exporter, r.releaseFunc(existing), nil
 	}
+	// Last writer wins: a slower build can install an older triple over a
+	// fresher one — pure churn, corrected by the next acquire's credsEqual miss.
 	superseded := r.duckExporters[key]
 	entry := &cachedDuckExporter{
 		exporter:        exporter,
@@ -352,6 +357,6 @@ func closeExporterDB(exporter *DuckExporter, logger *zap.Logger) {
 		return
 	}
 	if err := exporter.DB.Close(); err != nil {
-		logger.Warn("close superseded duck exporter", zap.Error(err))
+		logger.Warn("close discarded duck exporter", zap.Error(err))
 	}
 }
