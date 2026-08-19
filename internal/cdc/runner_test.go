@@ -168,10 +168,12 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 		S3UseSSL:     true,
 	}
 
-	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, s3Runtime)
+	exporter1, release1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, s3Runtime)
 	require.NoError(t, err)
-	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, s3Runtime)
+	release1()
+	exporter2, release2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, s3Runtime)
 	require.NoError(t, err)
+	release2()
 
 	require.Same(t, exporter1, exporter2)
 	require.Equal(t, 1, createCalls)
@@ -183,7 +185,8 @@ func TestRunnerCachesDuckExporter(t *testing.T) {
 // SET s3_region entirely — so two runs whose only difference is the region the
 // AWS default chain happened to resolve produce byte-identical exporters. Key
 // on the chain region and the cache claims a distinction the exporter never
-// made, building (and leaking) a second identical DuckDB instance (#329).
+// made, building — and pointlessly churning (#331) — a second identical
+// DuckDB instance (#329).
 func TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion(t *testing.T) {
 	origNewDuckExporterFn := newDuckExporterFn
 	defer func() {
@@ -216,20 +219,23 @@ func TestRunnerDuckExporterCacheKeyIgnoresChainResolvedRegion(t *testing.T) {
 		secretAccessKey: "secret",
 	}
 
-	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeEast)
+	exporter1, release1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeEast)
 	require.NoError(t, err)
-	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeWest)
+	release1()
+	exporter2, release2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeWest)
 	require.NoError(t, err)
+	release2()
 
 	require.Same(t, exporter1, exporter2)
 	require.Equal(t, 1, createCalls)
 }
 
-// TestRunnerDuckExporterCacheKeyIncludesSessionToken pins the other half of the
+// TestRunnerDuckExporterRotationRebuildsExporter pins the other half of the
 // same rule: the exporter bakes the token into SET s3_session_token at
 // construction, so two runtimes differing only in their token configure
-// different exporters and must not share a cache slot (#329).
-func TestRunnerDuckExporterCacheKeyIncludesSessionToken(t *testing.T) {
+// different exporters and must not share a cache slot (#329) — and the
+// superseded entry leaves the map (#331).
+func TestRunnerDuckExporterRotationRebuildsExporter(t *testing.T) {
 	origNewDuckExporterFn := newDuckExporterFn
 	defer func() {
 		newDuckExporterFn = origNewDuckExporterFn
@@ -264,14 +270,17 @@ func TestRunnerDuckExporterCacheKeyIncludesSessionToken(t *testing.T) {
 		sessionToken:    "token-2",
 	}
 
-	exporter1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeOld)
+	exporter1, release1, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeOld)
 	require.NoError(t, err)
-	exporter2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeRotated)
+	release1()
+	exporter2, release2, err := runner.getOrCreateDuckExporter(context.Background(), cfg, runtimeRotated)
 	require.NoError(t, err)
+	release2()
 
 	require.NotSame(t, exporter1, exporter2)
 	require.Equal(t, 2, createCalls)
 	require.Equal(t, []string{"token-1", "token-2"}, seenTokens)
+	require.Len(t, runner.duckExporters, 1)
 }
 
 func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
@@ -280,9 +289,9 @@ func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
 
 	runner := NewRunner(zap.NewNop())
 	runner.s3Runtimes[s3RuntimeGroupKey{region: "us-east-1"}] = &cachedS3Runtime{region: "us-east-1"}
-	runner.duckExporters[duckExporterKey{dbPath: ":memory:"}] = &DuckExporter{
-		DB:     db,
-		Logger: zap.NewNop(),
+	runner.duckExporters[duckExporterGroupKey{dbPath: ":memory:"}] = &cachedDuckExporter{
+		exporter: &DuckExporter{DB: db, Logger: zap.NewNop()},
+		refs:     1, // Close is hard shutdown: in-flight holds do not defer it
 	}
 
 	require.NoError(t, runner.Close())
