@@ -28,8 +28,8 @@ type s3ObjectStat struct {
 	LastModified time.Time
 }
 
-// snapshotS3Inventory stats every object under prefix (hoisted from the
-// dry-run test when #248 gave it a second consumer; the prefix parameter
+// snapshotS3Inventory stats every object under prefix (hoisted when #248
+// added a consumer needing a schema-scoped prefix; the prefix parameter
 // lets callers scope to one schema's partition or a single key).
 func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env, prefix string) map[string]s3ObjectStat {
 	t.Helper()
@@ -82,9 +82,9 @@ func snapshotManifest(t *testing.T, ctx context.Context, env *Env, schema Schema
 // reuses a deterministic key, and a base-path set comparison cannot see a
 // manifest rewritten with the same paths; stat + byte identity can (#248).
 //
-// The manifest is the leg that always fires: any rewrite increments its
-// version field, so its bytes and ETag necessarily move even when the data
-// objects beside it are reproduced byte-for-byte (see s3ObjectStat).
+// The manifest is the leg that always fires: any save through the manifest
+// store increments its version field, so its bytes and ETag necessarily move
+// even when the data objects beside it are reproduced byte-for-byte (see s3ObjectStat).
 type schemaS3State struct {
 	objects      map[string]s3ObjectStat
 	manifestRaw  []byte
