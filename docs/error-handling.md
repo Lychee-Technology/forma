@@ -597,11 +597,13 @@ deployment, and should be treated as operator-visible consistency failures.
 EAV records whose attribute id is no longer present in the schema metadata are
 not an error: they are skipped on read and preserved on update (#294
 tolerate-and-preserve), so removing an attribute from a schema is
-non-destructive and re-adding it restores the stored values. An attributeID
-freed by removing an attribute must never be reused for a different attribute:
-preserved EAV rows would silently bind to the new attribute's name (same value
-type) or make the row unreadable with a storage type mismatch (different value
-type).
+non-destructive and re-adding it restores the stored values. The read-path skip
+is logged at Info, once per process per (schema, skipped attributeID set),
+naming the first row observed as `exampleRowID` — a supported state's audit
+trail, not an incident signal (#343). An attributeID freed by removing an
+attribute must never be reused for a different attribute: preserved EAV rows
+would silently bind to the new attribute's name (same value type) or make the
+row unreadable with a storage type mismatch (different value type).
 
 Since #342 that rule is enforced. `generate-attributes` keeps the removed
 attribute's entry in `<schema>_attributes.json` marked `"retired": true` and
