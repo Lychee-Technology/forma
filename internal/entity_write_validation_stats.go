@@ -61,9 +61,15 @@ const reportOnlyMilestoneMessage = "report-only schema validation violations rea
 const reportOnlyMilestoneEvery = 100
 
 // reportOnlyStats aggregates accepted violations per schema for the lifetime
-// of one EntityManager (#317). Counts reset with the process; the milestone
-// log line carries them, so the trend survives in the log stream rather than
-// in memory.
+// of one EntityManager (#317) — the shipped wiring (NewEntityManager, one call
+// per process in cmd/server and cmd/lambda) makes that the process lifetime,
+// but an embedder holding several managers gets one tally per manager. Counts
+// reset on restart; the milestone log line carries them, so the trend survives
+// in the log stream rather than in memory.
+//
+// A count means "validated and accepted at that instant", not "persisted": an
+// atomic batch whose later operation fails has already counted its earlier
+// ones, exactly as the per-write Warn has always fired at validation time.
 type reportOnlyStats struct {
 	mu      sync.Mutex
 	schemas map[int16]*reportOnlySchemaCounts

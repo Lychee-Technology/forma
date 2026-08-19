@@ -143,7 +143,8 @@ Read it in one direction only. While those milestones keep appearing for a
 schema, its rows are not yet repaired. Silence does not establish the converse:
 the signal fires only when a violating row is written, so rows nobody updates
 never announce themselves, the stride means a schema is quiet between
-milestones, and the counts are per process and reset on restart. The signal
+milestones, and the counts live on the `EntityManager` — one per process in
+the shipped wiring — and reset on restart. The signal
 narrows where to look; the e2e pass above is still what licenses the flip.
 
 ### Which errors are which class
@@ -812,8 +813,13 @@ the `required`-versus-`constraint` label on the report-only aggregate. It
 decides a metric label and nothing else — never a status, a body, or whether a
 write proceeds — so a wrong match cannot reproduce either failure above, and
 the prose it keys on is pinned against the real validator by
-`TestClassifyViolationPinsLibraryProse`. A prose key that feeds any *decision*
-remains forbidden.
+`TestClassifyViolationPinsLibraryProse`. A prose key that feeds any decision
+*on this path* — a status, a disclosed body, a write outcome — remains
+forbidden. (Two older string keys sit outside this paragraph's rule and
+predate the carve-out: `manifest.IsNotFound` reads S3 driver prose to recognise
+an absent object on the read path, and the e2e harness's
+`isFederatedTierFileError` is test-only. Neither classifies an error toward a
+caller.)
 
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that

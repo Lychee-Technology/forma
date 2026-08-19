@@ -73,7 +73,8 @@ type EntityConfig struct {
 	// those lines keep appearing for a schema, its rows are not yet repaired.
 	// Their absence is not proof of the converse: the signal fires only when a
 	// violating row is written, and only every 100th time thereafter within one
-	// process, so a schema whose bad rows are never updated stays silent.
+	// process (strictly, per EntityManager — the shipped wiring builds exactly
+	// one), so a schema whose bad rows are never updated stays silent.
 	// Confirm with an e2e pass over real data before flipping
 	// (docs/error-handling.md).
 	ValidateUpdatesStrict bool `json:"validateUpdatesStrict"`
