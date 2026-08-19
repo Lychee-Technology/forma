@@ -215,8 +215,7 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 			ids = append(ids, id)
 		}
 		slices.Sort(ids)
-		zap.S().Warnw("skipped EAV records for attribute ids not in metadata cache (removed by schema evolution; rows preserved, #294)",
-			"schemaID", schemaID, "rowID", records[0].RowID, "attrIDs", ids)
+		logSkippedAttrIDs(schemaID, records[0].RowID, ids)
 	}
 
 	if err := c.checkRequiredAttributes(schemaID, cache, presentAttrIndices); err != nil {
