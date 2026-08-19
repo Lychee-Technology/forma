@@ -191,3 +191,45 @@ func TestRunnerDuckExporterDistinctGroupsCoexist(t *testing.T) {
 	require.NoError(t, expA.DB.PingContext(ctx))
 	require.NoError(t, expB.DB.PingContext(ctx))
 }
+
+// TestRunnerDuckExporterConcurrentRotationIsSafe hammers acquire→use→release
+// across two alternating credential triples. The refcount contract under test:
+// a held exporter always answers Ping (never closed underneath its holder),
+// and after the storm exactly one cached entry remains, alive. Run with -race
+// (CI does) — the interleaving itself is the assertion surface.
+func TestRunnerDuckExporterConcurrentRotationIsSafe(t *testing.T) {
+	opened := stubDuckExporterWithDB(t)
+	runner := NewRunner(zap.NewNop())
+	cfg, old, rotated := duckEvictionFixture()
+	runtimes := []*cachedS3Runtime{old, rotated}
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				exporter, release, err := runner.getOrCreateDuckExporter(ctx, cfg, runtimes[(g+i)%2])
+				if err != nil {
+					t.Errorf("goroutine %d iter %d: acquire: %v", g, i, err)
+					return
+				}
+				if pingErr := exporter.DB.PingContext(ctx); pingErr != nil {
+					t.Errorf("goroutine %d iter %d: held exporter closed underneath us: %v", g, i, pingErr)
+				}
+				release()
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	require.Len(t, runner.duckExporters, 1)
+	live := 0
+	for _, db := range opened() {
+		if db.PingContext(ctx) == nil {
+			live++
+		}
+	}
+	require.Equal(t, 1, live, "storm settled: exactly the cached entry's handle stays open")
+}
