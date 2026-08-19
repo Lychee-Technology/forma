@@ -85,7 +85,7 @@ func TestConcurrentFlushDifferentSchemas(t *testing.T) {
 		t.Fatalf("runner2 must not touch the locked schema %d: flushed=%v dirty=%v",
 			simple.ID, flushedA, dirtyA)
 	}
-	if finals := finalsForSchema(env, r2.NewObjects, simple); len(finals) != 0 {
+	if finals := filterFinalsForSchema(env, r2.NewObjects, simple); len(finals) != 0 {
 		t.Errorf("runner2 must not promote finals for the locked schema %d, got %v", simple.ID, finals)
 	}
 

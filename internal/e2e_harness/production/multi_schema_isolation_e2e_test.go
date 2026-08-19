@@ -81,7 +81,7 @@ func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: schemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
 		t.Fatal("flush with one schema's CopyObject failing must fail")
@@ -141,7 +141,7 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 		t.Fatalf("schema %d rows must stay dirty when its manifest append fails: flushed=%v dirty=%v",
 			second.ID, flushed, dirty)
 	}
-	finals := finalsForSchema(env, report.NewObjects, second)
+	finals := filterFinalsForSchema(env, report.NewObjects, second)
 	if len(finals) != 1 {
 		t.Fatalf("schema %d final must exist when its manifest save fails, got %v", second.ID, finals)
 	}
@@ -161,11 +161,11 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 		t.Errorf("retry must drain only the faulted schema: unflushed before/after = %d/%d, want 3/0",
 			retry.UnflushedBefore, retry.UnflushedAfter)
 	}
-	retryFinals := finalsForSchema(env, retry.NewObjects, second)
+	retryFinals := filterFinalsForSchema(env, retry.NewObjects, second)
 	if len(retryFinals) != 1 {
 		t.Fatalf("retry must promote exactly one new final for the faulted schema, got %v", retry.NewObjects)
 	}
-	if healthy := finalsForSchema(env, retry.NewObjects, simple); len(healthy) != 0 {
+	if healthy := filterFinalsForSchema(env, retry.NewObjects, simple); len(healthy) != 0 {
 		t.Errorf("healthy schema must gain no new objects on retry, got %v", healthy)
 	}
 	assertManifestDeltaPaths(t, retry.Manifests, second, retryFinals)
@@ -187,7 +187,7 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: schemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
 		t.Fatal("flush with one schema's CopyObject failing must fail")
@@ -207,7 +207,7 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 	if retry.UnflushedBefore != 3 || retry.UnflushedAfter != 0 {
 		t.Errorf("retry unflushed %d -> %d, want 3 -> 0", retry.UnflushedBefore, retry.UnflushedAfter)
 	}
-	if healthyNew := finalsForSchema(env, retry.NewObjects, simple); len(healthyNew) != 0 {
+	if healthyNew := filterFinalsForSchema(env, retry.NewObjects, simple); len(healthyNew) != 0 {
 		t.Errorf("retry must not re-export the healthy schema, got new finals %v", healthyNew)
 	}
 	assertSchemaFullyFlushed(ctx, t, env, retry.NewObjects, retry.Manifests, second, 3)
@@ -243,7 +243,7 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Helper()
 		siblingManifestKey := fmt.Sprintf("%s/manifest/%d.json", env.S3Prefix, sibling.ID)
 		for _, k := range report.NewObjects {
-			if strings.HasPrefix(k, schemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
+			if strings.HasPrefix(k, buildSchemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
 				t.Errorf("init of schema %d touched sibling schema %d: %s", target.ID, sibling.ID, k)
 			}
 		}

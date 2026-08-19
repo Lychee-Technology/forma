@@ -196,22 +196,22 @@ func assertSameRowIDs(t *testing.T, label string, got, want map[string]bool) {
 	}
 }
 
-// schemaKeyPrefix returns the Env-scoped S3 key prefix of one schema's
+// buildSchemaKeyPrefix returns the Env-scoped S3 key prefix of one schema's
 // parquet partition (e.g. "e2e/<run>/env3/22/"). Matching on the full prefix
 // rather than a bare "/22/" substring keeps the filter unambiguous no matter
 // what the run ID or env sequence look like.
-func schemaKeyPrefix(env *Env, schema SchemaRef) string {
+func buildSchemaKeyPrefix(env *Env, schema SchemaRef) string {
 	return fmt.Sprintf("%s/%d/", env.S3Prefix, schema.ID)
 }
 
-// finalsForSchema filters keys down to one schema's final parquet objects
+// filterFinalsForSchema filters keys down to one schema's final parquet objects
 // (multi-schema passes legitimately mix partitions in one report, so the
 // global splitKeys alone cannot attribute objects to a schema).
-func finalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
+func filterFinalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
 	finals, _ := splitKeys(keys)
 	var got []string
 	for _, k := range finals {
-		if strings.HasPrefix(k, schemaKeyPrefix(env, schema)) {
+		if strings.HasPrefix(k, buildSchemaKeyPrefix(env, schema)) {
 			got = append(got, k)
 		}
 	}
@@ -225,12 +225,12 @@ func finalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
 // legitimately create objects in the same report.
 func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, report *FlushReport, schema SchemaRef, wantDirty int) {
 	t.Helper()
-	if finals := finalsForSchema(env, report.NewObjects, schema); len(finals) != 0 {
+	if finals := filterFinalsForSchema(env, report.NewObjects, schema); len(finals) != 0 {
 		t.Errorf("schema %d must promote no final parquet after its fault, got %v", schema.ID, finals)
 	}
 	_, tmps := splitKeys(report.NewObjects)
 	for _, k := range tmps {
-		if strings.HasPrefix(k, schemaKeyPrefix(env, schema)) {
+		if strings.HasPrefix(k, buildSchemaKeyPrefix(env, schema)) {
 			t.Errorf("schema %d must leave no tmp residue after its copy fault (#226), got %s", schema.ID, k)
 		}
 	}
@@ -256,7 +256,7 @@ func assertSchemaFullyFlushed(ctx context.Context, t *testing.T, env *Env, newKe
 		t.Fatalf("schema %d must be fully flushed: flushed=%v dirty=%v, want %d flushed",
 			schema.ID, flushed, dirty, wantRows)
 	}
-	finals := finalsForSchema(env, newKeys, schema)
+	finals := filterFinalsForSchema(env, newKeys, schema)
 	if len(finals) != 1 {
 		t.Fatalf("schema %d must promote exactly one final delta, got %v", schema.ID, finals)
 	}

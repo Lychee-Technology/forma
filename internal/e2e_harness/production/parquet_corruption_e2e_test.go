@@ -102,7 +102,7 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 		t.Fatalf("precondition: healthy query did not route to duckdb: %+v", healthy.Plan.Routing)
 	}
 
-	wrongKey := schemaKeyPrefix(env, wide) + "wrong_schema_zzz.parquet"
+	wrongKey := buildSchemaKeyPrefix(env, wide) + "wrong_schema_zzz.parquet"
 	writeParquetViaDuck(ctx, t, env, "SELECT 1 AS wrong_col, 'x' AS other_col", wrongKey)
 	if err := env.RegisterParquetInManifest(ctx, wide, wrongKey, "delta"); err != nil {
 		t.Fatalf("register wrong-schema parquet: %v", err)
@@ -151,7 +151,7 @@ func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 
 	// Same column names as the real export, poisoned types for the two
 	// columns every projection touches.
-	wrongTypeKey := schemaKeyPrefix(env, wide) + "wrong_type_zzz.parquet"
+	wrongTypeKey := buildSchemaKeyPrefix(env, wide) + "wrong_type_zzz.parquet"
 	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
 		"SELECT 'not-a-uuid' AS row_id, 'not-an-epoch' AS changed_at, * EXCLUDE (row_id, changed_at) FROM read_parquet('s3://%s/%s') LIMIT 1",
 		env.Cluster.Bucket, keys[0]), wrongTypeKey)
@@ -194,7 +194,7 @@ func TestParquetCorruption_EmptyParquetFile(t *testing.T) {
 		t.Fatalf("expected exactly one parquet after seedTwoTiers, got %v", keys)
 	}
 
-	emptyKey := schemaKeyPrefix(env, wide) + "empty_zzz.parquet"
+	emptyKey := buildSchemaKeyPrefix(env, wide) + "empty_zzz.parquet"
 	writeParquetViaDuck(ctx, t, env,
 		fmt.Sprintf("SELECT * FROM read_parquet('s3://%s/%s') WHERE 1=0", env.Cluster.Bucket, keys[0]),
 		emptyKey)
@@ -232,7 +232,7 @@ func TestParquetCorruption_WrongSchemaFile_GlobHint(t *testing.T) {
 
 	// The rogue file is NOT manifest-registered: only the hinted glob can
 	// reach it, which is exactly the bypass under test.
-	wrongKey := schemaKeyPrefix(env, wide) + "wrong_schema_glob_zzz.parquet"
+	wrongKey := buildSchemaKeyPrefix(env, wide) + "wrong_schema_glob_zzz.parquet"
 	writeParquetViaDuck(ctx, t, env, "SELECT 1 AS wrong_col, 'x' AS other_col", wrongKey)
 
 	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
