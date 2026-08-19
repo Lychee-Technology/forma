@@ -17,7 +17,11 @@ type S3ObjectClient = internalcdc.S3ObjectClient
 // S3FullClient extends S3ObjectClient with manifest read/write operations.
 type S3FullClient = internalcdc.S3FullClient
 
-// FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush passes.
+// FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush
+// passes. Safe for long-lived use under credential rotation: superseded
+// cached exporters are evicted and closed once idle (#331), so rotations do
+// not accumulate open DuckDB instances. Call Close at shutdown to release
+// whatever is still cached.
 type FlushRunner struct {
 	runner *internalcdc.Runner
 }

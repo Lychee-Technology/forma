@@ -26,11 +26,19 @@ var newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Clie
 
 var newDuckExporterFn = NewDuckExporter
 
+// Runner caches per-config S3 runtimes and DuckDB exporters across RunOnce
+// calls. Each cache holds one entry per non-credential config group; a
+// credential rotation (#329) replaces the group's entry, and a superseded
+// DuckDB exporter is closed once no in-flight RunOnce holds it (#331) — so a
+// long-lived Runner under STS rotation keeps exactly one exporter per group,
+// not one per token. Two configs sharing a group but alternating *different*
+// static credential triples therefore rebuild on every alternation: a rebuild
+// cost, accepted in #331, never a correctness issue.
 type Runner struct {
 	logger        *zap.Logger
 	mu            sync.Mutex
-	s3Runtimes    map[s3RuntimeKey]*cachedS3Runtime
-	duckExporters map[duckExporterKey]*DuckExporter
+	s3Runtimes    map[s3RuntimeGroupKey]*cachedS3Runtime
+	duckExporters map[duckExporterGroupKey]*cachedDuckExporter
 }
 
 type cachedS3Runtime struct {
@@ -42,33 +50,72 @@ type cachedS3Runtime struct {
 	sessionToken    string
 }
 
-type s3RuntimeKey struct {
-	region      string
-	endpoint    string
-	usePath     bool
-	accessKeyID string
-	// The token is part of the signing identity the cached provider bakes in,
-	// so it belongs in the key alongside the pair: omit it and a rotated
-	// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached
-	// runtime, handing every caller a stale-token artifact (#329).
-	secretAccessKey string
-	sessionToken    string
+// credsEqual reports whether this entry was built from exactly this resolved
+// static triple. The token is part of the signing identity the cached provider
+// bakes in, so it participates in the match: omit it and a rotated
+// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached runtime,
+// handing every caller a stale-token artifact (#329).
+func (c *cachedS3Runtime) credsEqual(accessKeyID, secretAccessKey, sessionToken string) bool {
+	return c.accessKeyID == accessKeyID &&
+		c.secretAccessKey == secretAccessKey &&
+		c.sessionToken == sessionToken
 }
 
-type duckExporterKey struct {
-	dbPath      string
-	threads     int
-	memLimit    string
-	region      string
-	endpoint    string
-	useSSL      bool
-	usePath     bool
-	accessKeyID string
-	// Same rule as s3RuntimeKey: the exporter bakes the token into
-	// SET s3_session_token at construction, so a key without it returns a
-	// stale-token exporter after a rotation (#329).
+// s3RuntimeGroupKey identifies a cache slot by everything *except* the
+// credential triple. Credentials live on the cached entry and are compared on
+// lookup: a changed triple (e.g. a rotated AWS_SESSION_TOKEN, #329) rebuilds
+// the runtime and replaces the superseded entry instead of minting a sibling
+// key that strands the old entry for process lifetime (#331).
+type s3RuntimeGroupKey struct {
+	region   string
+	endpoint string
+	usePath  bool
+}
+
+// duckExporterGroupKey identifies a cache slot by everything *except* the
+// credential triple. Credentials live on the cached entry and are compared on
+// lookup, so a rotation replaces the slot's occupant instead of stranding it
+// under a sibling key for process lifetime (#331).
+type duckExporterGroupKey struct {
+	dbPath   string
+	threads  int
+	memLimit string
+	// The raw cfg region, not s3Runtime.region: the exporter is configured
+	// from cfg alone, and an empty cfg.S3Region suppresses SET s3_region
+	// entirely. Keying on the chain-resolved region claims a distinction
+	// the exporter never makes, so two runs producing byte-identical
+	// exporters would miss the cache (#329). It also cut the other way: an
+	// empty-region cfg whose chain resolved to some region could collide
+	// with an explicitly-configured cfg of that same region, two configs
+	// that build *different* exporters, so the second silently reused the
+	// first's — a latent wrong cache hit the raw cfg region rules out.
+	region   string
+	endpoint string
+	useSSL   bool
+	usePath  bool
+}
+
+// cachedDuckExporter is one cache slot's occupant. refs counts in-flight
+// RunOnce frames currently holding the exporter; doomed marks an entry that
+// has been superseded (or hard-closed via Close) and must not be handed out
+// again. A doomed entry's DB closes when refs reaches zero — immediately at
+// supersession if idle, else at the last release (#331).
+type cachedDuckExporter struct {
+	exporter        *DuckExporter
+	accessKeyID     string
 	secretAccessKey string
 	sessionToken    string
+	refs            int
+	doomed          bool
+}
+
+// credsEqual: same rule as cachedS3Runtime.credsEqual — the exporter bakes
+// the token into SET s3_session_token at construction, so an entry built from
+// a different triple is a stale-token artifact, never a cache hit (#329).
+func (c *cachedDuckExporter) credsEqual(accessKeyID, secretAccessKey, sessionToken string) bool {
+	return c.accessKeyID == accessKeyID &&
+		c.secretAccessKey == secretAccessKey &&
+		c.sessionToken == sessionToken
 }
 
 func NewRunner(logger *zap.Logger) *Runner {
@@ -77,8 +124,8 @@ func NewRunner(logger *zap.Logger) *Runner {
 	}
 	return &Runner{
 		logger:        logger,
-		s3Runtimes:    make(map[s3RuntimeKey]*cachedS3Runtime),
-		duckExporters: make(map[duckExporterKey]*DuckExporter),
+		s3Runtimes:    make(map[s3RuntimeGroupKey]*cachedS3Runtime),
+		duckExporters: make(map[duckExporterGroupKey]*cachedDuckExporter),
 	}
 }
 
@@ -88,20 +135,23 @@ func (r *Runner) Close() error {
 	}
 
 	r.mu.Lock()
-	exporters := make([]*DuckExporter, 0, len(r.duckExporters))
-	for _, exporter := range r.duckExporters {
-		exporters = append(exporters, exporter)
+	entries := make([]*cachedDuckExporter, 0, len(r.duckExporters))
+	for _, entry := range r.duckExporters {
+		// Hard shutdown: doomed here + idempotent sql.DB.Close means a release
+		// arriving after Close is harmless.
+		entry.doomed = true
+		entries = append(entries, entry)
 	}
-	r.s3Runtimes = make(map[s3RuntimeKey]*cachedS3Runtime)
-	r.duckExporters = make(map[duckExporterKey]*DuckExporter)
+	r.s3Runtimes = make(map[s3RuntimeGroupKey]*cachedS3Runtime)
+	r.duckExporters = make(map[duckExporterGroupKey]*cachedDuckExporter)
 	r.mu.Unlock()
 
 	var errs []error
-	for _, exporter := range exporters {
-		if exporter == nil || exporter.DB == nil {
+	for _, entry := range entries {
+		if entry.exporter == nil || entry.exporter.DB == nil {
 			continue
 		}
-		if err := exporter.DB.Close(); err != nil {
+		if err := entry.exporter.DB.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -135,12 +185,13 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	}
 	defer db.Close()
 
-	duck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
+	duck, releaseDuck, err := r.getOrCreateDuckExporter(ctx, cfg, s3Runtime)
 	if err != nil {
 		// getOrCreateDuckExporter carries the "new duck exporter:" prefix; this
 		// layer adds the run-level step so the two never duplicate.
 		return fmt.Errorf("prepare duck exporter: %w", err)
 	}
+	defer releaseDuck()
 
 	flushCtx := newSchemaFlushContext(flushContextParams{
 		cfg:            cfg,
@@ -169,19 +220,16 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
 	accessKeyID, secretAccessKey, sessionToken := ResolveStaticS3Credentials(cfg)
 
-	key := s3RuntimeKey{
-		region:          cfg.S3Region,
-		endpoint:        cfg.S3Endpoint,
-		usePath:         cfg.S3UsePath,
-		accessKeyID:     accessKeyID,
-		secretAccessKey: secretAccessKey,
-		sessionToken:    sessionToken,
+	key := s3RuntimeGroupKey{
+		region:   cfg.S3Region,
+		endpoint: cfg.S3Endpoint,
+		usePath:  cfg.S3UsePath,
 	}
 
 	r.mu.Lock()
 	cached := r.s3Runtimes[key]
 	r.mu.Unlock()
-	if cached != nil {
+	if cached != nil && cached.credsEqual(accessKeyID, secretAccessKey, sessionToken) {
 		return cached, nil
 	}
 
@@ -213,65 +261,102 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 	}
 
 	r.mu.Lock()
-	if existing := r.s3Runtimes[key]; existing != nil {
+	if existing := r.s3Runtimes[key]; existing != nil && existing.credsEqual(accessKeyID, secretAccessKey, sessionToken) {
 		r.mu.Unlock()
 		return existing, nil
 	}
+	// Replacing a stale-credential entry needs no close: s3.Client holds no
+	// OS resources, so dropping the map reference is the whole eviction (#331).
 	r.s3Runtimes[key] = runtime
 	r.mu.Unlock()
 
 	return runtime, nil
 }
 
-func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3Runtime *cachedS3Runtime) (*DuckExporter, error) {
-	key := duckExporterKey{
+// getOrCreateDuckExporter returns the group's cached exporter (building and
+// caching one as needed) plus a release hook for the caller's hold: call it
+// exactly once, after the run finishes. The hook is nil when err is non-nil.
+func (r *Runner) getOrCreateDuckExporter(ctx context.Context, cfg CDCConfig, s3Runtime *cachedS3Runtime) (*DuckExporter, func(), error) {
+	key := duckExporterGroupKey{
 		dbPath:   cfg.DuckDBPath,
 		threads:  cfg.DuckThreads,
 		memLimit: cfg.DuckMemLimit,
-		// The raw cfg region, not s3Runtime.region: the exporter is configured
-		// from cfg alone, and an empty cfg.S3Region suppresses SET s3_region
-		// entirely. Keying on the chain-resolved region claims a distinction
-		// the exporter never makes, so two runs producing byte-identical
-		// exporters would miss the cache (#329). It also cut the other way: an
-		// empty-region cfg whose chain resolved to some region could collide
-		// with an explicitly-configured cfg of that same region, two configs
-		// that build *different* exporters, so the second silently reused the
-		// first's — a latent wrong cache hit the raw cfg region rules out.
-		region:      cfg.S3Region,
-		endpoint:    cfg.S3Endpoint,
-		useSSL:      cfg.S3UseSSL,
-		usePath:     cfg.S3UsePath,
-		accessKeyID: s3Runtime.accessKeyID,
-		// The cached runtime's token, matching the triple handed to
-		// newDuckExporterFn below (#329).
-		secretAccessKey: s3Runtime.secretAccessKey,
-		sessionToken:    s3Runtime.sessionToken,
+		region:   cfg.S3Region,
+		endpoint: cfg.S3Endpoint,
+		useSSL:   cfg.S3UseSSL,
+		usePath:  cfg.S3UsePath,
 	}
 
 	r.mu.Lock()
-	cached := r.duckExporters[key]
-	r.mu.Unlock()
-	if cached != nil {
-		return cached, nil
+	if entry := r.duckExporters[key]; entry != nil && entry.credsEqual(s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken) {
+		entry.refs++
+		r.mu.Unlock()
+		return entry.exporter, r.releaseFunc(entry), nil
 	}
+	r.mu.Unlock()
 
 	// The cached triple, not a fresh resolve: one resolution keeps the SDK
 	// provider and the DuckDB SET statements on the same credentials (#329).
 	exporter, err := newDuckExporterFn(ctx, cfg, s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken, r.logger)
 	if err != nil {
-		return nil, fmt.Errorf("new duck exporter: %w", err)
+		return nil, nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
 	r.mu.Lock()
-	if existing := r.duckExporters[key]; existing != nil {
+	if existing := r.duckExporters[key]; existing != nil && existing.credsEqual(s3Runtime.accessKeyID, s3Runtime.secretAccessKey, s3Runtime.sessionToken) {
+		// Lost a same-credentials build race: ours is redundant.
+		existing.refs++
 		r.mu.Unlock()
-		if exporter.DB != nil {
-			_ = exporter.DB.Close()
-		}
-		return existing, nil
+		closeExporterDB(exporter, r.logger)
+		return existing.exporter, r.releaseFunc(existing), nil
 	}
-	r.duckExporters[key] = exporter
+	// Last writer wins: a slower build can install an older triple over a
+	// fresher one — pure churn, corrected by the next acquire's credsEqual miss.
+	superseded := r.duckExporters[key]
+	entry := &cachedDuckExporter{
+		exporter:        exporter,
+		accessKeyID:     s3Runtime.accessKeyID,
+		secretAccessKey: s3Runtime.secretAccessKey,
+		sessionToken:    s3Runtime.sessionToken,
+		refs:            1,
+	}
+	r.duckExporters[key] = entry
+	var toClose *DuckExporter
+	if superseded != nil {
+		superseded.doomed = true
+		if superseded.refs == 0 {
+			toClose = superseded.exporter
+		}
+	}
 	r.mu.Unlock()
+	// Outside the lock: DB.Close can block on an open connection.
+	closeExporterDB(toClose, r.logger)
+	return entry.exporter, r.releaseFunc(entry), nil
+}
 
-	return exporter, nil
+// releaseFunc hands a RunOnce frame its release hook: drop the hold, and if
+// this was the last hold on a superseded entry, close its DB. Each hook must
+// be called exactly once (#331).
+func (r *Runner) releaseFunc(entry *cachedDuckExporter) func() {
+	return func() {
+		r.mu.Lock()
+		entry.refs--
+		shouldClose := entry.doomed && entry.refs == 0
+		r.mu.Unlock()
+		if shouldClose {
+			closeExporterDB(entry.exporter, r.logger)
+		}
+	}
+}
+
+// closeExporterDB closes a discarded exporter's DuckDB handle. Failing the *new*
+// run because an old handle failed to close would be wrong, so errors are
+// logged, never returned. Nil-safe on both exporter and DB.
+func closeExporterDB(exporter *DuckExporter, logger *zap.Logger) {
+	if exporter == nil || exporter.DB == nil {
+		return
+	}
+	if err := exporter.DB.Close(); err != nil {
+		logger.Warn("close discarded duck exporter", zap.Error(err))
+	}
 }
