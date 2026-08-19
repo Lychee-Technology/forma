@@ -303,14 +303,14 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 	}
 
 	// Onboarding contract: init does not clear change_log; clear it so the
-	// base tier alone must answer, then oracle-check both schemas.
+	// base tier alone must answer, then oracle-check both schemas. The count
+	// is only cold-tier evidence if the query actually routed to DuckDB —
+	// a PG-only routing regression would still count 5 entity_main rows (#248).
 	for _, ref := range []SchemaRef{simple, second} {
 		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", ref.ID)
 	}
 	for _, ref := range []SchemaRef{simple, second} {
-		result := env.AssertQueryMatches(ctx, Query{Schema: ref, Limit: 100})
-		if result != nil && len(result.Records) != 5 {
-			t.Errorf("schema %d federated result has %d rows, want 5", ref.ID, len(result.Records))
-		}
+		assertFederatedRowCount(ctx, t, env,
+			fmt.Sprintf("schema %d base tier", ref.ID), Query{Schema: ref, Limit: 100}, 5)
 	}
 }
