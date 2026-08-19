@@ -349,7 +349,7 @@ func (r *Runner) releaseFunc(entry *cachedDuckExporter) func() {
 	}
 }
 
-// closeExporterDB closes a doomed exporter's DuckDB handle. Failing the *new*
+// closeExporterDB closes a discarded exporter's DuckDB handle. Failing the *new*
 // run because an old handle failed to close would be wrong, so errors are
 // logged, never returned. Nil-safe on both exporter and DB.
 func closeExporterDB(exporter *DuckExporter, logger *zap.Logger) {
