@@ -26,6 +26,14 @@ var newS3ClientFn = func(cfg aws.Config, endpoint string, usePath bool) *s3.Clie
 
 var newDuckExporterFn = NewDuckExporter
 
+// Runner caches per-config S3 runtimes and DuckDB exporters across RunOnce
+// calls. Each cache holds one entry per non-credential config group; a
+// credential rotation (#329) replaces the group's entry, and a superseded
+// DuckDB exporter is closed once no in-flight RunOnce holds it (#331) — so a
+// long-lived Runner under STS rotation keeps exactly one exporter per group,
+// not one per token. Two configs sharing a group but alternating *different*
+// static credential triples therefore rebuild on every alternation: a rebuild
+// cost, accepted in #331, never a correctness issue.
 type Runner struct {
 	logger        *zap.Logger
 	mu            sync.Mutex
