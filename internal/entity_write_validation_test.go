@@ -7,6 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
@@ -288,6 +289,34 @@ func TestBatchUpdateAtomicStrictRejectsViolation(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
 
+// TestBatchUpdateReportOnlyLogsMilestoneOnFirstViolation pins the batch update
+// seam's stats wiring the way TestReportOnlyUpdateLogsMilestoneOnFirstViolation
+// pins the CRUD one: batchUpdateAtomic runs report-only in the shipped default
+// configuration, and before this test, deleting `stats: s.reportOnlyStats` from
+// that one call site left the whole suite green (PR #422 round-4 review).
+func TestBatchUpdateReportOnlyLogsMilestoneOnFirstViolation(t *testing.T) {
+	manager, _ := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	_, err = manager.BatchUpdate(context.Background(), &forma.BatchOperation{
+		Atomic:     true,
+		Operations: []forma.EntityOperation{*updateOp(created.RowID, map[string]any{"name": "banana"})},
+	})
+	require.NoError(t, err)
+
+	entries := logs.FilterMessage(reportOnlyMilestoneMessage).All()
+	require.Len(t, entries, 1, "the batch update seam must feed the same aggregate as CRUD update")
+	fields := entries[0].ContextMap()
+	require.Equal(t, "test", fields["schemaName"])
+	require.EqualValues(t, 1, fields["total"])
+	require.EqualValues(t, 1, fields["constraint"])
+}
+
 // TestReportOnlyUpdateRefusesToAbsorbConfigurationFault pins the boundary of
 // report-only mode: it forgives *violations*, not everything Validate can return.
 //
@@ -339,4 +368,91 @@ func TestUpdateOfUnrelatedFieldKeepsRequiredSatisfied(t *testing.T) {
 	}))
 
 	require.NoError(t, err)
+}
+
+// TestReportOnlyUpdateEmitsAggregateCounter pins #317's telemetry half: every
+// accepted violation increments entity_report_only_validation_violation_total
+// with the schema and kind the flip decision is made over. The default
+// deployment registers no emitter, so this is behavior-neutral there; the
+// milestone log line below is its default-visible counterpart.
+func TestReportOnlyUpdateEmitsAggregateCounter(t *testing.T) {
+	manager, _ := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	type emitted struct {
+		name   string
+		labels map[string]string
+		value  any
+	}
+	var got []emitted
+	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, labels map[string]string, value any) {
+		got = append(got, emitted{name: name, labels: labels, value: value})
+	})
+	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+
+	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
+	require.NoError(t, err)
+
+	require.Len(t, got, 1, "one accepted violation must emit exactly one increment")
+	require.Equal(t, "entity_report_only_validation_violation_total", got[0].name)
+	require.Equal(t, map[string]string{
+		"schema_id":   "100",
+		"schema_name": "test",
+		"kind":        "constraint",
+	}, got[0].labels)
+	require.Equal(t, int64(1), got[0].value)
+}
+
+// TestReportOnlyUpdateLogsMilestoneOnFirstViolation is the wiring test (#318's
+// lesson: fail-closed wiring needs a test that goes red when the wiring is
+// deleted). It exercises the full production path — NewEntityManager builds
+// the stats, the services carry them, validateWritePayload records — and
+// pins that the milestone line is aggregate-only: counts, no violation text,
+// no row id, no payload.
+func TestReportOnlyUpdateLogsMilestoneOnFirstViolation(t *testing.T) {
+	manager, _ := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+
+	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
+	require.NoError(t, err)
+
+	entries := logs.FilterMessage(reportOnlyMilestoneMessage).All()
+	require.Len(t, entries, 1, "the first accepted violation must log a milestone")
+
+	fields := entries[0].ContextMap()
+	require.Equal(t, "test", fields["schemaName"])
+	require.EqualValues(t, 100, fields["schemaID"])
+	require.EqualValues(t, 1, fields["total"])
+	require.EqualValues(t, 0, fields["required"])
+	require.EqualValues(t, 1, fields["constraint"])
+	require.NotContains(t, fields, "error", "the milestone line must not carry violation text")
+	require.NotContains(t, fields, "rowID", "the milestone line aggregates; the per-write line names rows")
+}
+
+// TestStrictRejectionEmitsNoAggregate pins the counter's scope: #317 counts
+// violations *accepted* in report-only mode, because the question it answers
+// is whether report-only can end. A strict rejection already surfaces as a 4xx
+// and must not inflate the aggregate.
+func TestStrictRejectionEmitsNoAggregate(t *testing.T) {
+	manager, _ := newValidatingManager(t, true)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	var emits int
+	telemetry.RegisterTelemetryEmitter(func(context.Context, string, map[string]string, any) { emits++ })
+	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+
+	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+	_, err = manager.Create(context.Background(), createOp(map[string]any{"name": "banana"}))
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+	require.Zero(t, emits, "rejected writes must not increment the report-only aggregate")
 }

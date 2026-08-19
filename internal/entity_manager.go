@@ -29,6 +29,9 @@ type entityManager struct {
 	// 500 on every write rather than being ignored.
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
+	// reportOnlyStats feeds the #317 milestone log line. Owned here so the CRUD
+	// and batch services aggregate into one set of per-schema counts.
+	reportOnlyStats *reportOnlyStats
 
 	crud     *entityCRUDService
 	query    *entityQueryService
@@ -164,6 +167,7 @@ func NewEntityManager(
 
 		validator:             validator,
 		validateUpdatesStrict: config.Entity.ValidateUpdatesStrict,
+		reportOnlyStats:       newReportOnlyStats(),
 	}
 	// Options run before the relation index is resolved, because one of them
 	// supplies it: WithRelationIndex is how the composition root hands over the

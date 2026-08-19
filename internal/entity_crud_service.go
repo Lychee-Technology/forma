@@ -26,6 +26,7 @@ type entityCRUDService struct {
 	// error, not a no-op.
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
+	reportOnlyStats       *reportOnlyStats
 }
 
 func newEntityCRUDService(em *entityManager) *entityCRUDService {
@@ -43,6 +44,7 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 
 		validator:             em.validator,
 		validateUpdatesStrict: em.validateUpdatesStrict,
+		reportOnlyStats:       em.reportOnlyStats,
 	}
 }
 
@@ -101,7 +103,7 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	// why the 4xx cannot be answered rather than inferring it. Do not resolve the
 	// hazard by validating before stripping: that defeats the guard and judges a
 	// document no row will hold.
-	if err := validateWritePayload(writeValidation{
+	if err := validateWritePayload(ctx, writeValidation{
 		validator:     s.validator,
 		schemaID:      schemaID,
 		schemaName:    req.SchemaName,
@@ -110,6 +112,7 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		data:          inputData,
 		enforce:       true,
 		relationRoots: s.relations.RelationRootNames(req.SchemaName),
+		stats:         s.reportOnlyStats,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
@@ -227,7 +230,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	// The *merged* document is what gets validated: a partial update that does
 	// not mention a required attribute must still succeed. The relation-root
 	// hazard noted in Create applies here too.
-	if err := validateWritePayload(writeValidation{
+	if err := validateWritePayload(ctx, writeValidation{
 		validator:     s.validator,
 		schemaID:      schemaID,
 		schemaName:    req.SchemaName,
@@ -236,6 +239,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		data:          mergedData,
 		enforce:       s.validateUpdatesStrict,
 		relationRoots: s.relations.RelationRootNames(req.SchemaName),
+		stats:         s.reportOnlyStats,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}

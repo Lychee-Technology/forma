@@ -182,7 +182,7 @@ func TestWriteDiagnosisIsSilentOnOperatorClassErrors(t *testing.T) {
 
 	// schemaID 9999 is registered nowhere, so Validate answers "no resolved JSON
 	// schema", which is a plain error and not a violation.
-	err = validateWritePayload(writeValidation{
+	err = validateWritePayload(context.Background(), writeValidation{
 		validator:     validator,
 		schemaID:      9999,
 		schemaName:    "child",
@@ -217,7 +217,7 @@ func TestWriteDiagnosisDoesNotChangeWhichWritesPass(t *testing.T) {
 	t.Run("a passing payload stays passing", func(t *testing.T) {
 		validator, schemaID := resolveFixtureValidator(t, "relation_ok_not")
 
-		require.NoError(t, validateWritePayload(writeValidation{
+		require.NoError(t, validateWritePayload(context.Background(), writeValidation{
 			validator:     validator,
 			schemaID:      schemaID,
 			schemaName:    "child",
@@ -230,7 +230,7 @@ func TestWriteDiagnosisDoesNotChangeWhichWritesPass(t *testing.T) {
 	t.Run("report-only still absorbs the violation", func(t *testing.T) {
 		validator, schemaID := resolveFixtureValidator(t, "relation_required_double_not")
 
-		require.NoError(t, validateWritePayload(writeValidation{
+		require.NoError(t, validateWritePayload(context.Background(), writeValidation{
 			validator:     validator,
 			schemaID:      schemaID,
 			schemaName:    "child",
@@ -297,7 +297,7 @@ func TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots(t *testing.T) {
 		transform.NormalizeDottedKeys(payload, nil, validator.ArrayPaths(schemaID)))
 	require.Error(t, bare, "the fixture must fail validation for this to say anything")
 
-	err := validateWritePayload(writeValidation{
+	err := validateWritePayload(context.Background(), writeValidation{
 		validator:  validator,
 		schemaID:   schemaID,
 		schemaName: "child",

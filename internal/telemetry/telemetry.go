@@ -93,3 +93,18 @@ func EmitCompactionRewriteApplied(ctx context.Context, schemaID int16) {
 	labels := map[string]string{"schema_id": fmt.Sprintf("%d", schemaID)}
 	currentEmitter()(ctx, "compaction_rewrite_applied_total", labels, int64(1))
 }
+
+// EmitReportOnlyValidationViolation records a write that violated its entity
+// JSON schema and was accepted because strict update validation is off (#317).
+// kind is "required" (the document lacks a property) or "constraint" (a
+// present value is illegal); package internal classifies it.
+// name: "entity_report_only_validation_violation_total" with labels
+// {"schema_id": "<id>", "schema_name": "<name>", "kind": "required"|"constraint"}
+func EmitReportOnlyValidationViolation(ctx context.Context, schemaID int16, schemaName, kind string) {
+	labels := map[string]string{
+		"schema_id":   fmt.Sprintf("%d", schemaID),
+		"schema_name": schemaName,
+		"kind":        kind,
+	}
+	currentEmitter()(ctx, "entity_report_only_validation_violation_total", labels, int64(1))
+}

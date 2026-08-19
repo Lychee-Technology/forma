@@ -125,6 +125,28 @@ bites, so any reconstruction that is lossy for such a field turns a legitimate
 partial update into a rejection the caller cannot diagnose from their own
 payload.
 
+Report-only mode carries its own rollout signal (#317), aggregate and
+payload-free. Every accepted violation increments the counter
+`entity_report_only_validation_violation_total`, labelled `schema_id`,
+`schema_name` and `kind`, where `kind` is `required` (a property is absent, so
+the repair is to backfill data) or `constraint` (a present value is illegal, so
+the repair is to fix the value); `kind` is read off the validator's message — a
+metric label is the one sanctioned prose key, carved out under "There is no
+substring heuristic" below. Because a deployment need not register a
+telemetry emitter, the same accounting also reaches the log: at a schema's 1st
+accepted violation and every 100th after, a `Warn` line — "report-only schema
+validation violations reached a milestone..." — carries the cumulative total and
+the per-kind split for that schema, and nothing else. No violation text, no row
+id, no payload.
+
+Read it in one direction only. While those milestones keep appearing for a
+schema, its rows are not yet repaired. Silence does not establish the converse:
+the signal fires only when a violating row is written, so rows nobody updates
+never announce themselves, the stride means a schema is quiet between
+milestones, and the counts live on the `EntityManager` — one per process in
+the shipped wiring — and reset on restart. The signal
+narrows where to look; the e2e pass above is still what licenses the flip.
+
 ### Which errors are which class
 
 `validateWritePayload` splits on sentinel evidence, not on the enforce flag:
@@ -784,6 +806,21 @@ errors that wrapped no sentinel. It was removed for two reasons:
   4xx.
 - **It was the last site classifying an error by string comparison**, which
   `AGENTS.md` forbids.
+
+One later arrival is deliberately outside that rule's blast radius, and it is
+the only one: `classifyViolation` (#317) reads the validator's message to pick
+the `required`-versus-`constraint` label on the report-only aggregate. It
+decides a metric label — and the matching `kind` field on the per-write Warn
+line — and nothing else: never a status, a body, or whether a write proceeds.
+So a wrong match cannot reproduce either failure above, and
+the prose it keys on is pinned against the real validator by
+`TestClassifyViolationPinsLibraryProse`. A prose key that feeds any decision
+*on this path* — a status, a disclosed body, a write outcome — remains
+forbidden. (Two older string keys sit outside this paragraph's rule and
+predate the carve-out: `manifest.IsNotFound` reads S3 driver prose to recognise
+an absent object on the read path, and the e2e harness's
+`isFederatedTierFileError` is test-only. Neither classifies an error toward a
+caller.)
 
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that

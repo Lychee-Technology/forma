@@ -28,6 +28,7 @@ type entityBatchService struct {
 	// error, not a no-op.
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
+	reportOnlyStats       *reportOnlyStats
 }
 
 // newEntityBatchService takes the CRUD service as an explicit parameter so the
@@ -57,6 +58,7 @@ func newEntityBatchService(em *entityManager, crud *entityCRUDService) *entityBa
 
 		validator:             em.validator,
 		validateUpdatesStrict: em.validateUpdatesStrict,
+		reportOnlyStats:       em.reportOnlyStats,
 	}
 }
 
@@ -219,7 +221,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 
 		// Creates always enforce, and this batch is atomic: one violation fails
 		// the whole request before anything is written.
-		if err := validateWritePayload(writeValidation{
+		if err := validateWritePayload(ctx, writeValidation{
 			validator:     s.validator,
 			schemaID:      schemaID,
 			schemaName:    op.SchemaName,
@@ -228,6 +230,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			data:          inputData,
 			enforce:       true,
 			relationRoots: relationRoots.resolve(op.SchemaName),
+			stats:         s.reportOnlyStats,
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -307,7 +310,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 		// The *merged* document is what gets validated, so a partial update that
 		// does not mention a required attribute still succeeds.
-		if err := validateWritePayload(writeValidation{
+		if err := validateWritePayload(ctx, writeValidation{
 			validator:     s.validator,
 			schemaID:      schemaID,
 			schemaName:    op.SchemaName,
@@ -316,6 +319,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 			data:          mergedData,
 			enforce:       s.validateUpdatesStrict,
 			relationRoots: relationRoots.resolve(op.SchemaName),
+			stats:         s.reportOnlyStats,
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
