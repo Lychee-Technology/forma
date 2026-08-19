@@ -810,8 +810,9 @@ errors that wrapped no sentinel. It was removed for two reasons:
 One later arrival is deliberately outside that rule's blast radius, and it is
 the only one: `classifyViolation` (#317) reads the validator's message to pick
 the `required`-versus-`constraint` label on the report-only aggregate. It
-decides a metric label and nothing else — never a status, a body, or whether a
-write proceeds — so a wrong match cannot reproduce either failure above, and
+decides a metric label — and the matching `kind` field on the per-write Warn
+line — and nothing else: never a status, a body, or whether a write proceeds.
+So a wrong match cannot reproduce either failure above, and
 the prose it keys on is pinned against the real validator by
 `TestClassifyViolationPinsLibraryProse`. A prose key that feeds any decision
 *on this path* — a status, a disclosed body, a write outcome — remains
