@@ -106,12 +106,12 @@ func TestRunnerGetOrCreateS3Runtime_EnvTripleCarriesSessionToken(t *testing.T) {
 	require.Equal(t, "env-token", creds.SessionToken)
 }
 
-// TestRunnerS3RuntimeCacheKeyIncludesSessionToken pins that the cached runtime
-// is keyed on the whole credential triple. The provider bakes the token in, so
-// a rotated AWS_SESSION_TOKEN under an unchanged access-key pair describes a
-// different signing identity — key on the pair alone and the Runner keeps
-// serving the expired token until the process restarts (#329).
-func TestRunnerS3RuntimeCacheKeyIncludesSessionToken(t *testing.T) {
+// TestRunnerS3RuntimeRotationReplacesEntry pins both halves of the #329/#331
+// contract: a rotated AWS_SESSION_TOKEN under an unchanged access-key pair is
+// a different signing identity, so the Runner must rebuild the runtime (#329)
+// — and the stale-credential entry must leave the map instead of stranding
+// there for process lifetime (#331).
+func TestRunnerS3RuntimeRotationReplacesEntry(t *testing.T) {
 	loadCalls := 0
 	stubLoadAWSConfig(t, func(context.Context, ...func(*config.LoadOptions) error) (aws.Config, error) {
 		loadCalls++
@@ -138,6 +138,8 @@ func TestRunnerS3RuntimeCacheKeyIncludesSessionToken(t *testing.T) {
 	require.Equal(t, "token-2", second.sessionToken)
 	creds := retrieveCreds(t, second.credProvider)
 	require.Equal(t, "token-2", creds.SessionToken)
+	// #331: the superseded entry is replaced, not accumulated.
+	require.Len(t, runner.s3Runtimes, 1)
 }
 
 func TestRunnerCachesDuckExporter(t *testing.T) {
@@ -277,7 +279,7 @@ func TestRunnerClose_ClearsCachesAndClosesExporters(t *testing.T) {
 	require.NoError(t, err)
 
 	runner := NewRunner(zap.NewNop())
-	runner.s3Runtimes[s3RuntimeKey{region: "us-east-1"}] = &cachedS3Runtime{region: "us-east-1"}
+	runner.s3Runtimes[s3RuntimeGroupKey{region: "us-east-1"}] = &cachedS3Runtime{region: "us-east-1"}
 	runner.duckExporters[duckExporterKey{dbPath: ":memory:"}] = &DuckExporter{
 		DB:     db,
 		Logger: zap.NewNop(),

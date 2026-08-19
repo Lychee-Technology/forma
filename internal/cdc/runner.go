@@ -29,7 +29,7 @@ var newDuckExporterFn = NewDuckExporter
 type Runner struct {
 	logger        *zap.Logger
 	mu            sync.Mutex
-	s3Runtimes    map[s3RuntimeKey]*cachedS3Runtime
+	s3Runtimes    map[s3RuntimeGroupKey]*cachedS3Runtime
 	duckExporters map[duckExporterKey]*DuckExporter
 }
 
@@ -42,17 +42,26 @@ type cachedS3Runtime struct {
 	sessionToken    string
 }
 
-type s3RuntimeKey struct {
-	region      string
-	endpoint    string
-	usePath     bool
-	accessKeyID string
-	// The token is part of the signing identity the cached provider bakes in,
-	// so it belongs in the key alongside the pair: omit it and a rotated
-	// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached
-	// runtime, handing every caller a stale-token artifact (#329).
-	secretAccessKey string
-	sessionToken    string
+// credsEqual reports whether this entry was built from exactly this resolved
+// static triple. The token is part of the signing identity the cached provider
+// bakes in, so it participates in the match: omit it and a rotated
+// AWS_SESSION_TOKEN under an unchanged pair keeps hitting the cached runtime,
+// handing every caller a stale-token artifact (#329).
+func (c *cachedS3Runtime) credsEqual(accessKeyID, secretAccessKey, sessionToken string) bool {
+	return c.accessKeyID == accessKeyID &&
+		c.secretAccessKey == secretAccessKey &&
+		c.sessionToken == sessionToken
+}
+
+// s3RuntimeGroupKey identifies a cache slot by everything *except* the
+// credential triple. Credentials live on the cached entry and are compared on
+// lookup: a changed triple (e.g. a rotated AWS_SESSION_TOKEN, #329) rebuilds
+// the runtime and replaces the superseded entry instead of minting a sibling
+// key that strands the old entry for process lifetime (#331).
+type s3RuntimeGroupKey struct {
+	region   string
+	endpoint string
+	usePath  bool
 }
 
 type duckExporterKey struct {
@@ -77,7 +86,7 @@ func NewRunner(logger *zap.Logger) *Runner {
 	}
 	return &Runner{
 		logger:        logger,
-		s3Runtimes:    make(map[s3RuntimeKey]*cachedS3Runtime),
+		s3Runtimes:    make(map[s3RuntimeGroupKey]*cachedS3Runtime),
 		duckExporters: make(map[duckExporterKey]*DuckExporter),
 	}
 }
@@ -92,7 +101,7 @@ func (r *Runner) Close() error {
 	for _, exporter := range r.duckExporters {
 		exporters = append(exporters, exporter)
 	}
-	r.s3Runtimes = make(map[s3RuntimeKey]*cachedS3Runtime)
+	r.s3Runtimes = make(map[s3RuntimeGroupKey]*cachedS3Runtime)
 	r.duckExporters = make(map[duckExporterKey]*DuckExporter)
 	r.mu.Unlock()
 
@@ -169,19 +178,16 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {
 	accessKeyID, secretAccessKey, sessionToken := ResolveStaticS3Credentials(cfg)
 
-	key := s3RuntimeKey{
-		region:          cfg.S3Region,
-		endpoint:        cfg.S3Endpoint,
-		usePath:         cfg.S3UsePath,
-		accessKeyID:     accessKeyID,
-		secretAccessKey: secretAccessKey,
-		sessionToken:    sessionToken,
+	key := s3RuntimeGroupKey{
+		region:   cfg.S3Region,
+		endpoint: cfg.S3Endpoint,
+		usePath:  cfg.S3UsePath,
 	}
 
 	r.mu.Lock()
 	cached := r.s3Runtimes[key]
 	r.mu.Unlock()
-	if cached != nil {
+	if cached != nil && cached.credsEqual(accessKeyID, secretAccessKey, sessionToken) {
 		return cached, nil
 	}
 
@@ -213,10 +219,12 @@ func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cach
 	}
 
 	r.mu.Lock()
-	if existing := r.s3Runtimes[key]; existing != nil {
+	if existing := r.s3Runtimes[key]; existing != nil && existing.credsEqual(accessKeyID, secretAccessKey, sessionToken) {
 		r.mu.Unlock()
 		return existing, nil
 	}
+	// Replacing a stale-credential entry needs no close: s3.Client holds no
+	// OS resources, so dropping the map reference is the whole eviction (#331).
 	r.s3Runtimes[key] = runtime
 	r.mu.Unlock()
 
