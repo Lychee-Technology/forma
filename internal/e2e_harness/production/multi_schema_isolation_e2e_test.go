@@ -272,6 +272,12 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatal("schema 22 init must produce base entries (positive control)")
 	}
 
+	// #248: the NewObjects key diff is blind to overwrites that reuse the
+	// deterministic min_max keys, and the base-path comparison below is blind
+	// to a manifest rewritten with the same paths. Require exact stat/byte
+	// identity of the sibling's whole S3 surface across the rerun.
+	siblingBefore := captureSchemaS3State(t, ctx, env, second)
+
 	// Rerun schema 20's init: the sibling's manifest and objects must be
 	// byte-for-byte uninvolved (deterministic keys make the rerun itself a
 	// pure overwrite, so any sibling-partition key here is a leak).
@@ -280,6 +286,8 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatalf("rerun init schema %d: %v", simple.ID, err)
 	}
 	assertInitTouchesOnly(rerun, simple, second)
+	assertSchemaS3StateUnchanged(t, "schema 20 rerun vs sibling 22",
+		siblingBefore, captureSchemaS3State(t, ctx, env, second))
 	manifests, err = env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("reload manifests: %v", err)
