@@ -23,17 +23,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
 	if opts.PreferHot {
-		result, err := h.ExecutePostgresQuery(ctx, opts)
-		if err != nil {
-			return nil, err
-		}
-		if result.Plan == nil {
-			result.Plan = &model.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
-		}
-		result.Plan.Notes = append(result.Plan.Notes, "prefer_hot_override", "postgres_only_execution")
-		result.Plan.Timings["total"] = time.Since(start).Milliseconds()
-		result.Duration = time.Since(start)
-		return result, nil
+		return h.executePreferHotQuery(ctx, opts, start)
 	}
 	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
 	tradeTimeOnlyProjection := usesTradeTimeOnlyBenchmarkProjectionForSelect(opts)
@@ -43,20 +33,11 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		}
 	}
 
-	// Check which tiers have parquet files
-	hasBaseFiles, hasDeltaFiles, err := h.checkTierFiles(ctx)
+	tiers, err := h.probeFederatedTiers(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Get dirty IDs from change_log
-	dirtyIDs, err := h.getDirtyIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get dirty ids: %w", err)
-	}
-
-	// If no parquet files exist and no hot records, fall back to Postgres-only query
-	if !hasBaseFiles && !hasDeltaFiles && len(dirtyIDs) == 0 {
+	if tiers.isEmpty() {
 		return h.ExecutePostgresQuery(ctx, opts)
 	}
 
@@ -65,8 +46,8 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	deltaPath := fmt.Sprintf("s3://%s/%s/%d/delta/*.parquet", h.S3Bucket, h.S3Prefix, h.SchemaID)
 
 	// Build and execute the federated query
-	query := h.buildFederatedQuerySQLDynamic(basePath, deltaPath, hasBaseFiles, hasDeltaFiles, dirtyIDs, opts)
-	countQuery := h.buildFederatedQueryCountSQLDynamic(basePath, deltaPath, hasBaseFiles, hasDeltaFiles, dirtyIDs, opts)
+	query := h.buildFederatedQuerySQLDynamic(basePath, deltaPath, tiers.hasBaseFiles, tiers.hasDeltaFiles, tiers.dirtyIDs, opts)
+	countQuery := h.buildFederatedQueryCountSQLDynamic(basePath, deltaPath, tiers.hasBaseFiles, tiers.hasDeltaFiles, tiers.dirtyIDs, opts)
 
 	var totalRecords int64
 	if err := h.Duck.DB.QueryRowContext(ctx, countQuery).Scan(&totalRecords); err != nil {
@@ -76,17 +57,10 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		return nil, fmt.Errorf("count query: %w", err)
 	}
 	if opts.CountOnly {
-		return &QueryResult{TotalRecords: totalRecords, Duration: time.Since(start), Plan: buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, time.Since(start))}, nil
+		return &QueryResult{TotalRecords: totalRecords, Duration: time.Since(start), Plan: tiers.executionPlan(time.Since(start))}, nil
 	}
 	if shouldSkipFederatedSelect(totalRecords, opts.Offset) {
-		plan := buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, time.Since(start))
-		plan.Notes = append(plan.Notes, "empty_page_short_circuit")
-		return &QueryResult{
-			Records:      nil,
-			TotalRecords: totalRecords,
-			Duration:     time.Since(start),
-			Plan:         plan,
-		}, nil
+		return tiers.emptyPageResult(totalRecords, time.Since(start)), nil
 	}
 
 	rows, err := h.Duck.DB.QueryContext(ctx, query)
@@ -104,7 +78,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	}
 
 	duration := time.Since(start)
-	plan := buildExecutionPlan(len(dirtyIDs), hasBaseFiles, hasDeltaFiles, duration)
+	plan := tiers.executionPlan(duration)
 
 	return &QueryResult{
 		Records:      records,
@@ -112,6 +86,69 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		Duration:     duration,
 		Plan:         plan,
 	}, nil
+}
+
+// executePreferHotQuery serves the PreferHot override, which is a separate
+// execution path rather than a step in the federated one: it answers straight
+// from Postgres and only annotates the plan to say why.
+func (h *FederatedTestHarness) executePreferHotQuery(ctx context.Context, opts *QueryOptions, start time.Time) (*QueryResult, error) {
+	result, err := h.ExecutePostgresQuery(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if result.Plan == nil {
+		result.Plan = &model.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
+	}
+	result.Plan.Notes = append(result.Plan.Notes, "prefer_hot_override", "postgres_only_execution")
+	result.Plan.Timings["total"] = time.Since(start).Milliseconds()
+	result.Duration = time.Since(start)
+	return result, nil
+}
+
+// federatedTierState is what one probe of the three tiers found: which parquet
+// tiers have files, and which row IDs are still unflushed in Postgres.
+type federatedTierState struct {
+	hasBaseFiles  bool
+	hasDeltaFiles bool
+	dirtyIDs      []uuid.UUID
+}
+
+// isEmpty reports that there is nothing for DuckDB to federate — no parquet in
+// either tier and no hot rows — so the query belongs on Postgres alone.
+func (s federatedTierState) isEmpty() bool {
+	return !s.hasBaseFiles && !s.hasDeltaFiles && len(s.dirtyIDs) == 0
+}
+
+func (s federatedTierState) executionPlan(duration time.Duration) *model.ExecutionPlan {
+	return buildExecutionPlan(len(s.dirtyIDs), s.hasBaseFiles, s.hasDeltaFiles, duration)
+}
+
+// emptyPageResult answers a page that starts past the last row: the count is
+// still real, so it is reported, but no select is worth running.
+func (s federatedTierState) emptyPageResult(totalRecords int64, duration time.Duration) *QueryResult {
+	plan := s.executionPlan(duration)
+	plan.Notes = append(plan.Notes, "empty_page_short_circuit")
+	return &QueryResult{
+		Records:      nil,
+		TotalRecords: totalRecords,
+		Duration:     duration,
+		Plan:         plan,
+	}
+}
+
+// probeFederatedTiers gathers everything the query shape depends on: parquet
+// availability per tier plus the dirty set that decides which S3 rows are
+// discarded in favour of their hot versions.
+func (h *FederatedTestHarness) probeFederatedTiers(ctx context.Context) (federatedTierState, error) {
+	hasBaseFiles, hasDeltaFiles, err := h.checkTierFiles(ctx)
+	if err != nil {
+		return federatedTierState{}, err
+	}
+	dirtyIDs, err := h.getDirtyIDs(ctx)
+	if err != nil {
+		return federatedTierState{}, fmt.Errorf("get dirty ids: %w", err)
+	}
+	return federatedTierState{hasBaseFiles: hasBaseFiles, hasDeltaFiles: hasDeltaFiles, dirtyIDs: dirtyIDs}, nil
 }
 
 // normalizeQueryOptions sets default values for query options.
