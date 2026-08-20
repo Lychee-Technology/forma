@@ -36,6 +36,16 @@ func relationRootPolicyRegistry() *stubSchemaRegistry {
 			// Outside every relation root: still enforced.
 			"propertySnapshot.price":  {AttributeID: 5, ValueType: forma.ValueTypeNumeric},
 			"propertySnapshot.status": {AttributeID: 6, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyIfParentPresent},
+
+			// Shares the relation root's characters but not its dot boundary, so
+			// it is an ordinary attribute and stays enforced (#321). The policy is
+			// required_if_parent_present rather than required_always so these two
+			// stay inert in the other tests here, which share this registry and
+			// supply only "id".
+			// IDs skip 7, which the relation-root-itself test below claims for
+			// "contactSnapshot"; missingRequired is keyed by attribute ID.
+			"contactSnapshotExtra.note":   {AttributeID: 10, ValueType: forma.ValueTypeText},
+			"contactSnapshotExtra.status": {AttributeID: 11, ValueType: forma.ValueTypeText, RequiredPolicy: forma.RequiredPolicyIfParentPresent},
 		},
 	}
 }
@@ -122,6 +132,39 @@ func TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself(t *testing.T) 
 		t.Fatal("a required policy on the relation root name itself is not covered by the carve-out")
 	}
 	if !strings.Contains(err.Error(), "missing required attribute 'contactSnapshot'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestFromEAVRecordsEnforcesRequiredPolicyOnSamePrefixSibling pins the other
+// half of Covers' boundary: the separator, not the characters.
+//
+// contactSnapshotExtra merely starts with the relation root's name. It is an
+// ordinary attribute, so its required policy stays enforced — and the sibling
+// supplied here is what makes its parent "present". Covers scans dot positions
+// precisely so this name does not match; a naive
+// strings.HasPrefix(name, root) && name != root would swallow it, and before
+// #321 nothing in the suite failed under that mutation.
+//
+// It pins the validation half only, deliberately: Covers governs nothing else.
+// The payload strip does not consult this set (relation_roots.go), so whether
+// the sibling still expands is the strip predicate's question, pinned by the
+// twin TestStripKeepsSamePrefixSibling (internal/relation_index_strip_test.go)
+// on RelationIndex.coversRelationSubtree. Between the two, the boundary is held
+// on both halves.
+func TestFromEAVRecordsEnforcesRequiredPolicyOnSamePrefixSibling(t *testing.T) {
+	converter, rowID := relationRootPolicyConverter(t)
+
+	id := "visit-1"
+	note := "ordinary attribute"
+	_, err := converter.FromEAVRecords([]model.EAVRecord{
+		{SchemaID: 500, RowID: rowID, AttrID: 1, ValueText: &id},
+		{SchemaID: 500, RowID: rowID, AttrID: 10, ValueText: &note},
+	})
+	if err == nil {
+		t.Fatal("contactSnapshotExtra shares the root's characters but not its dot boundary, so its required policy must still be enforced")
+	}
+	if !strings.Contains(err.Error(), "missing required attribute 'contactSnapshotExtra.status'") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

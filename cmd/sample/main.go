@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -121,6 +122,11 @@ func main() {
 	config.Database.TableNames.ChangeLog = "change_log_sample"
 
 	config.Entity.SchemaDirectory = *schemaDir
+
+	// The importer is a write path, so it honours the #314 staged rollout
+	// (VALIDATE_UPDATES_STRICT) like the other entry points that build an
+	// EntityManager. Pinned by cmd/lambda's entry-point walk (#321).
+	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
 
 	// Clear sample tables before import
 	sugar.Infof("Clearing sample tables...")
