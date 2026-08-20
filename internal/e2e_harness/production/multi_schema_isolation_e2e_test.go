@@ -262,11 +262,18 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatalf("schema %d must have no manifest before its own init, got %+v", second.ID, manifests[second.ID])
 	}
 
+	// #248: schema 20's surface already exists here, so schema 22's init is
+	// held to the same overwrite-proof contract as the rerun below — the key
+	// diff alone would miss an in-place re-export of the sibling.
+	simpleBefore := captureSchemaS3State(t, ctx, env, simple)
+
 	secondInit, err := env.RunInit(ctx, second)
 	if err != nil {
 		t.Fatalf("init schema %d: %v", second.ID, err)
 	}
 	assertInitTouchesOnly(secondInit, second, simple)
+	assertSchemaS3StateUnchanged(t, "schema 22 init vs sibling 20",
+		simpleBefore, captureSchemaS3State(t, ctx, env, simple))
 	siblingPaths := buildBasePaths(secondInit.Manifest)
 	if len(siblingPaths) == 0 {
 		t.Fatal("schema 22 init must produce base entries (positive control)")
