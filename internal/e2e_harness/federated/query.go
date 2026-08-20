@@ -94,7 +94,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 func (h *FederatedTestHarness) executePreferHotQuery(ctx context.Context, opts *QueryOptions, start time.Time) (*QueryResult, error) {
 	result, err := h.ExecutePostgresQuery(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prefer-hot postgres query: %w", err)
 	}
 	if result.Plan == nil {
 		result.Plan = &model.ExecutionPlan{Notes: []string{}, Timings: map[string]int64{}}
@@ -119,6 +119,10 @@ func (s federatedTierState) isEmpty() bool {
 	return !s.hasBaseFiles && !s.hasDeltaFiles && len(s.dirtyIDs) == 0
 }
 
+// executionPlan adapts the probe's three fields to buildExecutionPlan, which is
+// the plan vocabulary shared with buildPostgresOnlyExecutionPlan. It exists to
+// keep the four-argument unpacking out of three call sites in
+// ExecuteFederatedQuery, not to add a layer over the builder.
 func (s federatedTierState) executionPlan(duration time.Duration) *model.ExecutionPlan {
 	return buildExecutionPlan(len(s.dirtyIDs), s.hasBaseFiles, s.hasDeltaFiles, duration)
 }
@@ -142,7 +146,7 @@ func (s federatedTierState) emptyPageResult(totalRecords int64, duration time.Du
 func (h *FederatedTestHarness) probeFederatedTiers(ctx context.Context) (federatedTierState, error) {
 	hasBaseFiles, hasDeltaFiles, err := h.checkTierFiles(ctx)
 	if err != nil {
-		return federatedTierState{}, err
+		return federatedTierState{}, fmt.Errorf("check tier files: %w", err)
 	}
 	dirtyIDs, err := h.getDirtyIDs(ctx)
 	if err != nil {
