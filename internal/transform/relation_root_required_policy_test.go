@@ -146,8 +146,12 @@ func TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself(t *testing.T) 
 // strings.HasPrefix(name, root) && name != root would swallow it, and before
 // #321 nothing in the suite failed under that mutation.
 //
-// This is the twin of TestStripKeepsSamePrefixSibling, which pins the same
-// boundary on the strip predicate (RelationIndex.coversRelationSubtree).
+// It pins the validation half only, deliberately: Covers governs nothing else.
+// The payload strip does not consult this set (relation_roots.go), so whether
+// the sibling still expands is the strip predicate's question, pinned by the
+// twin TestStripKeepsSamePrefixSibling (internal/relation_index_strip_test.go)
+// on RelationIndex.coversRelationSubtree. Between the two, the boundary is held
+// on both halves.
 func TestFromEAVRecordsEnforcesRequiredPolicyOnSamePrefixSibling(t *testing.T) {
 	converter, rowID := relationRootPolicyConverter(t)
 
