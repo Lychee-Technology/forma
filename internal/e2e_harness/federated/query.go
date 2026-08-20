@@ -29,13 +29,13 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	tradeTimeOnlyProjection := usesTradeTimeOnlyBenchmarkProjectionForSelect(opts)
 	if needsBenchmarkDuckDBMacros(opts, benchmarkProjection, tradeTimeOnlyProjection) {
 		if err := prepareBenchmarkDuckDBMacros(ctx, h); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("prepare benchmark duckdb macros: %w", err)
 		}
 	}
 
 	tiers, err := h.probeFederatedTiers(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("probe federated tiers: %w", err)
 	}
 	if tiers.isEmpty() {
 		return h.ExecutePostgresQuery(ctx, opts)
@@ -57,7 +57,8 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		return nil, fmt.Errorf("count query: %w", err)
 	}
 	if opts.CountOnly {
-		return &QueryResult{TotalRecords: totalRecords, Duration: time.Since(start), Plan: tiers.executionPlan(time.Since(start))}, nil
+		countDuration := time.Since(start)
+		return &QueryResult{TotalRecords: totalRecords, Duration: countDuration, Plan: tiers.executionPlan(countDuration)}, nil
 	}
 	if shouldSkipFederatedSelect(totalRecords, opts.Offset) {
 		return tiers.emptyPageResult(totalRecords, time.Since(start)), nil
@@ -74,7 +75,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 
 	records, err := h.scanQueryResults(rows, benchmarkProjection)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan query results: %w", err)
 	}
 
 	duration := time.Since(start)
