@@ -81,7 +81,7 @@ func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: schemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
 		t.Fatal("flush with one schema's CopyObject failing must fail")
@@ -141,7 +141,7 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 		t.Fatalf("schema %d rows must stay dirty when its manifest append fails: flushed=%v dirty=%v",
 			second.ID, flushed, dirty)
 	}
-	finals := finalsForSchema(env, report.NewObjects, second)
+	finals := filterFinalsForSchema(env, report.NewObjects, second)
 	if len(finals) != 1 {
 		t.Fatalf("schema %d final must exist when its manifest save fails, got %v", second.ID, finals)
 	}
@@ -161,11 +161,11 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 		t.Errorf("retry must drain only the faulted schema: unflushed before/after = %d/%d, want 3/0",
 			retry.UnflushedBefore, retry.UnflushedAfter)
 	}
-	retryFinals := finalsForSchema(env, retry.NewObjects, second)
+	retryFinals := filterFinalsForSchema(env, retry.NewObjects, second)
 	if len(retryFinals) != 1 {
 		t.Fatalf("retry must promote exactly one new final for the faulted schema, got %v", retry.NewObjects)
 	}
-	if healthy := finalsForSchema(env, retry.NewObjects, simple); len(healthy) != 0 {
+	if healthy := filterFinalsForSchema(env, retry.NewObjects, simple); len(healthy) != 0 {
 		t.Errorf("healthy schema must gain no new objects on retry, got %v", healthy)
 	}
 	assertManifestDeltaPaths(t, retry.Manifests, second, retryFinals)
@@ -187,7 +187,7 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: schemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
 		t.Fatal("flush with one schema's CopyObject failing must fail")
@@ -207,7 +207,7 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 	if retry.UnflushedBefore != 3 || retry.UnflushedAfter != 0 {
 		t.Errorf("retry unflushed %d -> %d, want 3 -> 0", retry.UnflushedBefore, retry.UnflushedAfter)
 	}
-	if healthyNew := finalsForSchema(env, retry.NewObjects, simple); len(healthyNew) != 0 {
+	if healthyNew := filterFinalsForSchema(env, retry.NewObjects, simple); len(healthyNew) != 0 {
 		t.Errorf("retry must not re-export the healthy schema, got new finals %v", healthyNew)
 	}
 	assertSchemaFullyFlushed(ctx, t, env, retry.NewObjects, retry.Manifests, second, 3)
@@ -243,7 +243,7 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Helper()
 		siblingManifestKey := fmt.Sprintf("%s/manifest/%d.json", env.S3Prefix, sibling.ID)
 		for _, k := range report.NewObjects {
-			if strings.HasPrefix(k, schemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
+			if strings.HasPrefix(k, buildSchemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
 				t.Errorf("init of schema %d touched sibling schema %d: %s", target.ID, sibling.ID, k)
 			}
 		}
@@ -262,15 +262,28 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatalf("schema %d must have no manifest before its own init, got %+v", second.ID, manifests[second.ID])
 	}
 
+	// #248: schema 20's surface already exists here, so schema 22's init is
+	// held to the same overwrite-proof contract as the rerun below — the key
+	// diff alone would miss an in-place re-export of the sibling.
+	simpleBefore := captureSchemaS3State(t, ctx, env, simple)
+
 	secondInit, err := env.RunInit(ctx, second)
 	if err != nil {
 		t.Fatalf("init schema %d: %v", second.ID, err)
 	}
 	assertInitTouchesOnly(secondInit, second, simple)
+	assertSchemaS3StateUnchanged(t, "schema 22 init vs sibling 20",
+		simpleBefore, captureSchemaS3State(t, ctx, env, simple))
 	siblingPaths := buildBasePaths(secondInit.Manifest)
 	if len(siblingPaths) == 0 {
 		t.Fatal("schema 22 init must produce base entries (positive control)")
 	}
+
+	// #248: the NewObjects key diff is blind to overwrites that reuse the
+	// deterministic min_max keys, and the base-path comparison below is blind
+	// to a manifest rewritten with the same paths. Require exact stat/byte
+	// identity of the sibling's whole S3 surface across the rerun.
+	siblingBefore := captureSchemaS3State(t, ctx, env, second)
 
 	// Rerun schema 20's init: the sibling's manifest and objects must be
 	// byte-for-byte uninvolved (deterministic keys make the rerun itself a
@@ -280,6 +293,8 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatalf("rerun init schema %d: %v", simple.ID, err)
 	}
 	assertInitTouchesOnly(rerun, simple, second)
+	assertSchemaS3StateUnchanged(t, "schema 20 rerun vs sibling 22",
+		siblingBefore, captureSchemaS3State(t, ctx, env, second))
 	manifests, err = env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("reload manifests: %v", err)
@@ -295,14 +310,14 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 	}
 
 	// Onboarding contract: init does not clear change_log; clear it so the
-	// base tier alone must answer, then oracle-check both schemas.
+	// base tier alone must answer, then oracle-check both schemas. The count
+	// is only cold-tier evidence if the query actually routed to DuckDB —
+	// a PG-only routing regression would still count 5 entity_main rows (#248).
 	for _, ref := range []SchemaRef{simple, second} {
 		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", ref.ID)
 	}
 	for _, ref := range []SchemaRef{simple, second} {
-		result := env.AssertQueryMatches(ctx, Query{Schema: ref, Limit: 100})
-		if result != nil && len(result.Records) != 5 {
-			t.Errorf("schema %d federated result has %d rows, want 5", ref.ID, len(result.Records))
-		}
+		assertFederatedRowCount(ctx, t, env,
+			fmt.Sprintf("schema %d base tier", ref.ID), Query{Schema: ref, Limit: 100}, 5)
 	}
 }

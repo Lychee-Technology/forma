@@ -9,10 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
-	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -85,12 +81,6 @@ type changeLogRow struct {
 	DeletedAt int64 // 0 when NULL
 }
 
-type s3ObjectStat struct {
-	Size         int64
-	ETag         string
-	LastModified time.Time
-}
-
 // stateSnapshot captures the three mutation surfaces #180 guards.
 type stateSnapshot struct {
 	changeLog    map[string]changeLogRow
@@ -104,7 +94,7 @@ func captureState(t *testing.T, ctx context.Context, env *Env, schema SchemaRef)
 	raw, etag := snapshotManifest(t, ctx, env, schema)
 	return stateSnapshot{
 		changeLog:    snapshotChangeLog(t, ctx, env),
-		s3:           snapshotS3Inventory(t, ctx, env),
+		s3:           snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"),
 		manifestRaw:  raw,
 		manifestETag: etag,
 	}
@@ -134,51 +124,6 @@ func snapshotChangeLog(t *testing.T, ctx context.Context, env *Env) map[string]c
 		t.Fatalf("iterate change_log rows: %v", err)
 	}
 	return snap
-}
-
-func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env) map[string]s3ObjectStat {
-	t.Helper()
-	inv := make(map[string]s3ObjectStat)
-	var token *string
-	for {
-		out, err := env.Cluster.S3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(env.Cluster.Bucket),
-			Prefix:            aws.String(env.S3Prefix + "/"),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			t.Fatalf("snapshot s3 inventory: %v", err)
-		}
-		for _, obj := range out.Contents {
-			stat := s3ObjectStat{Size: aws.ToInt64(obj.Size), ETag: aws.ToString(obj.ETag)}
-			if obj.LastModified != nil {
-				stat.LastModified = obj.LastModified.UTC()
-			}
-			inv[aws.ToString(obj.Key)] = stat
-		}
-		if out.NextContinuationToken == nil {
-			return inv
-		}
-		token = out.NextContinuationToken
-	}
-}
-
-// snapshotManifest returns the manifest's raw bytes and ETag. The seed phase
-// runs a real flush + init first, so the manifest must exist by the time any
-// snapshot is taken — a load failure here is a test bug, not a skip.
-func snapshotManifest(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) ([]byte, string) {
-	t.Helper()
-	store := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		t.Fatalf("resolve manifest path for schema %d: %v", schema.ID, err)
-	}
-	raw, etag, err := store.Load(ctx, path)
-	if err != nil {
-		t.Fatalf("load manifest %s (seed must have created it): %v", path, err)
-	}
-	return raw, etag
 }
 
 func assertStateUnchanged(t *testing.T, label string, before, after stateSnapshot) {

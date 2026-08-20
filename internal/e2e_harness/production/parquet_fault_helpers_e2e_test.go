@@ -25,7 +25,7 @@ func schemaParquetKeys(ctx context.Context, t *testing.T, env *Env, schema Schem
 	}
 	var got []string
 	for _, k := range keys {
-		if strings.HasPrefix(k, schemaKeyPrefix(env, schema)) &&
+		if strings.HasPrefix(k, buildSchemaKeyPrefix(env, schema)) &&
 			strings.HasSuffix(k, ".parquet") && !strings.Contains(k, "/_tmp/") {
 			got = append(got, k)
 		}

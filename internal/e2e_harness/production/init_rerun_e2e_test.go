@@ -65,10 +65,8 @@ func TestInitRerunIdempotency(t *testing.T) {
 
 	// Same federated results after the rerun (base-only source).
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
-	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
-	if result != nil && len(result.Records) != 20 {
-		t.Fatalf("federated result has %d rows after rerun, want 20", len(result.Records))
-	}
+	assertFederatedRowCount(ctx, t, env, "post-rerun base tier",
+		Query{Schema: wide, Limit: 100}, 20)
 }
 
 func buildBasePaths(m *manifest.Manifest) map[string]bool {
@@ -152,8 +150,6 @@ func TestInitRerunAfterChangesReconcilesManifest(t *testing.T) {
 	if flush.UnflushedAfter != 0 {
 		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
 	}
-	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
-	if result != nil && len(result.Records) != 23 {
-		t.Fatalf("federated result has %d rows after changed rerun, want 23", len(result.Records))
-	}
+	assertFederatedRowCount(ctx, t, env, "post-rerun parity",
+		Query{Schema: wide, Limit: 100}, 23)
 }

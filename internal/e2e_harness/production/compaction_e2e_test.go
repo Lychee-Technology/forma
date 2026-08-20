@@ -153,7 +153,7 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 	mBefore := loadSchemaManifest(ctx, t, env, wide)
 	assertDeltaSizesPopulated(t, mBefore)
 	baseBefore, deltaBefore := countTier(mBefore, "base"), countTier(mBefore, "delta")
-	invBefore := snapshotS3Inventory(t, ctx, env)
+	invBefore := snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/")
 
 	result := assertCompactionEquivalence(ctx, t, env, wide,
 		compactionEquivalenceQueries(wide), CompactionOverrides{TargetBaseSizeBytes: 1}, "promotion")
@@ -180,7 +180,7 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 
 	// Promotion is a manifest-only relabel: zero parquet objects created,
 	// deleted, or modified.
-	assertParquetInventoryUnchanged(t, "promotion", invBefore, snapshotS3Inventory(t, ctx, env))
+	assertParquetInventoryUnchanged(t, "promotion", invBefore, snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"))
 
 	// The relabeled entries still serve reads: the post-compaction query must
 	// route through DuckDB over the manifest-listed objects.
