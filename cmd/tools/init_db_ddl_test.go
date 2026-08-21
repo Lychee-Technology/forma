@@ -92,3 +92,106 @@ func TestEAVIndexDDLCoversNumericAndText(t *testing.T) {
 		t.Errorf("text failure label = %q", ddl[1].failure)
 	}
 }
+
+// TestEntityMainDDLGolden pins the complete 37-line schema definition.
+// This catches mutations to column types (e.g., bigint_01 TEXT), dropped
+// constraints (e.g., NOT NULL, PRIMARY KEY), and missing columns (e.g., text_05).
+func TestEntityMainDDLGolden(t *testing.T) {
+	stmt := entityMainDDL(`"entity_main"`)
+
+	// Critical columns and constraints that must not change
+	criticalChecks := []string{
+		"bigint_01          BIGINT",
+		"ltbase_created_at  BIGINT NOT NULL",
+		"PRIMARY KEY (ltbase_schema_id, ltbase_row_id)",
+		"text_05            TEXT",
+		"ltbase_schema_id   SMALLINT NOT NULL",
+		"ltbase_row_id      UUID NOT NULL",
+	}
+
+	for _, check := range criticalChecks {
+		if !strings.Contains(stmt, check) {
+			t.Errorf("entityMainDDL missing critical definition: %q\nGot:\n%s", check, stmt)
+		}
+	}
+}
+
+// TestCoreTableDDLGolden pins all four table definitions and announcement strings
+// to catch mutations in column definitions, constraints, and output text.
+func TestCoreTableDDLGolden(t *testing.T) {
+	opts := testInitDBOptions()
+	ddl := coreTableDDL(opts)
+
+	// Check schema registry table
+	if !strings.Contains(ddl[0].statement, "schema_name TEXT PRIMARY KEY") {
+		t.Errorf("schema registry table: missing schema_name PRIMARY KEY\n%s", ddl[0].statement)
+	}
+	if !strings.Contains(ddl[0].statement, "schema_id SMALLINT UNIQUE NOT NULL") {
+		t.Errorf("schema registry table: missing schema_id UNIQUE NOT NULL\n%s", ddl[0].statement)
+	}
+
+	// Check entity main table (via entityMainDDL)
+	if !strings.Contains(ddl[1].statement, "PRIMARY KEY (ltbase_schema_id, ltbase_row_id)") {
+		t.Errorf("entity main table: missing composite PRIMARY KEY\n%s", ddl[1].statement)
+	}
+	if !strings.Contains(ddl[1].statement, "bigint_01          BIGINT") {
+		t.Errorf("entity main table: bigint_01 must be BIGINT type\n%s", ddl[1].statement)
+	}
+	if !strings.Contains(ddl[1].statement, "ltbase_created_at  BIGINT NOT NULL") {
+		t.Errorf("entity main table: ltbase_created_at must be NOT NULL\n%s", ddl[1].statement)
+	}
+
+	// Check EAV table
+	if !strings.Contains(ddl[2].statement, "PRIMARY KEY (schema_id, row_id, attr_id, array_indices)") {
+		t.Errorf("EAV table: primary key narrowed to fewer than 4 columns\n%s", ddl[2].statement)
+	}
+	if !strings.Contains(ddl[2].statement, "attr_id        SMALLINT NOT NULL") {
+		t.Errorf("EAV table: missing attr_id column\n%s", ddl[2].statement)
+	}
+
+	// Check change log table
+	if !strings.Contains(ddl[3].statement, "primary key (schema_id, row_id, flushed_at)") {
+		t.Errorf("change log table: missing composite primary key\n%s", ddl[3].statement)
+	}
+
+	// Check announcements
+	if ddl[0].announce != "Created schema registry table: schema_registry\n" {
+		t.Errorf("schema registry announcement = %q", ddl[0].announce)
+	}
+	if ddl[1].announce != "Created entity main table: entity_main" {
+		t.Errorf("entity main announcement = %q", ddl[1].announce)
+	}
+	if ddl[2].announce != "Created EAV table: eav_data\n" {
+		t.Errorf("EAV announcement = %q, want 'Created EAV table: eav_data\\n'", ddl[2].announce)
+	}
+	if ddl[3].announce != "Created change log table: change_log\n" {
+		t.Errorf("change log announcement = %q", ddl[3].announce)
+	}
+}
+
+// TestMainColumnIndexDDLGolden pins the presence of ltbase_schema_id in all
+// main indexes — dropping it would change query performance characteristics.
+func TestMainColumnIndexDDLGolden(t *testing.T) {
+	ddl := mainColumnIndexDDL(testInitDBOptions())
+	for i, stmt := range ddl {
+		if !strings.Contains(stmt.statement, "ltbase_schema_id") {
+			t.Errorf("main index %d statement missing ltbase_schema_id: %s", i, stmt.statement)
+		}
+	}
+}
+
+// TestEAVIndexDDLGolden pins the exact key columns for both EAV indexes,
+// particularly attr_id which is essential for attribute filtering.
+func TestEAVIndexDDLGolden(t *testing.T) {
+	ddl := eavIndexDDL(testInitDBOptions())
+
+	// Numeric index must include attr_id in the key
+	if !strings.Contains(ddl[0].statement, "schema_id, attr_id, value_numeric, row_id") {
+		t.Errorf("numeric index key missing attr_id: %s", ddl[0].statement)
+	}
+
+	// Text index must include attr_id in the key
+	if !strings.Contains(ddl[1].statement, "schema_id, attr_id, value_text, row_id") {
+		t.Errorf("text index key missing attr_id: %s", ddl[1].statement)
+	}
+}

@@ -120,6 +120,39 @@ type tableDDL struct {
 	failure   string
 }
 
+// schemaRegistryDDL constructs the schema registry table.
+func schemaRegistryDDL(schemaTable string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		schema_name TEXT PRIMARY KEY,
+		schema_id SMALLINT UNIQUE NOT NULL
+	)`, schemaTable)
+}
+
+// eavTableDDL constructs the EAV data table.
+func eavTableDDL(eavTable string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		schema_id      SMALLINT NOT NULL,
+		row_id         UUID NOT NULL,
+		attr_id        SMALLINT NOT NULL,
+		array_indices  TEXT NOT NULL DEFAULT '',
+		value_text     TEXT,
+		value_numeric  NUMERIC,
+		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
+	)`, eavTable)
+}
+
+// changeLogDDL constructs the change log table.
+func changeLogDDL(changeLog string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		    schema_id  SMALLINT NOT NULL,
+			row_id     UUID     NOT NULL,
+			flushed_at BIGINT   NOT NULL DEFAULT 0,
+			changed_at BIGINT   NOT NULL,
+			deleted_at BIGINT,
+			primary key (schema_id, row_id, flushed_at)
+		);`, changeLog)
+}
+
 // entityMainDDL is the hot-field main table: fixed physical columns that the
 // schema metadata maps logical attributes onto.
 func entityMainDDL(entityMain string) string {
@@ -172,12 +205,9 @@ func coreTableDDL(opts initDBOptions) []tableDDL {
 
 	return []tableDDL{
 		{
-			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-				schema_name TEXT PRIMARY KEY,
-				schema_id SMALLINT UNIQUE NOT NULL
-			)`, schemaTable),
-			announce: fmt.Sprintf("Created schema registry table: %s\n", opts.schemaTable),
-			failure:  "ensure schema registry table",
+			statement: schemaRegistryDDL(schemaTable),
+			announce:  fmt.Sprintf("Created schema registry table: %s\n", opts.schemaTable),
+			failure:   "ensure schema registry table",
 		},
 		{
 			statement: entityMainDDL(entityMain),
@@ -186,29 +216,14 @@ func coreTableDDL(opts initDBOptions) []tableDDL {
 			failure:  "ensure entity main table",
 		},
 		{
-			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-				schema_id      SMALLINT NOT NULL,
-				row_id         UUID NOT NULL,
-				attr_id        SMALLINT NOT NULL,
-				array_indices  TEXT NOT NULL DEFAULT '',
-				value_text     TEXT,
-				value_numeric  NUMERIC,
-				PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
-			)`, eavTable),
-			announce: fmt.Sprintf("Created EAV table: %s\n", opts.eavTable),
-			failure:  "ensure eav table",
+			statement: eavTableDDL(eavTable),
+			announce:  fmt.Sprintf("Created EAV table: %s\n", opts.eavTable),
+			failure:   "ensure eav table",
 		},
 		{
-			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-				    schema_id  SMALLINT NOT NULL,
-					row_id     UUID     NOT NULL,
-					flushed_at BIGINT   NOT NULL DEFAULT 0,
-					changed_at BIGINT   NOT NULL,
-					deleted_at BIGINT,
-					primary key (schema_id, row_id, flushed_at)
-				);`, changeLog),
-			announce: fmt.Sprintf("Created change log table: %s\n", opts.changeLog),
-			failure:  "ensure change log table",
+			statement: changeLogDDL(changeLog),
+			announce:  fmt.Sprintf("Created change log table: %s\n", opts.changeLog),
+			failure:   "ensure change log table",
 		},
 	}
 }
