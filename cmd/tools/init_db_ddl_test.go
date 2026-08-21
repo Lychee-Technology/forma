@@ -14,6 +14,172 @@ func testInitDBOptions() initDBOptions {
 	}
 }
 
+// allDDLStatements flattens the three builder groups in the exact order
+// ensureTables executes them: 4 core tables, 2 EAV indexes, 10 main-column
+// indexes.
+func allDDLStatements(opts initDBOptions) []tableDDL {
+	var all []tableDDL
+	for _, group := range [][]tableDDL{coreTableDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts)} {
+		all = append(all, group...)
+	}
+	return all
+}
+
+// wantDDLStatements is the golden text of every statement init-db issues,
+// captured from the pre-#319 ensureTables and verified byte-for-byte against
+// `git show 4b58a14:cmd/tools/init_db.go`.
+//
+// These are INDEPENDENT literals on purpose: never rebuild them by calling the
+// builders, or the test asserts nothing.
+//
+// The whitespace inside these raw strings is data, not source formatting. The
+// change_log literal genuinely mixes four-space and tab indentation; that is a
+// pre-existing quirk #319 preserved deliberately. Do not "tidy" it — gofmt will
+// not, and the DDL Postgres receives would change.
+func wantDDLStatements() []string {
+	return []string{
+		// schema_registry table
+		`CREATE TABLE IF NOT EXISTS "schema_registry" (
+		schema_name TEXT PRIMARY KEY,
+		schema_id SMALLINT UNIQUE NOT NULL
+	)`,
+		// entity_main table
+		`CREATE TABLE IF NOT EXISTS "entity_main" (
+		ltbase_schema_id   SMALLINT NOT NULL,
+		ltbase_row_id      UUID NOT NULL,
+		text_01            TEXT,
+		text_02            TEXT,
+		text_03            TEXT,
+		text_04            TEXT,
+		text_05            TEXT,
+		text_06            TEXT,
+		text_07            TEXT,
+		text_08            TEXT,
+		text_09            TEXT,
+		text_10            TEXT,
+		smallint_01        SMALLINT,
+		smallint_02        SMALLINT,
+		smallint_03        SMALLINT,
+		integer_01         INTEGER,
+		integer_02         INTEGER,
+		integer_03         INTEGER,
+		bigint_01          BIGINT,
+		bigint_02          BIGINT,
+		bigint_03          BIGINT,
+		bigint_04          BIGINT,
+		bigint_05          BIGINT,
+		double_01          DOUBLE PRECISION,
+		double_02          DOUBLE PRECISION,
+		double_03          DOUBLE PRECISION,
+		double_04          DOUBLE PRECISION,
+		double_05          DOUBLE PRECISION,
+		uuid_01            UUID,
+		uuid_02            UUID,
+		ltbase_created_at  BIGINT NOT NULL,
+		ltbase_updated_at  BIGINT NOT NULL,
+		ltbase_deleted_at  BIGINT,
+		ltbase_created_by  TEXT,
+		ltbase_updated_by  TEXT,
+		ltbase_deleted_by  TEXT,
+		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
+	)`,
+		// eav_data table
+		`CREATE TABLE IF NOT EXISTS "eav_data" (
+		schema_id      SMALLINT NOT NULL,
+		row_id         UUID NOT NULL,
+		attr_id        SMALLINT NOT NULL,
+		array_indices  TEXT NOT NULL DEFAULT '',
+		value_text     TEXT,
+		value_numeric  NUMERIC,
+		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
+	)`,
+		// change_log table
+		`CREATE TABLE IF NOT EXISTS "change_log" (
+		    schema_id  SMALLINT NOT NULL,
+			row_id     UUID     NOT NULL,
+			flushed_at BIGINT   NOT NULL DEFAULT 0,
+			changed_at BIGINT   NOT NULL,
+			deleted_at BIGINT,
+			primary key (schema_id, row_id, flushed_at)
+		);`,
+		// eav numeric index
+		"CREATE INDEX IF NOT EXISTS \"eav_data_numeric_idx\" ON \"eav_data\" (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL",
+		// eav text index
+		"CREATE INDEX IF NOT EXISTS \"eav_data_text_idx\" ON \"eav_data\" (schema_id, attr_id, value_text, row_id) WHERE value_text IS NOT NULL",
+		// main index on text_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_text_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"text_01\")",
+		// main index on text_02
+		"CREATE INDEX IF NOT EXISTS \"entity_main_text_02_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"text_02\")",
+		// main index on text_03
+		"CREATE INDEX IF NOT EXISTS \"entity_main_text_03_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"text_03\")",
+		// main index on smallint_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_smallint_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"smallint_01\")",
+		// main index on integer_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_integer_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"integer_01\")",
+		// main index on bigint_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_bigint_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"bigint_01\")",
+		// main index on bigint_02
+		"CREATE INDEX IF NOT EXISTS \"entity_main_bigint_02_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"bigint_02\")",
+		// main index on double_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_double_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"double_01\")",
+		// main index on double_02
+		"CREATE INDEX IF NOT EXISTS \"entity_main_double_02_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"double_02\")",
+		// main index on uuid_01
+		"CREATE INDEX IF NOT EXISTS \"entity_main_uuid_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"uuid_01\")",
+	}
+}
+
+// wantCoreAnnouncements is the golden text of the four lines init-db prints on
+// success. Independent literals, captured the same way as the statements.
+//
+// Note the entity-main line has NO trailing newline while the other three do.
+// That asymmetry is pre-existing tool output that #319 preserved verbatim.
+func wantCoreAnnouncements() []string {
+	return []string{
+		"Created schema registry table: schema_registry\n",
+		"Created entity main table: entity_main",
+		"Created EAV table: eav_data\n",
+		"Created change log table: change_log\n",
+	}
+}
+
+// TestDDLStatementsGolden compares every statement init-db issues against its
+// full expected text. Spot-checking substrings lets whole columns and defaults
+// be mutated undetected; this is the backstop that does not.
+func TestDDLStatementsGolden(t *testing.T) {
+	got := allDDLStatements(testInitDBOptions())
+	want := wantDDLStatements()
+	if len(got) != len(want) {
+		t.Fatalf("init-db issues %d statements, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].statement != want[i] {
+			t.Errorf("statement %d differs from golden:\n got: %q\nwant: %q", i, got[i].statement, want[i])
+		}
+	}
+}
+
+// TestCoreTableAnnouncementsGolden compares each success line against its full
+// expected text, and pins that the index statements announce nothing.
+func TestCoreTableAnnouncementsGolden(t *testing.T) {
+	opts := testInitDBOptions()
+	core := coreTableDDL(opts)
+	want := wantCoreAnnouncements()
+	if len(core) != len(want) {
+		t.Fatalf("coreTableDDL returned %d statements, want %d", len(core), len(want))
+	}
+	for i := range want {
+		if core[i].announce != want[i] {
+			t.Errorf("announcement %d differs from golden:\n got: %q\nwant: %q", i, core[i].announce, want[i])
+		}
+	}
+	for i, ddl := range append(eavIndexDDL(opts), mainColumnIndexDDL(opts)...) {
+		if ddl.announce != "" {
+			t.Errorf("index statement %d announces %q, want silence", i, ddl.announce)
+		}
+	}
+}
+
 // TestCoreTableDDLCoversFourTables pins the four CREATE TABLE statements
 // ensureTables issues, in order. Before #319 split them out, a dropped table
 // would only have surfaced against a live database.
@@ -29,6 +195,17 @@ func TestCoreTableDDLCoversFourTables(t *testing.T) {
 		}
 		if !strings.HasPrefix(ddl[i].statement, "CREATE TABLE IF NOT EXISTS") {
 			t.Errorf("statement %d is not an idempotent CREATE: %s", i, ddl[i].statement)
+		}
+	}
+	wantFailures := []string{
+		"ensure schema registry table",
+		"ensure entity main table",
+		"ensure eav table",
+		"ensure change log table",
+	}
+	for i, want := range wantFailures {
+		if ddl[i].failure != want {
+			t.Errorf("failure label %d = %q, want %q", i, ddl[i].failure, want)
 		}
 	}
 }
@@ -90,108 +267,5 @@ func TestEAVIndexDDLCoversNumericAndText(t *testing.T) {
 	}
 	if ddl[1].failure != "create text index" {
 		t.Errorf("text failure label = %q", ddl[1].failure)
-	}
-}
-
-// TestEntityMainDDLGolden pins the complete 37-line schema definition.
-// This catches mutations to column types (e.g., bigint_01 TEXT), dropped
-// constraints (e.g., NOT NULL, PRIMARY KEY), and missing columns (e.g., text_05).
-func TestEntityMainDDLGolden(t *testing.T) {
-	stmt := entityMainDDL(`"entity_main"`)
-
-	// Critical columns and constraints that must not change
-	criticalChecks := []string{
-		"bigint_01          BIGINT",
-		"ltbase_created_at  BIGINT NOT NULL",
-		"PRIMARY KEY (ltbase_schema_id, ltbase_row_id)",
-		"text_05            TEXT",
-		"ltbase_schema_id   SMALLINT NOT NULL",
-		"ltbase_row_id      UUID NOT NULL",
-	}
-
-	for _, check := range criticalChecks {
-		if !strings.Contains(stmt, check) {
-			t.Errorf("entityMainDDL missing critical definition: %q\nGot:\n%s", check, stmt)
-		}
-	}
-}
-
-// TestCoreTableDDLGolden pins all four table definitions and announcement strings
-// to catch mutations in column definitions, constraints, and output text.
-func TestCoreTableDDLGolden(t *testing.T) {
-	opts := testInitDBOptions()
-	ddl := coreTableDDL(opts)
-
-	// Check schema registry table
-	if !strings.Contains(ddl[0].statement, "schema_name TEXT PRIMARY KEY") {
-		t.Errorf("schema registry table: missing schema_name PRIMARY KEY\n%s", ddl[0].statement)
-	}
-	if !strings.Contains(ddl[0].statement, "schema_id SMALLINT UNIQUE NOT NULL") {
-		t.Errorf("schema registry table: missing schema_id UNIQUE NOT NULL\n%s", ddl[0].statement)
-	}
-
-	// Check entity main table (via entityMainDDL)
-	if !strings.Contains(ddl[1].statement, "PRIMARY KEY (ltbase_schema_id, ltbase_row_id)") {
-		t.Errorf("entity main table: missing composite PRIMARY KEY\n%s", ddl[1].statement)
-	}
-	if !strings.Contains(ddl[1].statement, "bigint_01          BIGINT") {
-		t.Errorf("entity main table: bigint_01 must be BIGINT type\n%s", ddl[1].statement)
-	}
-	if !strings.Contains(ddl[1].statement, "ltbase_created_at  BIGINT NOT NULL") {
-		t.Errorf("entity main table: ltbase_created_at must be NOT NULL\n%s", ddl[1].statement)
-	}
-
-	// Check EAV table
-	if !strings.Contains(ddl[2].statement, "PRIMARY KEY (schema_id, row_id, attr_id, array_indices)") {
-		t.Errorf("EAV table: primary key narrowed to fewer than 4 columns\n%s", ddl[2].statement)
-	}
-	if !strings.Contains(ddl[2].statement, "attr_id        SMALLINT NOT NULL") {
-		t.Errorf("EAV table: missing attr_id column\n%s", ddl[2].statement)
-	}
-
-	// Check change log table
-	if !strings.Contains(ddl[3].statement, "primary key (schema_id, row_id, flushed_at)") {
-		t.Errorf("change log table: missing composite primary key\n%s", ddl[3].statement)
-	}
-
-	// Check announcements
-	if ddl[0].announce != "Created schema registry table: schema_registry\n" {
-		t.Errorf("schema registry announcement = %q", ddl[0].announce)
-	}
-	if ddl[1].announce != "Created entity main table: entity_main" {
-		t.Errorf("entity main announcement = %q", ddl[1].announce)
-	}
-	if ddl[2].announce != "Created EAV table: eav_data\n" {
-		t.Errorf("EAV announcement = %q, want 'Created EAV table: eav_data\\n'", ddl[2].announce)
-	}
-	if ddl[3].announce != "Created change log table: change_log\n" {
-		t.Errorf("change log announcement = %q", ddl[3].announce)
-	}
-}
-
-// TestMainColumnIndexDDLGolden pins the presence of ltbase_schema_id in all
-// main indexes — dropping it would change query performance characteristics.
-func TestMainColumnIndexDDLGolden(t *testing.T) {
-	ddl := mainColumnIndexDDL(testInitDBOptions())
-	for i, stmt := range ddl {
-		if !strings.Contains(stmt.statement, "ltbase_schema_id") {
-			t.Errorf("main index %d statement missing ltbase_schema_id: %s", i, stmt.statement)
-		}
-	}
-}
-
-// TestEAVIndexDDLGolden pins the exact key columns for both EAV indexes,
-// particularly attr_id which is essential for attribute filtering.
-func TestEAVIndexDDLGolden(t *testing.T) {
-	ddl := eavIndexDDL(testInitDBOptions())
-
-	// Numeric index must include attr_id in the key
-	if !strings.Contains(ddl[0].statement, "schema_id, attr_id, value_numeric, row_id") {
-		t.Errorf("numeric index key missing attr_id: %s", ddl[0].statement)
-	}
-
-	// Text index must include attr_id in the key
-	if !strings.Contains(ddl[1].statement, "schema_id, attr_id, value_text, row_id") {
-		t.Errorf("text index key missing attr_id: %s", ddl[1].statement)
 	}
 }
