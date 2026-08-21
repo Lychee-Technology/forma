@@ -53,6 +53,7 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 		useIAMUsage:     "Use IAM authentication for PostgreSQL",
 	})
 
+	// Change log settings
 	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
 	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table name")
 	eavDataTable := fs.String("eav-table", "eav_data", "EAV data table name")
@@ -78,12 +79,14 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 		bucketRequired: true,
 	})
 
+	// Manifest settings (optional - enables manifest tracking)
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
 	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, false)
 
+	// Control
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual flush)")
 
 	if err := fs.Parse(args); err != nil {
