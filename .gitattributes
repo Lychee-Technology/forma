@@ -1,0 +1,4 @@
+tests/** linguist-vendored
+cmd/benchmark/** linguist-vendored
+benchmarks/** linguist-vendored
+examples/** linguist-documentation
