@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newPersistentTransformerRegistry() *stubSchemaRegistry { //nolint:funlen // #319 follow-up: oversized test functions, tracked separately
+func newPersistentTransformerRegistry() *stubSchemaRegistry { //nolint:funlen // #438: oversized test functions
 	return &stubSchemaRegistry{
 		schemaID:   201,
 		schemaName: "persistent_test",
@@ -119,7 +119,7 @@ func newPersistentTransformerRegistry() *stubSchemaRegistry { //nolint:funlen //
 	}
 }
 
-func TestPersistentRecordTransformer_RoundTrip(t *testing.T) { //nolint:funlen // #319 follow-up: oversized test functions, tracked separately
+func TestPersistentRecordTransformer_RoundTrip(t *testing.T) { //nolint:funlen // #438: oversized test functions
 	ctx := context.Background()
 	registry := newPersistentTransformerRegistry()
 	transformer := NewPersistentRecordTransformer(registry)
