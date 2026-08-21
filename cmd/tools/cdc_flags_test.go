@@ -69,8 +69,19 @@ func TestParseCDCFlushFlagsRejectsMissingBucket(t *testing.T) {
 	}
 }
 
-// TestParseCDCFlushFlagsUsingDefaults ensures flag defaults survive the flag
-// layer and are not silently overwritten by WithDefaults.
+// TestParseCDCFlushFlagsUsingDefaults pins the flag-layer defaults, but only
+// partially: buildCDCConfig ends in cdc.CDCConfig.WithDefaults(), which
+// backfills any field left <= 0 or "" (internal/cdc/config.go).
+//
+// Genuinely pinned here — WithDefaults never touches them, so deleting the
+// flag default turns this test red: S3Prefix, ManifestTemplate, PGHost,
+// PGPort, PGDB.
+//
+// Shadowed by WithDefaults, which supplies the identical value: MinRecords,
+// MaxAgeMs, BatchSize, PGSSLMode. Deleting those flag defaults leaves this
+// test green (measured), so their assertions cannot detect a missing flag
+// default — they only catch a change in the agreed value. Keep them for that,
+// but do not read them as coverage of the flag layer.
 func TestParseCDCFlushFlagsUsingDefaults(t *testing.T) {
 	opts, err := parseCDCFlushFlags([]string{"-s3-bucket=b"})
 	if err != nil {
@@ -195,8 +206,20 @@ func TestParseCDCInitFlagsRequiresSchemaRegistry(t *testing.T) {
 	}
 }
 
-// TestParseCDCInitFlagsUsingDefaults ensures flag defaults survive the flag
-// layer and are not silently overwritten by WithDefaults.
+// TestParseCDCInitFlagsUsingDefaults pins the flag-layer defaults, but only
+// partially, for the same reason as its cdc-flush sibling: buildCDCInitConfig
+// ends in cdc.CDCConfig.WithDefaults(), which backfills any field left <= 0
+// or "" (internal/cdc/config.go).
+//
+// Genuinely pinned here — WithDefaults never touches them, so deleting the
+// flag default turns this test red: TargetFileSizeMB, S3Prefix,
+// ManifestTemplate, PGHost, PGPort, PGDB.
+//
+// Shadowed by WithDefaults, which supplies the identical value: MaxBatchSize,
+// EntityMainTable, EAVDataTable, PGSSLMode. Deleting those flag defaults
+// leaves this test green (measured), so their assertions cannot detect a
+// missing flag default — they only catch a change in the agreed value. Keep
+// them for that, but do not read them as coverage of the flag layer.
 func TestParseCDCInitFlagsUsingDefaults(t *testing.T) {
 	opts, err := parseCDCInitFlags([]string{
 		"-s3-bucket=b",
@@ -239,10 +262,6 @@ func TestParseCDCInitFlagsUsingDefaults(t *testing.T) {
 	if opts.cfg.PGSSLMode != "require" {
 		t.Errorf("PGSSLMode = %q, want %q", opts.cfg.PGSSLMode, "require")
 	}
-	// Note: buildCDCInitConfig ends in .WithDefaults(), which backfills fields
-	// left <= 0 or "". For those fields, this test cannot distinguish "the flag
-	// default supplied this" from "WithDefaults supplied this". Nevertheless we
-	// assert them to catch accidental regressions.
 }
 
 // TestParseCDCInitFlagsHelp ensures -help exits cleanly with nil error
