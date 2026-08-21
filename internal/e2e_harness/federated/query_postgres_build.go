@@ -33,25 +33,7 @@ func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) 
 			COALESCE(hot_vals.trade_type, em.smallint_01::BIGINT, 0) as tradeType,
 			COALESCE(hot_vals.trade_time, em.bigint_02, 0) as tradeTime`)
 	}
-	query.WriteString(fmt.Sprintf(`
-		FROM change_log cl
-		LEFT JOIN entity_main em
-			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
-		LEFT JOIN (
-			SELECT schema_id, row_id,
-				MAX(CASE WHEN attr_id = %d THEN value_text END) AS symbol,
-				MAX(CASE WHEN attr_id = %d THEN value_text END) AS exchange,
-				MAX(CASE WHEN attr_id = %d THEN value_text END) AS region,
-				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_type,
-				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_time,
-				MAX(CASE WHEN attr_id = %d THEN value_text END) AS name
-			FROM eav_data
-			WHERE attr_id IN (%d, %d, %d, %d, %d, %d)
-			GROUP BY schema_id, row_id
-		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
-		WHERE cl.schema_id = $1 AND cl.flushed_at = 0 AND (cl.deleted_at IS NULL OR cl.deleted_at = 0)`,
-		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name,
-		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name))
+	query.WriteString(buildPostgresOnlyScanSource(attrIDs))
 	filterSQL, filterArgs := buildPostgresOnlyFilterClauses(opts, 2)
 	query.WriteString(filterSQL)
 	args = append(args, filterArgs...)
@@ -64,8 +46,23 @@ func (h *FederatedTestHarness) buildPostgresOnlyCountQuery(opts *QueryOptions) (
 	args := []any{h.SchemaID}
 	attrIDs := h.benchmarkPostgresAttributeIDs()
 	query := strings.Builder{}
-	query.WriteString(fmt.Sprintf(`
-		SELECT COUNT(*)
+	query.WriteString(`
+		SELECT COUNT(*)`)
+	query.WriteString(buildPostgresOnlyScanSource(attrIDs))
+	filterSQL, filterArgs := buildPostgresOnlyFilterClauses(opts, 2)
+	query.WriteString(filterSQL)
+	args = append(args, filterArgs...)
+	return query.String(), args
+}
+
+// buildPostgresOnlyScanSource renders the FROM/JOIN/WHERE block shared by the
+// Postgres-only select and count builders: the change_log/entity_main joins, the
+// hot_vals EAV pivot, and the unflushed-and-live guard. The count has to scan
+// exactly the row set the select returns, so rendering the block once makes that
+// structural rather than a convention two copies must keep agreeing on (#324).
+// TestPostgresOnlyCountSharesSelectScanSource is the guard against re-divergence.
+func buildPostgresOnlyScanSource(attrIDs postgresBenchmarkAttributeIDs) string {
+	return fmt.Sprintf(`
 		FROM change_log cl
 		LEFT JOIN entity_main em
 			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
@@ -83,11 +80,7 @@ func (h *FederatedTestHarness) buildPostgresOnlyCountQuery(opts *QueryOptions) (
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id
 		WHERE cl.schema_id = $1 AND cl.flushed_at = 0 AND (cl.deleted_at IS NULL OR cl.deleted_at = 0)`,
 		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name,
-		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name))
-	filterSQL, filterArgs := buildPostgresOnlyFilterClauses(opts, 2)
-	query.WriteString(filterSQL)
-	args = append(args, filterArgs...)
-	return query.String(), args
+		attrIDs.symbol, attrIDs.exchange, attrIDs.region, attrIDs.tradeType, attrIDs.tradeTime, attrIDs.name)
 }
 
 func buildPostgresOnlyFilterClauses(opts *QueryOptions, placeholderStart int) (string, []any) {

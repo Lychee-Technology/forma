@@ -148,22 +148,6 @@ func TestBuildParquetTierQueryAppliesPushdownSemijoin(t *testing.T) {
 	}
 }
 
-func TestBuildPostgresOnlyQueriesSupportBenchmarkFilters(t *testing.T) {
-	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade}
-	selectQuery, _ := h.buildPostgresOnlySelectQuery(&QueryOptions{PreferHot: true, Filter: &Filter{Conditions: map[string]any{"tradeType": 0, "exchange": "NYSE"}}, TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true, Limit: 20})
-	countQuery, _ := h.buildPostgresOnlyCountQuery(&QueryOptions{PreferHot: true, Filter: &Filter{Conditions: map[string]any{"tradeType": 0, "exchange": "NYSE"}}, TradeTimeStart: 1000, TradeTimeEnd: 2000})
-	for _, query := range []string{selectQuery, countQuery} {
-		for _, expected := range []string{"COALESCE(hot_vals.trade_type, em.smallint_01::BIGINT, 0)", "COALESCE(hot_vals.exchange, '')", "COALESCE(hot_vals.trade_time, em.bigint_02, 0)", "FROM change_log cl"} {
-			if !strings.Contains(query, expected) {
-				t.Fatalf("expected postgres-only query to include %q: %s", expected, query)
-			}
-		}
-	}
-	if strings.Contains(countQuery, "LIMIT") {
-		t.Fatalf("count query should not include pagination: %s", countQuery)
-	}
-}
-
 func TestBuildParquetTierQueryTradeTimeOnlyProjection(t *testing.T) {
 	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", true, true)
 	for _, expected := range []string{"'' as name", "'' as symbol", "'' as exchange", "'' as region", "0 as tradeType, tradeTime,"} {

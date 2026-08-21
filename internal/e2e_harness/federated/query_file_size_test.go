@@ -43,9 +43,12 @@ func countSourceLines(source []byte) int {
 	return lines
 }
 
-func listGuardedSourceFiles() ([]string, error) {
+// listNonTestSources collects the non-test files matching the given patterns.
+// The two size guards apply the same rule to different scopes, so the scope is
+// the argument and the rule lives here once.
+func listNonTestSources(patterns ...string) ([]string, error) {
 	var files []string
-	for _, pattern := range []string{"query*.go", "harness*.go"} {
+	for _, pattern := range patterns {
 		candidates, err := filepath.Glob(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("glob guarded source files %q: %w", pattern, err)
@@ -57,9 +60,13 @@ func listGuardedSourceFiles() ([]string, error) {
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no guarded source files matched query*.go or harness*.go")
+		return nil, fmt.Errorf("no guarded source files matched %s", strings.Join(patterns, " or "))
 	}
 	return files, nil
+}
+
+func listGuardedSourceFiles() ([]string, error) {
+	return listNonTestSources("query*.go", "harness*.go")
 }
 
 // TestGuardedSourcesStayWithinFileSizeLimit prevents query assembly and harness
