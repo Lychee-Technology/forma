@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func main() {
+func main() { //nolint:funlen // #319: split into logger/flag/run phases by this plan's Task 6
 	// Command line flags
 	csvFile := flag.String("csv", "", "Path to CSV file to import (required)")
 	schemaDir := flag.String("schema-dir", "./schemas", "Directory containing schema files")

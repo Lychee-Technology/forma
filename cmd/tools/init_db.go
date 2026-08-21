@@ -111,7 +111,7 @@ func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.Databa
 	return nil
 }
 
-func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
+func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error { //nolint:funlen // #319: DDL builders extracted by this plan's Task 4
 	schemaTable := quoteIdentifier(opts.schemaTable)
 	eavTable := quoteIdentifier(opts.eavTable)
 	entityMain := quoteIdentifier(opts.entityMain)

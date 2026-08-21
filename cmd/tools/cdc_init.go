@@ -17,7 +17,7 @@ const (
 
 // runCDCInit parses cdc-init CLI flags and delegates the actual base-file
 // export to cdc.RunInit (the driver was extracted into internal/cdc, #173).
-func runCDCInit(ctx context.Context, args []string) error {
+func runCDCInit(ctx context.Context, args []string) error { //nolint:funlen // #319: flag parsing extracted by this plan's Task 3
 	fs := flag.NewFlagSet("cdc-init", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 

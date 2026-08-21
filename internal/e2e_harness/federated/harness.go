@@ -166,7 +166,7 @@ func WithDuckDBResources(threads, memoryLimitMB, maxConnections int) HarnessOpti
 }
 
 // NewFederatedTestHarness creates a new federated test harness with all dependencies.
-func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*FederatedTestHarness, error) {
+func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*FederatedTestHarness, error) { //nolint:funlen // refs #431: splitting this is that issue's job, which also widens the AST guard to harness*.go
 	options := harnessOptions{}
 	for _, opt := range opts {
 		opt(&options)

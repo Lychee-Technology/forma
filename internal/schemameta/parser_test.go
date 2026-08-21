@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseAttributeMetadata(t *testing.T) {
+func TestParseAttributeMetadata(t *testing.T) { //nolint:funlen // #319 follow-up: oversized test functions, tracked separately
 	source := "test-source"
 	tests := []struct {
 		name      string

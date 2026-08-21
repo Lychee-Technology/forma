@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func runCDCFlush(ctx context.Context, args []string) error {
+func runCDCFlush(ctx context.Context, args []string) error { //nolint:funlen // #319: flag parsing extracted by this plan's Task 2
 	fs := flag.NewFlagSet("cdc-flush", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 

@@ -176,7 +176,7 @@ func (r *Runner) Run(ctx context.Context) (*RunResult, error) {
 }
 
 // RunWithHarness executes supported benchmark workloads against a live federated harness.
-func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestHarness, profile TierMixProfile) (*RunResult, error) {
+func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestHarness, profile TierMixProfile) (*RunResult, error) { //nolint:funlen // #319 follow-up: benchmark harness split, tracked separately
 	if h == nil {
 		return nil, fmt.Errorf("federated harness cannot be nil")
 	}
