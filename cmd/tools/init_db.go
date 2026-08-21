@@ -111,23 +111,19 @@ func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.Databa
 	return nil
 }
 
-func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error { //nolint:funlen // #319: DDL builders extracted by this plan's Task 4
-	schemaTable := quoteIdentifier(opts.schemaTable)
-	eavTable := quoteIdentifier(opts.eavTable)
-	entityMain := quoteIdentifier(opts.entityMain)
-	changeLog := quoteIdentifier(opts.changeLog)
+// tableDDL pairs one DDL statement with the line init-db prints on success and
+// the label its failure is wrapped with. Splitting the statements out of
+// ensureTables (#319) keeps them testable without a live database.
+type tableDDL struct {
+	statement string
+	announce  string
+	failure   string
+}
 
-	ddlSchema := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		schema_name TEXT PRIMARY KEY,
-		schema_id SMALLINT UNIQUE NOT NULL
-	)`, schemaTable)
-
-	if _, err := tx.Exec(ctx, ddlSchema); err != nil {
-		return fmt.Errorf("ensure schema registry table: %w", err)
-	}
-	fmt.Printf("Created schema registry table: %s\n", opts.schemaTable)
-
-	ddlMain := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+// entityMainDDL is the hot-field main table: fixed physical columns that the
+// schema metadata maps logical attributes onto.
+func entityMainDDL(entityMain string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id   SMALLINT NOT NULL,
 		ltbase_row_id      UUID NOT NULL,
 		text_01            TEXT,
@@ -166,53 +162,75 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error { //
 		ltbase_deleted_by  TEXT,
 		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 	)`, entityMain)
+}
 
-	if _, err := tx.Exec(ctx, ddlMain); err != nil {
-		return fmt.Errorf("ensure entity main table: %w", err)
+func coreTableDDL(opts initDBOptions) []tableDDL {
+	schemaTable := quoteIdentifier(opts.schemaTable)
+	eavTable := quoteIdentifier(opts.eavTable)
+	entityMain := quoteIdentifier(opts.entityMain)
+	changeLog := quoteIdentifier(opts.changeLog)
+
+	return []tableDDL{
+		{
+			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				schema_name TEXT PRIMARY KEY,
+				schema_id SMALLINT UNIQUE NOT NULL
+			)`, schemaTable),
+			announce: fmt.Sprintf("Created schema registry table: %s\n", opts.schemaTable),
+			failure:  "ensure schema registry table",
+		},
+		{
+			statement: entityMainDDL(entityMain),
+			// No trailing newline: pre-existing tool output, preserved verbatim.
+			announce: fmt.Sprintf("Created entity main table: %s", opts.entityMain),
+			failure:  "ensure entity main table",
+		},
+		{
+			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				schema_id      SMALLINT NOT NULL,
+				row_id         UUID NOT NULL,
+				attr_id        SMALLINT NOT NULL,
+				array_indices  TEXT NOT NULL DEFAULT '',
+				value_text     TEXT,
+				value_numeric  NUMERIC,
+				PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
+			)`, eavTable),
+			announce: fmt.Sprintf("Created EAV table: %s\n", opts.eavTable),
+			failure:  "ensure eav table",
+		},
+		{
+			statement: fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				    schema_id  SMALLINT NOT NULL,
+					row_id     UUID     NOT NULL,
+					flushed_at BIGINT   NOT NULL DEFAULT 0,
+					changed_at BIGINT   NOT NULL,
+					deleted_at BIGINT,
+					primary key (schema_id, row_id, flushed_at)
+				);`, changeLog),
+			announce: fmt.Sprintf("Created change log table: %s\n", opts.changeLog),
+			failure:  "ensure change log table",
+		},
 	}
-	fmt.Printf("Created entity main table: %s", opts.entityMain)
+}
 
-	ddlEAV := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		schema_id      SMALLINT NOT NULL,
-		row_id         UUID NOT NULL,
-		attr_id        SMALLINT NOT NULL,
-		array_indices  TEXT NOT NULL DEFAULT '',
-		value_text     TEXT,
-		value_numeric  NUMERIC,
-		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
-	)`, eavTable)
-
-	if _, err := tx.Exec(ctx, ddlEAV); err != nil {
-		return fmt.Errorf("ensure eav table: %w", err)
-	}
-	fmt.Printf("Created EAV table: %s\n", opts.eavTable)
-
-	ddlChangeLog := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		    schema_id  SMALLINT NOT NULL,
-			row_id     UUID     NOT NULL,
-			flushed_at BIGINT   NOT NULL DEFAULT 0,
-			changed_at BIGINT   NOT NULL,
-			deleted_at BIGINT,
-			primary key (schema_id, row_id, flushed_at)
-		);`, changeLog)
-
-	if _, err := tx.Exec(ctx, ddlChangeLog); err != nil {
-		return fmt.Errorf("ensure change log table: %w", err)
-	}
-	fmt.Printf("Created change log table: %s\n", opts.changeLog)
-
+func eavIndexDDL(opts initDBOptions) []tableDDL {
+	eavTable := quoteIdentifier(opts.eavTable)
 	idxNumeric := quoteIdentifier(makeIndexName(opts.eavTable, "numeric"))
-	createIdxNumeric := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL`, idxNumeric, eavTable)
-	if _, err := tx.Exec(ctx, createIdxNumeric); err != nil {
-		return fmt.Errorf("create numeric index: %w", err)
-	}
-
 	idxText := quoteIdentifier(makeIndexName(opts.eavTable, "text"))
-	createIdxText := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_text, row_id) WHERE value_text IS NOT NULL`, idxText, eavTable)
-	if _, err := tx.Exec(ctx, createIdxText); err != nil {
-		return fmt.Errorf("create text index: %w", err)
+	return []tableDDL{
+		{
+			statement: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL`, idxNumeric, eavTable),
+			failure:   "create numeric index",
+		},
+		{
+			statement: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, attr_id, value_text, row_id) WHERE value_text IS NOT NULL`, idxText, eavTable),
+			failure:   "create text index",
+		},
 	}
+}
 
+func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
+	entityMain := quoteIdentifier(opts.entityMain)
 	indexedMainColumns := []string{
 		"text_01", "text_02", "text_03",
 		"smallint_01",
@@ -222,11 +240,31 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error { //
 		"uuid_01",
 	}
 
+	ddl := make([]tableDDL, 0, len(indexedMainColumns))
 	for _, col := range indexedMainColumns {
 		idx := quoteIdentifier(makeIndexName(opts.entityMain, col))
-		stmt := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (ltbase_schema_id, ltbase_row_id, %s)`, idx, entityMain, quoteIdentifier(col))
-		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("create main index for %s: %w", col, err)
+		ddl = append(ddl, tableDDL{
+			statement: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (ltbase_schema_id, ltbase_row_id, %s)`, idx, entityMain, quoteIdentifier(col)),
+			failure:   "create main index for " + col,
+		})
+	}
+	return ddl
+}
+
+func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
+	groups := [][]tableDDL{
+		coreTableDDL(opts),
+		eavIndexDDL(opts),
+		mainColumnIndexDDL(opts),
+	}
+	for _, group := range groups {
+		for _, ddl := range group {
+			if _, err := tx.Exec(ctx, ddl.statement); err != nil {
+				return fmt.Errorf("%s: %w", ddl.failure, err)
+			}
+			if ddl.announce != "" {
+				fmt.Print(ddl.announce)
+			}
 		}
 	}
 
