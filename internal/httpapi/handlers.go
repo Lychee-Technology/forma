@@ -83,38 +83,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	_ = writeSuccess(w, http.StatusCreated, result)
 }
 
-// handleGet handles GET /api/v1/{schema_name}/{row_id}
-func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		_ = writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	schemaName, rowIDStr, err := parsePath(r.URL.Path)
-	if err != nil {
-		respondError(w, "invalid path", err)
-		return
-	}
-
-	if rowIDStr == "" {
-		_ = writeError(w, http.StatusBadRequest, "row_id is required")
-		return
-	}
-	zap.S().Infow("get request received", "schema", schemaName, "rowID", rowIDStr)
-
-	rowID, err := parseUUID(rowIDStr)
-	if err != nil {
-		respondError(w, "invalid row_id", forma.InvalidInputf("%v", err))
-		return
-	}
-
-	attrs := parseAttrs(r.URL.Query())
-	s.executeGet(w, r, schemaName, rowID, attrs)
-}
-
 // executeGet performs the actual Get manager call and writes the response.
-// Extracted so that handleQuery can invoke the same logic without re-entering
-// handleGet through the http.Handler interface (re-entry pattern).
+// It is handleQuery's row-id branch: GET /api/v1/{schema}/{row_id} reaches it
+// through apiHandler, which is the only dispatch path into a single record.
 func (s *Server) executeGet(w http.ResponseWriter, r *http.Request, schemaName string, rowID uuid.UUID, attrs []string) {
 	queryReq := &forma.QueryRequest{
 		SchemaName: schemaName,

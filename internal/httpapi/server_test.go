@@ -252,7 +252,12 @@ func TestClassifyManagerError(t *testing.T) {
 	}
 }
 
-func TestHandleGetErrorMapping(t *testing.T) {
+// TestGetByRowIDMapsManagerErrors drives the request through the registered mux
+// so the assertion covers the chain production actually uses: apiHandler's GET
+// branch -> handleQuery's row-id branch -> executeGet. Invoking a handler method
+// directly would leave that routing unpinned, which is how #368's dead handler
+// kept a test to itself after the live path had moved on.
+func TestGetByRowIDMapsManagerErrors(t *testing.T) {
 	rowID := uuid.New()
 
 	// Since #301 only a sentinel earns the 404; "entity not found" as bare prose
@@ -269,13 +274,11 @@ func TestHandleGetErrorMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := &Server{
-				manager: &mockEntityManager{getErr: tt.err},
-			}
+			server := NewServer(&mockEntityManager{getErr: tt.err}, Options{})
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/lead/"+rowID.String(), nil)
 			rec := httptest.NewRecorder()
-			server.handleGet(rec, req)
+			server.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
