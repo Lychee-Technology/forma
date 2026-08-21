@@ -302,6 +302,49 @@ func TestStreamOptimizedQueryRenderCacheDifferentArgCount(t *testing.T) {
 	require.Equal(t, int64(2), misses, "each different argCount must render template once")
 }
 
+// TestStreamOptimizedQueryArgCountKeyPin pins #319: the argCount parameter must
+// reach optimizedQueryShapeKey with the correct value. Pre-seeds the render cache
+// with the expected key and asserts the production call hits it. Under mutation
+// (argCount → argCount+1), the production code computes a different key, misses,
+// and the test fails.
+func TestStreamOptimizedQueryArgCountKeyPin(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	repo := NewDBPersistentRecordRepository(mock, nil)
+	tables := model.StorageTables{EntityMain: "main_t", EAVData: "eav_t", ChangeLog: "cl_t"}
+	clause := "m.\"integer_01\" > $2"
+	argCount := 1 // len(args) in the call below
+
+	// Build the expected cache key independently
+	expectedShapeHash := strconv.FormatUint(optimizedQueryShapeKey(tables, true, clause, argCount, nil), 16)
+	expectedKey := queryplan.Key{
+		Kind:      "postgres_optimized_template",
+		SchemaID:  1,
+		ShapeHash: expectedShapeHash,
+	}
+
+	// Pre-seed the cache with a sentinel query under the expected key
+	sentinelQuery := "SELECT 'sentinel' AS sentinel"
+	_, _, err = repo.planCache.GetOrBuild(expectedKey, func() (any, error) {
+		return sentinelQuery, nil
+	})
+	require.NoError(t, err)
+
+	// Now call StreamOptimizedQuery with matching argCount
+	// It should compute the same key and get a HIT, returning the sentinel
+	mock.ExpectQuery("SELECT").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"sentinel"}))
+	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, clause, []any{int64(5)}, 10, 0, nil, true, nil)
+	require.NoError(t, err)
+
+	hits, _ := repo.planCache.Stats()
+	require.Equal(t, int64(1), hits, "StreamOptimizedQuery must hit pre-seeded key with correct argCount")
+}
+
 // TestOptimizedQueryShapeKey pins that every render-affecting input changes
 // the key and that values do not participate.
 func TestOptimizedQueryShapeKey(t *testing.T) {
