@@ -31,6 +31,12 @@ func TestExecuteFederatedPaginatedQueryRecordsExecutionPlan(t *testing.T) {
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
 		&model.FederatedAttributeQuery{
 			AttributeQuery: model.AttributeQuery{SchemaID: 7},
+			// PreferHot is the one value the #319 extraction actually
+			// rewired: it went from an in-body fq.PreferHot reference to an
+			// argument passed at the call site. Setting it true (rather than
+			// leaving the zero value) is what makes the assertion below able
+			// to tell a correct hand-off from a dropped or inverted one.
+			PreferHot: true,
 		},
 		10, 0, nil, opts)
 
@@ -53,14 +59,27 @@ func TestExecuteFederatedPaginatedQueryRecordsExecutionPlan(t *testing.T) {
 	require.Equal(t, 1, optimizedQuerySources,
 		"the coordinator records exactly one postgres optimized query source: %+v",
 		opts.ExecutionPlan.Sources)
+	// These index into Sources[0] rather than into the entry matched by Reason
+	// above, which couples them to append order: ExecuteDuckDBFederatedQuery
+	// appends three further sources (dirty id set, pushdown fragment, duckdb
+	// template) onto this same opts after the coordinator records the postgres
+	// one, so index 0 is the postgres entry only because it is recorded first.
 	require.Equal(t, model.DataTierHot, opts.ExecutionPlan.Sources[0].Tier)
 	require.Equal(t, "postgres", opts.ExecutionPlan.Sources[0].Engine)
 	require.Equal(t, "1=1", opts.ExecutionPlan.Sources[0].SQL)
 	require.Equal(t, "postgres optimized query", opts.ExecutionPlan.Sources[0].Reason)
+	// Both are deterministic in this fixture: RunOptimizedQuery returns no
+	// records, and BuildHybridConditions returns no args.
+	require.Zero(t, opts.ExecutionPlan.Sources[0].ActualRows)
+	require.Empty(t, opts.ExecutionPlan.Sources[0].Params)
 	require.Contains(t, opts.ExecutionPlan.Timings, "postgres_fetch")
 
 	require.Equal(t, model.MergeStrategyLastWriteWins, opts.ExecutionPlan.Merge.Strategy)
 	require.Equal(t, []string{"SchemaID:RowID"}, opts.ExecutionPlan.Merge.DedupKeys)
+	require.Equal(t, []string{"attribute-level deduplication applied"}, opts.ExecutionPlan.Merge.Notes)
+	// The rewired argument, pinned: a dropped hand-off (recordMergePlan(opts,
+	// false, ...)) or an inverted one (PreferHot: !preferHot) both fail here.
+	require.True(t, opts.ExecutionPlan.Merge.PreferHot)
 	require.Contains(t, opts.ExecutionPlan.Timings, "merge")
 }
 
