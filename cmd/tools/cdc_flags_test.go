@@ -170,6 +170,9 @@ func TestParseCDCInitFlagsMapsArgsToConfig(t *testing.T) {
 	if opts.registry.table != "registry" {
 		t.Errorf("registry table = %q, want %q", opts.registry.table, "registry")
 	}
+	if opts.registry.dir != "/tmp/schemas" {
+		t.Errorf("registry dir = %q, want %q", opts.registry.dir, "/tmp/schemas")
+	}
 	if opts.schemaIDFilter != 3 {
 		t.Errorf("schemaIDFilter = %d, want 3", opts.schemaIDFilter)
 	}
@@ -251,5 +254,40 @@ func TestParseCDCInitFlagsHelp(t *testing.T) {
 	}
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
+	}
+}
+
+// TestParseCDCInitFlagsRejectsMissingBucket keeps the s3Flags.validate(true)
+// gate wired: dropping the validate call must not silently produce a config
+// that fails much later inside RunInit.
+func TestParseCDCInitFlagsRejectsMissingBucket(t *testing.T) {
+	_, err := parseCDCInitFlags([]string{"-schema-registry-table=t", "-schema-dir=/d"})
+	if err == nil {
+		t.Fatal("expected an error when -s3-bucket is missing")
+	}
+}
+
+// TestParseCDCInitFlagsEstimatedRowBytes ensures that when -estimated-row-bytes
+// is passed, both cfg.EstimatedRowBytes is set to that value and autoEstimateRowBytes
+// is false (not true). This guards against mutations that hardcode autoEstimateRowBytes
+// to true or cross-wire EstimatedRowBytes to a different flag.
+func TestParseCDCInitFlagsEstimatedRowBytes(t *testing.T) {
+	opts, err := parseCDCInitFlags([]string{
+		"-s3-bucket=b",
+		"-schema-registry-table=t",
+		"-schema-dir=/d",
+		"-estimated-row-bytes=4096",
+	})
+	if err != nil {
+		t.Fatalf("parse cdc-init flags: %v", err)
+	}
+	if opts == nil {
+		t.Fatal("expected options, got nil")
+	}
+	if opts.cfg.EstimatedRowBytes != 4096 {
+		t.Errorf("EstimatedRowBytes = %d, want 4096", opts.cfg.EstimatedRowBytes)
+	}
+	if opts.autoEstimateRowBytes {
+		t.Error("autoEstimateRowBytes = true, want false when -estimated-row-bytes is passed")
 	}
 }

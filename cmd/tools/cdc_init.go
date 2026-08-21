@@ -156,6 +156,8 @@ func buildCDCInitConfig(pg postgresFlags, password string, entityMainTable, eavD
 	}.WithDefaults()
 }
 
+// runCDCInit parses cdc-init CLI flags and delegates the actual base-file
+// export to cdc.RunInit (the driver was extracted into internal/cdc, #173).
 func runCDCInit(ctx context.Context, args []string) error {
 	opts, err := parseCDCInitFlags(args)
 	if err != nil {
