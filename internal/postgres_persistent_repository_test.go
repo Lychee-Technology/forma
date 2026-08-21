@@ -269,6 +269,39 @@ func TestStreamOptimizedQueryRenderCache(t *testing.T) {
 	require.Equal(t, int64(2), misses)
 }
 
+// TestStreamOptimizedQueryRenderCacheDifferentArgCount pins #319: the argCount
+// parameter must be correctly passed to optimizedQueryShapeKey. Two calls with
+// identical shapes but different len(args) must produce two cache misses, not
+// a hit on the second call — because their placeholder numbering differs.
+func TestStreamOptimizedQueryRenderCacheDifferentArgCount(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	repo := NewDBPersistentRecordRepository(mock, nil)
+	tables := model.StorageTables{EntityMain: "main_t", EAVData: "eav_t", ChangeLog: "cl_t"}
+
+	// First call with len(args) = 1
+	mock.ExpectQuery("WITH").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"row_id"}))
+	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"integer_01\" > $2", []any{int64(5)}, 10, 0, nil, true, nil)
+	require.NoError(t, err)
+
+	// Second call with identical clause but len(args) = 2
+	// This should produce a MISS, not a HIT, because the argCount differs
+	mock.ExpectQuery("WITH").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"row_id"}))
+	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, "m.\"integer_01\" > $2", []any{int64(5), "extra"}, 10, 0, nil, true, nil)
+	require.NoError(t, err)
+
+	hits, misses := repo.planCache.Stats()
+	require.Equal(t, int64(0), hits, "different argCount must not share cache entry")
+	require.Equal(t, int64(2), misses, "each different argCount must render template once")
+}
+
 // TestOptimizedQueryShapeKey pins that every render-affecting input changes
 // the key and that values do not participate.
 func TestOptimizedQueryShapeKey(t *testing.T) {
