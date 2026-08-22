@@ -12,3 +12,29 @@ issues:
       linters:
         - staticcheck
       text: "SA5011"
+
+# funlen (#319) enforces coding-standard.md 的 100 行函数上限——在此之前它只是
+# 文档，没有任何东西执行它：#314 期间一个函数长到 110 行、两次通过 make lint。
+linters:
+  enable:
+    - funlen
+    - nolintlint
+
+linters-settings:
+  funlen:
+    lines: 100
+    # 反义警告：golangci-lint v1.64.8 的 pkg/golinters/funlen/funlen.go:23 是
+    #   cfg.ignoreComments = !settings.IgnoreComments
+    # 而上游 ultraware/funlen@v0.2.0 的同名参数为 true 时才扣除注释。所以在这个
+    # 钉死的版本下 false == 排除注释，正是 #319 选定的口径。不要"修正"成 true：
+    # 那会立刻多出 4 处违规让 CI 变红，也会开始惩罚写注释——本仓库的注释是承重的
+    # 成因记录（见 engine.go:Query，103 行里 27 行是 #348/#183/#184 的注释）。
+    ignore-comments: false
+    # 必须是 -1。funlen.go:20 把 0 当作"未设置"并回落到默认的 40 条语句上限。
+    statements: -1
+  nolintlint:
+    # #319 要求 nolint 必须逐处带明确理由；这三项把它从人工约定变成机器检查。
+    # allow-unused: false 让将来函数被重构到 100 行以下后忘删的 nolint 自动变红。
+    require-explanation: true
+    require-specific: true
+    allow-unused: false

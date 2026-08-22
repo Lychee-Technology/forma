@@ -17,17 +17,24 @@ import (
 	"go.uber.org/zap"
 )
 
-func main() {
-	// Command line flags
-	csvFile := flag.String("csv", "", "Path to CSV file to import (required)")
-	schemaDir := flag.String("schema-dir", "./schemas", "Directory containing schema files")
-	schemaName := flag.String("schema", "watch", "Target schema name")
-	batchSize := flag.Int("batch-size", 100, "Batch size for import operations")
-	dbURL := flag.String("db", "postgres://postgres:postgres@localhost:5432/ltbase", "PostgreSQL connection URL (or set DATABASE_URL env)")
-	dryRun := flag.Bool("dry-run", false, "Parse CSV and validate mappings without writing to database")
-	verbose := flag.Bool("verbose", false, "Enable verbose logging")
+// sampleRunConfig carries the parsed sample-importer flags into runSampleImport.
+type sampleRunConfig struct {
+	databaseURL string
+	schemaDir   string
+	schemaName  string
+	csvFile     string
+	batchSize   int
+	mapper      CSVToSchemaMapper
+}
 
-	// Setup logging
+// buildSampleLogger installs the global zap logger and returns its sugared
+// handle plus the sync closure the caller must defer.
+//
+// It is deliberately called BEFORE flag.Parse(), exactly as the code it was
+// extracted from did: *verbose is therefore always false here. That is a
+// pre-existing bug (#319 follow-up), not something this refactor may fix —
+// changing the order would change behaviour in a commit that claims not to.
+func buildSampleLogger(verbose *bool) (*zap.SugaredLogger, func()) {
 	cfg := zap.NewProductionConfig()
 	cfg.Encoding = "console"
 	if *verbose {
@@ -39,33 +46,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to build logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = logger.Sync() }()
 	zap.ReplaceGlobals(logger)
-	sugar := logger.Sugar()
+	return logger.Sugar(), func() { _ = logger.Sync() }
+}
 
-	flag.Parse()
-
-	// Validate required flags
+// resolveSampleOptions validates the parsed flags and answers the database URL
+// and mapper the run needs. It exits the process on invalid input, exactly as
+// the inline code did.
+func resolveSampleOptions(csvFile, dbURL, schemaName *string, dryRun *bool, sugar *zap.SugaredLogger) (string, CSVToSchemaMapper) {
 	if *csvFile == "" {
 		sugar.Error("Error: -csv flag is required")
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	// Get database URL from flag or environment
 	databaseURL := *dbURL
 	if databaseURL == "" {
 		databaseURL = os.Getenv("DATABASE_URL")
 	}
-
 	if databaseURL == "" && !*dryRun {
 		sugar.Error("Error: Database URL is required. Use -db flag or set DATABASE_URL environment variable.")
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-
-	// Create mapper based on schema name
 	var mapper CSVToSchemaMapper
 	switch *schemaName {
 	case "watch":
@@ -75,20 +78,13 @@ func main() {
 		sugar.Fatalf("Unknown schema: %s. Supported schemas: watch", *schemaName)
 	}
 
-	// Dry run mode - just validate the CSV
-	if *dryRun {
-		sugar.Infof("Dry run mode: validating CSV file %s", *csvFile)
-		result, err := dryRunImport(ctx, *csvFile, mapper, sugar)
-		if err != nil {
-			sugar.Fatalf("Dry run failed: %v", err)
-		}
-		printResult(result, sugar)
-		os.Exit(0)
-	}
+	return databaseURL, mapper
+}
 
+func runSampleImport(ctx context.Context, cfg sampleRunConfig, sugar *zap.SugaredLogger) {
 	// Connect to database
 	sugar.Infof("Connecting to database...")
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := pgxpool.New(ctx, cfg.databaseURL)
 	if err != nil {
 		sugar.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -101,18 +97,18 @@ func main() {
 	sugar.Infof("Database connected successfully")
 
 	// Create schema registry
-	sugar.Infof("Loading schemas from: %s", *schemaDir)
-	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(*schemaDir)
+	sugar.Infof("Loading schemas from: %s", cfg.schemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(cfg.schemaDir)
 	if err != nil {
 		sugar.Fatalf("Failed to create schema registry: %v", err)
 	}
 
 	// Verify schema exists
-	schemaID, _, err := registry.GetSchemaAttributeCacheByName(*schemaName)
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName(cfg.schemaName)
 	if err != nil {
-		sugar.Fatalf("Schema '%s' not found: %v", *schemaName, err)
+		sugar.Fatalf("Schema '%s' not found: %v", cfg.schemaName, err)
 	}
-	sugar.Infof("Schema '%s' found with ID: %d", *schemaName, schemaID)
+	sugar.Infof("Schema '%s' found with ID: %d", cfg.schemaName, schemaID)
 
 	// Create configuration
 	config := forma.DefaultConfig(registry)
@@ -121,7 +117,7 @@ func main() {
 	config.Database.TableNames.SchemaRegistry = "schema_registry_sample"
 	config.Database.TableNames.ChangeLog = "change_log_sample"
 
-	config.Entity.SchemaDirectory = *schemaDir
+	config.Entity.SchemaDirectory = cfg.schemaDir
 
 	// The importer is a write path, so it honours the #314 staged rollout
 	// (VALIDATE_UPDATES_STRICT) like the other entry points that build an
@@ -150,15 +146,15 @@ func main() {
 	}()
 
 	// Create importer
-	importer := NewCSVImporter(entityManager, mapper, *batchSize)
+	importer := NewCSVImporter(entityManager, cfg.mapper, cfg.batchSize)
 	importer.SetLogger(sugar.Named("Import"))
 
 	// Execute import
-	sugar.Infof("Starting import from: %s", *csvFile)
-	sugar.Infof("Target schema: %s, Batch size: %d", *schemaName, *batchSize)
+	sugar.Infof("Starting import from: %s", cfg.csvFile)
+	sugar.Infof("Target schema: %s, Batch size: %d", cfg.schemaName, cfg.batchSize)
 
 	startTime := time.Now()
-	result, err := importer.ImportFromFile(ctx, *csvFile)
+	result, err := importer.ImportFromFile(ctx, cfg.csvFile)
 	if err != nil {
 		sugar.Fatalf("Import failed: %v", err)
 	}
@@ -167,11 +163,20 @@ func main() {
 	sugar.Infof("Import completed in %v", time.Since(startTime))
 	printResult(result, sugar)
 
+	printSampleQueryResults(ctx, entityManager, cfg.schemaName, sugar)
+
+	// Exit with error code if there were failures
+	if result.FailedCount > 0 {
+		os.Exit(1)
+	}
+}
+
+func printSampleQueryResults(ctx context.Context, entityManager forma.EntityManager, schemaName string, sugar *zap.SugaredLogger) {
 	// Execute advanced query example
 	sugar.Infof("Executing advanced query example...")
 	sugar.Infof("Query conditions: yearOfProduction.year >= 2020 AND size.width >= 40")
 	queryResult, err := entityManager.Query(ctx, &forma.QueryRequest{
-		SchemaName:   *schemaName,
+		SchemaName:   schemaName,
 		Page:         1,
 		ItemsPerPage: 10,
 		Condition: &forma.CompositeCondition{
@@ -207,11 +212,46 @@ func main() {
 			sugar.Info(string(jsonBytes))
 		}
 	}
+}
 
-	// Exit with error code if there were failures
-	if result.FailedCount > 0 {
-		os.Exit(1)
+func main() {
+	// Command line flags
+	csvFile := flag.String("csv", "", "Path to CSV file to import (required)")
+	schemaDir := flag.String("schema-dir", "./schemas", "Directory containing schema files")
+	schemaName := flag.String("schema", "watch", "Target schema name")
+	batchSize := flag.Int("batch-size", 100, "Batch size for import operations")
+	dbURL := flag.String("db", "postgres://postgres:postgres@localhost:5432/ltbase", "PostgreSQL connection URL (or set DATABASE_URL env)")
+	dryRun := flag.Bool("dry-run", false, "Parse CSV and validate mappings without writing to database")
+	verbose := flag.Bool("verbose", false, "Enable verbose logging")
+
+	sugar, syncLogger := buildSampleLogger(verbose)
+	defer syncLogger()
+
+	flag.Parse()
+
+	databaseURL, mapper := resolveSampleOptions(csvFile, dbURL, schemaName, dryRun, sugar)
+
+	ctx := context.Background()
+
+	// Dry run mode - just validate the CSV
+	if *dryRun {
+		sugar.Infof("Dry run mode: validating CSV file %s", *csvFile)
+		result, err := dryRunImport(ctx, *csvFile, mapper, sugar)
+		if err != nil {
+			sugar.Fatalf("Dry run failed: %v", err)
+		}
+		printResult(result, sugar)
+		os.Exit(0)
 	}
+
+	runSampleImport(ctx, sampleRunConfig{
+		databaseURL: databaseURL,
+		schemaDir:   *schemaDir,
+		schemaName:  *schemaName,
+		csvFile:     *csvFile,
+		batchSize:   *batchSize,
+		mapper:      mapper,
+	}, sugar)
 }
 
 // dryRunImport performs a dry run of the import process without database operations.

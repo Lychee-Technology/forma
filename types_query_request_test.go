@@ -13,7 +13,7 @@ import (
 // QueryRequest JSON Tests
 // =============================================================================
 
-func TestQueryRequest_UnmarshalJSON(t *testing.T) {
+func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: oversized test functions
 	rowID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 
 	tests := []struct {

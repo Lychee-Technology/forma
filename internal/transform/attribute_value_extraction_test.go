@@ -11,7 +11,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-func TestExtractValueFromEAVRecord(t *testing.T) {
+func TestExtractValueFromEAVRecord(t *testing.T) { //nolint:funlen // #438: oversized test functions
 	textVal := "hello"
 	numericVal := 42.0
 	uuidVal := uuid.New()

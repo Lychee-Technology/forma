@@ -12,7 +12,19 @@ import (
 	"go.uber.org/zap"
 )
 
-func runCDCFlush(ctx context.Context, args []string) error {
+// cdcFlushOptions carries everything runCDCFlush needs after the flag set has
+// been parsed and validated.
+type cdcFlushOptions struct {
+	cfg      publiccdc.Config
+	pg       postgresFlags
+	registry schemaRegistryFlags
+	dryRun   bool
+}
+
+// parseCDCFlushFlags registers, parses and validates the cdc-flush flag set.
+// It answers (nil, nil) for -help so the caller exits quietly, mirroring the
+// errors.Is(err, flag.ErrHelp) branch this was extracted from (#319).
+func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	fs := flag.NewFlagSet("cdc-flush", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
@@ -79,20 +91,31 @@ func runCDCFlush(ctx context.Context, args []string) error {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 
 	if err := s3Config.validate(true); err != nil {
-		return err
+		return nil, err
 	}
 	if err := schemaRegistry.validate(false); err != nil {
-		return err
+		return nil, err
 	}
 
 	password := pg.resolvedPassword("PGPASSWORD")
-	cfg := publiccdc.Config{
+	cfg := buildCDCConfig(pg, password, changeLogTable, entityMainTable, eavDataTable,
+		minRecords, maxAgeMs, batchSize, estimatedRowBytes, maxBatchBytes, duck,
+		s3Config, manifestPrefix, manifestTemplate)
+
+	return &cdcFlushOptions{cfg: cfg, pg: pg, registry: schemaRegistry, dryRun: *dryRun}, nil
+}
+
+// buildCDCConfig constructs a CDC config from parsed flag values.
+func buildCDCConfig(pg postgresFlags, password string, changeLogTable, entityMainTable, eavDataTable *string,
+	minRecords *int, maxAgeMs *int64, batchSize, estimatedRowBytes *int, maxBatchBytes *int64, duck duckExportFlags,
+	s3Config s3Flags, manifestPrefix, manifestTemplate *string) publiccdc.Config {
+	return publiccdc.Config{
 		ChangeLogTable:          *changeLogTable,
 		EntityMainTable:         *entityMainTable,
 		EAVDataTable:            *eavDataTable,
@@ -123,6 +146,17 @@ func runCDCFlush(ctx context.Context, args []string) error {
 		ManifestPrefix:          *manifestPrefix,
 		ManifestTemplate:        *manifestTemplate,
 	}.WithDefaults()
+}
+
+func runCDCFlush(ctx context.Context, args []string) error {
+	opts, err := parseCDCFlushFlags(args)
+	if err != nil {
+		return err
+	}
+	if opts == nil {
+		return nil
+	}
+	cfg := opts.cfg
 
 	logger, err := buildToolLogger(true)
 	if err != nil {
@@ -131,8 +165,8 @@ func runCDCFlush(ctx context.Context, args []string) error {
 	defer func() { _ = logger.Sync() }()
 
 	var registry forma.SchemaRegistry
-	if schemaRegistry.table != "" {
-		pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
+	if opts.registry.table != "" {
+		pool, err := buildToolPostgresPool(ctx, opts.pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
 			maxConnections: 4,
 			timeout:        30 * time.Second,
 		}))
@@ -140,7 +174,7 @@ func runCDCFlush(ctx context.Context, args []string) error {
 			return fmt.Errorf("create schema registry pool: %w", err)
 		}
 		defer pool.Close()
-		reg, err := buildToolSchemaRegistry(ctx, pool, schemaRegistry.table, schemaRegistry.dir)
+		reg, err := buildToolSchemaRegistry(ctx, pool, opts.registry.table, opts.registry.dir)
 		if err != nil {
 			return fmt.Errorf("create schema registry: %w", err)
 		}
@@ -157,9 +191,9 @@ func runCDCFlush(ctx context.Context, args []string) error {
 		zap.String("bucket", cfg.S3Bucket),
 		zap.String("prefix", cfg.S3Prefix),
 		zap.String("manifest_template", cfg.ManifestTemplate),
-		zap.Bool("dry_run", *dryRun))
+		zap.Bool("dry_run", opts.dryRun))
 
-	if err := publiccdc.RunOnce(ctx, cfg, s3Client, *dryRun, logger, registry); err != nil {
+	if err := publiccdc.RunOnce(ctx, cfg, s3Client, opts.dryRun, logger, registry); err != nil {
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 

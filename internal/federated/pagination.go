@@ -72,24 +72,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		return nil, 0, fmt.Errorf("fetch postgres records: %w", err)
 	}
 	// Record Postgres source info if execution plan requested
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		dp := model.DataSourcePlan{
-			Tier:   model.DataTierHot,
-			Engine: "postgres",
-			// The full optimized SQL is rendered inside RunOptimizedQuery;
-			// the hybrid WHERE clause and its parameters are what the
-			// coordinator can capture here.
-			SQL:               clause,
-			Params:            formatPlanParams(args),
-			RowEstimate:       0,
-			PredicatePushdown: fq.UseMainAsAnchor,
-			ActualRows:        int64(len(pgRecs)),
-			DurationMs:        pgDuration,
-			Reason:            "postgres optimized query",
-		}
-		opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dp)
-		opts.ExecutionPlan.Timings["postgres_fetch"] = pgDuration
-	}
+	recordPostgresSourcePlan(opts, fq, clause, args, len(pgRecs), pgDuration)
 
 	// Fetch from DuckDB (warm/cold)
 	duckRecs, _, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders, opts)
@@ -111,16 +94,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		return nil, 0, fmt.Errorf("merge records by tier: %w", err)
 	}
 	// Record merge plan if requested
-	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
-		opts.ExecutionPlan.Merge = model.MergePlan{
-			Strategy:   model.MergeStrategyLastWriteWins,
-			PreferHot:  fq.PreferHot,
-			DedupKeys:  []string{"SchemaID:RowID"},
-			DurationMs: mergeMs,
-			Notes:      []string{"attribute-level deduplication applied"},
-		}
-		opts.ExecutionPlan.Timings["merge"] = mergeMs
-	}
+	recordMergePlan(opts, fq.PreferHot, mergeMs)
 
 	total := int64(len(merged))
 
@@ -133,6 +107,47 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	page := merged[start:end]
 
 	return page, total, nil
+}
+
+// recordPostgresSourcePlan appends the hot-tier source entry for one paginated
+// fetch. It no-ops unless the caller asked for a plan, so the call site stays
+// a single line (#319).
+func recordPostgresSourcePlan(opts *model.FederatedQueryOptions, fq *model.FederatedAttributeQuery, clause string, args []any, rowCount int, durationMs int64) {
+	if opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
+		return
+	}
+	dp := model.DataSourcePlan{
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		// The full optimized SQL is rendered inside RunOptimizedQuery;
+		// the hybrid WHERE clause and its parameters are what the
+		// coordinator can capture here.
+		SQL:               clause,
+		Params:            formatPlanParams(args),
+		RowEstimate:       0,
+		PredicatePushdown: fq.UseMainAsAnchor,
+		ActualRows:        int64(rowCount),
+		DurationMs:        durationMs,
+		Reason:            "postgres optimized query",
+	}
+	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dp)
+	opts.ExecutionPlan.Timings["postgres_fetch"] = durationMs
+}
+
+// recordMergePlan records the tier-merge step of one paginated fetch. Like
+// recordPostgresSourcePlan it no-ops unless a plan was requested (#319).
+func recordMergePlan(opts *model.FederatedQueryOptions, preferHot bool, durationMs int64) {
+	if opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
+		return
+	}
+	opts.ExecutionPlan.Merge = model.MergePlan{
+		Strategy:   model.MergeStrategyLastWriteWins,
+		PreferHot:  preferHot,
+		DedupKeys:  []string{"SchemaID:RowID"},
+		DurationMs: durationMs,
+		Notes:      []string{"attribute-level deduplication applied"},
+	}
+	opts.ExecutionPlan.Timings["merge"] = durationMs
 }
 
 // executeFederatedKeysetQuery performs a keyset-cursor-based federated query.

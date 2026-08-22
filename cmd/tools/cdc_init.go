@@ -15,9 +15,21 @@ const (
 	defaultInitBatchSize = 50000
 )
 
-// runCDCInit parses cdc-init CLI flags and delegates the actual base-file
-// export to cdc.RunInit (the driver was extracted into internal/cdc, #173).
-func runCDCInit(ctx context.Context, args []string) error {
+// cdcInitOptions carries everything runCDCInit needs after the flag set has
+// been parsed and validated.
+type cdcInitOptions struct {
+	cfg                  cdc.CDCConfig
+	pg                   postgresFlags
+	registry             schemaRegistryFlags
+	schemaIDFilter       int
+	dryRun               bool
+	autoEstimateRowBytes bool
+}
+
+// parseCDCInitFlags registers, parses and validates the cdc-init flag set.
+// It answers (nil, nil) for -help so the caller exits quietly, mirroring the
+// errors.Is(err, flag.ErrHelp) branch this was extracted from (#319).
+func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	fs := flag.NewFlagSet("cdc-init", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
@@ -80,23 +92,41 @@ func runCDCInit(ctx context.Context, args []string) error {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 
 	if err := s3Config.validate(true); err != nil {
-		return err
+		return nil, err
 	}
 	if err := schemaRegistry.validate(true); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Track if user explicitly provided estimated-row-bytes (0 means auto-calculate from schema)
 	autoEstimateRowBytes := *estimatedRowBytes == 0
 	password := pg.resolvedPassword("PGPASSWORD")
 
-	cfg := cdc.CDCConfig{
+	cfg := buildCDCInitConfig(pg, password, entityMainTable, eavDataTable, batchSize,
+		targetFileSizeMB, estimatedRowBytes, maxBatchSize, duck, s3Config,
+		manifestPrefix, manifestTemplate)
+
+	return &cdcInitOptions{
+		cfg:                  cfg,
+		pg:                   pg,
+		registry:             schemaRegistry,
+		schemaIDFilter:       *schemaIDFilter,
+		dryRun:               *dryRun,
+		autoEstimateRowBytes: autoEstimateRowBytes,
+	}, nil
+}
+
+// buildCDCInitConfig constructs a CDC config from parsed flag values.
+func buildCDCInitConfig(pg postgresFlags, password string, entityMainTable, eavDataTable *string,
+	batchSize, targetFileSizeMB, estimatedRowBytes, maxBatchSize *int, duck duckExportFlags,
+	s3Config s3Flags, manifestPrefix, manifestTemplate *string) cdc.CDCConfig {
+	return cdc.CDCConfig{
 		EntityMainTable:         *entityMainTable,
 		EAVDataTable:            *eavDataTable,
 		BatchSize:               *batchSize,
@@ -124,6 +154,19 @@ func runCDCInit(ctx context.Context, args []string) error {
 		ManifestPrefix:          *manifestPrefix,
 		ManifestTemplate:        *manifestTemplate,
 	}.WithDefaults()
+}
+
+// runCDCInit parses cdc-init CLI flags and delegates the actual base-file
+// export to cdc.RunInit (the driver was extracted into internal/cdc, #173).
+func runCDCInit(ctx context.Context, args []string) error {
+	opts, err := parseCDCInitFlags(args)
+	if err != nil {
+		return err
+	}
+	if opts == nil {
+		return nil
+	}
+	cfg := opts.cfg
 
 	logger, err := buildToolLogger(true)
 	if err != nil {
@@ -131,7 +174,7 @@ func runCDCInit(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = logger.Sync() }()
 
-	pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
+	pool, err := buildToolPostgresPool(ctx, opts.pg.databaseConfig("PGPASSWORD", toolPostgresPoolSettings{
 		maxConnections: 4,
 		timeout:        30 * time.Second,
 	}))
@@ -140,7 +183,7 @@ func runCDCInit(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 
-	registry, err := buildToolSchemaRegistry(ctx, pool, schemaRegistry.table, schemaRegistry.dir)
+	registry, err := buildToolSchemaRegistry(ctx, pool, opts.registry.table, opts.registry.dir)
 	if err != nil {
 		return fmt.Errorf("create schema registry: %w", err)
 	}
@@ -159,17 +202,17 @@ func runCDCInit(ctx context.Context, args []string) error {
 		zap.Int("estimated_row_bytes", cfg.EstimatedRowBytes),
 		zap.Int("max_batch_size", cfg.MaxBatchSize),
 		zap.Int("fallback_batch_size", cfg.BatchSize),
-		zap.Int("schema_id_filter", *schemaIDFilter),
-		zap.Bool("dry_run", *dryRun),
-		zap.Bool("auto_estimate_row_bytes", autoEstimateRowBytes))
+		zap.Int("schema_id_filter", opts.schemaIDFilter),
+		zap.Bool("dry_run", opts.dryRun),
+		zap.Bool("auto_estimate_row_bytes", opts.autoEstimateRowBytes))
 
 	if _, err := cdc.RunInit(ctx, cdc.InitOptions{
 		Config:               cfg,
 		S3Client:             s3Client,
-		SchemaRegistryTable:  schemaRegistry.table,
-		SchemaIDFilter:       *schemaIDFilter,
-		DryRun:               *dryRun,
-		AutoEstimateRowBytes: autoEstimateRowBytes,
+		SchemaRegistryTable:  opts.registry.table,
+		SchemaIDFilter:       opts.schemaIDFilter,
+		DryRun:               opts.dryRun,
+		AutoEstimateRowBytes: opts.autoEstimateRowBytes,
 		Logger:               logger,
 		SchemaRegistry:       registry,
 	}); err != nil {

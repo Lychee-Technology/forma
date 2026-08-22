@@ -13,6 +13,59 @@ import (
 	"go.uber.org/zap"
 )
 
+// renderOptimizedQuerySQL renders (or reuses a cached render of) the optimized
+// OLTP query for one shape. Extracted from StreamOptimizedQuery (#319), which
+// sat one line under the 100-line cap.
+func (r *DBPersistentRecordRepository) renderOptimizedQuerySQL(
+	tables model.StorageTables,
+	schemaID int16,
+	clause string,
+	argCount int,
+	attributeOrders []model.AttributeOrder,
+	useMainTableAsAnchor bool,
+) (string, error) {
+	sqlParams := map[string]any{
+		"EAVTable":             sanitizeIdentifier(tables.EAVData),
+		"MainTable":            sanitizeIdentifier(tables.EntityMain),
+		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
+		"MainProjection":       model.EntityMainProjection,
+		"SchemaID":             "$1",
+		"UseMainTableAsAnchor": useMainTableAsAnchor,
+		"Anchor": map[string]any{
+			"Condition": clause,
+		},
+		"SortKeys": attributeOrders,
+		"Limit":    fmt.Sprintf("$%d", argCount+2),
+		"Offset":   fmt.Sprintf("$%d", argCount+3),
+		"PageSize": fmt.Sprintf("$%d", argCount+2),
+	}
+
+	// SchemaVersion is defense-in-depth (PR #148 review): today every render
+	// input derives from key-covered values (metadata reaches the skeleton
+	// only through clause text and attributeOrders), but fingerprinting keeps
+	// the key correct if the template ever consumes metadata directly.
+	fingerprint := ""
+	if r.metadataCache != nil {
+		fingerprint, _ = r.metadataCache.SchemaFingerprint(schemaID)
+	}
+	renderKey := queryplan.Key{
+		Kind:          "postgres_optimized_template",
+		SchemaVersion: fingerprint,
+		SchemaID:      schemaID,
+		ShapeHash:     strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, argCount, attributeOrders), 16),
+	}
+	queryAny, cacheHit, err := r.planCache.GetOrBuild(renderKey, func() (any, error) {
+		return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
+	})
+	if err != nil {
+		return "", fmt.Errorf("build optimized query: %w", err)
+	}
+	if !cacheHit {
+		zap.S().Debugw("optimized query render cache miss", "schemaID", schemaID)
+	}
+	return queryAny.(string), nil
+}
+
 func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -37,45 +90,14 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		offset = 0
 	}
 
-	sqlParams := map[string]any{
-		"EAVTable":             sanitizeIdentifier(tables.EAVData),
-		"MainTable":            sanitizeIdentifier(tables.EntityMain),
-		"ChangeLogTable":       sanitizeIdentifier(tables.ChangeLog),
-		"MainProjection":       model.EntityMainProjection,
-		"SchemaID":             "$1",
-		"UseMainTableAsAnchor": useMainTableAsAnchor,
-		"Anchor": map[string]any{
-			"Condition": clause,
-		},
-		"SortKeys": attributeOrders,
-		"Limit":    fmt.Sprintf("$%d", len(args)+2),
-		"Offset":   fmt.Sprintf("$%d", len(args)+3),
-		"PageSize": fmt.Sprintf("$%d", len(args)+2),
-	}
-
-	// SchemaVersion is defense-in-depth (PR #148 review): today every render
-	// input derives from key-covered values (metadata reaches the skeleton
-	// only through clause text and attributeOrders), but fingerprinting keeps
-	// the key correct if the template ever consumes metadata directly.
-	fingerprint := ""
-	if r.metadataCache != nil {
-		fingerprint, _ = r.metadataCache.SchemaFingerprint(schemaID)
-	}
-	renderKey := queryplan.Key{
-		Kind:          "postgres_optimized_template",
-		SchemaVersion: fingerprint,
-		SchemaID:      schemaID,
-		ShapeHash:     strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, len(args), attributeOrders), 16),
-	}
-	queryAny, cacheHit, err := r.planCache.GetOrBuild(renderKey, func() (any, error) {
-		return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
-	})
+	// Deliberately a bare return rather than AGENTS.md's usual wrap-with-context:
+	// renderOptimizedQuerySQL already wraps as "build optimized query: %w", which
+	// is the exact text this call site produced before #319 extracted it. Adding a
+	// second layer here would both duplicate the context and change the
+	// caller-visible message, which this behaviour-preserving refactor must not do.
+	query, err := r.renderOptimizedQuerySQL(tables, schemaID, clause, len(args), attributeOrders, useMainTableAsAnchor)
 	if err != nil {
-		return 0, fmt.Errorf("build optimized query: %w", err)
-	}
-	query := queryAny.(string)
-	if !cacheHit {
-		zap.S().Debugw("optimized query render cache miss", "schemaID", schemaID)
+		return 0, err
 	}
 
 	queryArgs := make([]any, 0, len(args)+3)

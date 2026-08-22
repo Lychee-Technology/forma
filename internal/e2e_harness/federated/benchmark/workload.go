@@ -48,7 +48,7 @@ type WorkloadDefinition struct {
 }
 
 // DefaultWorkloads returns the initial declarative workload matrix.
-func DefaultWorkloads() []WorkloadDefinition {
+func DefaultWorkloads() []WorkloadDefinition { //nolint:funlen // permanent: a flat workload table literal; splitting it would hide the data, not simplify it
 	return []WorkloadDefinition{
 		{
 			Name:                  "baseline-page-1",

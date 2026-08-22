@@ -94,7 +94,7 @@ func (r *Runner) executeServiceWorkload(ctx context.Context, h *federated.Federa
 	return run, records, nil
 }
 
-func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
+func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.FederatedTestHarness, workload WorkloadDefinition) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) { //nolint:funlen // #437: benchmark harness split
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
@@ -353,7 +353,7 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	return result, records, nil
 }
 
-func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
+func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) { //nolint:funlen // #437: benchmark harness split
 	if h == nil || h.PGDSN == "" {
 		return nil, nil, nil, fmt.Errorf("benchmark harness postgres DSN is required")
 	}
