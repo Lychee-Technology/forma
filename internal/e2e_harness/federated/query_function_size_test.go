@@ -46,10 +46,13 @@ func measureFunctionLines(filename string, source []byte) ([]guardedFunction, er
 }
 
 // listFunctionGuardedSourceFiles scans a narrower set than the file-size guard,
-// which also covers harness*.go: NewFederatedTestHarness there is already past
-// the 100-line hard limit, so including it would make this guard unsatisfiable
-// without a harness.go refactor this change does not own. Widening the scope to
-// match is #431's job, at which point both guards can share one pattern list.
+// which since #369 covers the whole package: two functions outside query*.go are
+// over the trigger and would make this guard unsatisfiable on arrival —
+// NewFederatedTestHarness in harness.go at 131 lines, past even AGENTS.md's
+// 100-line hard limit (#431), and loadExternalFederatedConfigFromEnv in
+// helpers.go at 84. Each needs a refactor this guard does not own, so the scope
+// widens one file group at a time; only once both are under the trigger can this
+// guard drop its pattern list and share listGuardedSourceFiles.
 func listFunctionGuardedSourceFiles() ([]string, error) {
 	return listNonTestSources("query*.go")
 }
