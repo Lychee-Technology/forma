@@ -30,7 +30,8 @@ func TestListGuardedSourceFilesCoversEveryNonTestSource(t *testing.T) {
 	guarded := make(map[string]bool, len(files))
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
-			t.Fatalf("test file %s included in source guard", name)
+			t.Errorf("test file %s included in source guard", name)
+			continue
 		}
 		guarded[name] = true
 	}
