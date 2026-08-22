@@ -16,18 +16,44 @@ func TestCountSourceLinesIncludesFinalUnterminatedLine(t *testing.T) {
 	}
 }
 
-func TestListGuardedSourceFilesExcludesTests(t *testing.T) {
+// TestListGuardedSourceFilesCoversEveryNonTestSource pins the guard's scope to
+// the whole package: every non-test source file is watched, and no test file is.
+// Listing the directory independently is what makes the first half real, and it
+// is what a pattern list cannot satisfy — a file whose name stops matching a
+// pattern drops out of a pattern-based guard in silence (#369).
+func TestListGuardedSourceFilesCoversEveryNonTestSource(t *testing.T) {
 	files, err := listGuardedSourceFiles()
 	if err != nil {
 		t.Fatalf("list guarded source files: %v", err)
 	}
-	if len(files) == 0 {
-		t.Fatal("expected guarded source files")
-	}
+
+	guarded := make(map[string]bool, len(files))
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
-			t.Fatalf("test file %s included in source guard", name)
+			t.Errorf("test file %s included in source guard", name)
+			continue
 		}
+		guarded[name] = true
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+
+	sources := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		sources++
+		if !guarded[name] {
+			t.Errorf("%s is outside the file-size guard", name)
+		}
+	}
+	if sources == 0 {
+		t.Fatal("expected package source files")
 	}
 }
 
@@ -65,12 +91,16 @@ func listNonTestSources(patterns ...string) ([]string, error) {
 	return files, nil
 }
 
+// listGuardedSourceFiles scopes the file-size guard to the whole package rather
+// than to a list of name patterns. Every non-test file is watched, so a new one
+// arrives guarded and a renamed one cannot slip out (#369).
 func listGuardedSourceFiles() ([]string, error) {
-	return listNonTestSources("query*.go", "harness*.go")
+	return listNonTestSources("*.go")
 }
 
-// TestGuardedSourcesStayWithinFileSizeLimit prevents query assembly and harness
-// infrastructure concerns from accumulating back into oversized source files (#220).
+// TestGuardedSourcesStayWithinFileSizeLimit prevents any concern in this harness
+// package — query assembly, seeding, assertions, infrastructure — from
+// accumulating back into an oversized source file (#220, #369).
 func TestGuardedSourcesStayWithinFileSizeLimit(t *testing.T) {
 	names, err := listGuardedSourceFiles()
 	if err != nil {
