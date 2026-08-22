@@ -90,6 +90,11 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 		offset = 0
 	}
 
+	// Deliberately a bare return rather than AGENTS.md's usual wrap-with-context:
+	// renderOptimizedQuerySQL already wraps as "build optimized query: %w", which
+	// is the exact text this call site produced before #319 extracted it. Adding a
+	// second layer here would both duplicate the context and change the
+	// caller-visible message, which this behaviour-preserving refactor must not do.
 	query, err := r.renderOptimizedQuerySQL(tables, schemaID, clause, len(args), attributeOrders, useMainTableAsAnchor)
 	if err != nil {
 		return 0, err
