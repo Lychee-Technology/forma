@@ -7,8 +7,9 @@ It is a good source of real behavioral tests and regression guards.
 
 ## Primary Test Files
 
-- `internal/entity_manager_test.go`
-- prefer adding or extending a focused `internal/entity_query_service_test.go` when service-level behavior is hard to express cleanly in `entity_manager_test.go`
+- `internal/entity_query_service_test.go` (Query, pagination, condition, federated-path tests)
+- `internal/entity_cross_schema_search_test.go` (cross-schema aggregation tests)
+- shared mocks and builders live in `internal/entity_manager_mocks_test.go` (the former `entity_manager_test.go` was split by concern in #320)
 
 ## Functions In Scope
 
