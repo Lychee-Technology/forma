@@ -236,3 +236,14 @@ func createTestConfig() *forma.Config {
 		},
 	}
 }
+
+func visitPayload(id string) map[string]any {
+	return map[string]any{
+		"id":               id,
+		"leadId":           "lead-1",
+		"userId":           "user-1",
+		"propertyId":       "property-1",
+		"scheduledStartAt": "2024-01-01T00:00:00Z",
+		"status":           "scheduled",
+	}
+}
