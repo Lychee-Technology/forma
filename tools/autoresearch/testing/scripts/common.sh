@@ -175,7 +175,7 @@ resolve_target_primary_test() {
       printf '%s\n' 'internal/postgres_duckdb_federated_integration_test.go'
       ;;
     entity_query_service)
-      printf '%s\n' 'internal/entity_manager_test.go'
+      printf '%s\n' 'internal/entity_query_service_test.go'
       ;;
     postgres_repo_query)
       printf '%s\n' 'internal/postgres_persistent_repository_repo_test.go'

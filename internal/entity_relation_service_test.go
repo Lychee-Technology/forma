@@ -16,7 +16,7 @@ import (
 
 // mockByAttrValuesCall records one QueryPersistentRecordsByAttrValues
 // invocation on mockPersistentRecordRepository (declared in
-// entity_manager_test.go) for batching assertions.
+// entity_manager_mocks_test.go) for batching assertions.
 type mockByAttrValuesCall struct {
 	schemaID int16
 	attr     string
