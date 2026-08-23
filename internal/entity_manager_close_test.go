@@ -22,7 +22,7 @@ func (r *recordingCloser) Close() error {
 }
 
 // newTestEntityManagerForClose builds a manager the same way
-// TestEntityManager_Create does (entity_manager_test.go): same registry,
+// TestEntityManager_Create does (entity_crud_service_test.go): same registry,
 // transformer, mock repository, and default test config, with opts appended.
 func newTestEntityManagerForClose(t *testing.T, opts ...EntityManagerOption) forma.EntityManager {
 	t.Helper()
