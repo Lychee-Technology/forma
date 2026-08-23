@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,8 +29,8 @@ func countSourceLines(source []byte) int {
 }
 
 // listGuardedFiles watches every Go file in the package directory, tests
-// included — unlike the httpapi and federated guards, which exclude tests
-// because their packages carry grandfathered oversized test files. The
+// included — unlike the httpapi and federated guards, which exclude tests: the
+// federated package carries grandfathered oversized test files (#369). The
 // violations this guard exists for were test files (#320, #271, #401), so
 // tests are in scope. Glob *.go with no filtering cannot silently narrow
 // the way a pattern list can (#369): every Go file in the directory matches.
@@ -42,6 +43,51 @@ func listGuardedFiles() ([]string, error) {
 		return nil, fmt.Errorf("no guarded files matched *.go")
 	}
 	return files, nil
+}
+
+// TestListGuardedFilesCoversEveryGoFileIncludingTests pins the guard's scope by
+// listing the package directory independently: every Go file on disk must be in
+// the listing, and the _test.go assertion is inverted relative to the httpapi
+// and federated guards — here a test file must be present, not absent (#320).
+// The listing is also required to hold at least one test file, so the inversion
+// stays pinned even if ReadDir and Glob were ever to drift together.
+func TestListGuardedFilesCoversEveryGoFileIncludingTests(t *testing.T) {
+	files, err := listGuardedFiles()
+	if err != nil {
+		t.Fatalf("list guarded files: %v", err)
+	}
+
+	guarded := make(map[string]bool, len(files))
+	listedTests := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			listedTests++
+		}
+		guarded[name] = true
+	}
+	if listedTests == 0 {
+		t.Error("no _test.go file in the listing: the guard has stopped covering tests")
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+
+	found := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		found++
+		if !guarded[name] {
+			t.Errorf("%s is outside the file-size guard", name)
+		}
+	}
+	if found == 0 {
+		t.Fatal("expected package Go files")
+	}
 }
 
 // TestFactoryPackageFilesStayWithinFileSizeLimit keeps every file in the
