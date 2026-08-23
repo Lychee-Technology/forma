@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,7 +41,7 @@ func listGuardedFiles() ([]string, error) {
 		return nil, fmt.Errorf("glob guarded files: %w", err)
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no guarded files matched *.go")
+		return nil, errors.New("no guarded files matched *.go")
 	}
 	return files, nil
 }
