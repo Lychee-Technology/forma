@@ -31,8 +31,8 @@ deliberately with `GOTOOLCHAIN=auto make test`. On a machine whose local Go is n
 E2E (requires Docker; testcontainers-based):
 
 ```bash
-go test -v ./internal/e2e_harness/... -timeout=5m                          # infra smoke
-go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m     # full federated suite
+GOTOOLCHAIN=go1.26.0 go test -v ./internal/e2e_harness/... -timeout=5m                      # infra smoke
+GOTOOLCHAIN=go1.26.0 go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m # full federated suite
 make test-e2e-production                                                    # production harness + oracle
 ```
 
