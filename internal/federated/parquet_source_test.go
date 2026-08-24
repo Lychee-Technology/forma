@@ -13,7 +13,15 @@ import (
 )
 
 func hybridDuckConfig() forma.DuckDBConfig {
-	return forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
+	// Enables the hybrid engine AND the #456 caller-hint feature scoped to the
+	// "b" test bucket, so hint-path unit tests run behind the same gate as
+	// production.
+	return forma.DuckDBConfig{
+		Enabled:                 true,
+		AllowCallerParquetPaths: true,
+		S3Bucket:                "b",
+		Routing:                 forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid},
+	}
 }
 
 type fakeParquetSource struct {
@@ -178,7 +186,7 @@ func TestParquetSource_EmptyHintErrs(t *testing.T) {
 func TestDuckDBParquetPathsForQuery_DegenerateHint(t *testing.T) {
 	noHint, err := duckDBParquetPathsForQuery(&model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7},
-	})
+	}, hybridDuckConfig())
 	require.NoError(t, err)
 	require.Nil(t, noHint)
 
@@ -187,7 +195,7 @@ func TestDuckDBParquetPathsForQuery_DegenerateHint(t *testing.T) {
 			AttributeQuery: model.AttributeQuery{SchemaID: 7},
 			DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: tmpl},
 		}
-		paths, err := duckDBParquetPathsForQuery(q)
+		paths, err := duckDBParquetPathsForQuery(q, hybridDuckConfig())
 		require.Nil(t, paths)
 		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
 		require.ErrorContains(t, err, tmpl)
@@ -404,7 +412,8 @@ func TestParquetSource_PathsErrorClassifiedReadFailed(t *testing.T) {
 // tests need: only the parquet source and the corrupt-path cache participate,
 // so every other seam stays nil.
 func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
-	return NewDBFederatedQueryEngine(nil, nil, nil, nil, forma.DuckDBConfig{}, nil, "", WithParquetSource(src))
+	return NewDBFederatedQueryEngine(nil, nil, nil, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, "", WithParquetSource(src))
 }
 
 func exclusionTestQuery() *model.FederatedAttributeQuery {
@@ -449,15 +458,15 @@ func TestResolveParquetPathsAllCorruptKeepsFullSet(t *testing.T) {
 // them.
 func TestResolveParquetPathsHintSetNeverFiltered(t *testing.T) {
 	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet"}})
-	e.corruptPaths.Add([]string{"s3://hinted/x.parquet"})
+	e.corruptPaths.Add([]string{"s3://b/hinted.parquet"})
 	q := exclusionTestQuery()
-	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://hinted/x.parquet"}
+	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/hinted.parquet"}
 
 	paths, fromSource, _, excluded, err := e.resolveParquetPaths(context.Background(), q)
 	require.NoError(t, err)
 	require.False(t, fromSource)
 	require.Empty(t, excluded)
-	require.Equal(t, []string{"s3://hinted/x.parquet"}, paths)
+	require.Equal(t, []string{"s3://b/hinted.parquet"}, paths)
 }
 
 // TestRecordCorruptExclusionNotesExcludedObjects pins the loudness half: the
