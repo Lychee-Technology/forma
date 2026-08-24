@@ -15,7 +15,13 @@ import (
 // schemavalidate assertion on changed stdlib error text under go1.27 —
 // because GOTOOLCHAIN=auto upgrades to a newer local toolchain but never
 // downgrades to the pinned one. The Makefile pins GOTOOLCHAIN for every
-// gate; this test goes red first if the pin leaves GOENV, and it also ties CI to the pin: CI's test job runs go test under setup-go's GO_VERSION, so bumping ci.yml's GO_VERSION without go.mod (or vice versa) fails here by design. It observes only the binary that compiled it — the lint gate's wiring is pinned separately by TestLintRecipeInheritsGOENV.
+// gate; this test goes red first if the pin leaves GOENV. It also ties CI
+// to the pin in one direction: CI's test job runs go test under setup-go's
+// GO_VERSION with no GOTOOLCHAIN set, so a GO_VERSION on a newer major.minor
+// than go.mod's directive fails here, while a go.mod-only bump auto-upgrades
+// CI's toolchain and passes, and patch-level divergence is tolerated. The
+// test observes only the binary that compiled it — the lint gate's wiring is
+// pinned separately by TestLintRecipeInheritsGOENV.
 func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 	mod, err := os.ReadFile("go.mod")
 	if err != nil {
