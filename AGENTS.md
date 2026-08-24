@@ -16,11 +16,17 @@ make coverage      # unit tests + coverage report in build/
 make build-all     # build server/tools/sample into build/ with platform symlinks
 ```
 
-Run a single test (mirror the Makefile's env to avoid sandbox cache/VCS errors):
+Run a single test (mirror the Makefile's env — GOTOOLCHAIN included, see the note below):
 
 ```bash
-GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false go test ./internal/sqlgen -run TestName -v
+GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false GOTOOLCHAIN=go1.26.0 go test ./internal/sqlgen -run TestName -v
 ```
+
+The Makefile pins `GOTOOLCHAIN` to go.mod's `go` directive (#448): `GOTOOLCHAIN=auto`
+never downgrades, so a newer local Go breaks `make lint` (golangci-lint v1.64.8 cannot
+read newer export data) and `make test` (stdlib error-text assertions). Direct `go test`
+invocations bypass the Makefile, so set it yourself as above. Probe a newer toolchain
+deliberately with `GOTOOLCHAIN=auto make test`.
 
 E2E (requires Docker; testcontainers-based):
 
