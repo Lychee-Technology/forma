@@ -89,7 +89,7 @@ lint:
 	@echo "Installing golangci-lint..."
 	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	@echo "Running golangci-lint..."
-	@PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --timeout=5m
+	@$(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --timeout=5m
 
 # Run unit tests with coverage report
 coverage: create-build-dir
