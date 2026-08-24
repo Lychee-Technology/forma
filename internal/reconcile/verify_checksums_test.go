@@ -84,7 +84,7 @@ func TestVerifyChecksums_MatchingBytesAreClean(t *testing.T) {
 
 	var out bytes.Buffer
 	report.Render(&out)
-	require.Equal(t, "schema 7: clean\n", out.String())
+	require.Equal(t, "schema 7: clean (1 objects, 1 manifest entries)\n", out.String())
 }
 
 func TestVerifyChecksums_MutatedBytesAreDivergence(t *testing.T) {
@@ -131,7 +131,7 @@ func TestVerifyChecksums_LegacyUnstampedEntrySkippedAndCounted(t *testing.T) {
 
 	var out bytes.Buffer
 	report.Render(&out)
-	require.Equal(t, "schema 7: clean (1 unstamped entry skipped)\n", out.String())
+	require.Equal(t, "schema 7: clean (1 objects, 1 manifest entries; 1 unstamped entry skipped)\n", out.String())
 }
 
 func TestVerifyChecksums_UnprovenDanglingCandidateNotRead(t *testing.T) {

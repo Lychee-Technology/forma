@@ -159,3 +159,31 @@ type listerFunc func(ctx context.Context, prefix string) ([]ObjectInfo, error)
 func (f listerFunc) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	return f(ctx, prefix)
 }
+
+func TestReconcileSchema_RecordsInventoryCounts(t *testing.T) {
+	deltaListed := "data/7/" + uuidA + ".parquet"
+	merged := "data/7/base-" + uuidB + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": {
+			{Key: deltaListed, LastModified: testClock()},
+			{Key: merged, LastModified: testClock()},
+			{Key: "data/7/notes.txt", LastModified: testClock()}, // not parquet: never counted
+		},
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: deltaListed},
+	}})
+	r := newTestReconciler(lister, manifests, &fakeDeleter{}, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
+
+	report, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s := report.Schemas[0]
+	if s.ObjectsSeen != 2 {
+		t.Fatalf("ObjectsSeen = %d, want 2 (parquet objects only)", s.ObjectsSeen)
+	}
+	if s.ManifestEntries != 1 {
+		t.Fatalf("ManifestEntries = %d, want 1", s.ManifestEntries)
+	}
+}

@@ -152,6 +152,7 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 
 	d := diffSchema(r.Bucket, r.DataPrefix, schemaID, objects, m)
+	s.ObjectsSeen, s.ManifestEntries = d.objectsSeen, d.manifestEntries
 	s.DeltaOrphans = objectKeyList(d.deltaOrphans)
 	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)
