@@ -167,6 +167,12 @@ jobs:
           DUCKDB_MANIFEST_TEMPLATE: "manifest/{{.SchemaID}}.json"
           S3_BUCKET: forma-cdc
           S3_PREFIX: delta
+          # federated-check sends an explicit s3_parquet_path_template hint
+          # (s3://forma-cdc/delta/{{.SchemaID}}/*.parquet). Since #456 that
+          # per-request hint is rejected by default; opt in here so the smoke
+          # exercises the hint path (in-scope of S3_BUCKET) rather than silently
+          # falling back to manifest reads.
+          DUCKDB_ALLOW_CALLER_PARQUET_PATHS: "true"
         run: |
           ./build/server &
           for i in $(seq 1 30); do

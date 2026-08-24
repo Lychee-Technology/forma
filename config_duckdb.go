@@ -340,6 +340,17 @@ func (c *Config) validateDuckDBConfig() error {
 	if err := c.DuckDB.ValidateManifestRead(); err != nil {
 		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)
 	}
+	// #456: honoring a caller-supplied s3_parquet_path_template requires a
+	// bucket to scope it against; validateHintPathScope would otherwise reject
+	// every such request at run time. Fail fast at startup instead — an
+	// operator misconfiguration must not masquerade as invalid caller input,
+	// mirroring the manifest-read bucket requirement above.
+	if c.DuckDB.AllowCallerParquetPaths && strings.TrimSpace(c.DuckDB.S3Bucket) == "" {
+		return &ConfigError{
+			Field:   "duckdb.s3Bucket",
+			Message: "must be set when duckdb.allowCallerParquetPaths is enabled",
+		}
+	}
 
 	return nil
 }

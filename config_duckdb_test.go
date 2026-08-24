@@ -343,6 +343,36 @@ func TestValidateDuckDBConfig_ManifestReadWiredIntoValidate(t *testing.T) {
 	}
 }
 
+// TestValidateDuckDBConfig_AllowCallerParquetPathsRequiresBucket pins #456: the
+// caller-path opt-in cannot be enabled without a bucket to scope hints against,
+// so Validate fails fast at startup rather than letting every hint-bearing
+// request 4xx at run time.
+func TestValidateDuckDBConfig_AllowCallerParquetPathsRequiresBucket(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig(NewMockSchemaRegistry())
+	config.DuckDB.AllowCallerParquetPaths = true
+	config.DuckDB.S3Bucket = "  " // whitespace-only is still "unset"
+
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("Expected Validate to reject allowCallerParquetPaths without a bucket, got nil")
+	}
+	var configErr *ConfigError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("Expected ConfigError, got %T (%v)", err, err)
+	}
+	if configErr.Field != "duckdb.s3Bucket" {
+		t.Errorf("Expected error field duckdb.s3Bucket, got %s", configErr.Field)
+	}
+
+	// With a bucket set, the same opt-in validates cleanly.
+	config.DuckDB.S3Bucket = "forma-cdc"
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Expected allowCallerParquetPaths + bucket to validate, got %v", err)
+	}
+}
+
 func TestDuckDBConfig_ManifestReadEnabled(t *testing.T) {
 	t.Parallel()
 
