@@ -70,6 +70,27 @@ func TestHintQuoteCharRejected(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
 
+// TestHintRenderedOutOfScopeRejected pins that scope is checked AFTER template
+// rendering, not on the raw template: a template whose {{.SchemaID}} expansion
+// lands outside the bucket is rejected on its rendered value.
+func TestHintRenderedOutOfScopeRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://other/{{.SchemaID}}/x.parquet"), cfg)
+	require.Nil(t, paths)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestHintMixedScopeRejected pins that a comma-separated multi-path template is
+// validated per segment: one out-of-scope segment rejects the whole hint, so an
+// in-scope segment cannot smuggle an out-of-scope sibling into the scan set.
+func TestHintMixedScopeRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	paths, err := duckDBParquetPathsForQuery(
+		hintQuery("s3://b/{{.SchemaID}}/base/*.parquet, s3://other/{{.SchemaID}}/x.parquet"), cfg)
+	require.Nil(t, paths)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
 // TestHintEmptyBucketRejected pins that the feature cannot be honored without a
 // bucket to scope against, even with the flag on.
 func TestHintEmptyBucketRejected(t *testing.T) {

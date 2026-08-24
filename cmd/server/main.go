@@ -159,6 +159,12 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	if err := duckCfg.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
 	}
+	// #456: the caller-path opt-in needs a bucket to scope hints against; reject
+	// the enabled-without-bucket combination here, before any I/O, rather than
+	// 4xx-ing every hint-bearing request at run time.
+	if err := duckCfg.ValidateCallerParquetPaths(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	}
 
 	startupTimeout := dbConfig.Timeout
 	if startupTimeout <= 0 {

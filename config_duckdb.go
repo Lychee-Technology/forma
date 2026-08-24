@@ -340,17 +340,29 @@ func (c *Config) validateDuckDBConfig() error {
 	if err := c.DuckDB.ValidateManifestRead(); err != nil {
 		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)
 	}
-	// #456: honoring a caller-supplied s3_parquet_path_template requires a
-	// bucket to scope it against; validateHintPathScope would otherwise reject
-	// every such request at run time. Fail fast at startup instead — an
-	// operator misconfiguration must not masquerade as invalid caller input,
-	// mirroring the manifest-read bucket requirement above.
-	if c.DuckDB.AllowCallerParquetPaths && strings.TrimSpace(c.DuckDB.S3Bucket) == "" {
+	if err := c.DuckDB.ValidateCallerParquetPaths(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ValidateCallerParquetPaths rejects the #456 caller-path opt-in when no bucket
+// is configured to scope hints against. Honoring
+// federated.s3_parquet_path_template requires a non-empty S3Bucket:
+// validateHintPathScope would otherwise reject every such request at run time,
+// turning an operator misconfiguration into invalid caller input. Like
+// ValidateManifestRead, validation is independent of Enabled — whether the
+// setting takes effect is the factory's gate, but an incoherent combination is
+// always a configuration error. Both cmd/server and the factory call this
+// beside ValidateManifestRead so the failure lands at startup, before any I/O,
+// rather than on the first hint-bearing request.
+func (d DuckDBConfig) ValidateCallerParquetPaths() error {
+	if d.AllowCallerParquetPaths && strings.TrimSpace(d.S3Bucket) == "" {
 		return &ConfigError{
 			Field:   "duckdb.s3Bucket",
 			Message: "must be set when duckdb.allowCallerParquetPaths is enabled",
 		}
 	}
-
 	return nil
 }

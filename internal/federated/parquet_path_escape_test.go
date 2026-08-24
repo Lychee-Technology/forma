@@ -34,12 +34,12 @@ func TestExecutorParquetSitesEscapeQuotes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cap := &captureDuckExecutor{}
-			tc.run(cap)
-			if len(cap.queries) == 0 {
+			rec := &captureDuckExecutor{}
+			tc.run(rec)
+			if len(rec.queries) == 0 {
 				t.Fatalf("%s issued no query", tc.name)
 			}
-			sql := cap.queries[0]
+			sql := rec.queries[0]
 			// Anchor on the payload prefix: an unescaped path renders
 			// "parquet') UNION" (a lone quote closing the literal), a doubled
 			// one renders "parquet'') UNION". A bare "') UNION" check cannot

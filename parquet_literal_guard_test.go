@@ -43,10 +43,16 @@ func TestParquetPathRendersAreEscaped(t *testing.T) {
 			return false
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
+		if !ok || sel.Sel.Name != "EscapeLiteral" {
 			return false
 		}
-		return sel.Sel.Name == "EscapeLiteral"
+		// Require the sqlutil receiver: a same-named helper from another
+		// package must not satisfy the guard, since sqlutil.EscapeLiteral is the
+		// single documented home of the doubling rule. Every render site calls
+		// it qualified, so an unqualified EscapeLiteral (only reachable from
+		// inside sqlutil itself) is deliberately out of scope.
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "sqlutil"
 	}
 
 	// isPathRenderFormat reports whether a format string literal renders a

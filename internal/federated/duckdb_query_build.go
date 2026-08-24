@@ -326,13 +326,25 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.Duck
 }
 
 // validateHintPathScope fails a caller-supplied parquet path set unless every
-// rendered path sits inside the configured bucket and carries no character that
-// could break out of the SQL string literal it is rendered into (#456). The
-// trailing slash on the bucket prefix is load-bearing: it blocks the
-// s3://<bucket>X/... prefix-collision bypass and a bare s3://<bucket> with no
-// key. The bucket name is operator detail and stays out of the published
-// message (#313); the caller's own path may be echoed.
+// rendered path sits inside the configured bucket (#456). The trailing slash on
+// the bucket prefix is load-bearing: it blocks the s3://<bucket>X/... prefix-
+// collision bypass and a bare s3://<bucket> with no key. The bucket name is
+// operator detail and stays out of the published message (#313); the caller's
+// own path may be echoed.
+//
+// The disallowed-character check is defense-in-depth, not the escaping boundary:
+// every render site already routes the path through sqlutil.EscapeLiteral, and
+// in a single-quoted DuckDB literal only a single quote can alter SQL structure
+// once doubled — the double-quote, semicolon, and newlines cannot. Rejecting
+// them outright keeps such a path from ever reaching a render site, at the cost
+// of refusing the rare object key that legitimately contains one.
+//
+// The bucket is trimmed to match Config.ValidateCallerParquetPaths, which
+// rejects a whitespace-only bucket at startup; trimming here keeps a
+// hand-built engine (tests, embedders that skip Config.Validate) consistent
+// rather than silently rejecting every hint against a padded bucket.
 func validateHintPathScope(paths []string, bucket string) error {
+	bucket = strings.TrimSpace(bucket)
 	if bucket == "" {
 		return forma.WithOperatorDetail(
 			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
