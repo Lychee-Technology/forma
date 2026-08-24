@@ -55,6 +55,11 @@ func (s *schemaIDList) Set(v string) error {
 		if err != nil {
 			return fmt.Errorf("invalid schema id %q: %w", part, err)
 		}
+		if id <= 0 {
+			// Registry schema IDs are positive; 0/negative would parse but
+			// silently waive nothing — fail the typo fast instead.
+			return fmt.Errorf("invalid schema id %q: must be a positive schema ID", part)
+		}
 		*s = append(*s, int16(id))
 	}
 	return nil

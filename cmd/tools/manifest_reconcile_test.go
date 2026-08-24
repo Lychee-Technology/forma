@@ -216,6 +216,18 @@ func TestParseReconcileFlags_AllowEmptyManifestSchema(t *testing.T) {
 	}); err == nil {
 		t.Fatal("non-numeric schema id must error")
 	}
+
+	// Registry schema IDs are positive (--schema-id treats 0 as "all"), so
+	// 0 or a negative value can never match a real schema: the allowance
+	// would parse yet silently waive nothing. Fail the typo fast instead.
+	for _, bad := range []string{"0", "-7"} {
+		if _, err := parseReconcileFlags([]string{
+			"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
+			"--allow-empty-manifest-schema", bad,
+		}); err == nil {
+			t.Fatalf("non-positive schema id %q must error", bad)
+		}
+	}
 }
 
 func TestNewReconciler_WiresEmptyManifestAllowance(t *testing.T) {
