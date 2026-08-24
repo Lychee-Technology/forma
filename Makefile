@@ -23,16 +23,19 @@ MAIN_LAMBDA=./cmd/lambda
 GOCACHE?=$(CURDIR)/.gocache
 # Disable VCS stamping by default to prevent stat-cache permission warnings in sandboxed builds.
 GOFLAGS?=-buildvcs=false
-# Pin the toolchain the go-based gates run under to go.mod's go directive (#448).
-# GOTOOLCHAIN=auto only ever upgrades — a toolchain directive in go.mod is a
-# floor, not a ceiling — so a newer local Go silently replaces CI's pinned
-# version: golangci-lint v1.64.8 then reports ~46 spurious typecheck errors
-# (it cannot read the newer export data) and schemavalidate trips on changed
-# stdlib error text. ?= keeps deliberate probes possible: GOTOOLCHAIN=auto make test.
-# fmt-check is not covered: it calls the local gofmt binary directly. The
-# derivation needs go.mod's go directive to stay a full x.y.z — a patchless
-# "go 1.27" would derive go1.27, which is not a valid toolchain name.
-GOTOOLCHAIN?=go$(shell sed -n 's/^go //p' go.mod)
+# Pin the go toolchain the go-based gates run under (#448). go.mod's go directive
+# is go1.26.0, matched by golangci-lint v1.64.8 in CI. GOTOOLCHAIN=go1.26+auto
+# fixes the selected version at go1.26.0 exactly: unlike plain GOTOOLCHAIN=auto —
+# which adopts a newer *local* Go (auto never downgrades) and so makes
+# golangci-lint v1.64.8 report ~46 spurious typecheck errors it cannot read the
+# newer export data for, and schemavalidate trip on changed stdlib error text —
+# the go1.26 floor keeps a newer local Go from replacing CI's version (verified:
+# with a local go1.26.6, `GOTOOLCHAIN=go1.26+auto go version` still reports
+# go1.26.0). The +auto suffix still follows a higher go/toolchain directive in
+# go.mod if one is ever added, downloading it on demand — so a future bump needs
+# no change here. ?= keeps deliberate probes possible: GOTOOLCHAIN=auto make test.
+# fmt-check is not covered: it calls the local gofmt binary directly.
+GOTOOLCHAIN?=go1.26+auto
 GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)" GOTOOLCHAIN=$(GOTOOLCHAIN)
 
 GOOS=$(shell $(GOENV) go env GOOS)

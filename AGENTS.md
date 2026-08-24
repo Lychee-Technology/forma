@@ -19,20 +19,24 @@ make build-all     # build server/tools/sample into build/ with platform symlink
 Run a single test (mirror the Makefile's env — GOTOOLCHAIN included, see the note below):
 
 ```bash
-GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false GOTOOLCHAIN=go1.26.0 go test ./internal/sqlgen -run TestName -v
+GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false GOTOOLCHAIN=go1.26+auto go test ./internal/sqlgen -run TestName -v
 ```
 
-The Makefile pins `GOTOOLCHAIN` to go.mod's `go` directive (#448): `GOTOOLCHAIN=auto`
-never downgrades, so a newer local Go breaks `make lint` (golangci-lint v1.64.8 cannot
-read newer export data) and `make test` (stdlib error-text assertions). Direct `go test`
-invocations bypass the Makefile, so set it yourself as above. Probe a newer toolchain
-deliberately with `GOTOOLCHAIN=auto make test`. On a machine whose local Go is newer, the first pinned run downloads the go1.26.0 toolchain once. The `go1.26.0` in the example above matches go.mod's `go` directive — update the two together.
+The Makefile pins `GOTOOLCHAIN=go1.26+auto` (#448). The `go1.26` floor fixes the
+selected toolchain at go1.26.0 — unlike `GOTOOLCHAIN=auto`, which never downgrades and
+so lets a newer local Go break `make lint` (golangci-lint v1.64.8 cannot read newer
+export data) and `make test` (stdlib error-text assertions). The `+auto` suffix still
+follows a higher `go`/`toolchain` directive in go.mod if one is added, so a future bump
+needs no change here. Direct `go test` invocations bypass the Makefile, so set it
+yourself as above. Probe a newer toolchain deliberately with `GOTOOLCHAIN=auto make test`.
+On a machine whose local Go is newer than 1.26.0, the first run downloads the go1.26.0
+toolchain once.
 
 E2E (requires Docker; testcontainers-based):
 
 ```bash
-GOTOOLCHAIN=go1.26.0 go test -v ./internal/e2e_harness/... -timeout=5m                      # infra smoke
-GOTOOLCHAIN=go1.26.0 go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m # full federated suite
+GOTOOLCHAIN=go1.26+auto go test -v ./internal/e2e_harness/... -timeout=5m                      # infra smoke
+GOTOOLCHAIN=go1.26+auto go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m # full federated suite
 make test-e2e-production                                                    # production harness + oracle
 ```
 

@@ -28,14 +28,17 @@ func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	// The directive must carry a full x.y.z: the Makefile's sed derives
-	// GOTOOLCHAIN from it verbatim, and a patchless "go 1.26" would derive
-	// go1.26 — not a valid toolchain name. Requiring the patch segment here
-	// makes this guard red on the same precondition, while capturing only
-	// major.minor so patch-level toolchain divergence stays tolerated.
+	// The directive must carry a full x.y.z so this guard captures a stable
+	// major.minor to compare against; go.mod's own convention writes the patch
+	// ("go 1.26.0"). The Makefile pins GOTOOLCHAIN=go1.26+auto — a fixed floor,
+	// no longer sed-derived from this directive — so the go1.26 floor selects
+	// go1.26.0 without adopting a newer local Go, while +auto still follows a
+	// higher go/toolchain directive here if one is added. Requiring the patch
+	// segment keeps the major.minor capture below unambiguous, while capturing
+	// only major.minor so patch-level toolchain divergence stays tolerated.
 	match := regexp.MustCompile(`(?m)^go (\d+\.\d+)\.\d+`).FindSubmatch(mod)
 	if match == nil {
-		t.Fatal("no full x.y.z go directive found in go.mod: the Makefile's GOTOOLCHAIN derivation needs one (#448)")
+		t.Fatal("no full x.y.z go directive found in go.mod: this pinned-toolchain guard needs the patch segment to capture major.minor (#448)")
 	}
 	want := "go" + string(match[1])
 	got := runtime.Version()
