@@ -15,7 +15,7 @@ import (
 // schemavalidate assertion on changed stdlib error text under go1.27 —
 // because GOTOOLCHAIN=auto upgrades to a newer local toolchain but never
 // downgrades to the pinned one. The Makefile pins GOTOOLCHAIN for every
-// gate; this test is what goes red first if that wiring is ever removed.
+// gate; this test goes red first if the pin leaves GOENV, and it also ties CI to the pin: CI's test job runs go test under setup-go's GO_VERSION, so bumping ci.yml's GO_VERSION without go.mod (or vice versa) fails here by design. It observes only the binary that compiled it — the lint gate's wiring is pinned separately by TestLintRecipeInheritsGOENV.
 func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 	mod, err := os.ReadFile("go.mod")
 	if err != nil {
@@ -29,5 +29,32 @@ func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 	got := runtime.Version()
 	if got != want && !strings.HasPrefix(got, want+".") {
 		t.Fatalf("test binary built by %s, but go.mod pins %s.x (#448): run gates through make, which sets GOTOOLCHAIN, or export GOTOOLCHAIN yourself", got, want)
+	}
+}
+
+// TestLintRecipeInheritsGOENV pins the other half of the #448 wiring: the
+// lint gate. golangci-lint spawns its own `go list`, which reads GOTOOLCHAIN
+// from the environment, so the Makefile's lint run line must lead with
+// $(GOENV). TestGatesRunUnderPinnedToolchain cannot see this gate, and the
+// branch that introduced the pin shipped exactly this omission until review
+// caught it (commit 78f003a) — a $(GOENV) buried inside the GOPATH command
+// substitution does not reach the linter process, so a prefix is required.
+func TestLintRecipeInheritsGOENV(t *testing.T) {
+	mk, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	found := false
+	for _, line := range strings.Split(string(mk), "\n") {
+		if !strings.Contains(line, "golangci-lint run") {
+			continue
+		}
+		found = true
+		if !strings.HasPrefix(strings.TrimLeft(line, "\t@"), "$(GOENV) ") {
+			t.Errorf("lint recipe line %q does not lead with $(GOENV): golangci-lint would run its go list on the ambient toolchain, reviving the spurious typecheck errors of #448", line)
+		}
+	}
+	if !found {
+		t.Fatal("no golangci-lint run line found in Makefile: the lint-pin guard has lost its target")
 	}
 }
