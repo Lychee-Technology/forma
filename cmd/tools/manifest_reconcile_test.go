@@ -184,3 +184,43 @@ func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
 		t.Fatal("help must return nil options")
 	}
 }
+
+func TestParseReconcileFlags_AllowEmptyManifestSchema(t *testing.T) {
+	opts, err := parseReconcileFlags([]string{
+		"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
+		"--allow-empty-manifest-schema", "7",
+		"--allow-empty-manifest-schema", "9,11",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(opts.allowEmptyManifestSchemas) != 3 ||
+		opts.allowEmptyManifestSchemas[0] != 7 ||
+		opts.allowEmptyManifestSchemas[1] != 9 ||
+		opts.allowEmptyManifestSchemas[2] != 11 {
+		t.Fatalf("allowEmptyManifestSchemas = %v, want [7 9 11]", opts.allowEmptyManifestSchemas)
+	}
+
+	// The allowance only modifies --gc's guard; accepting it without --gc
+	// would silently arm a future deletion the operator never reviewed.
+	if _, err := parseReconcileFlags([]string{
+		"--s3-bucket", "bkt", "--schema-registry-table", "t",
+		"--allow-empty-manifest-schema", "7",
+	}); err == nil {
+		t.Fatal("--allow-empty-manifest-schema without --gc must error")
+	}
+
+	if _, err := parseReconcileFlags([]string{
+		"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
+		"--allow-empty-manifest-schema", "abc",
+	}); err == nil {
+		t.Fatal("non-numeric schema id must error")
+	}
+}
+
+func TestNewReconciler_WiresEmptyManifestAllowance(t *testing.T) {
+	r := newReconciler(&reconcileOptions{allowEmptyManifestSchemas: []int16{7, 9}}, &s3.Client{}, nil, zap.NewNop())
+	if len(r.Opts.AllowEmptyManifestSchemas) != 2 || r.Opts.AllowEmptyManifestSchemas[0] != 7 || r.Opts.AllowEmptyManifestSchemas[1] != 9 {
+		t.Fatalf("AllowEmptyManifestSchemas = %v, want [7 9]", r.Opts.AllowEmptyManifestSchemas)
+	}
+}
