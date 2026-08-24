@@ -81,13 +81,14 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 // leaking it into the validator would skip a probe the operator-pinned set
 // has no manifest evidence for.
 func TestResolveScanSourcesHintPathsHaveNoStamps(t *testing.T) {
-	const hinted = "s3://hinted/x.parquet"
+	const hinted = "s3://b/hinted.parquet"
 	src := &fakeParquetSource{
 		paths:  []string{"s3://b/7/a.parquet"},
 		stamps: map[string]map[string]string{hinted: buildStampedSystemCols()},
 	}
 	duck := &fakeDuckDBExecutor{}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, forma.DuckDBConfig{},
+	e := NewDBFederatedQueryEngine(nil, nil, duck, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"},
 		testMetadataCacheSchema7(t), "", WithParquetSource(src))
 
 	q := exclusionTestQuery()

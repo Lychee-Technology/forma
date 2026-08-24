@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // verifyParquetPaths re-reads each path individually via a full SELECT *
@@ -68,7 +70,7 @@ func unverifiablePath(path string) bool {
 
 // drainParquet opens one parquet object and iterates it to exhaustion.
 func drainParquet(ctx context.Context, duck DuckDBQueryExecutor, path string) error {
-	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT * FROM read_parquet('%s')", path))
+	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT * FROM read_parquet('%s')", sqlutil.EscapeLiteral(path)))
 	if err != nil {
 		return fmt.Errorf("open parquet %s: %w", path, err)
 	}

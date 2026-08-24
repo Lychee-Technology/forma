@@ -105,6 +105,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	if err := effectiveConfig.DuckDB.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
 	}
+	// #456: reject the caller-path opt-in without a bucket before any I/O, so an
+	// operator misconfiguration fails fast instead of surfacing as a 4xx on
+	// every hint-bearing request.
+	if err := effectiveConfig.DuckDB.ValidateCallerParquetPaths(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect tables for schema %s: %w", schemaName, err)

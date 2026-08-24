@@ -20,11 +20,11 @@ func capturePlanPathSQL(t *testing.T, withCache bool, schemaID int16, mc *schema
 		opts = append(opts, WithPlanCache(queryplan.NewCache(16)))
 	}
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		hybridDuckConfig(),
 		mc, "host=pg dbname=x", opts...)
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: schemaID, Limit: 25}}
 	q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
-	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://bench/{schema_id}/base.parquet"}
+	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/bench/{schema_id}/base.parquet"}
 	orders := []model.AttributeOrder{{AttrID: 3, AttrName: "symbol", ColumnName: "text_01",
 		StorageLocation: forma.AttributeStorageLocationMain, SortOrder: forma.SortOrderDesc, ValueType: forma.ValueTypeText}}
 	tables := model.StorageTables{EntityMain: "entity_main_b", EAVData: "eav_b", ChangeLog: "cl_b"}

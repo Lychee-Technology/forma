@@ -100,7 +100,7 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 
 	duck := &fakeDuckDBExecutor{}
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		hybridDuckConfig(),
 		coldPlanCacheMetadata(t), "host=x",
 		WithPlanCache(queryplan.NewCache(64)),
 		WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}))
@@ -185,7 +185,7 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 		},
 	}
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		hybridDuckConfig(),
 		coldPlanCacheMetadata(t), "host=x",
 		WithPlanCache(queryplan.NewCache(64)))
 

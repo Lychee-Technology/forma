@@ -255,6 +255,13 @@ func (e *Env) startDuckDB() error {
 		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: 2,
 		QueryTimeout:   60 * time.Second,
+		// #456: the production harness drives federated reads through the
+		// caller-supplied S3ParquetPathTemplate hint, so it opts into the
+		// feature and scopes it to the cluster bucket. Setting S3Bucket without
+		// ManifestTemplate stays inert for manifest reads (ManifestReadEnabled
+		// gates on the template only).
+		S3Bucket:                c.Bucket,
+		AllowCallerParquetPaths: true,
 	}
 	e.DuckCfg.Routing.Strategy = e.opts.routing
 

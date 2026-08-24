@@ -843,6 +843,7 @@ only it.
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360) |
+| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`, `validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, or resolves outside the configured bucket (#456). The hint template and the offending rendered path are caller-owned and published; the configured bucket name is operator detail (`WithOperatorDetail`). |
 
 The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.

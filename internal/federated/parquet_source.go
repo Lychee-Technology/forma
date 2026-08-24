@@ -63,7 +63,7 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // forwarded unfiltered — a stamp key for a #251-excluded object is harmless
 // because the validator looks up by surviving path.
 func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, excludedCorrupt []string, err error) {
-	hinted, err := duckDBParquetPathsForQuery(q)
+	hinted, err := duckDBParquetPathsForQuery(q, e.cfg)
 	if err != nil {
 		return nil, false, nil, nil, fmt.Errorf("render parquet path hint: %w", err)
 	}

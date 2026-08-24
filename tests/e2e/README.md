@@ -20,7 +20,7 @@ Rigorous correctness is owned by the **Go production harness** (`internal/e2e_ha
 
 - [Bun](https://bun.sh/) runtime
 - [k6](https://k6.io/) for load testing, or Docker for the built-in fallback runner
-- Docker & Docker Compose (for local infrastructure)
+- Docker or Podman with Docker Compose compatibility (for local infrastructure)
 - Go toolchain (for building CDC tools)
 
 ## Quick Start
@@ -39,6 +39,20 @@ bun run test
 ```
 
 `bun run test` only runs `register-schemas -> gen-data -> cdc-flush -> federated-check`. `cdc-init`, `compactor`, and k6 are available as manual follow-up steps.
+
+## Go Container Tests
+
+The repo-wide Go test command includes a testcontainers smoke test. Use the helper
+from the repository root to auto-detect Docker or Podman, configure the compatible
+socket, and run the full test target:
+
+```bash
+./scripts/test_with_container_runtime.sh
+```
+
+For rootless Podman, the helper starts `$XDG_RUNTIME_DIR/podman/podman.sock`, sets
+`DOCKER_HOST` to that Docker-compatible endpoint, and disables the Ryuk reaper. An
+existing `DOCKER_HOST` is honored.
 
 For a one-shot local performance run that starts Forma, waits for `/health`, runs `k6-full`, and then cleans up, use:
 
@@ -251,6 +265,7 @@ See `.env.example` for all available configuration options:
 | `DUCKDB_S3_PREFIX` | _(unset)_ | Server: S3 data prefix for DuckDB. Falls back to `S3_PREFIX`, but **only when a manifest template is also set** (see below) |
 | `DUCKDB_MANIFEST_PREFIX` | _(unset)_ | Server: manifest prefix for DuckDB. Falls back to `MANIFEST_PREFIX`, but **only when a manifest template is also set** |
 | `DUCKDB_MANIFEST_TEMPLATE` | _(unset)_ | Server: manifest template (switch for manifest-driven reads; fails at startup if set without bucket). Falls back to `MANIFEST_TEMPLATE` |
+| `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` | `false` | Server: opt in to honoring the per-request `s3_parquet_path_template` hint (#456). Default off rejects the hint; when `true`, hint paths must fall inside `S3_BUCKET`, and enabling it without a bucket fails at startup. `federated-check` sends such a hint, so this must be `true` (with `S3_BUCKET` set) to exercise the hint path |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
 `MANIFEST_PREFIX` and `MANIFEST_TEMPLATE` are **reserved shared names**, not

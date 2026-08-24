@@ -103,6 +103,7 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
 	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
 	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
+	base.AllowCallerParquetPaths = bootstrap.EnvBool("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", base.AllowCallerParquetPaths)
 	return base
 }
 
@@ -157,6 +158,12 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
 	if err := duckCfg.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
+	// #456: the caller-path opt-in needs a bucket to scope hints against; reject
+	// the enabled-without-bucket combination here, before any I/O, rather than
+	// 4xx-ing every hint-bearing request at run time.
+	if err := duckCfg.ValidateCallerParquetPaths(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
 	}
 
 	startupTimeout := dbConfig.Timeout

@@ -182,6 +182,21 @@ func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testin
 	}
 }
 
+// TestDuckDBConfigFromEnv_AllowCallerParquetPaths pins the #456 opt-in:
+// caller-supplied parquet path templates stay off unless
+// DUCKDB_ALLOW_CALLER_PARQUET_PATHS is set, and turning it on flips the flag.
+func TestDuckDBConfigFromEnv_AllowCallerParquetPaths(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); got.AllowCallerParquetPaths {
+		t.Fatalf("expected AllowCallerParquetPaths off by default, got true")
+	}
+
+	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
+	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); !got.AllowCallerParquetPaths {
+		t.Fatalf("expected AllowCallerParquetPaths on when DUCKDB_ALLOW_CALLER_PARQUET_PATHS=true")
+	}
+}
+
 func TestBootstrapServer_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -189,6 +204,29 @@ func TestBootstrapServer_CanceledContext(t *testing.T) {
 	_, err := bootstrapServer(ctx, zap.NewNop().Sugar())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+// TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket pins #456: the
+// caller-path opt-in without a bucket is refused at startup, before any DB I/O
+// (the check sits beside ValidateManifestRead, above the pool connect), rather
+// than surfacing as a 4xx on every hint-bearing request. This is the wiring a
+// review found missing — Config.Validate itself has no production caller.
+func TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
+	// Env() treats an empty value as unset, so these force an empty bucket even
+	// if the ambient environment exports one.
+	t.Setenv("S3_BUCKET", "")
+	t.Setenv("DUCKDB_S3_BUCKET", "")
+
+	_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
+	if err == nil {
+		t.Fatal("expected startup to reject allowCallerParquetPaths without a bucket, got nil")
+	}
+	var configErr *forma.ConfigError
+	if !errors.As(err, &configErr) || configErr.Field != "duckdb.s3Bucket" {
+		t.Fatalf("expected a ConfigError on duckdb.s3Bucket, got %v", err)
 	}
 }
 

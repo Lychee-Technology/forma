@@ -326,7 +326,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 func formatDuckDBPathList(paths []string) string {
 	quoted := make([]string, 0, len(paths))
 	for _, path := range paths {
-		quoted = append(quoted, fmt.Sprintf("'%s'", path))
+		quoted = append(quoted, fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(path)))
 	}
 	if len(quoted) == 1 {
 		return quoted[0]

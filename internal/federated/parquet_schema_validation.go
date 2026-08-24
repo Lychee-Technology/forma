@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/lychee-technology/forma/internal/parquetcheck"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
 
@@ -396,7 +397,7 @@ func (v *parquetSchemaValidator) markValidated(path string, cols, stamp map[stri
 // globParquetPaths expands one glob pattern to its concrete matches via
 // DuckDB's glob() table function (httpfs LIST under s3://).
 func globParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, pattern string) ([]string, error) {
-	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT file FROM glob('%s')", pattern))
+	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT file FROM glob('%s')", sqlutil.EscapeLiteral(pattern)))
 	if err != nil {
 		return nil, fmt.Errorf("expand parquet glob %s: %w", pattern, err)
 	}
@@ -421,7 +422,7 @@ func globParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, pattern str
 // executor seam; the row scan itself is shared with the *sql.DB probe in
 // parquetcheck so the DESCRIBE row shape lives in exactly one place.
 func describeParquetColumns(ctx context.Context, duck DuckDBQueryExecutor, path string) (map[string]string, error) {
-	rows, err := duck.Query(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", path))
+	rows, err := duck.Query(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", sqlutil.EscapeLiteral(path)))
 	if err != nil {
 		return nil, fmt.Errorf("describe parquet %s: %w", path, err)
 	}

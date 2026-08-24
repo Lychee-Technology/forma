@@ -275,11 +275,21 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	return sqlStr, args, true
 }
 
-func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, error) {
+func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.DuckDBConfig) ([]string, error) {
 	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
 		return nil, nil
 	}
-	rendered, err := sqlgen.RenderS3ParquetPath(q.DuckDBHints.S3ParquetPathTemplate, q.SchemaID)
+	tmpl := q.DuckDBHints.S3ParquetPathTemplate
+	// #456 layer 1: the template is a caller-controlled scan target, so it is
+	// honored only where the operator has explicitly opted in. Reject rather
+	// than ignore — a silent ignore would answer from a different path set than
+	// the caller named, the same provenance switch the invalid-template rule
+	// below exists to prevent.
+	if !cfg.AllowCallerParquetPaths {
+		return nil, forma.InvalidInputf(
+			"caller-supplied s3_parquet_path_template %q is not permitted on this deployment", tmpl)
+	}
+	rendered, err := sqlgen.RenderS3ParquetPath(tmpl, q.SchemaID)
 	if err != nil {
 		// A caller-supplied template that cannot render is invalid input, not
 		// an absent hint: swallowing it would silently serve the query from a
@@ -288,8 +298,7 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, err
 		// payload field, so the published message may echo it; text/template's
 		// render prose is operator detail and stays log-only (#313).
 		return nil, forma.WithOperatorDetail(
-			forma.InvalidInputf("render s3 parquet path template %q: the template is not renderable",
-				q.DuckDBHints.S3ParquetPathTemplate), err)
+			forma.InvalidInputf("render s3 parquet path template %q: the template is not renderable", tmpl), err)
 	}
 	parts := strings.Split(rendered, ",")
 	paths := make([]string, 0, len(parts))
@@ -307,8 +316,50 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery) ([]string, err
 		// the caller explicitly requested. Same rule as an unrenderable
 		// template: explicit hints always win, including when they fail
 		// (#250 PR review).
-		return nil, forma.InvalidInputf("s3 parquet path template %q rendered no usable paths",
-			q.DuckDBHints.S3ParquetPathTemplate)
+		return nil, forma.InvalidInputf("s3 parquet path template %q rendered no usable paths", tmpl)
+	}
+	// #456 layer 2: every rendered path must sit inside the configured bucket.
+	if err := validateHintPathScope(paths, cfg.S3Bucket); err != nil {
+		return nil, err
 	}
 	return paths, nil
+}
+
+// validateHintPathScope fails a caller-supplied parquet path set unless every
+// rendered path sits inside the configured bucket (#456). The trailing slash on
+// the bucket prefix is load-bearing: it blocks the s3://<bucket>X/... prefix-
+// collision bypass and a bare s3://<bucket> with no key. The bucket name is
+// operator detail and stays out of the published message (#313); the caller's
+// own path may be echoed.
+//
+// The disallowed-character check is defense-in-depth, not the escaping boundary:
+// every render site already routes the path through sqlutil.EscapeLiteral, and
+// in a single-quoted DuckDB literal only a single quote can alter SQL structure
+// once doubled — the double-quote, semicolon, and newlines cannot. Rejecting
+// them outright keeps such a path from ever reaching a render site, at the cost
+// of refusing the rare object key that legitimately contains one.
+//
+// The bucket is trimmed to match Config.ValidateCallerParquetPaths, which
+// rejects a whitespace-only bucket at startup; trimming here keeps a
+// hand-built engine (tests, embedders that skip Config.Validate) consistent
+// rather than silently rejecting every hint against a padded bucket.
+func validateHintPathScope(paths []string, bucket string) error {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		return forma.WithOperatorDetail(
+			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
+			fmt.Errorf("duckdb.s3Bucket must be set to scope caller-supplied parquet paths"))
+	}
+	prefix := "s3://" + bucket + "/"
+	for _, path := range paths {
+		if strings.ContainsAny(path, "'\";\n\r") {
+			return forma.InvalidInputf("s3 parquet path %q is not permitted: it contains a disallowed character", path)
+		}
+		if !strings.HasPrefix(path, prefix) {
+			return forma.WithOperatorDetail(
+				forma.InvalidInputf("s3 parquet path %q is outside the permitted parquet scope", path),
+				fmt.Errorf("path must be under s3://%s/", bucket))
+		}
+	}
+	return nil
 }

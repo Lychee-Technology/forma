@@ -227,6 +227,13 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 		}
 	}
 
+	// #456: the federated (and benchmark) harnesses exercise the
+	// caller-supplied S3ParquetPathTemplate hint, so opt into the feature and
+	// scope it to this harness's bucket. Both branches above have finalized
+	// duckCfg and bucket by here.
+	duckCfg.S3Bucket = bucket
+	duckCfg.AllowCallerParquetPaths = true
+
 	// Create S3 client
 	s3Client, err := createS3Client(ctx, base.S3Endpoint, s3Region, s3AccessKey, s3SecretKey)
 	if err != nil {
