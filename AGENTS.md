@@ -26,7 +26,7 @@ The Makefile pins `GOTOOLCHAIN` to go.mod's `go` directive (#448): `GOTOOLCHAIN=
 never downgrades, so a newer local Go breaks `make lint` (golangci-lint v1.64.8 cannot
 read newer export data) and `make test` (stdlib error-text assertions). Direct `go test`
 invocations bypass the Makefile, so set it yourself as above. Probe a newer toolchain
-deliberately with `GOTOOLCHAIN=auto make test`. On a machine whose local Go is newer, the first pinned run downloads the go1.26.0 toolchain once.
+deliberately with `GOTOOLCHAIN=auto make test`. On a machine whose local Go is newer, the first pinned run downloads the go1.26.0 toolchain once. The `go1.26.0` in the example above matches go.mod's `go` directive — update the two together.
 
 E2E (requires Docker; testcontainers-based):
 

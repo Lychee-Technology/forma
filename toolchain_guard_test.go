@@ -27,9 +27,14 @@ func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	match := regexp.MustCompile(`(?m)^go (\d+\.\d+)`).FindSubmatch(mod)
+	// The directive must carry a full x.y.z: the Makefile's sed derives
+	// GOTOOLCHAIN from it verbatim, and a patchless "go 1.26" would derive
+	// go1.26 — not a valid toolchain name. Requiring the patch segment here
+	// makes this guard red on the same precondition, while capturing only
+	// major.minor so patch-level toolchain divergence stays tolerated.
+	match := regexp.MustCompile(`(?m)^go (\d+\.\d+)\.\d+`).FindSubmatch(mod)
 	if match == nil {
-		t.Fatal("no go directive found in go.mod")
+		t.Fatal("no full x.y.z go directive found in go.mod: the Makefile's GOTOOLCHAIN derivation needs one (#448)")
 	}
 	want := "go" + string(match[1])
 	got := runtime.Version()
