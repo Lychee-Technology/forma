@@ -24,18 +24,22 @@ GOCACHE?=$(CURDIR)/.gocache
 # Disable VCS stamping by default to prevent stat-cache permission warnings in sandboxed builds.
 GOFLAGS?=-buildvcs=false
 # Pin the go toolchain the go-based gates run under (#448). go.mod's go directive
-# is go1.26.0, matched by golangci-lint v1.64.8 in CI. GOTOOLCHAIN=go1.26+auto
-# fixes the selected version at go1.26.0 exactly: unlike plain GOTOOLCHAIN=auto —
-# which adopts a newer *local* Go (auto never downgrades) and so makes
-# golangci-lint v1.64.8 report ~46 spurious typecheck errors it cannot read the
-# newer export data for, and schemavalidate trip on changed stdlib error text —
-# the go1.26 floor keeps a newer local Go from replacing CI's version (verified:
-# with a local go1.26.6, `GOTOOLCHAIN=go1.26+auto go version` still reports
-# go1.26.0). The +auto suffix still follows a higher go/toolchain directive in
-# go.mod if one is ever added, downloading it on demand — so a future bump needs
-# no change here. ?= keeps deliberate probes possible: GOTOOLCHAIN=auto make test.
-# fmt-check is not covered: it calls the local gofmt binary directly.
-GOTOOLCHAIN?=go1.26+auto
+# is "go 1.26" (a language version); golangci-lint v1.64.8 in CI runs go1.26.0.
+# GOTOOLCHAIN=go1.26.0+auto fixes the selected version at go1.26.0 exactly:
+# unlike plain GOTOOLCHAIN=auto — which adopts a newer *local* Go (auto never
+# downgrades) and so makes golangci-lint v1.64.8 report ~46 spurious typecheck
+# errors it cannot read the newer export data for, and schemavalidate trip on
+# changed stdlib error text — the go1.26.0 floor keeps a newer local Go from
+# replacing CI's version (verified: with a local go1.26.6,
+# `GOTOOLCHAIN=go1.26.0+auto go version` still reports go1.26.0). The floor must
+# name a full toolchain (go1.26.0, not go1.26): a bare go1.26 is a language
+# version, not a toolchain name, and fails to resolve now that the go directive
+# carries no patch. The +auto suffix still follows a higher go/toolchain
+# directive in go.mod if one is ever added, downloading it on demand — so a
+# future bump needs no change here. ?= keeps deliberate probes possible:
+# GOTOOLCHAIN=auto make test. fmt-check is not covered: it calls the local gofmt
+# binary directly.
+GOTOOLCHAIN?=go1.26.0+auto
 GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)" GOTOOLCHAIN=$(GOTOOLCHAIN)
 
 GOOS=$(shell $(GOENV) go env GOOS)
