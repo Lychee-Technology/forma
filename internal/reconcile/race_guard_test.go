@@ -15,14 +15,19 @@ func TestGC_CollectsInitShapedBaseOrphans(t *testing.T) {
 	old := testClock().Add(-24 * time.Hour)
 	initShaped := "data/7/" + uuidA + "_" + uuidB + ".parquet"
 	merged := "data/7/base-" + uuidB + ".parquet"
+	listedDelta := "data/7/" + uuidC + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
 		"data/7/": {
+			{Key: listedDelta, LastModified: old},
 			{Key: initShaped, LastModified: old},
 			{Key: merged, LastModified: old},
 		},
 	}}
 	deleter := &fakeDeleter{}
-	r := newTestReconciler(lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
+	// Non-empty manifest so the #463 guard stays out of this test's way.
+	r := newTestReconciler(lister, newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}}), deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
 	r.Opts = Options{GC: true, GCGrace: 15 * time.Minute}
 	seedGCSighting(t, r, 7, old, initShaped, merged)
 
@@ -41,11 +46,19 @@ func TestGC_CollectsInitShapedBaseOrphans(t *testing.T) {
 func TestGC_ZeroGraceRefusesDeletion(t *testing.T) {
 	old := testClock().Add(-24 * time.Hour)
 	merged := "data/7/base-" + uuidA + ".parquet"
+	listedDelta := "data/7/" + uuidC + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
-		"data/7/": {{Key: merged, LastModified: old}},
+		"data/7/": {
+			{Key: listedDelta, LastModified: old},
+			{Key: merged, LastModified: old},
+		},
 	}}
 	deleter := &fakeDeleter{}
-	r := newTestReconciler(lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
+	// Non-empty manifest so the zero-grace refusal below — not the #463
+	// empty-manifest guard — is what this test exercises.
+	r := newTestReconciler(lister, newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}}), deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
 	r.Opts = Options{GC: true} // zero-value grace: must refuse, not delete everything
 
 	report, err := r.Run(context.Background())

@@ -22,14 +22,21 @@ func TestGC_DeletesBaseAndTmpPastGrace(t *testing.T) {
 	old := testClock().Add(-16 * time.Minute)
 	baseKey := "data/7/base-" + uuidA + ".parquet"
 	tmpKey := "data/7/_tmp/" + uuidB + ".parquet"
+	listedDelta := "data/7/" + uuidC + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
 		"data/7/": {
+			{Key: listedDelta, LastModified: old},
 			{Key: baseKey, Size: 10, LastModified: old},
 			{Key: tmpKey, Size: 20, LastModified: old},
 		},
 	}}
 	deleter := &fakeDeleter{}
-	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	// The listed delta keeps the manifest non-empty: since #463 --gc
+	// refuses to treat base objects as orphans against a zero-entry
+	// manifest (see empty_manifest_guard_test.go).
+	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}}), deleter)
 	seedGCSighting(t, r, 7, old, baseKey, tmpKey)
 
 	report, err := r.Run(context.Background())
@@ -44,14 +51,19 @@ func TestGC_GraceBoundaryNotDeleted(t *testing.T) {
 	within := testClock().Add(-14 * time.Minute)
 	baseKey := "data/7/base-" + uuidA + ".parquet"
 	tmpKey := "data/7/_tmp/" + uuidB + ".parquet"
+	listedDelta := "data/7/" + uuidC + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
 		"data/7/": {
+			{Key: listedDelta, LastModified: within},
 			{Key: baseKey, LastModified: atBoundary},
 			{Key: tmpKey, LastModified: within},
 		},
 	}}
 	deleter := &fakeDeleter{}
-	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	// Non-empty manifest so the #463 guard stays out of this test's way.
+	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}}), deleter)
 	// Sightings are old enough — the object-age gate alone must hold.
 	seedGCSighting(t, r, 7, testClock().Add(-time.Hour), baseKey, tmpKey)
 
@@ -99,14 +111,19 @@ func TestGC_DeleteFailureBestEffortContinues(t *testing.T) {
 	old := testClock().Add(-16 * time.Minute)
 	failKey := "data/7/base-" + uuidA + ".parquet"
 	okKey := "data/7/_tmp/" + uuidB + ".parquet"
+	listedDelta := "data/7/" + uuidC + ".parquet"
 	lister := &fakeLister{objects: map[string][]ObjectInfo{
 		"data/7/": {
+			{Key: listedDelta, LastModified: old},
 			{Key: failKey, LastModified: old},
 			{Key: okKey, LastModified: old},
 		},
 	}}
 	deleter := &fakeDeleter{errFor: map[string]error{failKey: fmt.Errorf("access denied")}}
-	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter)
+	// Non-empty manifest so the #463 guard stays out of this test's way.
+	r := gcReconciler(t, lister, newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}}), deleter)
 	seedGCSighting(t, r, 7, old, failKey, okKey)
 
 	report, err := r.Run(context.Background())

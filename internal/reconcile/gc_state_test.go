@@ -18,7 +18,16 @@ import (
 
 func gcStateReconciler(t *testing.T, lister *fakeLister, deleter *fakeDeleter, states *fakeGCState) *Reconciler {
 	t.Helper()
-	r := newTestReconciler(lister, newFakeManifests(&manifest.Manifest{SchemaID: 7}), deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
+	// One listed delta keeps schema 7's manifest non-empty — since #463
+	// --gc refuses base orphans against a zero-entry manifest, and these
+	// tests are about sighting-state mechanics, not the guard.
+	listedDelta := "data/7/" + uuidC + ".parquet"
+	lister.objects["data/7/"] = append(lister.objects["data/7/"],
+		ObjectInfo{Key: listedDelta, LastModified: testClock().Add(-24 * time.Hour)})
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: listedDelta},
+	}})
+	r := newTestReconciler(lister, manifests, deleter, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
 	r.GCStates = states
 	r.Opts = Options{GC: true, GCGrace: 15 * time.Minute}
 	return r
