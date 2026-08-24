@@ -9,6 +9,33 @@ import (
 	"go.uber.org/zap"
 )
 
+// refuseEmptyManifestGC is the #463 guard: a schema with at least one live
+// base-tier object and ZERO manifest entries is far more likely a
+// manifest-resolution failure (a mis-pointed --manifest-prefix/
+// --manifest-template while --data-prefix still matches; the resolver's
+// LoadOrCreate semantics turn that into an empty manifest) than genuine
+// mass orphaning — proceeding would classify the whole base tier as
+// orphaned and, past the grace, delete it irreversibly. GC therefore fails
+// the schema instead. A successful init promotion this run clears the
+// guard (it just published this schema's manifest, proving resolution
+// works), and an operator who has confirmed a schema's manifest is
+// genuinely empty can waive it per schema via --allow-empty-manifest-schema.
+func (r *Reconciler) refuseEmptyManifestGC(schemaID int16, d diffResult, promotedInit bool) error {
+	baseObjects := len(d.baseInitOrphans) + len(d.baseMergedOrphans)
+	if d.manifestEntries > 0 || baseObjects == 0 || promotedInit {
+		return nil
+	}
+	for _, id := range r.Opts.AllowEmptyManifestSchemas {
+		if id == schemaID {
+			r.Logger.Warn("empty-manifest gc guard waived by explicit allowance",
+				zap.Int16("schema_id", schemaID), zap.Int("base_objects", baseObjects))
+			return nil
+		}
+	}
+	return fmt.Errorf("gc refused for schema %d: %d base object(s) live in storage (init=%d merged=%d, %d objects seen) against 0 manifest entries resolved — treating this as a manifest-resolution failure, not mass orphaning; verify --manifest-prefix/--manifest-template against the writers' configuration, or re-run with --allow-empty-manifest-schema %d after confirming this schema's manifest is genuinely empty",
+		schemaID, baseObjects, len(d.baseInitOrphans), len(d.baseMergedOrphans), d.objectsSeen, schemaID)
+}
+
 // gcSchema deletes provable garbage — merged-base and _tmp orphans (#188
 // rewrite leftovers), init-shaped base orphans (#290: cdc-init holds the same
 // per-schema advisory lock, so under it an init-shaped orphan is provably not

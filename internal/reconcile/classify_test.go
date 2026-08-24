@@ -10,6 +10,7 @@ import (
 const (
 	uuidA = "019bed54-48eb-7cdc-aed3-8d38ec9c1394"
 	uuidB = "019bed54-48eb-7cdc-aed3-8d38ec9c1395"
+	uuidC = "019bed54-48eb-7cdc-aed3-8d38ec9c1396"
 )
 
 func TestClassifyObjectKey(t *testing.T) {
