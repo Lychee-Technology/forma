@@ -71,6 +71,15 @@ type DuckDBConfig struct {
 	// pre-existing glob-based read path.
 	ManifestTemplate string `json:"manifestTemplate"`
 
+	// AllowCallerParquetPaths opts the deployment into honoring the
+	// per-request federated.s3_parquet_path_template field (#456). It defaults
+	// to false: the field is a caller-controlled scan target, so on every
+	// existing deployment a request carrying it is rejected. When true, a
+	// caller template is still honored only for paths inside the configured
+	// S3Bucket (see the engine's path resolver) — the flag is necessary, not
+	// sufficient.
+	AllowCallerParquetPaths bool `json:"allowCallerParquetPaths"`
+
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
 

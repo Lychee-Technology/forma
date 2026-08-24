@@ -182,6 +182,21 @@ func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testin
 	}
 }
 
+// TestDuckDBConfigFromEnv_AllowCallerParquetPaths pins the #456 opt-in:
+// caller-supplied parquet path templates stay off unless
+// DUCKDB_ALLOW_CALLER_PARQUET_PATHS is set, and turning it on flips the flag.
+func TestDuckDBConfigFromEnv_AllowCallerParquetPaths(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); got.AllowCallerParquetPaths {
+		t.Fatalf("expected AllowCallerParquetPaths off by default, got true")
+	}
+
+	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
+	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); !got.AllowCallerParquetPaths {
+		t.Fatalf("expected AllowCallerParquetPaths on when DUCKDB_ALLOW_CALLER_PARQUET_PATHS=true")
+	}
+}
+
 func TestBootstrapServer_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

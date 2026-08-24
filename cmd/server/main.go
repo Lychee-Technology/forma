@@ -103,6 +103,7 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
 	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
 	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
+	base.AllowCallerParquetPaths = bootstrap.EnvBool("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", base.AllowCallerParquetPaths)
 	return base
 }
 
