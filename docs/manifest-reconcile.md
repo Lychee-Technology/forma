@@ -432,6 +432,8 @@ forma-tools manifest-reconcile ... --verify-checksums
 
 # 确认某 schema 的 manifest 确实为空后，逐 schema 放行 #463 空 manifest 防护
 forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7
+# 多个 schema：重复旗标或逗号分隔（等价写法）
+forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allow-empty-manifest-schema 11
 ```
 
 要点：
