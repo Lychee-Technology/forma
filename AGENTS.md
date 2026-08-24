@@ -14,6 +14,7 @@ make fmt-check     # gofmt gate over git-listed Go files — CI runs it ahead of
 make lint          # golangci-lint, pinned to v1.64.8 — same as CI; do not upgrade the pin
 make coverage      # unit tests + coverage report in build/
 make build-all     # build server/tools/sample into build/ with platform symlinks
+./scripts/test_with_container_runtime.sh  # auto-detect Docker/Podman, configure E2E, run make test
 ```
 
 Run a single test (mirror the Makefile's env — GOTOOLCHAIN included, see the note below):
@@ -34,13 +35,20 @@ the Makefile, so set it yourself as above. Probe a newer toolchain deliberately 
 `GOTOOLCHAIN=auto make test`. On a machine whose local Go is newer than 1.26.0, the first
 run downloads the go1.26.0 toolchain once.
 
-E2E (requires Docker; testcontainers-based):
+E2E (Docker or rootless Podman; testcontainers-based):
 
 ```bash
+./scripts/test_with_container_runtime.sh
 GOTOOLCHAIN=go1.26.0+auto go test -v ./internal/e2e_harness/... -timeout=5m                      # infra smoke
 GOTOOLCHAIN=go1.26.0+auto go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m # full federated suite
 make test-e2e-production                                                    # production harness + oracle
 ```
+
+`scripts/test_with_container_runtime.sh` honors an existing `DOCKER_HOST`. Otherwise it
+uses a reachable Docker daemon, or starts the rootless Podman socket at
+`$XDG_RUNTIME_DIR/podman/podman.sock` and exports the Docker-compatible endpoint.
+Rootless Podman runs set `TESTCONTAINERS_RYUK_DISABLED=true` because the Ryuk reaper
+cannot reliably connect to the rootless API socket. The script then runs `make test`.
 
 Bun black-box E2E and k6 load tests live in `tests/e2e/` (see its README). Benchmarks: `make benchmark-smoke` (CI), `benchmark-regression`, `benchmark-heavy`; `benchmark-heavy-live` and `benchmark-concurrency` take hours and are operator-initiated only.
 

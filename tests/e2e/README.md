@@ -20,7 +20,7 @@ Rigorous correctness is owned by the **Go production harness** (`internal/e2e_ha
 
 - [Bun](https://bun.sh/) runtime
 - [k6](https://k6.io/) for load testing, or Docker for the built-in fallback runner
-- Docker & Docker Compose (for local infrastructure)
+- Docker or Podman with Docker Compose compatibility (for local infrastructure)
 - Go toolchain (for building CDC tools)
 
 ## Quick Start
@@ -39,6 +39,20 @@ bun run test
 ```
 
 `bun run test` only runs `register-schemas -> gen-data -> cdc-flush -> federated-check`. `cdc-init`, `compactor`, and k6 are available as manual follow-up steps.
+
+## Go Container Tests
+
+The repo-wide Go test command includes a testcontainers smoke test. Use the helper
+from the repository root to auto-detect Docker or Podman, configure the compatible
+socket, and run the full test target:
+
+```bash
+./scripts/test_with_container_runtime.sh
+```
+
+For rootless Podman, the helper starts `$XDG_RUNTIME_DIR/podman/podman.sock`, sets
+`DOCKER_HOST` to that Docker-compatible endpoint, and disables the Ryuk reaper. An
+existing `DOCKER_HOST` is honored.
 
 For a one-shot local performance run that starts Forma, waits for `/health`, runs `k6-full`, and then cleans up, use:
 

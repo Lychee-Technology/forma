@@ -5,7 +5,7 @@ Forma is a general-purpose data management system built on PostgreSQL. It uses J
 ## Prerequisites
 
 - **Go** 1.26+
-- **Docker & Docker Compose** (for local PostgreSQL and S3-compatible storage)
+- **Docker or Podman**, plus Docker Compose compatibility (for local PostgreSQL and S3-compatible storage)
 - **Bun** (for E2E test scripts)
 - **k6** (for load testing; Docker fallback available)
 
@@ -84,9 +84,12 @@ make lint
 
 ### Go E2E Harness (container-based)
 
-Requires Docker. Validates the three-tier federated query architecture (Postgres Hot + S3 Delta/Base → DuckDB merge-on-read).
+Uses Docker or Podman through testcontainers. Validates the three-tier federated query architecture (Postgres Hot + S3 Delta/Base → DuckDB merge-on-read).
 
 ```bash
+# Auto-detect Docker or Podman, configure testcontainers, and run make test.
+./scripts/test_with_container_runtime.sh
+
 # Smoke test: verify infrastructure starts
 go test -v ./internal/e2e_harness/... -timeout=5m
 
@@ -96,6 +99,10 @@ go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=30m
 # Performance tests only (longer timeout)
 go test -v ./internal/e2e_harness/federated/... -run TestPerformance -tags=e2e -timeout=60m
 ```
+
+The runtime helper honors `DOCKER_HOST`. With rootless Podman it starts the user
+socket at `$XDG_RUNTIME_DIR/podman/podman.sock`, exports the Docker-compatible
+endpoint, disables the Ryuk reaper, and runs `make test`.
 
 ### Bun E2E (black-box API validation)
 
