@@ -208,6 +208,8 @@ func TestPromote_PromotedSetNotGCed(t *testing.T) {
 
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
+	require.NoError(t, report.Schemas[0].Err,
+		"a successful promotion just published the manifest, so the #463 empty-manifest guard must not fire")
 	require.ElementsMatch(t, []string{file1, file2}, report.Schemas[0].PromotedBase)
 	require.Empty(t, report.Schemas[0].Deleted, "promoted files must not be GC candidates in the same run")
 
@@ -225,6 +227,10 @@ func TestPromote_RefusedSetStaysGCEligible(t *testing.T) {
 	r := promoteReconciler(t, lister, manifests, stats, live)
 	r.Opts.GC = true
 	r.Opts.GCGrace = time.Minute
+	// A refused promotion leaves the manifest EMPTY, which is exactly the
+	// #463 guarded signature — the refused set keeps its #290 GC
+	// eligibility only under an explicit per-schema allowance.
+	r.Opts.AllowEmptyManifestSchemas = []int16{7}
 	seedGCSighting(t, r, 7, testClock().Add(-2*time.Hour), file1, file2)
 	lister.objects["data/7/"][0].LastModified = testClock().Add(-2 * time.Hour)
 	lister.objects["data/7/"][1].LastModified = testClock().Add(-2 * time.Hour)
@@ -233,7 +239,26 @@ func TestPromote_RefusedSetStaysGCEligible(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, report.Schemas[0].InitPromotionRefusal)
 	require.ElementsMatch(t, []string{file1, file2}, report.Schemas[0].Deleted,
-		"refused set keeps the #290 GC behavior")
+		"refused set keeps the #290 GC behavior under the explicit allowance")
+}
+
+func TestPromote_RefusedSetGuardedWithoutAllowance(t *testing.T) {
+	// #463 regression: the issue's exact reproduction — base objects, empty
+	// manifest, sighting and age both past grace — must FAIL, not delete.
+	lister, stats, live, file1, file2 := completeInitSet()
+	live.liveCount = 4 // partial → refusal
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{}})
+	r := promoteReconciler(t, lister, manifests, stats, live)
+	r.Opts.GC = true
+	r.Opts.GCGrace = time.Minute
+	seedGCSighting(t, r, 7, testClock().Add(-2*time.Hour), file1, file2)
+	lister.objects["data/7/"][0].LastModified = testClock().Add(-2 * time.Hour)
+	lister.objects["data/7/"][1].LastModified = testClock().Add(-2 * time.Hour)
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err)
+	require.Error(t, report.Schemas[0].Err)
+	require.Empty(t, report.Schemas[0].Deleted)
 }
 
 func TestPromote_ErrorWhenStatsUnconfigured(t *testing.T) {

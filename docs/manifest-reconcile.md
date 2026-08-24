@@ -261,6 +261,29 @@ grace，后续运行就会删除它们）。
 P 调度时上界 ≈ grace + 2P。
 混用"带 --gc 与不带 --gc"的运行方式时，早先运行留下的目击记录可能在文件短暂重新列入清单期间未被清理，建议保持一致的 --repair --gc 运行方式以让目击清理正常工作。
 
+## `--gc` 的空 manifest 防护（#463）
+
+`ResolverManifestStore.Load` 对解析不到的 manifest 采用 LoadOrCreate 语义（解析为空
+manifest）。因此当 `--manifest-prefix`/`--manifest-template` 指错位置而 `--data-prefix`
+仍然匹配时，每个 schema 的 manifest 都解析为空，所有 base 层对象都会被判为孤儿——
+两阶段宽限只是延迟，cron 的下一轮就会不可逆地删光整个 base 层。
+
+防护规则：某 schema 在存储中有 ≥1 个 base/merged 对象、而 manifest 解析出 0 个条目时，
+`--gc` 对该 schema 直接失败（计入 schema Err，进程退出码 1），拒绝把这一签名当成
+大规模孤儿。拒绝信息引用与报告一致的清点数字（对象数、manifest 条目数、各类孤儿数）。
+同一轮 `--repair` 成功完成 init 晋升的 schema 不触发防护（晋升刚刚发布了该 schema 的
+manifest，证明解析路径有效）；被**拒绝**的 init 晋升集合自 #463 起默认不再是 GC 候选
+（manifest 仍为空，正是被防护的签名），沿用 #290 回收行为需显式放行。
+
+确认某个 schema 的 manifest 确实为空（而不是模板指错）后，可用
+`--allow-empty-manifest-schema <id>`（可重复/逗号分隔，需与 `--gc` 同用）逐 schema 放行。
+刻意不提供全局开关：一次模板指错会同时清空所有 schema 的 manifest，全局放行恰好放过
+防护要拦的事故。
+
+排查手段：不带 `--repair`/`--gc` 的只读巡检即为 dry-run——报告对每个 schema 打印
+`inventory: N objects in storage, M manifest entries resolved; orphan candidates: ...`，
+「N 个对象、0 条 manifest 条目」即模板指错的典型签名。
+
 ## `--verify-stamps`：#256 戳记的离线字节真值核查
 
 #256 给每个 manifest 条目盖上 parquet footer 的列集印章（`FileEntry.columns`，列名 →
@@ -338,8 +361,9 @@ base 对象（以及压根不再参与合并的历史对象）不在其覆盖内
   splice 出去的两种跳过，探到了、对象活着的第三种照常比对；
 - **无法解析的路径 / 不在本 schema 数据前缀下的条目**（unverifiable，含 glob）：同样已在报告里。
 
-**覆盖率可观测性。** 报表会打印本轮因无印章而跳过的条目数——干净行形如
-`schema 7: clean (3 unstamped entries skipped)`，非干净时作为单独一行。它**不影响退出码**
+**覆盖率可观测性。** 报表会打印本轮因无印章而跳过的条目数——干净行并入 #463 清点数
+括号，形如 `schema 7: clean (1 objects, 1 manifest entries; 3 unstamped entries skipped)`，
+非干净时作为单独一行。它**不影响退出码**
 （缺覆盖不是差异），但读"一致"这个结论时必须带上它：对一批基本没盖章的条目扫出"一致"，
 这个结论的含金量远低于对已盖章条目扫出的"一致"。
 
@@ -406,6 +430,11 @@ forma-tools manifest-reconcile ... --verify-stamps
 
 # #347 内容校验和的字节完整性扫描（每个已盖章条目一次全量 GET，最低频运行）
 forma-tools manifest-reconcile ... --verify-checksums
+
+# 确认某 schema 的 manifest 确实为空后，逐 schema 放行 #463 空 manifest 防护
+forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7
+# 多个 schema：重复旗标或逗号分隔（等价写法）
+forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allow-empty-manifest-schema 11
 ```
 
 要点：

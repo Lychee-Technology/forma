@@ -114,6 +114,12 @@ type diffResult struct {
 	unknown           []ObjectInfo
 	dangling          []string
 	unverifiable      []string
+	// objectsSeen counts the classified parquet objects under the schema
+	// prefix; manifestEntries counts the manifest's file entries as loaded.
+	// Both feed the per-schema inventory report and the #463 empty-manifest
+	// GC guard, which must quote the same numbers the report prints.
+	objectsSeen     int
+	manifestEntries int
 }
 
 // diffSchema computes the two-way diff for one schema: objects absent from
@@ -124,6 +130,7 @@ func diffSchema(bucket, dataPrefix string, schemaID int16, objects []ObjectInfo,
 
 	manifestKeys := make(map[string]struct{}, len(m.Files))
 	var d diffResult
+	d.manifestEntries = len(m.Files)
 	for _, f := range m.Files {
 		key, ok := normalizeKey(bucket, f.Path)
 		if !ok {
@@ -140,6 +147,7 @@ func diffSchema(bucket, dataPrefix string, schemaID int16, objects []ObjectInfo,
 		if !ok {
 			continue
 		}
+		d.objectsSeen++
 		if _, listed := manifestKeys[obj.Key]; listed {
 			continue
 		}

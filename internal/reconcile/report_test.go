@@ -86,6 +86,35 @@ func TestReport_RenderNamesExactKeys(t *testing.T) {
 	}
 }
 
+func TestRender_InventoryCounts(t *testing.T) {
+	// #463: the report quotes per-schema inventory — objects seen in
+	// storage, manifest entries resolved, candidates by class — so an
+	// operator can spot the "N objects, 0 entries" resolution-failure
+	// signature before any --gc, and the guard's refusal quotes the same
+	// numbers.
+	var buf bytes.Buffer
+	Report{Schemas: []SchemaReport{{
+		SchemaID:        7,
+		ObjectsSeen:     5,
+		ManifestEntries: 0,
+		BaseOrphans:     []string{"data/7/base-b.parquet"},
+		TmpOrphans:      []string{"data/7/_tmp/c.parquet"},
+	}}}.Render(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "inventory: 5 objects in storage, 0 manifest entries resolved") {
+		t.Fatalf("missing inventory line in:\n%s", out)
+	}
+	if !strings.Contains(out, "orphan candidates: delta=0 base=1 tmp=1 unknown=0") {
+		t.Fatalf("missing candidate counts in:\n%s", out)
+	}
+
+	buf.Reset()
+	Report{Schemas: []SchemaReport{{SchemaID: 3, ObjectsSeen: 4, ManifestEntries: 4}}}.Render(&buf)
+	if !strings.Contains(buf.String(), "schema 3: clean (4 objects, 4 manifest entries)") {
+		t.Fatalf("clean line must carry the counts:\n%s", buf.String())
+	}
+}
+
 func TestResidual_PromotedBaseCountsResolved(t *testing.T) {
 	s := SchemaReport{
 		BaseOrphans:  []string{"data/7/a_b.parquet"},

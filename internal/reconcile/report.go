@@ -17,7 +17,14 @@ type SchemaReport struct {
 	Unknown      []string // unrecognized shapes; reported, never repaired or deleted
 	Dangling     []string // manifest entries with no live object; removal stays manual
 	Unverifiable []string // manifest paths this listing cannot prove absent
-	Repaired     []string // delta orphans appended to the manifest (--repair)
+	// ObjectsSeen counts this schema's classified parquet objects in
+	// storage; ManifestEntries counts its manifest's file entries as
+	// loaded (#463). Together they distinguish "the manifest genuinely
+	// lists nothing" from "the manifest failed to resolve" — N objects
+	// against 0 entries is the mis-pointed-template signature --gc refuses.
+	ObjectsSeen     int
+	ManifestEntries int
+	Repaired        []string // delta orphans appended to the manifest (--repair)
 	// DeltaLeftovers are delta orphans the repair guard classified as
 	// compaction leftovers (no uncovered rows, or every uncovered row
 	// deleted in Postgres): never appended, GC-eligible under --gc.
@@ -110,16 +117,19 @@ func (r Report) Render(w io.Writer) {
 			continue
 		}
 		if s.clean() {
-			// A clean verdict still reports the coverage gap: "clean" over
-			// entries the scrub could not check is a weaker statement.
+			// A clean verdict still reports the inventory and any coverage
+			// gap: "clean" over entries the scrub could not check is a
+			// weaker statement.
+			parenthetical := fmt.Sprintf("%d objects, %d manifest entries", s.ObjectsSeen, s.ManifestEntries)
 			if note := s.unstampedNote(); note != "" {
-				fmt.Fprintf(w, "schema %d: clean (%s)\n", s.SchemaID, note)
-				continue
+				parenthetical += "; " + note
 			}
-			fmt.Fprintf(w, "schema %d: clean\n", s.SchemaID)
+			fmt.Fprintf(w, "schema %d: clean (%s)\n", s.SchemaID, parenthetical)
 			continue
 		}
 		fmt.Fprintf(w, "schema %d:\n", s.SchemaID)
+		fmt.Fprintf(w, "  inventory: %d objects in storage, %d manifest entries resolved; orphan candidates: delta=%d base=%d tmp=%d unknown=%d\n",
+			s.ObjectsSeen, s.ManifestEntries, len(s.DeltaOrphans), len(s.BaseOrphans), len(s.TmpOrphans), len(s.Unknown))
 		renderKeys(w, "delta orphan", s.DeltaOrphans)
 		renderKeys(w, "delta leftover (gc-eligible)", s.DeltaLeftovers)
 		renderKeys(w, "base orphan", s.BaseOrphans)

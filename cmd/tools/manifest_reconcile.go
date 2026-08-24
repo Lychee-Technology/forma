@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,38 @@ func (e *discrepancyError) Error() string {
 
 func (e *discrepancyError) ExitCode() int { return 2 }
 
+// schemaIDList collects the repeatable --allow-empty-manifest-schema values;
+// each occurrence is one schema ID (comma-separated also accepted).
+type schemaIDList []int16
+
+func (s *schemaIDList) String() string {
+	parts := make([]string, 0, len(*s))
+	for _, id := range *s {
+		parts = append(parts, strconv.Itoa(int(id)))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (s *schemaIDList) Set(v string) error {
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 16)
+		if err != nil {
+			return fmt.Errorf("invalid schema id %q: %w", part, err)
+		}
+		if id <= 0 {
+			// Registry schema IDs are positive; 0/negative would parse but
+			// silently waive nothing — fail the typo fast instead.
+			return fmt.Errorf("invalid schema id %q: must be a positive schema ID", part)
+		}
+		*s = append(*s, int16(id))
+	}
+	return nil
+}
+
 // reconcileOptions carries the parsed manifest-reconcile flag values.
 type reconcileOptions struct {
 	s3              s3Flags
@@ -43,11 +76,14 @@ type reconcileOptions struct {
 	schemaID        int
 	repair          bool
 	gc              bool
-	verifyStamps    bool
-	verifyChecksums bool
-	gcGrace         time.Duration
-	etagRetries     int
-	duck            duckExportFlags
+	// allowEmptyManifestSchemas waives the #463 empty-manifest GC guard for
+	// exactly these schema IDs (never globally).
+	allowEmptyManifestSchemas []int16
+	verifyStamps              bool
+	verifyChecksums           bool
+	gcGrace                   time.Duration
+	etagRetries               int
+	duck                      duckExportFlags
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil
@@ -86,12 +122,15 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	// reports every real file as dangling and every listed key as orphaned.
 	dataPrefix := fs.String("data-prefix", "data", "Data prefix for parquet files (must match the flusher's prefix)")
 	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table (repair guard's liveness check)")
-	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
+	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (must match the writers' manifest prefix: a mis-pointed value resolves every manifest empty, classifying the whole base tier as orphaned — --gc refuses that signature, #463)")
+	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (must match the writers' template — same #463 hazard as --manifest-prefix)")
 	registryTable := fs.String("schema-registry-table", "", "Schema registry table for schema enumeration (required)")
 	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = all registered schemas)")
 	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans and promote complete init-shaped base orphan sets (coverage + eviction-safety verified)")
 	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
+	var allowEmptyManifest schemaIDList
+	fs.Var(&allowEmptyManifest, "allow-empty-manifest-schema",
+		"Schema ID whose EMPTY manifest is operator-confirmed legitimate: --gc then accepts zero manifest entries for that schema instead of refusing (#463). Repeatable / comma-separable; deliberately schema-explicit — there is no global override")
 	verifyStamps := fs.Bool("verify-stamps", false, "Compare every listed entry's column stamp against the parquet footer (byte-truth check for the #256 stamp trust)")
 	verifyChecksums := fs.Bool("verify-checksums", false, "Re-hash every checksum-stamped object and compare with the manifest stamp (#347 byte-integrity scrub; one full GET per stamped entry)")
 	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")
@@ -114,6 +153,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	if *gc && *gcGrace <= 0 {
 		return nil, fmt.Errorf("--gc-grace must be positive; a zero grace would delete a live compaction's staging objects")
 	}
+	if len(allowEmptyManifest) > 0 && !*gc {
+		return nil, fmt.Errorf("--allow-empty-manifest-schema only modifies --gc's empty-manifest guard; pass it together with --gc")
+	}
 
 	opts.manifest = cdc.ManifestConfig{
 		Bucket:       opts.s3.bucket,
@@ -126,6 +168,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	opts.schemaID = *schemaID
 	opts.repair = *repair
 	opts.gc = *gc
+	opts.allowEmptyManifestSchemas = allowEmptyManifest
 	opts.verifyStamps = *verifyStamps
 	opts.verifyChecksums = *verifyChecksums
 	opts.gcGrace = *gcGrace
@@ -223,12 +266,13 @@ func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logg
 		DataPrefix: opts.dataPrefix,
 		Logger:     logger,
 		Opts: reconcile.Options{
-			Repair:          opts.repair,
-			GC:              opts.gc,
-			GCGrace:         opts.gcGrace,
-			VerifyStamps:    opts.verifyStamps,
-			VerifyChecksums: opts.verifyChecksums,
-			MaxETagRetries:  opts.etagRetries,
+			Repair:                    opts.repair,
+			GC:                        opts.gc,
+			GCGrace:                   opts.gcGrace,
+			VerifyStamps:              opts.verifyStamps,
+			VerifyChecksums:           opts.verifyChecksums,
+			MaxETagRetries:            opts.etagRetries,
+			AllowEmptyManifestSchemas: opts.allowEmptyManifestSchemas,
 		},
 	}
 }

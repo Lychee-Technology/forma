@@ -83,6 +83,12 @@ type Options struct {
 	// parquet mis-decode corruption. One full GET per stamped entry.
 	VerifyChecksums bool
 	MaxETagRetries  int // manifest save retries on optimistic-concurrency conflict
+	// AllowEmptyManifestSchemas waives the #463 empty-manifest GC guard for
+	// exactly these schemas. Schema-explicit by design: one mis-pointed
+	// manifest template resolves EVERY schema's manifest empty, so a global
+	// override would wave the whole fleet through the very failure the
+	// guard exists to stop.
+	AllowEmptyManifestSchemas []int16
 }
 
 // Reconciler diffs S3 parquet objects against per-schema manifests and
@@ -152,6 +158,7 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 
 	d := diffSchema(r.Bucket, r.DataPrefix, schemaID, objects, m)
+	s.ObjectsSeen, s.ManifestEntries = d.objectsSeen, d.manifestEntries
 	s.DeltaOrphans = objectKeyList(d.deltaOrphans)
 	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)
@@ -255,6 +262,9 @@ func (r *Reconciler) runRepairs(ctx context.Context, schemaID int16, m *manifest
 // collectAndGC assembles this schema's GC candidate set from the diff and
 // hands it to gcSchema.
 func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffResult, promotedInit bool, deltaLeftovers []ObjectInfo) ([]string, error) {
+	if err := r.refuseEmptyManifestGC(schemaID, d, promotedInit); err != nil {
+		return nil, err
+	}
 	// Init-shaped base orphans are GC candidates since #290 — unless this
 	// run just promoted them (#292): a promoted set is now manifest-listed
 	// inventory, and gcSchema's state prune drops their sighting entries

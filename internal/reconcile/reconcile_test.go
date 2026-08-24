@@ -159,3 +159,39 @@ type listerFunc func(ctx context.Context, prefix string) ([]ObjectInfo, error)
 func (f listerFunc) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	return f(ctx, prefix)
 }
+
+func TestReconcileSchema_RecordsInventoryCounts(t *testing.T) {
+	deltaListed := "data/7/" + uuidA + ".parquet"
+	merged := "data/7/base-" + uuidB + ".parquet"
+	unknownShape := "data/7/weird.parquet" // parquet but no recognized shape: ClassUnknown
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/7/": {
+			{Key: deltaListed, LastModified: testClock()},
+			{Key: merged, LastModified: testClock()},
+			{Key: unknownShape, LastModified: testClock()},
+			{Key: "data/7/notes.txt", LastModified: testClock()}, // not parquet: never counted
+		},
+	}}
+	manifests := newFakeManifests(&manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: deltaListed},
+	}})
+	r := newTestReconciler(lister, manifests, &fakeDeleter{}, &fakeLocker{}, &fakeEnum{ids: []int16{7}})
+
+	report, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s := report.Schemas[0]
+	// Unknown shapes ARE parquet inventory: the count answers "how many
+	// parquet objects live under this schema's prefix", and an unknown
+	// shape is still an object the manifest fails to account for.
+	if s.ObjectsSeen != 3 {
+		t.Fatalf("ObjectsSeen = %d, want 3 (parquet objects incl. unknown shape)", s.ObjectsSeen)
+	}
+	if len(s.Unknown) != 1 || s.Unknown[0] != unknownShape {
+		t.Fatalf("Unknown = %v, want [%s]", s.Unknown, unknownShape)
+	}
+	if s.ManifestEntries != 1 {
+		t.Fatalf("ManifestEntries = %d, want 1", s.ManifestEntries)
+	}
+}

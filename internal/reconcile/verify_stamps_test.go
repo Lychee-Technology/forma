@@ -60,7 +60,7 @@ func TestVerifyStamps_MatchingFooterIsClean(t *testing.T) {
 
 	var out bytes.Buffer
 	report.Render(&out)
-	require.Equal(t, "schema 7: clean\n", out.String())
+	require.Equal(t, "schema 7: clean (1 objects, 1 manifest entries)\n", out.String())
 }
 
 func TestVerifyStamps_MissingDeletedAtIsDivergence(t *testing.T) {
