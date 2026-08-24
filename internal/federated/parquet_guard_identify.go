@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // identifyGuardViolations attributes a #256 scan-guard failure to the parquet
@@ -70,7 +71,7 @@ func identifyGuardViolations(ctx context.Context, duck DuckDBQueryExecutor, path
 // absent from the single-file set (proved against the pinned DuckDB in
 // sqlgen/duckdb_cold_scan_identify_test.go).
 func drainGuardedParquet(ctx context.Context, duck DuckDBQueryExecutor, path string) error {
-	src := sqlgen.BuildParquetScanSource(fmt.Sprintf("'%s'", path), nil)
+	src := sqlgen.BuildParquetScanSource(fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(path)), nil)
 	rows, err := duck.Query(ctx, "SELECT * FROM "+src)
 	if err != nil {
 		return fmt.Errorf("open guarded parquet %s: %w", path, err)
