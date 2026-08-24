@@ -90,8 +90,25 @@ func TestCILintJobRunsMakeLint(t *testing.T) {
 		t.Fatalf("read .github/workflows/ci.yml: %v", err)
 	}
 	text := string(ci)
-	if !strings.Contains(text, "make lint") {
-		t.Error("ci.yml has no `make lint` step: the lint job must run the Makefile recipe so the golangci-lint pin and GOENV have one definition (#454)")
+	// The positive half must match a real run directive, not prose: ci.yml's
+	// explanatory comment also says "make lint", so a bare substring search
+	// stays green even with the invocation deleted (#482 review). Comment
+	// lines are skipped explicitly so prose never counts, whatever shape the
+	// directive pattern takes in the future.
+	runMakeLint := regexp.MustCompile(`^run:\s*make lint\s*$`)
+	found := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if runMakeLint.MatchString(trimmed) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("ci.yml has no `run: make lint` directive: the lint job must run the Makefile recipe so the golangci-lint pin and GOENV have one definition (#454)")
 	}
 	if strings.Contains(text, "golangci-lint") {
 		t.Error("ci.yml mentions golangci-lint directly: the install+run belong to the Makefile lint recipe alone — an open-coded copy drops the GOTOOLCHAIN pin and re-splits the version pin (#454)")
