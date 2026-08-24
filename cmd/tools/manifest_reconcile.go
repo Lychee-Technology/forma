@@ -74,11 +74,11 @@ type reconcileOptions struct {
 	// allowEmptyManifestSchemas waives the #463 empty-manifest GC guard for
 	// exactly these schema IDs (never globally).
 	allowEmptyManifestSchemas []int16
-	verifyStamps    bool
-	verifyChecksums bool
-	gcGrace         time.Duration
-	etagRetries     int
-	duck            duckExportFlags
+	verifyStamps              bool
+	verifyChecksums           bool
+	gcGrace                   time.Duration
+	etagRetries               int
+	duck                      duckExportFlags
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil

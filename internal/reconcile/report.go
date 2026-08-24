@@ -24,7 +24,7 @@ type SchemaReport struct {
 	// against 0 entries is the mis-pointed-template signature --gc refuses.
 	ObjectsSeen     int
 	ManifestEntries int
-	Repaired     []string // delta orphans appended to the manifest (--repair)
+	Repaired        []string // delta orphans appended to the manifest (--repair)
 	// DeltaLeftovers are delta orphans the repair guard classified as
 	// compaction leftovers (no uncovered rows, or every uncovered row
 	// deleted in Postgres): never appended, GC-eligible under --gc.
