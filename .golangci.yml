@@ -4,8 +4,9 @@
 # dereference after `if x == nil { t.Fatal(...) }` is unreachable — but some
 # Go-toolchain/golangci-lint combinations lose that fact and demand dead
 # `return` statements after t.Fatal (this bit PRs #132 and #133). The linter
-# version is pinned in Makefile and .github/workflows/ci.yml for the same
-# reason: keep local `make lint` and CI byte-identical.
+# version is pinned in the Makefile's lint recipe alone for the same reason:
+# keep local `make lint` and CI byte-identical — CI's lint job reaches the pin
+# by running `make lint` (#454), a shape TestCILintJobRunsMakeLint guards.
 issues:
   exclude-rules:
     - path: _test\.go$

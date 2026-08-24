@@ -75,3 +75,25 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 		t.Fatal("no golangci-lint run line found in Makefile: the lint-pin guard has lost its target")
 	}
 }
+
+// TestCILintJobRunsMakeLint pins the CI side of the #448 wiring (#454): the
+// lint job must invoke `make lint` rather than open-coding the golangci-lint
+// install+run. An open-coded invocation carries none of the Makefile's GOENV
+// (GOTOOLCHAIN pin, GOCACHE, GOFLAGS), so local/CI parity would hold only
+// while setup-go's GO_VERSION coincidentally equals the Makefile's toolchain
+// floor — the same coincidence #448 proved unreliable. Asserting the absence
+// of "golangci-lint" in the workflow catches both halves of a regression:
+// re-adding the install line or the run line.
+func TestCILintJobRunsMakeLint(t *testing.T) {
+	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read .github/workflows/ci.yml: %v", err)
+	}
+	text := string(ci)
+	if !strings.Contains(text, "make lint") {
+		t.Error("ci.yml has no `make lint` step: the lint job must run the Makefile recipe so the golangci-lint pin and GOENV have one definition (#454)")
+	}
+	if strings.Contains(text, "golangci-lint") {
+		t.Error("ci.yml mentions golangci-lint directly: the install+run belong to the Makefile lint recipe alone — an open-coded copy drops the GOTOOLCHAIN pin and re-splits the version pin (#454)")
+	}
+}

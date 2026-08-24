@@ -26,10 +26,13 @@ jobs:
       - name: Check gofmt
         run: make fmt-check
 
-      - name: Run golangci-lint
-        run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
-          golangci-lint run --timeout=5m
+      # Run the Makefile recipe, not an open-coded install+run: the recipe is
+      # the single definition of the linter version pin and of GOENV
+      # (GOTOOLCHAIN=go1.26.0+auto, GOCACHE, GOFLAGS), so local `make lint`
+      # and CI stay byte-identical (#454). TestCILintJobRunsMakeLint guards
+      # this shape.
+      - name: Run linter
+        run: make lint
 
   test:
     name: Test
