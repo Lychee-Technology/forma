@@ -23,7 +23,14 @@ MAIN_LAMBDA=./cmd/lambda
 GOCACHE?=$(CURDIR)/.gocache
 # Disable VCS stamping by default to prevent stat-cache permission warnings in sandboxed builds.
 GOFLAGS?=-buildvcs=false
-GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)"
+# Pin the toolchain the gates run under to go.mod's go directive (#448).
+# GOTOOLCHAIN=auto only ever upgrades — a toolchain directive in go.mod is a
+# floor, not a ceiling — so a newer local Go silently replaces CI's pinned
+# version: golangci-lint v1.64.8 then reports ~46 spurious typecheck errors
+# (it cannot read the newer export data) and schemavalidate trips on changed
+# stdlib error text. ?= keeps deliberate probes possible: GOTOOLCHAIN=auto make test.
+GOTOOLCHAIN?=go$(shell sed -n 's/^go //p' go.mod)
+GOENV=GOCACHE=$(GOCACHE) GOFLAGS="$(GOFLAGS)" GOTOOLCHAIN=$(GOTOOLCHAIN)
 
 GOOS=$(shell $(GOENV) go env GOOS)
 GOARCH=$(shell $(GOENV) go env GOARCH)
