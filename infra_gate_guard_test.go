@@ -2,6 +2,7 @@ package forma
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -60,4 +61,27 @@ func TestMakefileHasCheckInfraTarget(t *testing.T) {
 	if !hasVet {
 		t.Error("no `cd infra && $(GOENV) ... go vet ./...` line in Makefile: check-infra must vet the module under the pinned toolchain (#444)")
 	}
+}
+
+// TestCILintJobChecksInfraModule pins the CI side of #444's build+vet gate:
+// the lint job must run `make check-infra`, the single definition of the
+// infra build+vet wiring (same #454 rationale as TestCILintJobRunsMakeLint —
+// an open-coded copy would drop GOENV and the toolchain pin). Comment lines
+// are skipped so prose never satisfies the guard.
+func TestCILintJobChecksInfraModule(t *testing.T) {
+	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read .github/workflows/ci.yml: %v", err)
+	}
+	runCheckInfra := regexp.MustCompile(`^run:\s*make check-infra\s*$`)
+	for _, line := range strings.Split(ciLintJobBlock(t, string(ci)), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if runCheckInfra.MatchString(trimmed) {
+			return
+		}
+	}
+	t.Error("ci.yml's lint job has no `run: make check-infra` directive: the infra module would go back to having no CI build/vet coverage (#444)")
 }
