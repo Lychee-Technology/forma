@@ -63,9 +63,9 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 	}
 	found := false
 	// A per-module run line may lead with `cd <dir> && ` (#444) — golangci-lint
-	// v1.64.8 has no chdir flag, and a leading cd does not keep the $(GOENV)
-	// assignments that follow it from reaching the linter process. Strip that
-	// prefix, then require $(GOENV) exactly as before.
+	// v1.64.8 has no chdir flag, and a leading cd does not prevent the
+	// following $(GOENV) assignments from reaching the linter process. Strip
+	// that prefix, then require $(GOENV) exactly as before.
 	cdPrefix := regexp.MustCompile(`^cd \S+ && `)
 	for _, line := range strings.Split(string(mk), "\n") {
 		if !strings.Contains(line, "golangci-lint run") {

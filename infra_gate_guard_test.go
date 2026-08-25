@@ -15,13 +15,17 @@ import (
 // the minimal shape that proves the linter runs in the module's own root;
 // the sibling guards in toolchain_guard_test.go already hold that same line
 // to the $(GOENV) prefix and --build-tags flag, since they scan every
-// golangci-lint run line.
+// golangci-lint run line. Comment lines are skipped so prose never satisfies
+// a positive guard (#485 review; same hardening as the ci.yml guards, #482).
 func TestLintRecipeCoversInfraModule(t *testing.T) {
 	mk, err := os.ReadFile("Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
 	for _, line := range strings.Split(string(mk), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
 		if strings.Contains(line, "golangci-lint run") && strings.Contains(line, "cd infra") {
 			return
 		}
@@ -45,6 +49,11 @@ func TestMakefileHasCheckInfraTarget(t *testing.T) {
 	}
 	var hasBuild, hasVet bool
 	for _, line := range strings.Split(text, "\n") {
+		// Skip comments for the same reason as TestLintRecipeCoversInfraModule:
+		// a positive guard must never be satisfied by prose (#485 review).
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
 		if !strings.Contains(line, "cd infra") || !strings.Contains(line, "$(GOENV)") {
 			continue
 		}
