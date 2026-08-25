@@ -53,26 +53,51 @@ func FailOnUnreachable() bool {
 	return os.Getenv("CI") != ""
 }
 
-// unreachable reports whether err indicates network-level absence of the
-// database — nothing listening, unknown host, connect timeout. A server that
-// answered and rejected us (bad credentials, missing database, protocol/TLS
-// failure) is deliberately excluded: that is misconfiguration, which must
-// fail loudly rather than skip, even off-CI (#486 review P2).
+// unreachable reports whether err denotes network-level absence of the
+// database for every connection attempt it carries. Absence means the
+// failure originated at dial time: connection refused, unreachable
+// host/network, DNS resolution, dial timeout. Anything after an accepted
+// connection — server rejection, protocol/TLS failure, handshake or startup
+// timeout — is misconfiguration and must fail loudly, even off-CI (#486
+// review P2).
+//
+// The walk is manual rather than errors.Is/As because pgx joins per-address
+// results (errors.Join inside pgconn.ConnectError), and errors.Is matches
+// when ANY joined branch matches: a mixed outcome — one address refused,
+// another answered and rejected us — would classify as absence and skip away
+// the actionable server-side error. Every joined branch must be absence on
+// its own (#486 review round 3).
 func unreachable(err error) bool {
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true
+	for err != nil {
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			branches := joined.Unwrap()
+			if len(branches) == 0 {
+				return false
+			}
+			for _, branch := range branches {
+				if !unreachable(branch) {
+					return false
+				}
+			}
+			return true
+		}
+		switch e := err.(type) {
+		case *net.OpError:
+			// The op tells where the failure happened: "dial" is absence
+			// (refused, unreachable, DNS, dial timeout all surface here);
+			// "read"/"write" mean the server accepted the connection first.
+			return e.Op == "dial"
+		case *net.DNSError:
+			return true
+		}
+		// Leaf equality, not errors.Is: Is would descend into joined
+		// subtrees below this node with any-branch semantics.
+		if err == syscall.ECONNREFUSED || err == syscall.EHOSTUNREACH || err == syscall.ENETUNREACH {
+			return true
+		}
+		err = errors.Unwrap(err)
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.EHOSTUNREACH) ||
-		errors.Is(err, syscall.ENETUNREACH) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	return errors.Is(err, context.DeadlineExceeded)
+	return false
 }
 
 // Connect opens and pings a pgxpool for the resolved DSN. Connection failures
