@@ -75,3 +75,81 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 		t.Fatal("no golangci-lint run line found in Makefile: the lint-pin guard has lost its target")
 	}
 }
+
+// TestCILintJobRunsMakeLint pins the CI side of the #448 wiring (#454): the
+// lint job must invoke `make lint` rather than open-coding the golangci-lint
+// install+run. An open-coded invocation carries none of the Makefile's GOENV
+// (GOTOOLCHAIN pin, GOCACHE, GOFLAGS), so local/CI parity would hold only
+// while setup-go's GO_VERSION coincidentally equals the Makefile's toolchain
+// floor — the same coincidence #448 proved unreliable. Asserting the absence
+// of "golangci-lint" in the whole workflow catches both halves of a
+// regression: re-adding the install line or the run line.
+func TestCILintJobRunsMakeLint(t *testing.T) {
+	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read .github/workflows/ci.yml: %v", err)
+	}
+	text := string(ci)
+	// The positive half must match a real run directive, not prose, and only
+	// inside the lint job (#482 review, both rounds): ci.yml's explanatory
+	// comment also says "make lint", and another job legitimately running the
+	// same command must not satisfy a guard about the lint job's wiring.
+	// Comment lines are skipped explicitly so prose never counts, whatever
+	// shape the directive pattern takes in the future.
+	runMakeLint := regexp.MustCompile(`^run:\s*make lint\s*$`)
+	found := false
+	for _, line := range strings.Split(ciLintJobBlock(t, text), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if runMakeLint.MatchString(trimmed) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("ci.yml's lint job has no `run: make lint` directive: the lint job must run the Makefile recipe so the golangci-lint pin and GOENV have one definition (#454)")
+	}
+	if strings.Contains(text, "golangci-lint") {
+		t.Error("ci.yml mentions golangci-lint directly: the install+run belong to the Makefile lint recipe alone — an open-coded copy drops the GOTOOLCHAIN pin and re-splits the version pin (#454)")
+	}
+}
+
+// ciLintJobBlock cuts the `lint:` job's body out of ci.yml by indentation: it
+// starts after the two-space `lint:` key under the top-level `jobs:` key and
+// ends at the next non-blank line indented two spaces or less (the next job,
+// or a later top-level key). Deliberately not a YAML parser — a yaml
+// dependency buys nothing here (#482 review round 1), and the sibling guards
+// in this file are plain text scans for the same reason. If the workflow's
+// job indentation ever changes shape, this fails loudly via t.Fatal rather
+// than passing on an empty block.
+func ciLintJobBlock(t *testing.T, text string) string {
+	t.Helper()
+	lines := strings.Split(text, "\n")
+	inJobs := false
+	start := -1
+	for i, line := range lines {
+		if line == "jobs:" {
+			inJobs = true
+			continue
+		}
+		if !inJobs {
+			continue
+		}
+		if start == -1 {
+			if line == "  lint:" {
+				start = i + 1
+			}
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(line, "    ") {
+			return strings.Join(lines[start:i], "\n")
+		}
+	}
+	if start == -1 {
+		t.Fatal("ci.yml has no `lint:` job under `jobs:`: this guard scopes its run-directive check to that job and has lost its target (#454)")
+	}
+	return strings.Join(lines[start:], "\n")
+}
