@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-production fmt-check lint coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production fmt-check lint check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -98,11 +98,29 @@ fmt-check:
 # files in scope (#436) — without it golangci-lint never loads them at all;
 # TestLintRecipeCoversE2ETag guards the flag, and the timeout is 10m because
 # the tag roughly doubles the analyzed file set.
+#
+# infra/ is a separate Go module (#444), invisible to the root run's ./... —
+# so a second run executes inside it (guarded by TestLintRecipeCoversInfraModule).
+# It reuses the root .golangci.yml via golangci-lint's upward config search.
+# --build-tags e2e is inert there today (no tagged files) but keeps every run
+# line uniform under TestLintRecipeCoversE2ETag.
 lint:
 	@echo "Installing golangci-lint..."
 	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	@echo "Running golangci-lint..."
 	@$(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --build-tags e2e --timeout=10m
+	@echo "Running golangci-lint (infra module)..."
+	@cd infra && $(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --build-tags e2e --timeout=10m
+
+# Build + vet the infra/ Pulumi module (#444). infra/ is its own Go module
+# (github.com/lychee-technology/forma/infra), so the root gates' ./... never
+# reaches it; before this target it was never built, vetted, or linted in CI.
+# CI's lint job runs this recipe (TestCILintJobChecksInfraModule guards that).
+check-infra:
+	@echo "Building infra module..."
+	@cd infra && $(GOENV) go build ./...
+	@echo "Vetting infra module..."
+	@cd infra && $(GOENV) go vet ./...
 
 # Run unit tests with coverage report
 coverage: create-build-dir
