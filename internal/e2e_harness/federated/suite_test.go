@@ -258,23 +258,3 @@ func BenchmarkCDCFlush(b *testing.B) {
 		}
 	}
 }
-
-// Test categories for organization
-var testCategories = map[string]string{
-	"TC-01": "Three-tier data architecture",
-	"TC-02": "Merge-on-Read logic",
-	"TC-03": "Global deduplication",
-	"TC-04": "Soft delete filtering",
-	"TC-05": "CDC Smart Flushing",
-	"TC-06": "Compaction strategy",
-	"TC-07": "Data consistency",
-	"TC-08": "Performance benchmarks",
-	"TC-09": "Failure modes",
-}
-
-// printTestCategories outputs the test categories for documentation.
-func printTestCategories() {
-	for id, desc := range testCategories {
-		println(id + ": " + desc)
-	}
-}

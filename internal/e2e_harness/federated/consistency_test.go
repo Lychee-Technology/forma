@@ -308,7 +308,6 @@ func TestConsistency_AfterCompaction(t *testing.T) {
 	require.NoError(t, h.ClearAllData(ctx))
 
 	// Create delta files
-	var allRecords []TestRecord
 	for i := 0; i < 5; i++ {
 		records := GenerateTestRecords(100, &GeneratorOptions{
 			SchemaID:       h.SchemaID,
@@ -318,7 +317,6 @@ func TestConsistency_AfterCompaction(t *testing.T) {
 		})
 		err = h.WriteParquet(ctx, "delta", "consistency_delta_"+string(rune('a'+i))+".parquet", records)
 		require.NoError(t, err)
-		allRecords = append(allRecords, records...)
 	}
 
 	// Get pre-compaction state
