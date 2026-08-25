@@ -1,8 +1,15 @@
 package testdb
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // clearDBEnv blanks every variable ResolveDSN reads so ambient shell/CI env
@@ -56,6 +63,44 @@ func TestResolveDSNPrefersDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@override:5/db")
 	if got := ResolveDSN(); got != "postgres://u:p@override:5/db" {
 		t.Errorf("ResolveDSN() = %q, want DATABASE_URL to win over DB_*", got)
+	}
+}
+
+// TestUnreachableClassifiesNetworkAbsenceOnly pins the local skip/fail split
+// (#486 review P2): only network-level absence — nothing listening, unknown
+// host, connect timeout — may skip; a server that answered and rejected us
+// (bad credentials, missing database, protocol/TLS failure) is
+// misconfiguration and must fail loudly even off-CI.
+func TestUnreachableClassifiesNetworkAbsenceOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection refused", fmt.Errorf("dial tcp: %w", syscall.ECONNREFUSED), true},
+		{"host unreachable", fmt.Errorf("dial tcp: %w", syscall.EHOSTUNREACH), true},
+		{"network unreachable", fmt.Errorf("dial tcp: %w", syscall.ENETUNREACH), true},
+		{"unknown host", fmt.Errorf("lookup: %w", &net.DNSError{Err: "no such host", IsNotFound: true}), true},
+		{"connect timeout", fmt.Errorf("ping: %w", context.DeadlineExceeded), true},
+		{"auth failure", fmt.Errorf("connect: %w", &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}), false},
+		{"missing database", fmt.Errorf("connect: %w", &pgconn.PgError{Code: "3D000", Message: "database does not exist"}), false},
+		{"protocol junk from a non-postgres listener", fmt.Errorf("read: %w", io.EOF), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unreachable(tt.err); got != tt.want {
+				t.Errorf("unreachable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveDSNEscapesSSLMode(t *testing.T) {
+	clearDBEnv(t)
+	t.Setenv("DB_SSL_MODE", "verify full&x=y")
+	got := ResolveDSN()
+	if !strings.Contains(got, "sslmode=verify+full%26x%3Dy") {
+		t.Errorf("ResolveDSN() = %q, want query-escaped sslmode value", got)
 	}
 }
 

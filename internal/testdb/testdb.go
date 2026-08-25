@@ -11,9 +11,11 @@ package testdb
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func ResolveDSN() string {
 		),
 		Host:     net.JoinHostPort(bootstrap.Env("DB_HOST", "localhost"), bootstrap.Env("DB_PORT", "5432")),
 		Path:     "/" + bootstrap.Env("DB_NAME", "forma"),
-		RawQuery: "sslmode=" + bootstrap.Env("DB_SSL_MODE", "disable"),
+		RawQuery: "sslmode=" + url.QueryEscape(bootstrap.Env("DB_SSL_MODE", "disable")),
 	}
 	return u.String()
 }
@@ -51,10 +53,34 @@ func FailOnUnreachable() bool {
 	return os.Getenv("CI") != ""
 }
 
-// Connect opens and pings a pgxpool for the resolved DSN. When the database
-// is unreachable it fails the test in CI (the service is provisioned on
-// purpose — a skip would go dark, #385) and skips on developer machines
-// without a local Postgres. The pool is closed via t.Cleanup.
+// unreachable reports whether err indicates network-level absence of the
+// database — nothing listening, unknown host, connect timeout. A server that
+// answered and rejected us (bad credentials, missing database, protocol/TLS
+// failure) is deliberately excluded: that is misconfiguration, which must
+// fail loudly rather than skip, even off-CI (#486 review P2).
+func unreachable(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// Connect opens and pings a pgxpool for the resolved DSN. Connection failures
+// split three ways: in CI every failure is fatal (the service is provisioned
+// on purpose — a skip would go dark, #385); locally, network-level absence
+// skips (a developer without Postgres), while a server that answered and
+// rejected the connection is misconfiguration and fails loudly (#486 review
+// P2). The pool is closed via t.Cleanup.
 func Connect(t testing.TB, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 
@@ -72,7 +98,10 @@ func Connect(t testing.TB, ctx context.Context) *pgxpool.Pool {
 	}
 	if err != nil {
 		if FailOnUnreachable() {
-			t.Fatalf("integration database unreachable in CI — the workflow provisions Postgres on purpose, so this is a failure, not a skip (#385): %v", err)
+			t.Fatalf("integration database connection failed in CI — the workflow provisions Postgres on purpose, so this is a failure, not a skip (#385): %v", err)
+		}
+		if !unreachable(err) {
+			t.Fatalf("integration Postgres answered but rejected the connection — misconfiguration, not absence; fix DATABASE_URL / DB_* env (#486 review): %v", err)
 		}
 		t.Skipf("skipping: integration Postgres unreachable (%v)", err)
 	}
