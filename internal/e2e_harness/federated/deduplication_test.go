@@ -24,7 +24,7 @@ func TestDeduplication_SameTier(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
@@ -78,7 +78,7 @@ func TestDeduplication_CrossTier(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
@@ -133,7 +133,7 @@ func TestDeduplication_BulkPerformance(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Generate 10K records with 30% duplicates
 	totalRecords := 10000
@@ -179,7 +179,7 @@ func TestDeduplication_UUIDv7TimeOrdering(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Generate UUIDs with time gaps
 	var uuids []uuid.UUID
@@ -229,7 +229,7 @@ func TestDeduplication_NoFalsePositives(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Create 100 unique records (no duplicates)
 	uniqueRecords := GenerateTestRecords(100, &GeneratorOptions{
@@ -262,7 +262,7 @@ func TestDeduplication_MultipleRowsWithVersions(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	numDistinctRows := 20
 	versionsPerRow := 3

@@ -71,7 +71,7 @@ func TestPerformance_SimplePagination(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed medium-scale data (using smaller dataset for CI)
 	require.NoError(t, h.ClearAllData(ctx))
@@ -136,7 +136,7 @@ func TestPerformance_ComplexFilter(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -189,7 +189,7 @@ func TestPerformance_FullTableScan(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed larger dataset
 	require.NoError(t, h.ClearAllData(ctx))
@@ -242,7 +242,7 @@ func TestPerformance_ConcurrentQueries(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -326,7 +326,7 @@ func TestPerformance_CDCFlush(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed hot buffer with records to flush
 	require.NoError(t, h.ClearAllData(ctx))
@@ -390,7 +390,7 @@ func TestPerformance_Compaction(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Create multiple delta files to compact
 	require.NoError(t, h.ClearAllData(ctx))
@@ -442,7 +442,7 @@ func TestPerformance_QueryLatencyDistribution(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -524,7 +524,7 @@ func TestPerformance_MemoryUsage(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed data
 	require.NoError(t, h.ClearAllData(ctx))

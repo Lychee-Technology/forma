@@ -29,7 +29,7 @@ func TestConsistency_CountMatch(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("hot_buffer_only", func(t *testing.T) {
 		// Clear data and seed only hot buffer
@@ -109,7 +109,7 @@ func TestConsistency_AttributeValueMatch(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed specific test data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -179,7 +179,7 @@ func TestConsistency_ChecksumValidation(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("same_data_same_checksum", func(t *testing.T) {
 		// Clear and seed data
@@ -259,7 +259,7 @@ func TestConsistency_AfterCDCFlush(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -302,7 +302,7 @@ func TestConsistency_AfterCompaction(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed multiple delta files
 	require.NoError(t, h.ClearAllData(ctx))
@@ -357,7 +357,7 @@ func TestConsistency_RowIDExistence(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -395,7 +395,7 @@ func TestConsistency_MissingRecordDetection(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -443,7 +443,7 @@ func TestConsistency_DeduplicationAcrossComparison(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -480,7 +480,7 @@ func TestConsistency_TimestampOrdering(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data with known timestamps
 	require.NoError(t, h.ClearAllData(ctx))

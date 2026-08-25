@@ -62,7 +62,7 @@ func TestSuite_Smoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Verify basic operations
 	t.Run("harness_initialization", func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestSuite_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	if err := h.ClearAllData(ctx); err != nil {
@@ -202,7 +202,7 @@ func BenchmarkFederatedQuery(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, b)
 
 	// Seed data
 	if err := h.ClearAllData(ctx); err != nil {
@@ -236,7 +236,7 @@ func BenchmarkCDCFlush(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, b)
 
 	b.ResetTimer()
 
