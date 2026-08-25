@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,24 +36,13 @@ func writeSchemaFile(t *testing.T, dir, schemaName string, schema map[string]any
 	require.NoError(t, err)
 }
 
-// connectTestPostgres establishes a connection to the test PostgreSQL database.
-// Skips the test if DATABASE_URL is not set.
+// connectTestPostgres establishes a connection to the test PostgreSQL
+// database. DATABASE_URL still wins when set; otherwise the DSN comes from
+// DB_* env with local defaults, and an unreachable database fails (CI) or
+// skips (local) — see internal/testdb (#385).
 func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		pool.Close()
-	})
-
-	return pool
+	return testdb.Connect(t, ctx)
 }
 
 // createTempTables creates temporary tables for testing and returns their names.
