@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,7 +36,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	t.Cleanup(cancel)
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool)
 

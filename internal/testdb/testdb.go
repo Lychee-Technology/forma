@@ -74,7 +74,7 @@ func Connect(t testing.TB, ctx context.Context) *pgxpool.Pool {
 		if FailOnUnreachable() {
 			t.Fatalf("integration database unreachable in CI — the workflow provisions Postgres on purpose, so this is a failure, not a skip (#385): %v", err)
 		}
-		t.Skipf("skipping: no local Postgres (%v)", err)
+		t.Skipf("skipping: integration Postgres unreachable (%v)", err)
 	}
 
 	t.Cleanup(pool.Close)

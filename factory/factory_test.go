@@ -36,15 +36,6 @@ func writeSchemaFile(t *testing.T, dir, schemaName string, schema map[string]any
 	require.NoError(t, err)
 }
 
-// connectTestPostgres establishes a connection to the test PostgreSQL
-// database. DATABASE_URL still wins when set; otherwise the DSN comes from
-// DB_* env with local defaults, and an unreachable database fails (CI) or
-// skips (local) — see internal/testdb (#385).
-func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-	return testdb.Connect(t, ctx)
-}
-
 // createTempTables creates temporary tables for testing and returns their names.
 func createTempTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (schemaRegistryTable, entityMainTable, eavDataTable string) {
 	t.Helper()
@@ -135,7 +126,7 @@ func TestNewEntityManagerWithConfig_Integration_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
@@ -182,7 +173,7 @@ func TestNewEntityManagerWithConfig_Integration_MissingTables(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Use non-existent table names
 	config := forma.DefaultConfig(newMockSchemaRegistry())
@@ -203,7 +194,7 @@ func TestNewEntityManagerWithConfig_Integration_NilSchemaRegistry(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
@@ -245,7 +236,7 @@ func TestNewEntityManagerWithConfig_Integration_MetadataLoaderError(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Don't insert any schemas - this will cause metadata loader to fail

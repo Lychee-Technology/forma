@@ -23,7 +23,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	repo := NewDBPersistentRecordRepository(pool, nil)
@@ -93,7 +93,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	// The update path scopes its EAV delete to current-schema attributeIDs
@@ -147,7 +147,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	repo := NewDBPersistentRecordRepository(pool, nil)
@@ -182,11 +182,6 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	assert.Equal(t, record.RowID, records[0].RowID)
 	assert.Equal(t, record.TextItems, records[0].TextItems)
 	assert.Nil(t, records[0].OtherAttributes)
-}
-
-func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-	return testdb.Connect(t, ctx)
 }
 
 func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) model.StorageTables {
