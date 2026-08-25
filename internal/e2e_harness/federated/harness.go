@@ -299,6 +299,9 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 
 	// Initialize database schema
 	if err := h.initDatabaseSchema(ctx); err != nil {
+		// Best-effort: construction is already failing, and the schema error
+		// below is the one the caller must see. No testing.TB exists here, so
+		// CleanupOrLog does not apply.
 		_ = h.Cleanup(ctx)
 		return nil, fmt.Errorf("init database schema: %w", err)
 	}
