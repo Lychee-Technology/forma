@@ -76,6 +76,32 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 	}
 }
 
+// TestLintRecipeCoversE2ETag pins the #436 fix: the Makefile's lint recipe
+// must pass --build-tags e2e, or the 96 //go:build e2e files silently drop
+// out of linting again — golangci-lint only loads packages matching the
+// active build tags, so without the flag those files are never analyzed
+// (that gap hid 83 pre-existing violations). CI inherits this line via
+// `make lint` (#454), so this one guard covers both gates.
+func TestLintRecipeCoversE2ETag(t *testing.T) {
+	mk, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	found := false
+	for _, line := range strings.Split(string(mk), "\n") {
+		if !strings.Contains(line, "golangci-lint run") {
+			continue
+		}
+		found = true
+		if !strings.Contains(line, "--build-tags e2e") {
+			t.Errorf("lint recipe line %q lacks --build-tags e2e: the e2e-tagged files would silently stop being linted (#436)", line)
+		}
+	}
+	if !found {
+		t.Fatal("no golangci-lint run line found in Makefile: the e2e-tag guard has lost its target")
+	}
+}
+
 // TestCILintJobRunsMakeLint pins the CI side of the #448 wiring (#454): the
 // lint job must invoke `make lint` rather than open-coding the golangci-lint
 // install+run. An open-coded invocation carries none of the Makefile's GOENV

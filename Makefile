@@ -94,12 +94,15 @@ fmt-check:
 		exit 1; \
 	fi
 
-# Run linter (same as CI lint job)
+# Run linter (same as CI lint job). --build-tags e2e keeps the //go:build e2e
+# files in scope (#436) — without it golangci-lint never loads them at all;
+# TestLintRecipeCoversE2ETag guards the flag, and the timeout is 10m because
+# the tag roughly doubles the analyzed file set.
 lint:
 	@echo "Installing golangci-lint..."
 	@$(GOENV) go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	@echo "Running golangci-lint..."
-	@$(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --timeout=5m
+	@$(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --build-tags e2e --timeout=10m
 
 # Run unit tests with coverage report
 coverage: create-build-dir
