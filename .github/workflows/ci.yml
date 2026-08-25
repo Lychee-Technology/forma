@@ -22,6 +22,11 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
+          # The lint job is the one job that also builds the infra/ module
+          # (make check-infra, #444); key the module cache on both go.sums.
+          cache-dependency-path: |
+            go.sum
+            infra/go.sum
 
       - name: Check gofmt
         run: make fmt-check
@@ -33,6 +38,12 @@ jobs:
       # this shape.
       - name: Run linter
         run: make lint
+
+      # Build + vet the infra/ module (#444) — a separate Go module the root
+      # gates never reach. Same single-definition rationale as `make lint`
+      # above (#454); TestCILintJobChecksInfraModule guards the invocation.
+      - name: Build and vet infra module
+        run: make check-infra
 
   test:
     name: Test

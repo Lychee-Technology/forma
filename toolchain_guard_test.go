@@ -62,12 +62,18 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 		t.Fatalf("read Makefile: %v", err)
 	}
 	found := false
+	// A per-module run line may lead with `cd <dir> && ` (#444) — golangci-lint
+	// v1.64.8 has no chdir flag, and a leading cd does not prevent the
+	// following $(GOENV) assignments from reaching the linter process. Strip
+	// that prefix, then require $(GOENV) exactly as before.
+	cdPrefix := regexp.MustCompile(`^cd \S+ && `)
 	for _, line := range strings.Split(string(mk), "\n") {
 		if !strings.Contains(line, "golangci-lint run") {
 			continue
 		}
 		found = true
-		if !strings.HasPrefix(strings.TrimLeft(line, "\t@"), "$(GOENV) ") {
+		trimmed := cdPrefix.ReplaceAllString(strings.TrimLeft(line, "\t@"), "")
+		if !strings.HasPrefix(trimmed, "$(GOENV) ") {
 			t.Errorf("lint recipe line %q does not lead with $(GOENV): golangci-lint would run its go list on the ambient toolchain, reviving the spurious typecheck errors of #448", line)
 		}
 	}

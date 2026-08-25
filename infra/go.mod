@@ -1,6 +1,10 @@
 module github.com/lychee-technology/forma/infra
 
-go 1.25.5
+// Tracks the root module's go directive (#444). Make-driven gates run this
+// module under the Makefile's GOTOOLCHAIN=go1.26.0+auto pin, whose floor
+// outranks any lower directive here — so an independent older version only
+// creates a second, drifting language-version surface.
+go 1.26
 
 require (
 	github.com/pulumi/pulumi-aws/sdk/v6 v6.83.2

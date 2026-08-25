@@ -63,13 +63,55 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 	namePrefix := fmt.Sprintf("forma-%s", config.Environment)
 	lambdaFunctionName := fmt.Sprintf("%s-api", namePrefix)
 
-	// Create S3 bucket for Lambda deployment artifacts
+	deploymentBucket, err := newDeploymentBucket(ctx, namePrefix, config.Environment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create deployment bucket resources: %w", err)
+	}
+
+	lambdaRole, err := newLambdaRole(ctx, namePrefix, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Lambda role resources: %w", err)
+	}
+
+	// Create CloudWatch Log Group for Lambda
+	logGroup, err := cloudwatch.NewLogGroup(ctx, namePrefix+"-lambda-logs", &cloudwatch.LogGroupArgs{
+		Name:            pulumi.Sprintf("/aws/lambda/%s", lambdaFunctionName),
+		RetentionInDays: pulumi.Int(14),
+		Tags: pulumi.StringMap{
+			"Name":        pulumi.String(namePrefix + "-lambda-logs"),
+			"Environment": pulumi.String(config.Environment),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CloudWatch log group: %w", err)
+	}
+
+	api, stage, err := newAPIGateway(ctx, namePrefix, config.Environment, logGroup)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create API Gateway resources: %w", err)
+	}
+
+	return &ServerlessOutput{
+		DeploymentBucketName:   deploymentBucket.Bucket,
+		LambdaRoleArn:          lambdaRole.Arn,
+		LogGroupName:           logGroup.Name,
+		LogGroupArn:            logGroup.Arn,
+		ApiGatewayID:           api.ID().ToStringOutput(),
+		ApiGatewayExecutionArn: api.ExecutionArn,
+		ApiEndpoint:            stage.InvokeUrl,
+		LambdaFunctionName:     lambdaFunctionName,
+	}, nil
+}
+
+// newDeploymentBucket creates the S3 bucket for Lambda deployment artifacts,
+// with public access blocked.
+func newDeploymentBucket(ctx *pulumi.Context, namePrefix, environment string) (*s3.Bucket, error) {
 	deploymentBucket, err := s3.NewBucket(ctx, namePrefix+"-lambda-deployments", &s3.BucketArgs{
 		Bucket:       pulumi.String(namePrefix + "-lambda-deployments"),
 		ForceDestroy: pulumi.Bool(true),
 		Tags: pulumi.StringMap{
 			"Name":        pulumi.String(namePrefix + "-lambda-deployments"),
-			"Environment": pulumi.String(config.Environment),
+			"Environment": pulumi.String(environment),
 			"Purpose":     pulumi.String("lambda-deployments"),
 		},
 	})
@@ -77,7 +119,6 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 		return nil, fmt.Errorf("failed to create deployment bucket: %w", err)
 	}
 
-	// Block public access on deployment bucket
 	_, err = s3.NewBucketPublicAccessBlock(ctx, namePrefix+"-lambda-deployments-pab", &s3.BucketPublicAccessBlockArgs{
 		Bucket:                deploymentBucket.ID(),
 		BlockPublicAcls:       pulumi.Bool(true),
@@ -88,8 +129,12 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure deployment bucket public access block: %w", err)
 	}
+	return deploymentBucket, nil
+}
 
-	// Create IAM role for Lambda
+// newLambdaRole creates the Lambda execution role with its three policies:
+// basic execution (CloudWatch Logs), Aurora DSQL connect, and data-lake S3 access.
+func newLambdaRole(ctx *pulumi.Context, namePrefix string, config *ServerlessConfig) (*iam.Role, error) {
 	assumeRolePolicy := `{
 		"Version": "2012-10-17",
 		"Statement": [{
@@ -122,7 +167,6 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 		return nil, fmt.Errorf("failed to attach basic execution policy: %w", err)
 	}
 
-	// Create custom policy for Aurora DSQL access
 	// Lambda needs dsql:DbConnectAdmin to generate auth tokens and connect
 	dsqlPolicy := config.DSQLClusterArn.ApplyT(func(arn string) string {
 		return fmt.Sprintf(`{
@@ -146,7 +190,7 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 		return nil, fmt.Errorf("failed to create DSQL policy: %w", err)
 	}
 
-	// Create custom policy for S3 access (data lake bucket)
+	// S3 access covers the data lake bucket the API reads and writes
 	s3Policy := config.S3Bucket.ApplyT(func(bucket string) string {
 		return fmt.Sprintf(`{
 			"Version": "2012-10-17",
@@ -174,26 +218,16 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 policy: %w", err)
 	}
+	return lambdaRole, nil
+}
 
-	// Create CloudWatch Log Group for Lambda
-	logGroup, err := cloudwatch.NewLogGroup(ctx, namePrefix+"-lambda-logs", &cloudwatch.LogGroupArgs{
-		Name:            pulumi.Sprintf("/aws/lambda/%s", lambdaFunctionName),
-		RetentionInDays: pulumi.Int(14),
-		Tags: pulumi.StringMap{
-			"Name":        pulumi.String(namePrefix + "-lambda-logs"),
-			"Environment": pulumi.String(config.Environment),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CloudWatch log group: %w", err)
-	}
-
-	// Create API Gateway HTTP API
-	// Note: Integration and route will be created by CD workflow after Lambda is deployed
+// newAPIGateway creates the HTTP API and its $default auto-deploy stage.
+// Integration and route are created by the CD workflow after Lambda is deployed.
+func newAPIGateway(ctx *pulumi.Context, namePrefix, environment string, logGroup *cloudwatch.LogGroup) (*apigatewayv2.Api, *apigatewayv2.Stage, error) {
 	api, err := apigatewayv2.NewApi(ctx, namePrefix+"-api-gw", &apigatewayv2.ApiArgs{
 		Name:         pulumi.String(namePrefix + "-api"),
 		ProtocolType: pulumi.String("HTTP"),
-		Description:  pulumi.String(fmt.Sprintf("API Gateway for Forma %s", config.Environment)),
+		Description:  pulumi.String(fmt.Sprintf("API Gateway for Forma %s", environment)),
 		CorsConfiguration: &apigatewayv2.ApiCorsConfigurationArgs{
 			AllowHeaders: pulumi.StringArray{
 				pulumi.String("Content-Type"),
@@ -216,15 +250,15 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 		},
 		Tags: pulumi.StringMap{
 			"Name":        pulumi.String(namePrefix + "-api"),
-			"Environment": pulumi.String(config.Environment),
+			"Environment": pulumi.String(environment),
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create API Gateway: %w", err)
+		return nil, nil, fmt.Errorf("failed to create API Gateway: %w", err)
 	}
 
-	// Create stage with auto-deploy
-	// Note: Access logs use the log group ARN, which is available before Lambda
+	// Create stage with auto-deploy.
+	// Access logs use the log group ARN, which is available before Lambda.
 	stage, err := apigatewayv2.NewStage(ctx, namePrefix+"-api-stage", &apigatewayv2.StageArgs{
 		ApiId:      api.ID(),
 		Name:       pulumi.String("$default"),
@@ -235,21 +269,11 @@ func NewServerless(ctx *pulumi.Context, config *ServerlessConfig) (*ServerlessOu
 		},
 		Tags: pulumi.StringMap{
 			"Name":        pulumi.String(namePrefix + "-api-stage"),
-			"Environment": pulumi.String(config.Environment),
+			"Environment": pulumi.String(environment),
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create API Gateway stage: %w", err)
+		return nil, nil, fmt.Errorf("failed to create API Gateway stage: %w", err)
 	}
-
-	return &ServerlessOutput{
-		DeploymentBucketName:   deploymentBucket.Bucket,
-		LambdaRoleArn:          lambdaRole.Arn,
-		LogGroupName:           logGroup.Name,
-		LogGroupArn:            logGroup.Arn,
-		ApiGatewayID:           api.ID().ToStringOutput(),
-		ApiGatewayExecutionArn: api.ExecutionArn,
-		ApiEndpoint:            stage.InvokeUrl,
-		LambdaFunctionName:     lambdaFunctionName,
-	}, nil
+	return api, stage, nil
 }
