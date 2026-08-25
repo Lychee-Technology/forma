@@ -24,7 +24,7 @@ func TestMergeOnRead_UnionAllCorrectness(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed non-overlapping data to each tier
 	baseRecords, err := h.SeedBaseRecords(ctx, 1000)
@@ -57,7 +57,7 @@ func TestMergeOnRead_OverlappingRecords(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Use preset deduplication scenario
 	scenarios := PresetScenarios{}
@@ -96,7 +96,7 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
@@ -163,7 +163,7 @@ func TestMergeOnRead_DirtyIDExclusion(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 
@@ -221,7 +221,7 @@ func TestMergeOnRead_MultipleOverlappingRecords(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Create 5 different row_ids, each with 3 versions
 	numRows := 5
@@ -257,7 +257,7 @@ func TestMergeOnRead_MixedCleanAndDirty(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Create 100 base records (clean - already flushed)
 	cleanRecords := GenerateTestRecords(100, &GeneratorOptions{
@@ -303,7 +303,7 @@ func TestMergeOnRead_TimeSlotOrdering(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	baseTime := time.Now()
 

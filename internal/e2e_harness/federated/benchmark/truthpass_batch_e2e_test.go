@@ -22,7 +22,7 @@ func TestTruthPassBatchEqualsPerCandidate(t *testing.T) {
 
 	h, err := federated.NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	runner, err := NewRunner(Config{
 		Mode:          ExecutionModePlan,

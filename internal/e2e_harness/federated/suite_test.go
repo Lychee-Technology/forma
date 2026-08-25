@@ -62,7 +62,7 @@ func TestSuite_Smoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Verify basic operations
 	t.Run("harness_initialization", func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestSuite_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	if err := h.ClearAllData(ctx); err != nil {
@@ -202,7 +202,7 @@ func BenchmarkFederatedQuery(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, b)
 
 	// Seed data
 	if err := h.ClearAllData(ctx); err != nil {
@@ -236,7 +236,7 @@ func BenchmarkCDCFlush(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create test harness: %v", err)
 	}
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, b)
 
 	b.ResetTimer()
 
@@ -256,25 +256,5 @@ func BenchmarkCDCFlush(b *testing.B) {
 		if err != nil {
 			b.Logf("Flush error: %v", err)
 		}
-	}
-}
-
-// Test categories for organization
-var testCategories = map[string]string{
-	"TC-01": "Three-tier data architecture",
-	"TC-02": "Merge-on-Read logic",
-	"TC-03": "Global deduplication",
-	"TC-04": "Soft delete filtering",
-	"TC-05": "CDC Smart Flushing",
-	"TC-06": "Compaction strategy",
-	"TC-07": "Data consistency",
-	"TC-08": "Performance benchmarks",
-	"TC-09": "Failure modes",
-}
-
-// printTestCategories outputs the test categories for documentation.
-func printTestCategories() {
-	for id, desc := range testCategories {
-		println(id + ": " + desc)
 	}
 }

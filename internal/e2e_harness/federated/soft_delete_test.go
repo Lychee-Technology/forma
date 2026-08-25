@@ -24,7 +24,7 @@ func TestSoftDelete_ExcludeDeleted(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Use preset soft delete scenario
 	scenarios := PresetScenarios{}
@@ -54,7 +54,7 @@ func TestSoftDelete_NullVsZeroDeletedAt(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	now := time.Now().UnixMilli()
 
@@ -100,7 +100,7 @@ func TestSoftDelete_RestoreAfterDelete(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
@@ -161,7 +161,7 @@ func TestSoftDelete_DeleteThenReuse(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Create two different row_ids
 	deletedRowID := uuid.Must(uuid.NewV7())
@@ -208,7 +208,7 @@ func TestSoftDelete_AllTiersDeleted(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	now := time.Now().UnixMilli()
 
@@ -270,7 +270,7 @@ func TestSoftDelete_HotDeleteShadowsParquetVersion(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
@@ -324,7 +324,7 @@ func TestSoftDelete_BulkDeletedExclusion(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Generate records with 50% deleted
 	totalRecords := 1000
@@ -373,7 +373,7 @@ func TestSoftDelete_DeletedAtTimestampPrecision(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	now := time.Now()
 	nowMs := now.UnixMilli()

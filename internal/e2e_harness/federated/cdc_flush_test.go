@@ -29,7 +29,7 @@ func TestCDCFlush_MinRecordsThreshold(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("below_threshold_no_flush", func(t *testing.T) {
 		// Clear existing data
@@ -99,7 +99,7 @@ func TestCDCFlush_MaxAgeThreshold(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("recent_records_no_age_trigger", func(t *testing.T) {
 		// Clear existing data
@@ -159,7 +159,7 @@ func TestCDCFlush_AdvisoryLockPreventsConurrent(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -209,7 +209,7 @@ func TestCDCFlush_RecordsMarkedFlushed(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -263,7 +263,7 @@ func TestCDCFlush_DeltaFileNaming(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -298,7 +298,7 @@ func TestCDCFlush_BatchSizeRespected(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Set a specific batch size
 	h.CDCConfig.BatchSize = 100
@@ -333,7 +333,7 @@ func TestCDCFlush_MultipleFlushesComplete(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Set small batch size for multiple iterations
 	h.CDCConfig.BatchSize = 50

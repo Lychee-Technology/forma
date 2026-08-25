@@ -28,7 +28,7 @@ func TestCompaction_NewDataAppendsToDeltas(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed initial base data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -70,7 +70,7 @@ func TestCompaction_LowDirtyRatioSkipsCompaction(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed base data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -115,7 +115,7 @@ func TestCompaction_HighDirtyRatioTriggersRewrite(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed base data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -155,7 +155,7 @@ func TestCompaction_MergesMultipleDeltaFiles(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -206,7 +206,7 @@ func TestCompaction_PreservesDeduplication(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -248,7 +248,7 @@ func TestCompaction_FileSizeRotation(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -286,7 +286,7 @@ func TestCompaction_PreservesSoftDeletes(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -323,7 +323,7 @@ func TestCompaction_DurationWithinThreshold(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear and seed data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -362,7 +362,7 @@ func TestCompaction_EmptyDeltaNoOp(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear all data (no delta files)
 	require.NoError(t, h.ClearAllData(ctx))

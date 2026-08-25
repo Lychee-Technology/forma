@@ -24,7 +24,7 @@ func TestDataTier_S3BaseFilesOnly(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed only base records
 	baseRecords, err := h.SeedBaseRecords(ctx, 100)
@@ -63,7 +63,7 @@ func TestDataTier_S3DeltaFilesOnly(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed only delta records
 	deltaRecords, err := h.SeedDeltaRecords(ctx, 50)
@@ -101,7 +101,7 @@ func TestDataTier_PostgresHotBufferOnly(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed only hot records (unflushed)
 	hotRecords, err := h.SeedHotRecords(ctx, 25)
@@ -136,7 +136,7 @@ func TestDataTier_AllThreeTiers(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Use preset scenario for non-overlapping data
 	scenarios := PresetScenarios{}
@@ -181,7 +181,7 @@ func TestDataTier_TierPriorityOrder(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed all tiers
 	require.NoError(t, h.SeedAllTiers(ctx, 100, 50, 25))
@@ -212,7 +212,7 @@ func TestDataTier_EmptyTiers(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Clear all data
 	require.NoError(t, h.ClearAllData(ctx))
@@ -237,7 +237,7 @@ func TestDataTier_LargeLimitPagination(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Seed data to all tiers
 	require.NoError(t, h.SeedAllTiers(ctx, 500, 300, 100))

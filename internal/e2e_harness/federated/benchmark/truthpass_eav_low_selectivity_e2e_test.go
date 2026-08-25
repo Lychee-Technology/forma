@@ -27,7 +27,7 @@ func TestTruthPassOracleFiltersPureEAVAttribute(t *testing.T) {
 
 	h, err := federated.NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	// Hotspot distribution is required: it appends updated records that rewrite
 	// orderChannel and land in the hot tier, which is where the reconstruction

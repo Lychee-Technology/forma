@@ -40,7 +40,7 @@ func runFilterAfterLWWScenario(t *testing.T, sc filterLWWScenario) {
 
 	h, err := federated.NewFederatedTestHarness(ctx)
 	require.NoError(t, err, "failed to create harness")
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 	require.NoError(t, h.SetupSchema(sc.schemaID, sc.schemaName))
 
 	rowID := uuid.Must(uuid.NewV7())

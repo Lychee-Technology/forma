@@ -27,7 +27,7 @@ func TestFailureMode_S3Unavailable(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("fallback_to_postgres_only", func(t *testing.T) {
 		// Clear data and seed both S3 and Postgres
@@ -93,7 +93,7 @@ func TestFailureMode_PostgresUnavailable(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("error_on_pg_failure", func(t *testing.T) {
 		// Clear and seed S3 data only
@@ -141,7 +141,7 @@ func TestFailureMode_CorruptedParquet(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("handles_missing_parquet", func(t *testing.T) {
 		// Clear all data (no parquet files)
@@ -184,7 +184,7 @@ func TestFailureMode_QueryTimeout(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("context_deadline_exceeded", func(t *testing.T) {
 		// Seed data
@@ -236,7 +236,7 @@ func TestFailureMode_PartialFailureRecovery(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("partial_flush_recovery", func(t *testing.T) {
 		// Seed hot buffer with multiple batches worth of data
@@ -295,7 +295,7 @@ func TestFailureMode_GracefulDegradation(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("query_hot_buffer_when_s3_fails", func(t *testing.T) {
 		// Clear and seed only hot buffer
@@ -347,7 +347,7 @@ func TestFailureMode_ConcurrentFailures(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("concurrent_queries_with_intermittent_failures", func(t *testing.T) {
 		// Seed data
@@ -397,7 +397,7 @@ func TestFailureMode_DataIntegrityAfterFailure(t *testing.T) {
 
 	h, err := NewFederatedTestHarness(ctx)
 	require.NoError(t, err)
-	defer h.Cleanup(ctx)
+	defer h.CleanupOrLog(ctx, t)
 
 	t.Run("no_data_loss_after_s3_failure", func(t *testing.T) {
 		// Clear and seed data

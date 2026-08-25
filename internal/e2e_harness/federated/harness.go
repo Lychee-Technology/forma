@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -298,6 +299,9 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 
 	// Initialize database schema
 	if err := h.initDatabaseSchema(ctx); err != nil {
+		// Best-effort: construction is already failing, and the schema error
+		// below is the one the caller must see. No testing.TB exists here, so
+		// CleanupOrLog does not apply.
 		_ = h.Cleanup(ctx)
 		return nil, fmt.Errorf("init database schema: %w", err)
 	}
@@ -407,6 +411,16 @@ func (h *FederatedTestHarness) Cleanup(ctx context.Context) error {
 		return fmt.Errorf("cleanup errors: %v", errs)
 	}
 	return nil
+}
+
+// CleanupOrLog releases all resources like Cleanup, reporting any failure
+// through tb instead of returning it. Deferred call sites cannot act on the
+// error, but it must not be silently discarded (errcheck, #436).
+func (h *FederatedTestHarness) CleanupOrLog(ctx context.Context, tb testing.TB) {
+	tb.Helper()
+	if err := h.Cleanup(ctx); err != nil {
+		tb.Logf("harness cleanup failed: %v", err)
+	}
 }
 
 // SetupSchema configures the schema for testing.
