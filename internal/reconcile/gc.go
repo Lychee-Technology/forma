@@ -36,7 +36,7 @@ func (r *Reconciler) refuseEmptyManifestGC(schemaID int16, d diffResult, promote
 		return nil
 	}
 	if d.manifestEntries > 0 {
-		return fmt.Errorf("gc refused for schema %d: %d base object(s) live in storage (init=%d merged=%d, %d objects seen) but none of the %d manifest entries resolved lie inside this schema's data prefix (0 in-prefix) — the loaded manifest is foreign to this schema (fixed-file or cross-schema --manifest-template, or entries pointing at another bucket), not a record of its data; verify --manifest-prefix/--manifest-template and --s3-bucket against the writers' configuration (--allow-empty-manifest-schema only waives genuinely EMPTY manifests, never a foreign one)",
+		return fmt.Errorf("gc refused for schema %d: %d base object(s) live in storage (init=%d merged=%d, %d objects seen) but none of the %d manifest entries resolved lie inside this schema's data prefix (0 in-prefix) — the loaded manifest is foreign to this schema (fixed-file or cross-schema --manifest-template, entries pointing at another bucket, or unverifiable glob entries), not a verifiable record of its data; verify --manifest-prefix/--manifest-template and --s3-bucket against the writers' configuration (--allow-empty-manifest-schema only waives genuinely EMPTY manifests, never a foreign one)",
 			schemaID, baseObjects, len(d.baseInitOrphans), len(d.baseMergedOrphans), d.objectsSeen, d.manifestEntries)
 	}
 	for _, id := range r.Opts.AllowEmptyManifestSchemas {

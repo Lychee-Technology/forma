@@ -132,7 +132,7 @@ func TestGC_ForeignManifestWithBaseObjects_RefusesInsteadOfDeleting(t *testing.T
 	require.Error(t, s.Err, "live base objects against a foreign manifest must fail the schema")
 	require.Contains(t, s.Err.Error(), "2 manifest entries", "refusal must quote the raw count")
 	require.Contains(t, s.Err.Error(), "0 in-prefix", "refusal must quote the in-prefix count")
-	require.NotContains(t, s.Err.Error(), "--allow-empty-manifest-schema 7",
+	require.NotContains(t, s.Err.Error(), "re-run with --allow-empty-manifest-schema",
 		"a foreign manifest must not advertise the empty-manifest waiver")
 	require.Empty(t, deleter.deleted)
 	require.Empty(t, s.Deleted)

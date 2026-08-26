@@ -30,7 +30,7 @@ type SchemaReport struct {
 	// against raw>0/in-prefix=0 is the foreign-manifest signature --gc
 	// refuses.
 	ManifestEntriesInPrefix int
-	Repaired        []string // delta orphans appended to the manifest (--repair)
+	Repaired                []string // delta orphans appended to the manifest (--repair)
 	// DeltaLeftovers are delta orphans the repair guard classified as
 	// compaction leftovers (no uncovered rows, or every uncovered row
 	// deleted in Postgres): never appended, GC-eligible under --gc.
