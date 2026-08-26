@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +19,7 @@ func TestNewFileSchemaRegistry_Integration_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Create schema registry table
 	suffix := time.Now().UnixNano()
@@ -79,7 +80,7 @@ func TestNewFileSchemaRegistry_Integration_EmptyRegistry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Create empty schema registry table
 	suffix := time.Now().UnixNano()
@@ -112,7 +113,7 @@ func TestNewFileSchemaRegistry_Integration_InvalidDirectory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Create schema registry table with a schema entry
 	suffix := time.Now().UnixNano()
@@ -150,7 +151,7 @@ func TestNewFileSchemaRegistry_Integration_MissingAttributesFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Create schema registry table
 	suffix := time.Now().UnixNano()
@@ -191,7 +192,7 @@ func TestNewFileSchemaRegistry_Integration_DuplicateSchemaIDFails(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	suffix := time.Now().UnixNano()
 	tableName := fmt.Sprintf("schema_registry_dup_id_%d", suffix)

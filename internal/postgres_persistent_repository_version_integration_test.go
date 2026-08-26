@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/testdb"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,7 +33,7 @@ func TestSameMillisecondWritesStayStrictlyOrderedIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	mc := schemameta.NewMetadataCache()
@@ -98,7 +99,7 @@ func TestRecreateOutranksClockAheadTombstoneIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	mc := schemameta.NewMetadataCache()
@@ -164,7 +165,7 @@ func TestConcurrentDeleteRecreateSerializesIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	mc := schemameta.NewMetadataCache()

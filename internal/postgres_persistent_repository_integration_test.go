@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/testdb"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,7 +23,7 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	repo := NewDBPersistentRecordRepository(pool, nil)
@@ -92,7 +93,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	// The update path scopes its EAV delete to current-schema attributeIDs
@@ -146,7 +147,7 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
 
 	repo := NewDBPersistentRecordRepository(pool, nil)
@@ -181,34 +182,6 @@ func TestRunOptimizedQueryIntegration(t *testing.T) {
 	assert.Equal(t, record.RowID, records[0].RowID)
 	assert.Equal(t, record.TextItems, records[0].TextItems)
 	assert.Nil(t, records[0].OtherAttributes)
-}
-
-func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-
-	dsn := "postgres://postgres:postgres@localhost:5432/forma?sslmode=disable"
-
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("invalid postgres dsn: %v", err)
-	}
-	cfg.ConnConfig.ConnectTimeout = 2 * time.Second
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Skipf("skipping integration test, cannot connect to postgres: %v", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Skipf("skipping integration test, postgres not reachable: %v", err)
-	}
-
-	t.Cleanup(func() {
-		pool.Close()
-	})
-
-	return pool
 }
 
 func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) model.StorageTables {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,26 +34,6 @@ func writeSchemaFile(t *testing.T, dir, schemaName string, schema map[string]any
 	require.NoError(t, err)
 	err = os.WriteFile(filepath.Join(dir, schemaName+".json"), data, 0644)
 	require.NoError(t, err)
-}
-
-// connectTestPostgres establishes a connection to the test PostgreSQL database.
-// Skips the test if DATABASE_URL is not set.
-func connectTestPostgres(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		pool.Close()
-	})
-
-	return pool
 }
 
 // createTempTables creates temporary tables for testing and returns their names.
@@ -145,7 +126,7 @@ func TestNewEntityManagerWithConfig_Integration_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
@@ -192,7 +173,7 @@ func TestNewEntityManagerWithConfig_Integration_MissingTables(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 
 	// Use non-existent table names
 	config := forma.DefaultConfig(newMockSchemaRegistry())
@@ -213,7 +194,7 @@ func TestNewEntityManagerWithConfig_Integration_NilSchemaRegistry(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Create temp schema directory
@@ -255,7 +236,7 @@ func TestNewEntityManagerWithConfig_Integration_MetadataLoaderError(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool := connectTestPostgres(t, ctx)
+	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
 
 	// Don't insert any schemas - this will cause metadata loader to fail
