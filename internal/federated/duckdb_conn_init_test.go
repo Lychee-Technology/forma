@@ -18,12 +18,23 @@ import (
 	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
+
+// useTestGlobalLogger routes zap's globals into the test log for the test's
+// duration: NewDuckDBClientContext's connection init logs through zap.S(), and
+// init is fail-open — a degraded init (e.g. an INSTALL timing out) surfaces
+// only as a logged warning. Without this, a failure shows just the downstream
+// NULL-scan error with zero trace of the real cause (#487).
+func useTestGlobalLogger(t *testing.T) {
+	t.Cleanup(zap.ReplaceGlobals(zaptest.NewLogger(t)))
+}
 
 // The ping issued during construction opens (and thereby initializes) the first
 // pooled connection, so a freshly constructed client must already expose the S3
 // session settings and extensions on that connection.
 func TestNewDuckDBClientContext_FirstConnectionConfigured(t *testing.T) {
+	useTestGlobalLogger(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -76,6 +87,7 @@ func newS3ConfiguredDuckDBConfig() forma.DuckDBConfig {
 // Issue #245: session-scoped SET statements (s3_region etc.) must reach every pooled
 // connection, not just the one that happened to serve the configuration calls.
 func TestNewDuckDBClientContext_AllConnectionsConfigured(t *testing.T) {
+	useTestGlobalLogger(t)
 	duck, err := NewDuckDBClient(newS3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	defer duck.Close()
@@ -108,6 +120,7 @@ func TestNewDuckDBClientContext_AllConnectionsConfigured(t *testing.T) {
 // Issue #245: mirrors the real failure shape — concurrent federated queries spread
 // across the pool must all see the configured S3 session settings.
 func TestNewDuckDBClientContext_ConcurrentConnectionsConfigured(t *testing.T) {
+	useTestGlobalLogger(t)
 	duck, err := NewDuckDBClient(newS3ConfiguredDuckDBConfig())
 	require.NoError(t, err)
 	defer duck.Close()

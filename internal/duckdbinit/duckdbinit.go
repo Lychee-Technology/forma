@@ -15,9 +15,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// DefaultInitTimeout bounds one hook run (all init statements of a single new
-// physical connection). It matches the 5s ping bound both constructors use,
-// and the pre-#285 exporter's construction-time init deadline.
+// DefaultInitTimeout bounds each init step of a new physical connection.
+// It matches the 5s ping bound both constructors use, and the pre-#285
+// exporter's construction-time init deadline. The bound is per step, not per
+// hook run: under one shared deadline a single slow INSTALL (a network
+// download on a cold cache) starved every later step, so the network-free
+// SET s3_* statements were skipped and connections opened with half their
+// session config silently missing (#487).
 const DefaultInitTimeout = 5 * time.Second
 
 // Stmt is a single statement executed on every new physical DuckDB connection.
@@ -67,28 +71,37 @@ func ValidateS3Credential(name, value string) error {
 // init never blocks the connection; construction-time errors are limited to
 // the credential validation done by the statement builders.
 //
-// Each hook run executes its statements under one shared initTimeout deadline:
-// driver cancellation rides on the context passed to ExecContext, so an
-// unbounded context would let a stalled INSTALL/LOAD block connection
-// establishment (and thereby constructors) indefinitely. A non-positive
-// initTimeout disables the bound.
-func MakeConnInit(steps []Step, log *zap.SugaredLogger, initTimeout time.Duration) func(driver.ExecerContext) error {
+// Each step runs under its own stepTimeout deadline: driver cancellation
+// rides on the context passed to ExecContext, so an unbounded context would
+// let a stalled INSTALL/LOAD block connection establishment (and thereby
+// constructors) indefinitely. The deadline is deliberately not shared across
+// steps — one slow INSTALL must degrade only its own step, never starve the
+// later, network-free SET statements into being skipped (#487). The hook run
+// stays bounded at len(steps) * stepTimeout. A non-positive stepTimeout
+// disables the bound.
+func MakeConnInit(steps []Step, log *zap.SugaredLogger, stepTimeout time.Duration) func(driver.ExecerContext) error {
 	return func(execer driver.ExecerContext) error {
-		ctx := context.Background()
-		if initTimeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, initTimeout)
-			defer cancel()
-		}
 		for _, step := range steps {
-			for _, s := range step.Stmts {
-				// Statements are literal SQL, no NamedValue args.
-				if _, err := execer.ExecContext(ctx, s.SQL, nil); err != nil {
-					log.Warnw("duckdb: connection init step failed", "step", s.Label, "err", err)
-					break
-				}
-			}
+			runStep(execer, step, log, stepTimeout)
 		}
 		return nil
+	}
+}
+
+// runStep executes one step's statements under a fresh stepTimeout deadline,
+// logging and skipping the step's remainder on the first failure.
+func runStep(execer driver.ExecerContext, step Step, log *zap.SugaredLogger, stepTimeout time.Duration) {
+	ctx := context.Background()
+	if stepTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, stepTimeout)
+		defer cancel()
+	}
+	for _, s := range step.Stmts {
+		// Statements are literal SQL, no NamedValue args.
+		if _, err := execer.ExecContext(ctx, s.SQL, nil); err != nil {
+			log.Warnw("duckdb: connection init step failed", "step", s.Label, "err", err)
+			return
+		}
 	}
 }
