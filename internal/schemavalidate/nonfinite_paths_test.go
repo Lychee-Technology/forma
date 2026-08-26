@@ -334,18 +334,46 @@ func TestValidateNamesNonFinitePointerAndNumber(t *testing.T) {
 	}
 }
 
-// TestValidateFallsBackOnInvalidNumberLiteral pins the boundary the json.Number
-// gate creates: a literal that is garbage rather than non-finite still refuses,
-// and must publish the library text, which already names it.
-func TestValidateFallsBackOnInvalidNumberLiteral(t *testing.T) {
+// TestValidateNamesInvalidNumberLiteral pins #453: a garbage json.Number
+// refuses marshal, and the published message is owned — naming the attribute,
+// the literal, and the expected state — never forwarded stdlib text, whose
+// wording is a function of the build toolchain (Go 1.27 rewords it). The raw
+// library error stays reachable for operators via WithOperatorDetail.
+func TestValidateNamesInvalidNumberLiteral(t *testing.T) {
 	const schema = `{"type":"object","properties":{"score":{"type":"number"}}}`
 	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
 	require.NoError(t, err)
 
-	err = v.Validate(3, map[string]any{"score": json.Number("abc")})
-	require.ErrorIs(t, err, forma.ErrInvalidInput)
-	msg, ok := forma.ResolvePublicMessage(err)
-	require.True(t, ok)
-	require.Contains(t, msg, "invalid number literal")
-	require.NotContains(t, msg, "non-finite", "nothing may be named when the walk found nothing")
+	t.Run("single literal", func(t *testing.T) {
+		err := v.Validate(3, map[string]any{"score": json.Number("abc")})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+		require.Contains(t, msg, "payload cannot be encoded as JSON")
+		require.Contains(t, msg, `attribute "score" holds invalid number literal "abc"`)
+		require.Contains(t, msg, "a valid JSON number is required")
+		require.NotContains(t, msg, "json:", "stdlib text must not reach the published body")
+		require.NotContains(t, msg, "more)")
+		require.True(t, forma.HasOperatorDetail(err), "the raw library error belongs to the log, not the body")
+	})
+
+	t.Run("multiple literals count the rest", func(t *testing.T) {
+		err := v.Validate(3, map[string]any{"b": json.Number("abc"), "a": json.Number("def")})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok)
+		require.Contains(t, msg, `attribute "a" holds invalid number literal "def"`)
+		require.Contains(t, msg, "(and 1 more)")
+	})
+
+	// Priority is deterministic when both kinds are present: the non-finite
+	// message wins, matching the walk's original purpose.
+	t.Run("non-finite outranks invalid literal", func(t *testing.T) {
+		err := v.Validate(3, map[string]any{"bad": json.Number("abc"), "score": math.NaN()})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok)
+		require.Contains(t, msg, `attribute "score" holds non-finite number NaN`)
+		require.NotContains(t, msg, "invalid number literal")
+	})
 }

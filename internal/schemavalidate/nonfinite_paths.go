@@ -34,28 +34,48 @@ type invalidNumberLiteral struct {
 // in their payload is barely actionable. So the payload is walked here to
 // derive the path. Only the first offender is named — alphabetically first, so
 // the same payload always produces the same message — with a count of the
-// rest, matching the precedent in transform's missing-required error.
+// rest, matching the precedent in transform's missing-required error. When
+// both finding kinds are present the non-finite message wins: either is
+// truthful (each would refuse on its own), and a fixed priority keeps the
+// published message deterministic.
+//
+// The invalid-literal message is owned rather than forwarded (#453):
+// forwarding stdlib text made the published 4xx body a function of the build
+// toolchain — Go 1.27 rewords it — which is a silent API-contract change
+// triggered by nothing but a go.mod bump. The raw library error rides along
+// as operator detail, so the log keeps it while the body never sees it.
 //
 // If the walk comes back empty, the library's text is published unchanged: it
 // is then the only description of the fault that exists. That covers a failing
 // json.Marshaler and an unsupported type such as a channel or func — and a
 // cycle, which reaches this branch because the walk is depth-capped and gives
-// up on one rather than following it (see nonFinitePaths). There the library's
-// text begins "json: unsupported value: encountered a cycle" and goes on to
-// name the type it was found via; publishing it is the honest answer, because
-// no single attribute is at fault.
+// up on one rather than following it (see marshalRefusalPaths). There the
+// library's text begins "json: unsupported value: encountered a cycle" and
+// goes on to name the type it was found via; publishing it is the honest
+// answer, because no single attribute is at fault.
 func marshalRefusalError(doc any, marshalErr error) error {
-	found, _ := marshalRefusalPaths(doc)
-	if len(found) == 0 {
-		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+	nonFinite, invalidLiterals := marshalRefusalPaths(doc)
+	if len(nonFinite) > 0 {
+		return forma.InvalidInputf(
+			"payload cannot be encoded as JSON: attribute %q holds non-finite number %v; a finite value is required%s",
+			nonFinite[0].path, nonFinite[0].value, moreSuffix(len(nonFinite)))
 	}
-	more := ""
-	if len(found) > 1 {
-		more = fmt.Sprintf(" (and %d more)", len(found)-1)
+	if len(invalidLiterals) > 0 {
+		return forma.WithOperatorDetail(forma.InvalidInputf(
+			"payload cannot be encoded as JSON: attribute %q holds invalid number literal %q; a valid JSON number is required%s",
+			invalidLiterals[0].path, invalidLiterals[0].literal, moreSuffix(len(invalidLiterals))),
+			marshalErr)
 	}
-	return forma.InvalidInputf(
-		"payload cannot be encoded as JSON: attribute %q holds non-finite number %v; a finite value is required%s",
-		found[0].path, found[0].value, more)
+	return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+}
+
+// moreSuffix renders the " (and N more)" tail shared by both owned messages:
+// only the alphabetically first offender is named, the rest are counted.
+func moreSuffix(n int) string {
+	if n > 1 {
+		return fmt.Sprintf(" (and %d more)", n-1)
+	}
+	return ""
 }
 
 // maxNonFiniteWalkDepth bounds the recursion below. Nothing upstream enforces a
