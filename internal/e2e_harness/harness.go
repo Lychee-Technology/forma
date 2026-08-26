@@ -35,7 +35,10 @@ func (h *TestHarness) StartPostgres(ctx context.Context) (string, error) {
 			"POSTGRES_USER":     "postgres",
 			"POSTGRES_DB":       "postgres",
 		},
-		WaitingFor: wait.ForListeningPort("5432/tcp").WithStartupTimeout(30 * time.Second),
+		// 120s, not 30s: the per-container startup budget must absorb the
+		// docker-socket contention of back-to-back container churn in a full
+		// suite run (#434); a healthy start still returns in seconds.
+		WaitingFor: wait.ForListeningPort("5432/tcp").WithStartupTimeout(120 * time.Second),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
@@ -217,7 +220,18 @@ func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 			"RUSTFS_ACCESS_KEY": RustFSAccessKey,
 			"RUSTFS_SECRET_KEY": RustFSSecretKey,
 		},
-		WaitingFor: wait.ForListeningPort("9000/tcp").WithStartupTimeout(60 * time.Second),
+		// Readiness means the server answered HTTP, not merely that a port
+		// mapping exists: under back-to-back container churn the mapped-port
+		// probe has timed out against a slow docker socket while RustFS was
+		// still booting (#434). Any status code counts — unauthenticated
+		// GET / gets an S3 error response, and a response at all proves the
+		// HTTP stack is serving. The budget is deliberately wide: it bounds
+		// the worst case on a loaded host, and a healthy start still returns
+		// in seconds.
+		WaitingFor: wait.ForHTTP("/").
+			WithPort("9000/tcp").
+			WithStatusCodeMatcher(func(int) bool { return true }).
+			WithStartupTimeout(120 * time.Second),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
