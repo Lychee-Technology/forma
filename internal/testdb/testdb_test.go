@@ -209,13 +209,13 @@ func TestResolveDSNEscapesSSLMode(t *testing.T) {
 	}
 }
 
-func TestFailOnUnreachableFollowsCIVar(t *testing.T) {
+func TestInCIFollowsCIVar(t *testing.T) {
 	t.Setenv("CI", "")
-	if FailOnUnreachable() {
-		t.Error("FailOnUnreachable() = true with CI unset, want false (developer machines skip)")
+	if InCI() {
+		t.Error("InCI() = true with CI unset, want false (developer machines skip)")
 	}
 	t.Setenv("CI", "true")
-	if !FailOnUnreachable() {
-		t.Error("FailOnUnreachable() = false with CI=true, want true (CI provisions Postgres on purpose)")
+	if !InCI() {
+		t.Error("InCI() = false with CI=true, want true (CI provisions Postgres on purpose)")
 	}
 }

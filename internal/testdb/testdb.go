@@ -45,11 +45,12 @@ func ResolveDSN() string {
 	return u.String()
 }
 
-// FailOnUnreachable reports whether an unreachable database is a failure
-// rather than a skip. GitHub Actions sets CI on every hosted runner, so this
-// needs no workflow wiring and stays correct if more jobs provision Postgres
-// (#385).
-func FailOnUnreachable() bool {
+// InCI reports whether the tests run under CI, where a database is
+// provisioned on purpose and therefore every connection failure — not only
+// unreachability — is fatal rather than skippable. GitHub Actions sets CI on
+// every hosted runner, so this needs no workflow wiring and stays correct if
+// more jobs provision Postgres (#385).
+func InCI() bool {
 	return os.Getenv("CI") != ""
 }
 
@@ -86,6 +87,9 @@ func unreachable(err error) bool {
 			// The op tells where the failure happened: "dial" is absence
 			// (refused, unreachable, DNS, dial timeout all surface here);
 			// "read"/"write" mean the server accepted the connection first.
+			// Deliberately errno-blind at dial time: nothing was accepted
+			// yet, so any dial failure reads as absence (#486 review round
+			// 4, recorded as intended breadth).
 			return e.Op == "dial"
 		case *net.DNSError:
 			return true
@@ -122,11 +126,11 @@ func Connect(t testing.TB, ctx context.Context) *pgxpool.Pool {
 		}
 	}
 	if err != nil {
-		if FailOnUnreachable() {
+		if InCI() {
 			t.Fatalf("integration database connection failed in CI — the workflow provisions Postgres on purpose, so this is a failure, not a skip (#385): %v", err)
 		}
 		if !unreachable(err) {
-			t.Fatalf("integration Postgres answered but rejected the connection — misconfiguration, not absence; fix DATABASE_URL / DB_* env (#486 review): %v", err)
+			t.Fatalf("integration database connection failed for a reason other than network absence — misconfiguration, not a missing Postgres; fix DATABASE_URL / DB_* env (#486 review): %v", err)
 		}
 		t.Skipf("skipping: integration Postgres unreachable (%v)", err)
 	}
