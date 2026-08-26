@@ -130,7 +130,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
 	var allowEmptyManifest schemaIDList
 	fs.Var(&allowEmptyManifest, "allow-empty-manifest-schema",
-		"Schema ID whose EMPTY manifest is operator-confirmed legitimate: --gc then accepts zero manifest entries for that schema instead of refusing (#463). Repeatable / comma-separable; deliberately schema-explicit — there is no global override")
+		"Schema ID whose EMPTY manifest is operator-confirmed legitimate: --gc then accepts zero manifest entries for that schema instead of refusing (#463). Repeatable / comma-separable; deliberately schema-explicit — there is no global override. Does NOT waive a non-empty manifest with zero entries in the schema's data prefix (#481 foreign manifest): that signature always refuses")
 	verifyStamps := fs.Bool("verify-stamps", false, "Compare every listed entry's column stamp against the parquet footer (byte-truth check for the #256 stamp trust)")
 	verifyChecksums := fs.Bool("verify-checksums", false, "Re-hash every checksum-stamped object and compare with the manifest stamp (#347 byte-integrity scrub; one full GET per stamped entry)")
 	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -183,6 +184,50 @@ func TestGC_ManifestWithInPrefixEntries_GuardDoesNotFire(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, report.Schemas[0].Err)
 	require.Equal(t, []string{merged}, deleter.deleted)
+}
+
+func TestGC_FixedFileTemplate_ForeignManifest_FailsInsteadOfDeleting(t *testing.T) {
+	// #481 acceptance regression: a fixed-file --manifest-template (no
+	// {{.SchemaID}}) resolving to an EXISTING foreign manifest, with
+	// --data-prefix still matching the writers', must fail --gc — through
+	// the real resolver store, not a fake.
+	ctx := context.Background()
+	mem := newMemManifestStore()
+	resolver := &ResolverManifestStore{
+		Store:    mem,
+		Resolver: manifest.PathResolver{PathTemplate: "manifest/data.json"},
+	}
+	m7, etag, err := resolver.Load(ctx, 7)
+	require.NoError(t, err)
+	m7.Files = append(m7.Files, manifest.FileEntry{Tier: "delta", Path: "data/7/" + uuidC + ".parquet"})
+	_, err = resolver.Save(ctx, 7, m7, etag)
+	require.NoError(t, err)
+
+	old := testClock().Add(-24 * time.Hour)
+	merged9 := "data/9/base-" + uuidA + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{
+		"data/9/": {{Key: merged9, LastModified: old}},
+	}}
+	deleter := &fakeDeleter{}
+	r := &Reconciler{
+		Lister:     lister,
+		Deleter:    deleter,
+		Manifests:  resolver,
+		Locker:     &fakeLocker{},
+		Schemas:    &fakeEnum{ids: []int16{9}},
+		GCStates:   newFakeGCState(),
+		Now:        testClock,
+		Bucket:     "bkt",
+		DataPrefix: "data",
+		Logger:     zap.NewNop(),
+		Opts:       Options{GC: true, GCGrace: 15 * time.Minute},
+	}
+	seedGCSighting(t, r, 9, old, merged9)
+
+	report, err := r.Run(ctx)
+	require.NoError(t, err)
+	require.Error(t, report.Schemas[0].Err, "schema 9 must fail, not delete its base tier")
+	require.Empty(t, deleter.deleted)
 }
 
 func TestGC_NonEmptyManifest_GuardDoesNotFire(t *testing.T) {
