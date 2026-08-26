@@ -157,8 +157,12 @@ func TestDeduplication_BulkPerformance(t *testing.T) {
 	// Verify deduplication occurred
 	AssertNoDuplicates(t, result.Records)
 
-	// Verify performance (should be < 5s for 10K records with 30% duplicates)
-	require.Less(t, duration, 5*time.Second, "deduplication took too long: %v", duration)
+	// Regression tripwire, not a performance target: in isolation this query
+	// runs in ~220ms, but the full suite's container churn has pushed it past
+	// a 5s ceiling on a loaded host (#434). The ceiling only needs to catch a
+	// broken dedup (30s-class); real latency baselining belongs to the
+	// benchmark harness.
+	require.Less(t, duration, 30*time.Second, "deduplication took too long: %v", duration)
 
 	// Calculate actual dedup ratio
 	uniqueCount := len(result.Records)

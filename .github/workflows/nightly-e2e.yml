@@ -1,0 +1,64 @@
+# Nightly full federated e2e suite (#434). CI's per-PR run uses -short, which
+# skips 37 of the 124 federated e2e tests (deduplication, merge-on-read,
+# data-tier, soft-delete, performance). This scheduled run is their only CI
+# signal, and the measurable baseline for the suite's flake rate. It gates
+# nothing: value is signal, so failures file/update a labeled issue instead
+# of blocking PRs.
+name: Nightly Full E2E
+
+on:
+  schedule:
+    - cron: '30 19 * * *' # 03:30 Asia/Shanghai
+  workflow_dispatch:
+
+# A manual dispatch overlapping the scheduled run (or a hung run meeting the
+# next day's schedule) must queue, not double-run: two suites sharing one
+# runner-class would contend exactly like the local churn this suite is being
+# de-flaked against (#490 review).
+concurrency:
+  group: nightly-e2e
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26.0'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  federated-full:
+    name: Full Federated Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run full federated e2e suite (no -short)
+        run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m
+
+      - name: File or update failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create nightly-e2e --repo "$GITHUB_REPOSITORY" \
+            --color D93F0B --description "Nightly full e2e suite failure" --force
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
+            --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body "Nightly full federated e2e suite failed again: $run_url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
+              --title "nightly: full federated e2e suite failed" \
+              --body "The scheduled full federated suite (\`-tags=e2e\`, no \`-short\`) failed: $run_url (refs #434)"
+          fi

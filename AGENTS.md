@@ -55,7 +55,7 @@ Bun black-box E2E and k6 load tests live in `tests/e2e/` (see its README). Bench
 
 Local server: `./scripts/local_server.sh` (Docker Compose Postgres + init-db + server on :8080).
 
-CI (`.github/workflows/ci.yml`) runs lint, unit tests with `-race`, the e2e smoke + `-tags=e2e -short` federated suite, the production harness, and `benchmark-smoke`.
+CI (`.github/workflows/ci.yml`) runs lint, unit tests with `-race`, the e2e smoke + `-tags=e2e -short` federated suite, the production harness, and `benchmark-smoke`. Note `-short` skips 37 of the 124 federated e2e tests (deduplication, merge-on-read, data-tier, soft-delete, performance); their CI signal is the nightly full-suite run (`.github/workflows/nightly-e2e.yml`), which files a `nightly-e2e`-labeled issue on failure (#434).
 
 ## Architecture
 
