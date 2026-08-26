@@ -261,7 +261,7 @@ grace，后续运行就会删除它们）。
 P 调度时上界 ≈ grace + 2P。
 混用"带 --gc 与不带 --gc"的运行方式时，早先运行留下的目击记录可能在文件短暂重新列入清单期间未被清理，建议保持一致的 --repair --gc 运行方式以让目击清理正常工作。
 
-## `--gc` 的空 manifest 防护（#463）
+## `--gc` 的空/外来 manifest 防护（#463 / #481）
 
 `ResolverManifestStore.Load` 对解析不到的 manifest 采用 LoadOrCreate 语义（解析为空
 manifest）。因此当 `--manifest-prefix`/`--manifest-template` 指错位置而 `--data-prefix`
@@ -280,9 +280,24 @@ manifest，证明解析路径有效）；被**拒绝**的 init 晋升集合自 #
 刻意不提供全局开关：一次模板指错会同时清空所有 schema 的 manifest，全局放行恰好放过
 防护要拦的事故。
 
+#481 将防护从「manifest 条目数为 0」收紧为真正的不变量：**本轮加载的 manifest 没有任何
+条目落在该 schema 的数据前缀内**（in-prefix = 0）。因此固定文件模板（`--manifest-template`
+漏掉 `{{.SchemaID}}`）、跨 schema/跨环境指错、或条目全部指向另一个 bucket 的「非空但外来」
+manifest 同样被拒绝。拒绝信息同时引用原始条目数与 in-prefix 条目数（与报告的
+`M manifest entries resolved (K in schema prefix)` 一致），便于区分「manifest 为空」与
+「manifest 外来」。**外来签名不可用 `--allow-empty-manifest-schema` 放行**——它意味着模板
+或 bucket 配置错误，而非合法的空 manifest；修复方式是校正 `--manifest-prefix`/
+`--manifest-template`/`--s3-bucket` 使之与写入端一致。
+
+另外，`ResolverManifestStore.Load` 自 #481 起校验加载到的 manifest 的 `schema_id`：与请求
+schema 不一致时按工具故障失败（计入 schema Err，退出码 1，先于任何分类），固定文件模板
+在加载阶段即被拦截。`schema_id` 为 0（旧版 manifest 未落此字段）保持兼容、照常加载，
+仍由 in-prefix 防护兜底。
+
 排查手段：不带 `--repair`/`--gc` 的只读巡检即为 dry-run——报告对每个 schema 打印
-`inventory: N objects in storage, M manifest entries resolved; orphan candidates: ...`，
-「N 个对象、0 条 manifest 条目」即模板指错的典型签名。
+`inventory: N objects in storage, M manifest entries resolved (K in schema prefix); orphan candidates: ...`，
+「N 个对象、0 条 manifest 条目」即模板指错的典型签名；「M > 0 而 in-prefix 为 0」则是
+#481 的外来 manifest 签名。
 
 ## `--verify-stamps`：#256 戳记的离线字节真值核查
 
@@ -432,6 +447,7 @@ forma-tools manifest-reconcile ... --verify-stamps
 forma-tools manifest-reconcile ... --verify-checksums
 
 # 确认某 schema 的 manifest 确实为空后，逐 schema 放行 #463 空 manifest 防护
+# （只放行「条目为 0」的空签名；#481 非空外来 manifest 不可放行，需修正模板/bucket 配置）
 forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7
 # 多个 schema：重复旗标或逗号分隔（等价写法）
 forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allow-empty-manifest-schema 11
