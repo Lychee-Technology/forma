@@ -11,6 +11,11 @@
 # The run URL and "(refs <ref>)" are appended to the comment/body here.
 set -Eeuo pipefail
 
+if [ "$#" -ne 6 ]; then
+	echo "usage: $0 <label> <label-description> <issue-title> <comment-prefix> <body-prefix> <ref>" >&2
+	exit 2
+fi
+
 label="$1"
 label_desc="$2"
 title="$3"
