@@ -87,7 +87,9 @@ type Options struct {
 	// exactly these schemas. Schema-explicit by design: one mis-pointed
 	// manifest template resolves EVERY schema's manifest empty, so a global
 	// override would wave the whole fleet through the very failure the
-	// guard exists to stop.
+	// guard exists to stop. It waives only the truly-empty signature: a
+	// NON-EMPTY manifest with zero in-prefix entries (#481 foreign
+	// manifest) is never waivable.
 	AllowEmptyManifestSchemas []int16
 }
 
