@@ -4,6 +4,15 @@
 # signal, and the measurable baseline for the suite's flake rate. It gates
 # nothing: value is signal, so failures file/update a labeled issue instead
 # of blocking PRs.
+#
+# The production-race job is the #410 ruling: CI races only the unit suite,
+# so the production e2e harness — the one venue driving real concurrent
+# flush/compaction/read against real containers — had no recurring -race
+# signal after passing once during #345. It lives here, not in the PR gate:
+# the race detector's slowdown would invalidate the wall-clock regression
+# tripwires #434 calibrated for race-free runs, and this workflow already
+# has the budget and the failure-issue reporting. Jobs run on separate
+# hosted runners, so the two suites' containers never contend.
 name: Nightly Full E2E
 
 on:
@@ -61,4 +70,42 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
               --title "nightly: full federated e2e suite failed" \
               --body "The scheduled full federated suite (\`-tags=e2e\`, no \`-short\`) failed: $run_url (refs #434)"
+          fi
+
+  production-race:
+    name: Production Suite (-race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # TestNightlyRacesProductionSuite guards this line. The 30m timeout is
+      # the gate run's 10m (make test-e2e-production) times the ~2-3x race
+      # instrumentation cost, rounded up.
+      - name: Run production e2e suite under -race
+        run: go test -v ./internal/e2e_harness/production/ -tags=e2e -race -timeout=30m
+
+      - name: File or update failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create nightly-e2e --repo "$GITHUB_REPOSITORY" \
+            --color D93F0B --description "Nightly full e2e suite failure" --force
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
+            --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body "Nightly production e2e suite failed under -race: $run_url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
+              --title "nightly: production e2e suite failed under -race" \
+              --body "The scheduled production suite run (\`-tags=e2e -race\`) failed: $run_url (refs #410)"
           fi
