@@ -52,6 +52,39 @@ func TestMonotonicVersionsCloseSameMillisecondTies(t *testing.T) {
 	}
 }
 
+// clockAheadLeadMs is how far past the wall clock the restamps below move a
+// row's version. The exact-version assertions (ahead+1 / ahead+2) hold only
+// while the wall clock is still behind the restamp, so this is a budget for
+// everything between the restamp and the asserted write — which for the
+// recreate race includes a full flush list+export leg. Under -race that leg
+// alone took ~2.1s (nightly production-race run, #410), blowing the original
+// 2s lead; 20s keeps the GREATEST branch deterministically exercised on
+// 2-core CI runners. Nothing waits for the clock to catch up, so the size
+// costs no wall time.
+const clockAheadLeadMs = 20_000
+
+// requireExactStamp asserts got == want and, on mismatch, separates the two
+// possible causes: if the wall clock had overtaken the restamp by the time
+// the write completed, the lead budget was eaten by scheduling — the
+// GREATEST branch was never reachable and the exact-version pin is
+// meaningless — so the failure must read as a blown budget, not as a
+// monotonicity regression (#410 review). wroteByMs is a clock reading taken
+// right after the asserted write returned, not at assert time: for the
+// recreate race the assertion runs only after the paused flush resumes and
+// finishes, and reading the clock there could report a genuine regression
+// as a blown budget (review round 2). Conversely wroteByMs <= ahead is
+// conclusive: the stamping GREATEST saw a clock no later than this reading.
+func requireExactStamp(t *testing.T, what string, got, want, ahead, wroteByMs int64) {
+	t.Helper()
+	if got == want {
+		return
+	}
+	if wroteByMs > ahead {
+		t.Fatalf("%s stamped %d, want %d — but the wall clock (%d) had passed the restamp (%d) when the write completed: the %dms clock-ahead lead was exhausted by scheduling; raise clockAheadLeadMs, this is not a GREATEST regression", what, got, want, wroteByMs, ahead, clockAheadLeadMs)
+	}
+	t.Fatalf("%s stamped %d, want %d (strictly above the row's previous version)", what, got, want)
+}
+
 // restampMainVersionAhead moves the row's stored version aheadMillis past the
 // current wall clock and returns the restamped version. The guard count
 // proves the restamp took — a silent no-op would leave the scenario probing
@@ -87,16 +120,15 @@ func testUpdateAdvancesPastClockAheadVersion(ctx context.Context, t *testing.T, 
 	mustApplyEvents(ctx, t, env, "monotonic creates", target, bystander)
 	mustFlush(ctx, t, env) // delta A: live "stale-a" @ its create ts
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, target, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, target, clockAheadLeadMs)
 
 	upd := UpdateEvent(wide, target.RowID, map[string]any{"title": "fresh-b", "count": float64(200)})
 	mustApplyEvents(ctx, t, env, "monotonic update", upd)
+	wroteBy := time.Now().UnixMilli()
 
 	// The effective version must be ahead+1 — strictly past the clock-ahead
 	// previous version, not the (smaller) wall-clock read.
-	if upd.ChangedAt != ahead+1 {
-		t.Fatalf("update stamped change_log at %d, want %d (GREATEST over the row's previous version)", upd.ChangedAt, ahead+1)
-	}
+	requireExactStamp(t, "update change_log", upd.ChangedAt, ahead+1, ahead, wroteBy)
 	var mainVer int64
 	if err := env.Pool.QueryRow(ctx,
 		"SELECT ltbase_updated_at FROM entity_main WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
@@ -152,14 +184,13 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 	mustApplyEvents(ctx, t, env, "delete-guard creates", victim, control)
 	mustFlush(ctx, t, env) // delta: both live @ create ts
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, clockAheadLeadMs)
 
 	del := DeleteEvent(wide, victim.RowID)
 	mustApplyEvents(ctx, t, env, "delete-guard delete", del)
-	if del.ChangedAt != ahead+1 || del.DeletedAt != ahead+1 {
-		t.Fatalf("tombstone stamped (changed_at=%d, deleted_at=%d), want both %d (strictly past the clock-ahead live version)",
-			del.ChangedAt, del.DeletedAt, ahead+1)
-	}
+	wroteBy := time.Now().UnixMilli()
+	requireExactStamp(t, "tombstone changed_at", del.ChangedAt, ahead+1, ahead, wroteBy)
+	requireExactStamp(t, "tombstone deleted_at", del.DeletedAt, ahead+1, ahead, wroteBy)
 
 	// Flush IMMEDIATELY: the clock-ahead tombstone must be exported and
 	// marked in this run (round-2 P1).
@@ -212,12 +243,10 @@ func TestRecreateBetweenExportAndMark(t *testing.T) {
 	mustApplyEvents(ctx, t, env, "recreate-race creates", victim, control)
 	mustFlush(ctx, t, env) // delta #1: both live
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, clockAheadLeadMs)
 	del := DeleteEvent(wide, victim.RowID)
 	mustApplyEvents(ctx, t, env, "recreate-race delete", del)
-	if del.ChangedAt != ahead+1 {
-		t.Fatalf("tombstone stamped %d, want %d", del.ChangedAt, ahead+1)
-	}
+	requireExactStamp(t, "recreate-race tombstone", del.ChangedAt, ahead+1, ahead, time.Now().UnixMilli())
 
 	// The paused flush lists and exports the tombstone @ ahead+1, then hangs
 	// before mark; the recreate lands while it hangs. title/count are the
@@ -230,17 +259,20 @@ func TestRecreateBetweenExportAndMark(t *testing.T) {
 		TextItems:  map[string]string{"text_01": "reborn"},
 		Int32Items: map[string]int32{"integer_01": 30},
 	}
+	// recreatedBy is read inside the pause, right after the insert returns:
+	// the assertion below only runs once the flush has resumed and finished,
+	// and a clock read that late would blame the budget for that whole leg.
+	var recreatedBy int64
 	report, err := runPausedFlush(ctx, t, env, func() {
 		if err := repo.InsertPersistentRecord(ctx, tables, rec); err != nil {
 			t.Errorf("recreate during paused flush: %v", err)
 		}
+		recreatedBy = time.Now().UnixMilli()
 	})
 	if err != nil {
 		t.Fatalf("paused flush: %v", err)
 	}
-	if rec.UpdatedAt != ahead+2 {
-		t.Fatalf("recreate stamped %d, want %d (strictly above the retained tombstone)", rec.UpdatedAt, ahead+2)
-	}
+	requireExactStamp(t, "recreate", rec.UpdatedAt, ahead+2, ahead, recreatedBy)
 	// Mirror the recreate into the oracle event log (the restamp-mirroring
 	// pattern) so oracle-checked probes stay meaningful.
 	env.eventSeq++
