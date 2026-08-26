@@ -52,6 +52,17 @@ func TestMonotonicVersionsCloseSameMillisecondTies(t *testing.T) {
 	}
 }
 
+// clockAheadLeadMs is how far past the wall clock the restamps below move a
+// row's version. The exact-version assertions (ahead+1 / ahead+2) hold only
+// while the wall clock is still behind the restamp, so this is a budget for
+// everything between the restamp and the asserted write — which for the
+// recreate race includes a full flush list+export leg. Under -race that leg
+// alone took ~2.1s (nightly production-race run, #410), blowing the original
+// 2s lead; 20s keeps the GREATEST branch deterministically exercised on
+// 2-core CI runners. Nothing waits for the clock to catch up, so the size
+// costs no wall time.
+const clockAheadLeadMs = 20_000
+
 // restampMainVersionAhead moves the row's stored version aheadMillis past the
 // current wall clock and returns the restamped version. The guard count
 // proves the restamp took — a silent no-op would leave the scenario probing
@@ -87,7 +98,7 @@ func testUpdateAdvancesPastClockAheadVersion(ctx context.Context, t *testing.T, 
 	mustApplyEvents(ctx, t, env, "monotonic creates", target, bystander)
 	mustFlush(ctx, t, env) // delta A: live "stale-a" @ its create ts
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, target, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, target, clockAheadLeadMs)
 
 	upd := UpdateEvent(wide, target.RowID, map[string]any{"title": "fresh-b", "count": float64(200)})
 	mustApplyEvents(ctx, t, env, "monotonic update", upd)
@@ -152,7 +163,7 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 	mustApplyEvents(ctx, t, env, "delete-guard creates", victim, control)
 	mustFlush(ctx, t, env) // delta: both live @ create ts
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, clockAheadLeadMs)
 
 	del := DeleteEvent(wide, victim.RowID)
 	mustApplyEvents(ctx, t, env, "delete-guard delete", del)
@@ -212,7 +223,7 @@ func TestRecreateBetweenExportAndMark(t *testing.T) {
 	mustApplyEvents(ctx, t, env, "recreate-race creates", victim, control)
 	mustFlush(ctx, t, env) // delta #1: both live
 
-	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, 2000)
+	ahead := restampMainVersionAhead(ctx, t, env, wide, victim, clockAheadLeadMs)
 	del := DeleteEvent(wide, victim.RowID)
 	mustApplyEvents(ctx, t, env, "recreate-race delete", del)
 	if del.ChangedAt != ahead+1 {
