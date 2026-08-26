@@ -154,7 +154,7 @@ func TestNonFinitePathsAbortsOnCycle(t *testing.T) {
 // walk cannot tell "no non-finite here" from "stopped looking".
 func TestNonFinitePathsAbortsBeyondDepthCap(t *testing.T) {
 	t.Run("beyond the cap the walk yields nothing", func(t *testing.T) {
-		doc := nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"score": math.NaN()})
+		doc := nestMaps(maxMarshalRefusalWalkDepth+1, map[string]any{"score": math.NaN()})
 		require.Nil(t, nonFinitePaths(doc))
 	})
 
@@ -168,7 +168,7 @@ func TestNonFinitePathsAbortsBeyondDepthCap(t *testing.T) {
 	t.Run("a partial result is discarded, not published", func(t *testing.T) {
 		doc := map[string]any{
 			"a": math.NaN(),
-			"z": nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"deep": math.NaN()}),
+			"z": nestMaps(maxMarshalRefusalWalkDepth+1, map[string]any{"deep": math.NaN()}),
 		}
 		require.Nil(t, nonFinitePaths(doc))
 	})
@@ -206,7 +206,7 @@ func TestValidateFallsBackBeyondDepthCap(t *testing.T) {
 	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
 	require.NoError(t, err)
 
-	doc := nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"score": math.NaN()})
+	doc := nestMaps(maxMarshalRefusalWalkDepth+1, map[string]any{"score": math.NaN()})
 	err = v.Validate(3, doc)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 	msg, ok := forma.ResolvePublicMessage(err)
@@ -265,6 +265,9 @@ func TestMarshalRefusalPathsClassifiesNumberLiterals(t *testing.T) {
 		"abc":      {invalid: true},
 		"":         {},              // encoding/json marshals an empty Number as 0 — never a refusal
 		"1_0":      {invalid: true}, // ParseFloat accepts it; JSON grammar does not
+		"0x1p4":    {invalid: true}, // hex float: same ParseFloat-accepts/JSON-refuses band
+		"+1":       {invalid: true}, // JSON numbers take no leading +
+		"01":       {invalid: true}, // JSON numbers take no leading zero
 		"1e400":    {},
 		"-1e400":   {},
 		"1.5":      {},
@@ -305,7 +308,7 @@ func TestInvalidNumberLiteralPathsShareWalkSemantics(t *testing.T) {
 	t.Run("a partial result is discarded on abort", func(t *testing.T) {
 		nonFinite, invalid := marshalRefusalPaths(map[string]any{
 			"a": json.Number("abc"),
-			"z": nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"deep": json.Number("def")}),
+			"z": nestMaps(maxMarshalRefusalWalkDepth+1, map[string]any{"deep": json.Number("def")}),
 		})
 		require.Nil(t, nonFinite)
 		require.Nil(t, invalid)

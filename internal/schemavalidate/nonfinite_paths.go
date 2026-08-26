@@ -78,7 +78,7 @@ func moreSuffix(n int) string {
 	return ""
 }
 
-// maxNonFiniteWalkDepth bounds the recursion below. Nothing upstream enforces a
+// maxMarshalRefusalWalkDepth bounds the recursion below. Nothing upstream enforces a
 // shallower limit: encoding/json's decoder refuses nesting past 10000, ten times
 // this cap, so a decoded document can sit well beyond it.
 //
@@ -89,10 +89,11 @@ func moreSuffix(n int) string {
 // are pinned.
 //
 // What limits the cost of that degradation is the payload's provenance, not its
-// depth: JSON has no syntax for a non-finite, so an HTTP request can never
-// produce the refusal this walk exists to explain. Only a Go embedder can, which
-// makes a message degraded by this cap an embedder-only outcome.
-const maxNonFiniteWalkDepth = 1000
+// depth: JSON has no syntax for a non-finite, and a decoded json.Number is
+// grammar-valid by construction, so an HTTP request can never produce either
+// refusal this walk exists to explain. Only a Go embedder can, which makes a
+// message degraded by this cap an embedder-only outcome.
+const maxMarshalRefusalWalkDepth = 1000
 
 // marshalRefusalPaths walks a document and returns every finding the walk can
 // name — non-finite floats and invalid json.Number literals (#453) — each
@@ -104,7 +105,7 @@ const maxNonFiniteWalkDepth = 1000
 // is what makes a cyclic payload safe here — json.Marshal detects a cycle and
 // refuses, so this walk runs precisely when a cycle is possible, and following
 // one has no natural end, so the cap is the end. A merely deep acyclic payload
-// hits the same cap and gets the same treatment (see maxNonFiniteWalkDepth).
+// hits the same cap and gets the same treatment (see maxMarshalRefusalWalkDepth).
 //
 // Abandoning rather than truncating is deliberate: a partial walk cannot tell
 // "nothing wrong in this payload" from "stopped looking", and only the first
@@ -126,33 +127,34 @@ const maxNonFiniteWalkDepth = 1000
 // Structs, custom Marshalers and channels land here too. A fault at the
 // document root is likewise left to the library: there is no attribute to name.
 func marshalRefusalPaths(doc any) ([]nonFinitePath, []invalidNumberLiteral) {
-	var walker nonFiniteWalker
+	var walker marshalRefusalWalker
 	walker.walk("", doc, 0)
 	if walker.aborted {
 		return nil, nil
 	}
-	slices.SortFunc(walker.found, func(a, b nonFinitePath) int {
+	slices.SortFunc(walker.nonFinite, func(a, b nonFinitePath) int {
 		return strings.Compare(a.path, b.path)
 	})
 	slices.SortFunc(walker.invalid, func(a, b invalidNumberLiteral) int {
 		return strings.Compare(a.path, b.path)
 	})
-	return walker.found, walker.invalid
+	return walker.nonFinite, walker.invalid
 }
 
-// nonFiniteWalker carries the walk's accumulated findings and its abort flag.
-// Once aborted, every pending frame returns without doing further work.
-type nonFiniteWalker struct {
-	found   []nonFinitePath
-	invalid []invalidNumberLiteral
-	aborted bool
+// marshalRefusalWalker carries the walk's accumulated findings — one slice per
+// finding kind — and its abort flag. Once aborted, every pending frame returns
+// without doing further work.
+type marshalRefusalWalker struct {
+	nonFinite []nonFinitePath
+	invalid   []invalidNumberLiteral
+	aborted   bool
 }
 
-func (w *nonFiniteWalker) walk(path string, node any, depth int) {
+func (w *marshalRefusalWalker) walk(path string, node any, depth int) {
 	if w.aborted {
 		return
 	}
-	if depth > maxNonFiniteWalkDepth {
+	if depth > maxMarshalRefusalWalkDepth {
 		w.aborted = true
 		return
 	}
@@ -202,18 +204,18 @@ func (w *nonFiniteWalker) walk(path string, node any, depth int) {
 	}
 }
 
-func (w *nonFiniteWalker) appendIfNonFinite(path string, value float64) {
+func (w *marshalRefusalWalker) appendIfNonFinite(path string, value float64) {
 	if path == "" {
 		return
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		w.found = append(w.found, nonFinitePath{path: path, value: value})
+		w.nonFinite = append(w.nonFinite, nonFinitePath{path: path, value: value})
 	}
 }
 
 // appendInvalidLiteral mirrors appendIfNonFinite's root rule: a fault at the
 // document root has no attribute to name and falls back to the library text.
-func (w *nonFiniteWalker) appendInvalidLiteral(path, literal string) {
+func (w *marshalRefusalWalker) appendInvalidLiteral(path, literal string) {
 	if path == "" {
 		return
 	}
