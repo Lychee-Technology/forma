@@ -53,24 +53,21 @@ jobs:
       - name: Run full federated e2e suite (no -short)
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m
 
+      # The two nightly jobs share one reporting script but MUST NOT share a
+      # label: the label keys the open-issue lookup, so a shared one appends
+      # this suite's failures to the other suite's thread (#410 review).
       - name: File or update failure issue
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh label create nightly-e2e --repo "$GITHUB_REPOSITORY" \
-            --color D93F0B --description "Nightly full e2e suite failure" --force
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
-            --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-              --body "Nightly full federated e2e suite failed again: $run_url"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
-              --title "nightly: full federated e2e suite failed" \
-              --body "The scheduled full federated suite (\`-tags=e2e\`, no \`-short\`) failed: $run_url (refs #434)"
-          fi
+        run: >
+          bash scripts/nightly_failure_issue.sh
+          nightly-e2e
+          "Nightly full e2e suite failure"
+          "nightly: full federated e2e suite failed"
+          "Nightly full federated e2e suite failed again"
+          "The scheduled full federated suite (\`-tags=e2e\`, no \`-short\`) failed"
+          "#434"
 
   production-race:
     name: Production Suite (-race)
@@ -91,21 +88,16 @@ jobs:
       - name: Run production e2e suite under -race
         run: go test -v ./internal/e2e_harness/production/ -tags=e2e -race -timeout=30m
 
+      # Same script, own label — see the label note on the federated job.
       - name: File or update failure issue
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh label create nightly-e2e --repo "$GITHUB_REPOSITORY" \
-            --color D93F0B --description "Nightly full e2e suite failure" --force
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
-            --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-              --body "Nightly production e2e suite failed under -race: $run_url"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --label nightly-e2e \
-              --title "nightly: production e2e suite failed under -race" \
-              --body "The scheduled production suite run (\`-tags=e2e -race\`) failed: $run_url (refs #410)"
-          fi
+        run: >
+          bash scripts/nightly_failure_issue.sh
+          nightly-e2e-race
+          "Nightly production e2e -race failure"
+          "nightly: production e2e suite failed under -race"
+          "Nightly production e2e suite failed under -race again"
+          "The scheduled production suite run (\`-tags=e2e -race\`) failed"
+          "#410"
