@@ -27,6 +27,13 @@ func cyclicMap() map[string]any {
 	return m
 }
 
+// nonFinitePaths keeps the pre-#453 unit tests reading naturally: prod code
+// walks once via marshalRefusalPaths and gets both finding kinds.
+func nonFinitePaths(doc any) []nonFinitePath {
+	found, _ := marshalRefusalPaths(doc)
+	return found
+}
+
 func TestNonFinitePaths(t *testing.T) {
 	t.Run("flat map", func(t *testing.T) {
 		found := nonFinitePaths(map[string]any{"name": "x", "score": math.NaN()})
@@ -244,17 +251,65 @@ func TestNonFinitePathsCoversPointerAndNumberSpellings(t *testing.T) {
 	})
 }
 
-// TestNonFinitePathsIgnoresNonRefusingNumberLiterals guards the gate on the
-// json.Number case. 1e400 is the one that matters: ParseFloat reports it out of
-// range (and hands back +Inf), but it is valid JSON grammar and marshals fine,
-// so it is never the cause of a refusal and naming it would be a lie. "abc"
-// does cause a refusal, but the library's own text already names it.
-func TestNonFinitePathsIgnoresNonRefusingNumberLiterals(t *testing.T) {
-	for _, literal := range []string{"1e400", "-1e400", "abc", "", "1.5"} {
-		t.Run(literal, func(t *testing.T) {
-			require.Empty(t, nonFinitePaths(map[string]any{"score": json.Number(literal)}))
+// TestMarshalRefusalPathsClassifiesNumberLiterals guards the two gates on the
+// json.Number case (#453). A literal parsing cleanly to a non-finite is a
+// non-finite finding; a literal json.Marshal itself refuses is an invalid
+// literal finding — probed against Marshal, not re-derived from grammar, so
+// the classification cannot drift from the refusal it explains. 1e400 is the
+// literal that must land in neither: ParseFloat reports it out of range, but
+// it is valid JSON grammar and marshals fine, so it never causes a refusal.
+func TestMarshalRefusalPathsClassifiesNumberLiterals(t *testing.T) {
+	for literal, want := range map[string]struct{ nonFinite, invalid bool }{
+		"NaN":      {nonFinite: true},
+		"Infinity": {nonFinite: true},
+		"abc":      {invalid: true},
+		"":         {},              // encoding/json marshals an empty Number as 0 — never a refusal
+		"1_0":      {invalid: true}, // ParseFloat accepts it; JSON grammar does not
+		"1e400":    {},
+		"-1e400":   {},
+		"1.5":      {},
+	} {
+		t.Run("literal "+literal, func(t *testing.T) {
+			nonFinite, invalid := marshalRefusalPaths(map[string]any{"score": json.Number(literal)})
+			require.Equal(t, want.nonFinite, len(nonFinite) == 1, "non-finite findings: %v", nonFinite)
+			require.Equal(t, want.invalid, len(invalid) == 1, "invalid-literal findings: %v", invalid)
+			if want.invalid {
+				require.Equal(t, "score", invalid[0].path)
+				require.Equal(t, literal, invalid[0].literal)
+			}
 		})
 	}
+}
+
+// TestInvalidNumberLiteralPathsShareWalkSemantics pins that the second finding
+// kind inherits the walk's contract: dotted/indexed paths, sorted output, a
+// skipped root (no attribute to name), and the depth-cap abort discarding a
+// partial answer rather than publishing it.
+func TestInvalidNumberLiteralPathsShareWalkSemantics(t *testing.T) {
+	t.Run("nested and indexed paths, sorted", func(t *testing.T) {
+		_, invalid := marshalRefusalPaths(map[string]any{
+			"z": json.Number("abc"),
+			"a": map[string]any{"b": []any{json.Number("def")}},
+		})
+		require.Len(t, invalid, 2)
+		require.Equal(t, "a.b[0]", invalid[0].path)
+		require.Equal(t, "z", invalid[1].path)
+	})
+
+	t.Run("document root is not named", func(t *testing.T) {
+		nonFinite, invalid := marshalRefusalPaths(json.Number("abc"))
+		require.Empty(t, nonFinite)
+		require.Empty(t, invalid)
+	})
+
+	t.Run("a partial result is discarded on abort", func(t *testing.T) {
+		nonFinite, invalid := marshalRefusalPaths(map[string]any{
+			"a": json.Number("abc"),
+			"z": nestMaps(maxNonFiniteWalkDepth+1, map[string]any{"deep": json.Number("def")}),
+		})
+		require.Nil(t, nonFinite)
+		require.Nil(t, invalid)
+	})
 }
 
 // TestValidateNamesNonFinitePointerAndNumber is the same coverage at the seam.

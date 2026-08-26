@@ -18,6 +18,13 @@ type nonFinitePath struct {
 	value float64
 }
 
+// invalidNumberLiteral is one json.Number found in a payload whose text
+// json.Marshal refuses as JSON number grammar, with the dotted path it sits at.
+type invalidNumberLiteral struct {
+	path    string
+	literal string
+}
+
 // marshalRefusalError classifies a json.Marshal refusal of the caller's own
 // payload (#322): caller input, so it carries forma.ErrInvalidInput and
 // publishes.
@@ -38,7 +45,7 @@ type nonFinitePath struct {
 // name the type it was found via; publishing it is the honest answer, because
 // no single attribute is at fault.
 func marshalRefusalError(doc any, marshalErr error) error {
-	found := nonFinitePaths(doc)
+	found, _ := marshalRefusalPaths(doc)
 	if len(found) == 0 {
 		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
 	}
@@ -67,59 +74,57 @@ func marshalRefusalError(doc any, marshalErr error) error {
 // makes a message degraded by this cap an embedder-only outcome.
 const maxNonFiniteWalkDepth = 1000
 
-// nonFinitePaths walks a document and returns every non-finite float in it,
+// marshalRefusalPaths walks a document and returns every finding the walk can
+// name — non-finite floats and invalid json.Number literals (#453) — each
 // sorted by path. It exists for one error path — json.Marshal has just refused
 // the payload — and is never on a successful write.
 //
 // The walk is depth-capped, and exceeding the cap abandons it entirely: nil
-// comes back, and the caller publishes the library's text. That is what makes
-// a cyclic payload safe here — json.Marshal detects a cycle and refuses, so
-// this walk runs precisely when a cycle is possible, and following one has no
-// natural end, so the cap is the end. A merely deep acyclic payload hits the
-// same cap and gets the same treatment (see maxNonFiniteWalkDepth).
+// comes back for both kinds, and the caller publishes the library's text. That
+// is what makes a cyclic payload safe here — json.Marshal detects a cycle and
+// refuses, so this walk runs precisely when a cycle is possible, and following
+// one has no natural end, so the cap is the end. A merely deep acyclic payload
+// hits the same cap and gets the same treatment (see maxNonFiniteWalkDepth).
 //
 // Abandoning rather than truncating is deliberate: a partial walk cannot tell
-// "no non-finite in this payload" from "stopped looking", and only the first
-// answer may be published. A payload with a shallow non-finite and a too-deep
+// "nothing wrong in this payload" from "stopped looking", and only the first
+// answer may be published. A payload with a shallow finding and a too-deep
 // branch is what distinguishes them, and is pinned.
 //
 // Only the shapes a payload is made of are walked: map[string]any, []any,
 // float64, float32, *float64, *float32 and json.Number. Every one of them can
 // be what Marshal refused — a pointer at a non-finite gives "unsupported
-// value: NaN", and a json.Number spelled "NaN"/"Inf"/"Infinity" gives "invalid
-// number literal". A nil pointer is skipped: it marshals as null, so it is
-// never the cause.
+// value: NaN", and a json.Number refuses either as a non-finite spelling
+// ("NaN"/"Inf"/"Infinity") or as garbage that is not JSON number grammar; the
+// two gates on that case are documented at the case itself.
 //
-// The json.Number case counts a literal only when it parses cleanly to a
-// non-finite. That gate excludes exactly the two kinds that must not be named:
-// "1e400", which ParseFloat reports out of range but which is valid JSON
-// grammar and marshals fine (so it never causes a refusal at all), and garbage
-// such as "abc", which does cause one but is already named by the library's
-// own "invalid number literal" text.
-//
-// Everything else yields nothing and falls back to that library text. That
+// Everything else yields nothing and falls back to the library text. That
 // includes shapes which do refuse and which an embedder could plausibly hand
 // in — a []float64 or map[string]float64 holding a non-finite refuses exactly
 // like []any would, but is not walked, because type-switching every concrete
 // numeric container is a losing game against a caller who can name any type.
-// Structs, custom Marshalers and channels land here too. A non-finite at the
+// Structs, custom Marshalers and channels land here too. A fault at the
 // document root is likewise left to the library: there is no attribute to name.
-func nonFinitePaths(doc any) []nonFinitePath {
+func marshalRefusalPaths(doc any) ([]nonFinitePath, []invalidNumberLiteral) {
 	var walker nonFiniteWalker
 	walker.walk("", doc, 0)
 	if walker.aborted {
-		return nil
+		return nil, nil
 	}
 	slices.SortFunc(walker.found, func(a, b nonFinitePath) int {
 		return strings.Compare(a.path, b.path)
 	})
-	return walker.found
+	slices.SortFunc(walker.invalid, func(a, b invalidNumberLiteral) int {
+		return strings.Compare(a.path, b.path)
+	})
+	return walker.found, walker.invalid
 }
 
 // nonFiniteWalker carries the walk's accumulated findings and its abort flag.
 // Once aborted, every pending frame returns without doing further work.
 type nonFiniteWalker struct {
 	found   []nonFinitePath
+	invalid []invalidNumberLiteral
 	aborted bool
 }
 
@@ -159,11 +164,20 @@ func (w *nonFiniteWalker) walk(path string, node any, depth int) {
 			w.appendIfNonFinite(path, float64(*v))
 		}
 	case json.Number:
-		// A non-nil err covers both literals that must not be named: 1e400,
-		// which is out of range but valid JSON that marshals fine, and garbage
-		// such as "abc", which the library's own text already names.
-		if parsed, err := strconv.ParseFloat(string(v), 64); err == nil {
+		// Two gates (#453). A literal that parses cleanly to a non-finite
+		// ("NaN", "Infinity") is a non-finite finding. Anything else is probed
+		// against json.Marshal itself: the literal is invalid exactly when the
+		// library refuses it, which keeps this classification immune to grammar
+		// drift between toolchains. The probe is also what excludes 1e400 —
+		// ParseFloat reports it out of range, but it is valid JSON grammar and
+		// marshals fine, so it never causes a refusal and must not be named.
+		if parsed, err := strconv.ParseFloat(string(v), 64); err == nil &&
+			(math.IsNaN(parsed) || math.IsInf(parsed, 0)) {
 			w.appendIfNonFinite(path, parsed)
+			return
+		}
+		if _, err := json.Marshal(v); err != nil {
+			w.appendInvalidLiteral(path, string(v))
 		}
 	}
 }
@@ -175,6 +189,15 @@ func (w *nonFiniteWalker) appendIfNonFinite(path string, value float64) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		w.found = append(w.found, nonFinitePath{path: path, value: value})
 	}
+}
+
+// appendInvalidLiteral mirrors appendIfNonFinite's root rule: a fault at the
+// document root has no attribute to name and falls back to the library text.
+func (w *nonFiniteWalker) appendInvalidLiteral(path, literal string) {
+	if path == "" {
+		return
+	}
+	w.invalid = append(w.invalid, invalidNumberLiteral{path: path, literal: literal})
 }
 
 func joinAttributePath(prefix, key string) string {
