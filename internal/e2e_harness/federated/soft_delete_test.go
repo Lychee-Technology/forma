@@ -355,8 +355,11 @@ func TestSoftDelete_BulkDeletedExclusion(t *testing.T) {
 	AssertRecordCount(t, result.Records, expectedLive)
 	AssertNoDeleted(t, result.Records)
 
-	// Should complete in reasonable time
-	require.Less(t, duration, 3*time.Second, "soft delete filtering too slow: %v", duration)
+	// Regression tripwire, not a performance target: an absolute wall-clock
+	// ceiling in a containerised e2e run measures the host as much as the
+	// code (#434). 15s only catches an order-of-magnitude regression on this
+	// 1000-record query.
+	require.Less(t, duration, 15*time.Second, "soft delete filtering too slow: %v", duration)
 
 	t.Logf("TC-04-06 PASSED: Bulk delete exclusion - %d total, %d deleted -> %d returned in %v",
 		totalRecords, totalRecords-expectedLive, expectedLive, duration)
