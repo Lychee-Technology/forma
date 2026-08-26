@@ -11,6 +11,14 @@ on:
     - cron: '30 19 * * *' # 03:30 Asia/Shanghai
   workflow_dispatch:
 
+# A manual dispatch overlapping the scheduled run (or a hung run meeting the
+# next day's schedule) must queue, not double-run: two suites sharing one
+# runner-class would contend exactly like the local churn this suite is being
+# de-flaked against (#490 review).
+concurrency:
+  group: nightly-e2e
+  cancel-in-progress: false
+
 env:
   GO_VERSION: '1.26.0'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'

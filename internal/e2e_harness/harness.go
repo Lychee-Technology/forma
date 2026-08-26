@@ -225,9 +225,9 @@ func (h *TestHarness) StartS3(ctx context.Context) (string, error) {
 		// probe has timed out against a slow docker socket while RustFS was
 		// still booting (#434). Any status code counts — unauthenticated
 		// GET / gets an S3 error response, and a response at all proves the
-		// HTTP stack is serving. The budget is deliberately wide: it bounds
-		// the worst case on a loaded host, and a healthy start still returns
-		// in seconds.
+		// HTTP stack is serving. The budget (60s → 120s) is deliberately
+		// wide: it bounds the worst case on a loaded host, and a healthy
+		// start still returns in seconds.
 		WaitingFor: wait.ForHTTP("/").
 			WithPort("9000/tcp").
 			WithStatusCodeMatcher(func(int) bool { return true }).
