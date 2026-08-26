@@ -8,6 +8,7 @@ import (
 	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 func newExporterInitTestConfig() CDCConfig {
@@ -28,7 +29,11 @@ func newExporterInitTestConfig() CDCConfig {
 func TestNewDuckExporter_FreshConnectionsConfigured(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	ctx := context.Background()
-	exp, err := NewDuckExporter(ctx, newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zap.NewNop())
+	// zaptest, not zap.NewNop(): connection init is fail-open, so a degraded
+	// init (e.g. an INSTALL timing out) surfaces only as a logged warning —
+	// with a nop logger the failure output shows just the downstream NULL
+	// scan with zero trace of the real cause (#487).
+	exp, err := NewDuckExporter(ctx, newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zaptest.NewLogger(t))
 	require.NoError(t, err)
 	defer exp.DB.Close()
 
@@ -48,7 +53,7 @@ func TestNewDuckExporter_FreshConnectionsConfigured(t *testing.T) {
 // The exporter pool must be bounded (#285: sql.Open default is unlimited).
 func TestNewDuckExporter_PoolBoundedToSingleConnection(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	exp, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zap.NewNop())
+	exp, err := NewDuckExporter(context.Background(), newExporterInitTestConfig(), "AKIDEXAMPLE", "testsecretvalue", "", zaptest.NewLogger(t))
 	require.NoError(t, err)
 	defer exp.DB.Close()
 	require.Equal(t, 1, exp.DB.Stats().MaxOpenConnections)

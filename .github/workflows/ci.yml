@@ -72,6 +72,23 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # DuckDB extension INSTALLs hit the network on a cold runner; a slow
+      # download can eat a connection-init step's 5s deadline, and the
+      # fail-open init then logs-and-skips that extension (#487). Restoring
+      # the local extension repository makes INSTALL a no-op on the hot path.
+      # go.sum pins the duckdb-go driver and thereby the DuckDB core version
+      # that names the extension directory; restore-keys lets a stale cache
+      # still serve, since INSTALL only re-downloads what the current version
+      # lacks. Every job that opens DuckDB connections carries this step
+      # (TestDuckDBExtensionCacheCoversExposedJobs guards that).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Download dependencies
         run: go mod download
 
@@ -103,6 +120,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # See the test job's cache-step note (#487).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Run E2E harness tests
         run: go test -v ./internal/e2e_harness/... -timeout=5m
 
@@ -124,6 +150,15 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      # See the test job's cache-step note (#487).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2

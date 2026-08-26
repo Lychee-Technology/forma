@@ -148,40 +148,12 @@ func TestCILintJobRunsMakeLint(t *testing.T) {
 	}
 }
 
-// ciLintJobBlock cuts the `lint:` job's body out of ci.yml by indentation: it
-// starts after the two-space `lint:` key under the top-level `jobs:` key and
-// ends at the next non-blank line indented two spaces or less (the next job,
-// or a later top-level key). Deliberately not a YAML parser — a yaml
-// dependency buys nothing here (#482 review round 1), and the sibling guards
-// in this file are plain text scans for the same reason. If the workflow's
-// job indentation ever changes shape, this fails loudly via t.Fatal rather
-// than passing on an empty block.
+// ciLintJobBlock cuts the `lint:` job's body out of ci.yml. The indentation
+// cut lives in workflowJobBlock (duckdb_ext_cache_guard_test.go), which is
+// deliberately not a YAML parser — a yaml dependency buys nothing here (#482
+// review round 1), and the sibling guards in this file are plain text scans
+// for the same reason.
 func ciLintJobBlock(t *testing.T, text string) string {
 	t.Helper()
-	lines := strings.Split(text, "\n")
-	inJobs := false
-	start := -1
-	for i, line := range lines {
-		if line == "jobs:" {
-			inJobs = true
-			continue
-		}
-		if !inJobs {
-			continue
-		}
-		if start == -1 {
-			if line == "  lint:" {
-				start = i + 1
-			}
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(line, "    ") {
-			return strings.Join(lines[start:i], "\n")
-		}
-	}
-	if start == -1 {
-		t.Fatal("ci.yml has no `lint:` job under `jobs:`: this guard scopes its run-directive check to that job and has lost its target (#454)")
-	}
-	return strings.Join(lines[start:], "\n")
+	return workflowJobBlock(t, text, "lint")
 }

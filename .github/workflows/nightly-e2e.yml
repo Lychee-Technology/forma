@@ -50,6 +50,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # See ci.yml's test-job cache-step note (#487).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Run full federated e2e suite (no -short)
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m
 
@@ -81,6 +90,15 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      # See ci.yml's test-job cache-step note (#487).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
 
       # TestNightlyRacesProductionSuite guards this line. The 30m timeout is
       # the gate run's 10m (make test-e2e-production) times the ~2-3x race

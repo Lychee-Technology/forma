@@ -84,6 +84,41 @@ func TestMakeConnInit_BlockedStmtObservesCancellation(t *testing.T) {
 	require.Contains(t, execer.executed, "SET s3_region='us-test-1';", "later steps must still be attempted after a timed-out step")
 }
 
+// stepBudgetExecer blocks the statement matching blockOn until its context
+// expires and records the context error every statement observes on entry.
+type stepBudgetExecer struct {
+	blockOn string
+	ctxErrs map[string]error
+}
+
+func (e *stepBudgetExecer) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	e.ctxErrs[query] = ctx.Err()
+	if query == e.blockOn {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return driver.RowsAffected(0), nil
+}
+
+// Issue #487: a single slow INSTALL must not starve the steps after it. Under
+// one shared deadline, an INSTALL that eats the whole budget hands an
+// already-expired context to every later step — including the network-free
+// SET s3_* statements — so a slow extension download silently zeroes the S3
+// session config. Each step must get its own deadline instead.
+func TestMakeConnInit_SlowStepDoesNotStarveLaterSteps(t *testing.T) {
+	steps := []duckdbinit.Step{
+		duckdbinit.ExtensionStep("httpfs"),
+		duckdbinit.SingleStmtStep("SET s3_region='us-test-1';", "set s3_region"),
+	}
+	execer := &stepBudgetExecer{blockOn: "INSTALL httpfs;", ctxErrs: make(map[string]error)}
+	require.NoError(t, duckdbinit.MakeConnInit(steps, zap.NewNop().Sugar(), 50*time.Millisecond)(execer))
+
+	require.Contains(t, execer.ctxErrs, "SET s3_region='us-test-1';", "later steps must still run after a timed-out step")
+	require.NoError(t, execer.ctxErrs["SET s3_region='us-test-1';"],
+		"a step after a timed-out step must run under its own live deadline, not the expired remnant of a shared one (#487)")
+	require.NotContains(t, execer.ctxErrs, "LOAD httpfs;", "a timed-out INSTALL must still skip its own LOAD")
+}
+
 func TestValidateS3Credential(t *testing.T) {
 	for _, bad := range []string{"a'b", `a"b`, "a;b", `a\b`, "a b"} {
 		require.Error(t, duckdbinit.ValidateS3Credential("s3_region", bad), "value %q must be rejected", bad)
