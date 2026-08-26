@@ -92,9 +92,6 @@ type stepBudgetExecer struct {
 }
 
 func (e *stepBudgetExecer) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
-	if e.ctxErrs == nil {
-		e.ctxErrs = make(map[string]error)
-	}
 	e.ctxErrs[query] = ctx.Err()
 	if query == e.blockOn {
 		<-ctx.Done()
@@ -113,7 +110,7 @@ func TestMakeConnInit_SlowStepDoesNotStarveLaterSteps(t *testing.T) {
 		duckdbinit.ExtensionStep("httpfs"),
 		duckdbinit.SingleStmtStep("SET s3_region='us-test-1';", "set s3_region"),
 	}
-	execer := &stepBudgetExecer{blockOn: "INSTALL httpfs;"}
+	execer := &stepBudgetExecer{blockOn: "INSTALL httpfs;", ctxErrs: make(map[string]error)}
 	require.NoError(t, duckdbinit.MakeConnInit(steps, zap.NewNop().Sugar(), 50*time.Millisecond)(execer))
 
 	require.Contains(t, execer.ctxErrs, "SET s3_region='us-test-1';", "later steps must still run after a timed-out step")
