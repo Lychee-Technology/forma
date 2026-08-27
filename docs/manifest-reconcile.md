@@ -6,8 +6,12 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 - **#197 flush 孤儿**：delta flush 导出成功、行已标记 `flushed_at != 0`，但 manifest
   append 失败。文件在最终 key 上、数据只存在于该文件，重跑 flush 不会补录。
 - **#188 compaction 遗留**：rewrite 崩溃留下的 `_tmp/` staging 对象与未列入 manifest 的
-  `base-{uuid}.parquet`，以及 manifest 提交后删除失败的 merged source。这些对象的数据
-  已并入 merged base，属于纯垃圾。
+  `base-{uuid}.parquet`，以及 manifest 提交后被 splice 出去的 merged source。#461 起
+  compactor **有意不再内联删除** merged source：持有 pre-swap 路径集的 in-flight 联邦
+  读还可能懒打开它们，零宽限删除会让该读以不可降级的 `ParquetSetInconsistentError`
+  失败并触发熔断计数。因此**每次** rewrite 都会留下未列入的 source（base/tmp 形态走
+  `--gc`，delta 形态走 `--repair --gc`），本工具的两阶段 grace 回收是其成文回收机制，
+  不再只是崩溃残留的兜底。这些对象的数据已并入 merged base，属于纯垃圾。
 - **#226 swallowed-delete 残留**：flush / cdc-init / compaction 经 `CopyTmpToFinal`
   提升成功后，对 `_tmp/` staging 对象的 DeleteObject 失败被有意吞掉（提升已成功，
   流程不应失败）。CopyObject 或导出失败时 #226 已在带内当场自愈（best-effort 删除
@@ -23,8 +27,8 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 
 | 类别 | 形态 | 来源 | 处置 |
 |------|------|------|------|
-| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #188 删除失败的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
-| merged base 孤儿 | `base-{uuid}.parquet` | #188 | `--gc` 两阶段删除（见下） |
+| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #461 起每次 rewrite 保留的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
+| merged base 孤儿 | `base-{uuid}.parquet` | #188 崩溃 / #461 起每次 rewrite 保留的 merged source | `--gc` 两阶段删除（见下） |
 | init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--repair` 下先经晋升守卫（三重证明，见下）整组判定：证明通过则整组补录进 manifest base 层；证明不通过（或未开 `--repair`）保持 GC 候选，走 `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件 |
 | `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
 
