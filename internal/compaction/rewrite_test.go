@@ -236,8 +236,10 @@ func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
 	require.Equal(t, int64(4096), newBase.SizeBytes)
 	require.Equal(t, map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}, newBase.Columns)
 
-	// Sources deleted only AFTER the successful commit; staged key kept.
-	require.Equal(t, []string{"p/1/aaa_bbb.parquet", "p/1/ddd.parquet"}, nonTmpDeletes(s3c.deletes))
+	// #461: the committed sources are NOT deleted inline — they must survive
+	// the in-flight-reader window as unlisted orphans until manifest-reconcile
+	// --gc reclaims them past the grace period.
+	require.Empty(t, nonTmpDeletes(s3c.deletes))
 	require.Equal(t, 1, applied)
 }
 
@@ -257,10 +259,11 @@ func TestCompactor_Rewrite_ConflictRetryRecomputesFromFreshManifest(t *testing.T
 	require.Equal(t, merger.sources[0], merger.sources[1])
 
 	// Attempt 1's staged base (never listed) was cleaned up before the retry;
-	// the committed sources were deleted exactly once, after the commit.
+	// the committed sources were retained for the in-flight-reader window
+	// (#461) — manifest-reconcile --gc reclaims them past the grace period.
 	require.Len(t, s3c.copies, 2)
 	firstStaged := s3c.copies[0]
-	require.Equal(t, []string{firstStaged, "p/1/aaa_bbb.parquet", "p/1/ddd.parquet"}, nonTmpDeletes(s3c.deletes))
+	require.Equal(t, []string{firstStaged}, nonTmpDeletes(s3c.deletes))
 	require.Equal(t, s3c.copies[1], result.NewBaseKey)
 	require.NotContains(t, s3c.deletes, result.NewBaseKey)
 }
