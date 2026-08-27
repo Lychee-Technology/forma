@@ -6,8 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -83,31 +81,54 @@ func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string
 	}
 }
 
-// assertManifestMatchesInventory pins the #188 success criteria "manifest
-// correctly reflects object inventory" and "no orphan objects": the schema's
-// live parquet keys (tmp excluded: swallowed-delete residue is reclaimed by
-// manifest-reconcile --gc, #226) and the manifest's file
-// paths must be exactly the same set.
-func assertManifestMatchesInventory(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+// assertManifestMatchesInventory pins the #188 success criteria under the
+// #461 retention contract: every manifest entry must exist in S3 (manifest ⊆
+// live objects — the read-safety invariant), and every live parquet key NOT
+// in the manifest (tmp excluded: swallowed-delete residue is reclaimed by
+// manifest-reconcile --gc, #226) must be a retired source — a key that was
+// manifest-listed earlier in the test (everListed) and is deliberately
+// retained for the in-flight-reader window until manifest-reconcile's GC
+// grace reclaims it. A never-listed leftover is still the staged-orphan bug.
+func assertManifestMatchesInventory(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, everListed map[string]bool) {
 	t.Helper()
 	inventory := schemaParquetKeys(ctx, t, env, schema)
-	m := loadSchemaManifest(ctx, t, env, schema)
-	listed := make([]string, 0, len(m.Files))
-	for _, f := range m.Files {
-		listed = append(listed, f.Path)
+	live := make(map[string]bool, len(inventory))
+	for _, k := range inventory {
+		live[k] = true
 	}
-	sort.Strings(listed)
-	if !reflect.DeepEqual(inventory, listed) {
-		t.Errorf("manifest and S3 inventory diverge:\n s3 objects: %v\n manifest:   %v", inventory, listed)
+	m := loadSchemaManifest(ctx, t, env, schema)
+	listed := make(map[string]bool, len(m.Files))
+	for _, f := range m.Files {
+		listed[f.Path] = true
+		if !live[f.Path] {
+			t.Errorf("manifest entry %s is missing from S3 (dangling)", f.Path)
+		}
+	}
+	for _, k := range inventory {
+		if !listed[k] && !everListed[k] {
+			t.Errorf("unlisted object %s in S3 was never manifest-listed; a staged orphan must not linger (#188/#203)", k)
+		}
+	}
+}
+
+// recordListedKeys folds the schema's currently listed manifest paths into
+// everListed, so a later assertManifestMatchesInventory can tell a #461
+// retired source (was listed, then spliced out) from a staged orphan. Call it
+// right before every operation that swaps the manifest.
+func recordListedKeys(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, everListed map[string]bool) {
+	t.Helper()
+	for _, f := range loadSchemaManifest(ctx, t, env, schema).Files {
+		everListed[f.Path] = true
 	}
 }
 
 // TestCompactionRewriteEquivalence covers #188 scenario 2 with hot rows
 // present: a dirty-ratio-eligible schema (2 updates + 1 delete over 5 base
 // rows) must be rewritten into a single new base parquet holding exactly the
-// LWW winners, with the merged source objects removed from S3 and the
-// manifest, bit-for-bit identical federated results, an untouched hot tier,
-// and a Noop second pass (idempotency).
+// LWW winners, with the merged source objects spliced out of the manifest but
+// retained in S3 for the in-flight-reader window (#461), bit-for-bit
+// identical federated results, an untouched hot tier, and a Noop second pass
+// (idempotency).
 func TestCompactionRewriteEquivalence(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()
@@ -142,6 +163,8 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 
 	mBefore := loadSchemaManifest(ctx, t, env, wide)
 	mergedFiles := len(mBefore.Files)
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, wide, everListed)
 
 	result := assertCompactionEquivalence(ctx, t, env, wide,
 		compactionEquivalenceQueries(wide), CompactionOverrides{}, "rewrite")
@@ -172,7 +195,7 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 		t.Errorf("manifest version %d -> %d, want monotonic advance", mBefore.Version, mAfter.Version)
 	}
 	assertNoDuplicateManifestEntries(t, mAfter)
-	assertManifestMatchesInventory(ctx, t, env, wide)
+	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 
 	winners := map[uuid.UUID]*Event{
 		creates[0].RowID: updates[0],
@@ -236,6 +259,8 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	}
 	mustFlush(ctx, t, env) // delta #2: v2 of row 0
 
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, wide, everListed)
 	result := assertCompactionEquivalence(ctx, t, env, wide,
 		compactionEquivalenceQueries(wide), CompactionOverrides{}, "multi-version")
 	if result.Outcome != compaction.RewriteApplied {
@@ -253,7 +278,7 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 		creates[1].RowID: creates[1],
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, winners, nil)
-	assertManifestMatchesInventory(ctx, t, env, wide)
+	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 	// #256: the merge writer stamps the new base entry from a DESCRIBE of the
 	// tmp object it merged into; tmp→final is a byte-identical copy, so the
 	// stamp must equal a DESCRIBE of the published object.
@@ -282,6 +307,8 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 	}
 	mustFlush(ctx, t, env)
 
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, wide, everListed)
 	result := assertCompactionEquivalence(ctx, t, env, wide,
 		compactionEquivalenceQueries(wide), CompactionOverrides{}, "all-tombstones")
 	if result.Outcome != compaction.RewriteApplied {
@@ -299,7 +326,7 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 		t.Errorf("delta entries = %d, want 0", got)
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, nil, []uuid.UUID{creates[0].RowID, creates[1].RowID})
-	assertManifestMatchesInventory(ctx, t, env, wide)
+	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 	// #256 edge: a zero-row merged base still describes to a full column set,
 	// so it must still carry a byte-truth stamp rather than fall back to nil.
 	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (zero-row merged base)",
@@ -335,6 +362,8 @@ func TestCompactionFullLifecycleEquivalence(t *testing.T) {
 	flush := mustFlush(ctx, t, env)
 	assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush), del)
 
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, wide, everListed)
 	result := assertCompactionEquivalence(ctx, t, env, wide,
 		compactionEquivalenceQueries(wide), CompactionOverrides{}, "full-lifecycle")
 	if result.Outcome != compaction.RewriteApplied {
@@ -343,7 +372,7 @@ func TestCompactionFullLifecycleEquivalence(t *testing.T) {
 
 	winners := map[uuid.UUID]*Event{creates[0].RowID: update}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, winners, []uuid.UUID{del.RowID})
-	assertManifestMatchesInventory(ctx, t, env, wide)
+	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 
 	// Deletion stays invisible under every tier preference; parquet-serving
 	// hints must still route through DuckDB (mirrors lifecycle's #175 loop).

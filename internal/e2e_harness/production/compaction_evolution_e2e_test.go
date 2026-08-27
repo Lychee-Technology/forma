@@ -242,7 +242,8 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 // assertMixedGenRewriteSurfaces pins the manifest and hot-tier surfaces after
 // the mixed-generation rewrite: exactly one base entry (the merged file),
 // zero delta entries, monotonic manifest version, no duplicate entries,
-// manifest == S3 inventory, and an untouched hot tier.
+// manifest ⊆ S3 inventory with only retired sources unlisted (#461), and an
+// untouched hot tier.
 func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, mBefore *manifest.Manifest, hotBefore int64) {
 	t.Helper()
 	mAfter := loadSchemaManifest(ctx, t, env, schema)
@@ -256,7 +257,11 @@ func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, 
 		t.Errorf("manifest version %d -> %d, want monotonic advance", mBefore.Version, mAfter.Version)
 	}
 	assertNoDuplicateManifestEntries(t, mAfter)
-	assertManifestMatchesInventory(ctx, t, env, schema)
+	everListed := make(map[string]bool, len(mBefore.Files))
+	for _, f := range mBefore.Files {
+		everListed[f.Path] = true
+	}
+	assertManifestMatchesInventory(ctx, t, env, schema, everListed)
 
 	hotAfter, err := env.countUnflushed(ctx)
 	if err != nil {
