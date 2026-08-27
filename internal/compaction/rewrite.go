@@ -128,11 +128,7 @@ func (c *Compactor) runRewrite(
 	// breaker-worthy ParquetSetInconsistentError. They stay behind as
 	// unlisted orphans for manifest-reconcile, whose gcSchema sighting-state
 	// grace exists exactly for this window (base/tmp shapes via --gc, delta
-	// shapes via --repair --gc).
-	c.Logger.Info("rewrite retired merged sources; left unlisted for manifest-reconcile gc",
-		zap.Int16("schema_id", schemaID),
-		zap.Int("retired_sources", len(sources)))
-
+	// shapes via --repair --gc). files_merged below counts them.
 	telemetry.EmitCompactionRewriteApplied(ctx, schemaID)
 	c.Logger.Info("compaction rewrite completed",
 		zap.Int16("schema_id", schemaID),
