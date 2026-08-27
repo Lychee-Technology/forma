@@ -299,9 +299,9 @@ func iterateSchemaBatches(
 	state *schemaInitState,
 	onBatch func(rowIDs []uuid.UUID) error,
 ) error {
-	offset := 0
+	var after *uuid.UUID
 	for {
-		rowIDs, err := selectEntityMainBatch(ctx, runCtx.db, runCtx.cfg.EntityMainTable, state.schemaID, offset, state.batchSize)
+		rowIDs, err := selectEntityMainBatch(ctx, runCtx.db, runCtx.cfg.EntityMainTable, state.schemaID, after, state.batchSize)
 		if err != nil {
 			return fmt.Errorf("select batch: %w", err)
 		}
@@ -309,10 +309,19 @@ func iterateSchemaBatches(
 			return nil
 		}
 
+		// Selection->export test seam, mirroring the flusher's (#182). Init
+		// has no snapshot clock, so the hook receives 0.
+		if hook := runCtx.cfg.BeforeExportHook; hook != nil {
+			if err := hook(ctx, state.schemaID, rowIDs, 0); err != nil {
+				return fmt.Errorf("before-export hook: %w", err)
+			}
+		}
+
 		if err := onBatch(rowIDs); err != nil {
 			return err
 		}
-		offset += state.batchSize
+		last := rowIDs[len(rowIDs)-1]
+		after = &last
 	}
 }
 
@@ -451,20 +460,26 @@ func getEntityMainCount(ctx context.Context, db *sql.DB, tableName string, schem
 	return cnt, nil
 }
 
-// selectEntityMainBatch returns a batch of row IDs ordered by ltbase_row_id.
-func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, schemaID int16, offset, limit int) ([]uuid.UUID, error) {
+// selectEntityMainBatch returns a batch of row IDs ordered by ltbase_row_id,
+// strictly after the `after` cursor (nil starts from the beginning). Keyset
+// pagination, not LIMIT/OFFSET: init runs against a live table (TrySchemaLock
+// excludes only flusher/init/reconcile, not CRUD), and with OFFSET a row
+// deleted below the cursor shifts the window left and silently drops one live
+// row from the wholesale-replaced base tier (#462). The row-id cursor is
+// immune — membership changes below it cannot move the window.
+func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, schemaID int16, after *uuid.UUID, limit int) ([]uuid.UUID, error) {
 	if tableName == "" {
 		tableName = "entity_main"
 	}
 	query := fmt.Sprintf(`
 		SELECT ltbase_row_id
 		FROM %s
-		WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL
+		WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL AND ($3::uuid IS NULL OR ltbase_row_id > $3)
 		ORDER BY ltbase_row_id
-		LIMIT $2 OFFSET $3`,
+		LIMIT $2`,
 		sanitizeIdentifier(tableName))
 
-	rows, err := db.QueryContext(ctx, query, schemaID, limit, offset)
+	rows, err := db.QueryContext(ctx, query, schemaID, limit, after)
 	if err != nil {
 		return nil, fmt.Errorf("select batch: %w", err)
 	}

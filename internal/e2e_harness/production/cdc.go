@@ -111,6 +111,7 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 // InitOverrides customizes a single init pass (#180). Zero-value fields fall
 // back to the defaults RunInit uses.
 type InitOverrides struct {
+	Config *cdc.CDCConfig // nil: e.CDC
 	DryRun bool
 }
 
@@ -124,8 +125,12 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 		return nil, fmt.Errorf("capture pre-init s3 listing: %w", err)
 	}
 
+	cfg := e.CDC
+	if ov.Config != nil {
+		cfg = *ov.Config
+	}
 	summary, err := cdc.RunInit(ctx, cdc.InitOptions{
-		Config:               e.CDC,
+		Config:               cfg,
 		S3Client:             e.Cluster.S3,
 		SchemaRegistryTable:  e.Tables.SchemaRegistry,
 		SchemaIDFilter:       int(schema.ID),
