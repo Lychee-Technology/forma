@@ -19,12 +19,12 @@ import (
 // site is covered the moment it is added.
 //
 // Scanned shapes (fmt.Sprintf format string literals) in internal/federated,
-// internal/sqlgen, and internal/parquetcheck:
+// internal/sqlgen, internal/parquetcheck, and internal/compaction (#478):
 //   - contains `read_parquet('%s'`  (drainParquet, describeParquetColumns,
-//     parquetcheck.Describe)
+//     parquetcheck.Describe, compaction.UncoveredRows, buildMergeStatsSQL)
 //   - contains `glob('%s'`          (globParquetPaths)
 //   - equals   `'%s'`               (formatDuckDBPathList, drainGuardedParquet
-//     via BuildParquetScanSource)
+//     via BuildParquetScanSource, compaction's per-URI list quoting)
 //
 // For each, the argument feeding that %s must be a call to
 // sqlutil.EscapeLiteral(...).
@@ -35,7 +35,7 @@ import (
 // some other construction is invisible here and is covered by the behavioral
 // escape tests instead. Test files are excluded.
 func TestParquetPathRendersAreEscaped(t *testing.T) {
-	dirs := []string{"internal/federated", "internal/sqlgen", "internal/parquetcheck"}
+	dirs := []string{"internal/federated", "internal/sqlgen", "internal/parquetcheck", "internal/compaction"}
 
 	isEscapeLiteralCall := func(e ast.Expr) bool {
 		call, ok := e.(*ast.CallExpr)
