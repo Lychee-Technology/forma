@@ -3,6 +3,8 @@ package compaction
 import (
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // mergeLWWOrderBy mirrors the federated read path's version fold EXACTLY
@@ -28,7 +30,10 @@ const defaultMergeCopyOptions = "FORMAT PARQUET, PARQUET_VERSION V2, COMPRESSION
 
 // validateMergeURI rejects URIs that cannot be embedded in a single-quoted
 // DuckDB literal. Production keys are prefix/schemaID/uuid-ish and never
-// carry quotes; this guards against SQL breakage, not hostile input.
+// carry quotes; this guards against SQL breakage, not hostile input. The
+// render sites additionally wrap every URI in sqlutil.EscapeLiteral (#478)
+// as defense-in-depth, so escaping is an identity transform on anything
+// this validator admits; the validator stays as the operator-facing error.
 func validateMergeURI(uri string) error {
 	if uri == "" {
 		return fmt.Errorf("empty parquet URI")
@@ -59,7 +64,7 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
 		if err := validateMergeURI(uri); err != nil {
 			return "", fmt.Errorf("merge source: %w", err)
 		}
-		quoted = append(quoted, "'"+uri+"'")
+		quoted = append(quoted, fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(uri)))
 	}
 	if copyOptions == "" {
 		copyOptions = defaultMergeCopyOptions
@@ -75,7 +80,7 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
     FROM read_parquet([%s], union_by_name=true)
   )
   WHERE _rn = 1 AND (deleted_at IS NULL OR deleted_at = 0)
-) TO '%s' (%s)`, mergeLWWOrderBy, strings.Join(quoted, ", "), tmpURI, copyOptions), nil
+) TO '%s' (%s)`, mergeLWWOrderBy, strings.Join(quoted, ", "), sqlutil.EscapeLiteral(tmpURI), copyOptions), nil
 }
 
 // buildMergeRowsInSQL counts the raw version rows across the source files
@@ -89,7 +94,7 @@ func buildMergeRowsInSQL(sourceURIs []string) (string, error) {
 		if err := validateMergeURI(uri); err != nil {
 			return "", fmt.Errorf("rows-in source: %w", err)
 		}
-		quoted = append(quoted, "'"+uri+"'")
+		quoted = append(quoted, fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(uri)))
 	}
 	return fmt.Sprintf("SELECT COUNT(*) FROM read_parquet([%s], union_by_name=true)", strings.Join(quoted, ", ")), nil
 }
@@ -109,5 +114,5 @@ func buildMergeStatsSQL(tmpURI string) (string, error) {
        COALESCE(MAX(CAST(row_id AS VARCHAR)), ''),
        COALESCE(MIN(changed_at), 0),
        COALESCE(MAX(changed_at), 0)
-FROM read_parquet('%s')`, tmpURI), nil
+FROM read_parquet('%s')`, sqlutil.EscapeLiteral(tmpURI)), nil
 }

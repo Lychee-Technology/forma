@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // UncoveredRow is one row_id in an orphan parquet whose newest uncovered
@@ -38,7 +40,7 @@ func UncoveredRows(ctx context.Context, db *sql.DB, orphanURI string, listedURIs
 			if err := validateMergeURI(uri); err != nil {
 				return nil, fmt.Errorf("uncovered-rows listed file: %w", err)
 			}
-			quoted = append(quoted, "'"+uri+"'")
+			quoted = append(quoted, fmt.Sprintf("'%s'", sqlutil.EscapeLiteral(uri)))
 		}
 		notSuperseded = fmt.Sprintf(`
 WHERE NOT EXISTS (
@@ -53,7 +55,7 @@ SELECT CAST(row_id AS VARCHAR) AS rid,
        (arg_max(COALESCE(deleted_at, 0), changed_at) > 0) AS tomb
 FROM read_parquet('%s') o%s
 GROUP BY row_id
-ORDER BY rid`, orphanURI, notSuperseded)
+ORDER BY rid`, sqlutil.EscapeLiteral(orphanURI), notSuperseded)
 
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
