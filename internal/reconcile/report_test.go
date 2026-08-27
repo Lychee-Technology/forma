@@ -87,21 +87,23 @@ func TestReport_RenderNamesExactKeys(t *testing.T) {
 }
 
 func TestRender_InventoryCounts(t *testing.T) {
-	// #463: the report quotes per-schema inventory — objects seen in
-	// storage, manifest entries resolved, candidates by class — so an
-	// operator can spot the "N objects, 0 entries" resolution-failure
-	// signature before any --gc, and the guard's refusal quotes the same
-	// numbers.
+	// #463/#481: the report quotes per-schema inventory — objects seen in
+	// storage, manifest entries resolved (raw and in-prefix), candidates by
+	// class — so an operator can spot both the "N objects, 0 entries"
+	// resolution-failure signature and the "raw>0, in-prefix 0" foreign-
+	// manifest signature before any --gc, and the guard's refusal quotes
+	// the same numbers.
 	var buf bytes.Buffer
 	Report{Schemas: []SchemaReport{{
-		SchemaID:        7,
-		ObjectsSeen:     5,
-		ManifestEntries: 0,
-		BaseOrphans:     []string{"data/7/base-b.parquet"},
-		TmpOrphans:      []string{"data/7/_tmp/c.parquet"},
+		SchemaID:                7,
+		ObjectsSeen:             5,
+		ManifestEntries:         3,
+		ManifestEntriesInPrefix: 0,
+		BaseOrphans:             []string{"data/7/base-b.parquet"},
+		TmpOrphans:              []string{"data/7/_tmp/c.parquet"},
 	}}}.Render(&buf)
 	out := buf.String()
-	if !strings.Contains(out, "inventory: 5 objects in storage, 0 manifest entries resolved") {
+	if !strings.Contains(out, "inventory: 5 objects in storage, 3 manifest entries resolved (0 in schema prefix)") {
 		t.Fatalf("missing inventory line in:\n%s", out)
 	}
 	if !strings.Contains(out, "orphan candidates: delta=0 base=1 tmp=1 unknown=0") {

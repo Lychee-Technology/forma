@@ -168,6 +168,23 @@ func TestClassifyObjectKey_RequiresUUIDShapes(t *testing.T) {
 	}
 }
 
+func TestDiffSchema_CountsInPrefixManifestEntries(t *testing.T) {
+	m := &manifest.Manifest{SchemaID: 7, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: "data/7/" + uuidA + ".parquet"},              // in prefix, relative
+		{Tier: "base", Path: "s3://bkt/data/7/base-" + uuidB + ".parquet"}, // in prefix, same-bucket URI
+		{Tier: "delta", Path: "data/8/" + uuidC + ".parquet"},              // out of prefix (another schema)
+		{Tier: "delta", Path: "s3://other/data/7/" + uuidA + ".parquet"},   // foreign bucket: unverifiable
+		{Tier: "delta", Path: "data/7/*.parquet"},                          // glob: unverifiable
+	}}
+	d := diffSchema("bkt", "data", 7, nil, m)
+	if d.manifestEntries != 5 {
+		t.Fatalf("manifestEntries = %d, want 5", d.manifestEntries)
+	}
+	if d.manifestEntriesInPrefix != 2 {
+		t.Fatalf("manifestEntriesInPrefix = %d, want 2", d.manifestEntriesInPrefix)
+	}
+}
+
 func objectKeys(objs []ObjectInfo) []string {
 	keys := make([]string, 0, len(objs))
 	for _, o := range objs {

@@ -87,7 +87,9 @@ type Options struct {
 	// exactly these schemas. Schema-explicit by design: one mis-pointed
 	// manifest template resolves EVERY schema's manifest empty, so a global
 	// override would wave the whole fleet through the very failure the
-	// guard exists to stop.
+	// guard exists to stop. It waives only the truly-empty signature: a
+	// NON-EMPTY manifest with zero in-prefix entries (#481 foreign
+	// manifest) is never waivable.
 	AllowEmptyManifestSchemas []int16
 }
 
@@ -158,7 +160,7 @@ func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) Schema
 	}
 
 	d := diffSchema(r.Bucket, r.DataPrefix, schemaID, objects, m)
-	s.ObjectsSeen, s.ManifestEntries = d.objectsSeen, d.manifestEntries
+	s.ObjectsSeen, s.ManifestEntries, s.ManifestEntriesInPrefix = d.objectsSeen, d.manifestEntries, d.manifestEntriesInPrefix
 	s.DeltaOrphans = objectKeyList(d.deltaOrphans)
 	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
 	s.TmpOrphans = objectKeyList(d.tmpOrphans)

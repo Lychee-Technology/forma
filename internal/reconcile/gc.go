@@ -9,21 +9,35 @@ import (
 	"go.uber.org/zap"
 )
 
-// refuseEmptyManifestGC is the #463 guard: a schema with at least one live
-// base-tier object and ZERO manifest entries is far more likely a
-// manifest-resolution failure (a mis-pointed --manifest-prefix/
-// --manifest-template while --data-prefix still matches; the resolver's
-// LoadOrCreate semantics turn that into an empty manifest) than genuine
-// mass orphaning — proceeding would classify the whole base tier as
-// orphaned and, past the grace, delete it irreversibly. GC therefore fails
-// the schema instead. A successful init promotion this run clears the
-// guard (it just published this schema's manifest, proving resolution
-// works), and an operator who has confirmed a schema's manifest is
-// genuinely empty can waive it per schema via --allow-empty-manifest-schema.
+// refuseEmptyManifestGC is the #463/#481 guard: a schema with at least one
+// live base-tier object whose loaded manifest accounts for NONE of this
+// schema's data — zero entries normalize into its data prefix — is far more
+// likely a manifest-resolution failure than genuine mass orphaning;
+// proceeding would classify the whole base tier as orphaned and, past the
+// grace, delete it irreversibly. GC therefore fails the schema instead.
+// Two signatures share that invariant:
+//
+//   - #463: the manifest resolved EMPTY (a mis-pointed --manifest-prefix/
+//     --manifest-template turned into an empty manifest by the resolver's
+//     LoadOrCreate semantics). An operator who has confirmed the schema's
+//     manifest is genuinely empty can waive this per schema via
+//     --allow-empty-manifest-schema.
+//   - #481: the manifest is NON-EMPTY but foreign — a fixed-file template
+//     (no {{.SchemaID}}), a cross-schema/cross-tier mispointing, or entries
+//     all in a foreign bucket. Never waivable: entries exist but none
+//     describe this schema's data, which indicates a wrong template or
+//     bucket, not a legitimately empty manifest.
+//
+// A successful init promotion this run clears the guard (it just published
+// this schema's manifest, proving resolution works).
 func (r *Reconciler) refuseEmptyManifestGC(schemaID int16, d diffResult, promotedInit bool) error {
 	baseObjects := len(d.baseInitOrphans) + len(d.baseMergedOrphans)
-	if d.manifestEntries > 0 || baseObjects == 0 || promotedInit {
+	if d.manifestEntriesInPrefix > 0 || baseObjects == 0 || promotedInit {
 		return nil
+	}
+	if d.manifestEntries > 0 {
+		return fmt.Errorf("gc refused for schema %d: %d base object(s) live in storage (init=%d merged=%d, %d objects seen) but none of the %d manifest entries resolved lie inside this schema's data prefix (0 in-prefix) — the loaded manifest is foreign to this schema (fixed-file or cross-schema --manifest-template, entries pointing at another bucket, or unverifiable glob entries), not a verifiable record of its data; verify --manifest-prefix/--manifest-template and --s3-bucket against the writers' configuration (--allow-empty-manifest-schema only waives genuinely EMPTY manifests, never a foreign one)",
+			schemaID, baseObjects, len(d.baseInitOrphans), len(d.baseMergedOrphans), d.objectsSeen, d.manifestEntries)
 	}
 	for _, id := range r.Opts.AllowEmptyManifestSchemas {
 		if id == schemaID {

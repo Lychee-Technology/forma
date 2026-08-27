@@ -24,7 +24,13 @@ type SchemaReport struct {
 	// against 0 entries is the mis-pointed-template signature --gc refuses.
 	ObjectsSeen     int
 	ManifestEntries int
-	Repaired        []string // delta orphans appended to the manifest (--repair)
+	// ManifestEntriesInPrefix counts the loaded entries that normalize into
+	// this schema's data prefix (#481) — the raw/in-prefix pair
+	// distinguishes "manifest empty" from "manifest foreign": N objects
+	// against raw>0/in-prefix=0 is the foreign-manifest signature --gc
+	// refuses.
+	ManifestEntriesInPrefix int
+	Repaired                []string // delta orphans appended to the manifest (--repair)
 	// DeltaLeftovers are delta orphans the repair guard classified as
 	// compaction leftovers (no uncovered rows, or every uncovered row
 	// deleted in Postgres): never appended, GC-eligible under --gc.
@@ -128,8 +134,8 @@ func (r Report) Render(w io.Writer) {
 			continue
 		}
 		fmt.Fprintf(w, "schema %d:\n", s.SchemaID)
-		fmt.Fprintf(w, "  inventory: %d objects in storage, %d manifest entries resolved; orphan candidates: delta=%d base=%d tmp=%d unknown=%d\n",
-			s.ObjectsSeen, s.ManifestEntries, len(s.DeltaOrphans), len(s.BaseOrphans), len(s.TmpOrphans), len(s.Unknown))
+		fmt.Fprintf(w, "  inventory: %d objects in storage, %d manifest entries resolved (%d in schema prefix); orphan candidates: delta=%d base=%d tmp=%d unknown=%d\n",
+			s.ObjectsSeen, s.ManifestEntries, s.ManifestEntriesInPrefix, len(s.DeltaOrphans), len(s.BaseOrphans), len(s.TmpOrphans), len(s.Unknown))
 		renderKeys(w, "delta orphan", s.DeltaOrphans)
 		renderKeys(w, "delta leftover (gc-eligible)", s.DeltaLeftovers)
 		renderKeys(w, "base orphan", s.BaseOrphans)
