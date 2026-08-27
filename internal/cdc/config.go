@@ -63,7 +63,8 @@ type CDCConfig struct {
 	// (the snapshot is already captured) and before the DuckDB export. Test
 	// seam for driving mutations inside the selection->export race window
 	// (#182); always nil in production. A hook error aborts the batch before
-	// any side effect.
+	// any side effect. The init backfill fires the same hook per batch
+	// (#462); it has no snapshot clock, so there the hook receives 0.
 	BeforeExportHook func(ctx context.Context, schemaID int16, batchIDs []uuid.UUID, snapshot int64) error
 }
 
