@@ -14,6 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // maxParquetArtifacts caps how many parquet files get schema+sample dumps.
@@ -277,7 +279,7 @@ func (e *Env) dumpOneParquet(ctx context.Context, dir, key string) error {
 	path := fmt.Sprintf("s3://%s/%s", e.Cluster.Bucket, key)
 	base := filepath.Join(dir, "parquet", sanitizeName(strings.TrimPrefix(key, e.S3Prefix+"/")))
 
-	schema, err := e.duckRowsToMaps(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", path), 0)
+	schema, err := e.duckRowsToMaps(ctx, fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", sqlutil.EscapeLiteral(path)), 0)
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)
 	}
@@ -285,7 +287,7 @@ func (e *Env) dumpOneParquet(ctx context.Context, dir, key string) error {
 		return err
 	}
 
-	sample, err := e.duckRowsToMaps(ctx, fmt.Sprintf("SELECT * FROM read_parquet('%s') LIMIT %d", path, maxSampleRows), maxSampleRows)
+	sample, err := e.duckRowsToMaps(ctx, fmt.Sprintf("SELECT * FROM read_parquet('%s') LIMIT %d", sqlutil.EscapeLiteral(path), maxSampleRows), maxSampleRows)
 	if err != nil {
 		return fmt.Errorf("sample: %w", err)
 	}
