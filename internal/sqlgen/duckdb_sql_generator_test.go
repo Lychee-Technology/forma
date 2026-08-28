@@ -119,7 +119,7 @@ func TestBuildListPredicate_Equals(t *testing.T) {
 func TestBuildListPredicate_EqualsNumeric(t *testing.T) {
 	sql, param, err := BuildListPredicate("scores", "equals", "42", forma.ValueTypeInteger)
 	require.NoError(t, err)
-	require.Equal(t, "list_contains(scores, CAST(? AS BIGINT))", sql)
+	require.Equal(t, "list_contains(scores, CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "42", param)
 }
 
@@ -154,7 +154,7 @@ func TestBuildListPredicate_Gt(t *testing.T) {
 func TestBuildListPredicate_Gte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gte", "5", forma.ValueTypeInteger)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x >= CAST(? AS BIGINT))", sql)
+	require.Equal(t, "list_any_match(values, x -> x >= CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "5", param)
 }
 
@@ -168,7 +168,7 @@ func TestBuildListPredicate_Lt(t *testing.T) {
 func TestBuildListPredicate_Lte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "lte", "50", forma.ValueTypeSmallInt)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x <= CAST(? AS BIGINT))", sql)
+	require.Equal(t, "list_any_match(values, x -> x <= CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "50", param)
 }
 

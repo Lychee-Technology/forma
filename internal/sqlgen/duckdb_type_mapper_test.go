@@ -31,18 +31,19 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 			expected: "VARCHAR",
 		},
 		{
-			// #384: integer/smallint operands cast at storage width — every
-			// EAV tier column is BIGINT and bound int4/int2 columns promote
-			// losslessly, while the old strict narrow CAST errored on
+			// #384: integer/smallint operands cast at storage width DOUBLE —
+			// the EAV write funnel narrows through float64, every EAV tier
+			// column is DOUBLE, and bound int4/int2 columns promote
+			// losslessly; the old strict narrow CAST errored on
 			// out-of-range operands that Postgres answered normally.
 			name:     "ValueTypeSmallInt",
 			vt:       forma.ValueTypeSmallInt,
-			expected: "BIGINT",
+			expected: "DOUBLE",
 		},
 		{
 			name:     "ValueTypeInteger",
 			vt:       forma.ValueTypeInteger,
-			expected: "BIGINT",
+			expected: "DOUBLE",
 		},
 		{
 			name:     "ValueTypeBigInt",
@@ -103,7 +104,7 @@ func TestCastExpression_SimpleColumn(t *testing.T) {
 			name:     "CastColumnToInteger",
 			column:   "age",
 			vt:       forma.ValueTypeInteger,
-			expected: "CAST(age AS BIGINT)",
+			expected: "CAST(age AS DOUBLE)",
 		},
 		{
 			name:     "CastColumnToBoolean",
@@ -386,7 +387,7 @@ func TestMapValueTypeToListDuckDBType_TextElement(t *testing.T) {
 
 func TestMapValueTypeToListDuckDBType_IntegerElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeInteger)
-	require.Equal(t, "LIST(BIGINT)", result)
+	require.Equal(t, "LIST(DOUBLE)", result)
 }
 
 func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {

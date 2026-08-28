@@ -234,10 +234,11 @@ func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
 // bigint values above 2^53 and crashed CAST-back at a stored MaxInt64 (#205).
 // TRY_CAST (not CAST) matches export semantics: an out-of-range NUMERIC in
 // eav_data becomes NULL on every tier alike instead of a read-path crash.
-// EAV-only integer/smallint cast by storage width (BIGINT), not declared
-// width, so a stored value the declared type cannot hold answers the same on
-// hot Postgres and every DuckDB tier (#384); the write funnel now rejects new
-// ones (transform.checkDeclaredIntegerFit).
+// EAV-only integer/smallint cast by storage width (DOUBLE — the write funnel
+// narrows everything through float64), not declared width, so a stored value
+// the declared type cannot hold answers the same on hot Postgres and every
+// DuckDB tier (#384); the write funnel now rejects new ones
+// (transform.checkDeclaredIntegerFit).
 func buildEAVPivotExpr(a attrProjectionInfo) string {
 	if a.meta.ValueType == forma.ValueTypeList {
 		// One eav_data row per element: aggregate into a LIST in element-index
@@ -270,11 +271,14 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 			}
 			return fmt.Sprintf("TRY_CAST(%s AS SMALLINT)", base)
 		}
-		// EAV-only storage is unconstrained NUMERIC: project by storage width
-		// so a stored value the declared type cannot hold answers identically
-		// on every tier instead of TRY_CASTing to NULL only on the DuckDB
-		// legs while hot Postgres matches it (#384).
-		return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", base)
+		// EAV-only storage width is DOUBLE, like the numeric class: the write
+		// funnel narrows everything through float64 (numutil.Float64), so
+		// whatever value_numeric holds — including out-of-declared-range and
+		// non-integral history — is a float64 image, and DOUBLE reproduces it
+		// exactly on every tier. A narrower integer cast either NULLed the
+		// value (BIGINT-overflow) or rounded it (1.5 → 2) only on the DuckDB
+		// legs while hot Postgres compared the raw NUMERIC (#384).
+		return fmt.Sprintf("TRY_CAST(%s AS DOUBLE)", base)
 	default:
 		// numeric 保持 DOUBLE;text/uuid 走 value_text,无 cast
 		return base
@@ -291,10 +295,10 @@ func eavElementCastExpr(vt forma.ValueType) string {
 	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return "TRY_CAST(value_numeric AS BIGINT)"
 	case forma.ValueTypeInteger, forma.ValueTypeSmallInt:
-		// List storage is one unconstrained-NUMERIC eav row per element and
-		// lists are always EAV-only: storage width, as in the scalar EAV-only
-		// arm of buildEAVPivotExpr (#384).
-		return "TRY_CAST(value_numeric AS BIGINT)"
+		// List storage is one float64-funneled NUMERIC eav row per element
+		// and lists are always EAV-only: storage width DOUBLE, as in the
+		// scalar EAV-only arm of buildEAVPivotExpr (#384).
+		return "TRY_CAST(value_numeric AS DOUBLE)"
 	case forma.ValueTypeNumeric:
 		return "TRY_CAST(value_numeric AS DOUBLE)"
 	default: // text / uuid

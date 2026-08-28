@@ -110,14 +110,14 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false), nil)
 
 	sql1, notes1 := runColdPlanCacheQuery(t, e, duck)
-	require.Contains(t, sql1, "NULL::BIGINT AS score",
+	require.Contains(t, sql1, "NULL::DOUBLE AS score",
 		"cold-absent attribute must render as a typed NULL in the scan source")
 	require.Contains(t, notes1, "plan_cache=miss", "first request compiles")
 
 	sql2, notes2 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, notes2, "plan_cache=hit",
 		"same shape, same paths, same missing set: the skeleton must be reused — this is the reuse that could poison")
-	require.Contains(t, sql2, "NULL::BIGINT AS score")
+	require.Contains(t, sql2, "NULL::DOUBLE AS score")
 
 	// The first flush lands `score`. Overwriting the cached footer is a TEST
 	// STAND-IN for "a new file's columns joined the union": flush and
@@ -134,7 +134,7 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	sql3, notes3 := runColdPlanCacheQuery(t, e, duck)
 	require.Contains(t, notes3, "plan_cache=miss",
 		"the missing set alone must re-key the plan cache (#255 poisoning guard)")
-	require.NotContains(t, sql3, "NULL::BIGINT AS score",
+	require.NotContains(t, sql3, "NULL::DOUBLE AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
 	require.NotContains(t, sql3, ", NULL::",
 		"no missing columns: the scan source carries no typed-NULL augmentation at all")
@@ -192,7 +192,7 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 	// Run 1 — pre-flush: the glob expands to the single v1 base object, whose
 	// footer has no `score`.
 	sql1, notes1 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
-	require.Contains(t, sql1, "NULL::BIGINT AS score",
+	require.Contains(t, sql1, "NULL::DOUBLE AS score",
 		"cold-absent attribute must render as a typed NULL in the scan source")
 	require.Contains(t, notes1, "plan_cache=miss", "first request compiles")
 
@@ -205,7 +205,7 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 	sql2, notes2 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
 	require.Contains(t, notes2, "plan_cache=miss",
 		"the missing set ALONE must re-key the plan cache: the glob path string never changed (#255)")
-	require.NotContains(t, sql2, "NULL::BIGINT AS score",
+	require.NotContains(t, sql2, "NULL::DOUBLE AS score",
 		"post-flush the real column must be scanned, not a cached NULL projection")
 	require.NotContains(t, sql2, ", NULL::",
 		"no missing columns: the scan source carries no typed-NULL augmentation at all")

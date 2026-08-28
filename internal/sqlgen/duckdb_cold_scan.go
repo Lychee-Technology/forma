@@ -129,8 +129,9 @@ func BuildParquetScanSource(pathsSQL string, missing []NullScanColumn) string {
 // lockstep with buildEAVPivotExpr / eavElementCastExpr (hot leg) and
 // cdc.castEAVValue / castMainValue (export leg): a mismatch would widen the
 // UNION ALL and re-open #205. The binding matters since #384: EAV-only
-// integer/smallint carry storage width (BIGINT) on every DuckDB surface,
-// while column-bound ones keep the physical int4/int2 width.
+// integer/smallint carry storage width (DOUBLE — value_numeric holds float64
+// images) on every DuckDB surface, while column-bound ones keep the physical
+// int4/int2 width.
 func DuckDBNullScanType(meta forma.AttributeMetadata) string {
 	if meta.ValueType == forma.ValueTypeList {
 		// Lists are always EAV-only; elements carry EAV storage width.
@@ -149,12 +150,12 @@ func duckDBNullScalarType(vt forma.ValueType, isColumn bool) string {
 		if isColumn {
 			return "INTEGER"
 		}
-		return "BIGINT"
+		return "DOUBLE"
 	case forma.ValueTypeSmallInt:
 		if isColumn {
 			return "SMALLINT"
 		}
-		return "BIGINT"
+		return "DOUBLE"
 	case forma.ValueTypeNumeric:
 		return "DOUBLE"
 	default: // text / uuid — VARCHAR on every tier

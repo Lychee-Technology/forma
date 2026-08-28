@@ -35,8 +35,9 @@ func TestBuildEAVPivotEmitsTypedCasts(t *testing.T) {
 	require.NoError(t, err)
 
 	// bigint / date pivot 出 BIGINT;EAV-only integer/smallint 按存储宽度出
-	// BIGINT(#384):value_numeric 是无约束 NUMERIC,按声明宽度 cast 会把超出
-	// 声明范围的历史值只在 DuckDB 腿上 TRY_CAST 成 NULL。
+	// DOUBLE(#384):写漏斗经 float64 收窄,value_numeric 全是 float64 镜像,
+	// 按声明宽度 cast 会把越界历史值 TRY_CAST 成 NULL、把非整数历史值取整,
+	// 且都只发生在 DuckDB 腿上。
 	require.Contains(t, sp.EAVPivotSelect,
 		"TRY_CAST(MAX(CASE WHEN attr_id = 5 THEN value_numeric END) AS BIGINT) AS amount")
 	require.Contains(t, sp.EAVPivotSelect,
@@ -44,9 +45,9 @@ func TestBuildEAVPivotEmitsTypedCasts(t *testing.T) {
 	require.Contains(t, sp.EAVPivotSelect,
 		"TRY_CAST(MAX(CASE WHEN attr_id = 15 THEN value_numeric END) AS BIGINT) AS total")
 	require.Contains(t, sp.EAVPivotSelect,
-		"TRY_CAST(MAX(CASE WHEN attr_id = 16 THEN value_numeric END) AS BIGINT) AS qty")
+		"TRY_CAST(MAX(CASE WHEN attr_id = 16 THEN value_numeric END) AS DOUBLE) AS qty")
 	require.Contains(t, sp.EAVPivotSelect,
-		"TRY_CAST(MAX(CASE WHEN attr_id = 17 THEN value_numeric END) AS BIGINT) AS level")
+		"TRY_CAST(MAX(CASE WHEN attr_id = 17 THEN value_numeric END) AS DOUBLE) AS level")
 	// column-bound integer/smallint 保持声明宽度:物理列本身就是 int4/int2,
 	// COALESCE 伙伴 m.<col> 同宽,外层 CAST 也按描述符宽度扫描。
 	require.Contains(t, sp.EAVPivotSelect,

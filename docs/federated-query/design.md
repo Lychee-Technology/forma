@@ -610,36 +610,47 @@ stamp existing.
 
 ### **6.4 Numeric Width Contract (#384)**
 
-`eav_data.value_numeric` is an unconstrained PG `NUMERIC`, so declared attribute
-width and physical storage width can disagree. The ruling, applied on both
-sides:
+`eav_data.value_numeric` is an unconstrained PG `NUMERIC`, but every value the
+write funnel puts there is a **float64 image** (`transform.populateTypedValue`
+narrows the whole numeric family through `numutil.Float64`), so the effective
+EAV storage width is DOUBLE regardless of the declared type. The ruling,
+applied on both sides:
 
-* **Write side**: the EAV write funnel (`transform.populateTypedValue`) rejects
-  numeric-family values that do not fit the declared integer type — out of
-  range or non-integral for `smallint`/`integer`/`bigint` — as user-facing
-  invalid input. `numeric` stays unconstrained (its float64 ceiling is #205).
-  Main-column-bound write fidelity is tracked separately (#459).
+* **Write side**: the EAV write funnel rejects numeric-family values that do
+  not fit the declared integer type — out of range or non-integral for
+  `smallint`/`integer`/`bigint` — as user-facing invalid input. `numeric`
+  stays unconstrained (its float64 ceiling is #205). Main-column-bound write
+  fidelity is tracked separately (#459).
 * **Projection**: EAV-only `integer`/`smallint` project by **storage width** —
-  `TRY_CAST(value_numeric AS BIGINT)` — on every DuckDB surface (hot EAV pivot,
-  list elements, CDC parquet export, cold NULL augmentation), so historical
-  out-of-declared-range rows answer identically on all tiers instead of being
-  NULL only on DuckDB. Column-bound attributes keep declared width: their
-  storage is physically int4/int2.
+  `TRY_CAST(value_numeric AS DOUBLE)`, exactly like the `numeric` class — on
+  every DuckDB surface (hot EAV pivot, list elements, CDC parquet export, cold
+  NULL augmentation). DOUBLE reproduces every float64 image faithfully, so
+  historical out-of-declared-range *and* non-integral rows answer identically
+  on all tiers (an integer-width cast NULLed the former and rounded the
+  latter, only on the DuckDB legs). Column-bound attributes keep declared
+  width: their storage is physically int4/int2.
 * **Predicate operands**: DuckDB operand casts follow column storage width —
-  `integer`/`smallint` operands cast to `BIGINT` (an out-of-range operand
-  matches nothing, like Postgres, instead of raising a Conversion Error) and
-  `numeric` operands cast to `DOUBLE` (matching the DOUBLE columns; the former
-  `DECIMAL(38,10)` cast truncated operand scale at 10 fractional digits and
-  overflowed past ~1e28).
-* **Bool truthiness**: both engines compare `value_numeric <> 0`. The PG EAV
-  EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` rather than
-  `x.value_numeric = 1.0/0.0`, matching every DuckDB leg's column derivation.
+  `integer`/`smallint`/`numeric` operands cast to `DOUBLE` (an operand of any
+  magnitude compares, like Postgres, instead of raising a Conversion Error;
+  the former `DECIMAL(38,10)` numeric cast also truncated operand scale at 10
+  fractional digits and overflowed past ~1e28). Float64 operands bind in
+  shortest round-trip form (`strconv.FormatFloat(v, 'g', -1, 64)`), so the
+  DuckDB side recovers the identical float64 the PG side binds — `%.15g`
+  dropped the 16th-17th significant digits. `bigint` stays `BIGINT` with
+  exact int64/decimal-string binds (#281/#357).
+* **Bool**: both engines compare the `value_numeric <> 0` truthiness — the PG
+  EAV EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` — and
+  parse operands under one shared rule (`ParseBool` spellings, else any
+  integer with `>0` truthiness), so no spelling errors on exactly one route.
   (The write-side bool truth table is #404.)
 
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
 promote the mixed widths losslessly, and the NULLs are unrecoverable from
-parquet alone (re-flush from PG restores them).
+parquet alone (re-flush from PG restores them; #501 tracks detection/repair).
+The remaining asymmetry class is #205's float64 ceiling: values only a full
+NUMERIC can hold (planted by direct SQL, never by the funnel) still read
+exactly on Postgres and as their float64 image on DuckDB.
 
 ## **7. Resilience and Error Handling**
 

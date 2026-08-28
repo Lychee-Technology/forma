@@ -13,9 +13,10 @@ import (
 
 // This file is the #384 acceptance suite: for EAV-only attributes whose
 // stored value_numeric falls outside (or beside) the declared width, hot
-// Postgres and cold DuckDB must answer the same filter identically —
-// projection by storage width (BIGINT/DOUBLE), operand casts by storage
-// width, and one bool truth rule (value_numeric <> 0) on both routes.
+// Postgres and every DuckDB tier must answer the same filter identically —
+// projection and operand casts by storage width (DOUBLE: the write funnel
+// narrows everything through float64), and one bool truth rule
+// (value_numeric <> 0) with one operand parse rule on both routes.
 //
 // Out-of-range values are planted by direct eav_data UPDATEs: the write
 // funnel rejects them since #384 (TestEAVIntegerWidthWriteRejection), so the
@@ -66,26 +67,38 @@ func assertWidthRowSet(t *testing.T, label string, res *QueryResult, want []*Eve
 	}
 }
 
-// serveFromCold exports every seeded row to base parquet and clears their
-// change_log entries so the rows leave the dirty set and are served from the
-// cold tier (the RunInit-plus-DELETE idiom of the boundary suites).
-func serveFromCold(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, seeded []*Event) {
+// runWidthProbesAllTiers drives the same probe set through all three tiers
+// via the real pipeline: hot (unflushed, PreferHot → Postgres), warm (after a
+// real CDC flush the rows are served from delta parquet), and cold (after a
+// real compaction the delta is merged into base). The warm stage is what pins
+// that the CDC export — not just the init export — carries the storage-width
+// contract.
+func runWidthProbesAllTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef,
+	label string, probes []widthProbe) {
 	t.Helper()
-	if _, err := env.RunInit(ctx, schema); err != nil {
-		t.Fatalf("run init: %v", err)
+	hotBase := Query{Schema: schema, PreferHot: true, Limit: 100}
+	runWidthProbes(ctx, t, env, label+"/hot-pg", hotBase, false, probes)
+
+	if _, err := env.RunFlush(ctx); err != nil {
+		t.Fatalf("%s: flush: %v", label, err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		schema.ID, rowIDs(seeded))
+	duckBase := Query{Schema: schema, Limit: 100}
+	runWidthProbes(ctx, t, env, label+"/warm-duck", duckBase, true, probes)
+
+	if _, err := env.RunCompaction(ctx, schema); err != nil {
+		t.Fatalf("%s: compaction: %v", label, err)
+	}
+	runWidthProbes(ctx, t, env, label+"/cold-duck", duckBase, true, probes)
 }
 
 // TestEAVIntegerWidthParityBothDialects is the #384 headline: an EAV-only
 // integer/smallint value past the declared width (planted directly, standing
 // in for pre-rejection history) must be matched by the same filter on the hot
-// Postgres route and every DuckDB tier. Pre-#384 the DuckDB legs projected it
-// to NULL via TRY_CAST at declared width (no match) and the strict
-// CAST(? AS INTEGER) operand raised a Conversion Error for the out-of-range
-// literal, while hot Postgres compared the stored NUMERIC and matched.
+// Postgres route and every DuckDB tier. Pre-#384 the DuckDB legs projected an
+// over-range value to NULL via TRY_CAST at declared width (no match), rounded
+// a non-integral value, and the strict CAST(? AS INTEGER) operand raised a
+// Conversion Error for the out-of-range literal — while hot Postgres compared
+// the stored NUMERIC and matched throughout.
 func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -93,16 +106,20 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1]
 
 	// `qty` (attr 14) is the EAV-only integer, `level` (attr 13) the EAV-only
-	// smallint. In-range placeholders first; the over-range state is planted.
+	// smallint. In-range placeholders first; the illegal state is planted.
 	rowOver := CreateEvent(wide, map[string]any{"title": "w-qty-over", "qty": 42})
+	rowFrac := CreateEvent(wide, map[string]any{"title": "w-qty-frac", "qty": 43})
 	rowSmall := CreateEvent(wide, map[string]any{"title": "w-qty-small", "qty": 7})
 	rowLevel := CreateEvent(wide, map[string]any{"title": "w-level-over", "level": 5})
-	seeded := []*Event{rowOver, rowSmall, rowLevel}
+	seeded := []*Event{rowOver, rowFrac, rowSmall, rowLevel}
 	mustApplyEvents(ctx, t, env, "width parity creates", seeded...)
 
 	env.ExecSQL(ctx,
 		"UPDATE eav_data SET value_numeric = 4294967296 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 14",
 		wide.ID, rowOver.RowID)
+	env.ExecSQL(ctx,
+		"UPDATE eav_data SET value_numeric = 1.5 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 14",
+		wide.ID, rowFrac.RowID)
 	env.ExecSQL(ctx,
 		"UPDATE eav_data SET value_numeric = 40000 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 13",
 		wide.ID, rowLevel.RowID)
@@ -113,21 +130,25 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 		{"qty_equals_2p32", Filter{Attr: "qty", Op: "equals", Value: "4294967296"}, []*Event{rowOver}},
 		// Range operator with an in-range literal still sees the row.
 		{"qty_gt_maxint32", Filter{Attr: "qty", Op: "gt", Value: "2147483647"}, []*Event{rowOver}},
-		// The placeholder value must be gone — guards that the UPDATE took.
+		// Non-integral history (P1a): DOUBLE projection keeps 1.5 as 1.5 on
+		// every DuckDB tier — an integer-width cast rounded it to 2, matching
+		// equals:2 only on the DuckDB legs while Postgres compared 1.5.
+		{"qty_equals_frac", Filter{Attr: "qty", Op: "equals", Value: "1.5"}, []*Event{rowFrac}},
+		{"qty_equals_2_not_frac", Filter{Attr: "qty", Op: "equals", Value: "2"}, nil},
+		// The placeholder values must be gone — guards that the UPDATEs took.
 		{"qty_equals_placeholder_gone", Filter{Attr: "qty", Op: "equals", Value: "42"}, nil},
+		{"qty_equals_frac_placeholder_gone", Filter{Attr: "qty", Op: "equals", Value: "43"}, nil},
 		// In-range values keep working.
 		{"qty_equals_in_range", Filter{Attr: "qty", Op: "equals", Value: "7"}, []*Event{rowSmall}},
 		// smallint twin at 40000 (past INT16).
 		{"level_equals_40000", Filter{Attr: "level", Op: "equals", Value: "40000"}, []*Event{rowLevel}},
 		{"level_gt_maxint16", Filter{Attr: "level", Op: "gt", Value: "32767"}, []*Event{rowLevel}},
+		// Operand past BIGINT (P2a): compares as DOUBLE instead of erroring
+		// only on the DuckDB route.
+		{"qty_gt_1e30_empty", Filter{Attr: "qty", Op: "gt", Value: "1e30"}, nil},
 	}
 
-	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
-	runWidthProbes(ctx, t, env, "int/hot-pg", hotBase, false, probes)
-
-	serveFromCold(ctx, t, env, wide, seeded)
-	coldBase := Query{Schema: wide, Limit: 100}
-	runWidthProbes(ctx, t, env, "int/cold-duck", coldBase, true, probes)
+	runWidthProbesAllTiers(ctx, t, env, wide, "int", probes)
 }
 
 // TestEAVIntegerWidthWriteRejection pins the write half of the #384 ruling:
@@ -190,14 +211,14 @@ func TestEAVBoolTruthinessParityBothDialects(t *testing.T) {
 		{"active_equals_1", Filter{Attr: "active", Op: "equals", Value: "1"}, []*Event{rowTrue, rowStored2}},
 		{"active_equals_0", Filter{Attr: "active", Op: "equals", Value: "0"}, []*Event{rowFalse}},
 		{"active_not_equals_1", Filter{Attr: "active", Op: "not_equals", Value: "1"}, []*Event{rowFalse}},
+		// Operand spellings under the engine-shared parse rule (P2b): "true"
+		// used to 400 only on the PG route, "2" used to error only on the
+		// DuckDB route.
+		{"active_equals_true", Filter{Attr: "active", Op: "equals", Value: "true"}, []*Event{rowTrue, rowStored2}},
+		{"active_equals_2_truthy", Filter{Attr: "active", Op: "equals", Value: "2"}, []*Event{rowTrue, rowStored2}},
 	}
 
-	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
-	runWidthProbes(ctx, t, env, "bool/hot-pg", hotBase, false, probes)
-
-	serveFromCold(ctx, t, env, wide, seeded)
-	coldBase := Query{Schema: wide, Limit: 100}
-	runWidthProbes(ctx, t, env, "bool/cold-duck", coldBase, true, probes)
+	runWidthProbesAllTiers(ctx, t, env, wide, "bool", probes)
 }
 
 // TestEAVNumericOperandWidthParityBothDialects pins the #384 numeric ruling:
@@ -216,21 +237,21 @@ func TestEAVNumericOperandWidthParityBothDialects(t *testing.T) {
 	rowFine := CreateEvent(wide, map[string]any{"title": "n-fine", "ratio": 0.12345678905})
 	rowCoarse := CreateEvent(wide, map[string]any{"title": "n-coarse", "ratio": 0.1234567890})
 	rowHuge := CreateEvent(wide, map[string]any{"title": "n-huge", "ratio": 1e30})
-	seeded := []*Event{rowFine, rowCoarse, rowHuge}
+	rowP16 := CreateEvent(wide, map[string]any{"title": "n-p16", "ratio": 0.1234567890123456})
+	seeded := []*Event{rowFine, rowCoarse, rowHuge, rowP16}
 	mustApplyEvents(ctx, t, env, "numeric width creates", seeded...)
 
 	probes := []widthProbe{
 		// 11 fractional digits: DECIMAL(38,10) truncated this operand.
 		{"ratio_equals_11_digits", Filter{Attr: "ratio", Op: "equals", Value: "0.12345678905"}, []*Event{rowFine}},
+		// 16 significant digits (P1b): the %.15g operand render dropped the
+		// last digit, so the DuckDB route bound an adjacent float64 and
+		// equality missed the row only there.
+		{"ratio_equals_16_digits", Filter{Attr: "ratio", Op: "equals", Value: "0.1234567890123456"}, []*Event{rowP16}},
 		// Past DECIMAL(38,10)'s integer range: must answer, not error.
 		{"ratio_gt_1e28", Filter{Attr: "ratio", Op: "gt", Value: "1e28"}, []*Event{rowHuge}},
-		{"ratio_lt_1", Filter{Attr: "ratio", Op: "lt", Value: "1"}, []*Event{rowFine, rowCoarse}},
+		{"ratio_lt_1", Filter{Attr: "ratio", Op: "lt", Value: "1"}, []*Event{rowFine, rowCoarse, rowP16}},
 	}
 
-	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
-	runWidthProbes(ctx, t, env, "num/hot-pg", hotBase, false, probes)
-
-	serveFromCold(ctx, t, env, wide, seeded)
-	coldBase := Query{Schema: wide, Limit: 100}
-	runWidthProbes(ctx, t, env, "num/cold-duck", coldBase, true, probes)
+	runWidthProbesAllTiers(ctx, t, env, wide, "num", probes)
 }

@@ -61,18 +61,18 @@ func TestDuckDBNullScanTypeMirrorsTierTypes(t *testing.T) {
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeBigInt}, "BIGINT"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeDate}, "BIGINT"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime}, "BIGINT"},
-		// #384: EAV-only integer/smallint carry storage width (the NUMERIC
-		// column round-trips values the declared width cannot hold), while
+		// #384: EAV-only integer/smallint carry storage width DOUBLE (the
+		// write funnel narrows everything through float64), while
 		// column-bound ones keep the physical int4/int2 width.
-		{forma.AttributeMetadata{ValueType: forma.ValueTypeInteger}, "BIGINT"},
-		{forma.AttributeMetadata{ValueType: forma.ValueTypeSmallInt}, "BIGINT"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeInteger}, "DOUBLE"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeSmallInt}, "DOUBLE"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeInteger, ColumnBinding: bound}, "INTEGER"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeSmallInt, ColumnBinding: bound}, "SMALLINT"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric}, "DOUBLE"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeText}, "VARCHAR"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeUUID}, "VARCHAR"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBigInt}, "BIGINT[]"},
-		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeInteger}, "BIGINT[]"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeInteger}, "DOUBLE[]"},
 		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText}, "VARCHAR[]"},
 	}
 	for _, c := range cases {

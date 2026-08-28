@@ -234,7 +234,7 @@ func TestSchemaEvolutionAddedColumn(t *testing.T) {
 		map[string]string{"name": "VARCHAR", "value": "DOUBLE", "label": "VARCHAR"})
 	forbidParquetCols(t, "base (v1)", baseCols, "score")
 	requireParquetCols(t, "delta (v2)", describeParquetCols(ctx, t, env, deltaKey),
-		map[string]string{"score": "BIGINT", "label": "VARCHAR"})
+		map[string]string{"score": "DOUBLE", "label": "VARCHAR"})
 
 	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20})
 	assertUsesDuckDB(t, full)
@@ -283,7 +283,7 @@ func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 	seedGeneration(ctx, t, env, simple, 5, scoreProfile)
 	baseKey := runInitBase(ctx, t, env, simple)
 	requireParquetCols(t, "base (v1)", describeParquetCols(ctx, t, env, baseKey),
-		map[string]string{"score": "BIGINT", "label": "VARCHAR"})
+		map[string]string{"score": "DOUBLE", "label": "VARCHAR"})
 
 	if err := env.EvolveSchema(ctx, v2); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
@@ -326,15 +326,16 @@ func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 }
 
 // TestSchemaEvolutionChangedType covers #189 scenario 3: `score` keeps its
-// attributeID but its valueType changes integer→numeric, so the v1 base
-// parquet stores BIGINT where the v2 delta stores DOUBLE. Contract:
-// predictable widening — the union resolves to DOUBLE, matching the oracle's
-// numeric-family float64 normalization; filters and sorts see one coherent
-// numeric domain across generations.
+// attributeID but its valueType changes integer→numeric. Since #384 both
+// generations export at EAV storage width DOUBLE (pre-#384 the v1 base
+// stored the declared integer width), so the union is trivially DOUBLE —
+// matching the oracle's numeric-family float64 normalization; filters and
+// sorts see one coherent numeric domain across generations.
 //
 // Red on current main with SILENTLY WRONG DATA, not a loud failure: without
 // union_by_name DuckDB coerces every file to the first file's schema, so the
-// delta's DOUBLE values are cast to the base's BIGINT — fractional scores
+// delta's DOUBLE values are cast to the base's narrower integer width —
+// fractional scores
 // are corrupted in place and only the oracle catches it (attr mismatches,
 // totals identical). That failure mode is the strongest reason the fix must
 // widen the union rather than pin first-file-wins.
@@ -355,7 +356,7 @@ func TestSchemaEvolutionChangedType(t *testing.T) {
 		})))
 
 	requireParquetCols(t, "base (v1 integer)", describeParquetCols(ctx, t, env, baseKey),
-		map[string]string{"score": "BIGINT"})
+		map[string]string{"score": "DOUBLE"})
 	requireParquetCols(t, "delta (v2 numeric)", describeParquetCols(ctx, t, env, deltaKey),
 		map[string]string{"score": "DOUBLE"})
 
@@ -366,7 +367,7 @@ func TestSchemaEvolutionChangedType(t *testing.T) {
 	}
 
 	// One numeric domain across generations: the threshold catches v1
-	// BIGINT rows (20,30,40) and every v2 DOUBLE row (50.5..110.5).
+	// integer-generation rows (20,30,40) and every v2 DOUBLE row (50.5..110.5).
 	filtered := env.AssertQueryMatches(ctx, Query{
 		Schema:  simple,
 		Filters: []Filter{{Attr: "score", Op: "gte", Value: "20"}},
@@ -408,7 +409,7 @@ func TestSchemaEvolutionMixedGenerations(t *testing.T) {
 	requireParquetCols(t, "base (v1)", baseCols, map[string]string{"old_col": "VARCHAR"})
 	forbidParquetCols(t, "base (v1)", baseCols, "new_col")
 	deltaCols := describeParquetCols(ctx, t, env, deltaKey)
-	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{"new_col": "BIGINT"})
+	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{"new_col": "DOUBLE"})
 	forbidParquetCols(t, "delta (v2)", deltaCols, "old_col")
 
 	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20})
@@ -461,10 +462,10 @@ func TestSchemaEvolutionRenamedColumn(t *testing.T) {
 		})))
 
 	baseCols := describeParquetCols(ctx, t, env, baseKey)
-	requireParquetCols(t, "base (v1)", baseCols, map[string]string{"score": "BIGINT"})
+	requireParquetCols(t, "base (v1)", baseCols, map[string]string{"score": "DOUBLE"})
 	forbidParquetCols(t, "base (v1)", baseCols, "points")
 	deltaCols := describeParquetCols(ctx, t, env, deltaKey)
-	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{"points": "BIGINT"})
+	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{"points": "DOUBLE"})
 	forbidParquetCols(t, "delta (v2)", deltaCols, "score")
 
 	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20})
