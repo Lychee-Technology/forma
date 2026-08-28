@@ -149,6 +149,10 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		// int64-first parse one call later, at predicate_normalizer.go's
 		// ToDuckDBParam hop. Everything else keeps the funnel: INTEGER and
 		// SMALLINT ranges end at 2^31/2^15 and float64 is exact well past both.
+		// The DuckDB side deliberately keeps the exact int64 and lets
+		// CAST(? AS DOUBLE) round in-engine — above 2^53 it lands on the same
+		// float64 image the PG binders reach via NarrowEAVNumericOperand
+		// (#384), so both engines still compare one value.
 		if exact, ok := value.(int64); ok {
 			return exact, nil
 		}
