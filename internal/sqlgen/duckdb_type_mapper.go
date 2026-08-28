@@ -56,7 +56,12 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 }
 
 // MapValueTypeToListDuckDBType returns the DuckDB LIST type for an array of the given element type.
-// e.g., ValueTypeText -> "LIST(VARCHAR)", ValueTypeInteger -> "LIST(INTEGER)"
+// e.g., ValueTypeText -> "LIST(VARCHAR)", ValueTypeInteger -> "LIST(BIGINT)".
+// Element types ride MapValueTypeToDuckDBType and therefore EAV storage width
+// (#384), which is always right today because list attributes cannot bind a
+// main column (their storage is one eav_data row per element, mirrored by
+// eavElementCastExpr). If list column bindings ever appear, the
+// storage-vs-declared width choice needs an explicit decision here.
 func MapValueTypeToListDuckDBType(elementType forma.ValueType) string {
 	elemDuckType := MapValueTypeToDuckDBType(elementType)
 	return "LIST(" + elemDuckType + ")"
