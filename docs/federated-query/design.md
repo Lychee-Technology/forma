@@ -605,7 +605,9 @@ stamp existing.
 ### **6.3 Smart Type Casting**
 
 * PostgreSQL numeric $\rightarrow$ DuckDB DOUBLE (Precision loss acceptable for search, not for finance).
-* PostgreSQL smallint $\rightarrow$ DuckDB INTEGER or BIGINT (Safe).
+* PostgreSQL smallint/integer $\rightarrow$ **binding-dependent**: column-bound
+  attributes keep the physical SMALLINT/INTEGER width, EAV-only attributes
+  carry storage width DOUBLE — the precise per-surface contract is §6.4 (#384).
 * PostgreSQL text (containing UUID) $\rightarrow$ DuckDB UUID (Explicit cast required).
 
 ### **6.4 Numeric Width Contract (#384)**
