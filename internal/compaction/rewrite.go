@@ -58,8 +58,10 @@ func (c *Compactor) runRewrite(
 	analysis CompactionResult,
 ) (CompactionResult, error) {
 	// Fail closed before anything is merged: past this point the sources are
-	// folded into one object and then deleted, so a corrupt input would be
-	// laundered into the new base and lose its name (#347).
+	// folded into one object and spliced out of the manifest, so a corrupt
+	// input would be laundered into the new base and lose its listed name —
+	// the retained bytes (#461) are unlisted orphans on a GC countdown, not a
+	// named copy anyone would consult (#347).
 	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
 		return CompactionResult{}, err
 	}
