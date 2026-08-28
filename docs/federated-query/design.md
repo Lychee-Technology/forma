@@ -608,6 +608,39 @@ stamp existing.
 * PostgreSQL smallint $\rightarrow$ DuckDB INTEGER or BIGINT (Safe).
 * PostgreSQL text (containing UUID) $\rightarrow$ DuckDB UUID (Explicit cast required).
 
+### **6.4 Numeric Width Contract (#384)**
+
+`eav_data.value_numeric` is an unconstrained PG `NUMERIC`, so declared attribute
+width and physical storage width can disagree. The ruling, applied on both
+sides:
+
+* **Write side**: the EAV write funnel (`transform.populateTypedValue`) rejects
+  numeric-family values that do not fit the declared integer type — out of
+  range or non-integral for `smallint`/`integer`/`bigint` — as user-facing
+  invalid input. `numeric` stays unconstrained (its float64 ceiling is #205).
+  Main-column-bound write fidelity is tracked separately (#459).
+* **Projection**: EAV-only `integer`/`smallint` project by **storage width** —
+  `TRY_CAST(value_numeric AS BIGINT)` — on every DuckDB surface (hot EAV pivot,
+  list elements, CDC parquet export, cold NULL augmentation), so historical
+  out-of-declared-range rows answer identically on all tiers instead of being
+  NULL only on DuckDB. Column-bound attributes keep declared width: their
+  storage is physically int4/int2.
+* **Predicate operands**: DuckDB operand casts follow column storage width —
+  `integer`/`smallint` operands cast to `BIGINT` (an out-of-range operand
+  matches nothing, like Postgres, instead of raising a Conversion Error) and
+  `numeric` operands cast to `DOUBLE` (matching the DOUBLE columns; the former
+  `DECIMAL(38,10)` cast truncated operand scale at 10 fractional digits and
+  overflowed past ~1e28).
+* **Bool truthiness**: both engines compare `value_numeric <> 0`. The PG EAV
+  EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` rather than
+  `x.value_numeric = 1.0/0.0`, matching every DuckDB leg's column derivation.
+  (The write-side bool truth table is #404.)
+
+Parquet files written before this contract carry INT32/INT16 attribute columns
+and NULLs where a value exceeded the declared width; `union_by_name=true` scans
+promote the mixed widths losslessly, and the NULLs are unrecoverable from
+parquet alone (re-flush from PG restores them).
+
 ## **7. Resilience and Error Handling**
 
 ### **7.1 Circuit Breaker**
