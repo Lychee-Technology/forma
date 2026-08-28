@@ -294,8 +294,10 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 	for rows.Next() {
 		var rowIDStr string
 		var title, ref, note, token sql.NullString
-		var rank, level sql.NullInt16
-		var count, qty sql.NullInt32
+		var rank sql.NullInt16
+		var count sql.NullInt32
+		// EAV-only level/qty are physically DOUBLE since #384.
+		var level, qty sql.NullFloat64
 		var amount, joined, touched, born, seen, total sql.NullInt64
 		var score, ratio sql.NullFloat64
 		var active sql.NullBool
@@ -320,9 +322,9 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 		checkStr(t, tier, rowID, "ref", ref, want.ref)
 		checkStr(t, tier, rowID, "token", token, want.token)
 		checkI16(t, tier, rowID, "rank", rank, want.rank)
-		checkI16(t, tier, rowID, "level", level, want.level)
+		checkNarrowFromDouble(t, tier, rowID, "level", level, want.level)
 		checkI32(t, tier, rowID, "count", count, want.count)
-		checkI32(t, tier, rowID, "qty", qty, want.qty)
+		checkNarrowFromDouble(t, tier, rowID, "qty", qty, want.qty)
 		checkI64(t, tier, rowID, "amount", amount, want.amount)
 		checkI64(t, tier, rowID, "joined", joined, want.joined)
 		checkI64(t, tier, rowID, "touched", touched, want.touched)
@@ -416,6 +418,21 @@ func checkI32(t *testing.T, tier string, rowID uuid.UUID, col string, got sql.Nu
 		t.Errorf("%s %s.%s = NULL, want %d", tier, rowID, col, *want)
 	case want != nil && got.Int32 != *want:
 		t.Errorf("%s %s.%s = %d, want %d", tier, rowID, col, got.Int32, *want)
+	}
+}
+
+// checkNarrowFromDouble compares a DOUBLE parquet column (EAV-only narrow
+// ints export at storage width DOUBLE, #384) against the declared-width
+// truth; every in-range integer value is exact in DOUBLE.
+func checkNarrowFromDouble[T int16 | int32](t *testing.T, tier string, rowID uuid.UUID, col string, got sql.NullFloat64, want *T) {
+	t.Helper()
+	switch {
+	case want == nil && got.Valid:
+		t.Errorf("%s %s.%s = %v, want NULL", tier, rowID, col, got.Float64)
+	case want != nil && !got.Valid:
+		t.Errorf("%s %s.%s = NULL, want %d", tier, rowID, col, *want)
+	case want != nil && got.Float64 != float64(*want):
+		t.Errorf("%s %s.%s = %v, want %d", tier, rowID, col, got.Float64, *want)
 	}
 }
 
