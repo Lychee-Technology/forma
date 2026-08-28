@@ -32,6 +32,9 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	}
 	mustFlush(ctx, t, env) // dirty ratio 1/5 = 20% > 5%: rewrite-eligible
 
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, wide, everListed)
+
 	// Pause the compactor exactly at its manifest save; the rewrite's parquet
 	// staging traffic (DuckDB httpfs + CopyObject) does not match.
 	pauser := NewPausingS3OnKey(cluster.S3, S3OpPut, "manifest/")
@@ -62,6 +65,7 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 		t.Fatalf("apply concurrent update: %v", err)
 	}
 	mustFlush(ctx, t, env)
+	recordListedKeys(ctx, t, env, wide, everListed) // + the concurrent delta
 	midVersion := loadSchemaManifest(ctx, t, env, wide).Version
 
 	pauser.Resume()
@@ -95,9 +99,10 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 		t.Errorf("delta entries after conflict retry = %d, want 0 (concurrent delta folded)", got)
 	}
 	assertNoDuplicateManifestEntries(t, m)
-	// Includes the failed first attempt's staged base: it must not linger as
-	// an unlisted orphan.
-	assertManifestMatchesInventory(ctx, t, env, wide)
+	// The failed first attempt's staged base was never listed, so it must not
+	// linger (the confirmed-412 cleanup); the retry's retired sources are in
+	// everListed and may (#461: must be able to) survive unlisted.
+	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 
 	// Full result equivalence: engine vs oracle, which knows both updates.
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})

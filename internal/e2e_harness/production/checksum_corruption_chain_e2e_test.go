@@ -145,9 +145,11 @@ func assertScrubReportsOnlyDivergence(ctx context.Context, t *testing.T, env *En
 // assertCompactionRefusesCorruptSource runs the default (verifying) compaction
 // pass over the corrupted delta and requires the fail-closed outcome: an
 // ErrSourceChecksumMismatch, and a store left exactly as it was. The
-// post-conditions are the point — the rewrite merges its sources and then
-// deletes them, so a gate that fired but let the pass continue would still
-// have destroyed the only named copy of the corrupt bytes.
+// post-conditions are the point — the rewrite merges its sources and splices
+// them out of the manifest (since #461 their bytes are retained but unlisted,
+// awaiting reconcile GC), so a gate that fired but let the pass continue
+// would still have laundered the corrupt bytes into the new base and cost
+// them their name.
 func assertCompactionRefusesCorruptSource(ctx context.Context, t *testing.T, env *Env,
 	schema SchemaRef, corruptKey string) {
 	t.Helper()
@@ -194,7 +196,7 @@ func assertCompactionRefusesCorruptSource(ctx context.Context, t *testing.T, env
 // disagrees with the object's bytes — while the merge can still read it.
 // That also makes this the harmful case the gate exists to prevent, run on
 // purpose: the opted-out rewrite folds an unverified source into the new base
-// and deletes it.
+// and splices it out of the manifest (#461: retained unlisted, not deleted).
 func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 	schema SchemaRef, deltaKey, deltaPath string, pristine []byte) {
 	t.Helper()
@@ -213,6 +215,8 @@ func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 		t.Fatalf("verifying pass over a poisoned stamp must refuse with ErrSourceChecksumMismatch, got: %v", err)
 	}
 
+	everListed := map[string]bool{}
+	recordListedKeys(ctx, t, env, schema, everListed)
 	result, err := env.RunCompactionWith(ctx, schema, CompactionOverrides{SkipInputChecksumVerify: true})
 	if err != nil {
 		t.Fatalf("compaction with the checksum gate opted out: %v", err)
@@ -229,7 +233,7 @@ func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 	// Compactor's ObjectReader wiring on the production harness path.
 	assertEntryChecksumMatchesBytes(ctx, t, env, "compaction-merged base", soleTierEntry(t, m, "base"))
 	assertNoDuplicateManifestEntries(t, m)
-	assertManifestMatchesInventory(ctx, t, env, schema)
+	assertManifestMatchesInventory(ctx, t, env, schema, everListed)
 	env.AssertQueryMatches(ctx, Query{Schema: schema, Limit: 100})
 }
 

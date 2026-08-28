@@ -22,7 +22,7 @@ func (c *Compactor) canRewrite() bool {
 
 // runRewrite executes the dirty-ratio rewrite (#188): merge the schema's
 // COMPLETE base+delta parquet set into one new base file, swap the manifest
-// under the loaded ETag, then best-effort delete the merged sources.
+// under the loaded ETag, and RETAIN the now-unlisted sources.
 //
 // Ordering is what makes this safe under manifest-driven reads
 // (manifest ⊆ live objects, internal/manifest/query_source.go):
@@ -37,14 +37,18 @@ func (c *Compactor) canRewrite() bool {
 //  3. commit the manifest swap — the only atomic step; a conditional-put
 //     conflict surfaces as ErrConcurrentModification and the retry recomputes
 //     everything from a fresh manifest,
-//  4. only after the commit, delete the now-unlisted sources. Deletion is
-//     best-effort: a failure leaves unlisted orphans for #203's
-//     reconciliation, never a broken read set. In-flight queries that
-//     resolved the pre-swap object list can race step 4 and fail loudly on a
-//     missing key; the residual window is one query duration (noted on #188).
+//  4. after the commit, the now-unlisted sources are deliberately NOT
+//     deleted (#461): an in-flight query that resolved the pre-swap object
+//     list may still lazily open them, and a zero-grace delete would fail it
+//     with the non-degradable ParquetSetInconsistentError. They are left as
+//     unlisted orphans for manifest-reconcile's sighting-state GC grace
+//     (base/tmp shapes via --gc, delta shapes via --repair --gc). The only
+//     inline deletion is a confirmed-412 conflict dropping its own
+//     never-listed staged base.
 //
 // A crash before step 3 leaves the manifest untouched (staged objects become
-// #203 orphans); a crash after it leaves only unlisted sources behind.
+// #203 orphans); a crash after it changes nothing — the retained sources are
+// the same unlisted orphans the happy path leaves.
 func (c *Compactor) runRewrite(
 	ctx context.Context,
 	schemaID int16,
@@ -54,8 +58,10 @@ func (c *Compactor) runRewrite(
 	analysis CompactionResult,
 ) (CompactionResult, error) {
 	// Fail closed before anything is merged: past this point the sources are
-	// folded into one object and then deleted, so a corrupt input would be
-	// laundered into the new base and lose its name (#347).
+	// folded into one object and spliced out of the manifest, so a corrupt
+	// input would be laundered into the new base and lose its listed name —
+	// the retained bytes (#461) are unlisted orphans on a GC countdown, not a
+	// named copy anyone would consult (#347).
 	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
 		return CompactionResult{}, err
 	}
@@ -118,12 +124,13 @@ func (c *Compactor) runRewrite(
 		return CompactionResult{}, fmt.Errorf("rewrite manifest swap for schema %d had an ambiguous outcome; staged base retained at %s: %w", schemaID, finalKey, err)
 	}
 
-	sourceKeys := make([]string, 0, len(sources))
-	for _, f := range sources {
-		sourceKeys = append(sourceKeys, f.Path)
-	}
-	c.deleteObjects(ctx, schemaID, sourceKeys)
-
+	// #461: the merged sources are NOT deleted here. An in-flight federated
+	// read that resolved the pre-swap manifest may still lazily open them;
+	// deleting now would fail that read with the non-degradable,
+	// breaker-worthy ParquetSetInconsistentError. They stay behind as
+	// unlisted orphans for manifest-reconcile, whose gcSchema sighting-state
+	// grace exists exactly for this window (base/tmp shapes via --gc, delta
+	// shapes via --repair --gc). files_merged below counts them.
 	telemetry.EmitCompactionRewriteApplied(ctx, schemaID)
 	c.Logger.Info("compaction rewrite completed",
 		zap.Int16("schema_id", schemaID),
@@ -191,6 +198,9 @@ func (c *Compactor) objectURI(path string) string {
 
 // deleteObjects best-effort deletes bucket-relative keys. Failures (and
 // absolute foreign-bucket paths) are logged and left to #203 reconciliation.
+// Since #461 the rewrite only calls it for a confirmed-412 attempt's own
+// never-listed staged base — merged sources are retained for the
+// in-flight-reader window and reclaimed by manifest-reconcile's GC grace.
 func (c *Compactor) deleteObjects(ctx context.Context, schemaID int16, paths []string) {
 	for _, path := range paths {
 		key := path

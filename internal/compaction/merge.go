@@ -66,11 +66,13 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 
 	// The merge runs union_by_name (#189), which would NULL-pad the system
 	// columns of a malformed source: every such row then folds into the
-	// single NULL row_id partition and all but one are silently discarded —
-	// and the compactor deletes the merged sources afterwards, making the
-	// loss permanent. Enforce the export invariant per source BEFORE any
-	// write. An unreadable footer is inconclusive and passes through: the
-	// merge itself must read every file and will fail loudly on it.
+	// single NULL row_id partition and all but one are silently discarded. If
+	// published, that lossy output would splice the source entries out of the
+	// manifest; although the source bytes remain as unlisted GC candidates,
+	// the manifest read path would no longer consult them. Enforce the export
+	// invariant per source BEFORE any write. An unreadable footer is
+	// inconclusive and passes through: the merge itself must read every file
+	// and will fail loudly on it.
 	if err := validateMergeSourceSchemas(ctx, d.DB, sourceURIs); err != nil {
 		return MergeStats{}, fmt.Errorf("pre-merge parquet schema validation: %w", err)
 	}
