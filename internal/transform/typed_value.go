@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -38,6 +39,9 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 			return handleConversionError(err)
 		}
 		if numVal, err = finiteForEAV(numVal); err != nil {
+			return handleConversionError(err)
+		}
+		if err := checkDeclaredIntegerFit(value, numVal, meta.ValueType); err != nil {
 			return handleConversionError(err)
 		}
 		attr.ValueNumeric = &numVal
@@ -84,6 +88,52 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 	}
 
 	return true, nil
+}
+
+// checkDeclaredIntegerFit rejects a numeric-family value that cannot fit its
+// declared integer type (#384): eav_data.value_numeric is an unconstrained
+// NUMERIC, so Postgres would happily store and match a value the DuckDB tiers
+// project by width — the write funnel is the only place the declared type can
+// still be enforced. numeric stays unconstrained (#205 owns its float64
+// ceiling).
+func checkDeclaredIntegerFit(raw any, numVal float64, vt forma.ValueType) error {
+	var lo, hi float64
+	switch vt {
+	case forma.ValueTypeSmallInt:
+		lo, hi = math.MinInt16, math.MaxInt16
+	case forma.ValueTypeInteger:
+		lo, hi = math.MinInt32, math.MaxInt32
+	case forma.ValueTypeBigInt:
+		// An exactly-representable int64 fits by construction; this also
+		// admits boundary literals like "9223372036854775807" whose float64
+		// image rounds up to 2^63 and would fail the bound check below.
+		if _, ok := toInt64ExactForEAV(raw); ok {
+			return nil
+		}
+		// Constant conversion: math.MinInt64 converts to exactly -2^63
+		// (a valid value); math.MaxInt64 rounds up to exactly 2^63, so >=
+		// rejects the first float64 that no longer fits.
+		if numVal != math.Trunc(numVal) {
+			return errNonIntegralForType(numVal, vt)
+		}
+		if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
+			return fmt.Errorf("value %v out of range for declared type %s (allowed [-9223372036854775808, 9223372036854775807])", numVal, vt)
+		}
+		return nil
+	default:
+		return nil
+	}
+	if numVal != math.Trunc(numVal) {
+		return errNonIntegralForType(numVal, vt)
+	}
+	if numVal < lo || numVal > hi {
+		return fmt.Errorf("value %v out of range for declared type %s (allowed [%.0f, %.0f])", numVal, vt, lo, hi)
+	}
+	return nil
+}
+
+func errNonIntegralForType(numVal float64, vt forma.ValueType) error {
+	return fmt.Errorf("non-integral value %v does not fit declared type %s (whole number required)", numVal, vt)
 }
 
 func toString(value any) (string, error) {
