@@ -14,10 +14,12 @@ import (
 
 // ErrSourceChecksumMismatch marks a rewrite input whose bytes no longer hash
 // to its manifest stamp. The rewrite must NOT proceed: runRewrite merges the
-// sources into the new base and then deletes them, so this gate is the last
-// moment silent corruption (#347) is both detectable and still attributable
-// to a named object. Probe failures never map to this error — a failed GET is
-// transient infrastructure, not a corruption verdict.
+// sources into the new base and splices them out of the manifest, so this
+// gate is the last moment silent corruption (#347) is both detectable and
+// attributable to a manifest-listed object. The source bytes may remain as
+// unlisted GC candidates, but the read path will no longer consult that
+// named entry after the rewrite. Probe failures never map to this error — a
+// failed GET is transient infrastructure, not a corruption verdict.
 var ErrSourceChecksumMismatch = errors.New("compaction source checksum mismatch")
 
 // verifySourceChecksums re-hashes every stamped rewrite source and compares

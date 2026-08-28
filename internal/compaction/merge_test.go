@@ -206,9 +206,11 @@ func TestDuckMerger_RequiresDB(t *testing.T) {
 // TestDuckMerger_RejectsWrongSchemaSource pins the #189-review P1: the merge
 // scan runs union_by_name, which NULL-pads a malformed source's system
 // columns — every such row folds into the single NULL row_id partition and
-// all but one are silently discarded, and runRewrite deletes the merged
-// sources afterwards, making the loss permanent. The pre-merge invariant
-// check must abort before any write instead.
+// all but one are silently discarded. A published result would splice the
+// source entries out of the manifest, leaving the lossy output as the only
+// manifest-visible data even though the source bytes are retained as
+// unlisted GC candidates. The pre-merge invariant check must abort before
+// any write instead.
 func TestDuckMerger_RejectsWrongSchemaSource(t *testing.T) {
 	db, err := sql.Open("duckdb", "")
 	require.NoError(t, err)
