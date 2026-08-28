@@ -159,7 +159,7 @@ func buildCharNumericBoolCases() []charCase {
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
 				PgMainClause: "m.bool_01 = ?", PgMainArgs: []any{int64(1)},
-				PgClause: charEXISTS+"$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(5), true},
+				PgClause: charEXISTS + "$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(5), true},
 				DuckClause: "active = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
 			span: 3,
@@ -169,7 +169,7 @@ func buildCharNumericBoolCases() []charCase {
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
 				PgMainClause: "m.text_02 = ?", PgMainArgs: []any{"0"},
-				PgClause: charEXISTS+"$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(6), false},
+				PgClause: charEXISTS + "$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(6), false},
 				DuckClause: "verified = CAST(? AS BOOLEAN)", DuckArgs: []any{false},
 			},
 			span: 3,
@@ -179,7 +179,7 @@ func buildCharNumericBoolCases() []charCase {
 			cond: charKv("flag", "equals:1"),
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
-				PgClause: charEXISTS+"$1 AND (x.value_numeric <> 0) = $2)", PgArgs: []any{int16(7), true},
+				PgClause: charEXISTS + "$1 AND (x.value_numeric <> 0) = $2)", PgArgs: []any{int16(7), true},
 				DuckClause: "flag = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
 			span: 2,
