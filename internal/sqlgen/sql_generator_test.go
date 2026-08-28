@@ -128,12 +128,12 @@ func TestSQLGenerator_BoolEAV_UsesValueNumeric(t *testing.T) {
 	tests := []struct {
 		name    string
 		value   string
-		wantArg float64
+		wantArg bool
 		wantOp  string
 	}{
-		{name: "truthy value=1", value: "1", wantArg: float64(1), wantOp: "="},
-		{name: "falsy value=0", value: "0", wantArg: float64(0), wantOp: "="},
-		{name: "not-equal truthy neq:1", value: "neq:1", wantArg: float64(1), wantOp: "!="},
+		{name: "truthy value=1", value: "1", wantArg: true, wantOp: "="},
+		{name: "falsy value=0", value: "0", wantArg: false, wantOp: "="},
+		{name: "not-equal truthy neq:1", value: "neq:1", wantArg: true, wantOp: "!="},
 	}
 
 	for _, tc := range tests {
@@ -148,11 +148,14 @@ func TestSQLGenerator_BoolEAV_UsesValueNumeric(t *testing.T) {
 			gen := NewSQLGenerator()
 			clause, args, err := gen.ToSQLClauses(cond, "eav_data", 1, cache, &paramIndex)
 			require.NoError(t, err)
-			require.Contains(t, clause, "value_numeric", "bool filter must use value_numeric column")
+			// #384: bool compares (value_numeric <> 0) truthiness with a
+			// BOOLEAN bind, matching every DuckDB leg's derivation.
+			require.Contains(t, clause, "(x.value_numeric <> 0) "+tc.wantOp,
+				"bool filter must compare value_numeric truthiness")
 			require.NotContains(t, clause, "value_text", "bool filter must not use value_text column")
 			require.Len(t, args, 2)
 			require.Equal(t, int16(20), args[0], "first arg must be attr_id as int16")
-			require.Equal(t, tc.wantArg, args[1], "second arg must be float64")
+			require.Equal(t, tc.wantArg, args[1], "second arg must be the bool bind")
 		})
 	}
 }

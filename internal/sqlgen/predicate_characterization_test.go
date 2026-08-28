@@ -145,7 +145,7 @@ func buildCharNumericBoolCases() []charCase {
 			span: 2,
 		},
 		{
-			name: "integer above 2^31: main/eav/duck all int64 (CAST raises conversion error identically on both types)",
+			name: "integer above 2^31: main/eav/duck all int64, duck compares at BIGINT (#384)",
 			cond: charKv("age", "equals:9007199254740993"),
 			want: DualClauses{
 				PgMainClause: "m.integer_01 = ?", PgMainArgs: []any{int64(9007199254740993)},
@@ -155,31 +155,31 @@ func buildCharNumericBoolCases() []charCase {
 			span: 3,
 		},
 		{
-			name: "bool bool-int encoding: main int64(1), eav float64(1), duck true",
+			name: "bool bool-int encoding: main int64(1), eav truthy bool, duck true",
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
 				PgMainClause: "m.bool_01 = ?", PgMainArgs: []any{int64(1)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(5), float64(1)},
+				PgClause: charEXISTS+"$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(5), true},
 				DuckClause: "active = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
 			span: 3,
 		},
 		{
-			name: "bool bool-text encoding zero: main \"0\", eav float64(0), duck false",
+			name: "bool bool-text encoding zero: main \"0\", eav truthy bool, duck false",
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
 				PgMainClause: "m.text_02 = ?", PgMainArgs: []any{"0"},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(6), float64(0)},
+				PgClause: charEXISTS+"$2 AND (x.value_numeric <> 0) = $3)", PgArgs: []any{int16(6), false},
 				DuckClause: "verified = CAST(? AS BOOLEAN)", DuckArgs: []any{false},
 			},
 			span: 3,
 		},
 		{
-			name: "bool unbound: eav float64, duck true",
+			name: "bool unbound: eav truthy bool, duck true",
 			cond: charKv("flag", "equals:1"),
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
-				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(7), float64(1)},
+				PgClause: charEXISTS+"$1 AND (x.value_numeric <> 0) = $2)", PgArgs: []any{int16(7), true},
 				DuckClause: "flag = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
 			span: 2,

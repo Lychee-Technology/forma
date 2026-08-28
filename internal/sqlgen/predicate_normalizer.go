@@ -275,6 +275,7 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		ValueColumn: valueColumn,
 		SQLOp:       sqlOp,
 		Value:       parsedValue,
+		Truthy:      meta.ValueType == forma.ValueTypeBool,
 	}
 }
 
@@ -308,14 +309,14 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 		return "value_numeric", parsed, nil
 
 	case forma.ValueTypeBool:
+		// The bind is a Go bool compared against the (value_numeric <> 0)
+		// truthiness expression, not the raw column — the payload's Truthy
+		// flag drives the emitters (#384).
 		parsedInt, boolErr := strconv.Atoi(valStr)
 		if boolErr != nil {
 			return "", nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 		}
-		if parsedInt > 0 {
-			return "value_numeric", float64(1), nil
-		}
-		return "value_numeric", float64(0), nil
+		return "value_numeric", parsedInt > 0, nil
 
 	default:
 		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, attr)

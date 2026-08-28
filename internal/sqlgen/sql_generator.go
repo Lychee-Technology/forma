@@ -71,10 +71,10 @@ func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, e
 	args = append(args, p.Value)
 
 	sql := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND x.%s %s %s)",
+		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND %s %s %s)",
 		e.eavTable,
 		attrIDPlaceholder,
-		p.ValueColumn,
+		p.ComparisonLHS("x"),
 		p.SQLOp,
 		valuePlaceholder,
 	)

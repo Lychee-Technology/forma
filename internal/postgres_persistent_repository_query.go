@@ -366,8 +366,8 @@ func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string
 	valuePlaceholder := fmt.Sprintf("$%d", b.argCounter)
 
 	clause := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s AND x.%s %s %s)",
-		b.eavTable, schemaAlias, rowAlias, attrPlaceholder, eav.ValueColumn, eav.SQLOp, valuePlaceholder,
+		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s AND %s %s %s)",
+		b.eavTable, schemaAlias, rowAlias, attrPlaceholder, eav.ComparisonLHS("x"), eav.SQLOp, valuePlaceholder,
 	)
 	return clause, []any{eav.AttrID, eav.Value}, nil
 }
