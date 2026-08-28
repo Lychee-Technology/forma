@@ -18,17 +18,24 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 		return "VARCHAR"
 	case forma.ValueTypeUUID:
 		return "VARCHAR"
-	case forma.ValueTypeSmallInt:
-		return "SMALLINT"
-	case forma.ValueTypeInteger:
-		return "INTEGER"
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// #384: predicate operands cast by column storage width. Every
+		// integer/smallint EAV column is BIGINT across the tiers (see
+		// buildEAVPivotExpr), and a bound int4/int2 column compares against a
+		// BIGINT operand by lossless promotion. The declared-width cast was
+		// strict (CAST, not TRY_CAST), so an out-of-range operand raised a
+		// Conversion Error on the DuckDB route while Postgres answered
+		// normally; at BIGINT it simply matches nothing, like Postgres.
+		return "BIGINT"
 	case forma.ValueTypeBigInt:
 		return "BIGINT"
 	case forma.ValueTypeNumeric:
-		// Use explicit-precision DECIMAL to preserve numeric precision instead of DOUBLE.
-		// DECIMAL(38,10) supports 38 digits total, 10 fractional — enough for financial
-		// and scientific use-cases without default truncation.
-		return "DECIMAL(38,10)"
+		// #384: every numeric column on every tier is DOUBLE (EAV pivot,
+		// parquet export, main double columns). The former DECIMAL(38,10)
+		// operand cast silently truncated operands beyond 10 fractional
+		// digits (false mismatch against the DOUBLE column) and overflowed
+		// past ~1e28 (one-sided query failure).
+		return "DOUBLE"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Date/datetime attribute columns in the federated CTEs are epoch-ms
 		// BIGINT on all three sides — EAV pivot TRY_CAST(value_numeric AS

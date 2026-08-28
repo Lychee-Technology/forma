@@ -130,7 +130,7 @@ func buildCharNumericBoolCases() []charCase {
 			want: DualClauses{
 				PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(30)},
 				PgClause: charEavClause("$2", "value_numeric", ">", "$3"), PgArgs: []any{int16(2), int64(30)},
-				DuckClause: "age > CAST(? AS INTEGER)", DuckArgs: []any{int64(30)},
+				DuckClause: "age > CAST(? AS BIGINT)", DuckArgs: []any{int64(30)},
 			},
 			span: 3,
 		},
@@ -140,7 +140,7 @@ func buildCharNumericBoolCases() []charCase {
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", "<", "$2"), PgArgs: []any{int16(3), 3.5},
-				DuckClause: "score < CAST(? AS DECIMAL(38,10))", DuckArgs: []any{"3.5"},
+				DuckClause: "score < CAST(? AS DOUBLE)", DuckArgs: []any{"3.5"},
 			},
 			span: 2,
 		},
@@ -150,7 +150,7 @@ func buildCharNumericBoolCases() []charCase {
 			want: DualClauses{
 				PgMainClause: "m.integer_01 = ?", PgMainArgs: []any{int64(9007199254740993)},
 				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(2), int64(9007199254740993)},
-				DuckClause: "age = CAST(? AS INTEGER)", DuckArgs: []any{int64(9007199254740993)},
+				DuckClause: "age = CAST(? AS BIGINT)", DuckArgs: []any{int64(9007199254740993)},
 			},
 			span: 3,
 		},
@@ -249,7 +249,7 @@ func buildCharCompositeCases() []charCase {
 					charEavClause("$4", "value_numeric", ">", "$5") + ") OR (" +
 					charEavClause("$6", "value_text", "=", "$7") + "))))",
 				PgArgs:     []any{int16(1), "Alice", int16(2), int64(18), int16(4), "x"},
-				DuckClause: "(username = ?) AND ((age > CAST(? AS INTEGER)) OR (tag = ?))",
+				DuckClause: "(username = ?) AND ((age > CAST(? AS BIGINT)) OR (tag = ?))",
 				DuckArgs:   []any{"Alice", int64(18), "x"},
 			},
 			span: 7,
@@ -262,7 +262,7 @@ func buildCharCompositeCases() []charCase {
 				PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") OR (" +
 					charEavClause("$5", "value_numeric", ">", "$6") + "))",
 				PgArgs:     []any{int16(1), "A", int16(2), int64(5)},
-				DuckClause: "(username = ?) OR (age > CAST(? AS INTEGER))",
+				DuckClause: "(username = ?) OR (age > CAST(? AS BIGINT))",
 				DuckArgs:   []any{"A", int64(5)},
 			},
 			span: 6,
@@ -275,7 +275,7 @@ func buildCharCompositeCases() []charCase {
 				PgClause: "((" + charEavClause("$3", "value_numeric", ">", "$4") + ") AND (" +
 					charEavClause("$5", "value_numeric", "<", "$6") + "))",
 				PgArgs:     []any{int16(2), int64(10), int16(2), int64(90)},
-				DuckClause: "(age > CAST(? AS INTEGER)) AND (age < CAST(? AS INTEGER))",
+				DuckClause: "(age > CAST(? AS BIGINT)) AND (age < CAST(? AS BIGINT))",
 				DuckArgs:   []any{int64(10), int64(90)},
 			},
 			span: 6,
@@ -442,7 +442,7 @@ func TestStandaloneBuilders_Characterization(t *testing.T) {
 			wantClause string
 			wantArgs   []any
 		}{
-			{"numeric literal", "equals:42", "ghost = CAST(? AS DECIMAL(38,10))", []any{"42"}},
+			{"numeric literal", "equals:42", "ghost = CAST(? AS DOUBLE)", []any{"42"}},
 			{"bool literal", "equals:true", "ghost = CAST(? AS BOOLEAN)", []any{true}},
 			{"uuid literal", "equals:0b210f52-1f4d-4f47-9799-1e2f2c0efc07", "ghost = CAST(? AS VARCHAR)", []any{"0b210f52-1f4d-4f47-9799-1e2f2c0efc07"}},
 			{"iso literal", "gte:2024-01-02T03:04:05Z", "ghost >= CAST(? AS BIGINT)", []any{int64(1704164645000)}},

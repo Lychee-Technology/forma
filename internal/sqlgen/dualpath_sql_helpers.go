@@ -134,15 +134,11 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		// it miss on every tier alike — tier parity preserved.
 		//
 		// integer/smallint joined this arm in #355 purely to end the binder
-		// divergence: it changes no query result. Below the bound of the arm's
-		// own cast — 2^31 for CAST(? AS INTEGER), 2^15 for CAST(? AS SMALLINT) —
-		// int64 and float64 denote the same number, so comparisons are identical.
-		// Above it, both parameter types raise the same class of conversion error
-		// from that cast (DuckDB words the int64 and the float64 case
-		// differently), so queries fail either way. On the column side
-		// (independent of the parameter), an EAV-only integer attribute's stored
-		// value outside the 32-bit range is projected to NULL on every DuckDB tier
-		// via TRY_CAST; that is a separate defect tracked in #384.
+		// divergence: it changes no query result. Since #384 their operand
+		// cast is CAST(? AS BIGINT) (storage width, matching the BIGINT
+		// EAV columns), so an operand beyond the declared 2^31/2^15 range
+		// compares normally and matches nothing on both engines instead of
+		// raising a DuckDB Conversion Error while Postgres answered.
 		switch v := numutil.TryParseNumber(valStr).(type) {
 		case int64:
 			return v, nil
