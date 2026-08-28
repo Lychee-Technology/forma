@@ -16,7 +16,10 @@ import (
 // wideParquetTypes pins the physical parquet schema of e2e_wide exports.
 // Attribute types come from cdc.duckTypeForValue / castMainValue /
 // castEAVValue (internal/cdc/duckdb_exporter.go); note the deliberate
-// asymmetry: bound uuid (ref) is physical UUID, EAV uuid (token) is VARCHAR.
+// asymmetries: bound uuid (ref) is physical UUID while EAV uuid (token) is
+// VARCHAR, and bound smallint/integer (rank/count) keep declared width while
+// EAV-only level/qty export at storage width BIGINT (#384 — value_numeric is
+// unconstrained NUMERIC, so declared width manufactured NULLs).
 var wideParquetTypes = map[string]string{
 	"schema_id": "SMALLINT", "row_id": "UUID",
 	"changed_at": "BIGINT", "deleted_at": "BIGINT",
@@ -24,7 +27,7 @@ var wideParquetTypes = map[string]string{
 	"title": "VARCHAR", "rank": "SMALLINT", "count": "INTEGER", "amount": "BIGINT",
 	"score": "DOUBLE", "ref": "UUID", "joined": "BIGINT", "touched": "BIGINT",
 	"note": "VARCHAR", "active": "BOOLEAN", "born": "BIGINT", "seen": "BIGINT",
-	"level": "SMALLINT", "qty": "INTEGER", "total": "BIGINT", "ratio": "DOUBLE", "token": "VARCHAR",
+	"level": "BIGINT", "qty": "BIGINT", "total": "BIGINT", "ratio": "DOUBLE", "token": "VARCHAR",
 	// #204: list attrs export as a DuckDB LIST of the items type.
 	"tags": "VARCHAR[]",
 }

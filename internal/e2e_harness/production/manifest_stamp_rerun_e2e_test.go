@@ -54,7 +54,7 @@ func TestManifestStamp_InPlaceRewriteInvalidatesValidatorCache(t *testing.T) {
 		func(ordinal int) map[string]any { return map[string]any{"score": float64(50 + ordinal*10)} })))
 	baseKey := runInitBase(ctx, t, env, simple)
 	requireParquetCols(t, "base (with score)", describeParquetCols(ctx, t, env, baseKey),
-		map[string]string{"score": "INTEGER"})
+		map[string]string{"score": "BIGINT"})
 
 	// Warm-up: builds the engine that must survive both rewrites and leaves
 	// the validator holding a column set that CLAIMS score.
