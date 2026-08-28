@@ -47,7 +47,7 @@ func TestCastEAVValueMatchesNullScanTypeof(t *testing.T) {
 
 			var scan string
 			require.NoError(t,
-				db.QueryRow("SELECT typeof(NULL::"+sqlgen.DuckDBNullScanType(vt, "")+")").Scan(&scan))
+				db.QueryRow("SELECT typeof(NULL::"+sqlgen.DuckDBNullScanType(forma.AttributeMetadata{ValueType: vt})+")").Scan(&scan))
 
 			require.Equal(t, exported, scan,
 				"cold NULL scan type must equal the exported parquet column type for %s (#205 no-widening)", vt)

@@ -212,7 +212,8 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 	require.Contains(t, projection.mainProjections[0], "AS display_name")
 	require.Len(t, projection.eavAgg, 2)
 	require.Contains(t, projection.eavAgg[0], "attr_id = 21")
-	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_numeric AS INTEGER)")
+	// #384: EAV-only integer exports by storage width (BIGINT).
+	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_numeric AS BIGINT)")
 	require.Contains(t, projection.eavAgg[0], "AS employee_count")
 	require.Contains(t, projection.eavAgg[1], "attr_id = 22")
 	require.Contains(t, projection.eavAgg[1], "(value_numeric <> 0)")
@@ -281,7 +282,7 @@ func TestBuildSchemaDrivenProjection_ListAttrAggregatesElementsOrderedByIndex(t 
 	// aggregate but detected by the presence count, so an explicit empty
 	// list exports as [] while an absent attribute exports as NULL (#204).
 	require.Equal(t,
-		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS INTEGER) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND array_indices <> ''), []) END AS nums",
+		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS BIGINT) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND array_indices <> ''), []) END AS nums",
 		projection.eavAgg[1])
 	require.Equal(t,
 		"CASE WHEN count(*) FILTER (WHERE attr_id = 18) > 0 THEN coalesce(list(CAST(value_text AS VARCHAR) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 18 AND array_indices <> ''), []) END AS tags",

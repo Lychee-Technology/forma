@@ -340,7 +340,13 @@ func castEAVValue(meta forma.AttributeMetadata) string {
 		return "(value_numeric <> 0)"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return "TRY_CAST(value_numeric AS BIGINT)"
-	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// castEAVValue only ever serves EAV-only attributes (bound attrs
+		// export through castMainValue), whose storage is unconstrained
+		// NUMERIC: export by storage width so the parquet tiers keep values
+		// the declared width cannot hold, matching the hot pivot (#384).
+		return "TRY_CAST(value_numeric AS BIGINT)"
+	case forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		return fmt.Sprintf("TRY_CAST(value_numeric AS %s)", duckTypeForValue(meta.ValueType))
 	case forma.ValueTypeUUID:
 		return "CAST(value_text AS VARCHAR)"

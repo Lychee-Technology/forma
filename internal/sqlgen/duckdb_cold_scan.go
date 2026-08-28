@@ -124,28 +124,37 @@ func BuildParquetScanSource(pathsSQL string, missing []NullScanColumn) string {
 	return fmt.Sprintf("(SELECT %s FROM %s) AS cold_scan", strings.Join(parts, ", "), base)
 }
 
-// DuckDBNullScanType maps an attribute's value type to the DuckDB type its
+// DuckDBNullScanType maps an attribute's metadata to the DuckDB type its
 // parquet column would carry, for NULL::<type> augmentation. Kept in
 // lockstep with buildEAVPivotExpr / eavElementCastExpr (hot leg) and
-// cdc.castEAVValue (export leg): a mismatch would widen the UNION ALL and
-// re-open #205.
-func DuckDBNullScanType(vt forma.ValueType, itemsType forma.ValueType) string {
-	if vt == forma.ValueTypeList {
-		return duckDBNullScalarType(itemsType) + "[]"
+// cdc.castEAVValue / castMainValue (export leg): a mismatch would widen the
+// UNION ALL and re-open #205. The binding matters since #384: EAV-only
+// integer/smallint carry storage width (BIGINT) on every DuckDB surface,
+// while column-bound ones keep the physical int4/int2 width.
+func DuckDBNullScanType(meta forma.AttributeMetadata) string {
+	if meta.ValueType == forma.ValueTypeList {
+		// Lists are always EAV-only; elements carry EAV storage width.
+		return duckDBNullScalarType(meta.EffectiveItemsType(), false) + "[]"
 	}
-	return duckDBNullScalarType(vt)
+	return duckDBNullScalarType(meta.ValueType, meta.ColumnBinding != nil)
 }
 
-func duckDBNullScalarType(vt forma.ValueType) string {
+func duckDBNullScalarType(vt forma.ValueType, isColumn bool) string {
 	switch vt {
 	case forma.ValueTypeBool:
 		return "BOOLEAN"
 	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return "BIGINT"
 	case forma.ValueTypeInteger:
-		return "INTEGER"
+		if isColumn {
+			return "INTEGER"
+		}
+		return "BIGINT"
 	case forma.ValueTypeSmallInt:
-		return "SMALLINT"
+		if isColumn {
+			return "SMALLINT"
+		}
+		return "BIGINT"
 	case forma.ValueTypeNumeric:
 		return "DOUBLE"
 	default: // text / uuid — VARCHAR on every tier

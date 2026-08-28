@@ -26,7 +26,7 @@ func TestBuildEAVPivotListAttrAggregatesElements(t *testing.T) {
 	require.Contains(t, sp.EAVPivotSelect,
 		"CASE WHEN count(*) FILTER (WHERE attr_id = 18) > 0 THEN coalesce(list(value_text ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 18 AND array_indices <> ''), []) END AS tags")
 	require.Contains(t, sp.EAVPivotSelect,
-		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS INTEGER) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND array_indices <> ''), []) END AS nums")
+		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS BIGINT) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND array_indices <> ''), []) END AS nums")
 	// Scalar attrs keep the MAX(CASE ...) pivot untouched.
 	require.Contains(t, sp.EAVPivotSelect,
 		"MAX(CASE WHEN attr_id = 7 THEN value_text END) AS note")

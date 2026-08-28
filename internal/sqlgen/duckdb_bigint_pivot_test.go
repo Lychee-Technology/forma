@@ -26,11 +26,17 @@ func TestBuildEAVPivotEmitsTypedCasts(t *testing.T) {
 		"qty":   {AttributeID: 16, ValueType: forma.ValueTypeInteger},
 		"level": {AttributeID: 17, ValueType: forma.ValueTypeSmallInt},
 		"ratio": {AttributeID: 18, ValueType: forma.ValueTypeNumeric},
+		"score": {AttributeID: 19, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnInteger01}},
+		"grade": {AttributeID: 20, ValueType: forma.ValueTypeSmallInt,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01}},
 	}
 	sp, err := BuildSchemaProjection(7, cache)
 	require.NoError(t, err)
 
-	// bigint / date pivot 出 BIGINT;integer/smallint 出各自原生类型
+	// bigint / date pivot 出 BIGINT;EAV-only integer/smallint 按存储宽度出
+	// BIGINT(#384):value_numeric 是无约束 NUMERIC,按声明宽度 cast 会把超出
+	// 声明范围的历史值只在 DuckDB 腿上 TRY_CAST 成 NULL。
 	require.Contains(t, sp.EAVPivotSelect,
 		"TRY_CAST(MAX(CASE WHEN attr_id = 5 THEN value_numeric END) AS BIGINT) AS amount")
 	require.Contains(t, sp.EAVPivotSelect,
@@ -38,9 +44,15 @@ func TestBuildEAVPivotEmitsTypedCasts(t *testing.T) {
 	require.Contains(t, sp.EAVPivotSelect,
 		"TRY_CAST(MAX(CASE WHEN attr_id = 15 THEN value_numeric END) AS BIGINT) AS total")
 	require.Contains(t, sp.EAVPivotSelect,
-		"TRY_CAST(MAX(CASE WHEN attr_id = 16 THEN value_numeric END) AS INTEGER) AS qty")
+		"TRY_CAST(MAX(CASE WHEN attr_id = 16 THEN value_numeric END) AS BIGINT) AS qty")
 	require.Contains(t, sp.EAVPivotSelect,
-		"TRY_CAST(MAX(CASE WHEN attr_id = 17 THEN value_numeric END) AS SMALLINT) AS level")
+		"TRY_CAST(MAX(CASE WHEN attr_id = 17 THEN value_numeric END) AS BIGINT) AS level")
+	// column-bound integer/smallint 保持声明宽度:物理列本身就是 int4/int2,
+	// COALESCE 伙伴 m.<col> 同宽,外层 CAST 也按描述符宽度扫描。
+	require.Contains(t, sp.EAVPivotSelect,
+		"TRY_CAST(MAX(CASE WHEN attr_id = 19 THEN value_numeric END) AS INTEGER) AS score")
+	require.Contains(t, sp.EAVPivotSelect,
+		"TRY_CAST(MAX(CASE WHEN attr_id = 20 THEN value_numeric END) AS SMALLINT) AS grade")
 	// numeric 保持 DOUBLE 语义:不 cast
 	require.Contains(t, sp.EAVPivotSelect,
 		"MAX(CASE WHEN attr_id = 18 THEN value_numeric END) AS ratio")
