@@ -65,3 +65,18 @@ func TestBoolOperandParityAcrossEngines(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
+
+// #384 (fourth-review P1): integral operands for the DOUBLE-width classes
+// narrow through the same float64 funnel the stored data took, so above 2^53
+// the PG bind is the float64 image DuckDB's CAST(? AS DOUBLE) also lands on —
+// one verdict on both engines instead of PG-exact-miss vs DuckDB-rounded-hit.
+// bigint keeps the exact int64: its storage is BIGINT-backed on every tier.
+func TestNarrowEAVNumericOperand(t *testing.T) {
+	const above = int64(9007199254740993) // 2^53 + 1
+	image := float64(9007199254740992)    // its float64 image
+	require.Equal(t, image, NarrowEAVNumericOperand(forma.ValueTypeInteger, above))
+	require.Equal(t, image, NarrowEAVNumericOperand(forma.ValueTypeSmallInt, above))
+	require.Equal(t, image, NarrowEAVNumericOperand(forma.ValueTypeNumeric, above))
+	require.Equal(t, above, NarrowEAVNumericOperand(forma.ValueTypeBigInt, above))
+	require.Equal(t, float64(42), NarrowEAVNumericOperand(forma.ValueTypeInteger, 42))
+}

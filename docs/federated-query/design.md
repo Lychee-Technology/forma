@@ -631,9 +631,15 @@ applied on both sides:
   width: their storage is physically int4/int2.
 * **Predicate operands**: DuckDB operand casts follow column storage width —
   `integer`/`smallint`/`numeric` operands cast to `DOUBLE` (an operand of any
-  magnitude compares, like Postgres, instead of raising a Conversion Error;
-  the former `DECIMAL(38,10)` numeric cast also truncated operand scale at 10
-  fractional digits and overflowed past ~1e28). Float64 operands bind in
+  magnitude compares instead of raising a Conversion Error; the former
+  `DECIMAL(38,10)` numeric cast also truncated operand scale at 10 fractional
+  digits and overflowed past ~1e28). To keep the Postgres route on the same
+  verdict, integral operands for these DOUBLE-width classes **narrow through
+  the same float64 funnel the stored data took**
+  (`sqlgen.NarrowEAVNumericOperand`, applied by the EAV predicate binder and
+  the batch attr-value anchor alike): above 2^53 both engines compare the
+  operand's float64 image, rather than Postgres comparing the exact integer
+  while DuckDB matches its rounded neighbor. Float64 operands bind in
   shortest round-trip form (`strconv.FormatFloat(v, 'g', -1, 64)`), so the
   DuckDB side recovers the identical float64 the PG side binds — `%.15g`
   dropped the 16th-17th significant digits. `bigint` stays `BIGINT` with

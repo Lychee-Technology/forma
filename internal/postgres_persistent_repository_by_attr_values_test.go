@@ -134,7 +134,7 @@ func TestQueryPersistentRecordsByAttrValuesNumericValues(t *testing.T) {
 	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, int64(1))
 
 	mock.ExpectQuery(`t\.attr_id = \$2 AND t\.value_numeric = ANY\(\$3\)`).
-		WithArgs(int16(1), int16(31), []any{int64(7), int64(9)}, 2, 0).
+		WithArgs(int16(1), int16(31), []any{float64(7), float64(9)}, 2, 0).
 		WillReturnRows(pgxmock.NewRows(columns).AddRow(values...))
 
 	page, err := repo.QueryPersistentRecordsByAttrValues(ctx, tables, 1, "rank", []string{"7", "9"}, 2)
@@ -211,7 +211,7 @@ func TestQueryPersistentRecordsByAttrValuesKeepsFractionalOperandsFloat64(t *tes
 	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, int64(1))
 
 	mock.ExpectQuery(`t\.attr_id = \$2 AND t\.value_numeric = ANY\(\$3\)`).
-		WithArgs(int16(1), int16(33), []any{9.5, int64(8)}, 2, 0).
+		WithArgs(int16(1), int16(33), []any{9.5, float64(8)}, 2, 0).
 		WillReturnRows(pgxmock.NewRows(columns).AddRow(values...))
 
 	page, err := repo.QueryPersistentRecordsByAttrValues(ctx, tables, 1, "ratio",
@@ -240,6 +240,37 @@ func TestQueryPersistentRecordsByAttrValuesRejectsNonNumericOperand(t *testing.T
 	require.Contains(t, err.Error(), `invalid value "not-a-number"`)
 	require.Contains(t, err.Error(), "bigint")
 	require.NotContains(t, err.Error(), "float64")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestQueryPersistentRecordsByAttrValuesNarrowsDoubleWidthOperands is the
+// #384 companion to the exact-bigint pin above: an integer attribute's EAV
+// storage holds float64 images (the write funnel narrows through float64), so
+// its integral operands take the same narrowing — above 2^53 the bind is the
+// float64 image, keeping the batch anchor on the same verdict as the EAV
+// predicate binder and the DuckDB route (whose CAST(? AS DOUBLE) rounds the
+// operand to the same image).
+func TestQueryPersistentRecordsByAttrValuesNarrowsDoubleWidthOperands(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	repo := NewDBPersistentRecordRepository(mock, newByAttrValuesTestCache(t))
+	tables := model.StorageTables{EntityMain: "main_table", EAVData: "eav_table"}
+
+	rowID := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	columns, values := optimizedQueryFixtureColumnsAndValues(rowID, int64(1))
+
+	mock.ExpectQuery(`t\.attr_id = \$2 AND t\.value_numeric = ANY\(\$3\)`).
+		WithArgs(int16(1), int16(31), []any{float64(9007199254740992)}, 2, 0).
+		WillReturnRows(pgxmock.NewRows(columns).AddRow(values...))
+
+	page, err := repo.QueryPersistentRecordsByAttrValues(ctx, tables, 1, "rank",
+		[]string{"9007199254740993"}, 2)
+	require.NoError(t, err)
+	require.Len(t, page.Records, 1)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -109,9 +109,10 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 	// smallint. In-range placeholders first; the illegal state is planted.
 	rowOver := CreateEvent(wide, map[string]any{"title": "w-qty-over", "qty": 42})
 	rowFrac := CreateEvent(wide, map[string]any{"title": "w-qty-frac", "qty": 43})
+	rowP53 := CreateEvent(wide, map[string]any{"title": "w-qty-p53", "qty": 44})
 	rowSmall := CreateEvent(wide, map[string]any{"title": "w-qty-small", "qty": 7})
 	rowLevel := CreateEvent(wide, map[string]any{"title": "w-level-over", "level": 5})
-	seeded := []*Event{rowOver, rowFrac, rowSmall, rowLevel}
+	seeded := []*Event{rowOver, rowFrac, rowP53, rowSmall, rowLevel}
 	mustApplyEvents(ctx, t, env, "width parity creates", seeded...)
 
 	env.ExecSQL(ctx,
@@ -121,6 +122,9 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 		"UPDATE eav_data SET value_numeric = 1.5 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 14",
 		wide.ID, rowFrac.RowID)
 	env.ExecSQL(ctx,
+		"UPDATE eav_data SET value_numeric = 9007199254740992 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 14",
+		wide.ID, rowP53.RowID)
+	env.ExecSQL(ctx,
 		"UPDATE eav_data SET value_numeric = 40000 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 13",
 		wide.ID, rowLevel.RowID)
 
@@ -128,16 +132,27 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 		// 2^32: past INT32. Equality must address the stored value on both
 		// dialects, and the DuckDB leg must not error on the operand.
 		{"qty_equals_2p32", Filter{Attr: "qty", Op: "equals", Value: "4294967296"}, []*Event{rowOver}},
-		// Range operator with an in-range literal still sees the row.
-		{"qty_gt_maxint32", Filter{Attr: "qty", Op: "gt", Value: "2147483647"}, []*Event{rowOver}},
+		// Range operator with an in-range literal sees both planted rows
+		// above INT32 (2^32 and 2^53).
+		{"qty_gt_maxint32", Filter{Attr: "qty", Op: "gt", Value: "2147483647"}, []*Event{rowOver, rowP53}},
 		// Non-integral history (P1a): DOUBLE projection keeps 1.5 as 1.5 on
 		// every DuckDB tier — an integer-width cast rounded it to 2, matching
 		// equals:2 only on the DuckDB legs while Postgres compared 1.5.
 		{"qty_equals_frac", Filter{Attr: "qty", Op: "equals", Value: "1.5"}, []*Event{rowFrac}},
 		{"qty_equals_2_not_frac", Filter{Attr: "qty", Op: "equals", Value: "2"}, nil},
+		// 2^53 boundary (fourth-review P1): the stored value is the float64
+		// image 2^53; the operand 2^53+1 narrows to that same image on BOTH
+		// engines (PG via NarrowEAVNumericOperand, DuckDB via CAST AS
+		// DOUBLE), so both match — pre-fix PG bound the exact int64 and
+		// missed while the DuckDB tiers matched. A representable neighbor
+		// (…990) still misses on both.
+		{"qty_equals_2p53", Filter{Attr: "qty", Op: "equals", Value: "9007199254740992"}, []*Event{rowP53}},
+		{"qty_equals_2p53_plus_1_same_image", Filter{Attr: "qty", Op: "equals", Value: "9007199254740993"}, []*Event{rowP53}},
+		{"qty_equals_2p53_minus_2_empty", Filter{Attr: "qty", Op: "equals", Value: "9007199254740990"}, nil},
 		// The placeholder values must be gone — guards that the UPDATEs took.
 		{"qty_equals_placeholder_gone", Filter{Attr: "qty", Op: "equals", Value: "42"}, nil},
 		{"qty_equals_frac_placeholder_gone", Filter{Attr: "qty", Op: "equals", Value: "43"}, nil},
+		{"qty_equals_p53_placeholder_gone", Filter{Attr: "qty", Op: "equals", Value: "44"}, nil},
 		// In-range values keep working.
 		{"qty_equals_in_range", Filter{Attr: "qty", Op: "equals", Value: "7"}, []*Event{rowSmall}},
 		// smallint twin at 40000 (past INT16).

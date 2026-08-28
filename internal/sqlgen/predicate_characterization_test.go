@@ -118,18 +118,17 @@ func buildCharTextCases() []charCase {
 	}
 }
 
-// buildCharNumericBoolCases covers the numeric and boolean storage classes, including
-// the >2^31 range limit test where all three emitters now bind integer/smallint as int64
-// (#355), and the bool-int / bool-text / unbound-bool encodings. The bigint storage class
-// lives in predicate_characterization_bigint_test.go.
+// buildCharNumericBoolCases covers the numeric and boolean storage classes
+// (bigint lives in predicate_characterization_bigint_test.go): the DOUBLE-width
+// operand narrowing (#384), and the bool-int / bool-text / unbound encodings.
 func buildCharNumericBoolCases() []charCase {
 	return []charCase{
 		{
-			name: "integer gt: main/eav/duck all int64",
+			name: "integer gt: main int64, eav narrowed float64, duck int64",
 			cond: charKv("age", "gt:30"),
 			want: DualClauses{
 				PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(30)},
-				PgClause: charEavClause("$2", "value_numeric", ">", "$3"), PgArgs: []any{int16(2), int64(30)},
+				PgClause: charEavClause("$2", "value_numeric", ">", "$3"), PgArgs: []any{int16(2), float64(30)},
 				DuckClause: "age > CAST(? AS DOUBLE)", DuckArgs: []any{int64(30)},
 			},
 			span: 3,
@@ -145,11 +144,15 @@ func buildCharNumericBoolCases() []charCase {
 			span: 2,
 		},
 		{
-			name: "integer above 2^31: main/eav/duck all int64, duck compares at DOUBLE (#384)",
+			// #384: above 2^53 the EAV leg binds the float64 image (…992),
+			// the same value DuckDB's CAST(? AS DOUBLE) rounds to — one
+			// verdict. The bound int4 column keeps exact int64 (it can hold
+			// neither value; parity is trivial there).
+			name: "integer above 2^31: eav narrows to the float64 image (#384)",
 			cond: charKv("age", "equals:9007199254740993"),
 			want: DualClauses{
 				PgMainClause: "m.integer_01 = ?", PgMainArgs: []any{int64(9007199254740993)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(2), int64(9007199254740993)},
+				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(2), float64(9007199254740992)},
 				DuckClause: "age = CAST(? AS DOUBLE)", DuckArgs: []any{int64(9007199254740993)},
 			},
 			span: 3,
@@ -248,7 +251,7 @@ func buildCharCompositeCases() []charCase {
 				PgClause: "((" + charEavClause("$2", "value_text", "=", "$3") + ") AND (((" +
 					charEavClause("$4", "value_numeric", ">", "$5") + ") OR (" +
 					charEavClause("$6", "value_text", "=", "$7") + "))))",
-				PgArgs:     []any{int16(1), "Alice", int16(2), int64(18), int16(4), "x"},
+				PgArgs:     []any{int16(1), "Alice", int16(2), float64(18), int16(4), "x"},
 				DuckClause: "(username = ?) AND ((age > CAST(? AS DOUBLE)) OR (tag = ?))",
 				DuckArgs:   []any{"Alice", int64(18), "x"},
 			},
@@ -261,7 +264,7 @@ func buildCharCompositeCases() []charCase {
 				PgMainClause: "((m.text_01 = ?) OR (m.integer_01 > ?))", PgMainArgs: []any{"A", int64(5)},
 				PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") OR (" +
 					charEavClause("$5", "value_numeric", ">", "$6") + "))",
-				PgArgs:     []any{int16(1), "A", int16(2), int64(5)},
+				PgArgs:     []any{int16(1), "A", int16(2), float64(5)},
 				DuckClause: "(username = ?) OR (age > CAST(? AS DOUBLE))",
 				DuckArgs:   []any{"A", int64(5)},
 			},
@@ -274,7 +277,7 @@ func buildCharCompositeCases() []charCase {
 				PgMainClause: "((m.integer_01 > ?) AND (m.integer_01 < ?))", PgMainArgs: []any{int64(10), int64(90)},
 				PgClause: "((" + charEavClause("$3", "value_numeric", ">", "$4") + ") AND (" +
 					charEavClause("$5", "value_numeric", "<", "$6") + "))",
-				PgArgs:     []any{int16(2), int64(10), int16(2), int64(90)},
+				PgArgs:     []any{int16(2), float64(10), int16(2), float64(90)},
 				DuckClause: "(age > CAST(? AS DOUBLE)) AND (age < CAST(? AS DOUBLE))",
 				DuckArgs:   []any{int64(10), int64(90)},
 			},

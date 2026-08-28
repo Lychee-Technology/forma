@@ -73,10 +73,11 @@ func TestSQLGenerator_ToSQLClauses(t *testing.T) {
 		t.Fatalf("unexpected SQL clause.\nexpected: %s\nactual:   %s", expectedClause, sqlClause)
 	}
 
-	// price is `gt:10` on a numeric attribute: integral literals bind as exact
-	// int64 since #281 (fractional literals still bind float64).
+	// price is `gt:10` on a numeric attribute: integral literals narrow to
+	// the write funnel's float64 for the DOUBLE-width classes (#384;
+	// bigint keeps exact int64 per #281).
 	expectedArgs := []any{
-		int16(10), int64(10),
+		int16(10), float64(10),
 		int16(11), "active",
 		int16(12), "A%",
 	}
