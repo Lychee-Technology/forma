@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/numutil"
@@ -18,17 +19,26 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 		return "VARCHAR"
 	case forma.ValueTypeUUID:
 		return "VARCHAR"
-	case forma.ValueTypeSmallInt:
-		return "SMALLINT"
-	case forma.ValueTypeInteger:
-		return "INTEGER"
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+		// #384: predicate operands cast by column storage width. The EAV
+		// write funnel narrows every numeric-family value through float64
+		// (numutil.Float64), so an EAV integer/smallint column's true storage
+		// width is DOUBLE — which is also what every DuckDB tier projects for
+		// it (buildEAVPivotExpr) — and a bound int4/int2 column compares
+		// against a DOUBLE operand by lossless promotion (INT32 ≪ 2^53). The
+		// old declared-width cast was strict, so an out-of-range operand
+		// raised a Conversion Error on the DuckDB route while Postgres
+		// answered normally; at DOUBLE any magnitude simply compares.
+		return "DOUBLE"
 	case forma.ValueTypeBigInt:
 		return "BIGINT"
 	case forma.ValueTypeNumeric:
-		// Use explicit-precision DECIMAL to preserve numeric precision instead of DOUBLE.
-		// DECIMAL(38,10) supports 38 digits total, 10 fractional — enough for financial
-		// and scientific use-cases without default truncation.
-		return "DECIMAL(38,10)"
+		// #384: every numeric column on every tier is DOUBLE (EAV pivot,
+		// parquet export, main double columns). The former DECIMAL(38,10)
+		// operand cast silently truncated operands beyond 10 fractional
+		// digits (false mismatch against the DOUBLE column) and overflowed
+		// past ~1e28 (one-sided query failure).
+		return "DOUBLE"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Date/datetime attribute columns in the federated CTEs are epoch-ms
 		// BIGINT on all three sides — EAV pivot TRY_CAST(value_numeric AS
@@ -49,7 +59,12 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 }
 
 // MapValueTypeToListDuckDBType returns the DuckDB LIST type for an array of the given element type.
-// e.g., ValueTypeText -> "LIST(VARCHAR)", ValueTypeInteger -> "LIST(INTEGER)"
+// e.g., ValueTypeText -> "LIST(VARCHAR)", ValueTypeInteger -> "LIST(DOUBLE)".
+// Element types ride MapValueTypeToDuckDBType and therefore EAV storage width
+// (#384), which is always right today because list attributes cannot bind a
+// main column (their storage is one eav_data row per element, mirrored by
+// eavElementCastExpr). If list column bindings ever appear, the
+// storage-vs-declared width choice needs an explicit decision here.
 func MapValueTypeToListDuckDBType(elementType forma.ValueType) string {
 	elemDuckType := MapValueTypeToDuckDBType(elementType)
 	return "LIST(" + elemDuckType + ")"
@@ -75,7 +90,10 @@ func CastExpression(columnOrExpr string, v forma.ValueType) string {
 //     accepted input widens to float64
 //   - bigint/numeric -> a decimal string, never a number (see
 //     toDuckDBDecimalParam): exact for int/int64/string inputs, while a float64
-//     input is rendered by decimalString's %.15g
+//     input is rendered by decimalString's shortest round-trip form, so the
+//     DuckDB side recovers the identical float64 the PG side binds (#384 P1b:
+//     the former %.15g dropped the 16th-17th significant digits and made
+//     equality miss rows only on the DuckDB route)
 func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 	if value == nil {
 		return nil, nil
@@ -131,6 +149,10 @@ func ToDuckDBParam(value any, v forma.ValueType) (any, error) {
 		// int64-first parse one call later, at predicate_normalizer.go's
 		// ToDuckDBParam hop. Everything else keeps the funnel: INTEGER and
 		// SMALLINT ranges end at 2^31/2^15 and float64 is exact well past both.
+		// The DuckDB side deliberately keeps the exact int64 and lets
+		// CAST(? AS DOUBLE) round in-engine — above 2^53 it lands on the same
+		// float64 image the PG binders reach via NarrowEAVNumericOperand
+		// (#384), so both engines still compare one value.
 		if exact, ok := value.(int64); ok {
 			return exact, nil
 		}
@@ -218,8 +240,12 @@ func toDuckDBDecimalParam(value any) (any, error) {
 	}
 }
 
+// decimalString renders a float64 operand in its shortest round-trip decimal
+// form: CAST(<it> AS DOUBLE) recovers the identical float64, matching the
+// value pgx binds to the Postgres NUMERIC comparison (#384 P1b). %.15g is not
+// enough — float64 needs up to 17 significant digits to round-trip.
 func decimalString(v float64) string {
-	return fmt.Sprintf("%.15g", v)
+	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
 func toOptionalFloat64Param(value any) (float64, bool, error) {

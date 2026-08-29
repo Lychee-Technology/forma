@@ -105,6 +105,22 @@ func detectValueType(valStr string) forma.ValueType {
 	return forma.ValueTypeText
 }
 
+// parseBoolOperand parses a bool predicate operand under ONE rule for both
+// engines (#384 P2b): the standard bool spellings via ParseBool, else any
+// integer literal with the >0 truthiness the PG EAV path has always applied.
+// Before this, PG accepted "2" (truthy) but rejected "true", while the DuckDB
+// path accepted "true" but failed "2" — the same filter erred on exactly one
+// route depending on spelling.
+func parseBoolOperand(valStr string) (parsed, ok bool) {
+	if b, err := strconv.ParseBool(strings.ToLower(valStr)); err == nil {
+		return b, true
+	}
+	if i, err := strconv.Atoi(valStr); err == nil {
+		return i > 0, true
+	}
+	return false, false
+}
+
 // parseDuckDBRawParam parses a string value into a typed Go value for DuckDB parameters.
 func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) (any, error) {
 	switch valueType {
@@ -112,14 +128,10 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		return valStr, nil
 
 	case forma.ValueTypeBool:
-		if b, e := strconv.ParseBool(strings.ToLower(valStr)); e == nil {
+		if b, ok := parseBoolOperand(valStr); ok {
 			return b, nil
-		} else if valStr == "1" {
-			return true, nil
-		} else if valStr == "0" {
-			return false, nil
 		}
-		return valStr, nil
+		return nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt,
 		forma.ValueTypeSmallInt, forma.ValueTypeInteger:
@@ -128,21 +140,17 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		// TryParseNumber the two Postgres predicate paths and the batch
 		// attr-value anchor use (#355), so every emitter agrees on the value.
 		// A bigint predicate above 2^53 — legal column state since #205 —
-		// compares exactly instead of riding float64 + %.15g. Fractional
+		// compares exactly instead of riding a rounded float64. Fractional
 		// literals keep float64, the numeric family's storage contract.
 		// EAV-only bigints round at write (2^53 ceiling), so exact binds above
 		// it miss on every tier alike — tier parity preserved.
 		//
 		// integer/smallint joined this arm in #355 purely to end the binder
-		// divergence: it changes no query result. Below the bound of the arm's
-		// own cast — 2^31 for CAST(? AS INTEGER), 2^15 for CAST(? AS SMALLINT) —
-		// int64 and float64 denote the same number, so comparisons are identical.
-		// Above it, both parameter types raise the same class of conversion error
-		// from that cast (DuckDB words the int64 and the float64 case
-		// differently), so queries fail either way. On the column side
-		// (independent of the parameter), an EAV-only integer attribute's stored
-		// value outside the 32-bit range is projected to NULL on every DuckDB tier
-		// via TRY_CAST; that is a separate defect tracked in #384.
+		// divergence: it changes no query result. Since #384 their operand
+		// cast is CAST(? AS DOUBLE) (storage width — EAV columns are DOUBLE
+		// like the numeric class), so an operand of any magnitude compares
+		// normally on both engines instead of raising a DuckDB Conversion
+		// Error while Postgres answered.
 		switch v := numutil.TryParseNumber(valStr).(type) {
 		case int64:
 			return v, nil

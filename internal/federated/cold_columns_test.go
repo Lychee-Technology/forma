@@ -22,7 +22,8 @@ func TestColdMissingColumnsDetectsAbsentAttributes(t *testing.T) {
 	}
 	got := coldMissingColumns(cache, union)
 	require.Equal(t, []sqlgen.NullScanColumn{
-		{Name: "score", DuckDBType: "INTEGER"},
+		// EAV-only integer augments at storage width DOUBLE (#384).
+		{Name: "score", DuckDBType: "DOUBLE"},
 		{Name: "tags", DuckDBType: "BIGINT[]"},
 	}, got, "absent attrs detected, present ones skipped, sorted by name")
 }

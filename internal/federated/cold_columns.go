@@ -31,7 +31,7 @@ func coldMissingColumns(cache forma.SchemaAttributeCache, unionCols map[string]s
 		}
 		missing = append(missing, sqlgen.NullScanColumn{
 			Name:       col,
-			DuckDBType: sqlgen.DuckDBNullScanType(meta.ValueType, meta.EffectiveItemsType()),
+			DuckDBType: sqlgen.DuckDBNullScanType(meta),
 		})
 	}
 	sort.Slice(missing, func(i, j int) bool { return missing[i].Name < missing[j].Name })

@@ -52,24 +52,32 @@ func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
 // TestDuckDBNullScanTypeMatchesHotLegTypeof below (hot pivot) and
 // cdc.TestCastEAVValueMatchesNullScanTypeof (export leg).
 func TestDuckDBNullScanTypeMirrorsTierTypes(t *testing.T) {
+	bound := &forma.MainColumnBinding{ColumnName: forma.MainColumnInteger01}
 	cases := []struct {
-		vt, items forma.ValueType
-		want      string
+		meta forma.AttributeMetadata
+		want string
 	}{
-		{forma.ValueTypeBool, "", "BOOLEAN"},
-		{forma.ValueTypeBigInt, "", "BIGINT"},
-		{forma.ValueTypeDate, "", "BIGINT"},
-		{forma.ValueTypeDateTime, "", "BIGINT"},
-		{forma.ValueTypeInteger, "", "INTEGER"},
-		{forma.ValueTypeSmallInt, "", "SMALLINT"},
-		{forma.ValueTypeNumeric, "", "DOUBLE"},
-		{forma.ValueTypeText, "", "VARCHAR"},
-		{forma.ValueTypeUUID, "", "VARCHAR"},
-		{forma.ValueTypeList, forma.ValueTypeBigInt, "BIGINT[]"},
-		{forma.ValueTypeList, forma.ValueTypeText, "VARCHAR[]"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeBool}, "BOOLEAN"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeBigInt}, "BIGINT"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeDate}, "BIGINT"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime}, "BIGINT"},
+		// #384: EAV-only integer/smallint carry storage width DOUBLE (the
+		// write funnel narrows everything through float64), while
+		// column-bound ones keep the physical int4/int2 width.
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeInteger}, "DOUBLE"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeSmallInt}, "DOUBLE"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeInteger, ColumnBinding: bound}, "INTEGER"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeSmallInt, ColumnBinding: bound}, "SMALLINT"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric}, "DOUBLE"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeText}, "VARCHAR"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeUUID}, "VARCHAR"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBigInt}, "BIGINT[]"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeInteger}, "DOUBLE[]"},
+		{forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText}, "VARCHAR[]"},
 	}
 	for _, c := range cases {
-		require.Equal(t, c.want, DuckDBNullScanType(c.vt, c.items), "vt=%s items=%s", c.vt, c.items)
+		require.Equal(t, c.want, DuckDBNullScanType(c.meta), "vt=%s items=%s bound=%v",
+			c.meta.ValueType, c.meta.ItemsType, c.meta.ColumnBinding != nil)
 	}
 }
 
@@ -174,7 +182,7 @@ func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
 			require.NoError(t, db.QueryRow("SELECT "+hotExpr).Scan(&hot),
 				"hot-leg cast %q must evaluate", eavElementCastExpr(vt))
 
-			cold := typeOf(t, "NULL::"+DuckDBNullScanType(vt, ""))
+			cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.AttributeMetadata{ValueType: vt}))
 			require.Equal(t, hot, cold,
 				"cold NULL scan type must equal the hot-leg EAV cast type for %s (#205 no-widening)", vt)
 		})
@@ -189,7 +197,7 @@ func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
 			require.NoError(t, db.QueryRow(
 				"SELECT typeof(list(x)) FROM (SELECT "+eavElementCastExpr(items)+
 					" AS x FROM "+eavFixtureSubquery+")").Scan(&hot))
-			cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.ValueTypeList, items))
+			cold := typeOf(t, "NULL::"+DuckDBNullScanType(forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: items}))
 			require.Equal(t, hot, cold, "LIST element type must round-trip through the []-suffix construction for items=%s", items)
 		})
 	}
@@ -239,7 +247,7 @@ func TestDuckDBNullScanTypeMatchesPivotLegTypeof(t *testing.T) {
 	for _, vt := range scalars {
 		t.Run(string(vt), func(t *testing.T) {
 			hot := pivotTypeof(t, forma.AttributeMetadata{ValueType: vt})
-			cold := nullTypeof(t, DuckDBNullScanType(vt, ""))
+			cold := nullTypeof(t, DuckDBNullScanType(forma.AttributeMetadata{ValueType: vt}))
 			require.Equal(t, hot, cold,
 				"cold NULL scan type must equal the hot-leg PIVOT type for %s (#205 no-widening)", vt)
 		})
@@ -247,7 +255,7 @@ func TestDuckDBNullScanTypeMatchesPivotLegTypeof(t *testing.T) {
 	for _, items := range scalars {
 		t.Run("list_"+string(items), func(t *testing.T) {
 			hot := pivotTypeof(t, forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: items})
-			cold := nullTypeof(t, DuckDBNullScanType(forma.ValueTypeList, items))
+			cold := nullTypeof(t, DuckDBNullScanType(forma.AttributeMetadata{ValueType: forma.ValueTypeList, ItemsType: items}))
 			require.Equal(t, hot, cold,
 				"cold NULL scan type must equal the hot-leg LIST pivot type for items=%s", items)
 		})

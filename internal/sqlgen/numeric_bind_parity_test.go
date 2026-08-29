@@ -20,12 +20,11 @@ import (
 // while ConvertPgMainValue went int64-first, so the two Postgres/DuckDB legs of
 // the same predicate carried different values for the same input string.
 //
-// This changes no query result. Below the bound of the arm's own cast — 2^31
-// for CAST(? AS INTEGER), 2^15 for CAST(? AS SMALLINT) — int64 and float64
-// denote the same number so comparisons are identical. Above it, both parameter
-// types raise the same class of conversion error from that cast (DuckDB words
-// the int64 and the float64 case differently), so queries fail either way. What
-// is fixed here is the divergence itself.
+// This changes no query result: the parse rule is shared, and where a bind
+// then diverges by design — the DOUBLE-width classes narrow integral operands
+// through the write funnel's float64 (#384, NarrowEAVNumericOperand) after
+// this parse — it diverges identically on both engines. What is fixed here is
+// the parse divergence itself.
 func TestNumericBinderTypeParity(t *testing.T) {
 	cases := []struct {
 		name      string

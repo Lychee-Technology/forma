@@ -66,7 +66,7 @@ func buildEvoV1Profile() AttrProfile {
 }
 
 // buildEvoV2Profile seeds v2 rows: new_col + fractional score, so any silent
-// DOUBLE→INTEGER coercion in the merge corrupts a visible value.
+// DOUBLE→integer coercion in the merge corrupts a visible value.
 func buildEvoV2Profile() AttrProfile {
 	return buildEvolutionProfile(func(ordinal int) map[string]any {
 		return map[string]any{
@@ -78,7 +78,7 @@ func buildEvoV2Profile() AttrProfile {
 
 // buildEvolutionEquivalenceQueries is the before/after snapshot set: an
 // unsorted page, a sort on a generation-stable attribute, a score filter
-// spanning both generations (v1 INTEGER rows and v2 DOUBLE rows in one
+// spanning both generations (v1 integer-generation rows and v2 DOUBLE rows in one
 // numeric domain, with the boundary row score=20 included), and a new_col
 // filter that only v2-generation rows can match (v1 rows are NULL).
 func buildEvolutionEquivalenceQueries(schema SchemaRef) []Query {
@@ -179,8 +179,8 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		"name":    "VARCHAR",
 		"value":   "DOUBLE",
 		"old_col": "VARCHAR", // v1 legacy column survives the union
-		"new_col": "INTEGER", // v2 addition present
-		"score":   "DOUBLE",  // INTEGER widened to the delta's DOUBLE
+		"new_col": "DOUBLE",  // v2 addition present
+		"score":   "DOUBLE",  // both generations export DOUBLE since #384; was BIGINT widened to the delta's DOUBLE
 	})
 
 	path := buildParquetS3Path(env, key)
@@ -291,11 +291,11 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 	// shapes the equivalence pass proves nothing about cross-generation merge.
 	baseCols := describeParquetCols(ctx, t, env, seed.baseKey)
 	requireParquetCols(t, "base (v1)", baseCols, map[string]string{
-		"name": "VARCHAR", "value": "DOUBLE", "old_col": "VARCHAR", "score": "INTEGER"})
+		"name": "VARCHAR", "value": "DOUBLE", "old_col": "VARCHAR", "score": "DOUBLE"})
 	forbidParquetCols(t, "base (v1)", baseCols, "new_col")
 	deltaCols := describeParquetCols(ctx, t, env, seed.deltaKey)
 	requireParquetCols(t, "delta (v2)", deltaCols, map[string]string{
-		"score": "DOUBLE", "new_col": "INTEGER"})
+		"score": "DOUBLE", "new_col": "DOUBLE"})
 	forbidParquetCols(t, "delta (v2)", deltaCols, "old_col")
 
 	// Positive control for the row-level LWW assertion: the update targets'
@@ -395,7 +395,7 @@ func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, 
 
 	// Monotonic healing: the second merge output keeps the union shape.
 	requireParquetCols(t, "second merged base", describeParquetCols(ctx, t, env, second.NewBaseKey),
-		map[string]string{"old_col": "VARCHAR", "new_col": "INTEGER", "score": "DOUBLE"})
+		map[string]string{"old_col": "VARCHAR", "new_col": "DOUBLE", "score": "DOUBLE"})
 	path := buildParquetS3Path(env, second.NewBaseKey)
 	var oldColSurvivors int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(

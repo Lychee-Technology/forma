@@ -31,14 +31,19 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 			expected: "VARCHAR",
 		},
 		{
+			// #384: integer/smallint operands cast at storage width DOUBLE —
+			// the EAV write funnel narrows through float64, every EAV tier
+			// column is DOUBLE, and bound int4/int2 columns promote
+			// losslessly; the old strict narrow CAST errored on
+			// out-of-range operands that Postgres answered normally.
 			name:     "ValueTypeSmallInt",
 			vt:       forma.ValueTypeSmallInt,
-			expected: "SMALLINT",
+			expected: "DOUBLE",
 		},
 		{
 			name:     "ValueTypeInteger",
 			vt:       forma.ValueTypeInteger,
-			expected: "INTEGER",
+			expected: "DOUBLE",
 		},
 		{
 			name:     "ValueTypeBigInt",
@@ -46,9 +51,11 @@ func TestMapValueTypeToDuckDBType_AllSupportedTypes(t *testing.T) {
 			expected: "BIGINT",
 		},
 		{
+			// #384: numeric columns are DOUBLE on every tier; DECIMAL(38,10)
+			// truncated operand scale at 10 digits and overflowed past ~1e28.
 			name:     "ValueTypeNumeric",
 			vt:       forma.ValueTypeNumeric,
-			expected: "DECIMAL(38,10)",
+			expected: "DOUBLE",
 		},
 		{
 			name:     "ValueTypeDate",
@@ -97,7 +104,7 @@ func TestCastExpression_SimpleColumn(t *testing.T) {
 			name:     "CastColumnToInteger",
 			column:   "age",
 			vt:       forma.ValueTypeInteger,
-			expected: "CAST(age AS INTEGER)",
+			expected: "CAST(age AS DOUBLE)",
 		},
 		{
 			name:     "CastColumnToBoolean",
@@ -380,7 +387,7 @@ func TestMapValueTypeToListDuckDBType_TextElement(t *testing.T) {
 
 func TestMapValueTypeToListDuckDBType_IntegerElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeInteger)
-	require.Equal(t, "LIST(INTEGER)", result)
+	require.Equal(t, "LIST(DOUBLE)", result)
 }
 
 func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {
@@ -390,7 +397,7 @@ func TestMapValueTypeToListDuckDBType_BigIntElement(t *testing.T) {
 
 func TestMapValueTypeToListDuckDBType_NumericElement(t *testing.T) {
 	result := MapValueTypeToListDuckDBType(forma.ValueTypeNumeric)
-	require.Equal(t, "LIST(DECIMAL(38,10))", result)
+	require.Equal(t, "LIST(DOUBLE)", result)
 }
 
 func TestMapValueTypeToListDuckDBType_BoolElement(t *testing.T) {

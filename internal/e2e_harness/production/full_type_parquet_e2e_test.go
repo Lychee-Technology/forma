@@ -16,7 +16,11 @@ import (
 // wideParquetTypes pins the physical parquet schema of e2e_wide exports.
 // Attribute types come from cdc.duckTypeForValue / castMainValue /
 // castEAVValue (internal/cdc/duckdb_exporter.go); note the deliberate
-// asymmetry: bound uuid (ref) is physical UUID, EAV uuid (token) is VARCHAR.
+// asymmetries: bound uuid (ref) is physical UUID while EAV uuid (token) is
+// VARCHAR, and bound smallint/integer (rank/count) keep declared width while
+// EAV-only level/qty export at storage width DOUBLE (#384 — value_numeric
+// holds float64 images from the write funnel, so declared width manufactured
+// NULLs for over-range history and rounded non-integral history).
 var wideParquetTypes = map[string]string{
 	"schema_id": "SMALLINT", "row_id": "UUID",
 	"changed_at": "BIGINT", "deleted_at": "BIGINT",
@@ -24,7 +28,7 @@ var wideParquetTypes = map[string]string{
 	"title": "VARCHAR", "rank": "SMALLINT", "count": "INTEGER", "amount": "BIGINT",
 	"score": "DOUBLE", "ref": "UUID", "joined": "BIGINT", "touched": "BIGINT",
 	"note": "VARCHAR", "active": "BOOLEAN", "born": "BIGINT", "seen": "BIGINT",
-	"level": "SMALLINT", "qty": "INTEGER", "total": "BIGINT", "ratio": "DOUBLE", "token": "VARCHAR",
+	"level": "DOUBLE", "qty": "DOUBLE", "total": "BIGINT", "ratio": "DOUBLE", "token": "VARCHAR",
 	// #204: list attrs export as a DuckDB LIST of the items type.
 	"tags": "VARCHAR[]",
 }
@@ -290,8 +294,10 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 	for rows.Next() {
 		var rowIDStr string
 		var title, ref, note, token sql.NullString
-		var rank, level sql.NullInt16
-		var count, qty sql.NullInt32
+		var rank sql.NullInt16
+		var count sql.NullInt32
+		// EAV-only level/qty are physically DOUBLE since #384.
+		var level, qty sql.NullFloat64
 		var amount, joined, touched, born, seen, total sql.NullInt64
 		var score, ratio sql.NullFloat64
 		var active sql.NullBool
@@ -316,9 +322,9 @@ func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, t
 		checkStr(t, tier, rowID, "ref", ref, want.ref)
 		checkStr(t, tier, rowID, "token", token, want.token)
 		checkI16(t, tier, rowID, "rank", rank, want.rank)
-		checkI16(t, tier, rowID, "level", level, want.level)
+		checkNarrowFromDouble(t, tier, rowID, "level", level, want.level)
 		checkI32(t, tier, rowID, "count", count, want.count)
-		checkI32(t, tier, rowID, "qty", qty, want.qty)
+		checkNarrowFromDouble(t, tier, rowID, "qty", qty, want.qty)
 		checkI64(t, tier, rowID, "amount", amount, want.amount)
 		checkI64(t, tier, rowID, "joined", joined, want.joined)
 		checkI64(t, tier, rowID, "touched", touched, want.touched)
@@ -412,6 +418,21 @@ func checkI32(t *testing.T, tier string, rowID uuid.UUID, col string, got sql.Nu
 		t.Errorf("%s %s.%s = NULL, want %d", tier, rowID, col, *want)
 	case want != nil && got.Int32 != *want:
 		t.Errorf("%s %s.%s = %d, want %d", tier, rowID, col, got.Int32, *want)
+	}
+}
+
+// checkNarrowFromDouble compares a DOUBLE parquet column (EAV-only narrow
+// ints export at storage width DOUBLE, #384) against the declared-width
+// truth; every in-range integer value is exact in DOUBLE.
+func checkNarrowFromDouble[T int16 | int32](t *testing.T, tier string, rowID uuid.UUID, col string, got sql.NullFloat64, want *T) {
+	t.Helper()
+	switch {
+	case want == nil && got.Valid:
+		t.Errorf("%s %s.%s = %v, want NULL", tier, rowID, col, got.Float64)
+	case want != nil && !got.Valid:
+		t.Errorf("%s %s.%s = NULL, want %d", tier, rowID, col, *want)
+	case want != nil && got.Float64 != float64(*want):
+		t.Errorf("%s %s.%s = %v, want %d", tier, rowID, col, got.Float64, *want)
 	}
 }
 

@@ -55,7 +55,7 @@ func TestDuckDBNamespace_RenderPaths_AttributeAliasedClause(t *testing.T) {
 
 	// The clause references attribute names (matching the CTE aliases), not the
 	// physical column the attribute is bound to.
-	require.Equal(t, "(age > CAST(? AS INTEGER)) AND (tag = ?)", dc.DuckClause)
+	require.Equal(t, "(age > CAST(? AS DOUBLE)) AND (tag = ?)", dc.DuckClause)
 	require.NotContains(t, dc.DuckClause, "integer_01")
 
 	dirty := []uuid.UUID{uuid.New()}

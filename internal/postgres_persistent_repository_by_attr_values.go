@@ -7,6 +7,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/numutil"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // QueryPersistentRecordsByAttrValues fetches full records whose attribute
@@ -85,20 +86,22 @@ func buildAttrValuesAnchor(attr string, meta forma.AttributeMetadata, values []s
 
 	switch meta.ValueType {
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		// Per-element typing, mirroring ConvertPgMainValue and
-		// parseDuckDBRawParam (#281, #357): one literal must mean one Go value
-		// on every binder, or the same operand can match under a filter and
-		// miss under relation enrichment (#355). Integral literals in any
-		// accepted spelling bind as exact int64; genuinely fractional ones stay
-		// float64, which is what the write path's own float64 hop stored.
-		// Collapsing the slice to a single element type is not equivalent:
-		// []float64 loses exactness above 2^53, and rendering exact decimals
-		// into a ::numeric[] cast would stop matching stored fractional values.
+		// Per-element typing, mirroring the EAV predicate normalizer (#281,
+		// #357): one literal must mean one Go value on every binder, or the
+		// same operand can match under a filter and miss under relation
+		// enrichment (#355). Integral literals bind as exact int64 for
+		// bigint and narrow through the write funnel's float64 for the
+		// DOUBLE-width classes (sqlgen.NarrowEAVNumericOperand, #384);
+		// genuinely fractional ones stay float64, which is what the write
+		// path's own float64 hop stored. Collapsing the slice to a single
+		// element type is not equivalent: []float64 loses bigint exactness
+		// above 2^53, and rendering exact decimals into a ::numeric[] cast
+		// would stop matching stored fractional values.
 		operands := make([]any, 0, len(values))
 		for _, v := range values {
 			switch parsed := numutil.TryParseNumber(v).(type) {
 			case int64:
-				operands = append(operands, parsed)
+				operands = append(operands, sqlgen.NarrowEAVNumericOperand(meta.ValueType, parsed))
 			case float64:
 				operands = append(operands, parsed)
 			default:

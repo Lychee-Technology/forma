@@ -119,7 +119,7 @@ func TestBuildListPredicate_Equals(t *testing.T) {
 func TestBuildListPredicate_EqualsNumeric(t *testing.T) {
 	sql, param, err := BuildListPredicate("scores", "equals", "42", forma.ValueTypeInteger)
 	require.NoError(t, err)
-	require.Equal(t, "list_contains(scores, CAST(? AS INTEGER))", sql)
+	require.Equal(t, "list_contains(scores, CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "42", param)
 }
 
@@ -147,14 +147,14 @@ func TestBuildListPredicate_StartsWith(t *testing.T) {
 func TestBuildListPredicate_Gt(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gt", "10", forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x > CAST(? AS DECIMAL(38,10)))", sql)
+	require.Equal(t, "list_any_match(values, x -> x > CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "10", param)
 }
 
 func TestBuildListPredicate_Gte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gte", "5", forma.ValueTypeInteger)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x >= CAST(? AS INTEGER))", sql)
+	require.Equal(t, "list_any_match(values, x -> x >= CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "5", param)
 }
 
@@ -168,7 +168,7 @@ func TestBuildListPredicate_Lt(t *testing.T) {
 func TestBuildListPredicate_Lte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "lte", "50", forma.ValueTypeSmallInt)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x <= CAST(? AS SMALLINT))", sql)
+	require.Equal(t, "list_any_match(values, x -> x <= CAST(? AS DOUBLE))", sql)
 	require.Equal(t, "50", param)
 }
 
@@ -398,7 +398,7 @@ func TestBuildDuckClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGrouping
 
 	clause, args, err := buildDuckClause(cond, nil)
 	require.NoError(t, err)
-	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DECIMAL(38,10))) OR (email LIKE ?))", clause)
+	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DOUBLE)) OR (email LIKE ?))", clause)
 	require.Equal(t, []any{"active", "10", "ops%"}, args)
 }
 

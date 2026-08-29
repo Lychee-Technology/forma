@@ -2,7 +2,6 @@ package sqlgen
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -275,6 +274,7 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		ValueColumn: valueColumn,
 		SQLOp:       sqlOp,
 		Value:       parsedValue,
+		Truthy:      meta.ValueType == forma.ValueTypeBool,
 	}
 }
 
@@ -290,10 +290,11 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch v := numutil.TryParseNumber(valStr).(type) {
 		case int64:
-			// Exact bind (#281, #357): pgx encodes int64 into the NUMERIC
-			// comparison losslessly, in every integral spelling. Mirrors
-			// ConvertPgMainValue on the main-table path.
-			return "value_numeric", v, nil
+			// bigint binds the exact int64 (#281, #357); the DOUBLE-width
+			// classes narrow it through the same float64 funnel the stored
+			// data took, so both engines compare the float64 image above
+			// 2^53 (#384) — see NarrowEAVNumericOperand.
+			return "value_numeric", NarrowEAVNumericOperand(meta.ValueType, v), nil
 		case float64:
 			return "value_numeric", v, nil
 		default:
@@ -308,18 +309,37 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 		return "value_numeric", parsed, nil
 
 	case forma.ValueTypeBool:
-		parsedInt, boolErr := strconv.Atoi(valStr)
-		if boolErr != nil {
+		// The bind is a Go bool compared against the (value_numeric <> 0)
+		// truthiness expression, not the raw column — the payload's Truthy
+		// flag drives the emitters. The operand parse is the engine-shared
+		// parseBoolOperand rule (#384 P2b).
+		parsed, ok := parseBoolOperand(valStr)
+		if !ok {
 			return "", nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 		}
-		if parsedInt > 0 {
-			return "value_numeric", float64(1), nil
-		}
-		return "value_numeric", float64(0), nil
+		return "value_numeric", parsed, nil
 
 	default:
 		return "", nil, fmt.Errorf("unsupported value_type '%s' for attribute '%s'", meta.ValueType, attr)
 	}
+}
+
+// NarrowEAVNumericOperand converts a parsed integral operand into the Go
+// value the Postgres binders compare against value_numeric for the given
+// DECLARED type (#384). integer/smallint/numeric EAV storage holds float64
+// images (the write funnel narrows through numutil.Float64), so the operand
+// takes the same narrowing: above 2^53 both engines then compare the float64
+// image — the DuckDB leg's CAST(? AS DOUBLE) rounds identically — instead of
+// Postgres comparing the exact integer while DuckDB matches its rounded
+// neighbor. bigint keeps the exact int64 (#281/#357): its storage is
+// BIGINT-backed on every tier. Shared by the EAV predicate normalizer and the
+// batch attr-value anchor, which must reach the same verdict on the same
+// literal (#355).
+func NarrowEAVNumericOperand(vt forma.ValueType, v int64) any {
+	if vt == forma.ValueTypeBigInt {
+		return v
+	}
+	return float64(v)
 }
 
 // normalizePgMainPayload converts a leaf for entity_main pushdown: unknown

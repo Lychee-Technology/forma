@@ -83,9 +83,11 @@ func buildCharBigIntCases() []charCase {
 			want: DualClauses{
 				PgMainClause: "m.bigint_02 < ?", PgMainArgs: []any{float64(9007199254740993.5)},
 				PgClause: charEavClause("$2", "value_numeric", "<", "$3"), PgArgs: []any{int16(12), float64(9007199254740993.5)},
-				// float64 + %.15g, unchanged by #357: fractional literals have
-				// no exact integral form to refine to.
-				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"9.00719925474099e+15"},
+				// float64 in shortest round-trip form (#384 P1b): fractional
+				// literals have no exact integral form to refine to, and the
+				// rendered string must recover the identical float64
+				// (9007199254740993.5 rounds to ...994 at parse time).
+				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"9.007199254740994e+15"},
 			},
 			span: 3,
 		},
