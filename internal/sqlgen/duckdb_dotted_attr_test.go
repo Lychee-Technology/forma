@@ -59,7 +59,7 @@ func TestBuildSchemaProjection_DottedAttrsEmitAliasedColumns(t *testing.T) {
 
 	// S3 projection: physical parquet columns, sorted by logical attr name.
 	require.Equal(t,
-		"row_id, changed_at AS created_at, changed_at AS ver_ts, deleted_at AS deleted_ts, "+
+		"row_id, ltbase_created_at AS created_at, changed_at AS ver_ts, deleted_at AS deleted_ts, "+
 			"contact_annualIncome, contact_name, contact_note, flag",
 		sp.S3SourceSelect)
 

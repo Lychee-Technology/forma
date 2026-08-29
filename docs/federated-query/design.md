@@ -224,7 +224,15 @@ dirty_ids AS (
 s3_source AS (
     SELECT
         row_id,
-        changed_at AS created_at,
+        -- created_at and ver_ts are DIFFERENT quantities (#460):
+        -- ltbase_created_at is the row's creation time, which both exporters
+        -- write into every parquet generation; changed_at is the LWW version
+        -- stamp. Aliasing changed_at into the created_at slot made this leg
+        -- report a different quantity from pg_source's m.ltbase_created_at
+        -- through the same UNION ALL column, so created_at was wrong for
+        -- parquet-winning rows and the default sort key changed value the
+        -- moment a row was flushed.
+        ltbase_created_at AS created_at,
         changed_at AS ver_ts,
         deleted_at AS deleted_ts,
         -- Logical Columns (Native in Parquet)

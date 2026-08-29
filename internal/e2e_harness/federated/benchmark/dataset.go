@@ -37,10 +37,17 @@ type GeneratorConfig struct {
 
 // GeneratedRecord is the canonical benchmark row representation before tier assignment.
 type GeneratedRecord struct {
-	SchemaID   int16          `json:"schema_id"`
-	SchemaName string         `json:"schema_name"`
-	RowID      uuid.UUID      `json:"row_id"`
-	Version    int            `json:"version"`
+	SchemaID   int16     `json:"schema_id"`
+	SchemaName string    `json:"schema_name"`
+	RowID      uuid.UUID `json:"row_id"`
+	Version    int       `json:"version"`
+	// CreatedAt is the row's creation time: the ChangedAt of its FIRST
+	// version, identical across every version of the same row. The tier split
+	// scatters versions of one row across base/delta/hot, and the federated
+	// reader reports created_at from the row's own creation stamp on every
+	// tier (#460) — so the generated dataset must agree, or the benchmark
+	// would measure an unstable sort key its own fixtures invented.
+	CreatedAt  int64          `json:"created_at,omitempty"`
 	ChangedAt  int64          `json:"changed_at"`
 	DeletedAt  int64          `json:"deleted_at,omitempty"`
 	Attributes map[string]any `json:"attributes"`

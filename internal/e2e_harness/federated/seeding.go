@@ -132,7 +132,7 @@ func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecor
 			uuid_01 = $9,
 			ltbase_updated_at = $11,
 			ltbase_deleted_at = $12
-	`, r.SchemaID, r.RowID, text01, text02, smallint01, bigint01, bigint02, double01, uuid01, r.ChangedAt, r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
+	`, r.SchemaID, r.RowID, text01, text02, smallint01, bigint01, bigint02, double01, uuid01, r.CreationStamp(), r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
 	if err != nil {
 		return fmt.Errorf("insert entity_main: %w", err)
 	}

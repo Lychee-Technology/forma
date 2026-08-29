@@ -67,9 +67,26 @@ type TestRecord struct {
 	RowID      uuid.UUID
 	SchemaID   int16
 	Attributes map[string]any
-	ChangedAt  int64
-	DeletedAt  int64
-	FlushedAt  int64
+	// CreatedAt is the row's creation time, written to the parquet
+	// ltbase_created_at column and to entity_main.ltbase_created_at. Zero
+	// means "same as ChangedAt", the shape every pre-#460 fixture assumed;
+	// a fixture that needs creation and version stamps to differ — the
+	// created→updated→flushed case — sets it explicitly. See CreationStamp.
+	CreatedAt int64
+	ChangedAt int64
+	DeletedAt int64
+	FlushedAt int64
+}
+
+// CreationStamp is the row's creation time with the zero-value fallback
+// applied: fixtures that do not distinguish creation from version stamp
+// (the majority) keep reporting ChangedAt on both tiers, so hot and parquet
+// copies of the same fixture row still agree (#460).
+func (r TestRecord) CreationStamp() int64 {
+	if r.CreatedAt != 0 {
+		return r.CreatedAt
+	}
+	return r.ChangedAt
 }
 
 // QueryOptions configures federated query execution.

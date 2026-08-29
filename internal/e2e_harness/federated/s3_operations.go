@@ -70,7 +70,10 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 
 	attrKeys := collectCSVAttributeKeys(records)
 	writer := csv.NewWriter(f)
-	header := []string{"row_id", "schema_id", "changed_at", "deleted_at", "name", "version"}
+	// ltbase_created_at mirrors the production export: both CDC exporters
+	// write the row's true creation time next to the LWW version stamp, and
+	// the federated reader projects it into the created_at slot (#460).
+	header := []string{"row_id", "schema_id", "ltbase_created_at", "changed_at", "deleted_at", "name", "version"}
 	header = append(header, attrKeys...)
 	if err := writer.Write(header); err != nil {
 		return err
@@ -80,6 +83,7 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 		row := []string{
 			r.RowID.String(),
 			strconv.FormatInt(int64(r.SchemaID), 10),
+			strconv.FormatInt(r.CreationStamp(), 10),
 			strconv.FormatInt(r.ChangedAt, 10),
 			strconv.FormatInt(r.DeletedAt, 10),
 			attributeStringValue(r.Attributes, "name"),
