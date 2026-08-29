@@ -35,22 +35,27 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 		return &FlushResult{Flushed: false, Duration: time.Since(start)}, nil
 	}
 
-	// Get batch of unflushed row IDs
-	rowIDs, err := h.getUnflushedRowIDs(ctx)
+	// Get batch of unflushed row IDs with their creation stamps
+	unflushed, err := h.getUnflushedRowIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(rowIDs) == 0 {
+	if len(unflushed) == 0 {
 		return &FlushResult{Flushed: false, Duration: time.Since(start)}, nil
 	}
 
-	// Create test records from the row IDs
-	records := make([]TestRecord, len(rowIDs))
-	for i, id := range rowIDs {
+	// Create test records from the row IDs. ChangedAt is a fresh version
+	// stamp (this flush writes a new version); CreatedAt is carried over from
+	// entity_main, because a flush must not move a row's creation time (#460).
+	rowIDs := make([]uuid.UUID, len(unflushed))
+	records := make([]TestRecord, len(unflushed))
+	for i, row := range unflushed {
+		rowIDs[i] = row.id
 		records[i] = TestRecord{
-			RowID:     id,
+			RowID:     row.id,
 			SchemaID:  h.SchemaID,
+			CreatedAt: row.createdAt,
 			ChangedAt: time.Now().UnixMilli(),
 		}
 	}
@@ -80,10 +85,24 @@ func (h *FederatedTestHarness) tryAcquireSchemaLock(ctx context.Context) (bool, 
 }
 
 // getUnflushedRowIDs fetches unflushed row IDs from change_log up to batch size.
-func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]uuid.UUID, error) {
+// unflushedRow is one row selected for a simulated flush, carrying the
+// creation stamp the export must preserve. A flush writes a NEW version of an
+// EXISTING row, so it must copy entity_main.ltbase_created_at into the delta
+// rather than stamp the flush instant — otherwise the row's created_at would
+// move every time it is flushed (#460). COALESCE keeps fixtures that seed
+// change_log without an entity_main row behaving as before.
+type unflushedRow struct {
+	id        uuid.UUID
+	createdAt int64
+}
+
+func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflushedRow, error) {
 	rows, err := h.PGDB.QueryContext(ctx, `
-		SELECT row_id FROM change_log 
-		WHERE schema_id = $1 AND flushed_at = 0
+		SELECT cl.row_id, COALESCE(em.ltbase_created_at, cl.changed_at)
+		FROM change_log cl
+		LEFT JOIN entity_main em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
+		WHERE cl.schema_id = $1 AND cl.flushed_at = 0
 		LIMIT $2
 	`, h.SchemaID, h.CDCConfig.BatchSize)
 	if err != nil {
@@ -91,18 +110,18 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]uuid.U
 	}
 	defer rows.Close()
 
-	var rowIDs []uuid.UUID
+	var unflushed []unflushedRow
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var r unflushedRow
+		if err := rows.Scan(&r.id, &r.createdAt); err != nil {
 			return nil, fmt.Errorf("scan row id: %w", err)
 		}
-		rowIDs = append(rowIDs, id)
+		unflushed = append(unflushed, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate unflushed row ids: %w", err)
 	}
-	return rowIDs, nil
+	return unflushed, nil
 }
 
 // markRowsFlushed marks rows as flushed in the change_log.
@@ -169,8 +188,12 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 	for _, f := range deltaFiles {
 		if err := func(file string) error {
 			s3Path := fmt.Sprintf("s3://%s/%s", h.S3Bucket, file)
+			// ltbase_created_at is read back and re-emitted so compaction
+			// rewrites a row's creation stamp unchanged; dropping it here
+			// would let WriteParquet fall back to ChangedAt and move the
+			// row's created_at every time it is compacted (#460).
 			rows, err := h.Duck.DB.QueryContext(ctx, fmt.Sprintf(`
-				SELECT row_id, schema_id, changed_at, deleted_at, name, version
+				SELECT row_id, schema_id, ltbase_created_at, changed_at, deleted_at, name, version
 				FROM read_parquet('%s')
 			`, s3Path))
 			if err != nil {
@@ -181,17 +204,18 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 			for rows.Next() {
 				var rowID string
 				var schemaID int16
-				var changedAt, deletedAt int64
+				var createdAt, changedAt, deletedAt int64
 				var name sql.NullString
 				var version sql.NullInt64
 
-				if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+				if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version); err != nil {
 					return fmt.Errorf("scan row: %w", err)
 				}
 
 				rec := TestRecord{
 					RowID:     uuid.MustParse(rowID),
 					SchemaID:  schemaID,
+					CreatedAt: createdAt,
 					ChangedAt: changedAt,
 					DeletedAt: deletedAt,
 					Attributes: map[string]any{

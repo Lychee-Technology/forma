@@ -50,7 +50,7 @@ func TestBuildFederatedQueryCountSQLDynamic_PageOneKeepsWideCountPath(t *testing
 
 func TestBuildFederatedCombinedQueryUsesHotFilterExpressions(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
-	query := h.buildFederatedCombinedQuery("base-path", "delta-path", false, false, nil, &QueryOptions{Filter: &Filter{Conditions: map[string]any{"exchange": "NYSE"}}}, true, false)
+	query := h.buildFederatedCombinedQuery("base-path", "delta-path", false, false, nil, &QueryOptions{Filter: &Filter{Conditions: map[string]any{"exchange": "NYSE"}}}, true, false, true)
 	if !strings.Contains(query, "COALESCE(hot_vals.exchange, '')") {
 		t.Fatalf("expected hot exchange filter expression in combined query: %s", query)
 	}
@@ -60,25 +60,25 @@ func TestBuildFederatedCombinedQueryUsesHotFilterExpressions(t *testing.T) {
 }
 
 func TestBuildParquetTierQuerySupportsSchemaSpecificProjection(t *testing.T) {
-	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['customer-path']) WHERE 1 = 1 AND region = 'NA')", true, false)
+	customerQuery := buildParquetTierQuery("customer-path", benchmarkSchemaIDCustomer, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['customer-path']) WHERE 1 = 1 AND region = 'NA')", true, false, true)
 	if !strings.Contains(customerQuery, "region") {
 		t.Fatalf("expected customer projection without trade time conversion: %s", customerQuery)
 	}
-	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['security-path']) WHERE 1 = 1 AND symbol = 'SYM00001')", true, false)
+	securityQuery := buildParquetTierQuery("security-path", benchmarkSchemaIDSecurity, "base", "", "", "AND row_id IN (SELECT row_id FROM read_parquet(['security-path']) WHERE 1 = 1 AND symbol = 'SYM00001')", true, false, true)
 	if !strings.Contains(securityQuery, "symbol") {
 		t.Fatalf("expected security projection with symbol only: %s", securityQuery)
 	}
 }
 
 func TestBuildParquetTierQueryKeepsDeletedRowsForDeduplication(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", true, false)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "delta", "", "", "", true, false, true)
 	if strings.Contains(query, "deleted_at = 0") {
 		t.Fatalf("expected parquet tier query to defer deleted filtering until after dedup: %s", query)
 	}
 }
 
 func TestBuildHotTierQueryKeepsDeletedRowsForDeduplication(t *testing.T) {
-	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", true, false)
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", true, false, true)
 	if strings.Contains(query, "deleted_at = 0") || strings.Contains(query, "deleted_at IS NULL") {
 		t.Fatalf("expected hot tier query to defer deleted filtering until after dedup: %s", query)
 	}
@@ -95,7 +95,7 @@ func TestBuildFederatedDeduplicatedCTEUsesStableTieBreaks(t *testing.T) {
 
 func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
-	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, &QueryOptions{TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true}, true, false)
+	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, &QueryOptions{TradeTimeStart: 1000, TradeTimeEnd: 2000, SortBy: "tradeTime", SortDesc: true}, true, false, true)
 	for _, expected := range []string{"tradeTime >= 1000", "tradeTime <= 2000", "COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected combined query to include %q: %s", expected, query)
@@ -142,14 +142,14 @@ func TestProjectionSelectionHelpers(t *testing.T) {
 
 func TestBuildParquetTierQueryAppliesPushdownSemijoin(t *testing.T) {
 	semijoin := "AND row_id IN (SELECT row_id FROM read_parquet(['trade-path']) WHERE 1 = 1 AND tradeTime <= 2000)"
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", semijoin, true, false)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", semijoin, true, false, true)
 	if !strings.Contains(query, semijoin) {
 		t.Fatalf("expected pushdown semijoin in parquet query: %s", query)
 	}
 }
 
 func TestBuildParquetTierQueryTradeTimeOnlyProjection(t *testing.T) {
-	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", true, true)
+	query := buildParquetTierQuery("trade-path", benchmarkSchemaIDTrade, "base", "", "", "", true, true, true)
 	for _, expected := range []string{"'' as name", "'' as symbol", "'' as exchange", "'' as region", "0 as tradeType, tradeTime,"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected tradeTime-only parquet projection to include %q: %s", expected, query)
@@ -161,7 +161,7 @@ func TestBuildParquetTierQueryTradeTimeOnlyProjection(t *testing.T) {
 }
 
 func TestBuildHotTierQueryTradeTimeOnlyProjection(t *testing.T) {
-	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", true, true)
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", true, true, true)
 	for _, unexpected := range []string{"map(list(attr_name), list(attr_value))", "benchmark_text(hot_vals.attributes", "benchmark_int(hot_vals.attributes"} {
 		if strings.Contains(query, unexpected) {
 			t.Fatalf("expected tradeTime-only hot query to avoid %q: %s", unexpected, query)
@@ -235,7 +235,7 @@ func TestHotTierEAVMappingForSchemaSecurity(t *testing.T) {
 func TestBuildHotTierQueryTargetedTrade(t *testing.T) {
 	query := buildHotTierQueryTargeted("pg-conn", benchmarkSchemaIDTrade, "",
 		"AND COALESCE(hot_vals.exchange, '') = 'NYSE'",
-		"AND COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000")
+		"AND COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", true)
 	for _, expected := range []string{
 		"COALESCE(hot_vals.symbol, em.text_01, '') as name",
 		"COALESCE(hot_vals.symbol, em.text_01) as symbol",
@@ -261,7 +261,7 @@ func TestBuildHotTierQueryTargetedTrade(t *testing.T) {
 
 func TestBuildHotTierQueryTargetedCustomer(t *testing.T) {
 	query := buildHotTierQueryTargeted("pg-conn", benchmarkSchemaIDCustomer, "",
-		"AND COALESCE(hot_vals.region, em.text_02) = 'NA'", "")
+		"AND COALESCE(hot_vals.region, em.text_02) = 'NA'", "", true)
 	for _, expected := range []string{
 		"COALESCE(hot_vals.name, '') as name",
 		"'' as symbol",
@@ -278,7 +278,7 @@ func TestBuildHotTierQueryTargetedCustomer(t *testing.T) {
 
 func TestBuildHotTierQueryTargetedSecurity(t *testing.T) {
 	query := buildHotTierQueryTargeted("pg-conn", benchmarkSchemaIDSecurity, "",
-		"AND COALESCE(hot_vals.symbol, em.text_01) = 'SYM00001'", "")
+		"AND COALESCE(hot_vals.symbol, em.text_01) = 'SYM00001'", "", true)
 	for _, expected := range []string{
 		"COALESCE(hot_vals.name, hot_vals.symbol, '') as name",
 		"COALESCE(hot_vals.symbol, em.text_01) as symbol",
@@ -325,7 +325,7 @@ func TestBuildHotTradeTimeFilterClauseTargeted(t *testing.T) {
 }
 
 func TestBuildHotTierQueryDelegatesToTargetedForBenchmarkProjection(t *testing.T) {
-	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "AND COALESCE(hot_vals.exchange, '') = 'NYSE'", "", true, false)
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "AND COALESCE(hot_vals.exchange, '') = 'NYSE'", "", true, false, true)
 	for _, unexpected := range []string{"map(list(attr_name)", "benchmark_text(hot_vals.attributes"} {
 		if strings.Contains(query, unexpected) {
 			t.Fatalf("expected hot tier query to avoid %q with benchmark projection: %s", unexpected, query)
@@ -337,12 +337,48 @@ func TestBuildHotTierQueryDelegatesToTargetedForBenchmarkProjection(t *testing.T
 }
 
 func TestBuildHotTierQueryNonBenchmarkPathUnchanged(t *testing.T) {
-	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", false, false)
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", false, false, true)
 	if !strings.Contains(query, "'' as name") {
 		t.Fatalf("expected non-benchmark hot query to have literal name: %s", query)
 	}
-	if strings.Contains(query, "hot_vals") || strings.Contains(query, "entity_main") || strings.Contains(query, "eav_data") {
-		t.Fatalf("expected non-benchmark hot query to avoid eav and entity_main: %s", query)
+	if strings.Contains(query, "hot_vals") || strings.Contains(query, "eav_data") {
+		t.Fatalf("expected non-benchmark hot query to avoid the eav pivot: %s", query)
+	}
+	// entity_main is joined ONLY to source ltbase_created_at (#460); it is a
+	// primary-key lookup, not the eav pivot the narrow path exists to avoid.
+	if !strings.Contains(query, "COALESCE(em.ltbase_created_at, cl.changed_at) as ltbase_created_at") {
+		t.Fatalf("expected non-benchmark hot query to project the creation stamp: %s", query)
+	}
+	if !strings.Contains(query, "'public', 'entity_main') em") {
+		t.Fatalf("expected non-benchmark hot query to join entity_main for the creation stamp: %s", query)
+	}
+}
+
+// TestBuildHotTierQueryOmitsCreationStampWhenNotProjected pins the count
+// path's narrowness (#460): a count reads no row values, so it must neither
+// project ltbase_created_at nor pay for the entity_main join that sources it.
+func TestBuildHotTierQueryOmitsCreationStampWhenNotProjected(t *testing.T) {
+	query := buildHotTierQuery("pg-conn", benchmarkSchemaIDTrade, "", "", "", false, false, false)
+	if strings.Contains(query, "ltbase_created_at") {
+		t.Fatalf("count-path hot query must not project the creation stamp: %s", query)
+	}
+	if strings.Contains(query, "entity_main") {
+		t.Fatalf("count-path hot query must not join entity_main: %s", query)
+	}
+}
+
+// TestBuildParquetTierQueryOmitsCreationStampWhenNotProjected keeps both legs
+// of one union in agreement: when the count path drops the column from the hot
+// leg it must drop it from the parquet legs too, or the UNION ALL arities
+// diverge.
+func TestBuildParquetTierQueryOmitsCreationStampWhenNotProjected(t *testing.T) {
+	withStamp := buildParquetTierQuery("p", 1, "base", "", "", "", false, false, true)
+	if !strings.Contains(withStamp, "ltbase_created_at") {
+		t.Fatalf("select-path parquet leg must project the creation stamp: %s", withStamp)
+	}
+	withoutStamp := buildParquetTierQuery("p", 1, "base", "", "", "", false, false, false)
+	if strings.Contains(withoutStamp, "ltbase_created_at") {
+		t.Fatalf("count-path parquet leg must omit the creation stamp: %s", withoutStamp)
 	}
 }
 
@@ -425,7 +461,7 @@ func TestBuildParquetPushdownSemijoin(t *testing.T) {
 func TestBuildFederatedCombinedQueryUsesSemijoinPushdownForParquetTiers(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDCustomer, PGHost: "localhost", PGPort: "5432"}
 	opts := &QueryOptions{Filter: &Filter{Conditions: map[string]any{"region": "NA"}}}
-	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, opts, true, false)
+	query := h.buildFederatedCombinedQuery("base-path", "delta-path", true, true, nil, opts, true, false, true)
 	semijoin := "AND row_id IN (SELECT row_id FROM read_parquet(['base-path', 'delta-path']) WHERE 1 = 1 AND region = 'NA')"
 	if got := strings.Count(query, semijoin); got != 2 {
 		t.Fatalf("expected the cross-tier semijoin in both parquet tier queries, found %d: %s", got, query)

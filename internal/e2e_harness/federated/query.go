@@ -186,7 +186,7 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
-		var changedAt, deletedAt int64
+		var createdAt, changedAt, deletedAt int64
 		var name sql.NullString
 		var version sql.NullInt64
 		var symbol, exchange, region sql.NullString
@@ -194,19 +194,21 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 		var tradeTime any
 
 		if benchmarkProjection {
-			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
+			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
 				return nil, fmt.Errorf("scan row: %w", err)
 			}
 		} else {
-			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version); err != nil {
 				return nil, fmt.Errorf("scan row: %w", err)
 			}
 		}
 
+		// created_at and updated_at come from different columns (#460): the
+		// creation stamp is version-invariant, the LWW version stamp is not.
 		rec := &model.PersistentRecord{
 			RowID:        uuid.MustParse(rowID),
 			SchemaID:     schemaID,
-			CreatedAt:    changedAt,
+			CreatedAt:    createdAt,
 			UpdatedAt:    changedAt,
 			TextItems:    make(map[string]string),
 			Float64Items: make(map[string]float64),
@@ -393,21 +395,21 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
-		var changedAt, deletedAt int64
+		var createdAt, changedAt, deletedAt int64
 		var name sql.NullString
 		var version sql.NullInt64
 		var symbol, exchange, region sql.NullString
 		var tradeType, tradeTime sql.NullInt64
 		if benchmarkProjection {
-			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
+			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := rows.Scan(&rowID, &schemaID, &changedAt, &deletedAt, &name, &version); err != nil {
+			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version); err != nil {
 				return nil, err
 			}
 		}
-		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: changedAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
+		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: createdAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
 		if deletedAt > 0 {
 			rec.DeletedAt = &deletedAt
 		}
