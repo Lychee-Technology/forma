@@ -44,6 +44,11 @@ type NullScanColumn struct {
 const (
 	ParquetNullRowIDMessage     = "parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)"
 	ParquetNullChangedAtMessage = "parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)"
+	// ParquetNullCreatedAtMessage names the #460 conditional presence
+	// channel: a LIVE row whose creation stamp is NULL. Tombstones are
+	// excluded by the guard's own predicate, so this text never fires on
+	// healthy data — see parquetSystemColumnGuardItem.
+	ParquetNullCreatedAtMessage = "parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)"
 )
 
 // parquetSystemColumnGuardItem rewrites the parquetcheck system columns in
@@ -68,6 +73,21 @@ const (
 //     readable until compaction retires them, so a NULL-based presence guard
 //     would still error on healthy legacy data. See the residual note below.
 //
+//   - CONDITIONAL PRESENCE (NULL on a LIVE row → error): applied to
+//     ltbase_created_at (#460). It cannot take the unconditional shape,
+//     because hard-delete tombstones legitimately carry a NULL creation
+//     stamp — the delta export LEFT JOINs entity_main so a hard-deleted row's
+//     change_log entry still exports (#173). But it MUST have some presence
+//     guard, for the reason this whole item exists: without one, a trusted
+//     manifest stamp lets an object whose real bytes lack the column into a
+//     scan, union_by_name NULL-pads it, and a LIVE row reaches the caller
+//     with a NULL created_at — a wrong value, ordered by its NULL bucket
+//     rather than its creation time, that moves across a created_at keyset
+//     boundary on the next rewrite. Predicating on deleted_at splits the two
+//     cases exactly: tombstones pass, live rows fail loudly.
+//     COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 covers both live encodings
+//     — 0 since #274, NULL on pre-#274 legacy delta objects.
+//
 //   - TYPE (CAST): applied to changed_at, deleted_at and ltbase_created_at,
 //     all BIGINT in the production AND benchmark shapes. Without it a rogue
 //     file carrying one as VARCHAR widens the union_by_name result to VARCHAR
@@ -79,13 +99,13 @@ const (
 //     the benchmark shape, so any cast would bind one and coerce the other
 //     (#147); its untyped COALESCE adopts whichever the file carries.
 //
-// ltbase_created_at is type-pinned but NOT presence-guarded, for the same
-// reason deleted_at is not: hard-delete tombstones legitimately carry a NULL
-// creation stamp (the delta export LEFT JOINs entity_main, #173), so a
-// value-presence guard would fail every healthy scan touching one. Its
-// COLUMN presence is enforced a layer up, by the parquetcheck invariant and
-// the pre-read validator — which is what keeps a mixed-generation scan set
-// from NULL-padding it into the result (#460).
+// ltbase_created_at's COLUMN presence is ALSO enforced a layer up, by the
+// parquetcheck invariant and the pre-read validator. The two layers cover
+// different attackers: the validator rejects an object whose stamp or footer
+// omits the column, while the conditional guard above covers the case the
+// validator structurally cannot — a stamp that satisfies the invariant while
+// the bytes behind the key do not (a rogue overwrite or a tampered manifest),
+// which is exactly the trust boundary #256 opened and this guard closes.
 //
 // Three engine behaviors make this shape the one that works (proved against
 // the pinned DuckDB in duckdb_cold_scan_guard_test.go):
@@ -112,8 +132,10 @@ var parquetSystemColumnGuardItem = fmt.Sprintf(
 	"* REPLACE (COALESCE(row_id, error('%s')) AS row_id, "+
 		"CAST(COALESCE(changed_at, error('%s')) AS BIGINT) AS changed_at, "+
 		"CAST(deleted_at AS BIGINT) AS deleted_at, "+
-		"CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at)",
-	ParquetNullRowIDMessage, ParquetNullChangedAtMessage)
+		"CASE WHEN ltbase_created_at IS NULL "+
+		"AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('%s') "+
+		"ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at)",
+	ParquetNullRowIDMessage, ParquetNullChangedAtMessage, ParquetNullCreatedAtMessage)
 
 // BuildParquetScanSource renders the parquet scan for the advanced
 // template's two scan sites: the system-column guard above, plus (#255) a
