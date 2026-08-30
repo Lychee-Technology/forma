@@ -17,7 +17,7 @@ func TestColdMissingColumnsDetectsAbsentAttributes(t *testing.T) {
 		"tags":  {AttributeID: 4, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBigInt},
 	}
 	union := map[string]string{
-		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT",
+		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT",
 		"name": "VARCHAR",
 	}
 	got := coldMissingColumns(cache, union)

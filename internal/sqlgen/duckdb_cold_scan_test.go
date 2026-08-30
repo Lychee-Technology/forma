@@ -20,7 +20,7 @@ import (
 // to be made twice, on purpose.
 const wantGuardREPLACE = "* REPLACE (COALESCE(row_id, error('" + ParquetNullRowIDMessage + "')) AS row_id, " +
 	"CAST(COALESCE(changed_at, error('" + ParquetNullChangedAtMessage + "')) AS BIGINT) AS changed_at, " +
-	"CAST(deleted_at AS BIGINT) AS deleted_at)"
+	"CAST(deleted_at AS BIGINT) AS deleted_at, CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at)"
 
 // Idle state (#256): with no missing columns the scan source is the
 // system-column guard alone. The pre-#256 bare read_parquet form is retired —

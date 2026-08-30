@@ -13,7 +13,7 @@ import (
 // buildStampedSystemCols is a write-time footer stamp that satisfies the
 // parquetcheck invariant — what a #256 exporter records in the manifest.
 func buildStampedSystemCols() map[string]string {
-	return map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}
+	return map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT"}
 }
 
 // stampsTestMetadataCache registers schema 7 with two attributes so the #255

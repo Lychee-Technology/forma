@@ -44,6 +44,12 @@ type guardFixtureSet struct {
 	// file whose changed_at is VARCHAR widens the union and would make LWW
 	// ordering lexicographic.
 	varcharChangedAt, garbageChangedAt string
+	// noCreatedAt / varcharCreatedAt / nullCreatedAt exercise the #460
+	// creation-stamp column: absent entirely (caught before the read, by the
+	// parquetcheck invariant — the scan's REPLACE list simply fails to bind),
+	// carried as VARCHAR (the type channel the CAST re-pins), and present but
+	// NULL (the hard-delete tombstone shape the guard must tolerate).
+	noCreatedAt, varcharCreatedAt, nullCreatedAt string
 }
 
 func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
@@ -52,6 +58,10 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 	const rowIDA = "CAST('018f05c0-0000-7000-8000-00000000000a' AS UUID) AS row_id"
 	const rowIDB = "CAST('018f05c0-0000-7000-8000-00000000000b' AS UUID) AS row_id"
 	const liveDeleted = "CAST(NULL AS BIGINT) AS deleted_at"
+	// The creation stamp every production generation carries (#460). Held
+	// well below the changed_at values so a projection that confused the two
+	// is visible by value.
+	const created = "CAST(50 AS BIGINT) AS ltbase_created_at"
 
 	set := guardFixtureSet{}
 	for _, w := range []struct {
@@ -61,16 +71,24 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 		// changed_at=100 against varcharChangedAt's '9' is deliberate: the two
 		// order one way numerically and the other way lexicographically, which
 		// is what makes the union-widening failure visible.
-		{&set.healthy, "healthy.parquet", rowIDA + ", CAST(100 AS BIGINT) AS changed_at, " + liveDeleted + ", 'alive' AS title"},
-		{&set.noRowID, "no_row_id.parquet", "CAST(2 AS BIGINT) AS changed_at, " + liveDeleted + ", 'rogue' AS title"},
-		{&set.noChangedAt, "no_changed_at.parquet", rowIDB + ", " + liveDeleted + ", 'rogue' AS title"},
-		{&set.noDeletedAt, "no_deleted_at.parquet", rowIDB + ", CAST(4 AS BIGINT) AS changed_at, 'rogue' AS title"},
+		{&set.healthy, "healthy.parquet", rowIDA + ", CAST(100 AS BIGINT) AS changed_at, " + liveDeleted + ", " + created + ", 'alive' AS title"},
+		{&set.noRowID, "no_row_id.parquet", "CAST(2 AS BIGINT) AS changed_at, " + liveDeleted + ", " + created + ", 'rogue' AS title"},
+		{&set.noChangedAt, "no_changed_at.parquet", rowIDB + ", " + liveDeleted + ", " + created + ", 'rogue' AS title"},
+		{&set.noDeletedAt, "no_deleted_at.parquet", rowIDB + ", CAST(4 AS BIGINT) AS changed_at, " + created + ", 'rogue' AS title"},
 		{&set.varcharRowID, "benchmark.parquet", "CAST('rid-1' AS VARCHAR) AS row_id, " +
-			"CAST(3 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, 'bench' AS title"},
+			"CAST(3 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, " + created + ", 'bench' AS title"},
 		{&set.varcharChangedAt, "varchar_changed_at.parquet", rowIDB +
-			", CAST('9' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'numeric-string' AS title"},
+			", CAST('9' AS VARCHAR) AS changed_at, " + liveDeleted + ", " + created + ", 'numeric-string' AS title"},
 		{&set.garbageChangedAt, "garbage_changed_at.parquet", rowIDB +
-			", CAST('not-a-number' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'garbage' AS title"},
+			", CAST('not-a-number' AS VARCHAR) AS changed_at, " + liveDeleted + ", " + created + ", 'garbage' AS title"},
+		{&set.noCreatedAt, "no_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, " + liveDeleted + ", 'rogue' AS title"},
+		{&set.varcharCreatedAt, "varchar_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, " + liveDeleted +
+			", CAST('9' AS VARCHAR) AS ltbase_created_at, 'numeric-string' AS title"},
+		{&set.nullCreatedAt, "null_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, CAST(4 AS BIGINT) AS deleted_at" +
+			", CAST(NULL AS BIGINT) AS ltbase_created_at, 'tombstone' AS title"},
 	} {
 		*w.dst = filepath.Join(dir, w.name)
 		_, err := db.Exec(fmt.Sprintf("COPY (SELECT %s) TO '%s' (FORMAT PARQUET)", w.sel, *w.dst))
@@ -361,4 +379,105 @@ func TestUnguardedScanLosesRogueRowsSilently(t *testing.T) {
 	require.NoError(t, err, "the unguarded scan is exactly the silent path")
 	require.Len(t, got, 2)
 	require.Contains(t, got, nil, "the rogue object's row arrives with a NULL row_id and drops out of the anti-join")
+}
+
+// TestParquetScanGuardPinsCreatedAtType is the #460 type channel. Since the
+// reader projects ltbase_created_at as created_at, a rogue file carrying it as
+// VARCHAR widens the union_by_name result and the DEFAULT page order
+// (created_at DESC) silently goes lexicographic — '9' above '100' — exactly
+// the failure the changed_at CAST prevents for LWW. The bare leg is asserted
+// alongside so this test fails if DuckDB ever stops widening, which would make
+// the CAST look load-bearing when it no longer is.
+func TestParquetScanGuardPinsCreatedAtType(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+	paths := formatPathList(fx.healthy, fx.varcharCreatedAt)
+
+	var bareType, bareMax string
+	require.NoError(t, db.QueryRow(fmt.Sprintf(
+		"SELECT typeof(ltbase_created_at), max(ltbase_created_at) OVER () FROM read_parquet(%s, union_by_name=true) LIMIT 1",
+		paths)).Scan(&bareType, &bareMax))
+	require.Equal(t, "VARCHAR", bareType, "union_by_name widens to the rogue file's type")
+	require.Equal(t, "9", bareMax,
+		"and the default page order silently flips: lexicographically '9' beats '50'")
+
+	var guardedType string
+	var guardedMax, guardedMin int64
+	require.NoError(t, db.QueryRow("SELECT typeof(ltbase_created_at), max(ltbase_created_at) OVER (), min(ltbase_created_at) OVER () FROM "+
+		BuildParquetScanSource(paths, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
+		"a numeric-string creation stamp must coerce, not fail")
+	require.Equal(t, "BIGINT", guardedType, "the guard re-pins the creation-stamp type")
+	require.Equal(t, int64(50), guardedMax, "and the numeric order is restored")
+	require.Equal(t, int64(9), guardedMin, "the VARCHAR '9' coerced value-preservingly to 9")
+}
+
+// TestParquetScanGuardToleratesNullCreatedAt pins the deliberate asymmetry in
+// the #460 guard: ltbase_created_at gets a TYPE pin but NO value-presence
+// guard. Hard-delete tombstones legitimately carry a NULL creation stamp — the
+// delta export LEFT JOINs entity_main so a hard-deleted row's change_log entry
+// still exports (#173) — so a presence guard would fail every healthy scan
+// touching one. Those rows are dropped by the deleted_ts filter long before
+// any ORDER BY, so the NULL never reaches a caller.
+func TestParquetScanGuardToleratesNullCreatedAt(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	got, err := scanRowIDs(db, "SELECT ltbase_created_at FROM "+
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.nullCreatedAt), nil))
+	require.NoError(t, err,
+		"a tombstone's NULL creation stamp must pass the scan: the column is type-pinned, its value is not required")
+	require.Len(t, got, 2)
+	require.Contains(t, got, nil, "the tombstone row flows through with its NULL, to be dropped by the deleted_ts filter")
+}
+
+// TestParquetScanGuardFailsWhenCreatedAtAbsentEverywhere pins the binder
+// channel: a scan set where NO object carries ltbase_created_at cannot bind
+// the REPLACE list. Loud, never silent — the same contract row_id has. The
+// dangerous case is the MIXED set (some objects carrying it), which binds
+// fine and NULL-pads the rest; that one is caught a layer up by the
+// parquetcheck invariant, not here.
+func TestParquetScanGuardFailsWhenCreatedAtAbsentEverywhere(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	_, err := scanRowIDs(db, "SELECT row_id FROM "+
+		BuildParquetScanSource(formatPathList(fx.noCreatedAt), nil))
+	require.Error(t, err, "a scan set with no creation stamp anywhere must fail to bind, not scan on")
+	require.Contains(t, err.Error(), "ltbase_created_at")
+}
+
+// TestUnguardedMixedGenerationNullPadsCreatedAt is the RED half of the
+// invariant: with the column absent from ONE object of a mixed set, the scan
+// BINDS and those rows arrive with a NULL created_at. The caller gets a wrong
+// created_at, and the row is ordered by that NULL (DuckDB's default null order
+// is NULLS LAST) rather than by its real creation time — so its page position
+// is wrong now and MOVES once compaction folds the object into a file that
+// carries the column. Nothing at scan level can catch this: the REPLACE list
+// binds fine because a sibling object supplies the column. That is precisely
+// why ltbase_created_at joined parquetcheck.SystemColumns, so the pre-read
+// validator rejects the object instead (#460).
+func TestUnguardedMixedGenerationNullPadsCreatedAt(t *testing.T) {
+	db := guardDuckDB(t)
+	fx := guardFixtures(t, db)
+
+	rows, err := db.Query("SELECT ltbase_created_at FROM " +
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.noCreatedAt), nil) +
+		" ORDER BY ltbase_created_at DESC")
+	require.NoError(t, err, "the mixed set binds — the scan cannot see the missing column")
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var order []any
+	for rows.Next() {
+		var v sql.NullInt64
+		require.NoError(t, rows.Scan(&v))
+		if v.Valid {
+			order = append(order, v.Int64)
+			continue
+		}
+		order = append(order, nil)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []any{int64(50), nil}, order,
+		"the NULL-padded row is ordered by its NULL, not by its real creation time — "+
+			"the silent wrong value and unstable position the pre-read invariant now prevents")
 }

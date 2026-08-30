@@ -36,7 +36,7 @@ func newSlowDescribeExecutor(delay time.Duration) *slowDescribeExecutor {
 	return &slowDescribeExecutor{
 		delay: delay,
 		cols: [][2]string{
-			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"city", "VARCHAR"},
+			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"ltbase_created_at", "BIGINT"}, {"city", "VARCHAR"},
 		},
 	}
 }
@@ -169,7 +169,7 @@ func TestValidatorSingleFlightKeyDistinguishesStamps(t *testing.T) {
 		"an absent stamp is a different generation from any present one")
 
 	// Map iteration order must not leak into the key.
-	stamp := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "city": "VARCHAR"}
+	stamp := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT", "city": "VARCHAR"}
 	first := probeKey("s3://b/x.parquet", stamp)
 	for i := 0; i < 20; i++ {
 		require.Equal(t, first, probeKey("s3://b/x.parquet", stamp),

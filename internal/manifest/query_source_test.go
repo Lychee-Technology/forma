@@ -88,10 +88,10 @@ func TestQuerySource_PathsPassesURIEntriesUnchanged(t *testing.T) {
 // (legacy) entries contribute no key.
 func TestPathsReturnsColumnStamps(t *testing.T) {
 	relCols := map[string]string{
-		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "attr_6": "BIGINT",
+		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT", "attr_6": "BIGINT",
 	}
 	absCols := map[string]string{
-		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT",
+		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT",
 	}
 	src := testQuerySource(storeWithFileEntries(t, 7,
 		FileEntry{Tier: "delta", Path: "rel.parquet", Columns: relCols},

@@ -116,7 +116,7 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 			return nil, fmt.Errorf("unexpected describe probe: %s", sql)
 		}
 		return &fakeDescribeRows{cols: [][2]string{
-			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
+			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"ltbase_created_at", "BIGINT"},
 		}}, nil
 	}
 	if strings.HasPrefix(sql, "SELECT file FROM glob(") {

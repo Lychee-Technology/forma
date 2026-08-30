@@ -277,7 +277,7 @@ func TestFileEntryColumnsRoundTrip(t *testing.T) {
 		Tier: "delta",
 		Path: "delta/7/a.parquet",
 		Columns: map[string]string{
-			"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT",
+			"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT",
 		},
 	}
 	data, err := json.Marshal(entry)
@@ -288,7 +288,7 @@ func TestFileEntryColumnsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if back.Columns["row_id"] != "UUID" || len(back.Columns) != 3 {
+	if back.Columns["row_id"] != "UUID" || len(back.Columns) != 4 {
 		t.Fatalf("columns did not round-trip: %#v", back.Columns)
 	}
 }

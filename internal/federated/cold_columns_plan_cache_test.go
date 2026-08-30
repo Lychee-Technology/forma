@@ -26,7 +26,7 @@ const coldPlanCachePath = "s3://b/7/base.parquet"
 // — is absent, which is the #255 condition.
 func coldPlanCacheFooter(withScore bool) map[string]string {
 	cols := map[string]string{
-		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT",
+		"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT",
 		"age": "INTEGER",
 	}
 	if withScore {
@@ -153,7 +153,7 @@ const coldPlanCacheGlob = "s3://b/7/*.parquet"
 // the invariant before any of this is reached.
 func coldPlanCacheDescribeRows(withScore bool) [][2]string {
 	rows := [][2]string{
-		{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
+		{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"ltbase_created_at", "BIGINT"},
 		{"age", "INTEGER"},
 	}
 	if withScore {

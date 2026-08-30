@@ -68,14 +68,24 @@ const (
 //     readable until compaction retires them, so a NULL-based presence guard
 //     would still error on healthy legacy data. See the residual note below.
 //
-//   - TYPE (CAST): applied to changed_at and deleted_at, both BIGINT in the
-//     production AND benchmark shapes. Without it a rogue file carrying either
-//     as VARCHAR widens the union_by_name result to VARCHAR and LWW ordering
-//     silently goes lexicographic ('9' > '100'). The CAST re-pins BIGINT:
-//     numeric strings coerce value-preservingly, garbage fails loudly.
+//   - TYPE (CAST): applied to changed_at, deleted_at and ltbase_created_at,
+//     all BIGINT in the production AND benchmark shapes. Without it a rogue
+//     file carrying one as VARCHAR widens the union_by_name result to VARCHAR
+//     and ordering silently goes lexicographic ('9' > '100') — for changed_at
+//     that misfolds LWW, for ltbase_created_at it misorders the default page
+//     (#460). The CAST re-pins BIGINT: numeric strings coerce
+//     value-preservingly, garbage fails loudly.
 //     row_id gets NO cast — it is UUID in production exports and VARCHAR in
 //     the benchmark shape, so any cast would bind one and coerce the other
 //     (#147); its untyped COALESCE adopts whichever the file carries.
+//
+// ltbase_created_at is type-pinned but NOT presence-guarded, for the same
+// reason deleted_at is not: hard-delete tombstones legitimately carry a NULL
+// creation stamp (the delta export LEFT JOINs entity_main, #173), so a
+// value-presence guard would fail every healthy scan touching one. Its
+// COLUMN presence is enforced a layer up, by the parquetcheck invariant and
+// the pre-read validator — which is what keeps a mixed-generation scan set
+// from NULL-padding it into the result (#460).
 //
 // Three engine behaviors make this shape the one that works (proved against
 // the pinned DuckDB in duckdb_cold_scan_guard_test.go):
@@ -101,7 +111,8 @@ const (
 var parquetSystemColumnGuardItem = fmt.Sprintf(
 	"* REPLACE (COALESCE(row_id, error('%s')) AS row_id, "+
 		"CAST(COALESCE(changed_at, error('%s')) AS BIGINT) AS changed_at, "+
-		"CAST(deleted_at AS BIGINT) AS deleted_at)",
+		"CAST(deleted_at AS BIGINT) AS deleted_at, "+
+		"CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at)",
 	ParquetNullRowIDMessage, ParquetNullChangedAtMessage)
 
 // BuildParquetScanSource renders the parquet scan for the advanced

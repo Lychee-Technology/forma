@@ -253,10 +253,17 @@ s3_source AS (
     -- VARCHAR changed_at cannot widen the union and make ordering
     -- lexicographic. deleted_at is type-pinned but NOT presence-guarded:
     -- pre-#274 legacy delta objects encode live rows as NULL and stay
-    -- readable until compaction retires them (#365 residual). Both scan
-    -- sites render sqlgen.BuildParquetScanSource, which also appends the
-    -- #255 typed NULLs for never-flushed columns.
-    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+    -- readable until compaction retires them (#365 residual).
+    -- ltbase_created_at is likewise type-pinned with no value-presence
+    -- guard (#460): hard-delete tombstones legitimately carry a NULL
+    -- creation stamp. Its COLUMN presence is enforced before the read by
+    -- the parquetcheck invariant — otherwise a mixed-generation scan set
+    -- would NULL-pad it, and those rows would reach the caller with a NULL
+    -- created_at ordered by that NULL rather than by their real creation
+    -- time. Both scan sites render
+    -- sqlgen.BuildParquetScanSource, which also appends the #255 typed
+    -- NULLs for never-flushed columns.
+    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
     WHERE
         -- 1. Anti-Join: Exclude if a newer version exists in PG
         row_id NOT IN (SELECT row_id FROM dirty_ids)
@@ -266,7 +273,7 @@ s3_source AS (
         --    Filtering versions directly here drops newer non-matching
         --    versions pre-dedup and resurrects stale rows (#173/#178).
         AND row_id IN (
-            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
             WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')
         )
 ),

@@ -46,8 +46,20 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 }
 
 // convertCSVToParquet uses DuckDB to convert a CSV file to Parquet format.
+//
+// The system columns are CAST explicitly rather than left to read_csv_auto's
+// sniffer, whose choice is value-dependent: a fixture whose timestamps happen
+// to be small sniffs as INTEGER, and the parquetcheck invariant requires
+// exactly BIGINT. Leaving that to inference made a fixture's VALUES decide
+// whether the object passed pre-read validation (#460).
 func (h *FederatedTestHarness) convertCSVToParquet(ctx context.Context, csvPath, parquetPath string) error {
-	createSQL := fmt.Sprintf(`CREATE OR REPLACE TABLE temp_export AS SELECT * FROM read_csv_auto('%s')`, csvPath)
+	createSQL := fmt.Sprintf(`CREATE OR REPLACE TABLE temp_export AS
+		SELECT * REPLACE (
+			CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at,
+			CAST(changed_at AS BIGINT) AS changed_at,
+			CAST(deleted_at AS BIGINT) AS deleted_at
+		)
+		FROM read_csv_auto('%s')`, csvPath)
 	if _, err := h.Duck.DB.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("create temp table: %w", err)
 	}

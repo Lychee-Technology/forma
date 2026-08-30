@@ -104,8 +104,12 @@ func (s *scriptedDescribeExecutor) Query(ctx context.Context, sql string, args .
 	return nil, fmt.Errorf("unexpected probe: %s", sql)
 }
 
+// buildValidSystemCols is the full invariant a healthy object satisfies —
+// ltbase_created_at included since #460, when the reader began projecting it
+// as created_at.
 func buildValidSystemCols() [][2]string {
-	return [][2]string{{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"title", "VARCHAR"}}
+	return [][2]string{{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"},
+		{"ltbase_created_at", "BIGINT"}, {"title", "VARCHAR"}}
 }
 
 func TestParquetSchemaValidator_ValidPathsPassAndCache(t *testing.T) {

@@ -114,13 +114,13 @@ func TestSingleFileGuardedDrainRaisesNullPresenceMessages(t *testing.T) {
 		{
 			name: "null_row_id",
 			sel: `CAST(NULL AS UUID) AS row_id, CAST(1 AS BIGINT) AS changed_at, ` +
-				`CAST(0 AS BIGINT) AS deleted_at`,
+				`CAST(0 AS BIGINT) AS deleted_at, CAST(50 AS BIGINT) AS ltbase_created_at`,
 			message: ParquetNullRowIDMessage,
 		},
 		{
 			name: "null_changed_at",
 			sel: liveRowID + `, CAST(NULL AS BIGINT) AS changed_at, ` +
-				`CAST(0 AS BIGINT) AS deleted_at`,
+				`CAST(0 AS BIGINT) AS deleted_at, CAST(50 AS BIGINT) AS ltbase_created_at`,
 			message: ParquetNullChangedAtMessage,
 		},
 	}
