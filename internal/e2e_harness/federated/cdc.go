@@ -53,10 +53,16 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 	for i, row := range unflushed {
 		rowIDs[i] = row.id
 		records[i] = TestRecord{
-			RowID:     row.id,
-			SchemaID:  h.SchemaID,
-			CreatedAt: row.createdAt,
-			ChangedAt: time.Now().UnixMilli(),
+			RowID:    row.id,
+			SchemaID: h.SchemaID,
+			// A hard-delete tombstone exports with NO creation stamp; every
+			// other row carries the one it already had (#460).
+			CreatedAt:       row.createdAt.Int64,
+			NoCreationStamp: !row.createdAt.Valid,
+			ChangedAt:       time.Now().UnixMilli(),
+			// deleted_at must survive the flush or a tombstone would be
+			// exported as a live row and resurrect on the next read.
+			DeletedAt: row.deletedAt,
 		}
 	}
 
@@ -86,19 +92,32 @@ func (h *FederatedTestHarness) tryAcquireSchemaLock(ctx context.Context) (bool, 
 
 // getUnflushedRowIDs fetches unflushed row IDs from change_log up to batch size.
 // unflushedRow is one row selected for a simulated flush, carrying the
-// creation stamp the export must preserve. A flush writes a NEW version of an
-// EXISTING row, so it must copy entity_main.ltbase_created_at into the delta
-// rather than stamp the flush instant — otherwise the row's created_at would
-// move every time it is flushed (#460). COALESCE keeps fixtures that seed
-// change_log without an entity_main row behaving as before.
+// creation stamp the export must preserve and the tombstone marker that
+// decides whether it has one. A flush writes a NEW version of an EXISTING
+// row, so it must copy entity_main.ltbase_created_at into the delta rather
+// than stamp the flush instant — otherwise the row's created_at would move
+// every time it is flushed (#460).
 type unflushedRow struct {
 	id        uuid.UUID
-	createdAt int64
+	createdAt sql.NullInt64
+	deletedAt int64
 }
 
+// getUnflushedRowIDs mirrors the production delta export's LEFT JOIN (#173):
+// a hard-deleted row's change_log tombstone survives while its entity_main
+// row is gone, so its creation stamp comes back NULL — the one legitimate
+// absence, which the flush must carry through rather than back-fill.
+//
+// For a LIVE row the COALESCE to cl.changed_at is retained: fixtures that
+// seed change_log without an entity_main row are lazy, not hard-deleted, and
+// must keep behaving exactly as they did before.
 func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflushedRow, error) {
 	rows, err := h.PGDB.QueryContext(ctx, `
-		SELECT cl.row_id, COALESCE(em.ltbase_created_at, cl.changed_at)
+		SELECT cl.row_id,
+		       CASE WHEN em.ltbase_created_at IS NULL AND COALESCE(cl.deleted_at, 0) > 0
+		            THEN NULL
+		            ELSE COALESCE(em.ltbase_created_at, cl.changed_at) END,
+		       COALESCE(cl.deleted_at, 0)
 		FROM change_log cl
 		LEFT JOIN entity_main em
 			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id = cl.row_id
@@ -113,7 +132,7 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflus
 	var unflushed []unflushedRow
 	for rows.Next() {
 		var r unflushedRow
-		if err := rows.Scan(&r.id, &r.createdAt); err != nil {
+		if err := rows.Scan(&r.id, &r.createdAt, &r.deletedAt); err != nil {
 			return nil, fmt.Errorf("scan row id: %w", err)
 		}
 		unflushed = append(unflushed, r)
@@ -204,7 +223,13 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 			for rows.Next() {
 				var rowID string
 				var schemaID int16
-				var createdAt, changedAt, deletedAt int64
+				var changedAt, deletedAt int64
+				// NULLABLE: a production hard-delete tombstone carries no
+				// creation stamp, and scanning that into a bare int64 fails
+				// with "converting NULL to int64 is unsupported" — which
+				// would make compaction unable to read real exported data
+				// (#460).
+				var createdAt sql.NullInt64
 				var name sql.NullString
 				var version sql.NullInt64
 
@@ -213,11 +238,12 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 				}
 
 				rec := TestRecord{
-					RowID:     uuid.MustParse(rowID),
-					SchemaID:  schemaID,
-					CreatedAt: createdAt,
-					ChangedAt: changedAt,
-					DeletedAt: deletedAt,
+					RowID:           uuid.MustParse(rowID),
+					SchemaID:        schemaID,
+					CreatedAt:       createdAt.Int64,
+					NoCreationStamp: !createdAt.Valid,
+					ChangedAt:       changedAt,
+					DeletedAt:       deletedAt,
 					Attributes: map[string]any{
 						"name":    name.String,
 						"version": int(version.Int64),

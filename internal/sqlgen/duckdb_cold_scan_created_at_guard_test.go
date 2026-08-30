@@ -47,13 +47,14 @@ func TestParquetScanGuardPinsCreatedAtType(t *testing.T) {
 	require.Equal(t, int64(9), guardedMin, "the VARCHAR '9' coerced value-preservingly to 9")
 }
 
-// TestParquetScanGuardToleratesNullCreatedAt pins the deliberate asymmetry in
-// the #460 guard: ltbase_created_at gets a TYPE pin but NO value-presence
-// guard. Hard-delete tombstones legitimately carry a NULL creation stamp — the
-// delta export LEFT JOINs entity_main so a hard-deleted row's change_log entry
-// still exports (#173) — so a presence guard would fail every healthy scan
-// touching one. Those rows are dropped by the deleted_ts filter long before
-// any ORDER BY, so the NULL never reaches a caller.
+// TestParquetScanGuardToleratesNullCreatedAt pins the permissive half of the
+// #460 guard: ltbase_created_at gets a TYPE pin plus a CONDITIONAL presence
+// guard that fires only on LIVE rows, so a hard-delete tombstone's NULL
+// creation stamp passes. Tombstones legitimately have none — the delta export
+// LEFT JOINs entity_main so a hard-deleted row's change_log entry still
+// exports (#173) — and they are dropped by the deleted_ts filter long before
+// any ORDER BY, so the NULL never reaches a caller. The rejecting half lives
+// in TestParquetScanGuardCreatedAtPresenceIsConditionalOnDeleted.
 func TestParquetScanGuardToleratesNullCreatedAt(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)

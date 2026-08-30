@@ -92,10 +92,17 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 	}
 
 	for _, r := range records {
+		// An empty field is read back as a NULL BIGINT, which is how a
+		// hard-delete tombstone's absent creation stamp reaches parquet —
+		// the production shape (#460).
+		createdAt := ""
+		if stamp, ok := r.CreationStamp(); ok {
+			createdAt = strconv.FormatInt(stamp, 10)
+		}
 		row := []string{
 			r.RowID.String(),
 			strconv.FormatInt(int64(r.SchemaID), 10),
-			strconv.FormatInt(r.CreationStamp(), 10),
+			createdAt,
 			strconv.FormatInt(r.ChangedAt, 10),
 			strconv.FormatInt(r.DeletedAt, 10),
 			attributeStringValue(r.Attributes, "name"),

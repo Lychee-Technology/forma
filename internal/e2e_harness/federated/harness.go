@@ -73,20 +73,34 @@ type TestRecord struct {
 	// a fixture that needs creation and version stamps to differ — the
 	// created→updated→flushed case — sets it explicitly. See CreationStamp.
 	CreatedAt int64
-	ChangedAt int64
-	DeletedAt int64
-	FlushedAt int64
+	// NoCreationStamp marks a production-shaped HARD-DELETE tombstone: the
+	// row's entity_main record is gone, so the delta export's LEFT JOIN
+	// (#173) yields a NULL ltbase_created_at. That NULL is the one
+	// legitimate absence of a creation stamp — the production scan guard
+	// permits it precisely for this shape (#460) — and it must survive flush
+	// and compaction unchanged rather than being back-filled with a version
+	// stamp. It is a separate flag rather than a nil CreatedAt because zero
+	// already means "unspecified, fall back to ChangedAt", and the two must
+	// not be conflated.
+	NoCreationStamp bool
+	ChangedAt       int64
+	DeletedAt       int64
+	FlushedAt       int64
 }
 
-// CreationStamp is the row's creation time with the zero-value fallback
-// applied: fixtures that do not distinguish creation from version stamp
-// (the majority) keep reporting ChangedAt on both tiers, so hot and parquet
-// copies of the same fixture row still agree (#460).
-func (r TestRecord) CreationStamp() int64 {
-	if r.CreatedAt != 0 {
-		return r.CreatedAt
+// CreationStamp returns the row's creation time and whether it has one.
+// A hard-delete tombstone has none (see NoCreationStamp); every other
+// fixture falls back to ChangedAt, so records that do not distinguish
+// creation from version stamp keep reporting the same value on both tiers
+// exactly as they did before #460.
+func (r TestRecord) CreationStamp() (int64, bool) {
+	if r.NoCreationStamp {
+		return 0, false
 	}
-	return r.ChangedAt
+	if r.CreatedAt != 0 {
+		return r.CreatedAt, true
+	}
+	return r.ChangedAt, true
 }
 
 // QueryOptions configures federated query execution.

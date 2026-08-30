@@ -186,7 +186,11 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
-		var createdAt, changedAt, deletedAt int64
+		var changedAt, deletedAt int64
+		// Nullable: a hard-delete tombstone carries no creation stamp. The
+		// post-dedup filter drops tombstones before they reach here, so this
+		// is defence in depth against a NULL-to-int64 scan failure (#460).
+		var createdAt sql.NullInt64
 		var name sql.NullString
 		var version sql.NullInt64
 		var symbol, exchange, region sql.NullString
@@ -208,7 +212,7 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 		rec := &model.PersistentRecord{
 			RowID:        uuid.MustParse(rowID),
 			SchemaID:     schemaID,
-			CreatedAt:    createdAt,
+			CreatedAt:    createdAt.Int64,
 			UpdatedAt:    changedAt,
 			TextItems:    make(map[string]string),
 			Float64Items: make(map[string]float64),
@@ -395,7 +399,8 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 	for rows.Next() {
 		var rowID string
 		var schemaID int16
-		var createdAt, changedAt, deletedAt int64
+		var changedAt, deletedAt int64
+		var createdAt sql.NullInt64 // nullable for the same reason as above
 		var name sql.NullString
 		var version sql.NullInt64
 		var symbol, exchange, region sql.NullString
@@ -409,7 +414,7 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 				return nil, err
 			}
 		}
-		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: createdAt, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
+		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: createdAt.Int64, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
 		if deletedAt > 0 {
 			rec.DeletedAt = &deletedAt
 		}

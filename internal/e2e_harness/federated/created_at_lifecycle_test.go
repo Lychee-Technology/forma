@@ -17,6 +17,8 @@ package federated
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -146,4 +148,101 @@ func TestCreationStamp_SurvivesFlushAndCompaction(t *testing.T) {
 	require.Len(t, compacted.Records, 1)
 	require.Equal(t, want.createdAt, compacted.Records[0].CreatedAt,
 		"compaction rewrites a row in place; it must not move the row's creation time (#460)")
+}
+
+// TestCreationStamp_HardDeleteTombstoneSurvivesFlushAndCompaction is the
+// production-shaped tombstone case (#460). A hard-deleted row has NO
+// entity_main record, so the delta export's LEFT JOIN (#173) writes a NULL
+// ltbase_created_at — the one legitimate absence, which the production scan
+// guard permits by predicating its presence check on deleted_at.
+//
+// The harness lifecycle must be able to carry that shape end to end. Before
+// this, readDeltaFiles scanned the column into a bare int64 and compaction
+// failed outright on a real exported tombstone with "converting NULL to int64
+// is unsupported"; the flush also back-filled a stamp, so the harness could
+// not even produce the shape to fail on.
+func TestCreationStamp_HardDeleteTombstoneSurvivesFlushAndCompaction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+	ctx := context.Background()
+	h, err := NewFederatedTestHarness(ctx)
+	require.NoError(t, err, "failed to create harness")
+	defer h.CleanupOrLog(ctx, t)
+	require.NoError(t, h.ClearAllData(ctx))
+
+	// A live row keeps the delta non-degenerate: compaction must handle a
+	// mixed batch, and its stamp proves the tombstone's NULL is not simply
+	// swallowing every value.
+	live, liveRecord := newCreationStampFixture(h.SchemaID, 10)
+	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{liveRecord}))
+
+	// The hard-delete tombstone: change_log only, no entity_main row.
+	tombstoneID := uuid.Must(uuid.NewV7())
+	deletedAt := int64(1_900_000_000_500)
+	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{{
+		RowID:           tombstoneID,
+		SchemaID:        h.SchemaID,
+		NoCreationStamp: true,
+		ChangedAt:       deletedAt,
+		DeletedAt:       deletedAt,
+	}}))
+
+	flush, err := h.RunCDCFlush(ctx)
+	require.NoError(t, err, "flush failed")
+	require.True(t, flush.Flushed, "flush should have written a delta file")
+
+	// The exported tombstone must carry a NULL creation stamp, exactly as the
+	// production exporter writes it.
+	require.Equal(t, []bool{true}, h.tombstoneCreationStampIsNull(ctx, t, tombstoneID),
+		"a hard-delete tombstone must export with a NULL ltbase_created_at (#173/#460)")
+
+	// Compaction reads that object back. Before the nullable representation
+	// this call failed on the NULL, so the assertion is that it works at all.
+	compaction, err := h.RunCompaction(ctx)
+	require.NoError(t, err,
+		"compaction must be able to read a production-shaped hard-delete tombstone")
+	require.Positive(t, compaction.RowsMerged, "compaction should have merged the delta")
+
+	// And the rewritten base file must still carry the NULL, not a
+	// back-filled version stamp.
+	require.Equal(t, []bool{true}, h.tombstoneCreationStampIsNull(ctx, t, tombstoneID),
+		"compaction must rewrite the tombstone's creation stamp as NULL, not back-fill it")
+
+	// The live row survives with its creation stamp intact and the tombstone
+	// stays invisible to queries. Only the creation stamp is asserted: the
+	// simulated flush mints a fresh version stamp by design, exactly as in
+	// TestCreationStamp_SurvivesFlushAndCompaction.
+	got, err := h.ExecuteFederatedQuery(ctx, &QueryOptions{Limit: 10})
+	require.NoError(t, err, "federated query failed")
+	require.Len(t, got.Records, 1, "the hard-deleted row must not surface")
+	require.Equal(t, live.rowID, got.Records[0].RowID)
+	require.Equal(t, live.createdAt, got.Records[0].CreatedAt,
+		"the live row's creation stamp must be untouched by a sibling tombstone's flush and compaction (#460)")
+}
+
+// tombstoneCreationStampIsNull reports, per parquet object holding the row,
+// whether its ltbase_created_at is NULL. It reads every object the harness has
+// written so the assertion does not depend on which tier currently holds it.
+func (h *FederatedTestHarness) tombstoneCreationStampIsNull(ctx context.Context, t *testing.T, rowID uuid.UUID) []bool {
+	t.Helper()
+	var out []bool
+	for _, tier := range []string{"delta", "base"} {
+		files, err := h.ListParquetFiles(ctx, tier)
+		require.NoError(t, err)
+		for _, f := range files {
+			rows, err := h.Duck.DB.QueryContext(ctx, fmt.Sprintf(
+				"SELECT ltbase_created_at FROM read_parquet('s3://%s/%s') WHERE CAST(row_id AS VARCHAR) = '%s'",
+				h.S3Bucket, f, rowID))
+			require.NoError(t, err)
+			for rows.Next() {
+				var v sql.NullInt64
+				require.NoError(t, rows.Scan(&v))
+				out = append(out, !v.Valid)
+			}
+			require.NoError(t, rows.Err())
+			require.NoError(t, rows.Close())
+		}
+	}
+	return out
 }
