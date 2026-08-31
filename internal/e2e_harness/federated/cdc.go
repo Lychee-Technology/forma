@@ -38,7 +38,7 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 	// Get batch of unflushed row IDs with their creation stamps
 	unflushed, err := h.getUnflushedRowIDs(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("select flush batch for schema %d: %w", h.SchemaID, err)
 	}
 
 	if len(unflushed) == 0 {
@@ -125,7 +125,7 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflus
 		LIMIT $2
 	`, h.SchemaID, h.CDCConfig.BatchSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query unflushed row ids for schema %d: %w", h.SchemaID, err)
 	}
 	defer rows.Close()
 
@@ -216,7 +216,7 @@ func (h *FederatedTestHarness) readDeltaFiles(ctx context.Context, deltaFiles []
 				FROM read_parquet('%s')
 			`, s3Path))
 			if err != nil {
-				return nil
+				return fmt.Errorf("read delta parquet %s: %w", file, err)
 			}
 			defer rows.Close()
 
