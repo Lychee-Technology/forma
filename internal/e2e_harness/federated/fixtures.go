@@ -178,6 +178,10 @@ func (PresetScenarios) ThreeTierNoOverlap(schemaID int16) (base, delta, hot []Te
 func (PresetScenarios) DeduplicationScenario(schemaID int16) (base, delta, hot []TestRecord) {
 	sharedRowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
+	// One logical row has ONE creation stamp, shared by every version (#460).
+	// Without it each version would fall back to its own ChangedAt and the
+	// fixture would model the per-version creation time #460 removed.
+	createdAt := baseTime.Add(-200 * time.Hour).UnixMilli()
 
 	// Base: oldest version
 	base = []TestRecord{{
@@ -187,6 +191,7 @@ func (PresetScenarios) DeduplicationScenario(schemaID int16) (base, delta, hot [
 			"name":    "Original",
 			"version": 1,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: baseTime.Add(-100 * time.Hour).UnixMilli(),
 	}}
 
@@ -198,6 +203,7 @@ func (PresetScenarios) DeduplicationScenario(schemaID int16) (base, delta, hot [
 			"name":    "Updated in Delta",
 			"version": 2,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: baseTime.Add(-10 * time.Hour).UnixMilli(),
 	}}
 
@@ -209,6 +215,7 @@ func (PresetScenarios) DeduplicationScenario(schemaID int16) (base, delta, hot [
 			"name":    "Latest in Hot",
 			"version": 3,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: baseTime.UnixMilli(),
 	}}
 

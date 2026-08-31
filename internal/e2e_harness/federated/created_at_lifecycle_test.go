@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/uuid"
@@ -245,4 +246,44 @@ func (h *FederatedTestHarness) tombstoneCreationStampIsNull(ctx context.Context,
 		}
 	}
 	return out
+}
+
+// TestCompactionFailsClosedOnUnreadableDelta makes the #460 fail-closed
+// behaviour durable. readDeltaFiles used to swallow a QueryContext error and
+// return nil, silently dropping the whole delta object — so compaction would
+// write a base file missing those rows and report success. Adding
+// ltbase_created_at to that SELECT made a schema mismatch a reachable failure
+// on exactly that line, so the swallow became a data-loss channel and now
+// returns a wrapped error instead.
+//
+// Without this test the behaviour change is invisible and a future refactor
+// could restore the silent skip without anything going red.
+func TestCompactionFailsClosedOnUnreadableDelta(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+	ctx := context.Background()
+	h, err := NewFederatedTestHarness(ctx)
+	require.NoError(t, err, "failed to create harness")
+	defer h.CleanupOrLog(ctx, t)
+	require.NoError(t, h.ClearAllData(ctx))
+
+	// A healthy delta so compaction has real work and the failure cannot be
+	// mistaken for an empty-input no-op.
+	_, healthy := newCreationStampFixture(h.SchemaID, 20)
+	require.NoError(t, h.WriteParquet(ctx, "delta", "healthy_delta.parquet", []TestRecord{healthy}))
+
+	// A delta object whose columns are nothing like the export schema.
+	local := filepath.Join(h.tmpDir, "wrong_schema.parquet")
+	_, err = h.Duck.DB.ExecContext(ctx, fmt.Sprintf(
+		"COPY (SELECT 1 AS wrong_col, 'x' AS other_col) TO '%s' (FORMAT PARQUET)", local))
+	require.NoError(t, err)
+	require.NoError(t, h.uploadToS3(ctx,
+		local, fmt.Sprintf("%s/%d/delta/wrong_schema.parquet", h.S3Prefix, h.SchemaID)))
+
+	_, err = h.RunCompaction(ctx)
+	require.Error(t, err,
+		"compaction must fail closed on an unreadable delta object, not silently drop its rows (#460)")
+	require.Contains(t, err.Error(), "read delta parquet",
+		"the failure must name the operation and the object, per the error-wrapping contract")
 }

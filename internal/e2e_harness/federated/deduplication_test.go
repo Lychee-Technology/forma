@@ -83,11 +83,18 @@ func TestDeduplication_CrossTier(t *testing.T) {
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
 
+	// One logical row: every version carries the SAME creation stamp and its
+	// own version stamp (#460). The winner is identified by UpdatedAt — the
+	// LWW version stamp — while CreatedAt is asserted to stay invariant
+	// across the fold, which is the property the reader now guarantees.
+	createdAt := baseTime.Add(-200 * time.Hour).UnixMilli()
+
 	// Version in Base (oldest)
 	require.NoError(t, h.WriteParquet(ctx, "base", "dedup_base.parquet", []TestRecord{{
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Base Version", "version": 1},
+		CreatedAt:  createdAt,
 		ChangedAt:  baseTime.Add(-100 * time.Hour).UnixMilli(),
 	}}))
 
@@ -96,6 +103,7 @@ func TestDeduplication_CrossTier(t *testing.T) {
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Delta Version", "version": 2},
+		CreatedAt:  createdAt,
 		ChangedAt:  baseTime.Add(-10 * time.Hour).UnixMilli(),
 	}}))
 
@@ -104,6 +112,7 @@ func TestDeduplication_CrossTier(t *testing.T) {
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Hot Version", "version": 3},
+		CreatedAt:  createdAt,
 		ChangedAt:  baseTime.UnixMilli(),
 	}}))
 
@@ -114,10 +123,12 @@ func TestDeduplication_CrossTier(t *testing.T) {
 	// Should have only 1 record after cross-tier deduplication
 	AssertRecordCount(t, result.Records, 1)
 
-	// Hot version should win (highest priority: Hot > Delta > Base)
-	// Verify by timestamp since hot buffer records don't return attribute values in federated queries
-	require.Equal(t, baseTime.UnixMilli(), result.Records[0].CreatedAt,
-		"should return the hot buffer version (latest timestamp)")
+	// Hot version should win (highest priority: Hot > Delta > Base), proven by
+	// the version stamp rather than the creation stamp.
+	require.Equal(t, baseTime.UnixMilli(), result.Records[0].UpdatedAt,
+		"should return the hot buffer version (latest version stamp)")
+	require.Equal(t, createdAt, result.Records[0].CreatedAt,
+		"the creation stamp is version-invariant: folding three versions must not change it (#460)")
 
 	t.Logf("TC-03-02 PASSED: Cross-tier deduplication - Base/Delta/Hot -> Hot wins")
 }
@@ -272,12 +283,16 @@ func TestDeduplication_MultipleRowsWithVersions(t *testing.T) {
 	versionsPerRow := 3
 	baseTime := time.Now()
 
-	// Track expected timestamps for the latest version of each row
+	// Track the expected version stamp of the winning version, and the one
+	// creation stamp every version of that row shares (#460).
 	expectedLatestTimestamps := make(map[string]int64)
+	expectedCreatedAt := make(map[string]int64)
 
 	// Create multiple rows, each with multiple versions
 	for i := 0; i < numDistinctRows; i++ {
 		rowID := uuid.Must(uuid.NewV7())
+		createdAt := baseTime.Add(-time.Duration(versionsPerRow+1) * time.Hour).UnixMilli()
+		expectedCreatedAt[rowID.String()] = createdAt
 
 		for v := 0; v < versionsPerRow; v++ {
 			changedAt := baseTime.Add(-time.Duration(versionsPerRow-v) * time.Hour).UnixMilli()
@@ -288,6 +303,7 @@ func TestDeduplication_MultipleRowsWithVersions(t *testing.T) {
 					"name":    "Record",
 					"version": v + 1,
 				},
+				CreatedAt: createdAt,
 				ChangedAt: changedAt,
 			}
 
@@ -315,13 +331,15 @@ func TestDeduplication_MultipleRowsWithVersions(t *testing.T) {
 	AssertRecordCount(t, result.Records, numDistinctRows)
 	AssertNoDuplicates(t, result.Records)
 
-	// Verify all returned records have the latest version by checking timestamp
-	// (Hot buffer records don't return attribute values in federated queries)
+	// The winner is the latest VERSION stamp; the creation stamp is the same
+	// for every version and must survive the fold unchanged (#460).
 	for _, r := range result.Records {
 		expectedTs, exists := expectedLatestTimestamps[r.RowID.String()]
 		require.True(t, exists, "record %s should be in expected timestamps map", r.RowID)
-		require.Equal(t, expectedTs, r.CreatedAt,
+		require.Equal(t, expectedTs, r.UpdatedAt,
 			"record %s should have latest version timestamp", r.RowID)
+		require.Equal(t, expectedCreatedAt[r.RowID.String()], r.CreatedAt,
+			"record %s must keep its single creation stamp across all versions (#460)", r.RowID)
 	}
 
 	t.Logf("TC-03-06 PASSED: Multiple rows deduplication - %d rows x %d versions -> %d unique",
