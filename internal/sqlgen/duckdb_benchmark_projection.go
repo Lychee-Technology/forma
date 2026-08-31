@@ -33,7 +33,7 @@ func IsBenchmarkSchemaID(schemaID int16) bool {
 func BuildBenchmarkS3Projection(schemaID int16) string {
 	parts := []string{
 		"row_id",
-		"changed_at AS created_at",
+		"ltbase_created_at AS created_at",
 		"changed_at AS ver_ts",
 		"deleted_at AS deleted_ts",
 	}
@@ -206,9 +206,12 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 		}
 	}
 
-	// Benchmark parquet files expose changed_at/deleted_at directly rather than the
-	// production ltbase_* columns used by exported entity_main projections.
-	s3Parts := []string{"row_id", "changed_at AS created_at", "changed_at AS ver_ts", "deleted_at AS deleted_ts"}
+	// Benchmark parquet files expose changed_at/deleted_at directly rather than
+	// the production ltbase_* columns used by exported entity_main
+	// projections, but they carry ltbase_created_at alongside — the harness
+	// writer emits it (internal/e2e_harness/federated/s3_operations.go) so the
+	// benchmark measures the same created_at contract production reads (#460).
+	s3Parts := []string{"row_id", "ltbase_created_at AS created_at", "changed_at AS ver_ts", "deleted_at AS deleted_ts"}
 	for _, a := range allAttrs {
 		s3Parts = append(s3Parts, a.s3Expr)
 	}

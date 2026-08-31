@@ -23,7 +23,7 @@ const stampCachePath = "s3://b/7/base/0_9.parquet"
 // stampWith returns an invariant-satisfying stamp carrying the given extra
 // attribute columns — the part an init rerun can legitimately change.
 func stampWith(extra ...string) map[string]string {
-	cols := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT"}
+	cols := map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT"}
 	for _, name := range extra {
 		cols[name] = "BIGINT"
 	}

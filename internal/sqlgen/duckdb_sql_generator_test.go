@@ -419,7 +419,7 @@ func TestBuildSchemaProjection_NoSyntheticNameVersion(t *testing.T) {
 		[]string{"row_id", "created_at", "ver_ts", "deleted_ts", "age"},
 		sp.UnifiedColumnNames)
 	require.Equal(t,
-		"row_id, changed_at AS created_at, changed_at AS ver_ts, deleted_at AS deleted_ts, age",
+		"row_id, ltbase_created_at AS created_at, changed_at AS ver_ts, deleted_at AS deleted_ts, age",
 		sp.S3SourceSelect)
 	require.Empty(t, sp.EAVAttrs)
 	require.False(t, sp.HasEAVAttrs)

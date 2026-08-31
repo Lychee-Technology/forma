@@ -6,40 +6,59 @@ import "fmt"
 // Split from query.go to keep execution/scanning separate from postgres_scan
 // query construction (#220).
 
-func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+// hotCreationStampItem renders the hot leg's creation-stamp SELECT item. The
+// hot leg must report the same quantity the parquet legs report in that slot
+// (#460), which means reading entity_main.ltbase_created_at rather than
+// aliasing cl.changed_at. COALESCE keeps fixtures that seed change_log without
+// an entity_main row behaving exactly as before.
+func hotCreationStampItem(withCreationStamp bool) string {
+	if withCreationStamp {
+		return "COALESCE(em.ltbase_created_at, cl.changed_at) as ltbase_created_at,\n\t\t\t"
+	}
+	return ""
+}
+
+func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp bool) string {
 	if benchmarkProjection {
 		if tradeTimeOnlyProjection && schemaID == benchmarkSchemaIDTrade {
-			return h.buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter)
+			return h.buildHotTradeTimeOnlyQuery(pgConnStr, schemaID, rowIDFilter, withCreationStamp)
 		}
-		return h.buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+		return h.buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter, withCreationStamp)
+	}
+	// The narrow path keeps its change_log-only scan: entity_main is joined
+	// only when the creation stamp is actually projected, so count queries
+	// (withCreationStamp = false) stay exactly as narrow as before (#460).
+	mainJoin := ""
+	if withCreationStamp {
+		mainJoin = fmt.Sprintf(`
+		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR`, pgConnStr)
 	}
 	return fmt.Sprintf(`
 		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
-			cl.changed_at,
-			cl.deleted_at,
-			'' as name,
+			%s'' as name,
 			0 as version,
 			'hot' as tier
-		FROM postgres_scan('%s', 'public', 'change_log') cl
+		FROM postgres_scan('%s', 'public', 'change_log') cl%s
 		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
 			%s
-			%s`, pgConnStr, schemaID, rowIDFilter, timeWindowFilter)
+			%s`, hotCreationStampItem(withCreationStamp)+"cl.changed_at,\n\t\t\tcl.deleted_at,\n\t\t\t", pgConnStr, mainJoin, schemaID, rowIDFilter, timeWindowFilter)
 }
 
-func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
-	return (*FederatedTestHarness)(nil).buildHotTierQuery(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp bool) string {
+	return (*FederatedTestHarness)(nil).buildHotTierQuery(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp)
 }
 
-func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string) string {
+func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, schemaID int16, rowIDFilter string, withCreationStamp bool) string {
 	tradeTimeAttrID := h.benchmarkAttributeID(schemaID, "tradeTime")
 	return fmt.Sprintf(`
 		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
-			cl.changed_at,
+			%scl.changed_at,
 			cl.deleted_at,
 			'' as name,
 			0 as version,
@@ -61,7 +80,7 @@ func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, sche
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
 		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
-			%s`, pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
+			%s`, hotCreationStampItem(withCreationStamp), pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
 }
 
 type hotTierEAVMapping struct {
@@ -153,13 +172,13 @@ func hotTierEAVMappingForSchema(schemaID int16) hotTierEAVMapping {
 	return (*FederatedTestHarness)(nil).hotTierEAVMappingForSchema(schemaID)
 }
 
-func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
+func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, withCreationStamp bool) string {
 	m := h.hotTierEAVMappingForSchema(schemaID)
 	return fmt.Sprintf(`
 		SELECT
 			cl.row_id::VARCHAR as row_id,
 			cl.schema_id,
-			cl.changed_at,
+			%scl.changed_at,
 			cl.deleted_at,
 			%s as name,
 			0 as version,
@@ -180,12 +199,13 @@ func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schem
 			%s
 			%s
 			%s`,
+		hotCreationStampItem(withCreationStamp),
 		m.nameExpr, m.selectExprs,
 		pgConnStr, pgConnStr,
 		m.pivotColumns, pgConnStr, m.attrIDList,
 		schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 }
 
-func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string) string {
-	return (*FederatedTestHarness)(nil).buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
+func buildHotTierQueryTargeted(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, withCreationStamp bool) string {
+	return (*FederatedTestHarness)(nil).buildHotTierQueryTargeted(pgConnStr, schemaID, rowIDFilter, attributeFilter, timeWindowFilter, withCreationStamp)
 }

@@ -386,7 +386,31 @@ func benchmarkVisibleAttributeValue(record GeneratedRecord, attribute string) (a
 	}
 }
 
+// sortExpectedRecordsForWorkload orders the oracle's winners the way the
+// engine orders the page it is checked against.
+//
+// Keyset workloads are the exception (#460). The engine supports keyset
+// cursors on SYSTEM columns only — federated.isSupportedKeysetColumn rejects
+// main-column and EAV attributes — so a keyset page can only be ordered by
+// created_at DESC, row_id ASC, never by the tradeTime order the offset
+// workloads use.
+//
+// That divergence used to be invisible: the generator assigns tradeTime FROM
+// changed_at, and the reader aliased changed_at into created_at, so the two
+// orders were the same sequence by accident. #460 gives every version of a row
+// its FIRST version's creation stamp, so for a row with overlapping versions
+// created_at (first write) and tradeTime (latest write) now differ and the two
+// orders genuinely disagree. The oracle has to follow the engine.
 func sortExpectedRecordsForWorkload(records []GeneratedRecord, workload WorkloadDefinition) {
+	if workload.UseKeysetPagination {
+		sort.Slice(records, func(i, j int) bool {
+			if records[i].CreatedAt != records[j].CreatedAt {
+				return records[i].CreatedAt > records[j].CreatedAt
+			}
+			return records[i].RowID.String() < records[j].RowID.String()
+		})
+		return
+	}
 	if workload.TargetSchema == "trade" {
 		sort.Slice(records, func(i, j int) bool {
 			left := generatedRecordTradeTime(records[i])

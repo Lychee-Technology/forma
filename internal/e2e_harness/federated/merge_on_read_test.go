@@ -78,9 +78,14 @@ func TestMergeOnRead_OverlappingRecords(t *testing.T) {
 	// Verify it's the newest version (from hot buffer)
 	require.Equal(t, hotRecords[0].RowID, result.Records[0].RowID)
 
-	// Verify by timestamp that we got the latest version (hot buffer has newest changed_at)
-	require.Equal(t, hotRecords[0].ChangedAt, result.Records[0].CreatedAt,
-		"should return the hot buffer version (latest timestamp)")
+	// The winner is the newest VERSION stamp. The creation stamp is shared by
+	// all three versions and must be unchanged by the fold (#460).
+	require.Equal(t, hotRecords[0].ChangedAt, result.Records[0].UpdatedAt,
+		"should return the hot buffer version (latest version stamp)")
+	wantCreatedAt, ok := hotRecords[0].CreationStamp()
+	require.True(t, ok)
+	require.Equal(t, wantCreatedAt, result.Records[0].CreatedAt,
+		"the creation stamp is version-invariant across the tier fold (#460)")
 
 	t.Logf("TC-02-02 PASSED: Overlapping records deduplicated to 1 record")
 }
@@ -100,6 +105,8 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
+	// One logical row, one creation stamp shared by every version (#460).
+	createdAt := baseTime.Add(-200 * time.Hour).UnixMilli()
 
 	// Version 1: Base file (oldest) - 100 hours ago
 	require.NoError(t, h.WriteParquet(ctx, "base", "lww_base.parquet", []TestRecord{{
@@ -109,6 +116,7 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 			"name":    "Alice Original",
 			"version": 1,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: baseTime.Add(-100 * time.Hour).UnixMilli(),
 	}}))
 
@@ -120,6 +128,7 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 			"name":    "Alice Updated",
 			"version": 2,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: baseTime.Add(-10 * time.Hour).UnixMilli(),
 	}}))
 
@@ -132,6 +141,7 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 			"name":    "Alice Latest",
 			"version": 3,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: hotChangedAt,
 	}}))
 
@@ -145,9 +155,12 @@ func TestMergeOnRead_LastWriteWins(t *testing.T) {
 	// Verify only one record returned (deduplicated)
 	AssertRecordCount(t, result.Records, 1)
 
-	// Verify it's the newest version by timestamp
-	require.Equal(t, hotChangedAt, result.Records[0].CreatedAt,
-		"should return latest version (newest timestamp)")
+	// The newest VERSION stamp identifies the winner; the creation stamp is
+	// the same on all three versions and must survive the fold (#460).
+	require.Equal(t, hotChangedAt, result.Records[0].UpdatedAt,
+		"should return latest version (newest version stamp)")
+	require.Equal(t, createdAt, result.Records[0].CreatedAt,
+		"last-write-wins must not move the row's creation time (#460)")
 
 	t.Logf("TC-02-03 PASSED: Last write wins - returned newest version")
 }
@@ -166,6 +179,8 @@ func TestMergeOnRead_DirtyIDExclusion(t *testing.T) {
 	defer h.CleanupOrLog(ctx, t)
 
 	rowID := uuid.Must(uuid.NewV7())
+	// One logical row, one creation stamp shared by both versions (#460).
+	createdAt := time.Now().Add(-200 * time.Hour).UnixMilli()
 
 	// Old version in Base (should be excluded due to dirty)
 	require.NoError(t, h.WriteParquet(ctx, "base", "dirty_base.parquet", []TestRecord{{
@@ -175,6 +190,7 @@ func TestMergeOnRead_DirtyIDExclusion(t *testing.T) {
 			"name":    "Old Version",
 			"version": 1,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: time.Now().Add(-100 * time.Hour).UnixMilli(),
 	}}))
 
@@ -187,6 +203,7 @@ func TestMergeOnRead_DirtyIDExclusion(t *testing.T) {
 			"name":    "New Version",
 			"version": 2,
 		},
+		CreatedAt: createdAt,
 		ChangedAt: hotChangedAt,
 		FlushedAt: 0, // Unflushed = dirty
 	}}))
@@ -198,9 +215,12 @@ func TestMergeOnRead_DirtyIDExclusion(t *testing.T) {
 	// Should only have one record with the new version
 	AssertRecordCount(t, result.Records, 1)
 
-	// Verify by timestamp that we got the hot buffer version (attribute values not available in federated queries)
-	require.Equal(t, hotChangedAt, result.Records[0].CreatedAt,
-		"should return hot buffer version (latest timestamp)")
+	// The hot version wins on its VERSION stamp; the creation stamp is shared
+	// with the discarded base version and must be reported unchanged (#460).
+	require.Equal(t, hotChangedAt, result.Records[0].UpdatedAt,
+		"should return hot buffer version (latest version stamp)")
+	require.Equal(t, createdAt, result.Records[0].CreatedAt,
+		"the dirty-set anti-join must not change the row's creation time (#460)")
 
 	// Verify execution plan shows dirty ID exclusion
 	if result.Plan != nil {

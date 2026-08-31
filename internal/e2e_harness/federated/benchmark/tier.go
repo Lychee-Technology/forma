@@ -75,7 +75,10 @@ func ResolveTierMixProfile(name string) (TierMixProfile, error) {
 	}
 }
 
-// SplitIntoTiers partitions the generated dataset into base, delta, and hot tiers.
+// SplitIntoTiers partitions the generated dataset into base, delta, and hot
+// tiers. It first stamps every record's CreatedAt in place (see
+// stampCreationTimes), so versions of one row keep a single creation stamp
+// wherever the split scatters them.
 func SplitIntoTiers(dataset *GeneratedDataset, profile TierMixProfile) (*TieredDataset, error) {
 	if dataset == nil {
 		return nil, fmt.Errorf("dataset cannot be nil")
@@ -83,6 +86,7 @@ func SplitIntoTiers(dataset *GeneratedDataset, profile TierMixProfile) (*TieredD
 	if err := validateTierMixProfile(profile); err != nil {
 		return nil, err
 	}
+	stampCreationTimes(dataset.Records)
 	base := make([]GeneratedRecord, 0)
 	delta := make([]GeneratedRecord, 0)
 	hot := make([]GeneratedRecord, 0)
@@ -197,6 +201,7 @@ func ToTestRecords(records []GeneratedRecord) []federated.TestRecord {
 			RowID:      record.RowID,
 			SchemaID:   record.SchemaID,
 			Attributes: attrs,
+			CreatedAt:  record.CreatedAt,
 			ChangedAt:  record.ChangedAt,
 			DeletedAt:  record.DeletedAt,
 			FlushedAt:  0,
@@ -241,6 +246,25 @@ func tierCutoffs(total int, profile TierMixProfile) (int, int) {
 		deltaCutoff = total
 	}
 	return baseCutoff, deltaCutoff
+}
+
+// stampCreationTimes gives every version of a row the same creation stamp —
+// the earliest ChangedAt in its version group — in place, before the tier
+// split clones records into base/delta/hot. Without it a row's base copy and
+// its delta/hot copy would report different created_at values once the reader
+// projects the real creation stamp (#460), reintroducing at fixture level the
+// flush-boundary sort instability the reader fix removes.
+func stampCreationTimes(records []GeneratedRecord) {
+	earliest := make(map[string]int64, len(records))
+	for _, record := range records {
+		key := schemaRowKey(record.SchemaID, record.RowID)
+		if prev, ok := earliest[key]; !ok || record.ChangedAt < prev {
+			earliest[key] = record.ChangedAt
+		}
+	}
+	for i := range records {
+		records[i].CreatedAt = earliest[schemaRowKey(records[i].SchemaID, records[i].RowID)]
+	}
 }
 
 func groupBySchemaRowKey(records []GeneratedRecord) map[string][]GeneratedRecord {

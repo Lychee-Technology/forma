@@ -29,8 +29,12 @@ func writeParquetFixture(t *testing.T, db *sql.DB, path string, rows []mergeFixt
 		if r.title != "NULL" {
 			title = "'" + r.title + "'"
 		}
+		// ltbase_created_at is part of the export schema invariant since #460;
+		// a fixture without it is rejected before the merge, exactly as a
+		// real object would be. Held below changed_at so a merge that
+		// confused the two would be visible by value.
 		selects = append(selects, fmt.Sprintf(
-			"SELECT CAST('%s' AS UUID) AS row_id, CAST(%d AS BIGINT) AS changed_at, CAST(%s AS BIGINT) AS deleted_at, %s AS title",
+			"SELECT CAST('%s' AS UUID) AS row_id, CAST(%d AS BIGINT) AS changed_at, CAST(%s AS BIGINT) AS deleted_at, CAST(50 AS BIGINT) AS ltbase_created_at, %s AS title",
 			r.rowID, r.changedAt, r.deletedAt, title))
 	}
 	q := fmt.Sprintf("COPY (%s) TO '%s' (FORMAT PARQUET)", joinSQL(selects), path)

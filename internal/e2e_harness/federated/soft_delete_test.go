@@ -104,12 +104,18 @@ func TestSoftDelete_RestoreAfterDelete(t *testing.T) {
 
 	rowID := uuid.Must(uuid.NewV7())
 	baseTime := time.Now()
+	// One logical row: create, soft-delete and restore are three VERSIONS of
+	// it, so they share one creation stamp (#460). A soft delete leaves the
+	// entity_main row in place, so unlike a hard delete the stamp is present
+	// throughout.
+	createdAt := baseTime.Add(-4 * time.Hour).UnixMilli()
 
 	// Version 1: Created (not deleted)
 	require.NoError(t, h.WriteParquet(ctx, "base", "restore_v1.parquet", []TestRecord{{
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Created", "version": 1},
+		CreatedAt:  createdAt,
 		ChangedAt:  baseTime.Add(-3 * time.Hour).UnixMilli(),
 		DeletedAt:  0,
 	}}))
@@ -119,6 +125,7 @@ func TestSoftDelete_RestoreAfterDelete(t *testing.T) {
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Deleted", "version": 2},
+		CreatedAt:  createdAt,
 		ChangedAt:  baseTime.Add(-2 * time.Hour).UnixMilli(),
 		DeletedAt:  baseTime.Add(-2 * time.Hour).UnixMilli(),
 	}}))
@@ -129,6 +136,7 @@ func TestSoftDelete_RestoreAfterDelete(t *testing.T) {
 		RowID:      rowID,
 		SchemaID:   h.SchemaID,
 		Attributes: map[string]any{"name": "Restored", "version": 3},
+		CreatedAt:  createdAt,
 		ChangedAt:  restoredTime,
 		DeletedAt:  0, // Restored
 	}}))
@@ -143,9 +151,13 @@ func TestSoftDelete_RestoreAfterDelete(t *testing.T) {
 
 	// Verify it's the restored version by checking the row_id and that it's the latest
 	require.Equal(t, rowID, result.Records[0].RowID, "should return the correct row_id")
-	// The record should have the timestamp of the restored version (latest)
-	// Note: Hot buffer records return changed_at as CreatedAt in our mapping
-	require.Equal(t, restoredTime, result.Records[0].CreatedAt, "should return the restored version (latest timestamp)")
+	// The restored version wins on its VERSION stamp. Its creation stamp is
+	// the one the row has carried since version 1: a delete-and-restore cycle
+	// is not a new row and must not reset it (#460).
+	require.Equal(t, restoredTime, result.Records[0].UpdatedAt,
+		"should return the restored version (latest version stamp)")
+	require.Equal(t, createdAt, result.Records[0].CreatedAt,
+		"restoring a soft-deleted row must not change its creation time (#460)")
 
 	t.Logf("TC-04-03 PASSED: Restored record after deletion returned correctly")
 }

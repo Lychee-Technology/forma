@@ -94,14 +94,20 @@ func (h *FederatedTestHarness) insertHotRecord(ctx context.Context, r TestRecord
 		r.ChangedAt = now
 	}
 
-	// Insert into entity_main
-	if err := h.insertEntityMain(ctx, r); err != nil {
-		return err
-	}
+	// A hard-delete tombstone has NO entity_main or eav_data row — that is
+	// what makes it a hard delete, and it is why the exporter's LEFT JOIN
+	// yields a NULL creation stamp for it (#173/#460). Only the change_log
+	// tombstone is written.
+	if !r.NoCreationStamp {
+		// Insert into entity_main
+		if err := h.insertEntityMain(ctx, r); err != nil {
+			return err
+		}
 
-	// Insert into eav_data for each attribute
-	if err := h.insertEAVData(ctx, r); err != nil {
-		return err
+		// Insert into eav_data for each attribute
+		if err := h.insertEAVData(ctx, r); err != nil {
+			return err
+		}
 	}
 
 	// Insert into change_log (unflushed)
@@ -110,6 +116,15 @@ func (h *FederatedTestHarness) insertHotRecord(ctx context.Context, r TestRecord
 	}
 
 	return nil
+}
+
+// mustCreationStamp is the entity_main creation stamp. The column is NOT
+// NULL, and the only record without a stamp is a hard-delete tombstone —
+// which by definition has no entity_main row, so insertHotRecord never
+// reaches here for one.
+func mustCreationStamp(r TestRecord) int64 {
+	stamp, _ := r.CreationStamp()
+	return stamp
 }
 
 // insertEntityMain inserts a record into the entity_main table.
@@ -132,7 +147,7 @@ func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecor
 			uuid_01 = $9,
 			ltbase_updated_at = $11,
 			ltbase_deleted_at = $12
-	`, r.SchemaID, r.RowID, text01, text02, smallint01, bigint01, bigint02, double01, uuid01, r.ChangedAt, r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
+	`, r.SchemaID, r.RowID, text01, text02, smallint01, bigint01, bigint02, double01, uuid01, mustCreationStamp(r), r.ChangedAt, sql.NullInt64{Int64: r.DeletedAt, Valid: r.DeletedAt > 0})
 	if err != nil {
 		return fmt.Errorf("insert entity_main: %w", err)
 	}

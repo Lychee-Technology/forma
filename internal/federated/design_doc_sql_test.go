@@ -24,8 +24,9 @@ import (
 //     by AdvancedQueryTemplateDuckDB — never a 2-arg form or a predicate/query
 //     smuggled into the table argument;
 //   - the S3 projection uses the runtime parquet columns from
-//     buildS3Projection (changed_at AS created_at / ver_ts, deleted_at AS
-//     deleted_ts), not phantom ltbase_* columns;
+//     buildS3Projection (ltbase_created_at AS created_at, changed_at AS
+//     ver_ts, deleted_at AS deleted_ts) — created_at and ver_ts come from
+//     different parquet columns because they are different quantities (#460);
 //   - the documented query preserves the #173/#178 filter-after-LWW
 //     semantics that PR #211 encoded.
 //
@@ -213,6 +214,10 @@ func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) s
 //   - s4: single non-matching parquet version — the semijoin excludes it.
 //   - d1: stale matching parquet version AND an unflushed hot version — the
 //     dirty-set anti-join must serve the hot values (age 30, created_at 90).
+//
+// Every parquet row carries an ltbase_created_at distinct from its changed_at,
+// so a leg that aliased the version stamp into the created_at slot (#460)
+// would report the wrong value and fail the assertion below.
 //   - d2: unflushed hot version that fails the filter — dropped post-LWW.
 func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string) {
 	t.Helper()
@@ -238,14 +243,14 @@ func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string) {
 			('d2', 1, 205, 'developer')`,
 		`COPY (
 			SELECT * FROM (VALUES
-				('s1', CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Stale', 25, 'developer'),
-				('s1', CAST(200 AS BIGINT), CAST(0 AS BIGINT), 'John Newer', 15, 'developer'),
-				('s2', CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Alive', 30, 'developer'),
-				('s2', CAST(200 AS BIGINT), CAST(200 AS BIGINT), 'John Gone', 30, 'developer'),
-				('s3', CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Base', 40, 'developer'),
-				('s4', CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'Alice', 50, 'developer'),
-				('d1', CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Flushed', 25, 'developer')
-			) AS t(row_id, changed_at, deleted_at, name, age, tag)
+				('s1', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Stale', 25, 'developer'),
+				('s1', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(0 AS BIGINT), 'John Newer', 15, 'developer'),
+				('s2', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Alive', 30, 'developer'),
+				('s2', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(200 AS BIGINT), 'John Gone', 30, 'developer'),
+				('s3', CAST(80 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Base', 40, 'developer'),
+				('s4', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'Alice', 50, 'developer'),
+				('d1', CAST(90 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Flushed', 25, 'developer')
+			) AS t(row_id, ltbase_created_at, changed_at, deleted_at, name, age, tag)
 		) TO '` + parquetPath + `' (FORMAT PARQUET)`,
 	}
 	for _, stmt := range stmts {
@@ -289,11 +294,14 @@ func TestDesignDocSQL_ExecutesWithLWWFilterSemantics(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 
-	// ORDER BY created_at DESC: s3 (100, from parquet changed_at) precedes
-	// d1 (90, from entity_main.ltbase_created_at).
+	// ORDER BY created_at DESC: s3 reports 80, its parquet ltbase_created_at
+	// — NOT the 100 its changed_at carries (#460) — and d1 reports 90 from
+	// entity_main.ltbase_created_at, so the hot row now leads the page. The
+	// parquet copy of d1 carries the same 90, which is the point: a row's
+	// sort key does not move when it crosses the flush boundary.
 	require.Equal(t, []resultRow{
-		{rowID: "s3", name: "John Base", age: 40, tag: "developer", createdAt: 100},
 		{rowID: "d1", name: "John Dirty", age: 30, tag: "developer", createdAt: 90},
+		{rowID: "s3", name: "John Base", age: 40, tag: "developer", createdAt: 80},
 	}, got,
 		"§5 must keep filter-after-LWW: s1 (newer non-matching version) and s2 "+
 			"(tombstone winner) must not resurface; d1 must carry hot-tier values")

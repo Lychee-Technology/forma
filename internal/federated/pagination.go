@@ -187,10 +187,16 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	// Fetch from DuckDB (cold and warm via S3, hot via postgres_scan).
 	// The template applies the keyset WHERE in the visible CTE AFTER the
 	// ROW_NUMBER dedup picks rn = 1, so the cursor filters LWW winners, not
-	// row versions. Applying it pre-dedup resurrected superseded versions
-	// for cursors over any version-varying column — business attributes and
-	// created_at alike, since the S3 projection maps changed_at AS
-	// created_at (#212). Only row_id is version-invariant.
+	// row versions. Applying it pre-dedup resurrected superseded versions for
+	// cursors over any version-varying column (#212).
+	//
+	// created_at is no longer one of those: since #460 the S3 projection reads
+	// the exported ltbase_created_at instead of aliasing changed_at, so an
+	// ordinary row's creation stamp is the same on every version. Post-dedup
+	// placement remains REQUIRED regardless — business attributes still vary
+	// per version, and a delete-and-recreate history reuses a row_id with a
+	// genuinely different creation time, so a pre-dedup cursor could still
+	// admit a superseded version.
 	if opts != nil && opts.IncludeExecutionPlan && opts.ExecutionPlan != nil {
 		opts.ExecutionPlan.Routing = model.RoutingDecision{
 			Tiers:     []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},

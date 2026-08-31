@@ -46,8 +46,20 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 }
 
 // convertCSVToParquet uses DuckDB to convert a CSV file to Parquet format.
+//
+// The system columns are CAST explicitly rather than left to read_csv_auto's
+// sniffer, whose choice is value-dependent: a fixture whose timestamps happen
+// to be small sniffs as INTEGER, and the parquetcheck invariant requires
+// exactly BIGINT. Leaving that to inference made a fixture's VALUES decide
+// whether the object passed pre-read validation (#460).
 func (h *FederatedTestHarness) convertCSVToParquet(ctx context.Context, csvPath, parquetPath string) error {
-	createSQL := fmt.Sprintf(`CREATE OR REPLACE TABLE temp_export AS SELECT * FROM read_csv_auto('%s')`, csvPath)
+	createSQL := fmt.Sprintf(`CREATE OR REPLACE TABLE temp_export AS
+		SELECT * REPLACE (
+			CAST(ltbase_created_at AS BIGINT) AS ltbase_created_at,
+			CAST(changed_at AS BIGINT) AS changed_at,
+			CAST(deleted_at AS BIGINT) AS deleted_at
+		)
+		FROM read_csv_auto('%s')`, csvPath)
 	if _, err := h.Duck.DB.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("create temp table: %w", err)
 	}
@@ -70,16 +82,27 @@ func (h *FederatedTestHarness) writeRecordsToCSV(path string, records []TestReco
 
 	attrKeys := collectCSVAttributeKeys(records)
 	writer := csv.NewWriter(f)
-	header := []string{"row_id", "schema_id", "changed_at", "deleted_at", "name", "version"}
+	// ltbase_created_at mirrors the production export: both CDC exporters
+	// write the row's true creation time next to the LWW version stamp, and
+	// the federated reader projects it into the created_at slot (#460).
+	header := []string{"row_id", "schema_id", "ltbase_created_at", "changed_at", "deleted_at", "name", "version"}
 	header = append(header, attrKeys...)
 	if err := writer.Write(header); err != nil {
 		return err
 	}
 
 	for _, r := range records {
+		// An empty field is read back as a NULL BIGINT, which is how a
+		// hard-delete tombstone's absent creation stamp reaches parquet —
+		// the production shape (#460).
+		createdAt := ""
+		if stamp, ok := r.CreationStamp(); ok {
+			createdAt = strconv.FormatInt(stamp, 10)
+		}
 		row := []string{
 			r.RowID.String(),
 			strconv.FormatInt(int64(r.SchemaID), 10),
+			createdAt,
 			strconv.FormatInt(r.ChangedAt, 10),
 			strconv.FormatInt(r.DeletedAt, 10),
 			attributeStringValue(r.Attributes, "name"),

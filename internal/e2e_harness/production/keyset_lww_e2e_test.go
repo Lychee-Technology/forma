@@ -105,13 +105,13 @@ func testKeysetAttributeCursorResurrection(ctx context.Context, t *testing.T, en
 	}
 }
 
-// testKeysetCreatedAtCursorResurrection pins the #212 comment-thread finding:
-// created_at is NOT version-invariant in the federated path — the S3
-// projection maps changed_at AS created_at (duckdb_schema_projection.go), so
-// an update moves the winner's created_at forward and a created_at cursor
-// could resurrect the predecessor exactly like a business attribute. This
-// scenario pins "no version resurrection" only; the projection's
-// creation-time drift itself is out of scope for #212.
+// testKeysetCreatedAtCursorResurrection pins the #212 finding — a created_at
+// cursor must not resurrect a superseded version — on top of the #460
+// contract that created_at is now version-INVARIANT on every tier: the S3
+// projection reads the exported ltbase_created_at, so an update no longer
+// moves the winner's created_at forward. A row therefore keeps its cursor
+// position across an update and across the flush boundary; what the cursor
+// must still never do is admit the row twice, once per version.
 func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	a := CreateEvent(wide, map[string]any{"title": "ca-a", "count": float64(900)})
 	if err := env.ApplyEvents(ctx, a); err != nil {
@@ -151,10 +151,12 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 		t.Fatalf("control returned %d rows, want 3", len(res.Records))
 	}
 
-	// created_at DESC, cursor after C(t3) → created_at < t3. Among LWW
-	// winners only B(t2) qualifies: A's winner carries created_at = t4
-	// (update-time changed_at). Pre-#212 the superseded A@t1 version passed
-	// the cursor pre-dedup, won rn = 1, and resurrected as a second row.
+	// created_at DESC, cursor after C(t3) → created_at < t3. Two LWW winners
+	// qualify: B(t2) and A, whose created_at stayed t1 through the update
+	// (#460 — pre-fix A's winner carried the update-time changed_at t4 and
+	// fell outside the cursor entirely). Each must appear EXACTLY once:
+	// pre-#212 the superseded A@t1 version passed the cursor pre-dedup, won
+	// rn = 1, and resurrected A as a second row.
 	page, err := env.Query(ctx, Query{
 		Schema: wide,
 		Keyset: &model.KeysetCursor{
@@ -173,9 +175,14 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 	if err != nil {
 		t.Fatalf("created_at keyset query: %v", err)
 	}
-	if len(page.Records) != 1 || page.Records[0].RowID != b.RowID {
-		t.Fatalf("created_at keyset page = %v, want exactly [%s]: a stale pre-dedup version leaked through the cursor",
-			pageRowIDs(page), b.RowID)
+	// created_at DESC, row_id ASC: B(t2) precedes A(t1).
+	if len(page.Records) != 2 || page.Records[0].RowID != b.RowID || page.Records[1].RowID != a.RowID {
+		t.Fatalf("created_at keyset page = %v, want exactly [%s %s]: either a stale pre-dedup version leaked through the cursor, or a winner's created_at drifted off its creation time (#460)",
+			pageRowIDs(page), b.RowID, a.RowID)
+	}
+	if got := page.Records[1].CreatedAt; got != a.ChangedAt {
+		t.Fatalf("A created_at = %d, want its creation stamp %d: the federated route must not report the LWW version stamp (#460)",
+			got, a.ChangedAt)
 	}
 }
 

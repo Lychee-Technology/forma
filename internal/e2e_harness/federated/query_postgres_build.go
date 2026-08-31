@@ -21,6 +21,7 @@ func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) 
 		SELECT
 			cl.row_id::VARCHAR,
 			cl.schema_id,
+			COALESCE(em.ltbase_created_at, cl.changed_at),
 			cl.changed_at,
 			COALESCE(cl.deleted_at, 0),
 			COALESCE(hot_vals.name, hot_vals.symbol, '') as name,

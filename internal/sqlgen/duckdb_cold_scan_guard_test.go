@@ -44,6 +44,12 @@ type guardFixtureSet struct {
 	// file whose changed_at is VARCHAR widens the union and would make LWW
 	// ordering lexicographic.
 	varcharChangedAt, garbageChangedAt string
+	// noCreatedAt / varcharCreatedAt / nullCreatedAt exercise the #460
+	// creation-stamp column: absent entirely (caught before the read, by the
+	// parquetcheck invariant — the scan's REPLACE list simply fails to bind),
+	// carried as VARCHAR (the type channel the CAST re-pins), and present but
+	// NULL (the hard-delete tombstone shape the guard must tolerate).
+	noCreatedAt, varcharCreatedAt, nullCreatedAt string
 }
 
 func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
@@ -52,6 +58,10 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 	const rowIDA = "CAST('018f05c0-0000-7000-8000-00000000000a' AS UUID) AS row_id"
 	const rowIDB = "CAST('018f05c0-0000-7000-8000-00000000000b' AS UUID) AS row_id"
 	const liveDeleted = "CAST(NULL AS BIGINT) AS deleted_at"
+	// The creation stamp every production generation carries (#460). Held
+	// well below the changed_at values so a projection that confused the two
+	// is visible by value.
+	const created = "CAST(50 AS BIGINT) AS ltbase_created_at"
 
 	set := guardFixtureSet{}
 	for _, w := range []struct {
@@ -61,16 +71,24 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 		// changed_at=100 against varcharChangedAt's '9' is deliberate: the two
 		// order one way numerically and the other way lexicographically, which
 		// is what makes the union-widening failure visible.
-		{&set.healthy, "healthy.parquet", rowIDA + ", CAST(100 AS BIGINT) AS changed_at, " + liveDeleted + ", 'alive' AS title"},
-		{&set.noRowID, "no_row_id.parquet", "CAST(2 AS BIGINT) AS changed_at, " + liveDeleted + ", 'rogue' AS title"},
-		{&set.noChangedAt, "no_changed_at.parquet", rowIDB + ", " + liveDeleted + ", 'rogue' AS title"},
-		{&set.noDeletedAt, "no_deleted_at.parquet", rowIDB + ", CAST(4 AS BIGINT) AS changed_at, 'rogue' AS title"},
+		{&set.healthy, "healthy.parquet", rowIDA + ", CAST(100 AS BIGINT) AS changed_at, " + liveDeleted + ", " + created + ", 'alive' AS title"},
+		{&set.noRowID, "no_row_id.parquet", "CAST(2 AS BIGINT) AS changed_at, " + liveDeleted + ", " + created + ", 'rogue' AS title"},
+		{&set.noChangedAt, "no_changed_at.parquet", rowIDB + ", " + liveDeleted + ", " + created + ", 'rogue' AS title"},
+		{&set.noDeletedAt, "no_deleted_at.parquet", rowIDB + ", CAST(4 AS BIGINT) AS changed_at, " + created + ", 'rogue' AS title"},
 		{&set.varcharRowID, "benchmark.parquet", "CAST('rid-1' AS VARCHAR) AS row_id, " +
-			"CAST(3 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, 'bench' AS title"},
+			"CAST(3 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, " + created + ", 'bench' AS title"},
 		{&set.varcharChangedAt, "varchar_changed_at.parquet", rowIDB +
-			", CAST('9' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'numeric-string' AS title"},
+			", CAST('9' AS VARCHAR) AS changed_at, " + liveDeleted + ", " + created + ", 'numeric-string' AS title"},
 		{&set.garbageChangedAt, "garbage_changed_at.parquet", rowIDB +
-			", CAST('not-a-number' AS VARCHAR) AS changed_at, " + liveDeleted + ", 'garbage' AS title"},
+			", CAST('not-a-number' AS VARCHAR) AS changed_at, " + liveDeleted + ", " + created + ", 'garbage' AS title"},
+		{&set.noCreatedAt, "no_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, " + liveDeleted + ", 'rogue' AS title"},
+		{&set.varcharCreatedAt, "varchar_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, " + liveDeleted +
+			", CAST('9' AS VARCHAR) AS ltbase_created_at, 'numeric-string' AS title"},
+		{&set.nullCreatedAt, "null_created_at.parquet", rowIDB +
+			", CAST(4 AS BIGINT) AS changed_at, CAST(4 AS BIGINT) AS deleted_at" +
+			", CAST(NULL AS BIGINT) AS ltbase_created_at, 'tombstone' AS title"},
 	} {
 		*w.dst = filepath.Join(dir, w.name)
 		_, err := db.Exec(fmt.Sprintf("COPY (SELECT %s) TO '%s' (FORMAT PARQUET)", w.sel, *w.dst))

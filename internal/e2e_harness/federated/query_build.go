@@ -19,16 +19,21 @@ import (
 // buildFederatedQuerySQLDynamic builds the federated query SQL, only including tiers that have files.
 func (h *FederatedTestHarness) buildFederatedQuerySQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
 	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
-	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, benchmarkProjection, usesTradeTimeOnlyBenchmarkProjectionForSelect(opts))
+	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, benchmarkProjection, usesTradeTimeOnlyBenchmarkProjectionForSelect(opts), true)
 	return buildFinalFederatedSelect(combinedQuery, opts, benchmarkProjection)
 }
 
 func (h *FederatedTestHarness) buildFederatedQueryCountSQLDynamic(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions) string {
-	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, usesBenchmarkProjectionForCount(opts), false)
+	// withCreationStamp = false: a count reads no row values, so the creation
+	// stamp is omitted from every leg rather than sourced differently per
+	// tier. That keeps the narrow non-benchmark hot leg free of the
+	// entity_main join the stamp would otherwise require (#460), preserving
+	// the deep-page count's narrowness.
+	combinedQuery := h.buildFederatedCombinedQuery(basePath, deltaPath, hasBase, hasDelta, dirtyIDs, opts, usesBenchmarkProjectionForCount(opts), false, false)
 	return buildFinalFederatedCount(combinedQuery, opts)
 }
 
-func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath string, hasBase, hasDelta bool, dirtyIDs []uuid.UUID, opts *QueryOptions, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp bool) string {
 	dirtyExclusion := buildDirtyExclusion(dirtyIDs)
 	rowIDFilter := buildRowIDFilter(opts)
 	hotRowIDFilter := buildHotRowIDFilter(opts)
@@ -46,17 +51,17 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	var tierQueries []string
 
 	if hasBase {
-		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection)
+		baseQuery := buildParquetTierQuery(basePath, h.SchemaID, "base", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp)
 		tierQueries = append(tierQueries, baseQuery)
 	}
 
 	if hasDelta {
-		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection)
+		deltaQuery := buildParquetTierQuery(deltaPath, h.SchemaID, "delta", dirtyExclusion, rowIDFilter, parquetPushdown, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp)
 		tierQueries = append(tierQueries, deltaQuery)
 	}
 
 	// Always include hot buffer (Postgres)
-	hotQuery := h.buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection)
+	hotQuery := h.buildHotTierQuery(pgConnStr, h.SchemaID, hotRowIDFilter, hotAttributeFilter, hotTimeWindowFilter, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp)
 	tierQueries = append(tierQueries, hotQuery)
 
 	// Combine all tier queries with UNION ALL
@@ -64,17 +69,32 @@ func (h *FederatedTestHarness) buildFederatedCombinedQuery(basePath, deltaPath s
 	return combinedQuery
 }
 
-func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, pushdownSemijoin string, benchmarkProjection, tradeTimeOnlyProjection bool) string {
+// creationStampItem renders the parquet legs' creation-stamp SELECT item.
+// ltbase_created_at and changed_at are different quantities (#460) — the
+// creation stamp and the LWW version stamp — so a leg that carries the stamp
+// must read the real column rather than alias changed_at, or this harness
+// collapses them the way the production reader used to and a fixture written
+// with TestRecord.CreatedAt silently reads back as its ChangedAt. Count paths
+// pass withCreationStamp = false and omit the column entirely: every leg of
+// one union agrees, and no leg carries a value that means something else.
+func creationStampItem(withCreationStamp bool) string {
+	if withCreationStamp {
+		return "ltbase_created_at, "
+	}
+	return ""
+}
+
+func buildParquetTierQuery(path string, schemaID int16, tier, dirtyExclusion, rowIDFilter, pushdownSemijoin string, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp bool) string {
 	if benchmarkProjection {
-		projection := benchmarkParquetProjection(schemaID, tier, path, tradeTimeOnlyProjection)
+		projection := benchmarkParquetProjection(schemaID, tier, path, tradeTimeOnlyProjection, withCreationStamp)
 		return fmt.Sprintf(`
 			%s
 			WHERE 1 = 1 %s %s %s`, projection, dirtyExclusion, rowIDFilter, pushdownSemijoin)
 	}
 	return fmt.Sprintf(`
-			SELECT row_id, schema_id, changed_at, deleted_at, name, version, '%s' as tier
+			SELECT row_id, schema_id, %schanged_at, deleted_at, name, version, '%s' as tier
 			FROM read_parquet('%s')
-			WHERE 1 = 1 %s %s %s`, tier, path, dirtyExclusion, rowIDFilter, pushdownSemijoin)
+			WHERE 1 = 1 %s %s %s`, creationStampItem(withCreationStamp), tier, path, dirtyExclusion, rowIDFilter, pushdownSemijoin)
 }
 
 // buildParquetPushdownSemijoin renders the attribute/time-window pushdown for
@@ -109,17 +129,18 @@ func buildParquetPushdownSemijoin(basePath, deltaPath string, hasBase, hasDelta 
 		strings.Join(paths, ", "), predicates)
 }
 
-func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnlyProjection bool) string {
+func benchmarkParquetProjection(schemaID int16, tier, path string, tradeTimeOnlyProjection, withCreationStamp bool) string {
+	stamp := creationStampItem(withCreationStamp)
 	switch schemaID {
 	case benchmarkSchemaIDCustomer:
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, '' as symbol, '' as exchange, region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, sqlutil.EscapeLiteral(path))
+		return fmt.Sprintf(`SELECT row_id, schema_id, %schanged_at, deleted_at, name, version, '' as symbol, '' as exchange, region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, stamp, tier, sqlutil.EscapeLiteral(path))
 	case benchmarkSchemaIDSecurity:
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, sqlutil.EscapeLiteral(path))
+		return fmt.Sprintf(`SELECT row_id, schema_id, %schanged_at, deleted_at, name, version, symbol, '' as exchange, '' as region, 0 as tradeType, 0 as tradeTime, '%s' as tier FROM read_parquet('%s')`, stamp, tier, sqlutil.EscapeLiteral(path))
 	default:
 		if tradeTimeOnlyProjection {
-			return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, sqlutil.EscapeLiteral(path))
+			return fmt.Sprintf(`SELECT row_id, schema_id, %schanged_at, deleted_at, '' as name, version, '' as symbol, '' as exchange, '' as region, 0 as tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, stamp, tier, sqlutil.EscapeLiteral(path))
 		}
-		return fmt.Sprintf(`SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, tier, sqlutil.EscapeLiteral(path))
+		return fmt.Sprintf(`SELECT row_id, schema_id, %schanged_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime, '%s' as tier FROM read_parquet('%s')`, stamp, tier, sqlutil.EscapeLiteral(path))
 	}
 }
 
@@ -139,7 +160,7 @@ func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchma
 	if benchmarkProjection {
 		return fmt.Sprintf(`
 		%s
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
+		SELECT row_id, schema_id, ltbase_created_at, changed_at, deleted_at, name, version, symbol, exchange, region, tradeType, tradeTime
 		FROM deduplicated
 		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) %s %s
 		ORDER BY %s
@@ -148,7 +169,7 @@ func buildFinalFederatedSelect(combinedQuery string, opts *QueryOptions, benchma
 	}
 	return fmt.Sprintf(`
 		%s
-		SELECT row_id, schema_id, changed_at, deleted_at, name, version
+		SELECT row_id, schema_id, ltbase_created_at, changed_at, deleted_at, name, version
 		FROM deduplicated
 		WHERE rn = 1 AND (deleted_at = 0 OR deleted_at IS NULL) %s %s
 		ORDER BY row_id

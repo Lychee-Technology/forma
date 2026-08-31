@@ -135,12 +135,23 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 	return sp, nil
 }
 
+// buildS3Projection renders the parquet leg's system columns plus one column
+// per attribute. created_at and ver_ts are DIFFERENT quantities and come from
+// different parquet columns (#460): ltbase_created_at is the creation time
+// every generation carries (cdc.exportModeSpec.baseSelectColumns), changed_at
+// is the LWW version stamp. Aliasing changed_at into the created_at slot put a
+// different quantity here than the hot leg's m.ltbase_created_at puts in the
+// same UNION ALL column, so created_at was wrong for parquet-winning rows and
+// the default sort key changed value at the flush boundary. No COALESCE
+// fallback: only hard-delete tombstones carry a NULL ltbase_created_at (the
+// delta export LEFT JOINs entity_main, #173) and they always stamp
+// deleted_at > 0, so `visible` drops them before any ORDER BY.
 func (sp *SchemaProjection) buildS3Projection(sortedAttrs []string) {
 	parts := make([]string, 0, 4+len(sortedAttrs))
 	// System columns from parquet
 	parts = append(parts,
 		"row_id",
-		"changed_at AS created_at",
+		"ltbase_created_at AS created_at",
 		"changed_at AS ver_ts",
 		"deleted_at AS deleted_ts",
 	)

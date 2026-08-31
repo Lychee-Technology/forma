@@ -58,10 +58,10 @@ func TestDuckDBReadDottedAttributes(t *testing.T) {
 	parquet := filepath.ToSlash(filepath.Join(t.TempDir(), "delta.parquet"))
 	_, err = db.Exec(fmt.Sprintf(`COPY (
 		SELECT * FROM (VALUES
-			('11111111-1111-1111-1111-111111111111', 100, 0, 8000, 'alice', 'note-a', 'x'),
-			('22222222-2222-2222-2222-222222222222', 100, 0, 3000, 'bob',   'note-b', 'y'),
-			('33333333-3333-3333-3333-333333333333', 100, 0, 9000, 'carol', NULL,     'z')
-		) t(row_id, changed_at, deleted_at, contact_annualIncome, contact_name, contact_note, flag)
+			('11111111-1111-1111-1111-111111111111', 50, 100, 0, 8000, 'alice', 'note-a', 'x'),
+			('22222222-2222-2222-2222-222222222222', 50, 100, 0, 3000, 'bob',   'note-b', 'y'),
+			('33333333-3333-3333-3333-333333333333', 50, 100, 0, 9000, 'carol', NULL,     'z')
+		) t(row_id, ltbase_created_at, changed_at, deleted_at, contact_annualIncome, contact_name, contact_note, flag)
 	) TO '%s' (FORMAT PARQUET)`, parquet))
 	require.NoError(t, err)
 
