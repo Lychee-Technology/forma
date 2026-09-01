@@ -27,7 +27,7 @@ import (
 // The cursor must satisfy model.KeysetCursor.ValidateShape: values align
 // one-for-one with Columns, and the last column is the row_id tiebreak. A
 // misaligned cursor is an error rather than a NULL bind (#381 item 7).
-func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}, error) {
+func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{}, error) {
 	if !cursor.IsActive() {
 		return "1=1", nil, nil
 	}
@@ -44,13 +44,14 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (s
 	// parse as table "contact", column "annualIncome". The fold is the
 	// identity on every visible-CTE system column, so this is a no-op for
 	// row_id / created_at / ver_ts / deleted_ts cursors.
-	colRef := func(attr string) string {
-		col := ParquetAttrColumn(attr)
-		if tableAlias == "" {
-			return col
-		}
-		return tableAlias + col
-	}
+	//
+	// The clause always renders against the unqualified columns of visible, so
+	// there is no table alias to prefix. A tableAlias parameter used to exist:
+	// both callers passed "", and its branch concatenated WITHOUT a separator
+	// ("visible" + "row_id" = "visiblerow_id"), so the first caller to pass a
+	// real alias would have emitted a broken identifier. Removed rather than
+	// fixed — the qualification it promised has no use here (#381).
+	colRef := ParquetAttrColumn
 
 	var clauses []string
 	var args []interface{}
@@ -98,7 +99,7 @@ func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) 
 // names (#260/#381). It must stay consistent with the WHERE clause — an
 // ORDER BY disagreeing with the cursor predicate paginates incoherently.
 func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
-	if cursor == nil || len(cursor.Columns) == 0 {
+	if !cursor.IsActive() {
 		return "created_at DESC"
 	}
 	var parts []string

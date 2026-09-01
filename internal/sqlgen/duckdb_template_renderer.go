@@ -312,7 +312,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	// all condition args by appendKeysetArgs, matching the clause's position at
 	// the end of the visible CTE.
 	if q.KeysetCursor.IsActive() {
-		keysetClause, keysetArgs, err := generateKeysetWhereClause(q.KeysetCursor, "")
+		keysetClause, keysetArgs, err := generateKeysetWhereClause(q.KeysetCursor)
 		if err != nil {
 			return fmt.Errorf("inject keyset params: %w", err)
 		}

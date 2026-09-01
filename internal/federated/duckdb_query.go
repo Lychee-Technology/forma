@@ -58,6 +58,20 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
+	// The THIRD seam onto the keyset renderer. Query (engine.go) and
+	// ExecuteFederatedPaginatedQuery (pagination.go) both validate before they
+	// get here, but this method is exported and reaches the renderer directly,
+	// so a caller arriving straight at it would otherwise be held only to
+	// model.KeysetCursor.ValidateShape — no rn / source_tier_priority refusal
+	// and, more importantly, no safe-identifier barrier, which is the only
+	// injection guard on a name interpolated as an identifier. The contract is
+	// enforced identically at every entry point (#381), and validateKeysetCursor
+	// is pure and idempotent, so re-validating on the paginated path is free.
+	if q != nil {
+		if err := validateKeysetCursor(q.KeysetCursor); err != nil {
+			return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
+		}
+	}
 	mark := markExecutionPlan(opts)
 	recs, total, err := e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 	var retry *corruptParquetRetryError

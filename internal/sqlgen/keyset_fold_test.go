@@ -57,7 +57,7 @@ func TestKeysetColumnsAreFolded(t *testing.T) {
 		Mode:   model.KeysetCursorModeAfter,
 	}
 
-	where, args, err := generateKeysetWhereClause(cursor, "")
+	where, args, err := generateKeysetWhereClause(cursor)
 	if err != nil {
 		t.Fatalf("generateKeysetWhereClause: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestKeysetWhereClauseRejectsMisalignedValues(t *testing.T) {
 		Mode:   model.KeysetCursorModeAfter,
 	}
 
-	_, _, err := generateKeysetWhereClause(cursor, "")
+	_, _, err := generateKeysetWhereClause(cursor)
 	if err == nil {
 		t.Fatal("generateKeysetWhereClause() = nil error, want a misalignment error")
 	}

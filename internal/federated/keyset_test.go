@@ -61,12 +61,28 @@ func TestValidateKeysetCursor(t *testing.T) {
 		{"bracketed name folding onto rn is rejected", cursorOn("[rn]", "row_id"),
 			`keyset cursor column "[rn]"`},
 
-		// The ParquetAttrColumn fallback: every attribute the fold empties
-		// lands on the literal "attr", which would silently retarget the
-		// cursor at a real attribute of that name.
-		{"empty attribute is rejected", cursorOn("", "row_id"), `folds to the placeholder "attr"`},
-		{"bracket-only attribute is rejected", cursorOn("[]", "row_id"), `folds to the placeholder "attr"`},
-		{"backtick-only attribute is rejected", cursorOn("`", "row_id"), `folds to the placeholder "attr"`},
+		// Case is not a bypass. DuckDB resolves an unquoted identifier
+		// case-insensitively, so "RN" binds to the rn the ranked CTE
+		// projects exactly as "rn" does; the reject lookup therefore
+		// normalises case on the folded name.
+		{"upper-case RN is rejected", cursorOn("RN", "row_id"), `keyset cursor column "RN"`},
+		{"mixed-case Source_Tier_Priority is rejected", cursorOn("Source_Tier_Priority", "row_id"),
+			`keyset cursor column "Source_Tier_Priority"`},
+		{"bracketed upper-case name folding onto rn is rejected", cursorOn("[RN]", "row_id"),
+			`keyset cursor column "[RN]"`},
+		// The same normalisation on the system lookup: ROW_ID resolves to
+		// row_id in DuckDB, so it takes the system-column branch.
+		{"upper-case ROW_ID is accepted as a system column", cursorOn("ROW_ID", "row_id"), ""},
+
+		// The ParquetAttrColumn placeholder: an attribute the fold empties
+		// lands on the literal "attr", and so does one the fold merely strips
+		// down onto it — either would silently retarget the cursor at a real
+		// attribute of that name.
+		{"empty attribute is rejected", cursorOn("", "row_id"), `folds onto the placeholder "attr"`},
+		{"bracket-only attribute is rejected", cursorOn("[]", "row_id"), `folds onto the placeholder "attr"`},
+		{"backtick-only attribute is rejected", cursorOn("`", "row_id"), `folds onto the placeholder "attr"`},
+		{"a name stripping down onto the placeholder is rejected", cursorOn("[attr]", "row_id"),
+			`folds onto the placeholder "attr"`},
 		{"an attribute genuinely named attr is accepted", cursorOn("attr", "row_id"), ""},
 
 		// Injection barrier (#381 item 2).

@@ -178,8 +178,9 @@ collide on the same folded column.
 
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,
-`federated.validateKeysetCursor`, binds both entry points —
-`DBFederatedQueryEngine.Query` and `ExecuteFederatedPaginatedQuery` — and admits
+`federated.validateKeysetCursor`, binds every entry point onto the keyset
+renderer — `DBFederatedQueryEngine.Query`, `ExecuteFederatedPaginatedQuery`, and
+the exported `ExecuteDuckDBFederatedQuery` beneath them — and admits
 a column when it is one of the four system columns the `visible` CTE projects
 (`row_id`, `created_at`, `ver_ts`, `deleted_ts`) or an attribute whose
 `ParquetAttrColumn` fold is a bare SQL identifier. Cursor columns are emitted
@@ -188,8 +189,12 @@ folded by `generateKeysetWhereClause` and `buildKeysetOrderBy`, so a cursor over
 actually exposes. Two columns of `visible` are refused by name despite being
 bare identifiers — `rn` and `source_tier_priority`, the dedup machinery, on
 which a cursor would bind and then paginate over the dedup rank — as is any
-name the fold empties, which `ParquetAttrColumn` would otherwise substitute
-with its `attr` placeholder.
+name that folds onto `ParquetAttrColumn`'s `attr` placeholder, whether because
+the fold empties the name or because it strips the name down onto that literal.
+Both the reject set and the system-column set are matched on the folded name
+**case-insensitively**: DuckDB resolves an unquoted identifier without regard to
+case, so `RN` reaches the same dedup column as `rn`, and `ROW_ID` the same
+system column as `row_id`.
 
 Two rules travel with the cursor type itself (`model.KeysetCursor`), so
 `internal/sqlgen` can enforce them without reaching into `internal/federated`:
