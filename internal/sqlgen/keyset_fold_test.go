@@ -39,3 +39,60 @@ func TestRendererKeysetGateMatchesIsActive(t *testing.T) {
 		})
 	}
 }
+
+// TestKeysetColumnsAreFolded pins #381 item 1's live bug: cursor columns must
+// be emitted through ParquetAttrColumn like every other column reference, or a
+// dotted attribute renders "contact.annualIncome" against a visible CTE that
+// exposes only "contact_annualIncome" — parsed by DuckDB as table "contact",
+// column "annualIncome" (#260).
+func TestKeysetColumnsAreFolded(t *testing.T) {
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
+			{Attribute: "contact.annualIncome", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		},
+		Values: []interface{}{int64(90000), "r1"},
+		Mode:   model.KeysetCursorModeAfter,
+	}
+
+	where, args := generateKeysetWhereClause(cursor, "")
+	if strings.Contains(where, "contact.annualIncome") {
+		t.Errorf("WHERE clause emits the unfolded dotted name: %s", where)
+	}
+	if !strings.Contains(where, "contact_annualIncome") {
+		t.Errorf("WHERE clause is missing the folded column: %s", where)
+	}
+	if len(args) != 3 { // n(n+1)/2 for a 2-column cursor
+		t.Errorf("args = %d, want 3", len(args))
+	}
+
+	order := buildKeysetOrderBy(cursor)
+	if strings.Contains(order, "contact.annualIncome") {
+		t.Errorf("ORDER BY emits the unfolded dotted name: %s", order)
+	}
+	if order != "contact_annualIncome DESC, row_id ASC" {
+		t.Errorf("ORDER BY = %q, want %q", order, "contact_annualIncome DESC, row_id ASC")
+	}
+}
+
+// TestKeysetSystemColumnsSurviveTheFold guards the no-op half: the fold is the
+// identity on every visible-CTE system column, so this change must not alter
+// any cursor that production already renders.
+func TestKeysetSystemColumnsSurviveTheFold(t *testing.T) {
+	for _, attr := range []string{"row_id", "created_at", "ver_ts", "deleted_ts"} {
+		if got := ParquetAttrColumn(attr); got != attr {
+			t.Errorf("ParquetAttrColumn(%q) = %q, want the identity", attr, got)
+		}
+	}
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
+			{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		},
+		Values: []interface{}{int64(5), "r1"},
+		Mode:   model.KeysetCursorModeAfter,
+	}
+	if got := buildKeysetOrderBy(cursor); got != "created_at DESC, row_id ASC" {
+		t.Errorf("ORDER BY = %q, want %q", got, "created_at DESC, row_id ASC")
+	}
+}

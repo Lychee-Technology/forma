@@ -29,7 +29,14 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (s
 		return "1=1", nil
 	}
 
-	colRef := func(col string) string {
+	// Cursor columns fold like every other column reference in this dialect
+	// (#260/#381): the visible CTE projects each attribute under its
+	// ParquetAttrColumn alias, so an unfolded "contact.annualIncome" would
+	// parse as table "contact", column "annualIncome". The fold is the
+	// identity on every visible-CTE system column, so this is a no-op for
+	// row_id / created_at / ver_ts / deleted_ts cursors.
+	colRef := func(attr string) string {
+		col := ParquetAttrColumn(attr)
 		if tableAlias == "" {
 			return col
 		}
@@ -82,6 +89,11 @@ func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) 
 	}
 }
 
+// buildKeysetOrderBy renders the keyset ORDER BY. Columns fold through
+// ParquetAttrColumn for the same reason generateKeysetWhereClause's do: the
+// ORDER BY runs against the visible CTE, whose attribute columns carry folded
+// names (#260/#381). It must stay consistent with the WHERE clause — an
+// ORDER BY disagreeing with the cursor predicate paginates incoherently.
 func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 	if cursor == nil || len(cursor.Columns) == 0 {
 		return "created_at DESC"
@@ -92,7 +104,7 @@ func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 		if col.Direction == forma.SortOrderDesc {
 			dir = "DESC"
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", col.Attribute, dir))
+		parts = append(parts, fmt.Sprintf("%s %s", ParquetAttrColumn(col.Attribute), dir))
 	}
 	return strings.Join(parts, ", ")
 }
