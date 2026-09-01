@@ -210,3 +210,45 @@ func TestCompileDuckDBQueryRejectsNonCacheablePaths(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, compiled, "non-advanced templates are not cacheable")
 }
+
+// TestCompiledQueryBindRejectsMisalignedCursor pins the error path #381 item 7
+// gave Bind. The plan cache's shape hash covers cursor COLUMNS but deliberately
+// not cursor VALUES (internal/queryplan/shape.go, pinned by
+// TestShapeHashKeysetValuesDoNotParticipate), so a cached skeleton really can be
+// handed a cursor whose values no longer align with its columns. Binding SQL
+// NULL for the unfilled arm would answer a silently empty page; Bind must fail
+// instead, and must return nothing an unchecked caller could execute.
+func TestCompiledQueryBindRejectsMisalignedCursor(t *testing.T) {
+	cache := dualPlanTestCache()
+	cols := []model.KeysetColumn{
+		{Attribute: "created_at", Direction: forma.SortOrderDesc},
+		{Attribute: "row_id", Direction: forma.SortOrderDesc},
+	}
+	newQuery := func(values []any) *model.FederatedAttributeQuery {
+		q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
+			SchemaID: 7,
+			Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
+				&forma.KvCondition{Attr: "age", Value: "gt:10"},
+				&forma.KvCondition{Attr: "tag", Value: "equals:x"},
+			}},
+		}}
+		q.KeysetCursor = &model.KeysetCursor{Mode: model.KeysetCursorModeAfter, Columns: cols, Values: values}
+		return q
+	}
+
+	// Compile from a well-formed cursor: the skeleton is the one a cache hit
+	// would serve.
+	wellFormed := newQuery([]any{int64(1700000000000), "11111111-1111-1111-1111-111111111111"})
+	dual := parityDual(t, wellFormed.Condition, cache)
+	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), wellFormed, &dual, false)
+	require.NoError(t, err)
+	require.NotNil(t, compiled)
+
+	// Same columns, one value short — the shape the values-blind hash admits.
+	sql, args, err := compiled.Bind(newQuery([]any{int64(1700000000000)}), dual, nil, FlushGraceCutoffDisabled)
+	require.Error(t, err, "a cursor whose values do not align with its columns must not bind")
+	require.Contains(t, err.Error(), "carries 2 column(s) but 1 value(s)",
+		"the failure must name the counts, as model.KeysetCursor.ValidateShape does")
+	require.Empty(t, sql, "a failed Bind must return no executable SQL")
+	require.Empty(t, args, "a failed Bind must return no args")
+}
