@@ -33,7 +33,13 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		offset = 0
 	}
 
-	if opts != nil && opts.KeysetEnabled && hasKeysetCursor(fq) {
+	// An ACTIVE CURSOR ALONE selects the keyset path (#381 item 3). The
+	// retired opts.KeysetEnabled conjunct meant a cursor with the flag unset
+	// fell into the in-memory merge below, where the Postgres leg applies no
+	// cursor while the DuckDB leg does — a half-filtered page. The flag had no
+	// config wiring and was never read by the production entry point, so it
+	// was deleted rather than made symmetric.
+	if hasKeysetCursor(fq) {
 		return e.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
 	}
 

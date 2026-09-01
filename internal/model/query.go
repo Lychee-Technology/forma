@@ -37,7 +37,6 @@ type FederatedQueryOptions struct {
 	MaxRows                  int
 	Parallelism              int
 	AllowPartialDegradedMode bool
-	KeysetEnabled            bool
 	IncludeExecutionPlan     bool
 	ExecutionPlan            *ExecutionPlan
 	ConsistencyMode          ConsistencyMode

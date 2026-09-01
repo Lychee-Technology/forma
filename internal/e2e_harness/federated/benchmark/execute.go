@@ -236,7 +236,6 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 
 	fq.KeysetCursor = cursor
 	opts := &model.FederatedQueryOptions{
-		KeysetEnabled:        true,
 		IncludeExecutionPlan: true,
 	}
 

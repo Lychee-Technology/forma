@@ -13,9 +13,10 @@ import (
 )
 
 type fakePostgresFederatedSource struct {
-	queryCalls int
-	lastQuery  *model.PersistentRecordQuery
-	page       *model.PersistentRecordPage
+	queryCalls       int
+	runOptimizedCalls int
+	lastQuery        *model.PersistentRecordQuery
+	page             *model.PersistentRecordPage
 }
 
 func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
@@ -28,6 +29,7 @@ func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context
 }
 
 func (f *fakePostgresFederatedSource) RunOptimizedQuery(ctx context.Context, tables model.StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []model.AttributeOrder, useMainTableAsAnchor bool) ([]*model.PersistentRecord, int64, error) {
+	f.runOptimizedCalls++
 	return nil, 0, nil
 }
 
