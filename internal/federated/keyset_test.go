@@ -85,6 +85,18 @@ func TestValidateKeysetCursor(t *testing.T) {
 			`folds onto the placeholder "attr"`},
 		{"an attribute genuinely named attr is accepted", cursorOn("attr", "row_id"), ""},
 
+		// Case is not a bypass on the placeholder rule either: DuckDB resolves
+		// the emitted "Attr" to the same column as "attr", so a name that folds
+		// onto the placeholder in ANY casing is the same silent retarget.
+		{"bracketed mixed-case name folding onto the placeholder is rejected",
+			cursorOn("[Attr]", "row_id"), `folds onto the placeholder "Attr"`},
+		{"bracketed upper-case name folding onto the placeholder is rejected",
+			cursorOn("[ATTR]", "row_id"), `folds onto the placeholder "ATTR"`},
+		// The exemption is case-insensitive on both sides, so an attribute
+		// genuinely named "Attr" folds to its own name and stays accepted.
+		{"an attribute genuinely named Attr is accepted", cursorOn("Attr", "row_id"), ""},
+		{"an attribute genuinely named ATTR is accepted", cursorOn("ATTR", "row_id"), ""},
+
 		// Injection barrier (#381 item 2).
 		{"quote is rejected", cursorOn(`a"b`, "row_id"), "is not a safe SQL identifier"},
 		{"semicolon is rejected", cursorOn("a;DROP TABLE t", "row_id"), "is not a safe SQL identifier"},

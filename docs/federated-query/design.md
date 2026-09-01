@@ -191,10 +191,13 @@ bare identifiers — `rn` and `source_tier_priority`, the dedup machinery, on
 which a cursor would bind and then paginate over the dedup rank — as is any
 name that folds onto `ParquetAttrColumn`'s `attr` placeholder, whether because
 the fold empties the name or because it strips the name down onto that literal.
-Both the reject set and the system-column set are matched on the folded name
-**case-insensitively**: DuckDB resolves an unquoted identifier without regard to
-case, so `RN` reaches the same dedup column as `rn`, and `ROW_ID` the same
-system column as `row_id`.
+The reject set, the system-column set and the `attr` placeholder are all matched
+on the folded name **case-insensitively**: DuckDB resolves an unquoted identifier
+without regard to case, so `RN` reaches the same dedup column as `rn`, `ROW_ID`
+the same system column as `row_id`, and a folded `Attr` the same column as
+`attr`. The placeholder's exemption is folded case-insensitively too, so an
+attribute genuinely named `Attr` — which folds to its own name — stays admitted
+while `[Attr]` is refused.
 
 Two rules travel with the cursor type itself (`model.KeysetCursor`), so
 `internal/sqlgen` can enforce them without reaching into `internal/federated`:

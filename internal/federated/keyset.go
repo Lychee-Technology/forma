@@ -127,7 +127,7 @@ func validateKeysetCursor(cursor *model.KeysetCursor) error {
 		// name the code generator emits, so a rule applied to the raw name
 		// guards a string that never reaches SQL.
 		folded := sqlgen.ParquetAttrColumn(col.Attribute)
-		if folded == parquetAttrFallbackColumn && col.Attribute != parquetAttrFallbackColumn {
+		if strings.EqualFold(folded, parquetAttrFallbackColumn) && !strings.EqualFold(col.Attribute, parquetAttrFallbackColumn) {
 			// The literal "attr" is ParquetAttrColumn's placeholder: it
 			// substitutes it whenever the fold empties the name — "", "[]",
 			// "``" — and a name like "[attr]" or "`attr`" strips down onto it
@@ -135,6 +135,13 @@ func validateKeysetCursor(cursor *model.KeysetCursor) error {
 			// needs some column name for every attribute; here either route
 			// would silently retarget the cursor at a real attribute called
 			// "attr".
+			//
+			// Both comparisons are case-insensitive, for the same reason the
+			// two map lookups below are: DuckDB resolves unquoted identifiers
+			// case-insensitively, so a folded "Attr" reaches the very column
+			// "attr" does — the shift key must not be a bypass. The exemption
+			// is folded too, or an attribute legitimately named "Attr" (which
+			// folds to its own name) would be newly refused.
 			return fmt.Errorf("keyset cursor column %q folds onto the placeholder %q, which would silently retarget the cursor at a real attribute of that name: name a visible-CTE system column (row_id, created_at, ver_ts, deleted_ts) or a schema attribute that folds to its own name", col.Attribute, folded)
 		}
 		// Both map lookups are case-normalised: DuckDB resolves unquoted
