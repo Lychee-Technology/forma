@@ -174,15 +174,36 @@ generator (read side) and cannot diverge: the logical WHERE clause is applied
 both against raw `read_parquet` output (physical columns) and against the
 `visible` CTE (unified columns), so both must expose the same names (#260).
 The fold is lossy, so both sides fail fast if two attributes of one schema
-collide on the same folded column. Which columns a keyset cursor may carry is a
-per-seam contract, not a global one: `ExecuteFederatedPaginatedQuery` applies
-the `validateKeysetColumns` allowlist (`internal/federated/keyset.go`), which
-admits system columns only, while `DBFederatedQueryEngine.Query` requires only
-the trailing `row_id` tiebreak (`validateKeysetTiebreak`) and does accept
-attribute columns — which the fold does not reach: `generateKeysetWhereClause`
-emits `col.Attribute` verbatim (`internal/sqlgen/keyset_where.go`), so a cursor
-over `contact.annualIncome` would reference that dotted name against a `visible`
-CTE exposing only `contact_annualIncome`.
+collide on the same folded column.
+
+Keyset cursor columns obey the same contract as every other column reference,
+and it is one contract, not a per-seam one (#381). A single validator,
+`federated.validateKeysetCursor`, binds both entry points —
+`DBFederatedQueryEngine.Query` and `ExecuteFederatedPaginatedQuery` — and admits
+a column when it is one of the four system columns the `visible` CTE projects
+(`row_id`, `created_at`, `ver_ts`, `deleted_ts`) or an attribute whose
+`ParquetAttrColumn` fold is a bare SQL identifier. Cursor columns are emitted
+folded by `generateKeysetWhereClause` and `buildKeysetOrderBy`, so a cursor over
+`contact.annualIncome` references `contact_annualIncome`, the name the CTE
+actually exposes. Two columns of `visible` are refused by name despite being
+bare identifiers — `rn` and `source_tier_priority`, the dedup machinery, on
+which a cursor would bind and then paginate over the dedup rank — as is any
+name the fold empties, which `ParquetAttrColumn` would otherwise substitute
+with its `attr` placeholder.
+
+Two rules travel with the cursor type itself (`model.KeysetCursor`), so
+`internal/sqlgen` can enforce them without reaching into `internal/federated`:
+`Values` must align one-for-one with `Columns` — a short slice used to bind SQL
+NULL and return a silently empty page — and the final column must be `row_id`,
+the trailing tiebreak that makes each page boundary resolvable (#183).
+`IsActive` is the shared spelling of "carries a continuation obligation", used
+by every site that decides whether the clause is rendered and every site that
+decides whether a cursor is honoured or refused.
+
+The validator does not check that an attribute is registered in the schema:
+that needs the metadata cache, and an unregistered but well-formed name fails
+loudly at DuckDB's binder rather than silently. It is deferred to the
+caller-facing cursor surface the Postgres-side keyset feature introduces.
 
 ## **5. SQL Execution Template**
 
@@ -421,12 +442,17 @@ run triggered by count or by other rows.
 
 Keyset (cursor) pagination carries the same total-order requirement, and it is
 now **enforced**, not merely documented: the engine rejects any cursor whose
-final column is not `row_id` (`validateKeysetTiebreak`, guarding both the live
-renderer path in `DBFederatedQueryEngine.Query` and the `KeysetEnabled`
-`executeFederatedKeysetQuery` seam). A cursor ending on a non-unique key applies
-a strict inequality on that key at the boundary, which silently skips every row
-tied there; the trailing `row_id` gives the composite key a unique tiebreak so
-each boundary tie is resolvable (#183).
+final column is not `row_id`. The rule lives on the cursor type
+(`model.KeysetCursor.ValidateShape`) and is applied by the single validator
+`federated.validateKeysetCursor` at both entry points — the live renderer path
+in `DBFederatedQueryEngine.Query` and the keyset branch of
+`ExecuteFederatedPaginatedQuery`, which an active cursor alone now selects
+since the `KeysetEnabled` flag was retired (#381) — and again inside
+`generateKeysetWhereClause`, so a direct `internal/sqlgen` caller cannot bypass
+it. A cursor ending on a non-unique key applies a strict inequality on that key
+at the boundary, which silently skips every row tied there; the trailing
+`row_id` gives the composite key a unique tiebreak so each boundary tie is
+resolvable (#183).
 
 **Never-flushed columns (#255).** `union_by_name` can only union columns that
 exist in *some* file. An attribute added to the schema before its first flush is
