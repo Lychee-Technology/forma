@@ -159,15 +159,19 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 	}
 
 	// No AttributeOrders here, unlike the offset path: a keyset page is
-	// ordered by its cursor columns, and the engine supports keyset cursors on
-	// SYSTEM columns only (federated.isSupportedKeysetColumn rejects
-	// main-column and EAV attributes, so a tradeTime cursor errors outright).
-	// A keyset workload therefore pages by created_at DESC, row_id ASC — the
-	// default order — and sortExpectedRecordsForWorkload matches it. This used
-	// to build a tradeTime order and discard it, which read as an oversight
-	// but was in fact unobservable: tradeTime is generated FROM changed_at and
-	// the reader aliased changed_at into created_at, so both orders were the
-	// same sequence until #460 separated them.
+	// ordered by its cursor columns, and this workload builds its cursor below
+	// on created_at DESC, row_id ASC — the default order — so a keyset page is
+	// never in the tradeTime order the offset workloads use, and
+	// sortExpectedRecordsForWorkload matches the cursor instead. The cursor
+	// used to have no other choice: the retired federated allowlist accepted
+	// system columns only. #381 replaced it with validateKeysetCursor, which
+	// admits attribute columns too, but this workload's expectations are built
+	// around the default order and stay there.
+	//
+	// This code used to build a tradeTime order and discard it, which read as
+	// an oversight but was in fact unobservable: tradeTime is generated FROM
+	// changed_at and the reader aliased changed_at into created_at, so both
+	// orders were the same sequence until #460 separated them.
 
 	// Build the federated query with filter conditions
 	fq := &model.FederatedAttributeQuery{

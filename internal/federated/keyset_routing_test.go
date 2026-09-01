@@ -12,7 +12,7 @@ import (
 )
 
 // keysetCursorAfterCreatedAt builds a minimal well-formed cursor: one ordering
-// column plus the trailing row_id tiebreak validateKeysetTiebreak requires
+// column plus the trailing row_id tiebreak validateKeysetCursor requires
 // (#183). The values are inert — these tests assert routing, never row
 // selection, so no seeded row needs to match.
 func keysetCursorAfterCreatedAt() *model.KeysetCursor {
@@ -95,7 +95,7 @@ func TestQueryRejectsKeysetCursorWhenDuckDBDisabled(t *testing.T) {
 // TestQueryWithoutCursorStillServesPostgresOnly is the negative control: the
 // guard must key on an ACTIVE cursor only, so an absent cursor and an empty
 // column list (the open first page — the same no-op contract
-// validateKeysetTiebreak applies) both keep the Postgres-only path working.
+// validateKeysetCursor applies) both keep the Postgres-only path working.
 func TestQueryWithoutCursorStillServesPostgresOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

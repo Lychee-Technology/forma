@@ -389,11 +389,13 @@ func benchmarkVisibleAttributeValue(record GeneratedRecord, attribute string) (a
 // sortExpectedRecordsForWorkload orders the oracle's winners the way the
 // engine orders the page it is checked against.
 //
-// Keyset workloads are the exception (#460). The engine supports keyset
-// cursors on SYSTEM columns only — federated.isSupportedKeysetColumn rejects
-// main-column and EAV attributes — so a keyset page can only be ordered by
-// created_at DESC, row_id ASC, never by the tradeTime order the offset
-// workloads use.
+// Keyset workloads are the exception (#460). Their cursor is built on
+// created_at DESC, row_id ASC (execute.go), so a keyset page comes back in
+// that order, never in the tradeTime order the offset workloads use. (The
+// cursor used to have no other choice: the retired federated allowlist
+// accepted system columns only. #381 replaced it with validateKeysetCursor,
+// which admits attribute columns too, but this workload stays on the default
+// order.)
 //
 // That divergence used to be invisible: the generator assigns tradeTime FROM
 // changed_at, and the reader aliased changed_at into created_at, so the two

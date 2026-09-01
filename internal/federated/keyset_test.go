@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,111 +11,142 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateKeysetColumns_SystemColumnsSupported(t *testing.T) {
-	supportedColumns := []model.KeysetColumn{
-		{Attribute: "row_id", Direction: forma.SortOrderAsc},
-		{Attribute: "created_at", Direction: forma.SortOrderDesc},
-		{Attribute: "updated_at", Direction: forma.SortOrderAsc},
-		{Attribute: "deleted_at", Direction: forma.SortOrderAsc},
-		{Attribute: "ver_ts", Direction: forma.SortOrderDesc},
-		{Attribute: "deleted_ts", Direction: forma.SortOrderAsc},
-		{Attribute: "schema_id", Direction: forma.SortOrderAsc},
+func TestValidateKeysetCursor(t *testing.T) {
+	col := func(attr string) model.KeysetColumn {
+		return model.KeysetColumn{Attribute: attr, Direction: forma.SortOrderAsc}
+	}
+	cursorOn := func(attrs ...string) *model.KeysetCursor {
+		cols := make([]model.KeysetColumn, 0, len(attrs))
+		vals := make([]interface{}, 0, len(attrs))
+		for _, a := range attrs {
+			cols = append(cols, col(a))
+			vals = append(vals, "v")
+		}
+		return &model.KeysetCursor{Columns: cols, Values: vals, Mode: model.KeysetCursorModeAfter}
 	}
 
-	err := validateKeysetColumns(supportedColumns)
-	if err != nil {
-		t.Errorf("expected no error for supported columns, got: %v", err)
+	cases := []struct {
+		name    string
+		cursor  *model.KeysetCursor
+		wantErr string // "" means accepted
+	}{
+		// The four system columns the visible CTE actually projects.
+		{"row_id alone", cursorOn("row_id"), ""},
+		{"created_at then row_id", cursorOn("created_at", "row_id"), ""},
+		{"ver_ts then row_id", cursorOn("ver_ts", "row_id"), ""},
+		{"deleted_ts then row_id", cursorOn("deleted_ts", "row_id"), ""},
+
+		// Attribute columns: admitted, and the dotted form is the #260 case
+		// the old code emitted verbatim against a folded CTE column.
+		{"plain attribute", cursorOn("count", "row_id"), ""},
+		{"dotted attribute folds to a safe identifier", cursorOn("contact.annualIncome", "row_id"), ""},
+		{"spaced attribute folds to a safe identifier", cursorOn("annual income", "row_id"), ""},
+		{"bracketed attribute folds to a safe identifier", cursorOn("a[0]", "row_id"), ""},
+
+		// #381 amendment: the three names the old allowlist wrongly blessed are
+		// ordinary attribute names now. They are ACCEPTED here and fail at
+		// DuckDB's binder like any other unknown column — the false claim of
+		// support is what this change removes, not the acceptance.
+		{"updated_at is no longer blessed but is well-formed", cursorOn("updated_at", "row_id"), ""},
+		{"schema_id is no longer blessed but is well-formed", cursorOn("schema_id", "row_id"), ""},
+
+		// Dedup machinery: real columns of visible, never a caller's. The
+		// lookup folds first, so the punctuation that ParquetAttrColumn
+		// erases cannot smuggle a cursor onto the dedup rank.
+		{"rn is rejected", cursorOn("rn", "row_id"), `keyset cursor column "rn"`},
+		{"source_tier_priority is rejected", cursorOn("source_tier_priority", "row_id"),
+			`keyset cursor column "source_tier_priority"`},
+		{"dotted name folding onto source_tier_priority is rejected",
+			cursorOn("source_tier.priority", "row_id"), `keyset cursor column "source_tier.priority"`},
+		{"bracketed name folding onto rn is rejected", cursorOn("[rn]", "row_id"),
+			`keyset cursor column "[rn]"`},
+
+		// The ParquetAttrColumn fallback: every attribute the fold empties
+		// lands on the literal "attr", which would silently retarget the
+		// cursor at a real attribute of that name.
+		{"empty attribute is rejected", cursorOn("", "row_id"), `folds to the placeholder "attr"`},
+		{"bracket-only attribute is rejected", cursorOn("[]", "row_id"), `folds to the placeholder "attr"`},
+		{"backtick-only attribute is rejected", cursorOn("`", "row_id"), `folds to the placeholder "attr"`},
+		{"an attribute genuinely named attr is accepted", cursorOn("attr", "row_id"), ""},
+
+		// Injection barrier (#381 item 2).
+		{"quote is rejected", cursorOn(`a"b`, "row_id"), "is not a safe SQL identifier"},
+		{"semicolon is rejected", cursorOn("a;DROP TABLE t", "row_id"), "is not a safe SQL identifier"},
+		{"paren is rejected", cursorOn("count(*)", "row_id"), "is not a safe SQL identifier"},
+		{"leading digit is rejected", cursorOn("1st", "row_id"), "is not a safe SQL identifier"},
+
+		// Shape rules reach callers through this one entry point.
+		{"missing trailing row_id", cursorOn("created_at"), `expected "row_id"`},
+		{
+			"misaligned values",
+			&model.KeysetCursor{
+				Columns: []model.KeysetColumn{col("created_at"), col("row_id")},
+				Values:  []interface{}{"v"},
+				Mode:    model.KeysetCursorModeAfter,
+			},
+			"carries 2 column(s) but 1 value(s)",
+		},
+
+		// The open first page carries no obligation.
+		{"nil cursor", nil, ""},
+		{"empty cursor", &model.KeysetCursor{Mode: model.KeysetCursorModeAfter}, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateKeysetCursor(tc.cursor)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateKeysetCursor() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateKeysetCursor() = nil, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("validateKeysetCursor() = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+			if errors.Is(err, forma.ErrInvalidInput) {
+				t.Error("keyset validation is a read-path error, never a write-path ErrInvalidInput carrier")
+			}
+		})
 	}
 }
 
-func TestValidateKeysetColumns_EAVAttributeUnsupported(t *testing.T) {
-	unsupportedColumns := []model.KeysetColumn{
-		{Attribute: "created_at", Direction: forma.SortOrderDesc},
-		{Attribute: "user_email", Direction: forma.SortOrderAsc}, // EAV attribute
-		{Attribute: "row_id", Direction: forma.SortOrderAsc},
-	}
-
-	err := validateKeysetColumns(unsupportedColumns)
-	if err == nil {
-		t.Fatal("expected error for EAV attribute, got nil")
-	}
-
-	expectedMsg := "keyset pagination on attribute \"user_email\" is not supported"
-	if !strings.Contains(err.Error(), expectedMsg) {
-		t.Errorf("expected error message to contain %q, got: %v", expectedMsg, err)
-	}
-}
-
-func TestValidateKeysetColumns_EmptyColumnsValid(t *testing.T) {
-	err := validateKeysetColumns(nil)
-	if err != nil {
-		t.Errorf("expected no error for nil columns, got: %v", err)
-	}
-
-	err = validateKeysetColumns([]model.KeysetColumn{})
-	if err != nil {
-		t.Errorf("expected no error for empty columns, got: %v", err)
-	}
-}
-
-func TestValidateKeysetTiebreak_TrailingRowIDAccepted(t *testing.T) {
-	cursor := &model.KeysetCursor{
+// TestBothSeamsShareOneCursorValidator pins #381 item 1: the engine seam and
+// the paginated seam must refuse exactly the same cursors. Before this change
+// Query accepted arbitrary attribute columns that ExecuteFederatedPaginatedQuery
+// rejected, and neither checked value alignment.
+func TestBothSeamsShareOneCursorValidator(t *testing.T) {
+	bad := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
 			{Attribute: "created_at", Direction: forma.SortOrderDesc},
 			{Attribute: "row_id", Direction: forma.SortOrderAsc},
 		},
+		Values: []interface{}{int64(5)}, // one value short
+		Mode:   model.KeysetCursorModeAfter,
 	}
-	if err := validateKeysetTiebreak(cursor); err != nil {
-		t.Errorf("expected no error for cursor ending on row_id, got: %v", err)
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav"}
+	newQuery := func() *model.FederatedAttributeQuery {
+		return &model.FederatedAttributeQuery{
+			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+			KeysetCursor:   bad,
+		}
 	}
-}
 
-func TestValidateKeysetTiebreak_RowIDOnlyAccepted(t *testing.T) {
-	cursor := &model.KeysetCursor{
-		Columns: []model.KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
-	}
-	if err := validateKeysetTiebreak(cursor); err != nil {
-		t.Errorf("expected no error for row_id-only cursor, got: %v", err)
-	}
-}
+	engine := NewDBFederatedQueryEngine(
+		&fakePostgresFederatedSource{page: &model.PersistentRecordPage{}},
+		nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
 
-func TestValidateKeysetTiebreak_MissingRowIDRejected(t *testing.T) {
-	cursor := &model.KeysetCursor{
-		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
-	}
-	err := validateKeysetTiebreak(cursor)
-	if err == nil {
-		t.Fatal("expected error for cursor lacking trailing row_id, got nil")
-	}
-	// The message must name the offending column and the expected state.
-	if !strings.Contains(err.Error(), "created_at") {
-		t.Errorf("expected error to name the offending column %q, got: %v", "created_at", err)
-	}
-	if !strings.Contains(err.Error(), "row_id") {
-		t.Errorf("expected error to name the expected \"row_id\" tiebreak, got: %v", err)
-	}
-}
+	_, queryErr := engine.Query(context.Background(), tables, newQuery(), &model.FederatedQueryOptions{})
+	require.Error(t, queryErr, "engine seam must refuse a misaligned cursor")
+	require.Contains(t, queryErr.Error(), "carries 2 column(s) but 1 value(s)")
 
-func TestValidateKeysetTiebreak_NonTrailingRowIDRejected(t *testing.T) {
-	// row_id present but not last: the trailing "count" is still non-unique.
-	cursor := &model.KeysetCursor{
-		Columns: []model.KeysetColumn{
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-		},
-	}
-	if err := validateKeysetTiebreak(cursor); err == nil {
-		t.Fatal("expected error when row_id is not the final column, got nil")
-	}
-}
-
-func TestValidateKeysetTiebreak_EmptyAndNilNoOp(t *testing.T) {
-	if err := validateKeysetTiebreak(nil); err != nil {
-		t.Errorf("expected no error for nil cursor, got: %v", err)
-	}
-	if err := validateKeysetTiebreak(&model.KeysetCursor{}); err != nil {
-		t.Errorf("expected no error for empty cursor, got: %v", err)
-	}
+	_, _, pageErr := engine.ExecuteFederatedPaginatedQuery(
+		context.Background(), tables, newQuery(), 10, 0, nil, &model.FederatedQueryOptions{})
+	require.Error(t, pageErr, "paginated seam must refuse the same cursor")
+	require.Contains(t, pageErr.Error(), "carries 2 column(s) but 1 value(s)")
 }
 
 // TestPaginatedQueryTakesKeysetPathOnCursorAlone pins #381 item 3. The keyset

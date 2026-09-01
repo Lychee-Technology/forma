@@ -169,16 +169,11 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
-	// Validate keyset cursor columns are supported and end on the row_id
-	// tiebreak (#183): an unsupported column or a missing trailing row_id would
-	// otherwise be consumed silently by the DuckDB template below.
-	if fq.KeysetCursor != nil {
-		if err := validateKeysetColumns(fq.KeysetCursor.Columns); err != nil {
-			return nil, 0, err
-		}
-		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
-			return nil, 0, err
-		}
+	// The DuckDB template below consumes the cursor unvalidated, so refuse a
+	// malformed one here. Same call as the engine gate (engine.go): one
+	// contract, both seams (#381).
+	if err := validateKeysetCursor(fq.KeysetCursor); err != nil {
+		return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 
 	maxRows := model.FederatedMaxRows

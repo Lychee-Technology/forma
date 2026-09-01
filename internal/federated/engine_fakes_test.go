@@ -13,10 +13,10 @@ import (
 )
 
 type fakePostgresFederatedSource struct {
-	queryCalls       int
+	queryCalls        int
 	runOptimizedCalls int
-	lastQuery        *model.PersistentRecordQuery
-	page             *model.PersistentRecordPage
+	lastQuery         *model.PersistentRecordQuery
+	page              *model.PersistentRecordPage
 }
 
 func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
