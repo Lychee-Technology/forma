@@ -131,7 +131,7 @@ func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualCl
 		args = append(args, dual.PgMainArgs...)
 	}
 	args = append(args, dual.DuckArgs...)
-	if q != nil && q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
+	if q != nil && q.KeysetCursor.IsActive() {
 		_, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
 		args = append(args, keysetArgs...)
 	}

@@ -61,10 +61,15 @@ func validateKeysetTiebreak(cursor *model.KeysetCursor) error {
 
 // hasKeysetCursor reports whether the query carries an ACTIVE keyset cursor.
 // A nil cursor or an empty column list is the open first page, which carries
-// no continuation obligation — the same no-op contract validateKeysetTiebreak
-// applies.
+// no continuation obligation.
+//
+// The predicate itself lives on model.KeysetCursor (IsActive) so the
+// internal/sqlgen sites that decide whether the clause is RENDERED share it
+// with the sites here that decide whether a cursor is HONOURED OR REFUSED
+// (#381 item 9). This function is the package-local convenience wrapper that
+// also absorbs a nil query.
 func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
-	return fq != nil && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0
+	return fq != nil && fq.KeysetCursor.IsActive()
 }
 
 // rejectKeysetOnPostgresOnly fails a cursor-bearing request that reached the
