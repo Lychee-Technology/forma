@@ -50,7 +50,8 @@ func requireCompiledParity(t *testing.T, q *model.FederatedAttributeQuery, dual 
 	require.NoError(t, err)
 	require.NotNil(t, compiled)
 
-	gotSQL, gotArgs := compiled.Bind(q, dual, dirtyIDs, FlushGraceCutoffDisabled)
+	gotSQL, gotArgs, err := compiled.Bind(q, dual, dirtyIDs, FlushGraceCutoffDisabled)
+	require.NoError(t, err)
 	require.Equal(t, wantSQL, gotSQL)
 	require.Equal(t, wantArgs, gotArgs)
 
@@ -152,7 +153,8 @@ func TestCompiledQueryColdOnlyParityOmitsPgSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, compiled)
 
-	gotSQL, gotArgs := compiled.Bind(q, dual, nil, FlushGraceCutoffDisabled)
+	gotSQL, gotArgs, err := compiled.Bind(q, dual, nil, FlushGraceCutoffDisabled)
+	require.NoError(t, err)
 	require.NotContains(t, gotSQL, "pg_source",
 		"hot excluded: the compiled skeleton must omit the pg_source CTE")
 	wantArgs := append(append([]any{}, dual.DuckArgs...), dual.DuckArgs...)
@@ -186,7 +188,8 @@ func TestCompiledQueryReuseAcrossRequests(t *testing.T) {
 	dualB, err := plan.Bind(qB.Condition, cache, nil)
 	require.NoError(t, err)
 
-	gotSQL, gotArgs := compiled.Bind(qB, dualB, dirtyB, FlushGraceCutoffDisabled)
+	gotSQL, gotArgs, err := compiled.Bind(qB, dualB, dirtyB, FlushGraceCutoffDisabled)
+	require.NoError(t, err)
 	wantSQL, wantArgs, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, compiledParityParams(t), qB, dirtyB, &dualB)
 	require.NoError(t, err)
 	require.Equal(t, wantSQL, gotSQL, "request B served from request A's skeleton must equal the direct build")

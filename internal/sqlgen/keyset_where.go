@@ -24,9 +24,18 @@ import (
 // row — #281 / #205 M-2). No continuation-token codec exists today; a
 // future decoder must produce int64 for integer values (UseNumber /
 // numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
-func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}) {
-	if cursor == nil || len(cursor.Columns) == 0 {
-		return "1=1", nil
+// The cursor must satisfy model.KeysetCursor.ValidateShape: values align
+// one-for-one with Columns, and the last column is the row_id tiebreak. A
+// misaligned cursor is an error rather than a NULL bind (#381 item 7).
+func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}, error) {
+	if !cursor.IsActive() {
+		return "1=1", nil, nil
+	}
+	// The federated seams validate this too (federated.validateKeysetCursor),
+	// but the check is repeated here so a direct sqlgen caller cannot bind SQL
+	// NULL for an unfilled arm and receive a silently empty page (#381 item 7).
+	if err := cursor.ValidateShape(); err != nil {
+		return "", nil, fmt.Errorf("render keyset where clause: %w", err)
 	}
 
 	// Cursor columns fold like every other column reference in this dialect
@@ -42,12 +51,6 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (s
 		}
 		return tableAlias + col
 	}
-	valueAt := func(i int) interface{} {
-		if i < len(cursor.Values) {
-			return cursor.Values[i]
-		}
-		return nil
-	}
 
 	var clauses []string
 	var args []interface{}
@@ -59,18 +62,18 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (s
 		var parts []string
 		for j := 0; j < i; j++ {
 			parts = append(parts, fmt.Sprintf("%s = ?", colRef(cursor.Columns[j].Attribute)))
-			args = append(args, valueAt(j))
+			args = append(args, cursor.Values[j])
 		}
 		parts = append(parts, fmt.Sprintf("%s %s ?", colRef(col.Attribute), op))
-		args = append(args, valueAt(i))
+		args = append(args, cursor.Values[i])
 
 		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
 	}
 
 	if len(clauses) == 1 {
-		return clauses[0], args
+		return clauses[0], args, nil
 	}
-	return strings.Join(clauses, " OR "), args
+	return strings.Join(clauses, " OR "), args, nil
 }
 
 func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {

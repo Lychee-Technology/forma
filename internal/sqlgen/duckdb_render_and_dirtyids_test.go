@@ -76,7 +76,7 @@ func TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders(t *testing.T) {
 		KeysetCursor:   cursor,
 	}
 	params := map[string]any{}
-	injectDuckDBTemplateParams(params, q, nil)
+	require.NoError(t, injectDuckDBTemplateParams(params, q, nil))
 
 	clause, ok := params["KEYSET_WHERE_CLAUSE"].(string)
 	require.True(t, ok, "KEYSET_WHERE_CLAUSE should be a string")
@@ -94,10 +94,16 @@ func TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders(t *testing.T) {
 // a keyset query: [DuckArgs, PgMainArgs, DuckArgs, keysetArgs], one "?" per
 // arg in appearance order, no "$n" anywhere (#212).
 func TestBuildDuckDBQuery_KeysetArgsBindLast(t *testing.T) {
+	// The cursor carries the mandatory row_id tiebreak (#183): a cursor
+	// ending on a non-unique key is refused by ValidateShape, which
+	// generateKeysetWhereClause now enforces (#381 item 7).
 	cursor := &model.KeysetCursor{
-		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}},
-		Values:  []interface{}{int64(1000)},
-		Mode:    model.KeysetCursorModeAfter,
+		Columns: []model.KeysetColumn{
+			{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderDesc},
+		},
+		Values: []interface{}{int64(1000), "11111111-1111-1111-1111-111111111111"},
+		Mode:   model.KeysetCursorModeAfter,
 	}
 	q := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
@@ -111,10 +117,13 @@ func TestBuildDuckDBQuery_KeysetArgsBindLast(t *testing.T) {
 	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1), q, nil, dual)
 	require.NoError(t, err)
 
-	// [DuckArgs(2), PgMainArgs(0), DuckArgs(2), keyset(1)]
-	require.Len(t, args, 5)
-	require.Equal(t, int64(1000), args[4], "keyset value must be the last arg")
+	// [DuckArgs(2), PgMainArgs(0), DuckArgs(2), keyset(3)] — a 2-column
+	// cursor contributes n(n+1)/2 args.
+	require.Len(t, args, 7)
+	require.Equal(t, []any{
+		int64(1000), int64(1000), "11111111-1111-1111-1111-111111111111",
+	}, args[4:], "keyset values must be the last args, in placeholder order")
 	require.NotContains(t, sql, "$", "keyset queries must not reintroduce $n placeholders")
-	require.Equal(t, 5, strings.Count(sql, "?"),
+	require.Equal(t, 7, strings.Count(sql, "?"),
 		"placeholder count must equal arg count for positional binding")
 }

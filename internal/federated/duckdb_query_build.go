@@ -206,9 +206,10 @@ type duckCompiledEntry struct {
 
 // serveFromPlanCache attempts the compiled-plan path. It returns ok=false
 // when the request is not cacheable (no cache injected, test hook installed,
-// non-advanced template, or shape hashing failed) — the caller then uses the
-// direct builder. On a miss the compile result serves the request too, so
-// rendering happens at most once per shape.
+// non-advanced template, shape hashing failed, or binding the compiled
+// skeleton failed) — the caller then uses the direct builder. On a miss the
+// compile result serves the request too, so rendering happens at most once
+// per shape.
 func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
@@ -271,7 +272,13 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		bound.PgMainClause = entry.dualPlan.PgMainClause
 		bound.DuckClause = entry.dualPlan.DuckClause
 	}
-	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
+	sqlStr, args, err := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
+	if err != nil {
+		// Same contract as every other failure here: ok=false hands the
+		// request to the direct builder, which carries the identical keyset
+		// validation (#381 item 7) and reports the error to the caller.
+		return "", nil, false
+	}
 	return sqlStr, args, true
 }
 

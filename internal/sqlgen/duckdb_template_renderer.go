@@ -86,7 +86,9 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 				whereArgs = append(whereArgs, dual.DuckArgs...)
 			}
 		}
-		injectDuckDBTemplateParams(m, q, dual)
+		if err := injectDuckDBTemplateParams(m, q, dual); err != nil {
+			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+		}
 		if isAdvancedTemplate {
 			if err := requireProjectionParams(m); err != nil {
 				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
@@ -132,7 +134,9 @@ func buildDuckDBQueryLegacy(tpl *template.Template, m map[string]any, anchor map
 			whereArgs = append(whereArgs, whereArgs...)
 		}
 	}
-	injectDuckDBTemplateParams(m, q, nil)
+	if err := injectDuckDBTemplateParams(m, q, nil); err != nil {
+		return "", nil, fmt.Errorf("build DuckDB query: %w", err)
+	}
 	if isAdvancedTemplate {
 		if err := requireProjectionParams(m); err != nil {
 			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
@@ -231,7 +235,7 @@ func FederatedQueryHasHot(q *model.FederatedAttributeQuery) bool {
 	return false
 }
 
-func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) {
+func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) error {
 	// Defensive default for the #252 flush-grace cutoff, set before the nil-q
 	// return so every render path (dual, legacy, nil query) produces valid
 	// SQL with the pre-#252 barrier when the engine did not supply a cutoff.
@@ -260,7 +264,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	}
 
 	if q == nil {
-		return
+		return nil
 	}
 
 	params["SCHEMA_ID"] = q.SchemaID
@@ -308,7 +312,10 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	// all condition args by appendKeysetArgs, matching the clause's position at
 	// the end of the visible CTE.
 	if q.KeysetCursor.IsActive() {
-		keysetClause, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
+		keysetClause, keysetArgs, err := generateKeysetWhereClause(q.KeysetCursor, "")
+		if err != nil {
+			return fmt.Errorf("inject keyset params: %w", err)
+		}
 		params["HAS_KEYSET"] = true
 		params["KEYSET_WHERE_CLAUSE"] = keysetClause
 		params["KEYSET_ARGS"] = keysetArgs
@@ -321,6 +328,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	if _, ok := params["NON_KEYSET_ORDER_BY"]; !ok {
 		params["NON_KEYSET_ORDER_BY"] = buildNonKeysetOrderBy(q)
 	}
+	return nil
 }
 
 func formatDuckDBPathList(paths []string) string {

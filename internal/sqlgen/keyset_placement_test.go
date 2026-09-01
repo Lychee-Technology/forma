@@ -16,10 +16,15 @@ import (
 func TestAdvancedTemplate_KeysetAppliedAfterDedup(t *testing.T) {
 	q := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10},
+		// row_id closes the cursor (#183); ValidateShape refuses a cursor
+		// ending on the non-unique "count" key (#381 item 7).
 		KeysetCursor: &model.KeysetCursor{
-			Columns: []model.KeysetColumn{{Attribute: "count", Direction: forma.SortOrderAsc}},
-			Values:  []any{float64(500)},
-			Mode:    model.KeysetCursorModeAfter,
+			Columns: []model.KeysetColumn{
+				{Attribute: "count", Direction: forma.SortOrderAsc},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			},
+			Values: []any{float64(500), "11111111-1111-1111-1111-111111111111"},
+			Mode:   model.KeysetCursorModeAfter,
 		},
 	}
 	dual := &DualClauses{DuckClause: "1=1"}

@@ -28,7 +28,9 @@ func TestRendererKeysetGateMatchesIsActive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			params := map[string]any{}
 			q := &model.FederatedAttributeQuery{KeysetCursor: tc.cursor}
-			injectDuckDBTemplateParams(params, q, nil)
+			if err := injectDuckDBTemplateParams(params, q, nil); err != nil {
+				t.Fatalf("injectDuckDBTemplateParams: %v", err)
+			}
 			got, _ := params["HAS_KEYSET"].(bool)
 			if want := tc.cursor.IsActive(); got != want {
 				t.Errorf("HAS_KEYSET = %v, want IsActive() = %v", got, want)
@@ -55,7 +57,10 @@ func TestKeysetColumnsAreFolded(t *testing.T) {
 		Mode:   model.KeysetCursorModeAfter,
 	}
 
-	where, args := generateKeysetWhereClause(cursor, "")
+	where, args, err := generateKeysetWhereClause(cursor, "")
+	if err != nil {
+		t.Fatalf("generateKeysetWhereClause: %v", err)
+	}
 	if strings.Contains(where, "contact.annualIncome") {
 		t.Errorf("WHERE clause emits the unfolded dotted name: %s", where)
 	}
@@ -94,5 +99,35 @@ func TestKeysetSystemColumnsSurviveTheFold(t *testing.T) {
 	}
 	if got := buildKeysetOrderBy(cursor); got != "created_at DESC, row_id ASC" {
 		t.Errorf("ORDER BY = %q, want %q", got, "created_at DESC, row_id ASC")
+	}
+}
+
+// TestKeysetWhereClauseRejectsMisalignedValues pins #381 item 7 at the codegen
+// seam. The retired valueAt fallback returned nil for an index past the end of
+// Values, binding SQL NULL; `col > NULL` is NULL, WHERE treats that as
+// not-true, and every disjunct carrying the unfilled arm dropped out — the
+// caller received a silently empty page instead of an error.
+func TestKeysetWhereClauseRejectsMisalignedValues(t *testing.T) {
+	cursor := &model.KeysetCursor{
+		Columns: []model.KeysetColumn{
+			{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		},
+		Values: []interface{}{int64(5)}, // one short
+		Mode:   model.KeysetCursorModeAfter,
+	}
+
+	_, _, err := generateKeysetWhereClause(cursor, "")
+	if err == nil {
+		t.Fatal("generateKeysetWhereClause() = nil error, want a misalignment error")
+	}
+	if !strings.Contains(err.Error(), "carries 2 column(s) but 1 value(s)") {
+		t.Errorf("err = %q, want it to name the column/value counts", err.Error())
+	}
+
+	params := map[string]any{}
+	q := &model.FederatedAttributeQuery{KeysetCursor: cursor}
+	if err := injectDuckDBTemplateParams(params, q, nil); err == nil {
+		t.Error("injectDuckDBTemplateParams() = nil error, want the misalignment to propagate")
 	}
 }

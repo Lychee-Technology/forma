@@ -115,7 +115,7 @@ func minimalAdvancedParams(t *testing.T, missing []NullScanColumn) map[string]an
 // s3_source's FROM and the pushdown semijoin's inner FROM.
 func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	params := map[string]any{"S3_PATHS": "'s3://b/base/a.parquet'"}
-	injectDuckDBTemplateParams(params, nil, nil)
+	require.NoError(t, injectDuckDBTemplateParams(params, nil, nil))
 	// nil query keeps this a pure param-derivation probe.
 	src, _ := params["S3_SCAN_SOURCE"].(string)
 	require.Equal(t, BuildParquetScanSource("'s3://b/base/a.parquet'", nil), src)
@@ -125,7 +125,7 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 		"S3_PATHS":           "'s3://b/base/a.parquet'",
 		"ColdMissingColumns": []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}},
 	}
-	injectDuckDBTemplateParams(params, nil, nil)
+	require.NoError(t, injectDuckDBTemplateParams(params, nil, nil))
 	src, _ = params["S3_SCAN_SOURCE"].(string)
 	require.Contains(t, src, "NULL::INTEGER AS score")
 

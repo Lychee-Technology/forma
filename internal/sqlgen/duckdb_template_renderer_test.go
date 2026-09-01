@@ -202,7 +202,7 @@ func TestPGConnIsEscapedForSQLLiteral(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			params := map[string]any{"DuckDBPGConnString": tt.conn}
-			injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil)
+			require.NoError(t, injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil))
 
 			got, ok := params["PG_CONN"].(string)
 			require.True(t, ok, "PG_CONN was not populated")
@@ -225,7 +225,7 @@ func TestPGConnExplicitOverrideIsNotDoubleEscaped(t *testing.T) {
 		"PG_CONN":            "host=already port=1",
 		"DuckDBPGConnString": `host='ignored'`,
 	}
-	injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil)
+	require.NoError(t, injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil))
 	require.Equal(t, "host=already port=1", params["PG_CONN"])
 }
 
