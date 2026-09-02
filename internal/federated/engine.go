@@ -155,7 +155,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	// the cursor unvalidated (duckdb_template_renderer.go). validateKeysetCursor
 	// (keyset.go) is THE contract — the same call ExecuteFederatedPaginatedQuery
 	// makes, so the two seams cannot disagree about what a cursor may be (#381).
-	if err := validateKeysetCursor(fq.KeysetCursor); err != nil {
+	if err := validateKeysetCursor(fq.KeysetCursor, fq.AttributeOrders); err != nil {
 		return nil, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 	// Only explicit hot-only requests short-circuit to Postgres. Empty

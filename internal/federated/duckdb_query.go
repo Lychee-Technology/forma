@@ -62,7 +62,7 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	// renderer directly, so validation cannot be inherited. Each seam validates
 	// independently by design; the contract is pure and idempotent (#381).
 	if q != nil {
-		if err := validateKeysetCursor(q.KeysetCursor); err != nil {
+		if err := validateKeysetCursor(q.KeysetCursor, attributeOrders); err != nil {
 			return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
 		}
 	}
@@ -190,7 +190,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	// Validate the keyset cursor: the fourth seam (#381). Each entry point to
 	// the renderer validates independently by design, not through inheritance.
-	if err := validateKeysetCursor(q.KeysetCursor); err != nil {
+	if err := validateKeysetCursor(q.KeysetCursor, attributeOrders); err != nil {
 		return 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 

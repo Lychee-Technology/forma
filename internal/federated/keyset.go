@@ -109,6 +109,12 @@ const parquetAttrFallbackColumn = "attr"
 //
 //   - the shape rules, shared with any package via model.KeysetCursor
 //     (value/column alignment and the trailing row_id tiebreak);
+//   - the continuation rule, also on model.KeysetCursor: when the request
+//     resolved AttributeOrders, the cursor must be those orders plus the
+//     row_id tiebreak, or the renderer — which builds the keyset ORDER BY
+//     from the cursor alone — would silently replace the request's order
+//     with the cursor's. orders is the order that will RENDER for this
+//     dispatch: each seam passes the AttributeOrders it hands the builder.
 //   - per column, all judged on the ParquetAttrColumn fold — the same fold the
 //     code generator emits, so validation and codegen agree by construction:
 //     never the writer's empty-name fallback, never the dedup machinery, and
@@ -126,12 +132,15 @@ const parquetAttrFallbackColumn = "attr"
 //
 // A plain read-path error mirroring the rest of this file: the route or the
 // cursor is wrong for an operator to see, not a caller-facing 4xx.
-func validateKeysetCursor(cursor *model.KeysetCursor) error {
+func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOrder) error {
 	if err := cursor.ValidateShape(); err != nil {
-		// Deliberately unwrapped: both call sites (engine.go, pagination.go)
-		// already wrap this function's result with "validate keyset cursor",
-		// so adding context here would double that prefix. The sqlgen copy of
-		// the same call DOES wrap, because there it is the outermost frame.
+		// Deliberately unwrapped: every call site already wraps this
+		// function's result with "validate keyset cursor", so adding context
+		// here would double that prefix. The sqlgen copies of the same calls
+		// DO wrap, because there they are the outermost frame.
+		return err
+	}
+	if err := cursor.ValidateContinuation(orders); err != nil {
 		return err
 	}
 	if !cursor.IsActive() {

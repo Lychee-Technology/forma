@@ -312,6 +312,15 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	// all condition args by appendKeysetArgs, matching the clause's position at
 	// the end of the visible CTE.
 	if q.KeysetCursor.IsActive() {
+		// The ORDER BY below renders from the cursor alone, so the cursor must
+		// be a continuation of q.AttributeOrders rather than a replacement
+		// for it. The federated seams check this too (validateKeysetCursor);
+		// repeated here, like ValidateShape in generateKeysetWhereClause, so
+		// a direct sqlgen caller cannot render a page ordered on something
+		// the request never sorted on (#381 review).
+		if err := q.KeysetCursor.ValidateContinuation(q.AttributeOrders); err != nil {
+			return fmt.Errorf("inject keyset params: %w", err)
+		}
 		keysetClause, keysetArgs, err := generateKeysetWhereClause(q.KeysetCursor)
 		if err != nil {
 			return fmt.Errorf("inject keyset params: %w", err)

@@ -41,7 +41,7 @@ func runKeysetCursorCases(t *testing.T, cases []keysetCursorCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateKeysetCursor(tc.cursor)
+			err := validateKeysetCursor(tc.cursor, nil)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("validateKeysetCursor() = %v, want nil", err)
