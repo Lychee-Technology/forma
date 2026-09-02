@@ -222,20 +222,72 @@ direction side. No boundary value may be `nil`: alignment alone does not stop
 one, and a nil binds the very SQL NULL an unfilled arm did, so the comparison
 is unknown and every row tied at the boundary silently drops (a typed nil such
 as `(*string)(nil)` binds NULL too, and is refused with the untyped one).
-`Mode` must be `after` or `before`, and each column's `Direction` must be
-`asc`, `desc`, or empty for the documented `asc` default. Both enums are
-matched **byte-exactly**, unlike `row_id`: a mode and a direction are Go
-constants the renderer compares exactly and never identifiers DuckDB resolves,
-so admitting `After` or `DESC` would hand the renderer a spelling it reads as
-the fall-through default — *before*, and ascending — and the page would come
-back successfully in the wrong direction. A caller-facing decode boundary that
+`Mode` must be `after`, and each column's `Direction` must be `asc`, `desc`,
+or empty for the documented `asc` default. Both enums are matched
+**byte-exactly**, unlike `row_id`: a mode and a direction are Go constants the
+renderer compares exactly and never identifiers DuckDB resolves, so admitting
+`After` or `DESC` would hand the renderer a spelling it reads as the
+fall-through default — *before*, and ascending — and the page would come back
+successfully in the wrong direction. A caller-facing decode boundary that
 accepts other spellings normalizes them before building the cursor, as
 `normalizeSortOrder` does for the sort surface.
+
+`before` is declared (`model.KeysetCursorModeBefore`) but refused as well,
+until #513 lands its other half. The renderer flips the comparison operator
+for a `before` cursor but still fetches in the **forward** order under the
+`LIMIT`, so `key < 7 ORDER BY key ASC LIMIT 2` answers `[1, 2]` — the start
+of the prior range — where a caller stepping backwards expects `[5, 6]`;
+descending order has the symmetric defect. A backward page needs the reversed
+order under the `LIMIT` and the requested order restored outside it. Until
+that exists, a `before` cursor is a successfully-answered wrong page, and is
+refused for the same reason an unset mode is.
 
 An inactive cursor is exempt from all five: the open first page carries no
 continuation obligation. `IsActive` is the shared spelling of that predicate,
 used by every site that decides whether the clause is rendered and every site
 that decides whether a cursor is honoured or refused.
+
+**A cursor continues the request's order; it does not replace it.** The keyset
+`ORDER BY` renders from the cursor's columns alone, and the renderer never
+reads `AttributeOrders` while a cursor is active, so without a rule a request
+sorted on `count ASC` and continued with a valid `created_at DESC, row_id ASC`
+cursor answered a page ordered and filtered on `created_at`.
+`model.KeysetCursor.ValidateContinuation(orders)` closes that: when the request
+resolved `AttributeOrders`, the cursor must be exactly those orders — same
+attribute name at each position, matched byte-exactly, same direction —
+followed by an ascending `row_id`, because `row_id ASC` is the tiebreak the
+non-keyset `ORDER BY` appended to page one. A wrong attribute, a flipped
+direction, a `row_id DESC` tiebreak, or a longer or shorter cursor is refused.
+Every seam judges the order it is about to render (`fq.AttributeOrders` at
+`Query`, the `attributeOrders` argument elsewhere), and
+`sqlgen.injectDuckDBTemplateParams` repeats the check against the query it
+renders, so a direct `sqlgen` caller cannot bypass it either.
+
+When the request resolved **no** `AttributeOrders`, the cursor is honoured as
+written. That boundary is deliberate: the default `created_at DESC, row_id
+ASC` is the renderer's fallback rather than a caller statement, and
+`AttributeOrders` cannot express a system-column order at all (sort keys
+resolve against the schema; `created_at` is not a schema attribute). A
+cursor-only walk — an open first page bounded by a far-future `created_at`,
+then cursors on `created_at` in either direction with a `row_id` tiebreak in
+either direction — is a complete order specification with nothing to
+contradict, and it is how the production e2e walks and the federated
+benchmark page. Requiring an order-less request to match the default would
+make every `created_at` / `ver_ts` / `deleted_ts` cursor unreachable.
+
+**The explicit `limit`, `offset` and `attributeOrders` arguments are the
+pagination contract of every DuckDB seam.** The advanced template reads
+`LIMIT`, `OFFSET` and the non-keyset `ORDER BY` from the *query object*
+(`q.Limit`, `q.Offset`, `q.AttributeOrders`), so a caller that normalised or
+clamped its limit but passed the query unchanged used to have the clamp
+silently ignored: the keyset branch of `ExecuteFederatedPaginatedQuery`
+rendered `LIMIT 0` for a zero `fq.Limit` and an over-`MaxRows` `fq.Limit`
+verbatim, with only its in-memory slice honouring the clamp.
+`buildDuckDBQueryWithPlan` — the one point the direct render and the compiled
+plan cache both flow through — now renders a copy of the query carrying the
+dispatched arguments (`federated.dispatchedQuery`), so the rendered skeleton,
+the shape hash and the plan scope all see the query that was dispatched.
+`engine.Query` passes the query's own fields and is unaffected.
 
 The validator does not check that an attribute is registered in the schema:
 that needs the metadata cache, and an unregistered but well-formed name fails
