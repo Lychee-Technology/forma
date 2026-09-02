@@ -34,6 +34,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	coldMissing []sqlgen.NullScanColumn,
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
+	q = dispatchedQuery(q, limit, offset, attributeOrders)
 	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, coldMissing)
 
 	startTranslate := time.Now()
@@ -101,6 +102,36 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+// dispatchedQuery returns a copy of q whose Limit, Offset and AttributeOrders
+// are the arguments the DuckDB seam was called with.
+//
+// The advanced template renders LIMIT, OFFSET and the non-keyset ORDER BY from
+// the QUERY OBJECT (sqlgen.injectDuckDBTemplateParams reads q.Limit, q.Offset,
+// q.AttributeOrders); the call arguments only reach the template map under
+// "Limit"/"Offset"/"PageSize"/"SortKeys", which it never reads. So a caller
+// that normalised or clamped its limit but passed q unchanged had its clamp
+// silently ignored: the keyset branch of ExecuteFederatedPaginatedQuery
+// rendered LIMIT 0 for a zero q.Limit and an over-MaxRows q.Limit verbatim,
+// with only its in-memory slice honouring the clamp (#381 review), and
+// computeFederatedCount hand-rolled the very copy made here (#181).
+//
+// Made at this function, the single point the direct render and the compiled
+// plan cache both flow through, so the rendered skeleton, the shape hash and
+// the plan scope all see the query that was dispatched. The explicit arguments
+// are the pagination contract of every seam; engine.Query passes q's own
+// fields and is unaffected. q itself is never mutated — the caller may still
+// be reading it (recordTranslation, the keyset page slice).
+func dispatchedQuery(q *model.FederatedAttributeQuery, limit, offset int, attributeOrders []model.AttributeOrder) *model.FederatedAttributeQuery {
+	if q == nil {
+		return nil
+	}
+	page := *q
+	page.Limit = limit
+	page.Offset = offset
+	page.AttributeOrders = attributeOrders
+	return &page
 }
 
 // buildDuckDBTemplateBaseParams assembles the static template parameter map:

@@ -242,10 +242,12 @@ func (e *DBFederatedQueryEngine) computeFederatedCount(
 ) (int64, error) {
 	strippedQuery := *fq
 	strippedQuery.KeysetCursor = nil
-	// The advanced template renders LIMIT/OFFSET from the query object, not
-	// from the call parameters (injectDuckDBTemplateParams), so the count
-	// query must zero the pagination on the copy — otherwise a deep offset
-	// re-renders into the recount and it streams zero rows again (#181).
+	// The pagination on the copy is now redundant with dispatchedQuery, which
+	// renders every DuckDB query with the arguments it was dispatched with;
+	// it stays so this copy reads as the query it is — a limit-1 recount with
+	// no offset. Before that helper, the copy was the only thing keeping a
+	// deep offset out of the recount, which otherwise streamed zero rows
+	// again (#181).
 	strippedQuery.Limit = 1
 	strippedQuery.Offset = 0
 
