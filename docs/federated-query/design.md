@@ -199,19 +199,32 @@ the same system column as `row_id`, and a folded `Attr` the same column as
 attribute genuinely named `Attr` — which folds to its own name — stays admitted
 while `[Attr]` is refused.
 
+Case is the whole of that latitude on the system-column set. A name the fold
+merely **transforms** onto one of the four — `created.at` onto `created_at`,
+`ver.ts` onto `ver_ts`, `[row_id]` onto `row_id` — is refused, because the
+generator would emit the real system column and answer a page ordered and
+filtered on a key the caller never named. Schema registration does not stand in
+for that check: it rejects a registered *attribute* whose fold collides with a
+reserved parquet column, but a cursor column is an arbitrary string that was
+never registered.
+
 Two rules travel with the cursor type itself (`model.KeysetCursor`), so
 `internal/sqlgen` can enforce them without reaching into `internal/federated`:
 `Values` must align one-for-one with `Columns` — a short slice used to bind SQL
 NULL and return a silently empty page — and the final column must be `row_id`,
-the trailing tiebreak that makes each page boundary resolvable (#183).
+the trailing tiebreak that makes each page boundary resolvable (#183). That
+last comparison is case-insensitive for the same reason the sets above are, and
+no more so: `ROW_ID` is the tiebreak, `row.id` is not.
 `IsActive` is the shared spelling of "carries a continuation obligation", used
 by every site that decides whether the clause is rendered and every site that
 decides whether a cursor is honoured or refused.
 
 The validator does not check that an attribute is registered in the schema:
 that needs the metadata cache, and an unregistered but well-formed name fails
-loudly at DuckDB's binder rather than silently. It is deferred to the
-caller-facing cursor surface the Postgres-side keyset feature introduces.
+loudly at DuckDB's binder rather than silently — which holds without exception
+only because a fold onto a `visible` column, system or dedup, is refused before
+it can reach the generator. It is deferred to the caller-facing cursor surface
+the Postgres-side keyset feature introduces.
 
 ## **5. SQL Execution Template**
 

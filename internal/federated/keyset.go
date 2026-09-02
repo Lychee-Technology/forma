@@ -31,10 +31,21 @@ import (
 // DuckDB resolves an unquoted identifier case-insensitively, so a cursor on
 // "ROW_ID" or "Created_At" binds to exactly these columns; normalising the
 // lookup key routes those spellings through the system-column branch instead
-// of treating them as ordinary attribute names (#381). ParquetAttrColumn is
-// the identity on all four, and schema registration already rejects an
-// attribute whose fold collides with a reserved parquet column
-// (sqlgen.ValidateParquetAttrColumns), so no real attribute can reach them.
+// of treating them as ordinary attribute names (#381).
+//
+// Case-insensitivity is the whole of the latitude: reaching one of these four
+// by a NON-IDENTITY fold is refused. ParquetAttrColumn is the identity on all
+// four, so "created.at", "ver.ts", "deleted.ts" and "[row_id]" are not
+// spellings of a system column — they are arbitrary names the fold TRANSFORMS
+// onto one, and admitting them would emit the real system column for a cursor
+// the caller wrote against a key of their own: a page ordered and filtered on
+// something never named, the silent-wrong-answer outcome (#354) this file
+// exists to refuse. Schema registration cannot stand in for the check: it
+// rejects a registered ATTRIBUTE whose fold collides with a reserved parquet
+// column (sqlgen.ValidateParquetAttrColumns), but a cursor column is an
+// arbitrary string that was never registered. The refusal is also what keeps
+// validateKeysetCursor's "an unregistered name fails loudly at DuckDB's
+// binder" promise true without exception.
 var keysetSystemColumns = map[string]struct{}{
 	"row_id":     {},
 	"created_at": {},
@@ -101,7 +112,11 @@ const parquetAttrFallbackColumn = "attr"
 //   - per column, all judged on the ParquetAttrColumn fold — the same fold the
 //     code generator emits, so validation and codegen agree by construction:
 //     never the writer's empty-name fallback, never the dedup machinery, and
-//     otherwise a visible-CTE system column or a safe SQL identifier.
+//     otherwise a visible-CTE system column named under its own spelling or a
+//     safe SQL identifier. Case is the only latitude anywhere in that list:
+//     every rule below is matched case-insensitively because DuckDB resolves
+//     unquoted identifiers that way, and no rule admits a name that reached a
+//     column of visible by a non-identity fold.
 //
 // It deliberately does NOT check that an attribute is registered in the
 // schema: that needs the metadata cache, and an unregistered but well-formed
@@ -150,7 +165,14 @@ func validateKeysetCursor(cursor *model.KeysetCursor) error {
 		// every error message keep the caller's spelling.
 		key := strings.ToLower(folded)
 		if _, ok := keysetSystemColumns[key]; ok {
-			continue
+			// A system column is admitted only under its OWN name, case
+			// aside: the fold must have been the identity. Anything else
+			// reached the column by transformation, and the generator would
+			// emit the system column for a cursor that named something else.
+			if strings.EqualFold(col.Attribute, folded) {
+				continue
+			}
+			return fmt.Errorf("keyset cursor column %q folds to %q, a system column of the visible CTE, which would silently paginate on that column instead of the attribute named: cursor on %s under its own name, or on a schema attribute that folds to its own name", col.Attribute, folded, key)
 		}
 		if _, ok := keysetRejectedColumns[key]; ok {
 			return fmt.Errorf("keyset cursor column %q is federated dedup machinery, not a queryable column: cursor on row_id, created_at, ver_ts, deleted_ts or a schema attribute", col.Attribute)
