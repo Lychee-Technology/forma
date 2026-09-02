@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/lychee-technology/forma"
 )
@@ -47,12 +48,22 @@ func (c *KeysetCursor) IsActive() bool {
 //     treats that as not-true, and every disjunct carrying the arm drops out,
 //     so the caller received a SILENTLY EMPTY PAGE rather than an error
 //     (#381 item 7).
+//
 //  2. The final column must be row_id. The continuation predicate for the last
 //     cursor key is a strict inequality, so a cursor ending on a non-unique key
 //     excludes every row sharing that key's value at the page boundary — an
 //     entire tie group is silently skipped (#183). row_id is the only
 //     version-invariant unique column, so ending there gives the composite key
 //     a total order.
+//
+//     The comparison is case-insensitive because DuckDB resolves an unquoted
+//     identifier without regard to case: an emitted "ROW_ID" reaches the very
+//     column "row_id" does, so it IS the tiebreak and refusing it would
+//     contradict the case-insensitive system-column rule the federated
+//     validator applies one layer up (#381). It is case-insensitive and
+//     nothing more — a name that merely FOLDS onto row_id, like "row.id", is
+//     not the tiebreak and is refused here, matching that validator's refusal
+//     of any non-identity fold onto a system column.
 //
 // An inactive cursor is a no-op: the open first page carries no continuation
 // obligation, and nothing renders from it.
@@ -68,7 +79,7 @@ func (c *KeysetCursor) ValidateShape() error {
 			len(c.Columns), len(c.Values))
 	}
 	last := c.Columns[len(c.Columns)-1].Attribute
-	if last != "row_id" {
+	if !strings.EqualFold(last, "row_id") {
 		return fmt.Errorf("keyset cursor final column is %q, expected \"row_id\": a cursor not ending on the unique row_id tiebreak silently skips every row tied on the composite key at the page boundary", last)
 	}
 	return nil

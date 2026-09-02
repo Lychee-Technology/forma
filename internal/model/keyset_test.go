@@ -81,6 +81,27 @@ func TestKeysetCursorValidateShape(t *testing.T) {
 			wantErr: "carries 1 column(s) but 2 value(s)",
 		},
 		{
+			name: "upper-case ROW_ID is the tiebreak: DuckDB resolves it to row_id",
+			cursor: &KeysetCursor{
+				Columns: []KeysetColumn{
+					{Attribute: "created_at", Direction: forma.SortOrderDesc},
+					{Attribute: "ROW_ID", Direction: forma.SortOrderAsc},
+				},
+				Values: []interface{}{int64(5), "r1"},
+			},
+		},
+		{
+			name: "a name that merely FOLDS onto row_id is not the tiebreak",
+			cursor: &KeysetCursor{
+				Columns: []KeysetColumn{
+					{Attribute: "created_at", Direction: forma.SortOrderDesc},
+					{Attribute: "row.id", Direction: forma.SortOrderAsc},
+				},
+				Values: []interface{}{int64(5), "r1"},
+			},
+			wantErr: `final column is "row.id", expected "row_id"`,
+		},
+		{
 			name: "cursor not ending on row_id is rejected",
 			cursor: &KeysetCursor{
 				Columns: []KeysetColumn{
