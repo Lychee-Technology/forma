@@ -189,6 +189,49 @@ func TestValidateKeysetCursorIdentifierAndShape(t *testing.T) {
 	})
 }
 
+// TestValidateKeysetCursorValueAndEnumShape pins that the seam validator
+// carries the shape rules that guard the RENDERER's defaults, not just the
+// ones that guard its column references: a nil boundary binds SQL NULL, an
+// unset Mode reads as "before", and an unrecognised Direction reads as
+// ascending. Each answers a successful page of the wrong rows. The rules live
+// in model.KeysetCursor.ValidateShape; these cases pin that they reach the
+// seams through it, and that a rejection stays a read-path error (the shared
+// runner asserts !errors.Is(err, forma.ErrInvalidInput) on every case).
+func TestValidateKeysetCursorValueAndEnumShape(t *testing.T) {
+	withValues := func(mode model.KeysetCursorMode, dir forma.SortOrder, values ...interface{}) *model.KeysetCursor {
+		return &model.KeysetCursor{
+			Columns: []model.KeysetColumn{
+				{Attribute: "created_at", Direction: dir},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			},
+			Values: values,
+			Mode:   mode,
+		}
+	}
+	runKeysetCursorCases(t, []keysetCursorCase{
+		{
+			"a nil boundary value is refused at the seam",
+			withValues(model.KeysetCursorModeAfter, forma.SortOrderDesc, int64(5), nil),
+			`keyset cursor value 2 (for column "row_id") is nil`,
+		},
+		{
+			"an unset mode is refused at the seam",
+			withValues("", forma.SortOrderDesc, int64(5), "r1"),
+			`keyset cursor mode is "", expected "after" or "before"`,
+		},
+		{
+			"an unrecognised direction is refused at the seam",
+			withValues(model.KeysetCursorModeAfter, "sideways", int64(5), "r1"),
+			`keyset cursor column "created_at" has direction "sideways"`,
+		},
+		{
+			"a fully specified cursor is admitted",
+			withValues(model.KeysetCursorModeBefore, forma.SortOrderDesc, int64(5), "r1"),
+			"",
+		},
+	})
+}
+
 // TestBothSeamsShareOneCursorValidator pins #381 item 1: the engine seam and
 // the paginated seam must refuse exactly the same cursors. Before this change
 // Query accepted arbitrary attribute columns that ExecuteFederatedPaginatedQuery
