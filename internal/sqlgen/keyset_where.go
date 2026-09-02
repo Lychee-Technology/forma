@@ -82,11 +82,18 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{
 
 // keysetComparisonOp picks the continuation operator. The two switches below
 // are exhaustive rather than defaulting: ValidateShape has already refused any
-// mode outside {after, before} and any direction outside {asc, desc, ""}, so
-// the fall-through arms are reached only by the values they name. Before that
+// mode other than after and any direction outside {asc, desc, ""}, so the
+// fall-through arms are reached only by the values they name. Before that
 // rule existed, an unset mode silently meant BEFORE and an unrecognised
 // direction silently meant ASC, and both answered a successful page in the
 // wrong direction (#381).
+//
+// The before arms are currently unreachable: ValidateShape refuses a before
+// cursor because this flip is only half of a backward page — buildKeysetOrderBy
+// still fetches in the forward order under the LIMIT, so `key < 7 ORDER BY key
+// ASC LIMIT 2` answers [1, 2] rather than [5, 6]. They are kept because they
+// are the correct half; #513 adds the reversed fetch order and re-admits the
+// mode.
 func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {
 	isAfter := mode == model.KeysetCursorModeAfter
 	switch direction {

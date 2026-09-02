@@ -217,7 +217,12 @@ func TestValidateKeysetCursorValueAndEnumShape(t *testing.T) {
 		{
 			"an unset mode is refused at the seam",
 			withValues("", forma.SortOrderDesc, int64(5), "r1"),
-			`keyset cursor mode is "", expected "after" or "before"`,
+			`keyset cursor mode is "", expected "after"`,
+		},
+		{
+			"a before cursor is refused at the seam until its backward window exists (#513)",
+			withValues(model.KeysetCursorModeBefore, forma.SortOrderDesc, int64(5), "r1"),
+			`keyset cursor mode is "before", which is not supported yet (#513)`,
 		},
 		{
 			"an unrecognised direction is refused at the seam",
@@ -226,7 +231,7 @@ func TestValidateKeysetCursorValueAndEnumShape(t *testing.T) {
 		},
 		{
 			"a fully specified cursor is admitted",
-			withValues(model.KeysetCursorModeBefore, forma.SortOrderDesc, int64(5), "r1"),
+			withValues(model.KeysetCursorModeAfter, forma.SortOrderDesc, int64(5), "r1"),
 			"",
 		},
 	})

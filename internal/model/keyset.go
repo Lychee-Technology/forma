@@ -71,10 +71,20 @@ func (c *KeysetCursor) IsActive() bool {
 //     is unknown, so WHERE drops every disjunct carrying it. The caller gets a
 //     silently empty or short page — item 1's failure with the count right.
 //
-//  4. Mode must be one of the two modes. `keysetComparisonOp` computes
+//  4. Mode must be after. `keysetComparisonOp` computes
 //     `mode == KeysetCursorModeAfter`, so ANY other value — the zero value most
 //     of all — means BEFORE, and a cursor that lost its mode paginates
 //     backwards while answering successfully.
+//
+//     Before is declared (KeysetCursorModeBefore) but refused too, until #513
+//     lands the other half of it: the renderer flips the comparison operator
+//     for a before cursor yet still fetches in the FORWARD order under the
+//     LIMIT, so `key < 7 ORDER BY key ASC LIMIT 2` answers [1, 2] — the start
+//     of the prior range — where a caller stepping backwards expects [5, 6].
+//     A backward page needs the reversed order under the LIMIT and the
+//     requested order restored outside it. Until then a before cursor is a
+//     successfully-answered wrong page, and is refused for the same reason
+//     an unset mode is.
 //
 //  5. Each column's Direction must be asc, desc, or empty. The renderer treats
 //     everything that is not desc as ascending, so an unrecognised direction
@@ -166,14 +176,17 @@ func (c *KeysetCursor) validateDirections() error {
 	return nil
 }
 
-// validateMode refuses a mode the renderer would read as before without being
-// told to (rule 4), the zero value included.
+// validateMode refuses every mode but after (rule 4): an unknown one, the
+// zero value the renderer reads as before, and before itself, whose backward
+// window the renderer does not build yet (#513).
 func (c *KeysetCursor) validateMode() error {
 	switch c.Mode {
-	case KeysetCursorModeAfter, KeysetCursorModeBefore:
+	case KeysetCursorModeAfter:
 		return nil
+	case KeysetCursorModeBefore:
+		return fmt.Errorf("keyset cursor mode is \"before\", which is not supported yet (#513): the renderer flips the comparison but fetches in the forward order under the LIMIT, so a before page would answer the start of the prior range rather than the page preceding the cursor")
 	default:
-		return fmt.Errorf("keyset cursor mode is %q, expected \"after\" or \"before\": the renderer reads every other value — an unset mode above all — as \"before\", so a cursor that lost its mode paginates backwards and still answers successfully",
+		return fmt.Errorf("keyset cursor mode is %q, expected \"after\": the renderer reads every other value — an unset mode above all — as \"before\", so a cursor that lost its mode paginates backwards and still answers successfully",
 			c.Mode)
 	}
 }

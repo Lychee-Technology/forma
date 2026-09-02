@@ -174,21 +174,29 @@ func TestKeysetCursorValidateShapeMode(t *testing.T) {
 	}
 	runValidateShapeCases(t, []validateShapeCase{
 		{name: "after is a mode", cursor: modeCursor(KeysetCursorModeAfter)},
-		{name: "before is a mode", cursor: modeCursor(KeysetCursorModeBefore)},
+		{
+			// The renderer flips the operator for before but still fetches
+			// in the forward order under the LIMIT, so a before page answers
+			// the start of the prior range (#513). Refused until the
+			// backward window exists — not silently answered.
+			name:    "before is declared but refused until its backward window exists",
+			cursor:  modeCursor(KeysetCursorModeBefore),
+			wantErr: `keyset cursor mode is "before", which is not supported yet (#513)`,
+		},
 		{
 			name:    "an unset mode is rejected rather than silently meaning before",
 			cursor:  modeCursor(""),
-			wantErr: `keyset cursor mode is "", expected "after" or "before"`,
+			wantErr: `keyset cursor mode is "", expected "after"`,
 		},
 		{
 			name:    "an unknown mode is rejected",
 			cursor:  modeCursor("sideways"),
-			wantErr: `keyset cursor mode is "sideways", expected "after" or "before"`,
+			wantErr: `keyset cursor mode is "sideways", expected "after"`,
 		},
 		{
 			name:    "the mode enum is matched exactly: the renderer compares it byte-for-byte",
 			cursor:  modeCursor("After"),
-			wantErr: `keyset cursor mode is "After", expected "after" or "before"`,
+			wantErr: `keyset cursor mode is "After", expected "after"`,
 		},
 		{
 			name:   "an inactive cursor carries no mode obligation",
