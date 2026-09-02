@@ -71,8 +71,28 @@ func (c *KeysetCursor) IsActive() bool {
 //     is unknown, so WHERE drops every disjunct carrying it. The caller gets a
 //     silently empty or short page — item 1's failure with the count right.
 //
+//  4. Mode must be one of the two modes. `keysetComparisonOp` computes
+//     `mode == KeysetCursorModeAfter`, so ANY other value — the zero value most
+//     of all — means BEFORE, and a cursor that lost its mode paginates
+//     backwards while answering successfully.
+//
+//  5. Each column's Direction must be asc, desc, or empty. The renderer treats
+//     everything that is not desc as ascending, so an unrecognised direction
+//     paginates against its own ORDER BY. Empty is admitted because asc is the
+//     documented default of this repository's sort surface
+//     (internal.normalizeSortOrder), and the renderer already agrees with it.
+//
+// Rules 4 and 5 compare BYTE-EXACTLY, unlike rule 2's case-insensitive
+// row_id. That is not an inconsistency: rule 2 governs a SQL identifier, which
+// DuckDB resolves without regard to case, so "ROW_ID" IS row_id. A mode and a
+// direction are Go constants that never reach SQL as text, and the renderer
+// compares them exactly — admitting "DESC" here would hand the renderer a
+// spelling it reads as ascending, reinstating the silent default this rule
+// exists to remove. A future decode boundary that accepts caller spellings
+// normalizes them before building the cursor, as normalizeSortOrder does.
+//
 // An inactive cursor is a no-op: the open first page carries no continuation
-// obligation, and nothing renders from it — no values to bind.
+// obligation, and nothing renders from it — no values, no mode, no directions.
 //
 // A plain read-path error, not an ErrInvalidInput-wrapped write-path
 // validation carrier.
@@ -85,6 +105,12 @@ func (c *KeysetCursor) ValidateShape() error {
 			len(c.Columns), len(c.Values))
 	}
 	if err := c.validateBoundaryValues(); err != nil {
+		return err
+	}
+	if err := c.validateDirections(); err != nil {
+		return err
+	}
+	if err := c.validateMode(); err != nil {
 		return err
 	}
 	last := c.Columns[len(c.Columns)-1].Attribute
@@ -122,5 +148,32 @@ func isNilBoundary(v interface{}) bool {
 		return rv.IsNil()
 	default:
 		return false
+	}
+}
+
+// validateDirections refuses a direction the renderer would read as ascending
+// without being told to (rule 5).
+func (c *KeysetCursor) validateDirections() error {
+	for _, col := range c.Columns {
+		switch col.Direction {
+		case "", forma.SortOrderAsc, forma.SortOrderDesc:
+			continue
+		default:
+			return fmt.Errorf("keyset cursor column %q has direction %q, expected \"asc\", \"desc\" or empty (asc): the renderer reads every other value as ascending, so the cursor would page against its own ORDER BY and answer successfully",
+				col.Attribute, col.Direction)
+		}
+	}
+	return nil
+}
+
+// validateMode refuses a mode the renderer would read as before without being
+// told to (rule 4), the zero value included.
+func (c *KeysetCursor) validateMode() error {
+	switch c.Mode {
+	case KeysetCursorModeAfter, KeysetCursorModeBefore:
+		return nil
+	default:
+		return fmt.Errorf("keyset cursor mode is %q, expected \"after\" or \"before\": the renderer reads every other value — an unset mode above all — as \"before\", so a cursor that lost its mode paginates backwards and still answers successfully",
+			c.Mode)
 	}
 }

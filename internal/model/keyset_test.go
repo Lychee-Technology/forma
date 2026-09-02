@@ -163,3 +163,68 @@ func TestKeysetCursorValidateShapeBoundaryValues(t *testing.T) {
 		},
 	})
 }
+
+func TestKeysetCursorValidateShapeMode(t *testing.T) {
+	modeCursor := func(mode KeysetCursorMode) *KeysetCursor {
+		return &KeysetCursor{
+			Columns: createdAtThenRowID(),
+			Values:  []interface{}{int64(5), "r1"},
+			Mode:    mode,
+		}
+	}
+	runValidateShapeCases(t, []validateShapeCase{
+		{name: "after is a mode", cursor: modeCursor(KeysetCursorModeAfter)},
+		{name: "before is a mode", cursor: modeCursor(KeysetCursorModeBefore)},
+		{
+			name:    "an unset mode is rejected rather than silently meaning before",
+			cursor:  modeCursor(""),
+			wantErr: `keyset cursor mode is "", expected "after" or "before"`,
+		},
+		{
+			name:    "an unknown mode is rejected",
+			cursor:  modeCursor("sideways"),
+			wantErr: `keyset cursor mode is "sideways", expected "after" or "before"`,
+		},
+		{
+			name:    "the mode enum is matched exactly: the renderer compares it byte-for-byte",
+			cursor:  modeCursor("After"),
+			wantErr: `keyset cursor mode is "After", expected "after" or "before"`,
+		},
+		{
+			name:   "an inactive cursor carries no mode obligation",
+			cursor: &KeysetCursor{Mode: "sideways"},
+		},
+	})
+}
+
+func TestKeysetCursorValidateShapeDirection(t *testing.T) {
+	directionCursor := func(dir forma.SortOrder) *KeysetCursor {
+		return cursorOn([]KeysetColumn{
+			{Attribute: "created_at", Direction: dir},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+		}, int64(5), "r1")
+	}
+	runValidateShapeCases(t, []validateShapeCase{
+		{name: "asc is a direction", cursor: directionCursor(forma.SortOrderAsc)},
+		{name: "desc is a direction", cursor: directionCursor(forma.SortOrderDesc)},
+		{name: "an empty direction is the documented asc default", cursor: directionCursor("")},
+		{
+			name:    "an unknown direction is rejected rather than silently meaning asc",
+			cursor:  directionCursor("sideways"),
+			wantErr: `keyset cursor column "created_at" has direction "sideways", expected "asc", "desc" or empty`,
+		},
+		{
+			name:    "the direction enum is matched exactly: the renderer compares it byte-for-byte",
+			cursor:  directionCursor("DESC"),
+			wantErr: `keyset cursor column "created_at" has direction "DESC", expected "asc", "desc" or empty`,
+		},
+		{
+			name: "the tiebreak column's direction is checked too",
+			cursor: cursorOn([]KeysetColumn{
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+				{Attribute: "row_id", Direction: "ascending"},
+			}, int64(5), "r1"),
+			wantErr: `keyset cursor column "row_id" has direction "ascending"`,
+		},
+	})
+}

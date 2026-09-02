@@ -25,9 +25,11 @@ import (
 // future decoder must produce int64 for integer values (UseNumber /
 // numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
 // The cursor must satisfy model.KeysetCursor.ValidateShape: values align
-// one-for-one with Columns and none of them is nil, and the last column is
-// the row_id tiebreak. A cursor that would bind SQL NULL is an error rather
-// than a silently empty page (#381 item 7).
+// one-for-one with Columns and none of them is nil, the last column is the
+// row_id tiebreak, and the mode and directions are the enum values this file
+// compares against. A cursor that would bind SQL NULL, or that the operator
+// choice below would read as its fall-through default, is an error rather
+// than a quietly wrong page (#381 item 7 and its two review follow-ups).
 func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{}, error) {
 	if !cursor.IsActive() {
 		return "1=1", nil, nil
@@ -78,6 +80,13 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{
 	return strings.Join(clauses, " OR "), args, nil
 }
 
+// keysetComparisonOp picks the continuation operator. The two switches below
+// are exhaustive rather than defaulting: ValidateShape has already refused any
+// mode outside {after, before} and any direction outside {asc, desc, ""}, so
+// the fall-through arms are reached only by the values they name. Before that
+// rule existed, an unset mode silently meant BEFORE and an unrecognised
+// direction silently meant ASC, and both answered a successful page in the
+// wrong direction (#381).
 func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {
 	isAfter := mode == model.KeysetCursorModeAfter
 	switch direction {

@@ -208,7 +208,7 @@ for that check: it rejects a registered *attribute* whose fold collides with a
 reserved parquet column, but a cursor column is an arbitrary string that was
 never registered.
 
-Three rules travel with the cursor type itself
+Five rules travel with the cursor type itself
 (`model.KeysetCursor.ValidateShape`), so `internal/sqlgen` can enforce them
 without reaching into `internal/federated`. Two govern the columns: `Values`
 must align one-for-one with `Columns` — a short slice used to bind SQL NULL and
@@ -217,13 +217,22 @@ trailing tiebreak that makes each page boundary resolvable (#183). That last
 comparison is case-insensitive for the same reason the sets above are, and no
 more so: `ROW_ID` is the tiebreak, `row.id` is not.
 
-The third closes the same silent-answer family from the value side: no boundary
-value may be `nil`. Alignment alone does not stop one, and a nil binds the very
-SQL NULL an unfilled arm did, so the comparison is unknown and every row tied at
-the boundary silently drops (a typed nil such as `(*string)(nil)` binds NULL
-too, and is refused with the untyped one).
+The other three close the same silent-answer family from the value and
+direction side. No boundary value may be `nil`: alignment alone does not stop
+one, and a nil binds the very SQL NULL an unfilled arm did, so the comparison
+is unknown and every row tied at the boundary silently drops (a typed nil such
+as `(*string)(nil)` binds NULL too, and is refused with the untyped one).
+`Mode` must be `after` or `before`, and each column's `Direction` must be
+`asc`, `desc`, or empty for the documented `asc` default. Both enums are
+matched **byte-exactly**, unlike `row_id`: a mode and a direction are Go
+constants the renderer compares exactly and never identifiers DuckDB resolves,
+so admitting `After` or `DESC` would hand the renderer a spelling it reads as
+the fall-through default — *before*, and ascending — and the page would come
+back successfully in the wrong direction. A caller-facing decode boundary that
+accepts other spellings normalizes them before building the cursor, as
+`normalizeSortOrder` does for the sort surface.
 
-An inactive cursor is exempt from all three: the open first page carries no
+An inactive cursor is exempt from all five: the open first page carries no
 continuation obligation. `IsActive` is the shared spelling of that predicate,
 used by every site that decides whether the clause is rendered and every site
 that decides whether a cursor is honoured or refused.
