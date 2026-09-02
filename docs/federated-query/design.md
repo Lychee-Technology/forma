@@ -208,16 +208,25 @@ for that check: it rejects a registered *attribute* whose fold collides with a
 reserved parquet column, but a cursor column is an arbitrary string that was
 never registered.
 
-Two rules travel with the cursor type itself (`model.KeysetCursor`), so
-`internal/sqlgen` can enforce them without reaching into `internal/federated`:
-`Values` must align one-for-one with `Columns` — a short slice used to bind SQL
-NULL and return a silently empty page — and the final column must be `row_id`,
-the trailing tiebreak that makes each page boundary resolvable (#183). That
-last comparison is case-insensitive for the same reason the sets above are, and
-no more so: `ROW_ID` is the tiebreak, `row.id` is not.
-`IsActive` is the shared spelling of "carries a continuation obligation", used
-by every site that decides whether the clause is rendered and every site that
-decides whether a cursor is honoured or refused.
+Three rules travel with the cursor type itself
+(`model.KeysetCursor.ValidateShape`), so `internal/sqlgen` can enforce them
+without reaching into `internal/federated`. Two govern the columns: `Values`
+must align one-for-one with `Columns` — a short slice used to bind SQL NULL and
+return a silently empty page — and the final column must be `row_id`, the
+trailing tiebreak that makes each page boundary resolvable (#183). That last
+comparison is case-insensitive for the same reason the sets above are, and no
+more so: `ROW_ID` is the tiebreak, `row.id` is not.
+
+The third closes the same silent-answer family from the value side: no boundary
+value may be `nil`. Alignment alone does not stop one, and a nil binds the very
+SQL NULL an unfilled arm did, so the comparison is unknown and every row tied at
+the boundary silently drops (a typed nil such as `(*string)(nil)` binds NULL
+too, and is refused with the untyped one).
+
+An inactive cursor is exempt from all three: the open first page carries no
+continuation obligation. `IsActive` is the shared spelling of that predicate,
+used by every site that decides whether the clause is rendered and every site
+that decides whether a cursor is honoured or refused.
 
 The validator does not check that an attribute is registered in the schema:
 that needs the metadata cache, and an unregistered but well-formed name fails

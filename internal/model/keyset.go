@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -40,7 +41,7 @@ func (c *KeysetCursor) IsActive() bool {
 	return c != nil && len(c.Columns) > 0
 }
 
-// ValidateShape enforces the two cursor rules that need no knowledge of the
+// ValidateShape enforces the cursor rules that need no knowledge of the
 // physical schema, so they can be checked from any package:
 //
 //  1. Values must align with Columns one-for-one. A short or nil Values used
@@ -65,8 +66,13 @@ func (c *KeysetCursor) IsActive() bool {
 //     not the tiebreak and is refused here, matching that validator's refusal
 //     of any non-identity fold onto a system column.
 //
+//  3. Every boundary value must be non-nil. Alignment alone does not stop a
+//     nil: it binds SQL NULL just as an unfilled arm does, and `row_id > NULL`
+//     is unknown, so WHERE drops every disjunct carrying it. The caller gets a
+//     silently empty or short page — item 1's failure with the count right.
+//
 // An inactive cursor is a no-op: the open first page carries no continuation
-// obligation, and nothing renders from it.
+// obligation, and nothing renders from it — no values to bind.
 //
 // A plain read-path error, not an ErrInvalidInput-wrapped write-path
 // validation carrier.
@@ -78,9 +84,43 @@ func (c *KeysetCursor) ValidateShape() error {
 		return fmt.Errorf("keyset cursor carries %d column(s) but %d value(s): every cursor column needs exactly one boundary value, or the unfilled comparison binds SQL NULL and silently returns an empty page",
 			len(c.Columns), len(c.Values))
 	}
+	if err := c.validateBoundaryValues(); err != nil {
+		return err
+	}
 	last := c.Columns[len(c.Columns)-1].Attribute
 	if !strings.EqualFold(last, "row_id") {
 		return fmt.Errorf("keyset cursor final column is %q, expected \"row_id\": a cursor not ending on the unique row_id tiebreak silently skips every row tied on the composite key at the page boundary", last)
 	}
 	return nil
+}
+
+// validateBoundaryValues refuses a nil boundary (rule 3). Positions are
+// reported 1-based alongside the column name, because a caller assembling a
+// cursor from a row reads it as "the value for created_at", not as Values[0].
+func (c *KeysetCursor) validateBoundaryValues() error {
+	for i, v := range c.Values {
+		if !isNilBoundary(v) {
+			continue
+		}
+		return fmt.Errorf("keyset cursor value %d (for column %q) is nil: a nil boundary binds SQL NULL, and a comparison against NULL is unknown rather than false, so every row tied at the page boundary is silently dropped instead of the cursor being refused",
+			i+1, c.Columns[i].Attribute)
+	}
+	return nil
+}
+
+// isNilBoundary reports whether a boundary value binds SQL NULL. A typed nil
+// — (*string)(nil) in an interface — is not == nil but binds NULL exactly as
+// an untyped one does, and a cursor decoded into typed fields is precisely
+// where one appears, so the reflective check is the one that guards the
+// failure rather than the syntax.
+func isNilBoundary(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }

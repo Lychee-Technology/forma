@@ -30,89 +30,14 @@ func TestKeysetCursorIsActive(t *testing.T) {
 	}
 }
 
-func TestKeysetCursorValidateShape(t *testing.T) {
-	cases := []struct {
-		name    string
-		cursor  *KeysetCursor
-		wantErr string // "" means no error
-	}{
-		{
-			name:   "nil cursor carries no obligation",
-			cursor: nil,
-		},
-		{
-			name:   "inactive cursor carries no obligation even with stray values",
-			cursor: &KeysetCursor{Values: []interface{}{1, 2}},
-		},
-		{
-			name: "aligned cursor ending on row_id is valid",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{
-					{Attribute: "created_at", Direction: forma.SortOrderDesc},
-					{Attribute: "row_id", Direction: forma.SortOrderAsc},
-				},
-				Values: []interface{}{int64(5), "r1"},
-			},
-		},
-		{
-			name: "short values are rejected",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{
-					{Attribute: "created_at", Direction: forma.SortOrderDesc},
-					{Attribute: "row_id", Direction: forma.SortOrderAsc},
-				},
-				Values: []interface{}{int64(5)},
-			},
-			wantErr: "carries 2 column(s) but 1 value(s)",
-		},
-		{
-			name: "nil values are rejected",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
-			},
-			wantErr: "carries 1 column(s) but 0 value(s)",
-		},
-		{
-			name: "surplus values are rejected",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
-				Values:  []interface{}{"r1", "r2"},
-			},
-			wantErr: "carries 1 column(s) but 2 value(s)",
-		},
-		{
-			name: "upper-case ROW_ID is the tiebreak: DuckDB resolves it to row_id",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{
-					{Attribute: "created_at", Direction: forma.SortOrderDesc},
-					{Attribute: "ROW_ID", Direction: forma.SortOrderAsc},
-				},
-				Values: []interface{}{int64(5), "r1"},
-			},
-		},
-		{
-			name: "a name that merely FOLDS onto row_id is not the tiebreak",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{
-					{Attribute: "created_at", Direction: forma.SortOrderDesc},
-					{Attribute: "row.id", Direction: forma.SortOrderAsc},
-				},
-				Values: []interface{}{int64(5), "r1"},
-			},
-			wantErr: `final column is "row.id", expected "row_id"`,
-		},
-		{
-			name: "cursor not ending on row_id is rejected",
-			cursor: &KeysetCursor{
-				Columns: []KeysetColumn{
-					{Attribute: "row_id", Direction: forma.SortOrderAsc},
-					{Attribute: "created_at", Direction: forma.SortOrderDesc},
-				},
-				Values: []interface{}{"r1", int64(5)},
-			},
-			wantErr: `final column is "created_at", expected "row_id"`,
-		},
-	}
+type validateShapeCase struct {
+	name    string
+	cursor  *KeysetCursor
+	wantErr string // "" means accepted
+}
+
+func runValidateShapeCases(t *testing.T, cases []validateShapeCase) {
+	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cursor.ValidateShape()
@@ -130,4 +55,111 @@ func TestKeysetCursorValidateShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+// cursorOn builds an aligned, active, after-mode cursor over the named
+// columns so a case exercises one rule rather than tripping another first.
+func cursorOn(cols []KeysetColumn, values ...interface{}) *KeysetCursor {
+	return &KeysetCursor{Columns: cols, Values: values, Mode: KeysetCursorModeAfter}
+}
+
+func createdAtThenRowID() []KeysetColumn {
+	return []KeysetColumn{
+		{Attribute: "created_at", Direction: forma.SortOrderDesc},
+		{Attribute: "row_id", Direction: forma.SortOrderAsc},
+	}
+}
+
+func TestKeysetCursorValidateShapeAlignment(t *testing.T) {
+	runValidateShapeCases(t, []validateShapeCase{
+		{
+			name:   "nil cursor carries no obligation",
+			cursor: nil,
+		},
+		{
+			name:   "inactive cursor carries no obligation even with stray values",
+			cursor: &KeysetCursor{Values: []interface{}{1, 2}},
+		},
+		{
+			name:   "aligned cursor ending on row_id is valid",
+			cursor: cursorOn(createdAtThenRowID(), int64(5), "r1"),
+		},
+		{
+			name:    "short values are rejected",
+			cursor:  cursorOn(createdAtThenRowID(), int64(5)),
+			wantErr: "carries 2 column(s) but 1 value(s)",
+		},
+		{
+			name: "nil values are rejected",
+			cursor: &KeysetCursor{
+				Columns: []KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
+				Mode:    KeysetCursorModeAfter,
+			},
+			wantErr: "carries 1 column(s) but 0 value(s)",
+		},
+		{
+			name: "surplus values are rejected",
+			cursor: cursorOn(
+				[]KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
+				"r1", "r2"),
+			wantErr: "carries 1 column(s) but 2 value(s)",
+		},
+	})
+}
+
+func TestKeysetCursorValidateShapeTiebreak(t *testing.T) {
+	runValidateShapeCases(t, []validateShapeCase{
+		{
+			name: "upper-case ROW_ID is the tiebreak: DuckDB resolves it to row_id",
+			cursor: cursorOn([]KeysetColumn{
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+				{Attribute: "ROW_ID", Direction: forma.SortOrderAsc},
+			}, int64(5), "r1"),
+		},
+		{
+			name: "a name that merely FOLDS onto row_id is not the tiebreak",
+			cursor: cursorOn([]KeysetColumn{
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+				{Attribute: "row.id", Direction: forma.SortOrderAsc},
+			}, int64(5), "r1"),
+			wantErr: `final column is "row.id", expected "row_id"`,
+		},
+		{
+			name: "cursor not ending on row_id is rejected",
+			cursor: cursorOn([]KeysetColumn{
+				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+				{Attribute: "created_at", Direction: forma.SortOrderDesc},
+			}, "r1", int64(5)),
+			wantErr: `final column is "created_at", expected "row_id"`,
+		},
+	})
+}
+
+func TestKeysetCursorValidateShapeBoundaryValues(t *testing.T) {
+	var nilPtr *string
+	runValidateShapeCases(t, []validateShapeCase{
+		{
+			name:    "a nil tiebreak boundary is rejected",
+			cursor:  cursorOn(createdAtThenRowID(), int64(5), nil),
+			wantErr: `keyset cursor value 2 (for column "row_id") is nil`,
+		},
+		{
+			name:    "a nil prefix boundary is rejected",
+			cursor:  cursorOn(createdAtThenRowID(), nil, "r1"),
+			wantErr: `keyset cursor value 1 (for column "created_at") is nil`,
+		},
+		{
+			name:    "a typed nil pointer binds NULL too, so it is rejected",
+			cursor:  cursorOn(createdAtThenRowID(), nilPtr, "r1"),
+			wantErr: `keyset cursor value 1 (for column "created_at") is nil`,
+		},
+		{
+			name:   "zero-valued boundaries are legitimate and stay accepted",
+			cursor: cursorOn(createdAtThenRowID(), int64(0), ""),
+		},
+		{
+			name:   "a false boundary is legitimate and stays accepted",
+			cursor: cursorOn(createdAtThenRowID(), false, "r1"),
+		},
+	})
 }

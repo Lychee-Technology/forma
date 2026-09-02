@@ -25,8 +25,9 @@ import (
 // future decoder must produce int64 for integer values (UseNumber /
 // numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
 // The cursor must satisfy model.KeysetCursor.ValidateShape: values align
-// one-for-one with Columns, and the last column is the row_id tiebreak. A
-// misaligned cursor is an error rather than a NULL bind (#381 item 7).
+// one-for-one with Columns and none of them is nil, and the last column is
+// the row_id tiebreak. A cursor that would bind SQL NULL is an error rather
+// than a silently empty page (#381 item 7).
 func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{}, error) {
 	if !cursor.IsActive() {
 		return "1=1", nil, nil
