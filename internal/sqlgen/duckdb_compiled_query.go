@@ -86,7 +86,9 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 	hasHot := FederatedQueryHasHot(q)
 	m["HasHot"] = hasHot
 
-	injectDuckDBTemplateParams(m, q, dual)
+	if err := injectDuckDBTemplateParams(m, q, dual); err != nil {
+		return nil, fmt.Errorf("compile DuckDB query: %w", err)
+	}
 	if err := requireProjectionParams(m); err != nil {
 		return nil, fmt.Errorf("compile DuckDB query: %w", err)
 	}
@@ -118,7 +120,9 @@ func CompileDuckDBQuery(tpl *template.Template, params map[string]any, q *model.
 // shape matches the compiled skeleton: dirty CSV and flush-grace cutoff
 // spliced, condition args in the advanced-template interleave (DuckArgs,
 // PgMainArgs, DuckArgs), keyset cursor values, then the cached template args.
-func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID, graceCutoffMs int64) (string, []any) {
+// It errors on a cursor that fails model.KeysetCursor.ValidateShape rather
+// than binding SQL NULL for an unfilled arm (#381 item 7).
+func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualClauses, dirtyIDs []uuid.UUID, graceCutoffMs int64) (string, []any, error) {
 	sql := c.Skeleton
 	if c.HasDirty {
 		sql = strings.ReplaceAll(sql, dirtyIDsSentinel, RenderDirtyIDsValuesCSV(dirtyIDs))
@@ -131,10 +135,13 @@ func (c *DuckDBCompiledQuery) Bind(q *model.FederatedAttributeQuery, dual DualCl
 		args = append(args, dual.PgMainArgs...)
 	}
 	args = append(args, dual.DuckArgs...)
-	if q != nil && q.KeysetCursor != nil && len(q.KeysetCursor.Columns) > 0 {
-		_, keysetArgs := generateKeysetWhereClause(q.KeysetCursor, "")
+	if q != nil && q.KeysetCursor.IsActive() {
+		_, keysetArgs, err := generateKeysetWhereClause(q.KeysetCursor)
+		if err != nil {
+			return "", nil, fmt.Errorf("bind keyset args: %w", err)
+		}
 		args = append(args, keysetArgs...)
 	}
 	args = append(args, c.TplArgs...)
-	return sql, args
+	return sql, args, nil
 }

@@ -152,15 +152,11 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		opts.PartialScan = nil
 	}
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
-	// the cursor unvalidated (duckdb_template_renderer.go), so reject a cursor
-	// lacking the trailing row_id tiebreak here, before it can silently skip a
-	// boundary tie group (#183). hasKeysetCursor (keyset.go) is the shared
-	// spelling of "carries an active cursor", so this gate, the postgres-only
-	// guard and the degrade refusal cannot drift apart.
-	if hasKeysetCursor(fq) {
-		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
-			return nil, fmt.Errorf("validate keyset cursor: %w", err)
-		}
+	// the cursor unvalidated (duckdb_template_renderer.go). validateKeysetCursor
+	// (keyset.go) is THE contract — the same call ExecuteFederatedPaginatedQuery
+	// makes, so the two seams cannot disagree about what a cursor may be (#381).
+	if err := validateKeysetCursor(fq.KeysetCursor, fq.AttributeOrders); err != nil {
+		return nil, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 	// Only explicit hot-only requests short-circuit to Postgres. Empty
 	// PreferredTiers means the default all-tier form (the same contract the

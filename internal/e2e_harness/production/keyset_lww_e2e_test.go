@@ -16,7 +16,7 @@ import (
 // fires on an exact tie with the preceding key, which a synthetic boundary
 // (a value no seeded row carries) never hits, so the arm is inert. Every cursor
 // must still END on row_id — the engine now rejects cursors lacking that
-// trailing tiebreak (validateKeysetTiebreak, #183).
+// trailing tiebreak (validateKeysetCursor, #183).
 const keysetZeroRowID = "00000000-0000-0000-0000-000000000000"
 
 // TestKeysetLWW (#212): the keyset cursor must be applied AFTER last-write-

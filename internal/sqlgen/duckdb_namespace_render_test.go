@@ -68,7 +68,8 @@ func TestDuckDBNamespace_RenderPaths_AttributeAliasedClause(t *testing.T) {
 	compiled, err := CompileDuckDBQuery(AdvancedQueryTemplateDuckDB, nonBenchmarkNamespaceParams(t, cache), q, &dc, true)
 	require.NoError(t, err)
 	require.NotNil(t, compiled, "non-benchmark column-bound composite must be cacheable")
-	boundSQL, boundArgs := compiled.Bind(q, dc, dirty, FlushGraceCutoffDisabled)
+	boundSQL, boundArgs, err := compiled.Bind(q, dc, dirty, FlushGraceCutoffDisabled)
+	require.NoError(t, err)
 
 	for name, sql := range map[string]string{"direct": builtSQL, "compiled": boundSQL} {
 		// The attribute-aliased clause flows into the DuckDB CTE WHERE clauses.

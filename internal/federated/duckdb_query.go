@@ -58,6 +58,14 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
+	// Validate the keyset cursor at this exported seam: this method reaches the
+	// renderer directly, so validation cannot be inherited. Each seam validates
+	// independently by design; the contract is pure and idempotent (#381).
+	if q != nil {
+		if err := validateKeysetCursor(q.KeysetCursor, attributeOrders); err != nil {
+			return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
+		}
+	}
 	mark := markExecutionPlan(opts)
 	recs, total, err := e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 	var retry *corruptParquetRetryError
@@ -178,6 +186,12 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 ) (int64, error) {
 	if q == nil {
 		return 0, fmt.Errorf("query cannot be nil")
+	}
+
+	// Validate the keyset cursor: the fourth seam (#381). Each entry point to
+	// the renderer validates independently by design, not through inheritance.
+	if err := validateKeysetCursor(q.KeysetCursor, attributeOrders); err != nil {
+		return 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 
 	// Initialize execution plan tracking

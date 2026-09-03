@@ -24,23 +24,37 @@ import (
 // row — #281 / #205 M-2). No continuation-token codec exists today; a
 // future decoder must produce int64 for integer values (UseNumber /
 // numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
-func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (string, []interface{}) {
-	if cursor == nil || len(cursor.Columns) == 0 {
-		return "1=1", nil
+// The cursor must satisfy model.KeysetCursor.ValidateShape: values align
+// one-for-one with Columns and none of them is nil, the last column is the
+// row_id tiebreak, and the mode and directions are the enum values this file
+// compares against. A cursor that would bind SQL NULL, or that the operator
+// choice below would read as its fall-through default, is an error rather
+// than a quietly wrong page (#381 item 7 and its two review follow-ups).
+func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{}, error) {
+	if !cursor.IsActive() {
+		return "1=1", nil, nil
+	}
+	// The federated seams validate this too (federated.validateKeysetCursor),
+	// but the check is repeated here so a direct sqlgen caller cannot bind SQL
+	// NULL for an unfilled arm and receive a silently empty page (#381 item 7).
+	if err := cursor.ValidateShape(); err != nil {
+		return "", nil, fmt.Errorf("render keyset where clause: %w", err)
 	}
 
-	colRef := func(col string) string {
-		if tableAlias == "" {
-			return col
-		}
-		return tableAlias + col
-	}
-	valueAt := func(i int) interface{} {
-		if i < len(cursor.Values) {
-			return cursor.Values[i]
-		}
-		return nil
-	}
+	// Cursor columns fold like every other column reference in this dialect
+	// (#260/#381): the visible CTE projects each attribute under its
+	// ParquetAttrColumn alias, so an unfolded "contact.annualIncome" would
+	// parse as table "contact", column "annualIncome". The fold is the
+	// identity on every visible-CTE system column, so this is a no-op for
+	// row_id / created_at / ver_ts / deleted_ts cursors.
+	//
+	// The clause always renders against the unqualified columns of visible, so
+	// there is no table alias to prefix. A tableAlias parameter used to exist:
+	// both callers passed "", and its branch concatenated WITHOUT a separator
+	// ("visible" + "row_id" = "visiblerow_id"), so the first caller to pass a
+	// real alias would have emitted a broken identifier. Removed rather than
+	// fixed — the qualification it promised has no use here (#381).
+	colRef := ParquetAttrColumn
 
 	var clauses []string
 	var args []interface{}
@@ -52,20 +66,34 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor, tableAlias string) (s
 		var parts []string
 		for j := 0; j < i; j++ {
 			parts = append(parts, fmt.Sprintf("%s = ?", colRef(cursor.Columns[j].Attribute)))
-			args = append(args, valueAt(j))
+			args = append(args, cursor.Values[j])
 		}
 		parts = append(parts, fmt.Sprintf("%s %s ?", colRef(col.Attribute), op))
-		args = append(args, valueAt(i))
+		args = append(args, cursor.Values[i])
 
 		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
 	}
 
 	if len(clauses) == 1 {
-		return clauses[0], args
+		return clauses[0], args, nil
 	}
-	return strings.Join(clauses, " OR "), args
+	return strings.Join(clauses, " OR "), args, nil
 }
 
+// keysetComparisonOp picks the continuation operator. The two switches below
+// are exhaustive rather than defaulting: ValidateShape has already refused any
+// mode other than after and any direction outside {asc, desc, ""}, so the
+// fall-through arms are reached only by the values they name. Before that
+// rule existed, an unset mode silently meant BEFORE and an unrecognised
+// direction silently meant ASC, and both answered a successful page in the
+// wrong direction (#381).
+//
+// The before arms are currently unreachable: ValidateShape refuses a before
+// cursor because this flip is only half of a backward page — buildKeysetOrderBy
+// still fetches in the forward order under the LIMIT, so `key < 7 ORDER BY key
+// ASC LIMIT 2` answers [1, 2] rather than [5, 6]. They are kept because they
+// are the correct half; #513 adds the reversed fetch order and re-admits the
+// mode.
 func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) string {
 	isAfter := mode == model.KeysetCursorModeAfter
 	switch direction {
@@ -82,8 +110,13 @@ func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) 
 	}
 }
 
+// buildKeysetOrderBy renders the keyset ORDER BY. Columns fold through
+// ParquetAttrColumn for the same reason generateKeysetWhereClause's do: the
+// ORDER BY runs against the visible CTE, whose attribute columns carry folded
+// names (#260/#381). It must stay consistent with the WHERE clause — an
+// ORDER BY disagreeing with the cursor predicate paginates incoherently.
 func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
-	if cursor == nil || len(cursor.Columns) == 0 {
+	if !cursor.IsActive() {
 		return "created_at DESC"
 	}
 	var parts []string
@@ -92,7 +125,7 @@ func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 		if col.Direction == forma.SortOrderDesc {
 			dir = "DESC"
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", col.Attribute, dir))
+		parts = append(parts, fmt.Sprintf("%s %s", ParquetAttrColumn(col.Attribute), dir))
 	}
 	return strings.Join(parts, ", ")
 }

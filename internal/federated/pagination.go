@@ -33,7 +33,13 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 		offset = 0
 	}
 
-	if opts != nil && opts.KeysetEnabled && hasKeysetCursor(fq) {
+	// An ACTIVE CURSOR ALONE selects the keyset path (#381 item 3). The
+	// retired opts.KeysetEnabled conjunct meant a cursor with the flag unset
+	// fell into the in-memory merge below, where the Postgres leg applies no
+	// cursor while the DuckDB leg does — a half-filtered page. The flag had no
+	// config wiring and was never read by the production entry point, so it
+	// was deleted rather than made symmetric.
+	if hasKeysetCursor(fq) {
 		return e.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
 	}
 
@@ -163,16 +169,11 @@ func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
-	// Validate keyset cursor columns are supported and end on the row_id
-	// tiebreak (#183): an unsupported column or a missing trailing row_id would
-	// otherwise be consumed silently by the DuckDB template below.
-	if fq.KeysetCursor != nil {
-		if err := validateKeysetColumns(fq.KeysetCursor.Columns); err != nil {
-			return nil, 0, err
-		}
-		if err := validateKeysetTiebreak(fq.KeysetCursor); err != nil {
-			return nil, 0, err
-		}
+	// The DuckDB template below consumes the cursor unvalidated, so refuse a
+	// malformed one here. Same call as the engine gate (engine.go): one
+	// contract, both seams (#381).
+	if err := validateKeysetCursor(fq.KeysetCursor, attributeOrders); err != nil {
+		return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 
 	maxRows := model.FederatedMaxRows
@@ -241,10 +242,12 @@ func (e *DBFederatedQueryEngine) computeFederatedCount(
 ) (int64, error) {
 	strippedQuery := *fq
 	strippedQuery.KeysetCursor = nil
-	// The advanced template renders LIMIT/OFFSET from the query object, not
-	// from the call parameters (injectDuckDBTemplateParams), so the count
-	// query must zero the pagination on the copy — otherwise a deep offset
-	// re-renders into the recount and it streams zero rows again (#181).
+	// The pagination on the copy is now redundant with dispatchedQuery, which
+	// renders every DuckDB query with the arguments it was dispatched with;
+	// it stays so this copy reads as the query it is — a limit-1 recount with
+	// no offset. Before that helper, the copy was the only thing keeping a
+	// deep offset out of the recount, which otherwise streamed zero rows
+	// again (#181).
 	strippedQuery.Limit = 1
 	strippedQuery.Offset = 0
 

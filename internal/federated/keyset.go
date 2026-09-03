@@ -2,8 +2,11 @@ package federated
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // This file holds the keyset *validation* seams used by the federated
@@ -14,57 +17,193 @@ import (
 // with no production callers; it was deleted in #217 so the repo carries
 // exactly one keyset codegen.
 
-// isSupportedKeysetColumn returns true if the attribute is supported for keyset cursor extraction.
-// Currently only system columns and known main table columns are supported.
-// EAV-only attributes require schema cache integration and are not yet supported.
-func isSupportedKeysetColumn(attribute string) bool {
-	switch attribute {
-	case "row_id", "created_at", "updated_at", "deleted_at", "ver_ts", "deleted_ts", "schema_id":
-		return true
-	default:
-		// EAV attributes and main column attributes are not yet supported
-		return false
-	}
+// keysetSystemColumns are the system columns the visible CTE actually
+// projects. Both source legs agree on exactly these four names
+// (sqlgen.SchemaProjection.buildS3Projection and buildPGProjection): row_id,
+// ltbase_created_at AS created_at, changed_at AS ver_ts, deleted_at AS
+// deleted_ts. The retired allowlist also admitted updated_at, deleted_at and
+// schema_id, which are NOT columns of visible — a cursor on one could only
+// ever reach DuckDB's binder. They are no longer blessed here; being
+// well-formed identifiers they now pass as ordinary attribute names and fail
+// at the binder, which is honest rather than falsely supported (#381).
+//
+// Looked up on the FOLDED name, LOWER-CASED, like every other map rule below.
+// DuckDB resolves an unquoted identifier case-insensitively, so a cursor on
+// "ROW_ID" or "Created_At" binds to exactly these columns; normalising the
+// lookup key routes those spellings through the system-column branch instead
+// of treating them as ordinary attribute names (#381).
+//
+// Case-insensitivity is the whole of the latitude: reaching one of these four
+// by a NON-IDENTITY fold is refused. ParquetAttrColumn is the identity on all
+// four, so "created.at", "ver.ts", "deleted.ts" and "[row_id]" are not
+// spellings of a system column — they are arbitrary names the fold TRANSFORMS
+// onto one, and admitting them would emit the real system column for a cursor
+// the caller wrote against a key of their own: a page ordered and filtered on
+// something never named, the silent-wrong-answer outcome (#354) this file
+// exists to refuse. Schema registration cannot stand in for the check: it
+// rejects a registered ATTRIBUTE whose fold collides with a reserved parquet
+// column (sqlgen.ValidateParquetAttrColumns), but a cursor column is an
+// arbitrary string that was never registered. The refusal is also what keeps
+// validateKeysetCursor's "an unregistered name fails loudly at DuckDB's
+// binder" promise true without exception.
+var keysetSystemColumns = map[string]struct{}{
+	"row_id":     {},
+	"created_at": {},
+	"ver_ts":     {},
+	"deleted_ts": {},
 }
 
-// validateKeysetColumns checks if all keyset cursor columns are supported.
-// Returns an error if any column is unsupported.
-func validateKeysetColumns(columns []model.KeysetColumn) error {
-	for _, col := range columns {
-		if !isSupportedKeysetColumn(col.Attribute) {
-			return fmt.Errorf("keyset pagination on attribute %q is not supported (EAV attributes require schema cache)", col.Attribute)
-		}
-	}
-	return nil
+// keysetRejectedColumns are columns of visible that are dedup machinery, not
+// data. A cursor on either would bind successfully and paginate over the
+// dedup rank, so it fails silently-wrong rather than loudly — the one case
+// the identifier rule below cannot catch. Both are in scope where the keyset
+// predicate renders: the visible CTE selects over ranked, which projects them.
+//
+// The lookup is on the FOLDED name, LOWER-CASED, because the raw name is not
+// the name that reaches SQL: ParquetAttrColumn maps dots and spaces onto
+// underscores and strips backticks and brackets, so "source_tier.priority" and
+// "[rn]" land on these columns just as surely as the bare spellings do, and it
+// preserves case, so "RN" and "Source_Tier_Priority" survive the fold intact.
+// DuckDB resolves an unquoted identifier case-insensitively, so those spellings
+// bind to the very rn and source_tier_priority the ranked CTE projects: without
+// case normalisation the guard is defeated by the shift key, and the cursor
+// paginates over the dedup rank — the silently-wrong outcome this set exists to
+// prevent (#381). Checking the raw name, or the folded name verbatim, would
+// leave the guard bypassable by punctuation or by case. No registered attribute is
+// caught by mistake: schema registration rejects an attribute whose fold
+// collides with a reserved parquet column, and rn and source_tier_priority are
+// both in that reserved set (sqlgen.ValidateParquetAttrColumns).
+var keysetRejectedColumns = map[string]struct{}{
+	"rn":                   {},
+	"source_tier_priority": {},
 }
 
-// validateKeysetTiebreak enforces the keyset caller contract: the final cursor
-// column MUST be row_id. The continuation predicate for the last cursor key is
-// a strict inequality, so a cursor ending on a non-unique key (created_at, a
-// business attribute, ...) excludes every row sharing that key's value at the
-// page boundary — an entire tie group is silently skipped (#183). row_id is the
-// only version-invariant unique column, so ending the cursor there gives the
-// composite key a total order and makes each boundary tie resolvable. Empty and
-// nil cursors are a no-op (the open first page carries no tiebreak obligation).
-// Mirrors validateKeysetColumns: a plain read-path error, not an
-// ErrInvalidInput-wrapped write-path validation.
-func validateKeysetTiebreak(cursor *model.KeysetCursor) error {
-	if cursor == nil || len(cursor.Columns) == 0 {
+// safeSQLIdentifier matches a bare, unquoted DuckDB identifier. Cursor
+// attributes are interpolated into SQL as identifiers, not bound as
+// parameters, so this pattern IS the injection barrier (#381 item 2). It is
+// applied to the FOLDED name: ParquetAttrColumn turns dots and spaces into
+// underscores and strips backticks and brackets, so a legitimate nested
+// attribute like "contact.annualIncome" passes, while a quote, semicolon,
+// parenthesis or leading digit does not.
+var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// parquetAttrFallbackColumn is the placeholder column name ParquetAttrColumn
+// substitutes when the fold empties an attribute name. It is a legitimate
+// attribute name in its own right, so the cursor rule can only reject a name
+// that FOLDS ONTO it — a folded "attr" whose raw attribute was something else,
+// whether the fold emptied the name (the empty string, "[]", a bare pair of
+// backticks) or merely stripped it down to the literal placeholder, as
+// "[attr]" and a backtick-wrapped attr do.
+const parquetAttrFallbackColumn = "attr"
+
+// validateKeysetCursor is THE keyset cursor contract, and the only validation
+// entry point. Both seams call it — the engine gate (engine.go) and the
+// paginated keyset branch (pagination.go) — so the two can no longer disagree
+// about what a cursor may be (#381 item 1). It replaces the retired pair
+// validateKeysetColumns (a system-column allowlist reachable only from
+// ExecuteFederatedPaginatedQuery) and validateKeysetTiebreak (all that
+// DBFederatedQueryEngine.Query applied, so that seam accepted arbitrary
+// attribute columns the code generator could not correctly reference).
+//
+// It enforces, in order:
+//
+//   - the shape rules, shared with any package via model.KeysetCursor
+//     (value/column alignment and the trailing row_id tiebreak);
+//   - the continuation rule, also on model.KeysetCursor: when the request
+//     resolved AttributeOrders, the cursor must be those orders plus the
+//     row_id tiebreak, or the renderer — which builds the keyset ORDER BY
+//     from the cursor alone — would silently replace the request's order
+//     with the cursor's. orders is the order that will RENDER for this
+//     dispatch: each seam passes the AttributeOrders it hands the builder.
+//   - per column, all judged on the ParquetAttrColumn fold — the same fold the
+//     code generator emits, so validation and codegen agree by construction:
+//     never the writer's empty-name fallback, never the dedup machinery, and
+//     otherwise a visible-CTE system column named under its own spelling or a
+//     safe SQL identifier. Case is the only latitude anywhere in that list:
+//     every rule below is matched case-insensitively because DuckDB resolves
+//     unquoted identifiers that way, and no rule admits a name that reached a
+//     column of visible by a non-identity fold.
+//
+// It deliberately does NOT check that an attribute is registered in the
+// schema: that needs the metadata cache, and an unregistered but well-formed
+// name fails loudly at DuckDB's binder, never silently. The check belongs with
+// the caller-facing cursor surface the Postgres-side keyset feature
+// introduces.
+//
+// A plain read-path error mirroring the rest of this file: the route or the
+// cursor is wrong for an operator to see, not a caller-facing 4xx.
+func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOrder) error {
+	if err := cursor.ValidateShape(); err != nil {
+		// Deliberately unwrapped: every call site already wraps this
+		// function's result with "validate keyset cursor", so adding context
+		// here would double that prefix. The sqlgen copies of the same calls
+		// DO wrap, because there they are the outermost frame.
+		return err
+	}
+	if err := cursor.ValidateContinuation(orders); err != nil {
+		return err
+	}
+	if !cursor.IsActive() {
 		return nil
 	}
-	last := cursor.Columns[len(cursor.Columns)-1].Attribute
-	if last != "row_id" {
-		return fmt.Errorf("keyset cursor final column is %q, expected \"row_id\": a cursor not ending on the unique row_id tiebreak silently skips every row tied on the composite key at the page boundary", last)
+	for _, col := range cursor.Columns {
+		// Fold ONCE, then judge every rule on the folded name: that is the
+		// name the code generator emits, so a rule applied to the raw name
+		// guards a string that never reaches SQL.
+		folded := sqlgen.ParquetAttrColumn(col.Attribute)
+		if strings.EqualFold(folded, parquetAttrFallbackColumn) && !strings.EqualFold(col.Attribute, parquetAttrFallbackColumn) {
+			// The literal "attr" is ParquetAttrColumn's placeholder: it
+			// substitutes it whenever the fold empties the name — "", "[]",
+			// "``" — and a name like "[attr]" or "`attr`" strips down onto it
+			// directly. That placeholder exists for the export writer, which
+			// needs some column name for every attribute; here either route
+			// would silently retarget the cursor at a real attribute called
+			// "attr".
+			//
+			// Both comparisons are case-insensitive, for the same reason the
+			// two map lookups below are: DuckDB resolves unquoted identifiers
+			// case-insensitively, so a folded "Attr" reaches the very column
+			// "attr" does — the shift key must not be a bypass. The exemption
+			// is folded too, or an attribute legitimately named "Attr" (which
+			// folds to its own name) would be newly refused.
+			return fmt.Errorf("keyset cursor column %q folds onto the placeholder %q, which would silently retarget the cursor at a real attribute of that name: name a visible-CTE system column (row_id, created_at, ver_ts, deleted_ts) or a schema attribute that folds to its own name", col.Attribute, folded)
+		}
+		// Both map lookups are case-normalised: DuckDB resolves unquoted
+		// identifiers case-insensitively, so "RN" reaches the same column
+		// as "rn". Only the LOOKUP KEY is lower-cased — the emitted name and
+		// every error message keep the caller's spelling.
+		key := strings.ToLower(folded)
+		if _, ok := keysetSystemColumns[key]; ok {
+			// A system column is admitted only under its OWN name, case
+			// aside: the fold must have been the identity. Anything else
+			// reached the column by transformation, and the generator would
+			// emit the system column for a cursor that named something else.
+			if strings.EqualFold(col.Attribute, folded) {
+				continue
+			}
+			return fmt.Errorf("keyset cursor column %q folds to %q, a system column of the visible CTE, which would silently paginate on that column instead of the attribute named: cursor on %s under its own name, or on a schema attribute that folds to its own name", col.Attribute, folded, key)
+		}
+		if _, ok := keysetRejectedColumns[key]; ok {
+			return fmt.Errorf("keyset cursor column %q is federated dedup machinery, not a queryable column: cursor on row_id, created_at, ver_ts, deleted_ts or a schema attribute", col.Attribute)
+		}
+		if !safeSQLIdentifier.MatchString(folded) {
+			return fmt.Errorf("keyset cursor column %q folds to %q, which is not a safe SQL identifier: a cursor column is interpolated as an identifier, so it must match %s after the ParquetAttrColumn fold", col.Attribute, folded, safeSQLIdentifier.String())
+		}
 	}
 	return nil
 }
 
 // hasKeysetCursor reports whether the query carries an ACTIVE keyset cursor.
 // A nil cursor or an empty column list is the open first page, which carries
-// no continuation obligation — the same no-op contract validateKeysetTiebreak
-// applies.
+// no continuation obligation.
+//
+// The predicate itself lives on model.KeysetCursor (IsActive) so the
+// internal/sqlgen sites that decide whether the clause is RENDERED share it
+// with the sites here that decide whether a cursor is HONOURED OR REFUSED
+// (#381 item 9). This function is the package-local convenience wrapper that
+// also absorbs a nil query.
 func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
-	return fq != nil && fq.KeysetCursor != nil && len(fq.KeysetCursor.Columns) > 0
+	return fq != nil && fq.KeysetCursor.IsActive()
 }
 
 // rejectKeysetOnPostgresOnly fails a cursor-bearing request that reached the
@@ -93,7 +232,7 @@ func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
 // (#243/#185). Accepted over duplicating this guard at every gate, which would
 // trade the single confluence for a set of checks that must be kept in sync.
 //
-// A plain read-path error mirroring validateKeysetTiebreak: the submitted
+// A plain read-path error mirroring validateKeysetCursor: the submitted
 // cursor is well-formed, it is the route that cannot serve it.
 func rejectKeysetOnPostgresOnly(fq *model.FederatedAttributeQuery) error {
 	if !hasKeysetCursor(fq) {

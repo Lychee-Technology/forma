@@ -2,8 +2,6 @@ package model
 
 import (
 	"time"
-
-	"github.com/lychee-technology/forma"
 )
 
 type DataTier string
@@ -39,7 +37,6 @@ type FederatedQueryOptions struct {
 	MaxRows                  int
 	Parallelism              int
 	AllowPartialDegradedMode bool
-	KeysetEnabled            bool
 	IncludeExecutionPlan     bool
 	ExecutionPlan            *ExecutionPlan
 	ConsistencyMode          ConsistencyMode
@@ -109,22 +106,4 @@ type MergePlan struct {
 	DedupKeys  []string
 	DurationMs int64
 	Notes      []string
-}
-
-type KeysetCursorMode string
-
-const (
-	KeysetCursorModeAfter  KeysetCursorMode = "after"
-	KeysetCursorModeBefore KeysetCursorMode = "before"
-)
-
-type KeysetColumn struct {
-	Attribute string
-	Direction forma.SortOrder
-}
-
-type KeysetCursor struct {
-	Columns []KeysetColumn
-	Values  []interface{}
-	Mode    KeysetCursorMode
 }

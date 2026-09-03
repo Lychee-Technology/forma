@@ -137,8 +137,10 @@ func TestFlushGraceCompiledSkeletonIsCutoffIndependent(t *testing.T) {
 	require.NotContains(t, compiled.Skeleton, "flushed_at >= 111",
 		"a per-request cutoff must never bake into the skeleton")
 
-	sqlA, argsA := compiled.Bind(q, dual, nil, 1000)
-	sqlB, argsB := compiled.Bind(q, dual, nil, 2000)
+	sqlA, argsA, err := compiled.Bind(q, dual, nil, 1000)
+	require.NoError(t, err)
+	sqlB, argsB, err := compiled.Bind(q, dual, nil, 2000)
+	require.NoError(t, err)
 	requireGraceSites(t, sqlA, "1000")
 	requireGraceSites(t, sqlB, "2000")
 	require.NotContains(t, sqlA, flushGraceCutoffSentinel)

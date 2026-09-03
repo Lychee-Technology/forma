@@ -34,6 +34,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	coldMissing []sqlgen.NullScanColumn,
 	planCtx *duckDBExecutionPlanContext,
 ) (string, []any, int64, error) {
+	q = dispatchedQuery(q, limit, offset, attributeOrders)
 	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, coldMissing)
 
 	startTranslate := time.Now()
@@ -101,6 +102,36 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+// dispatchedQuery returns a copy of q whose Limit, Offset and AttributeOrders
+// are the arguments the DuckDB seam was called with.
+//
+// The advanced template renders LIMIT, OFFSET and the non-keyset ORDER BY from
+// the QUERY OBJECT (sqlgen.injectDuckDBTemplateParams reads q.Limit, q.Offset,
+// q.AttributeOrders); the call arguments only reach the template map under
+// "Limit"/"Offset"/"PageSize"/"SortKeys", which it never reads. So a caller
+// that normalised or clamped its limit but passed q unchanged had its clamp
+// silently ignored: the keyset branch of ExecuteFederatedPaginatedQuery
+// rendered LIMIT 0 for a zero q.Limit and an over-MaxRows q.Limit verbatim,
+// with only its in-memory slice honouring the clamp (#381 review), and
+// computeFederatedCount hand-rolled the very copy made here (#181).
+//
+// Made at this function, the single point the direct render and the compiled
+// plan cache both flow through, so the rendered skeleton, the shape hash and
+// the plan scope all see the query that was dispatched. The explicit arguments
+// are the pagination contract of every seam; engine.Query passes q's own
+// fields and is unaffected. q itself is never mutated — the caller may still
+// be reading it (recordTranslation, the keyset page slice).
+func dispatchedQuery(q *model.FederatedAttributeQuery, limit, offset int, attributeOrders []model.AttributeOrder) *model.FederatedAttributeQuery {
+	if q == nil {
+		return nil
+	}
+	page := *q
+	page.Limit = limit
+	page.Offset = offset
+	page.AttributeOrders = attributeOrders
+	return &page
 }
 
 // buildDuckDBTemplateBaseParams assembles the static template parameter map:
@@ -206,9 +237,10 @@ type duckCompiledEntry struct {
 
 // serveFromPlanCache attempts the compiled-plan path. It returns ok=false
 // when the request is not cacheable (no cache injected, test hook installed,
-// non-advanced template, or shape hashing failed) — the caller then uses the
-// direct builder. On a miss the compile result serves the request too, so
-// rendering happens at most once per shape.
+// non-advanced template, shape hashing failed, or binding the compiled
+// skeleton failed) — the caller then uses the direct builder. On a miss the
+// compile result serves the request too, so rendering happens at most once
+// per shape.
 func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
@@ -271,7 +303,13 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		bound.PgMainClause = entry.dualPlan.PgMainClause
 		bound.DuckClause = entry.dualPlan.DuckClause
 	}
-	sqlStr, args := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
+	sqlStr, args, err := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
+	if err != nil {
+		// Same contract as every other failure here: ok=false hands the
+		// request to the direct builder, which carries the identical keyset
+		// validation (#381 item 7) and reports the error to the caller.
+		return "", nil, false
+	}
 	return sqlStr, args, true
 }
 

@@ -174,15 +174,127 @@ generator (read side) and cannot diverge: the logical WHERE clause is applied
 both against raw `read_parquet` output (physical columns) and against the
 `visible` CTE (unified columns), so both must expose the same names (#260).
 The fold is lossy, so both sides fail fast if two attributes of one schema
-collide on the same folded column. Which columns a keyset cursor may carry is a
-per-seam contract, not a global one: `ExecuteFederatedPaginatedQuery` applies
-the `validateKeysetColumns` allowlist (`internal/federated/keyset.go`), which
-admits system columns only, while `DBFederatedQueryEngine.Query` requires only
-the trailing `row_id` tiebreak (`validateKeysetTiebreak`) and does accept
-attribute columns — which the fold does not reach: `generateKeysetWhereClause`
-emits `col.Attribute` verbatim (`internal/sqlgen/keyset_where.go`), so a cursor
-over `contact.annualIncome` would reference that dotted name against a `visible`
-CTE exposing only `contact_annualIncome`.
+collide on the same folded column.
+
+Keyset cursor columns obey the same contract as every other column reference,
+and it is one contract, not a per-seam one (#381). A single validator,
+`federated.validateKeysetCursor`, binds every entry point onto the keyset
+renderer — `DBFederatedQueryEngine.Query`, `ExecuteFederatedPaginatedQuery`, and
+the exported `ExecuteDuckDBFederatedQuery` beneath them — and admits
+a column when it is one of the four system columns the `visible` CTE projects
+(`row_id`, `created_at`, `ver_ts`, `deleted_ts`) or an attribute whose
+`ParquetAttrColumn` fold is a bare SQL identifier. Cursor columns are emitted
+folded by `generateKeysetWhereClause` and `buildKeysetOrderBy`, so a cursor over
+`contact.annualIncome` references `contact_annualIncome`, the name the CTE
+actually exposes. Two columns of `visible` are refused by name despite being
+bare identifiers — `rn` and `source_tier_priority`, the dedup machinery, on
+which a cursor would bind and then paginate over the dedup rank — as is any
+name that folds onto `ParquetAttrColumn`'s `attr` placeholder, whether because
+the fold empties the name or because it strips the name down onto that literal.
+The reject set, the system-column set and the `attr` placeholder are all matched
+on the folded name **case-insensitively**: DuckDB resolves an unquoted identifier
+without regard to case, so `RN` reaches the same dedup column as `rn`, `ROW_ID`
+the same system column as `row_id`, and a folded `Attr` the same column as
+`attr`. The placeholder's exemption is folded case-insensitively too, so an
+attribute genuinely named `Attr` — which folds to its own name — stays admitted
+while `[Attr]` is refused.
+
+Case is the whole of that latitude on the system-column set. A name the fold
+merely **transforms** onto one of the four — `created.at` onto `created_at`,
+`ver.ts` onto `ver_ts`, `[row_id]` onto `row_id` — is refused, because the
+generator would emit the real system column and answer a page ordered and
+filtered on a key the caller never named. Schema registration does not stand in
+for that check: it rejects a registered *attribute* whose fold collides with a
+reserved parquet column, but a cursor column is an arbitrary string that was
+never registered.
+
+Five rules travel with the cursor type itself
+(`model.KeysetCursor.ValidateShape`), so `internal/sqlgen` can enforce them
+without reaching into `internal/federated`. Two govern the columns: `Values`
+must align one-for-one with `Columns` — a short slice used to bind SQL NULL and
+return a silently empty page — and the final column must be `row_id`, the
+trailing tiebreak that makes each page boundary resolvable (#183). That last
+comparison is case-insensitive for the same reason the sets above are, and no
+more so: `ROW_ID` is the tiebreak, `row.id` is not.
+
+The other three close the same silent-answer family from the value and
+direction side. No boundary value may be `nil`: alignment alone does not stop
+one, and a nil binds the very SQL NULL an unfilled arm did, so the comparison
+is unknown and every row tied at the boundary silently drops (a typed nil such
+as `(*string)(nil)` binds NULL too, and is refused with the untyped one).
+`Mode` must be `after`, and each column's `Direction` must be `asc`, `desc`,
+or empty for the documented `asc` default. Both enums are matched
+**byte-exactly**, unlike `row_id`: a mode and a direction are Go constants the
+renderer compares exactly and never identifiers DuckDB resolves, so admitting
+`After` or `DESC` would hand the renderer a spelling it reads as the
+fall-through default — *before*, and ascending — and the page would come back
+successfully in the wrong direction. A caller-facing decode boundary that
+accepts other spellings normalizes them before building the cursor, as
+`normalizeSortOrder` does for the sort surface.
+
+`before` is declared (`model.KeysetCursorModeBefore`) but refused as well,
+until #513 lands its other half. The renderer flips the comparison operator
+for a `before` cursor but still fetches in the **forward** order under the
+`LIMIT`, so `key < 7 ORDER BY key ASC LIMIT 2` answers `[1, 2]` — the start
+of the prior range — where a caller stepping backwards expects `[5, 6]`;
+descending order has the symmetric defect. A backward page needs the reversed
+order under the `LIMIT` and the requested order restored outside it. Until
+that exists, a `before` cursor is a successfully-answered wrong page, and is
+refused for the same reason an unset mode is.
+
+An inactive cursor is exempt from all five: the open first page carries no
+continuation obligation. `IsActive` is the shared spelling of that predicate,
+used by every site that decides whether the clause is rendered and every site
+that decides whether a cursor is honoured or refused.
+
+**A cursor continues the request's order; it does not replace it.** The keyset
+`ORDER BY` renders from the cursor's columns alone, and the renderer never
+reads `AttributeOrders` while a cursor is active, so without a rule a request
+sorted on `count ASC` and continued with a valid `created_at DESC, row_id ASC`
+cursor answered a page ordered and filtered on `created_at`.
+`model.KeysetCursor.ValidateContinuation(orders)` closes that: when the request
+resolved `AttributeOrders`, the cursor must be exactly those orders — same
+attribute name at each position, matched byte-exactly, same direction —
+followed by an ascending `row_id`, because `row_id ASC` is the tiebreak the
+non-keyset `ORDER BY` appended to page one. A wrong attribute, a flipped
+direction, a `row_id DESC` tiebreak, or a longer or shorter cursor is refused.
+Every seam judges the order it is about to render (`fq.AttributeOrders` at
+`Query`, the `attributeOrders` argument elsewhere), and
+`sqlgen.injectDuckDBTemplateParams` repeats the check against the query it
+renders, so a direct `sqlgen` caller cannot bypass it either.
+
+When the request resolved **no** `AttributeOrders`, the cursor is honoured as
+written. That boundary is deliberate: the default `created_at DESC, row_id
+ASC` is the renderer's fallback rather than a caller statement, and
+`AttributeOrders` cannot express a system-column order at all (sort keys
+resolve against the schema; `created_at` is not a schema attribute). A
+cursor-only walk — an open first page bounded by a far-future `created_at`,
+then cursors on `created_at` in either direction with a `row_id` tiebreak in
+either direction — is a complete order specification with nothing to
+contradict, and it is how the production e2e walks and the federated
+benchmark page. Requiring an order-less request to match the default would
+make every `created_at` / `ver_ts` / `deleted_ts` cursor unreachable.
+
+**The explicit `limit`, `offset` and `attributeOrders` arguments are the
+pagination contract of every DuckDB seam.** The advanced template reads
+`LIMIT`, `OFFSET` and the non-keyset `ORDER BY` from the *query object*
+(`q.Limit`, `q.Offset`, `q.AttributeOrders`), so a caller that normalised or
+clamped its limit but passed the query unchanged used to have the clamp
+silently ignored: the keyset branch of `ExecuteFederatedPaginatedQuery`
+rendered `LIMIT 0` for a zero `fq.Limit` and an over-`MaxRows` `fq.Limit`
+verbatim, with only its in-memory slice honouring the clamp.
+`buildDuckDBQueryWithPlan` — the one point the direct render and the compiled
+plan cache both flow through — now renders a copy of the query carrying the
+dispatched arguments (`federated.dispatchedQuery`), so the rendered skeleton,
+the shape hash and the plan scope all see the query that was dispatched.
+`engine.Query` passes the query's own fields and is unaffected.
+
+The validator does not check that an attribute is registered in the schema:
+that needs the metadata cache, and an unregistered but well-formed name fails
+loudly at DuckDB's binder rather than silently — which holds without exception
+only because a fold onto a `visible` column, system or dedup, is refused before
+it can reach the generator. It is deferred to the caller-facing cursor surface
+the Postgres-side keyset feature introduces.
 
 ## **5. SQL Execution Template**
 
@@ -421,12 +533,17 @@ run triggered by count or by other rows.
 
 Keyset (cursor) pagination carries the same total-order requirement, and it is
 now **enforced**, not merely documented: the engine rejects any cursor whose
-final column is not `row_id` (`validateKeysetTiebreak`, guarding both the live
-renderer path in `DBFederatedQueryEngine.Query` and the `KeysetEnabled`
-`executeFederatedKeysetQuery` seam). A cursor ending on a non-unique key applies
-a strict inequality on that key at the boundary, which silently skips every row
-tied there; the trailing `row_id` gives the composite key a unique tiebreak so
-each boundary tie is resolvable (#183).
+final column is not `row_id`. The rule lives on the cursor type
+(`model.KeysetCursor.ValidateShape`) and is applied by the single validator
+`federated.validateKeysetCursor` at both entry points — the live renderer path
+in `DBFederatedQueryEngine.Query` and the keyset branch of
+`ExecuteFederatedPaginatedQuery`, which an active cursor alone now selects
+since the `KeysetEnabled` flag was retired (#381) — and again inside
+`generateKeysetWhereClause`, so a direct `internal/sqlgen` caller cannot bypass
+it. A cursor ending on a non-unique key applies a strict inequality on that key
+at the boundary, which silently skips every row tied there; the trailing
+`row_id` gives the composite key a unique tiebreak so each boundary tie is
+resolvable (#183).
 
 **Never-flushed columns (#255).** `union_by_name` can only union columns that
 exist in *some* file. An attribute added to the schema before its first flush is

@@ -53,7 +53,11 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 	// sqlgen.FederatedQueryHasHot — keep the two in lockstep.
 	write("tiers", strconv.FormatBool(queryHasHot(q)))
 
-	if q.KeysetCursor != nil {
+	// IsActive, not a nil check: a non-nil zero-column cursor renders the
+	// OFFSET form (sqlgen keys the clause off the same predicate), so hashing
+	// it apart from a nil cursor split the cache on two spellings of one
+	// skeleton (#381 item 9). Columns and Mode participate; Values do not.
+	if q.KeysetCursor.IsActive() {
 		write("pagination", "keyset", string(q.KeysetCursor.Mode))
 		for _, col := range q.KeysetCursor.Columns {
 			write(col.Attribute, string(col.Direction))
