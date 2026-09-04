@@ -95,14 +95,14 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 		}
 		actual, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, key)
 		if err != nil {
-			return fmt.Errorf("verify rewrite source %s for schema %d: %w", f.Path, schemaID, err)
+			return fmt.Errorf("verify rewrite source %q for schema %d: %w", f.Path, schemaID, err)
 		}
 		if actual != f.Checksum {
 			telemetry.EmitParquetChecksumMismatch(ctx, schemaID)
 			c.Logger.Error("rewrite source failed checksum verification; refusing to merge",
 				zap.Int16("schema_id", schemaID), zap.String("key", f.Path),
 				zap.String("stamped", f.Checksum), zap.String("actual", actual))
-			return fmt.Errorf("rewrite source %s for schema %d: stamped %s, bytes hash to %s: %w",
+			return fmt.Errorf("rewrite source %q for schema %d: stamped %s, bytes hash to %s: %w",
 				f.Path, schemaID, f.Checksum, actual, ErrSourceChecksumMismatch)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -82,6 +83,30 @@ func TestRejectForeignSources_EmptyKeyRefused(t *testing.T) {
 		require.ErrorIs(t, err, ErrForeignSource, "path %q", path)
 		require.ErrorContains(t, err, fmt.Sprintf("rewrite source %q", path), "the refusal quotes the path so an empty one stays legible")
 	}
+}
+
+// The gate order is load-bearing: when a source set would trip both gates, the
+// scope refusal wins and no byte is hashed — a corrupt in-bucket source next
+// to a foreign one surfaces as ErrForeignSource with no mismatch verdict, no
+// telemetry count and no GET, so the operator fixes the manifest first.
+func TestVerifyRewriteInputs_ScopeRefusalPrecedesChecksum(t *testing.T) {
+	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+	var events []telemetryEvent
+	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, labels map[string]string, value any) {
+		events = append(events, telemetryEvent{name: name, labels: labels, value: value})
+	})
+
+	c, s3c := newVerifyFixture(zap.NewNop())
+	s3c.putObject("p/1/aaa.parquet", corruptPayload)
+
+	err := c.verifyRewriteInputs(context.Background(), 1, []manifest.FileEntry{
+		stampedEntry("p/1/aaa.parquet", sourcePayload), // would fail the checksum gate
+		stampedEntry("s3://other-bkt/p/1/foreign.parquet", sourcePayload),
+	})
+	require.ErrorIs(t, err, ErrForeignSource)
+	require.NotErrorIs(t, err, ErrSourceChecksumMismatch, "scope is refused before any checksum verdict")
+	require.Empty(t, s3c.gets, "the scope gate runs before the checksum gate hashes anything")
+	require.Empty(t, events, "a scope refusal must not count as a mismatch")
 }
 
 // deleteObjects shares bucketRelativeKey: an own-bucket URI is deleted by its
