@@ -22,7 +22,8 @@ func TestClassifyObjectKey(t *testing.T) {
 		ok    bool
 	}{
 		{"delta uuid", "data/7/" + uuidA + ".parquet", ClassDelta, true},
-		{"init base min_max", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBaseInit, true},
+		{"init base min_max (legacy deterministic key)", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBaseInit, true},
+		{"init base min_max_fileid (write-once key, #416)", "data/7/" + uuidA + "_" + uuidB + "_" + uuidC + ".parquet", ClassBaseInit, true},
 		{"merged base", "data/7/base-" + uuidA + ".parquet", ClassBaseMerged, true},
 		{"tmp staged", "data/7/_tmp/" + uuidA + ".parquet", ClassTmp, true},
 		{"unrecognized stem", "data/7/weird.parquet", ClassUnknown, true},
@@ -154,6 +155,9 @@ func TestClassifyObjectKey_RequiresUUIDShapes(t *testing.T) {
 		{"base prefix valid uuid", "data/7/base-" + uuidA + ".parquet", ClassBaseMerged},
 		{"underscore junk", "data/7/a_b.parquet", ClassUnknown},
 		{"underscore valid uuids", "data/7/" + uuidA + "_" + uuidB + ".parquet", ClassBaseInit},
+		{"underscore valid uuids with file id", "data/7/" + uuidA + "_" + uuidB + "_" + uuidC + ".parquet", ClassBaseInit},
+		{"underscore valid range junk file id", "data/7/" + uuidA + "_" + uuidB + "_nope.parquet", ClassUnknown},
+		{"four underscore parts", "data/7/" + uuidA + "_" + uuidB + "_" + uuidC + "_" + uuidA + ".parquet", ClassUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

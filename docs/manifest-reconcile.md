@@ -29,10 +29,10 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 |------|------|------|------|
 | delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #461 起每次 rewrite 保留的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
 | merged base 孤儿 | `base-{uuid}.parquet` | #188 崩溃 / #461 起每次 rewrite 保留的 merged source | `--gc` 两阶段删除（见下） |
-| init base 孤儿 | `{min}_{max}.parquet` | cdc-init 导出 | `--repair` 下先经晋升守卫（三重证明，见下）整组判定：证明通过则整组补录进 manifest base 层；证明不通过（或未开 `--repair`）保持 GC 候选，走 `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 覆盖的旧文件 |
+| init base 孤儿 | `{min}_{max}_{uuid}.parquet`（#416 起 write-once；旧版 `{min}_{max}.parquet` 仍被识别） | cdc-init 导出 | `--repair` 下先经晋升守卫（三重证明，见下）整组判定：证明通过则整组补录进 manifest base 层；证明不通过（或未开 `--repair`）保持 GC 候选，走 `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 取代的旧文件（#416 起 init 重跑铸造新键，旧文件原样留在 S3 而不再被原地覆盖） |
 | `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
 
-形态匹配是严格的：`base-` 后缀与 `{min}_{max}` 两段都必须是合法 UUID，否则归
+形态匹配是严格的：`base-` 后缀与 `{min}_{max}[_{uuid}]` 的每一段都必须是合法 UUID，否则归
 unknown（只报告，永不删除）。
 
 另报告两类只读发现：
@@ -102,7 +102,7 @@ base 层（`SpliceTierFiles`：整个 base 层被这组条目替换，其他 tie
 
 - schema 当前**没有存活行** → 拒绝（此时 init 形态孤儿必然已被取代）；
 - 逐文件重算 parquet 统计；统计读不到 → 拒绝；
-- 文件名 `{min}_{max}` 与重算出的 row_id 区间**不一致** → 拒绝（元数据永不取自文件名，
+- 文件名 `{min}_{max}[_{uuid}]` 与重算出的 row_id 区间**不一致** → 拒绝（元数据永不取自文件名，
   该检查只是为了让"看起来像 init 形态"的外来/截断文件进不了 base 层）；
 - 任意两文件的 `[min, max]` 区间**重叠** → 拒绝：一次导出的批次互不相交，重叠说明这组
   文件混了多代 init，晋升会把重复行版本塞进 base 层；

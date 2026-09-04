@@ -34,9 +34,10 @@ func TestGC_CollectsInitShapedBaseOrphans(t *testing.T) {
 	report, err := r.Run(context.Background())
 	require.NoError(t, err)
 	// Since #290 cdc-init holds the same per-schema advisory lock, so under
-	// this lock an init-shaped {min}_{max} base orphan is provably not from
-	// an in-flight init — it is either a failed manifest publish or a file
-	// superseded by a later init run, and joins the two-phase --gc sweep.
+	// this lock an init-shaped ({min}_{max}[_{uuid}]) base orphan is provably
+	// not from an in-flight init — it is either a failed manifest publish or a
+	// set superseded by a later init run (write-once keys since #416), and
+	// joins the two-phase --gc sweep.
 	require.ElementsMatch(t, []string{initShaped, merged}, deleter.deleted)
 	require.ElementsMatch(t, []string{initShaped, merged}, report.Schemas[0].Deleted)
 	require.ElementsMatch(t, []string{initShaped, merged}, report.Schemas[0].BaseOrphans)

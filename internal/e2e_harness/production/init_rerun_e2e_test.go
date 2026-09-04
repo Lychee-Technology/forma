@@ -10,10 +10,12 @@ import (
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
-// TestInitRerunIdempotency (#176 scenario 4): rerunning cdc-init with no
-// data changes rewrites the same deterministic base keys (min/max row-id
-// naming -> S3 overwrite, no new objects) and must not duplicate manifest
-// entries. The federated result is unchanged.
+// TestInitRerunIdempotency (#176 scenario 4, re-keyed by #416): rerunning
+// cdc-init with no data changes exports the same batches to FRESH write-once
+// base keys ({min}_{max}_{uuid}: same row ranges, new file ids), replaces the
+// manifest's base tier with exactly that set (no duplicates), and leaves the
+// first run's objects byte-for-byte untouched on S3 as unlisted orphans for
+// manifest-reconcile --gc. The federated result is unchanged.
 func TestInitRerunIdempotency(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -36,16 +38,36 @@ func TestInitRerunIdempotency(t *testing.T) {
 		t.Fatalf("first init produced %d base entries, want 3", len(firstPaths))
 	}
 
+	firstObjects := snapshotS3Inventory(t, ctx, env, buildSchemaKeyPrefix(env, wide))
+
 	second, err := env.RunInit(ctx, wide)
 	if err != nil {
 		t.Fatalf("second init: %v", err)
 	}
-	// No duplicate objects: identical batching -> identical keys -> overwrite.
-	// (_tmp keys are copy-staging garbage, not duplicates, if one survives —
-	// swallowed-delete residue is reclaimed by manifest-reconcile --gc, #226.)
+	// Write-once keys (#416): the rerun mints exactly one fresh base object per
+	// batch and never reuses a first-run key. (_tmp keys are copy-staging
+	// garbage, not exports, if one survives — swallowed-delete residue is
+	// reclaimed by manifest-reconcile --gc, #226.)
+	minted := make(map[string]bool)
 	for _, k := range second.NewObjects {
-		if !strings.Contains(k, "/_tmp/") {
-			t.Errorf("rerun created new object %s, want overwrite of existing keys only", k)
+		if strings.Contains(k, "/_tmp/") {
+			continue
+		}
+		if _, dup := firstObjects[k]; dup {
+			t.Errorf("rerun reported %s as new, but the first run already wrote it", k)
+		}
+		minted[k] = true
+	}
+	if len(minted) != 3 {
+		t.Fatalf("rerun minted %d base objects, want 3 (one fresh key per batch): %v", len(minted), second.NewObjects)
+	}
+	// The superseded set is left alone: same stat and ETag for every
+	// first-run object, so no listed-under-a-stamp bytes ever changed (the
+	// TOCTOU the compactor's checksum gate false-positived on, #416).
+	afterObjects := snapshotS3Inventory(t, ctx, env, buildSchemaKeyPrefix(env, wide))
+	for k, before := range firstObjects {
+		if after, ok := afterObjects[k]; !ok || after != before {
+			t.Errorf("rerun touched first-run object %s: before %+v, after %+v", k, before, after)
 		}
 	}
 	// No duplicate manifest entries: count RAW entries, not unique paths —
@@ -54,11 +76,14 @@ func TestInitRerunIdempotency(t *testing.T) {
 	if len(rawEntries) != 3 {
 		t.Fatalf("manifest holds %d base entries after rerun, want 3 (no duplicates)", len(rawEntries))
 	}
-	// Path identity with the first run: the rerun must reference the same
-	// deterministic keys, not introduce new ones.
+	// The base tier is exactly the rerun's file set: every entry is a key the
+	// rerun minted, and none of the first run's keys survives in the manifest.
 	for _, f := range rawEntries {
-		if !firstPaths[f.Path] {
-			t.Errorf("rerun introduced unexpected base path %s", f.Path)
+		if !minted[f.Path] {
+			t.Errorf("manifest base entry %s is not a key the rerun minted (stale first-run path or unexpected key)", f.Path)
+		}
+		if firstPaths[f.Path] {
+			t.Errorf("rerun left first-run base path %s listed", f.Path)
 		}
 	}
 	assertBaseRows(ctx, t, env, second.Manifest, 20)

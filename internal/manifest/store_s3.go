@@ -3,11 +3,15 @@ package manifest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 type S3Client interface {
@@ -72,4 +76,24 @@ func (s *S3Store) Save(ctx context.Context, path string, data []byte, etag strin
 		newETag = *out.ETag
 	}
 	return newETag, nil
+}
+
+// IsPreconditionFailed reports whether err is a CONFIRMED HTTP 412
+// conditional-put rejection from the object store — the only Save failure
+// that proves the write did not commit, and therefore the only one a caller
+// may answer by reloading and retrying. Transport errors, timeouts and other
+// API failures are deliberately excluded: after those the put may have
+// landed, and callers must treat the outcome as ambiguous. Shared by the
+// compactor's CAS swap, manifest-reconcile's retried saves, and cdc-init's
+// final publish (#416).
+func IsPreconditionFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
+		return true
+	}
+	var respErr *awshttp.ResponseError
+	return errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusPreconditionFailed
 }

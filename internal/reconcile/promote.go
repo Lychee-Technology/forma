@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -29,7 +30,7 @@ type initCoverage struct {
 }
 
 // verifyInitCoverage proves an init-shaped orphan set is a complete init
-// export: per-file stats readable and consistent with the {min}_{max} name,
+// export: per-file stats readable and consistent with the {min}_{max}[_{uuid}] name,
 // pairwise-disjoint row ranges (one run exports disjoint ordered batches, so
 // an overlap means the set mixes init generations), no tombstones (cdc-init
 // exports live rows only), and — the #292 completeness proof — the set's
@@ -100,14 +101,15 @@ func (r *Reconciler) verifyInitCoverage(ctx context.Context, schemaID int16, orp
 	return cov, ""
 }
 
-// checkInitFilenameStats cross-checks the {min}_{max} filename against the
+// checkInitFilenameStats cross-checks the {min}_{max} row range in the
+// filename (write-once {min}_{max}_{uuid} or legacy {min}_{max}) against the
 // recomputed parquet stats. Entry metadata is never trusted from filenames
 // (mirrors buildRepairEntry); the check exists so a foreign or truncated
 // file that merely looks init-shaped cannot enter the base tier.
 func checkInitFilenameStats(key string, stats compaction.MergeStats) string {
 	base := key[strings.LastIndex(key, "/")+1:]
 	stem := strings.TrimSuffix(base, ".parquet")
-	minID, maxID, found := strings.Cut(stem, "_")
+	minID, maxID, found := cdc.ParseInitBaseStem(stem)
 	if !found {
 		// Unreachable after classifyObjectKey, kept as a defensive refusal.
 		return fmt.Sprintf("%s is not an init-shaped key", key)

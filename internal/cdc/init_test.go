@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
@@ -334,5 +335,130 @@ func TestInitStampColumnsShortCircuitWhenNoManifestStore(t *testing.T) {
 	}
 	if cols := initStampColumns(context.Background(), runCtx, 7, schemaBatchExport{finalKey: "base/7/x.parquet"}); cols != nil {
 		t.Fatalf("manifest store nil must yield nil stamp, got %#v", cols)
+	}
+}
+
+// A re-run over an unchanged row range must not overwrite the object the
+// manifest still lists: the compactor's pre-merge checksum gate hashes listed
+// objects against their stamps, and an in-place overwrite makes a healthy
+// system read as corrupt (#416). Each batch therefore mints a fresh key.
+func TestExportSchemaBatch_RerunOverSameRangeMintsFreshKey(t *testing.T) {
+	runCtx, _ := newChecksumInitContext(func(context.Context, string) (string, error) { return "sha256:x", nil })
+
+	first := &schemaInitState{schemaID: 7}
+	if err := exportSchemaBatch(context.Background(), runCtx, first, initBatchRowIDs()); err != nil {
+		t.Fatalf("first export: %v", err)
+	}
+	second := &schemaInitState{schemaID: 7}
+	if err := exportSchemaBatch(context.Background(), runCtx, second, initBatchRowIDs()); err != nil {
+		t.Fatalf("second export: %v", err)
+	}
+
+	a, b := first.fileEntries[0].Path, second.fileEntries[0].Path
+	if a == b {
+		t.Fatalf("re-run reused key %q; init base keys must be write-once", a)
+	}
+	rowID := initBatchRowIDs()[0].String()
+	for _, p := range []string{a, b} {
+		if !strings.HasPrefix(p, "cdc/7/"+rowID+"_"+rowID+"_") {
+			t.Fatalf("key %q does not keep the {min}_{max}_ prefix", p)
+		}
+	}
+}
+
+// conflictingSaveStore rejects the first N saves with a confirmed 412 and
+// bumps the stored manifest in between, the way a compactor swap landing
+// during the export does.
+type conflictingSaveStore struct {
+	memManifestStore
+	rejectFirst int
+	saves       int
+}
+
+func (s *conflictingSaveStore) Save(ctx context.Context, path string, data []byte, etag string) (string, error) {
+	s.saves++
+	if s.saves <= s.rejectFirst {
+		return "", &preconditionFailedErr{}
+	}
+	return s.memManifestStore.Save(ctx, path, data, etag)
+}
+
+// preconditionFailedErr implements smithy.APIError with code
+// PreconditionFailed — the confirmed-412 shape S3 returns for a stale If-Match.
+type preconditionFailedErr struct{}
+
+func (*preconditionFailedErr) Error() string                 { return "api error PreconditionFailed (test)" }
+func (*preconditionFailedErr) ErrorCode() string             { return "PreconditionFailed" }
+func (*preconditionFailedErr) ErrorMessage() string          { return "precondition failed (test)" }
+func (*preconditionFailedErr) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }
+
+// The final publish is the only step a compactor swap can race (init holds
+// the schema lock against the flusher and reconcile, not the compactor). A
+// confirmed 412 must reload the manifest and re-splice this run's base tier
+// rather than discard the whole export (#416).
+func TestUpdateSchemaManifest_RetriesConfirmed412(t *testing.T) {
+	st := &conflictingSaveStore{rejectFirst: 2}
+	seed := &manifest.Manifest{SchemaID: 1, Files: []manifest.FileEntry{
+		{Tier: "delta", Path: "prefix/1/d.parquet", RowCount: 5},
+		{Tier: "base", Path: "prefix/1/base-old.parquet", RowCount: 1},
+	}}
+	if _, err := manifest.Save(context.Background(), &st.memManifestStore, "manifest/1.json", seed, ""); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	runCtx := &initRunContext{
+		manifestStore:    st,
+		manifestResolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		logger:           zap.NewNop(),
+	}
+
+	if err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1)); err != nil {
+		t.Fatalf("publish under 412 conflicts: %v", err)
+	}
+	if st.saves != 3 {
+		t.Fatalf("saves = %d, want 3 (two rejected, one committed)", st.saves)
+	}
+	m, _, err := manifest.Load(context.Background(), st, "manifest/1.json")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Files) != 2 || m.Files[0].Path != "prefix/1/d.parquet" || m.Files[1].Path != "prefix/1/a_b.parquet" {
+		t.Fatalf("manifest after retried publish = %+v, want delta preserved and base replaced", m.Files)
+	}
+}
+
+// Retries are bounded: a conflict that never clears must surface, not spin.
+func TestUpdateSchemaManifest_GivesUpAfterBoundedConflicts(t *testing.T) {
+	st := &conflictingSaveStore{rejectFirst: 100}
+	runCtx := &initRunContext{
+		manifestStore:    st,
+		manifestResolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		logger:           zap.NewNop(),
+	}
+
+	err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1))
+	if err == nil {
+		t.Fatal("publish succeeded under a conflict that never clears")
+	}
+	if !manifest.IsPreconditionFailed(err) {
+		t.Fatalf("error does not carry the 412 cause: %v", err)
+	}
+	if st.saves != 1+initPublishConflictRetries {
+		t.Fatalf("saves = %d, want %d (one attempt plus the bounded retries)", st.saves, 1+initPublishConflictRetries)
+	}
+}
+
+// An ambiguous save error (not a confirmed 412) is not retried: the put may
+// have landed, and a blind retry could publish twice.
+func TestUpdateSchemaManifest_DoesNotRetryAmbiguousSaveError(t *testing.T) {
+	saveErr := errors.New("connection reset")
+	st := &failingSaveStore{saveErr: saveErr}
+	runCtx := &initRunContext{
+		manifestStore:    st,
+		manifestResolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		logger:           zap.NewNop(),
+	}
+	err := updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1))
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("err = %v, want the ambiguous save error surfaced", err)
 	}
 }

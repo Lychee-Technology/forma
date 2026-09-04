@@ -17,12 +17,13 @@ import (
 //
 // The pre-read validator caches every path it validates so a warm server pays
 // no footer probe. That was justified by "parquet objects are write-once",
-// which holds for flush and compaction — both mint fresh UUIDv7 keys — and
-// FAILS for init: cdc.BuildBasePath is deterministic ({min}_{max}.parquet), so
-// an init rerun overwrites the object in place and rewrites its manifest entry
-// under the same key. A path-keyed cache then serves the pre-rerun column set
-// for the rest of the process's life, with no eviction and no restart short of
-// bouncing the server.
+// which Forma's writers honour (flush and compaction always minted fresh
+// UUIDv7 keys; init does too since #416) but which a rewrite under a listed
+// key still violates: a pre-#416 init overwrote its deterministic
+// {min}_{max}.parquet key in place, and an operator repair can republish bytes
+// under an existing key, each re-stamping the entry under the same path. A
+// path-keyed cache then serves the pre-rewrite column set for the rest of the
+// process's life, with no eviction and no restart short of bouncing the server.
 //
 // The scenario keeps ONE engine alive across the rewrites — that is the whole
 // point, and it is why no EvolveSchema appears after the warm-up (EvolveSchema
@@ -30,10 +31,13 @@ import (
 //
 // Two rewrites, because they probe opposite halves of the contract:
 //
-//  1. An init rerun over unchanged rows: same key, byte-identical schema,
-//     IDENTICAL stamp. The entry must stay valid — re-keying the cache must not
-//     cost a probe on every rerun, which is the cold-start win #256 exists for.
-//  2. A rewrite that DROPS a column, with the manifest re-stamped to match.
+//  1. An init rerun over unchanged rows: a FRESH key (#416) carrying a
+//     byte-identical schema and an IDENTICAL stamp. The stamp must not move on
+//     an unchanged rerun — re-keying the cache must not cost a probe per
+//     rerun beyond the new object's own, which is the cold-start win #256
+//     exists for.
+//  2. An out-of-band rewrite of the listed key that DROPS a column, with the
+//     manifest re-stamped to match — the pre-#416 init shape, still reachable.
 //     A stale union still claims the column, so #255 augments nothing and the
 //     projection binds a column the object no longer has — a permanent
 //     ErrFederatedReadFailed for this schema that no retry clears. Re-validating
@@ -65,16 +69,18 @@ func TestManifestStamp_InPlaceRewriteInvalidatesValidatorCache(t *testing.T) {
 		t.Fatalf("precondition: the stamp does not claim score: %#v", stampA)
 	}
 
-	// Rewrite 1 — init rerun, nothing changed. Same key, same stamp.
+	// Rewrite 1 — init rerun, nothing changed. Fresh write-once key (#416),
+	// identical stamp.
 	rerun, err := env.RunInit(ctx, simple)
 	if err != nil {
 		t.Fatalf("init rerun: %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", simple.ID)
 	baseEntries := manifest.FilterByTier(rerun.Manifest, "base")
-	if len(baseEntries) != 1 || baseEntries[0].Path != baseKey {
-		t.Fatalf("init rerun did not overwrite %s in place; base entries: %+v", baseKey, baseEntries)
+	if len(baseEntries) != 1 || baseEntries[0].Path == baseKey {
+		t.Fatalf("init rerun did not replace %s with a fresh write-once key; base entries: %+v", baseKey, baseEntries)
 	}
+	baseKey = baseEntries[0].Path
 	stampB := stampedEntryFor(ctx, t, env, simple, baseKey)
 	if !maps.Equal(stampA, stampB) {
 		t.Fatalf("an unchanged rerun moved the stamp; the cache would re-validate needlessly:\n a: %#v\n b: %#v", stampA, stampB)

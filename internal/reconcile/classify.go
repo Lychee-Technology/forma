@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -70,9 +71,9 @@ func classifyObjectKey(prefix, key string) (OrphanClass, bool) {
 		}
 		return ClassUnknown, true
 	}
-	if minID, maxID, found := strings.Cut(stem, "_"); found {
-		if uuid.Validate(minID) == nil && uuid.Validate(maxID) == nil {
-			return ClassBaseInit, true // cdc.BuildBasePath: {minRowID}_{maxRowID}.parquet
+	if strings.Contains(stem, "_") {
+		if _, _, ok := cdc.ParseInitBaseStem(stem); ok {
+			return ClassBaseInit, true // cdc.BuildBasePath: {min}_{max}_{uuid}.parquet, or legacy {min}_{max}
 		}
 		return ClassUnknown, true
 	}
