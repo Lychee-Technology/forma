@@ -153,7 +153,8 @@ func TestVerifySourceChecksums_DisabledIssuesNoReads(t *testing.T) {
 // skipping it — it cannot hash bytes it cannot reach, and an unverifiable
 // stamped source must not merge.
 func TestVerifySourceChecksums_ForeignBucketPathRefused(t *testing.T) {
-	c, s3c := newVerifyFixture(zap.NewNop())
+	core, logs := observer.New(zap.ErrorLevel)
+	c, s3c := newVerifyFixture(zap.New(core))
 
 	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
 		stampedEntry("s3://other-bkt/p/1/foreign.parquet", sourcePayload),
@@ -161,6 +162,11 @@ func TestVerifySourceChecksums_ForeignBucketPathRefused(t *testing.T) {
 	require.ErrorIs(t, err, ErrForeignSource)
 	require.ErrorContains(t, err, "s3://other-bkt/p/1/foreign.parquet")
 	require.Empty(t, s3c.gets)
+
+	entries := logs.All()
+	require.Len(t, entries, 1, "the standalone gate logs its own refusal")
+	require.Equal(t, "s3://other-bkt/p/1/foreign.parquet", entries[0].ContextMap()["path"])
+	require.Equal(t, "bkt", entries[0].ContextMap()["bucket"])
 }
 
 // An absolute path inside the compactor's own bucket is verified against the

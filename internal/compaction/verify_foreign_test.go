@@ -70,6 +70,37 @@ func TestRejectForeignSources_BucketPrefixCollisionRefused(t *testing.T) {
 	require.ErrorIs(t, err, ErrForeignSource)
 }
 
+// A path that resolves to no key at all is out of scope too: the compactor
+// could not merge, hash or delete "s3://bkt/" or "/", so it refuses rather
+// than handing an empty key downstream.
+func TestRejectForeignSources_EmptyKeyRefused(t *testing.T) {
+	c, _ := newVerifyFixture(zap.NewNop())
+
+	for _, path := range []string{"s3://bkt/", "/", ""} {
+		err := c.rejectForeignSources(1, []manifest.FileEntry{{Tier: "base", Path: path}})
+		require.ErrorIs(t, err, ErrForeignSource, "path %q", path)
+	}
+}
+
+// deleteObjects shares bucketRelativeKey: an own-bucket URI is deleted by its
+// relative key, a foreign or empty one is skipped with a WARN, never deleted.
+func TestDeleteObjects_UsesBucketRelativeKey(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	c, s3c := newVerifyFixture(zap.New(core))
+	c.S3 = s3c
+
+	c.deleteObjects(context.Background(), 1, []string{
+		"s3://bkt/p/1/aaa.parquet",
+		"/p/1/bbb.parquet",
+		"s3://other-bkt/p/1/ccc.parquet",
+		"s3://bkt/",
+	})
+	require.Equal(t, []string{"p/1/aaa.parquet", "p/1/bbb.parquet"}, s3c.deletes)
+	require.Len(t, logs.All(), 2, "one WARN per skipped path")
+	require.Equal(t, "s3://other-bkt/p/1/ccc.parquet", logs.All()[0].ContextMap()["path"])
+	require.Equal(t, "s3://bkt/", logs.All()[1].ContextMap()["path"])
+}
+
 // foreignSourceManifest is rewrite-eligible (10% dirty ratio, sub-threshold
 // delta bytes) but lists its delta in another bucket, unstamped — the shape
 // the pre-#417 gate let straight through to MergeToTmp.
