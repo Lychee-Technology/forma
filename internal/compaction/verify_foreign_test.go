@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -79,6 +80,7 @@ func TestRejectForeignSources_EmptyKeyRefused(t *testing.T) {
 	for _, path := range []string{"s3://bkt/", "/", ""} {
 		err := c.rejectForeignSources(1, []manifest.FileEntry{{Tier: "base", Path: path}})
 		require.ErrorIs(t, err, ErrForeignSource, "path %q", path)
+		require.ErrorContains(t, err, fmt.Sprintf("rewrite source %q", path), "the refusal quotes the path so an empty one stays legible")
 	}
 }
 

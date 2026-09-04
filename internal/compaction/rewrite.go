@@ -203,8 +203,8 @@ func (c *Compactor) deleteObjects(ctx context.Context, schemaID int16, paths []s
 	for _, path := range paths {
 		key, ok := c.bucketRelativeKey(path)
 		if !ok {
-			c.Logger.Warn("skipping deletion of object outside compactor bucket",
-				zap.Int16("schema_id", schemaID), zap.String("path", path))
+			c.Logger.Warn("skipping deletion: path is outside the compactor bucket or names no key",
+				zap.Int16("schema_id", schemaID), zap.String("path", path), zap.String("bucket", c.Bucket))
 			continue
 		}
 		if err := cdc.DeleteObjectKey(ctx, c.S3, c.Bucket, key); err != nil {

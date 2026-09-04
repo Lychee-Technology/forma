@@ -61,7 +61,7 @@ func (c *Compactor) rejectForeignSources(schemaID int16, sources []manifest.File
 		}
 		c.Logger.Error("rewrite source lies outside the compactor bucket; refusing to merge (#417)",
 			zap.Int16("schema_id", schemaID), zap.String("path", f.Path), zap.String("bucket", c.Bucket))
-		return fmt.Errorf("rewrite source %s for schema %d is outside bucket %s: %w",
+		return fmt.Errorf("rewrite source %q for schema %d is outside bucket %s: %w",
 			f.Path, schemaID, c.Bucket, ErrForeignSource)
 	}
 	return nil
@@ -90,7 +90,7 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 			// fail-closed on its own (#417).
 			c.Logger.Error("stamped rewrite source lies outside the compactor bucket; cannot hash it, refusing to merge (#417)",
 				zap.Int16("schema_id", schemaID), zap.String("path", f.Path), zap.String("bucket", c.Bucket))
-			return fmt.Errorf("verify rewrite source %s for schema %d: outside bucket %s: %w",
+			return fmt.Errorf("verify rewrite source %q for schema %d: outside bucket %s: %w",
 				f.Path, schemaID, c.Bucket, ErrForeignSource)
 		}
 		actual, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, key)
@@ -113,7 +113,8 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 // bucket, reporting false for an absolute URI naming a different bucket and
 // for a path that resolves to no key at all ("", "/", "s3://<bucket>/"): an
 // empty key names nothing the compactor could merge, hash or delete, so it is
-// out of scope like a foreign one rather than passed on to fail downstream.
+// out of scope like a foreign one rather than passed on to fail downstream
+// (the refusal quotes the path so "" stays legible in the error).
 // It is the single path rule shared by the rewrite gates and deleteObjects:
 // objectURI's leading-slash trim for relative paths plus the own-bucket
 // prefix match for absolute URIs, an exact match so s3://bktX/ never passes
