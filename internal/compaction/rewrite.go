@@ -61,7 +61,12 @@ func (c *Compactor) runRewrite(
 	// folded into one object and spliced out of the manifest, so a corrupt
 	// input would be laundered into the new base and lose its listed name —
 	// the retained bytes (#461) are unlisted orphans on a GC countdown, not a
-	// named copy anyone would consult (#347).
+	// named copy anyone would consult (#347). A source in another bucket is
+	// refused first (#417): objectURI would hand it to DuckDB verbatim, but
+	// nothing below could verify, stat or delete it.
+	if err := c.rejectForeignSources(schemaID, sources); err != nil {
+		return CompactionResult{}, err
+	}
 	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
 		return CompactionResult{}, err
 	}
@@ -189,6 +194,8 @@ func spliceManifest(m *manifest.Manifest, mergedPaths map[string]bool, newBase m
 
 // objectURI renders a manifest path as an s3:// URI against the compactor's
 // bucket; absolute URIs pass through (mirrors manifest.QuerySource.Paths).
+// runRewrite never reaches it with a foreign-bucket path: rejectForeignSources
+// refuses those first (#417).
 func (c *Compactor) objectURI(path string) string {
 	if strings.HasPrefix(path, "s3://") {
 		return path

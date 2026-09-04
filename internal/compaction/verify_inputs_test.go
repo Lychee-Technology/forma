@@ -148,21 +148,19 @@ func TestVerifySourceChecksums_DisabledIssuesNoReads(t *testing.T) {
 	})
 }
 
-// An absolute path in another bucket is unreachable through the compactor's
-// own client, so it is skipped with a WARN — the same handling deleteObjects
-// gives it. Verification default-on must not turn a foreign path into a
-// spurious corruption verdict.
-func TestVerifySourceChecksums_ForeignBucketPathSkippedWithWarning(t *testing.T) {
-	core, logs := observer.New(zap.WarnLevel)
-	c, s3c := newVerifyFixture(zap.New(core))
+// Defence in depth for the #417 ruling: even when called on its own, the
+// checksum gate refuses a stamped source in another bucket instead of
+// skipping it — it cannot hash bytes it cannot reach, and an unverifiable
+// stamped source must not merge.
+func TestVerifySourceChecksums_ForeignBucketPathRefused(t *testing.T) {
+	c, s3c := newVerifyFixture(zap.NewNop())
 
 	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
 		stampedEntry("s3://other-bkt/p/1/foreign.parquet", sourcePayload),
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrForeignSource)
+	require.ErrorContains(t, err, "s3://other-bkt/p/1/foreign.parquet")
 	require.Empty(t, s3c.gets)
-	require.Len(t, logs.All(), 1)
-	require.Equal(t, "s3://other-bkt/p/1/foreign.parquet", logs.All()[0].ContextMap()["path"])
 }
 
 // An absolute path inside the compactor's own bucket is verified against the

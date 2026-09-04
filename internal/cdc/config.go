@@ -89,7 +89,9 @@ type CompactionConfig struct {
 	// corruption is both detectable and attributable to a named object, and
 	// that has to hold for deployments that never set this struct field.
 	// Setting it true trades that detection away to save one GET per stamped
-	// source.
+	// source. It waives hashing only: a source outside the compactor's bucket
+	// is still refused (compaction.ErrForeignSource, #417), because that is a
+	// scope check, not a checksum check.
 	SkipInputChecksumVerify bool
 
 	// Backoff parameters for S3/manifest operations

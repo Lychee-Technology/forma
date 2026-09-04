@@ -22,10 +22,38 @@ import (
 // failed GET is transient infrastructure, not a corruption verdict.
 var ErrSourceChecksumMismatch = errors.New("compaction source checksum mismatch")
 
+// ErrForeignSource marks a rewrite source whose manifest path names a bucket
+// other than the compactor's own (#417 ruling: cross-bucket manifest paths
+// are not a supported compaction input). The compactor cannot verify, stat or
+// delete such an object through its own client, yet MergeToTmp would fold its
+// bytes into a new base in this bucket and spliceManifest would drop its
+// listed name — an unverified relocation across a bucket boundary past a
+// fail-closed gate. Terminal for the pass, exactly like a checksum mismatch:
+// the fix is to correct the manifest, not to retry.
+var ErrForeignSource = errors.New("compaction source outside compactor bucket")
+
+// rejectForeignSources refuses a rewrite whose sources include a path outside
+// the compactor's bucket. It is a scope check, not a checksum check, so it
+// runs regardless of SkipInputChecksumVerify or ObjectReader and applies to
+// unstamped entries too.
+func (c *Compactor) rejectForeignSources(schemaID int16, sources []manifest.FileEntry) error {
+	for _, f := range sources {
+		if _, ok := c.bucketRelativeKey(f.Path); ok {
+			continue
+		}
+		c.Logger.Error("rewrite source lies outside the compactor bucket; refusing to merge (#417)",
+			zap.Int16("schema_id", schemaID), zap.String("path", f.Path), zap.String("bucket", c.Bucket))
+		return fmt.Errorf("rewrite source %s for schema %d is outside bucket %s: %w",
+			f.Path, schemaID, c.Bucket, ErrForeignSource)
+	}
+	return nil
+}
+
 // verifySourceChecksums re-hashes every stamped rewrite source and compares
 // against the manifest stamp. Unstamped (legacy) entries are skipped — field
-// presence is the format version signal. Disabled when the config opts out
-// or no ObjectReader is wired.
+// presence is the format version signal. A stamped source outside the
+// compactor's bucket cannot be hashed and is refused (ErrForeignSource).
+// Disabled when the config opts out or no ObjectReader is wired.
 func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, sources []manifest.FileEntry) error {
 	if c.Config.SkipInputChecksumVerify || c.ObjectReader == nil {
 		return nil
@@ -36,11 +64,12 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 		}
 		key, ok := c.bucketRelativeKey(f.Path)
 		if !ok {
-			// Unreachable through this compactor's client, exactly as
-			// deleteObjects treats it: report it, never call it corrupt.
-			c.Logger.Warn("skipping checksum verification of source outside compactor bucket",
-				zap.Int16("schema_id", schemaID), zap.String("path", f.Path))
-			continue
+			// Unreachable through this compactor's client: a stamped source
+			// that cannot be hashed must not merge. runRewrite refuses such
+			// paths earlier via rejectForeignSources; this keeps the gate
+			// fail-closed on its own (#417).
+			return fmt.Errorf("verify rewrite source %s for schema %d: outside bucket %s: %w",
+				f.Path, schemaID, c.Bucket, ErrForeignSource)
 		}
 		actual, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, key)
 		if err != nil {

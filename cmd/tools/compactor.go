@@ -44,7 +44,8 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	skipInputChecksumVerify := fs.Bool("skip-input-checksum-verify", false,
 		"Skip the #347 pre-merge integrity gate on rewrite inputs. Verification is on by default; "+
 			"use this flag only to unwedge compaction when a stamped source is known-corrupt and the "+
-			"corruption has been triaged")
+			"corruption has been triaged. It waives hashing only: a source outside the compactor's "+
+			"bucket is still refused (#417)")
 
 	maxRetries := fs.Int("max-retries", 5, "Maximum retry attempts")
 	baseBackoffMs := fs.Int("base-backoff-ms", 100, "Base backoff in milliseconds")
