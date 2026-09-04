@@ -5,13 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
-	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
-	"github.com/aws/smithy-go"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -158,16 +155,12 @@ func isRetryable(err error) bool {
 
 // isPreconditionFailed reports whether err is a CONFIRMED HTTP 412
 // conditional-put rejection from the object store — the only save failure
-// that proves the write did not commit. Transport errors, timeouts and
-// other API failures are deliberately excluded: after those the put may
-// have landed, and callers must treat the outcome as ambiguous.
+// that proves the write did not commit. The classification lives with the
+// store that produces it (manifest.IsPreconditionFailed) so every etag
+// writer — compactor, reconcile, cdc-init — agrees on what counts as a
+// retryable conflict.
 func isPreconditionFailed(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
-		return true
-	}
-	var respErr *awshttp.ResponseError
-	return errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusPreconditionFailed
+	return manifest.IsPreconditionFailed(err)
 }
 
 func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) (CompactionResult, error) {

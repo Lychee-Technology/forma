@@ -29,7 +29,7 @@ type repairOutcome struct {
 // Entry metadata is recomputed from the parquet contents, never trusted
 // from filenames. Runs under the schema advisory lock; the manifest save
 // still goes through etag optimistic concurrency (creates are If-None-Match
-// guarded) because compaction and init do not take the lock. Only a
+// guarded) because the compactor does not take the lock. Only a
 // confirmed 412 precondition failure is retried — after an ambiguous save
 // error the write may have landed, and a blind retry could duplicate
 // entries.

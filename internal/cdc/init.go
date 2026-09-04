@@ -331,7 +331,10 @@ func buildSchemaBatchExport(runCtx *initRunContext, state *schemaInitState, rowI
 
 	tmpUUID := uuid.Must(uuid.NewV7()).String()
 	tmpKey := BuildBaseTempPath(runCtx.cfg.S3Prefix, state.schemaID, tmpUUID)
-	finalKey := BuildBasePath(runCtx.cfg.S3Prefix, state.schemaID, minRowID, maxRowID)
+	// tmp and final share the batch's UUID: the final key is write-once
+	// (#416), and a shared id lets an operator pair a stranded _tmp object
+	// with the final it was meant to become.
+	finalKey := BuildBasePath(runCtx.cfg.S3Prefix, state.schemaID, minRowID, maxRowID, tmpUUID)
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", runCtx.cfg.S3Bucket, tmpKey)
 
 	return schemaBatchExport{
@@ -414,34 +417,6 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 		zap.Int64("rows_exported", state.rowsExported),
 		zap.Int("files_created", state.filesCreated),
 		zap.String("final_key", batch.finalKey))
-	return nil
-}
-
-// updateSchemaManifest records the exported base files in the schema
-// manifest. Failures propagate: base files absent from the manifest are
-// invisible to manifest consumers (e.g. compaction), and a silent miss here
-// would let RunInit report success for an unusable export. Init is a full
-// re-export, so the base tier is replaced wholesale with this run's files:
-// reruns neither duplicate entries nor leave stale ranges behind (#176).
-// Obsolete S3 objects are not deleted here — glob-based readers stay exact
-// via LWW/tombstones, and object cleanup belongs to
-// `forma-tools manifest-reconcile --gc` (#203).
-func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
-	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
-		return nil
-	}
-
-	manifestPath, err := runCtx.manifestResolver.Resolve(state.schemaID)
-	if err != nil {
-		return fmt.Errorf("resolve manifest path: %w", err)
-	}
-	if err := manifest.ReplaceTierFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, "base", state.fileEntries); err != nil {
-		return fmt.Errorf("update manifest: %w", err)
-	}
-	runCtx.logger.Info("manifest updated",
-		zap.Int16("schema_id", state.schemaID),
-		zap.String("manifest_path", manifestPath),
-		zap.Int("files_added", len(state.fileEntries)))
 	return nil
 }
 

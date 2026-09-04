@@ -646,8 +646,8 @@ while still never excluding it.
 **Trust boundary.** A stamp is trusted without reading bytes only because every
 object behind one was written by a Forma writer under manifest transactionality:
 flush and compaction mint fresh keys and stamp what they just wrote, an init
-rerun overwrites its deterministic key and re-stamps it in the same
-`ReplaceTierFiles` publish, and `manifest-reconcile --repair`'s init promotion
+rerun likewise mints fresh write-once keys (#416) and stamps them in the same
+`ReplaceTierFiles` publish that replaces the base tier, and `manifest-reconcile --repair`'s init promotion
 (#292) recomputes the stamp from the footer rather than inventing one. Outside
 that boundary — an out-of-band overwrite of a listed object's bytes while its
 entry keeps a stamp that still satisfies the system-column invariant — the read
@@ -701,11 +701,13 @@ connection by default, #285), and bails on context cancellation.
 
 **Cache invalidation.** The validator caches each path it validates, keyed by
 path **and by the stamp it was validated under** (nil for probe-validated). Path
-alone would be wrong: objects are write-once for flush and compaction, which
-mint fresh UUIDv7 keys, but **not for init** — `cdc.BuildBasePath` is
-deterministic (`{min}_{max}.parquet`), so an init rerun overwrites the object in
-place and rewrites its entry under the same key. A path-keyed cache would serve
-a warmed server the pre-rerun columns for the life of the process. The manifest
+alone would be wrong: Forma's writers mint write-once keys (flush and compaction
+always did; `cdc.BuildBasePath` mints `{min}_{max}_{uuid}.parquet` since #416,
+before which an init rerun overwrote its deterministic `{min}_{max}.parquet` key
+in place), but a rewrite under a listed path is still reachable — legacy
+deployments, or an operator repair that republishes bytes under an existing
+key — and each re-stamps the entry under the same key. A path-keyed cache would
+serve a warmed server the pre-rewrite columns for the life of the process. The manifest
 rewrite is therefore the invalidation signal: same stamp, keep the entry; new
 stamp, re-validate. An unchanged stamp still costs zero probes, so the
 cold-start win is intact. When a probe *does* run on a stamped path — which

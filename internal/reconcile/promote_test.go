@@ -29,7 +29,13 @@ const (
 	rid4 = "00000000-0000-7000-8000-000000000004"
 )
 
-func initKey(minID, maxID string) string { return "data/7/" + minID + "_" + maxID + ".parquet" }
+// initKey renders the write-once init base shape cdc-init mints since #416;
+// legacyInitKey the deterministic pre-#416 shape still found in buckets.
+func initKey(minID, maxID string) string {
+	return "data/7/" + minID + "_" + maxID + "_" + uuidC + ".parquet"
+}
+
+func legacyInitKey(minID, maxID string) string { return "data/7/" + minID + "_" + maxID + ".parquet" }
 
 // preInitClock is the listing time an object must carry to clear the survivor
 // fence on ground 1 (checkSurvivorDates): a listed non-base entry may only
@@ -208,6 +214,18 @@ func TestPromote_RefusesUnreadableStats(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, report.Schemas[0].InitPromotionRefusal, "unreadable parquet stats")
 	require.Empty(t, report.Schemas[0].PromotedBase, "one unreadable file refuses the whole set")
+}
+
+func TestCheckInitFilenameStats_AcceptsBothInitShapes(t *testing.T) {
+	stats := compaction.MergeStats{RowIDMin: rid1, RowIDMax: rid2}
+	for _, key := range []string{initKey(rid1, rid2), legacyInitKey(rid1, rid2)} {
+		if refusal := checkInitFilenameStats(key, stats); refusal != "" {
+			t.Fatalf("checkInitFilenameStats(%q) refused a matching file: %s", key, refusal)
+		}
+	}
+	if refusal := checkInitFilenameStats(legacyInitKey(rid1, rid2), compaction.MergeStats{RowIDMin: rid1, RowIDMax: rid4}); refusal == "" {
+		t.Fatal("legacy key with mismatching stats was accepted")
+	}
 }
 
 func TestPromote_RefusesFilenameStatsMismatch(t *testing.T) {

@@ -27,14 +27,15 @@ import (
 // objects land — hit the same cache through their concrete matches.
 //
 // The cache is keyed by path AND by the manifest stamp the entry was validated
-// under (nil for a probe-validated path). Path alone would be wrong: parquet
-// objects are write-once for flush and compaction, which always mint fresh
-// UUIDv7 keys, but NOT for init — cdc.BuildBasePath is deterministic
-// ({min}_{max}.parquet), so an init rerun overwrites the object in place and
-// rewrites its manifest entry under the same key. A path-keyed cache would
-// serve a warmed server the pre-rerun columns for the rest of its life. Adding
-// the stamp to the key makes the manifest rewrite the invalidation signal:
-// same stamp, same bytes, keep the entry; new stamp, re-validate.
+// under (nil for a probe-validated path). Path alone would be wrong: Forma's
+// writers mint write-once keys (flush and compaction always did; init since
+// #416), but a rewrite under a listed path is still reachable — a pre-#416
+// init overwrote its deterministic {min}_{max}.parquet key in place, and an
+// operator repair can republish bytes under an existing key — and each
+// re-stamps the entry under the same key. A path-keyed cache would serve a
+// warmed server the pre-rewrite columns for the rest of its life. Adding the
+// stamp to the key makes the manifest rewrite the invalidation signal: same
+// stamp, same bytes, keep the entry; new stamp, re-validate.
 //
 // The cache stores each validated path's columns so a repeat query can
 // contribute them to the column union (#255) without a second probe. It has

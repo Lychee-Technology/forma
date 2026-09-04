@@ -279,15 +279,15 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 		t.Fatal("schema 22 init must produce base entries (positive control)")
 	}
 
-	// #248: the NewObjects key diff is blind to overwrites that reuse the
-	// deterministic min_max keys, and the base-path comparison below is blind
-	// to a manifest rewritten with the same paths. Require exact stat/byte
-	// identity of the sibling's whole S3 surface across the rerun.
+	// #248: the NewObjects key diff is blind to a rewrite that reuses an
+	// existing key, and the base-path comparison below is blind to a manifest
+	// rewritten with the same paths. Require exact stat/byte identity of the
+	// sibling's whole S3 surface across the rerun.
 	siblingBefore := captureSchemaS3State(t, ctx, env, second)
 
 	// Rerun schema 20's init: the sibling's manifest and objects must be
-	// byte-for-byte uninvolved (deterministic keys make the rerun itself a
-	// pure overwrite, so any sibling-partition key here is a leak).
+	// byte-for-byte uninvolved (since #416 the rerun mints fresh write-once
+	// keys under its own partition, so any sibling-partition key is a leak).
 	rerun, err := env.RunInit(ctx, simple)
 	if err != nil {
 		t.Fatalf("rerun init schema %d: %v", simple.ID, err)

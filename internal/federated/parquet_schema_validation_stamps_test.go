@@ -11,12 +11,14 @@ import (
 )
 
 // The validator's cache used to be keyed by URI alone, on the premise that
-// parquet objects are write-once. That premise is false for init: cdc's base
-// keys are deterministic ({min}_{max}.parquet), so an init rerun overwrites
-// the object in place and rewrites its manifest stamp under the SAME path. A
-// warmed server would then serve the pre-rerun columns forever. These tests
-// pin the fix: an entry is only a hit while the manifest stamp it was
-// validated under still matches the current one.
+// parquet objects are write-once. Forma's writers honour that premise (flush
+// and compaction always did; init mints write-once keys since #416), but a
+// rewrite under a listed path is still reachable — a pre-#416 init overwrote
+// its deterministic {min}_{max}.parquet key in place, and an operator repair
+// can republish bytes under an existing key — and each re-stamps the entry
+// under the SAME path. A warmed server would then serve the pre-rewrite
+// columns forever. These tests pin the fix: an entry is only a hit while the
+// manifest stamp it was validated under still matches the current one.
 
 const stampCachePath = "s3://b/7/base/0_9.parquet"
 
