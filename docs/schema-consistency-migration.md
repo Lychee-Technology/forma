@@ -455,7 +455,12 @@ since `#314`, so such rows are always pre-existing data, never new writes.
 The row is not lost, but the tiers disagree on its shape until it is rewritten:
 the OLTP read returns the scalar (`"alpha"`), while the parquet export and the
 DuckDB hot-tier pivot return a one-element list (`["alpha"]`). Before `#372`
-the DuckDB tiers returned `[]` instead, silently dropping the value.
+the DuckDB tiers returned `[]` instead, silently dropping the value. The
+one-element list assumes the value sits in the storage column the list's items
+type uses; a legacy value in the other column (a text value under a numeric
+list, or the reverse) reads as `[null]` on the DuckDB tiers and is reported by
+the storage-column checks above as well as by this one, so fix the column
+first and then promote the row.
 
 The explicit empty-list marker (`#204`), which is the same key with **both**
 value columns NULL, is a supported state and is never reported here.
@@ -487,6 +492,12 @@ WHERE s.schema_id = 100 AND s.attr_id = 18 AND s.array_indices = ''
       AND d.attr_id = s.attr_id AND d.array_indices = '0'
   );
 ```
+
+Until that per-entity decision is made, the DuckDB tiers read a mixed entity as
+the real elements in index order followed by the legacy value last
+(`["e0", "e1", "legacy"]`): the empty index casts to NULL, which the ordered
+aggregate places after every element index. The position is deterministic but
+carries no meaning, so do not read it as the entity's intended list.
 
 After the rewrite, re-run the validator. A direct SQL rewrite does not stamp
 `change_log`, so an entity that was already flushed keeps its last exported
