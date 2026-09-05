@@ -99,3 +99,120 @@ func TestHintEmptyBucketRejected(t *testing.T) {
 	require.Nil(t, paths)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
+
+// TestHintRecursiveGlobRejected pins #477: `**` is refused in a hint path, the
+// same rule §4.3.1 imposes on the fallback glob, so a hint cannot widen the
+// scan across every prefix of the bucket.
+func TestHintRecursiveGlobRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for _, tmpl := range []string{
+		"s3://b/**/*.parquet",
+		"s3://b/data/{{.SchemaID}}/**",
+		"s3://b/data/**.parquet",
+	} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.Nil(t, paths, "template %q", tmpl)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
+	}
+}
+
+// TestHintTmpSegmentRejected pins #477: in-flight `_tmp/` staging objects are
+// not a scan target. A literal `_tmp` segment is refused wherever it sits.
+func TestHintTmpSegmentRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for _, tmpl := range []string{
+		"s3://b/data/{{.SchemaID}}/_tmp/x.parquet",
+		"s3://b/data/{{.SchemaID}}/_tmp/*.parquet",
+		"s3://b/_tmp/x.parquet",
+	} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.Nil(t, paths, "template %q", tmpl)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
+	}
+}
+
+// TestHintWildcardOutsideFinalSegmentRejected pins #477: wildcards may appear
+// only in the object-name segment. A wildcard directory segment
+// (`.../<schema>/*/x.parquet`) would match `_tmp/` without ever spelling it,
+// so the `_tmp` rule alone is not enough.
+func TestHintWildcardOutsideFinalSegmentRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for _, tmpl := range []string{
+		"s3://b/data/{{.SchemaID}}/*/x.parquet",
+		"s3://b/data/*/{{.SchemaID}}/*.parquet",
+		"s3://b/data/{{.SchemaID}}/?tmp/x.parquet",
+		"s3://b/data/{{.SchemaID}}/[_]tmp/x.parquet",
+		"s3://b/data/{{.SchemaID}}/_t*/x.parquet",
+	} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.Nil(t, paths, "template %q", tmpl)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
+	}
+}
+
+// TestHintDirectoryPathRejected pins #477: a path ending in `/` names a
+// directory, not an object or a glob, and is refused.
+func TestHintDirectoryPathRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for _, tmpl := range []string{"s3://b/", "s3://b/data/{{.SchemaID}}/"} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.Nil(t, paths, "template %q", tmpl)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tmpl)
+	}
+}
+
+// TestHintFinalSegmentGlobAccepted pins that the #477 shape rules keep every
+// hint form the repo relies on: a single-`*` object glob, a multi-path
+// base/delta template, a `?`/`[]` object pattern, and a literal object URI.
+func TestHintFinalSegmentGlobAccepted(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for tmpl, want := range map[string][]string{
+		"s3://b/data/{{.SchemaID}}/*.parquet": {"s3://b/data/7/*.parquet"},
+		"s3://b/data/{{.SchemaID}}/base/*.parquet, s3://b/data/{{.SchemaID}}/delta/*.parquet": {
+			"s3://b/data/7/base/*.parquet", "s3://b/data/7/delta/*.parquet"},
+		"s3://b/data/7/part-?[0-9].parquet":    {"s3://b/data/7/part-?[0-9].parquet"},
+		"s3://b/data/7/019abc.parquet":         {"s3://b/data/7/019abc.parquet"},
+		"s3://b/data/7/not_tmp/x.parquet":      {"s3://b/data/7/not_tmp/x.parquet"},
+		"s3://b/data/7/_tmp_archive/x.parquet": {"s3://b/data/7/_tmp_archive/x.parquet"},
+	} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.NoError(t, err, "template %q", tmpl)
+		require.Equal(t, want, paths, "template %q", tmpl)
+	}
+}
+
+// TestHintDataPrefixScope pins #477 prefix granularity: with S3DataPrefix set,
+// a hint must sit under s3://<bucket>/<prefix>/ — exact segment boundary, so a
+// sibling prefix sharing the same leading characters is out of scope — and the
+// prefix is canonicalized with the writers' single TrimSuffix("/").
+func TestHintDataPrefixScope(t *testing.T) {
+	for _, prefix := range []string{"data", "data/"} {
+		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/data/{{.SchemaID}}/*.parquet"), cfg)
+		require.NoError(t, err, "prefix %q", prefix)
+		require.Equal(t, []string{"s3://b/data/7/*.parquet"}, paths, "prefix %q", prefix)
+
+		for _, tmpl := range []string{
+			"s3://b/other/{{.SchemaID}}/*.parquet",
+			"s3://b/data2/{{.SchemaID}}/*.parquet", // prefix collision: must NOT match "data/"
+			"s3://b/data",                          // the prefix itself, no key below it
+			"s3://b/data/{{.SchemaID}}/*.parquet, s3://b/other/x.parquet",
+		} {
+			paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+			require.Nil(t, paths, "prefix %q template %q", prefix, tmpl)
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "prefix %q template %q", prefix, tmpl)
+		}
+	}
+}
+
+// TestHintEmptyDataPrefixKeepsBucketScope pins that an empty (or bare "/")
+// S3DataPrefix leaves the #456 bucket-granularity rule in force rather than
+// rejecting everything or scoping to the bucket root literally.
+func TestHintEmptyDataPrefixKeepsBucketScope(t *testing.T) {
+	for _, prefix := range []string{"", "/"} {
+		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/anywhere/{{.SchemaID}}/*.parquet"), cfg)
+		require.NoError(t, err, "prefix %q", prefix)
+		require.Equal(t, []string{"s3://b/anywhere/7/*.parquet"}, paths, "prefix %q", prefix)
+	}
+}

@@ -50,14 +50,17 @@ type DuckDBConfig struct {
 	// manifests that index them. Required whenever ManifestTemplate is set.
 	S3Bucket string `json:"s3Bucket"`
 	// S3DataPrefix mirrors the CDC write side's S3Prefix (the prefix under
-	// which delta/base parquet files are written). It is used *only* for the
-	// legacy glob fallback covering schemas that have never been flushed and
-	// therefore have no manifest object yet. Empty disables that fallback: a
-	// schema without a manifest then resolves to zero parquet paths, and a
-	// DuckDB-routed read of it fails fast with ErrNoParquetPaths — a
-	// non-degradable read-path error naming the schema, distinct from the
-	// transient failures AllowPartialDegradedMode absorbs (#299). Leave this
-	// set unless every schema is known to be manifested.
+	// which delta/base parquet files are written): the reader's parquet root.
+	// It serves two purposes. First, the legacy glob fallback covering schemas
+	// that have never been flushed and therefore have no manifest object yet.
+	// Empty disables that fallback: a schema without a manifest then resolves
+	// to zero parquet paths, and a DuckDB-routed read of it fails fast with
+	// ErrNoParquetPaths — a non-degradable read-path error naming the schema,
+	// distinct from the transient failures AllowPartialDegradedMode absorbs
+	// (#299). Leave this set unless every schema is known to be manifested.
+	// Second, when AllowCallerParquetPaths is on, a non-empty prefix narrows
+	// the scope of caller-supplied parquet paths from the whole bucket to
+	// s3://<S3Bucket>/<S3DataPrefix>/ (#477); empty keeps bucket granularity.
 	S3DataPrefix string `json:"s3DataPrefix"`
 	// ManifestPrefix is the root prefix for manifest objects in S3. It must
 	// match the CDC/compaction write side's ManifestPrefix.
@@ -76,8 +79,10 @@ type DuckDBConfig struct {
 	// to false: the field is a caller-controlled scan target, so on every
 	// existing deployment a request carrying it is rejected. When true, a
 	// caller template is still honored only for paths inside the configured
-	// S3Bucket (see the engine's path resolver) — the flag is necessary, not
-	// sufficient.
+	// S3Bucket — under S3DataPrefix too when one is set — and only in the
+	// fallback glob's shape: no `**`, wildcards in the object-name segment
+	// only, no `_tmp/` staging segment (#477; see the engine's path
+	// resolver). The flag is necessary, not sufficient.
 	AllowCallerParquetPaths bool `json:"allowCallerParquetPaths"`
 
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
