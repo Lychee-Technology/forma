@@ -238,10 +238,13 @@ func newGateRewriteFixture() (*Compactor, *loadCountingProvider, *fakeMerger, *f
 	return c, provider, merger, s3c
 }
 
-// The gate's reason for existing: runRewrite merges the sources and then
-// DELETES them, so a corrupt source must stop the pass before MergeToTmp —
-// nothing merged, nothing committed, nothing deleted, and the corrupt object
-// still on hand for the operator.
+// The gate's reason for existing: runRewrite folds the sources into one new
+// base and splices their entries out of the manifest (the objects are
+// retained for in-flight readers, #461, and reclaimed later by
+// manifest-reconcile --gc), so after the swap the corrupt bytes are no longer
+// attributable to a listed name. A corrupt source must therefore stop the
+// pass before MergeToTmp — nothing merged, nothing committed, nothing
+// deleted, and the corrupt object still listed for the operator.
 func TestCompactor_Rewrite_MismatchingSourceRefusesTheMerge(t *testing.T) {
 	c, provider, merger, s3c := newGateRewriteFixture()
 	s3c.putObject("p/1/ddd.parquet", corruptPayload)
