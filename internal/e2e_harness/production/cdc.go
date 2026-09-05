@@ -283,23 +283,33 @@ func (e *Env) countUnflushed(ctx context.Context) (int64, error) {
 }
 
 // loadManifests fetches and parses the manifest of every fixture schema that
-// has one. Missing manifests are simply absent from the map.
+// has one. A CONFIRMED missing manifest (manifest.IsNotFound) is simply absent
+// from the map; any other store failure surfaces (#464).
 func (e *Env) loadManifests(ctx context.Context) (map[int16]*manifest.Manifest, error) {
-	manifests := make(map[int16]*manifest.Manifest)
 	if e.CDC.ManifestTemplate == "" {
-		return manifests, nil
+		return make(map[int16]*manifest.Manifest), nil
 	}
-	store := &manifest.S3Store{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate}
+	store, resolver := e.manifestAccess()
+	return loadManifestsFrom(ctx, store, resolver)
+}
 
+// loadManifestsFrom is loadManifests against an explicit store and resolver.
+// Only manifest.ErrObjectNotFound may be treated as "no manifest yet": a
+// bucket, permission or transport failure must not read as an empty map, or
+// every assertion built on the map silently loses coverage.
+func loadManifestsFrom(ctx context.Context, store manifest.Store, resolver manifest.PathResolver) (map[int16]*manifest.Manifest, error) {
+	manifests := make(map[int16]*manifest.Manifest)
 	for _, ref := range DefaultSchemaFixtures() {
 		path, err := resolver.Resolve(ref.ID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve manifest path for schema %d: %w", ref.ID, err)
 		}
 		m, _, err := manifest.Load(ctx, store, path)
+		if manifest.IsNotFound(err) {
+			continue // confirmed absent: no manifest yet for this schema
+		}
 		if err != nil {
-			continue // no manifest yet for this schema
+			return nil, fmt.Errorf("load manifest for schema %d at %s: %w", ref.ID, path, err)
 		}
 		manifests[ref.ID] = m
 	}

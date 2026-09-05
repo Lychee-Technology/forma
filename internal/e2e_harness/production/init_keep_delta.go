@@ -32,13 +32,13 @@ func (e *Env) RunInitKeepingDelta(ctx context.Context, schema SchemaRef) (*InitR
 	if err != nil {
 		return nil, fmt.Errorf("resolve manifest path for schema %d: %w", schema.ID, err)
 	}
-	m, _, err := manifest.Load(ctx, store, manifestPath)
+	deltaEntries, err := loadKeptDeltaEntries(ctx, store, manifestPath)
 	if err != nil {
-		// No manifest yet: nothing to keep, a plain init is the same run.
-		return e.RunInit(ctx, schema)
+		return nil, fmt.Errorf("keep delta: load manifest for schema %d: %w", schema.ID, err)
 	}
-	deltaEntries := manifest.FilterByTier(m, "delta")
 	if len(deltaEntries) == 0 {
+		// No manifest yet, or no delta listed: nothing to keep, a plain init
+		// is the same run.
 		return e.RunInit(ctx, schema)
 	}
 
@@ -77,6 +77,21 @@ func (e *Env) RunInitKeepingDelta(ctx context.Context, schema SchemaRef) (*InitR
 	}
 	report.Manifest = m
 	return report, nil
+}
+
+// loadKeptDeltaEntries returns the delta entries the manifest at path lists,
+// or nil when the manifest is CONFIRMED absent (manifest.IsNotFound). Any
+// other store failure surfaces: a bucket or transport error must not steer
+// RunInitKeepingDelta onto the plain-init path (#464).
+func loadKeptDeltaEntries(ctx context.Context, store manifest.Store, manifestPath string) ([]manifest.FileEntry, error) {
+	m, _, err := manifest.Load(ctx, store, manifestPath)
+	if manifest.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load manifest %s: %w", manifestPath, err)
+	}
+	return manifest.FilterByTier(m, "delta"), nil
 }
 
 // manifestAccess returns the store and resolver for the Env's manifests.
