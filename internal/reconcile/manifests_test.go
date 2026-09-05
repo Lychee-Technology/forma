@@ -25,7 +25,7 @@ func newMemManifestStore() *memManifestStore {
 func (s *memManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
 	b, ok := s.data[path]
 	if !ok {
-		return nil, "", fmt.Errorf("NoSuchKey: manifest %s not found", path)
+		return nil, "", fmt.Errorf("mem store %s: %w", path, manifest.ErrObjectNotFound)
 	}
 	return b, s.etags[path], nil
 }

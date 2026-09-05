@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // stubS3 always succeeds, standing in for the real client.
@@ -49,12 +50,11 @@ func TestFaultInjectingS3MatchesOpAndKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "e2e injected s3 fault") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
-	// manifest.LoadOrCreate treats these phrases as "manifest does not exist
-	// yet" and would silently continue — the injected text must avoid them.
-	for _, phrase := range []string{"nosuchkey", "not found", "does not exist"} {
-		if strings.Contains(strings.ToLower(err.Error()), phrase) {
-			t.Fatalf("injected error text %q must not contain %q", err, phrase)
-		}
+	// manifest.LoadOrCreate answers a confirmed-absent manifest with a fresh
+	// one and would silently continue — an injected fault must never
+	// classify as absent (#464).
+	if manifest.IsNotFound(err) {
+		t.Fatalf("injected error %q must not classify as manifest absent", err)
 	}
 	if f.Injected() != 1 {
 		t.Fatalf("Injected() = %d, want 1", f.Injected())

@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,8 +18,11 @@ func (f *FSStore) Load(ctx context.Context, path string) ([]byte, string, error)
 		return nil, "", fmt.Errorf("fs store not configured")
 	}
 	b, err := fs.ReadFile(f.Root, path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, "", fmt.Errorf("read manifest file %s: %w: %w", path, ErrObjectNotFound, err)
+	}
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("read manifest file %s: %w", path, err)
 	}
 	return b, "", nil
 }

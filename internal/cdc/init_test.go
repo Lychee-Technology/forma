@@ -3,6 +3,7 @@ package cdc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestResolveInitBatchSize_RawZeroValueConfigIsZero(t *testing.T) {
 type failingSaveStore struct{ saveErr error }
 
 func (s *failingSaveStore) Load(context.Context, string) ([]byte, string, error) {
-	return nil, "", errors.New("NoSuchKey: not found")
+	return nil, "", fmt.Errorf("mem store: %w", manifest.ErrObjectNotFound)
 }
 
 func (s *failingSaveStore) Save(context.Context, string, []byte, string) (string, error) {
@@ -121,7 +122,7 @@ type memManifestStore struct {
 func (s *memManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
 	b, ok := s.data[path]
 	if !ok {
-		return nil, "", errors.New("NoSuchKey: not found")
+		return nil, "", fmt.Errorf("mem store %s: %w", path, manifest.ErrObjectNotFound)
 	}
 	return b, "", nil
 }

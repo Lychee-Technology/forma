@@ -175,7 +175,7 @@ func (s *inMemoryManifestStore) Load(_ context.Context, path string) ([]byte, st
 	}
 	b, ok := s.data[path]
 	if !ok {
-		return nil, "", fmt.Errorf("not found")
+		return nil, "", fmt.Errorf("mem store %s: %w", path, manifest.ErrObjectNotFound)
 	}
 	return append([]byte(nil), b...), s.etags[path], nil
 }
