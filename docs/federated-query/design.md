@@ -600,6 +600,22 @@ guard, not the fix: the stale generation itself is retired by `cdc-init
 --replace-delta` (see `docs/manifest-reconcile.md`), which is what makes the
 scan set single-typed again.
 
+The pin's trust boundary is the same as the #256 stamp trust below: the union
+it compares against is fed by manifest column stamps that pass the
+system-column invariant, with no footer probe, and `parquetcheck.Check`
+validates system columns only. A stamp that reports an attribute at the export
+type is therefore believed for that attribute even if the bytes at the path
+carry another type, and the drift would then bind unpinned. That state needs a
+same-key rewrite under an unchanged stamp — a legacy deterministic init key
+overwritten in place, or a manual or old-writer mutation — which no current
+writer performs: since #416 every init batch lands on a write-once key, flush
+and compaction never reuse a key, and re-runs go through `cdc-init
+--replace-delta`. Probing attribute columns on every read would give back the
+cost #256 removed, and binding a stamp to an object version is a manifest
+format change; the offline detector for a stamp that no longer matches its
+object is `manifest-reconcile --verify-stamps`, which re-describes each listed
+object and reports stamp/footer disagreements.
+
 **Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
 compaction merge) `DESCRIBE` each parquet object they publish and record its
 footer columns (name → DuckDB type) on the manifest entry

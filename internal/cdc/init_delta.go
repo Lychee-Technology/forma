@@ -23,17 +23,25 @@ var ErrDeltaTierPresent = errors.New("delta tier present; cdc-init replaces only
 
 // deltaInventory is one schema's delta tier as seen before the export:
 // manifest-listed entries (as bucket-relative keys), delta-shaped objects
-// under the delta prefix the manifest does not mention, and manifest
-// entries that cannot be resolved to a key in this bucket (globs, foreign
-// buckets), which a purge could not honour.
+// under the delta prefix the manifest does not mention, and two kinds of
+// manifest entry a purge could not honour — ones that cannot be resolved to
+// a key in this bucket (globs, foreign buckets) and ones that resolve to a
+// key outside this schema's delta namespace (a base-shaped or other-schema
+// path labelled delta), which the purge refuses to delete.
 type deltaInventory struct {
 	listed         []string
 	unlisted       []string
 	unnormalizable []string
+	foreign        []string
 }
 
 func (inv deltaInventory) empty() bool {
-	return len(inv.listed) == 0 && len(inv.unlisted) == 0 && len(inv.unnormalizable) == 0
+	return len(inv.listed) == 0 && len(inv.unlisted) == 0 && len(inv.unnormalizable) == 0 && len(inv.foreign) == 0
+}
+
+// unpurgeable counts the manifest entries the purge could not honour.
+func (inv deltaInventory) unpurgeable() int {
+	return len(inv.unnormalizable) + len(inv.foreign)
 }
 
 // purgeKeys is the sorted, de-duplicated union of every purgeable key.
@@ -86,6 +94,32 @@ func isDeltaShapedKey(prefix, key string) bool {
 	return uuid.Validate(strings.TrimSuffix(rel, ".parquet")) == nil
 }
 
+// deltaNamespace is the key prefix the flusher writes a schema's delta
+// objects under: `{deltaPrefix}/{schemaID}/` (BuildDeltaPath).
+func deltaNamespace(deltaPrefix string, schemaID int16) string {
+	return fmt.Sprintf("%s/%d/", strings.TrimSuffix(deltaPrefix, "/"), schemaID)
+}
+
+// ownedDeltaKey reports whether a manifest delta entry's key is one the
+// purge may delete: a delta-shaped object inside this schema's delta
+// namespace. The purge is irreversible, so a `Tier: "delta"` label alone is
+// not trusted — a base-shaped key or another schema's delta under that label
+// (a misclassified or hand-edited entry) must fail the run closed rather
+// than be deleted. With no configured delta prefix the prefix part of the
+// namespace is unconstrained, but the `/{schemaID}/{uuid}.parquet` tail is
+// still required.
+func ownedDeltaKey(deltaPrefix string, schemaID int16, key string) bool {
+	if deltaPrefix != "" {
+		return isDeltaShapedKey(deltaNamespace(deltaPrefix, schemaID), key)
+	}
+	dir := key[:strings.LastIndex(key, "/")+1] // "" for a bare file name
+	schemaDir := fmt.Sprintf("%d/", schemaID)
+	if dir != schemaDir && !strings.HasSuffix(dir, "/"+schemaDir) {
+		return false
+	}
+	return isDeltaShapedKey(dir, key)
+}
+
 // preflightDeltaTier inventories the schema's delta tier before any row is
 // counted or exported and applies the #371 rule: refuse while delta exists
 // unless the run may replace it. With permission, an entry the purge could
@@ -100,15 +134,14 @@ func preflightDeltaTier(ctx context.Context, runCtx *initRunContext, schemaID in
 		return inv, nil
 	}
 	if !runCtx.replaceDelta {
-		return deltaInventory{}, fmt.Errorf("schema %d has %d manifest-listed and %d unlisted delta objects (%d unresolvable entries); rerun with --replace-delta to purge them after the base swap: %w",
-			schemaID, len(inv.listed), len(inv.unlisted), len(inv.unnormalizable), ErrDeltaTierPresent)
+		return deltaInventory{}, fmt.Errorf("schema %d has %d manifest-listed and %d unlisted delta objects (%d entries a purge could not honour); rerun with --replace-delta to purge them after the base swap: %w",
+			schemaID, len(inv.listed), len(inv.unlisted), inv.unpurgeable(), ErrDeltaTierPresent)
 	}
 	if runCtx.manifestStore == nil {
 		return deltaInventory{}, fmt.Errorf("schema %d: --replace-delta needs a configured manifest template: the purge is ordered after the manifest swap, and without a manifest there is no swap to order it after", schemaID)
 	}
-	if len(inv.unnormalizable) > 0 {
-		return deltaInventory{}, fmt.Errorf("schema %d: manifest lists %d delta entries this run cannot delete through bucket %q (glob or foreign-bucket paths: %s); resolve them before --replace-delta",
-			schemaID, len(inv.unnormalizable), runCtx.cfg.S3Bucket, strings.Join(inv.unnormalizable, ", "))
+	if err := refuseUnpurgeable(runCtx, schemaID, inv.unnormalizable, inv.foreign); err != nil {
+		return deltaInventory{}, fmt.Errorf("%w; resolve them before --replace-delta", err)
 	}
 	runCtx.logger.Info("delta tier will be purged after the base swap",
 		zap.Int16("schema_id", schemaID),
@@ -130,7 +163,7 @@ func inventoryDeltaTier(ctx context.Context, runCtx *initRunContext, schemaID in
 		if err != nil {
 			return deltaInventory{}, err
 		}
-		inv.listed, inv.unnormalizable = splitNormalizableKeys(runCtx.cfg.S3Bucket, entries)
+		inv.listed, inv.unnormalizable, inv.foreign = classifyDeltaEntries(runCtx, schemaID, entries)
 	}
 
 	if runCtx.deltaPrefix == "" || runCtx.listObjectKeys == nil {
@@ -140,7 +173,7 @@ func inventoryDeltaTier(ctx context.Context, runCtx *initRunContext, schemaID in
 			zap.Bool("s3_client_set", runCtx.listObjectKeys != nil))
 		return inv, nil
 	}
-	prefix := fmt.Sprintf("%s/%d/", strings.TrimSuffix(runCtx.deltaPrefix, "/"), schemaID)
+	prefix := deltaNamespace(runCtx.deltaPrefix, schemaID)
 	keys, err := runCtx.listObjectKeys(ctx, prefix)
 	if err != nil {
 		return deltaInventory{}, fmt.Errorf("list delta prefix %s: %w", prefix, err)
@@ -163,25 +196,49 @@ func loadManifestDeltaEntries(ctx context.Context, runCtx *initRunContext, schem
 	if err != nil {
 		return nil, fmt.Errorf("resolve manifest path: %w", err)
 	}
-	m, _, err := manifest.LoadOrCreate(ctx, runCtx.manifestStore, manifestPath, schemaID)
+	m, _, err := loadInitManifest(ctx, runCtx, schemaID, manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("load manifest %s: %w", manifestPath, err)
+		return nil, err
 	}
 	return manifest.FilterByTier(m, "delta"), nil
 }
 
-// splitNormalizableKeys resolves delta entries to bucket-relative keys and
-// separates the ones this bucket's client cannot address.
-func splitNormalizableKeys(bucket string, entries []manifest.FileEntry) (keys, unnormalizable []string) {
+// classifyDeltaEntries resolves manifest delta entries to bucket-relative
+// keys and separates the two kinds the purge must not touch: entries this
+// bucket's client cannot address at all, and entries that address a key
+// outside the schema's delta namespace (ownedDeltaKey).
+func classifyDeltaEntries(runCtx *initRunContext, schemaID int16, entries []manifest.FileEntry) (keys, unnormalizable, foreign []string) {
 	for _, e := range entries {
-		key, ok := NormalizeObjectKey(bucket, e.Path)
+		key, ok := NormalizeObjectKey(runCtx.cfg.S3Bucket, e.Path)
 		if !ok {
 			unnormalizable = append(unnormalizable, e.Path)
 			continue
 		}
+		if !ownedDeltaKey(runCtx.deltaPrefix, schemaID, key) {
+			foreign = append(foreign, e.Path)
+			continue
+		}
 		keys = append(keys, key)
 	}
-	return keys, unnormalizable
+	return keys, unnormalizable, foreign
+}
+
+// refuseUnpurgeable is the fail-closed answer to manifest delta entries the
+// purge could not honour, shared by the pre-flight and the publish reload.
+func refuseUnpurgeable(runCtx *initRunContext, schemaID int16, unnormalizable, foreign []string) error {
+	if len(unnormalizable) == 0 && len(foreign) == 0 {
+		return nil
+	}
+	var reasons []string
+	if len(unnormalizable) > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d cannot be addressed through bucket %q (glob or foreign-bucket paths: %s)",
+			len(unnormalizable), runCtx.cfg.S3Bucket, strings.Join(unnormalizable, ", ")))
+	}
+	if len(foreign) > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d are not delta-shaped objects in this schema's delta namespace %s (%s)",
+			len(foreign), deltaNamespace(runCtx.deltaPrefix, schemaID), strings.Join(foreign, ", ")))
+	}
+	return fmt.Errorf("schema %d: manifest lists delta entries this run refuses to delete: %s", schemaID, strings.Join(reasons, "; "))
 }
 
 // purgeDeltaTier deletes the schema's purge set. It runs only after

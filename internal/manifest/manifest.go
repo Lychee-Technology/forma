@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/lychee-technology/forma"
 )
 
 // FileEntry describes a single parquet file tracked by the manifest.
@@ -211,15 +213,17 @@ func SpliceTierFiles(m *Manifest, tier string, entries []FileEntry) {
 
 // ReplaceTierFiles replaces every manifest entry of the given tier with the
 // provided entries, preserving entries of other tiers in their original
-// order. cdc-init is a full re-export of a schema's live rows, so after a
-// run the base tier's canonical inventory IS that run's output: stale
-// entries from earlier runs (different batch ranges) and historical
-// duplicates must not survive (#176). Compaction-promoted base entries are
-// replaced too — after a full re-export their live content is subsumed by
-// the new base files; their S3 objects remain for glob-based readers, and
-// object-level reconciliation is #203. Uses optimistic locking via etag.
+// order, as one load-splice-save under the loaded etag. It is the wholesale
+// tier replacement a full re-export needs (#176): stale entries from earlier
+// runs and historical duplicates must not survive, and compaction-promoted
+// base entries are replaced too — their S3 objects remain for glob-based
+// readers, and object-level reconciliation is #203. cdc-init's own publish
+// (internal/cdc/init_publish.go) splices base and delta itself so it can
+// retry a confirmed 412 and confirm an ambiguous save; this helper remains
+// for single-tier callers and loads through LoadOrCreateForSchema, so a
+// manifest stamped for another schema is never rewritten under this one.
 func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16, tier string, entries []FileEntry) error {
-	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
@@ -228,4 +232,29 @@ func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16
 		return fmt.Errorf("save manifest: %w", err)
 	}
 	return nil
+}
+
+// LoadOrCreateForSchema is LoadOrCreate plus the schema-identity check every
+// per-schema manifest consumer needs: a loaded manifest whose stamped
+// SchemaID names a different schema is a collided or mis-pointed path
+// template, and it is rejected with forma.ManifestSchemaMismatchError
+// instead of being read or written as the requested schema's. A zero stamp
+// is treated as unstamped rather than as schema 0: schema IDs are always
+// positive, and rejecting zero would break deployments still holding
+// manifests written before the field existed. Config validation samples two
+// schema IDs, which catches a collapsed template but cannot prove
+// injectivity over the whole domain — this is the enforcement.
+func LoadOrCreateForSchema(ctx context.Context, st Store, path string, schemaID int16) (*Manifest, string, error) {
+	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	if err != nil {
+		return nil, "", err
+	}
+	if m.SchemaID != 0 && m.SchemaID != schemaID {
+		return nil, "", &forma.ManifestSchemaMismatchError{
+			RequestedSchemaID: schemaID,
+			ManifestSchemaID:  m.SchemaID,
+			Path:              path,
+		}
+	}
+	return m, etag, nil
 }

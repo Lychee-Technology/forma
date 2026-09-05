@@ -174,7 +174,28 @@ func (d DuckDBConfig) ValidateManifestRead() error {
 			Message: "must be a valid text/template path template: " + err.Error(),
 		}
 	}
-	return probeManifestTemplate(tmpl)
+	return probeManifestTemplate("duckdb.manifestTemplate", tmpl)
+}
+
+// ValidateManifestPathTemplate applies the manifest template rules of
+// ValidateManifestRead to a template supplied outside the server config —
+// the cdc-init CLI's --manifest-template (#371 review). field names the
+// setting in the returned ConfigError. Every manifest writer that resolves a
+// per-schema path must reject a template that collapses schemas onto one
+// object: for a destructive run such as `cdc-init --replace-delta` a collided
+// template would otherwise purge another schema's delta tier.
+func ValidateManifestPathTemplate(field, pathTemplate string) error {
+	if strings.TrimSpace(pathTemplate) == "" {
+		return &ConfigError{Field: field, Message: "must not be empty"}
+	}
+	tmpl, err := template.New("manifest").Parse(pathTemplate)
+	if err != nil {
+		return &ConfigError{
+			Field:   field,
+			Message: "must be a valid text/template path template: " + err.Error(),
+		}
+	}
+	return probeManifestTemplate(field, tmpl)
 }
 
 // probeManifestTemplate renders the parsed template against two probe schema
@@ -195,10 +216,10 @@ func (d DuckDBConfig) ValidateManifestRead() error {
 // renders identically in production. missingkey=error turns the map miss into
 // a precise error naming the offending field; the "<no value>" check stays as
 // a backstop for the shapes that option does not cover (e.g. an explicit nil).
-func probeManifestTemplate(tmpl *template.Template) error {
+func probeManifestTemplate(field string, tmpl *template.Template) error {
 	const probeA, probeB = int16(1), int16(2)
 	reject := func(msg string) error {
-		return &ConfigError{Field: "duckdb.manifestTemplate", Message: msg}
+		return &ConfigError{Field: field, Message: msg}
 	}
 
 	render := func(schemaID int16) (string, error) {

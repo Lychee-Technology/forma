@@ -516,8 +516,26 @@ delta 真正退役的是 cdc-init 本身：
   `--dry-run` 只打印 `would delete N delta objects`。
 - **无 live 行的 schema 不换 base，也不动 delta。** 这类 schema 没有可发布的 swap，
   带 `--replace-delta` 时只记一条 warning。
-- **manifest 条目无法归一化时先拒绝。** glob 条目或指向其它 bucket 的 `s3://` 条目无法
-  通过本客户端删除，带 `--replace-delta` 时该 schema 在导出前即失败（fail-closed）。
+- **清理集只认命名空间，不认 `tier` 标签。** 可删除的 key 必须是本 schema delta 命名
+  空间里的 delta 形态对象：`{delta-prefix}/{schemaID}/<uuid>.parquet`（`--delta-prefix ""`
+  时前缀部分不限，但 `/{schemaID}/<uuid>.parquet` 尾部仍然必须匹配）。manifest 里标为
+  delta 却指向其它 schema、base 形态 key 的条目，以及 glob 条目或指向其它 bucket 的
+  `s3://` 条目，都属于"清理无法兑现"的条目：不带 `--replace-delta` 时计入拒绝理由，
+  带 `--replace-delta` 时该 schema 在导出前即失败并逐条列出（fail-closed），412 重试
+  重新加载 manifest 时同样检查。删除是不可逆的，标签本身不构成删除的授权。
+- **manifest 身份与模板先校验。** `--manifest-template` 在打开任何连接之前先做读路径
+  同样的双 schema 探测（#300）：渲染不随 schema 变化、渲染为空或 `<no value>` 的模板
+  直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别
+  的 schema 的 delta 层。每次加载 manifest（预检、每次发布、412 重新加载）都校验其
+  `schema_id` 与当前 schema 一致，不一致以 `forma.ErrManifestSchemaMismatch` 失败，
+  既不发布也不删除。
+- **保存结果不明时先确认再清理。** manifest CAS 返回的不是确认的 412（例如连接被重置）
+  时，PUT 可能已经提交。带 `--replace-delta` 的运行会重新加载 manifest：如果 base 层恰好
+  是本次导出的条目集合（#416 之后每个 key 一次性写入，集合相同只能是本次发布）且 delta
+  层为空，则视为 swap 已提交并继续清理——否则旧 delta 对象会变成未列孤儿，被下一次
+  `--repair` 重新收养。重新加载显示 swap 未提交、或重新加载本身失败时，返回错误且不删
+  任何对象，重跑 `cdc-init --replace-delta` 即可（预检会重新盘点这些对象，无论 manifest
+  是否仍列出它们）。
 
 **为什么就地删除，而不是交给 `--gc`。** 重 init 之后新 base 只含 live 行，旧 delta 里
 每个 tombstone 都"未被覆盖"且对应行在 Postgres 已死——这正是上文
@@ -539,4 +557,3 @@ forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --rep
 # 低流量窗口内真正执行：base swap 提交后清空 delta 层
 forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta
 ```
-

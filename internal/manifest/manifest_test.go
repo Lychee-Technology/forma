@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
 
@@ -336,4 +337,40 @@ func TestSpliceTierFiles_ReplacesTierPreservesOthers(t *testing.T) {
 			t.Fatalf("files = %v, want %v", got, want)
 		}
 	}
+}
+
+// LoadOrCreateForSchema is LoadOrCreate plus the read path's identity check:
+// a stored manifest stamped for another schema is a collided template, and
+// is surfaced as forma.ManifestSchemaMismatchError instead of being handed
+// to a caller that would read or rewrite it under the wrong identity.
+func TestLoadOrCreateForSchema(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+
+	m, etag, err := LoadOrCreateForSchema(ctx, st, "manifest/7.json", 7)
+	require.NoError(t, err)
+	require.Equal(t, int16(7), m.SchemaID)
+	require.Empty(t, etag, "a missing manifest is created in memory only")
+
+	stored := &Manifest{SchemaID: 7, Files: []FileEntry{{Tier: "base", Path: "base/7/a.parquet"}}}
+	_, err = Save(ctx, st, "manifest/7.json", stored, "")
+	require.NoError(t, err)
+	m, etag, err = LoadOrCreateForSchema(ctx, st, "manifest/7.json", 7)
+	require.NoError(t, err)
+	require.Len(t, m.Files, 1)
+	require.NotEmpty(t, etag)
+
+	legacy := &Manifest{Files: []FileEntry{{Tier: "base", Path: "base/7/a.parquet"}}}
+	_, err = Save(ctx, st, "manifest/legacy.json", legacy, "")
+	require.NoError(t, err)
+	_, _, err = LoadOrCreateForSchema(ctx, st, "manifest/legacy.json", 7)
+	require.NoError(t, err, "a pre-stamp manifest (schema_id 0) is accepted for any schema")
+
+	_, _, err = LoadOrCreateForSchema(ctx, st, "manifest/7.json", 8)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	var mismatch *forma.ManifestSchemaMismatchError
+	require.ErrorAs(t, err, &mismatch)
+	require.Equal(t, int16(8), mismatch.RequestedSchemaID)
+	require.Equal(t, int16(7), mismatch.ManifestSchemaID)
+	require.Equal(t, "manifest/7.json", mismatch.Path)
 }

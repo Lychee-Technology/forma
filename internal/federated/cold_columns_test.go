@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"context"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -116,4 +117,38 @@ func TestDuckPlanScopePartsIncludeColdPinnedSet(t *testing.T) {
 	healthy := queryplan.HashScopeParts(duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil, coldScanSet{})...)
 	require.NotEqual(t, pinned, healthy, "pinned and healthy shapes must occupy different plan-cache entries")
 	require.NotEqual(t, pinned, missing, "the missing and pinned roles of one column must not alias")
+}
+
+// #371 review P2, pinned as the trust boundary rather than fixed: the pin
+// consumes the validator's union, and a stamp that passes the system-column
+// invariant feeds that union with ZERO footer probes (#256). So the stamp's
+// attribute types decide whether a column is pinned — a stamp that reports
+// the drift earns the CAST, and a stamp that reports the export type earns
+// none, whatever the bytes at the path say. A stamp that misreports the
+// bytes is a write-path fault (a same-key rewrite under an unchanged
+// stamp, which no current writer performs — #416 minted write-once keys),
+// detected offline by `manifest-reconcile --verify-stamps`.
+func TestColdScanPinFollowsTrustedStampWithoutProbe(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"score": {AttributeID: 1, ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
+	}
+	for stampType, wantPinned := range map[string]bool{"VARCHAR": true, "INTEGER": false} {
+		exec := &scriptedDescribeExecutor{} // any probe would fail loudly here
+		v := newParquetSchemaValidator()
+		stamps := map[string]map[string]string{
+			"s3://b/1/a.parquet": stampCols(append(buildValidSystemCols(), [2]string{"score", stampType})),
+		}
+		union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/a.parquet"}, stamps)
+		require.NoError(t, err)
+		require.True(t, complete)
+		require.Empty(t, exec.probes, "stamp %s: the pin is decided without touching the footer", stampType)
+
+		got := coldScanColumns(cache, union)
+		require.Empty(t, got.missing)
+		if wantPinned {
+			require.Equal(t, []sqlgen.ScanColumn{{Name: "score", DuckDBType: "INTEGER"}}, got.pinned, "a stamp reporting the drift earns the CAST")
+		} else {
+			require.Empty(t, got.pinned, "a stamp reporting the export type is trusted; no probe re-checks it")
+		}
+	}
 }

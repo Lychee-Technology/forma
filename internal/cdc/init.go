@@ -173,6 +173,16 @@ func (c *initRunContext) close() {
 func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 	opts = normalizeInitOptions(opts)
 
+	// The read path probes the manifest template against two schema IDs so a
+	// template that collapses schemas onto one object cannot boot (#300).
+	// A writer needs the same guard, and init most of all: with ReplaceDelta a
+	// collided template would purge another schema's delta tier (#371 review).
+	if tmpl := opts.Config.ManifestTemplate; tmpl != "" {
+		if err := forma.ValidateManifestPathTemplate("manifest-template", tmpl); err != nil {
+			return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
+		}
+	}
+
 	runCtx, err := newInitRunContext(ctx, opts)
 	if err != nil {
 		return InitSummary{}, err
