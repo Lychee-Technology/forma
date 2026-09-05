@@ -150,3 +150,26 @@ func TestQueryDegradedFallbackIsMarkedHotTierOnly(t *testing.T) {
 	require.Empty(t, page.Partial.ExcludedObjects, "a stale corrupt-exclusion marker must not survive into a postgres-only answer")
 	require.Same(t, page.Partial, opts.PartialScan)
 }
+
+// TestQueryDisabledDuckDBPlanTiersAgreeWithMarker pins the execution-plan
+// side of the disabled path (PR #525 review): a multi-tier request served
+// Postgres-only because the engine is off must report routing.tiers [hot] —
+// the route actually taken — and the coverage marker on the same page names
+// the rest. The two views of one answer must not disagree.
+func TestQueryDisabledDuckDBPlanTiersAgreeWithMarker(t *testing.T) {
+	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+
+	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
+	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true})
+
+	require.NoError(t, err)
+	require.NotNil(t, page.ExecutionPlan)
+	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
+	require.Equal(t, []model.DataTier{model.DataTierHot}, page.ExecutionPlan.Routing.Tiers,
+		"plan must report the hot-only route actually taken, not the declared tiers")
+	require.NotNil(t, page.Partial)
+	require.Equal(t, warmCold, page.Partial.UnconsultedTiers)
+}

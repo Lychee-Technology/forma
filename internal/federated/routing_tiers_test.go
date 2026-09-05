@@ -125,3 +125,21 @@ func TestEvaluateRoutingPolicyExplicitTiersOverrideCostFirstSmallScan(t *testing
 	require.True(t, dec.UseDuckDB, "cost-first leaves UseDuckDB at cfg.Enabled for small scans; explicit tiers must not lose that")
 	require.Equal(t, "default", dec.Reason, "nothing overrode a decision that already chose DuckDB")
 }
+
+// TestEvaluateRoutingPolicyDisabledDuckDBCollapsesTiersToHot pins that the
+// disabled verdict reports the route actually taken: the Postgres-only path
+// reads entity_main alone, so dec.Tiers must be [hot] regardless of what the
+// caller declared. Before the PR #525 review fix the disabled early return
+// skipped the common collapse, so the plan claimed [hot, warm, cold] while
+// the coverage marker on the same answer said warm and cold were never read.
+func TestEvaluateRoutingPolicyDisabledDuckDBCollapsesTiersToHot(t *testing.T) {
+	cfg := forma.DuckDBConfig{Enabled: false, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
+	dec := EvaluateRoutingPolicy(cfg, &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
+	}, nil)
+
+	require.False(t, dec.UseDuckDB)
+	require.Equal(t, []model.DataTier{model.DataTierHot}, dec.Tiers,
+		"a disabled engine serves hot storage only; the plan must not claim the declared tiers")
+}

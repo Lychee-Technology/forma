@@ -43,10 +43,16 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 		dec.Tiers = fq.PreferredTiers
 	}
 
-	// If DuckDB disabled, never use it
+	// If DuckDB disabled, never use it. The verdict is final, so the
+	// heuristics and overrides below are skipped — which means the common
+	// tier collapse at the end is skipped too. Collapse here as well: the
+	// Postgres-only path reads entity_main alone, and the plan must report
+	// that route, not the caller's declared tiers, or it would contradict
+	// the hot_tier_only coverage marker set on the same answer (#468).
 	if !cfg.Enabled {
 		dec.UseDuckDB = false
 		dec.Reason = "duckdb disabled"
+		dec.Tiers = []model.DataTier{model.DataTierHot}
 		return dec
 	}
 
