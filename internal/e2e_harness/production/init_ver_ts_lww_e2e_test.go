@@ -66,8 +66,10 @@ func testFreshBaseBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env, w
 	mustApplyEvents(ctx, t, env, "fm1 update v3", v3)
 	assertStrictlyNewer(t, []*Event{v2}, []*Event{v3})
 
-	if _, err := env.RunInit(ctx, wide); err != nil { // base: v3 attrs @ init's ver_ts stamp
-		t.Fatalf("run init: %v", err)
+	// Fresh base over a stale delta is the legacy pre-#371 re-init layout;
+	// RunInitKeepingDelta reconstructs it (a plain RunInit now refuses).
+	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil { // base: v3 attrs @ init's ver_ts stamp
+		t.Fatalf("run init keeping delta: %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log") // onboarding cleanup (#176) ⇒ cold-only, DuckDB routing
 

@@ -40,7 +40,7 @@ func TestParquetScanGuardPinsCreatedAtType(t *testing.T) {
 	var guardedType string
 	var guardedMax, guardedMin int64
 	require.NoError(t, db.QueryRow("SELECT typeof(ltbase_created_at), max(ltbase_created_at) OVER (), min(ltbase_created_at) OVER () FROM "+
-		BuildParquetScanSource(paths, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
+		BuildParquetScanSource(paths, nil, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
 		"a numeric-string creation stamp must coerce, not fail")
 	require.Equal(t, "BIGINT", guardedType, "the guard re-pins the creation-stamp type")
 	require.Equal(t, int64(50), guardedMax, "and the numeric order is restored")
@@ -60,7 +60,7 @@ func TestParquetScanGuardToleratesNullCreatedAt(t *testing.T) {
 	fx := guardFixtures(t, db)
 
 	got, err := scanRowIDs(db, "SELECT ltbase_created_at FROM "+
-		BuildParquetScanSource(formatPathList(fx.healthy, fx.nullCreatedAt), nil))
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.nullCreatedAt), nil, nil))
 	require.NoError(t, err,
 		"a tombstone's NULL creation stamp must pass the scan: the column is type-pinned, its value is not required")
 	require.Len(t, got, 2)
@@ -78,7 +78,7 @@ func TestParquetScanGuardFailsWhenCreatedAtAbsentEverywhere(t *testing.T) {
 	fx := guardFixtures(t, db)
 
 	_, err := scanRowIDs(db, "SELECT row_id FROM "+
-		BuildParquetScanSource(formatPathList(fx.noCreatedAt), nil))
+		BuildParquetScanSource(formatPathList(fx.noCreatedAt), nil, nil))
 	require.Error(t, err, "a scan set with no creation stamp anywhere must fail to bind, not scan on")
 	require.Contains(t, err.Error(), "ltbase_created_at")
 }
@@ -109,7 +109,7 @@ func TestParquetScanGuardFailsMixedGenerationLiveRow(t *testing.T) {
 		"the NULL-padded live row reaches the caller with no creation stamp at all")
 
 	// GREEN half: the guard turns it into a loud failure.
-	_, err = scanRowIDs(db, "SELECT ltbase_created_at FROM "+BuildParquetScanSource(paths, nil))
+	_, err = scanRowIDs(db, "SELECT ltbase_created_at FROM "+BuildParquetScanSource(paths, nil, nil))
 	require.Error(t, err,
 		"a live row with no creation stamp must fail the query, not be served with a NULL created_at")
 	require.Contains(t, err.Error(), ParquetNullCreatedAtMessage,
@@ -149,7 +149,7 @@ func TestParquetScanGuardCreatedAtPresenceIsConditionalOnDeleted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := write(tc.name+".parquet", tc.deletedAt)
 			_, err := scanRowIDs(db, "SELECT ltbase_created_at FROM "+
-				BuildParquetScanSource(formatPathList(path), nil))
+				BuildParquetScanSource(formatPathList(path), nil, nil))
 			if tc.wantErr {
 				require.Error(t, err, "a live row with a NULL creation stamp must fail loudly")
 				require.Contains(t, err.Error(), ParquetNullCreatedAtMessage)

@@ -92,17 +92,7 @@ func classifyObjectKey(prefix, key string) (OrphanClass, bool) {
 // existence this bucket's listing cannot prove — foreign-bucket URIs and
 // glob entries — which must surface as unverifiable, never as dangling.
 func normalizeKey(bucket, path string) (string, bool) {
-	if strings.ContainsAny(path, "*?[") {
-		return "", false
-	}
-	if strings.HasPrefix(path, "s3://") {
-		key, found := strings.CutPrefix(path, "s3://"+bucket+"/")
-		if !found {
-			return "", false
-		}
-		return key, true
-	}
-	return path, true
+	return cdc.NormalizeObjectKey(bucket, path)
 }
 
 // diffResult is one schema's raw two-way diff between listed objects and

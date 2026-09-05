@@ -4,18 +4,21 @@ package production
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestCDCFlushAndInit verifies the real CDC runner and the extracted
 // cdc.RunInit against the per-test database and S3 prefix: dry-run leaves
 // flushed_at and the manifest untouched, a real flush writes delta parquet
-// under <prefix>/<schemaID>/ and marks rows flushed, and init writes base
-// files plus manifest base entries.
+// under <prefix>/<schemaID>/ and marks rows flushed, an init over that delta
+// tier refuses (#371), and init with ReplaceDelta writes base files plus
+// manifest base entries, empties the delta tier, and deletes its objects.
 func TestCDCFlushAndInit(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -66,9 +69,32 @@ func TestCDCFlushAndInit(t *testing.T) {
 	// object it just published.
 	assertEntriesStampedToByteTruth(ctx, t, env, "cdc flush (delta)", manifest.FilterByTier(m, "delta"))
 
-	initReport, err := env.RunInit(ctx, simple)
+	// #371: a re-init over a populated delta tier refuses unless the run may
+	// replace it — a base-only swap would leave the stale generations listed
+	// under the new base. The refusal leaves the manifest and objects alone.
+	if _, err := env.RunInit(ctx, simple); !errors.Is(err, cdc.ErrDeltaTierPresent) {
+		t.Fatalf("init over delta tier: err = %v, want cdc.ErrDeltaTierPresent", err)
+	}
+	manifestsAfterRefusal, err := env.loadManifests(ctx)
 	if err != nil {
-		t.Fatalf("init: %v", err)
+		t.Fatalf("load manifests after refusal: %v", err)
+	}
+	if got := countTier(manifestsAfterRefusal[simple.ID], "delta"); got != countTier(m, "delta") {
+		t.Fatalf("refused init changed the delta tier: %d entries, want %d", got, countTier(m, "delta"))
+	}
+	deltaKeys := make([]string, 0, countTier(m, "delta"))
+	for _, entry := range manifest.FilterByTier(m, "delta") {
+		key, ok := cdc.NormalizeObjectKey(env.Cluster.Bucket, entry.Path)
+		if !ok {
+			t.Fatalf("delta entry %q is not addressable in the test bucket", entry.Path)
+		}
+		deltaKeys = append(deltaKeys, key)
+	}
+	assertS3KeysPresence(ctx, t, env, "after refused init", deltaKeys, true)
+
+	initReport, err := env.RunInitWith(ctx, simple, InitOverrides{ReplaceDelta: true})
+	if err != nil {
+		t.Fatalf("init with replace-delta: %v", err)
 	}
 	if initReport.RowsExported != 3 {
 		t.Errorf("init rows exported = %d, want 3", initReport.RowsExported)
@@ -85,12 +111,34 @@ func TestCDCFlushAndInit(t *testing.T) {
 	if n := countTier(initReport.Manifest, "base"); n == 0 {
 		t.Errorf("manifest has no base entries after init: %+v", initReport.Manifest.Files)
 	}
-	// #256: the init writer stamps each base entry the same way, and the
-	// delta stamps written above survive the manifest round-trip.
+	// #256: the init writer stamps each base entry the same way.
 	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (base)",
 		manifest.FilterByTier(initReport.Manifest, "base"))
-	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (deltas preserved)",
-		manifest.FilterByTier(initReport.Manifest, "delta"))
+	// #371: the swap emptied the delta tier in the same manifest write, and
+	// the purge that followed removed the objects themselves.
+	if got := countTier(initReport.Manifest, "delta"); got != 0 {
+		t.Errorf("manifest still lists %d delta entries after --replace-delta: %+v", got, initReport.Manifest.Files)
+	}
+	assertS3KeysPresence(ctx, t, env, "after replace-delta init", deltaKeys, false)
+}
+
+// assertS3KeysPresence checks that every key exists (present=true) or is
+// gone (present=false) in the Env's bucket.
+func assertS3KeysPresence(ctx context.Context, t *testing.T, env *Env, when string, keys []string, present bool) {
+	t.Helper()
+	all, err := env.listS3Keys(ctx)
+	if err != nil {
+		t.Fatalf("list s3 keys %s: %v", when, err)
+	}
+	have := make(map[string]struct{}, len(all))
+	for _, k := range all {
+		have[k] = struct{}{}
+	}
+	for _, key := range keys {
+		if _, ok := have[key]; ok != present {
+			t.Errorf("%s: delta object %s present=%t, want %t", when, key, ok, present)
+		}
+	}
 }
 
 func anyKeyMatches(keys []string, prefix, suffix string) bool {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // scanSources is the resolved storage context of one federated read.
@@ -15,12 +14,12 @@ type scanSources struct {
 	paths           []string
 	fromSource      bool
 	graceCutoffMs   int64
-	coldMissing     []sqlgen.NullScanColumn
+	cold            coldScanSet
 	excludedCorrupt []string
 }
 
 // schemaCacheByID is the nil-safe metadata-cache accessor shared by the
-// pre-flight (#255 cold-missing computation) and the SQL build.
+// pre-flight (#255/#371 cold scan-set computation) and the SQL build.
 func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAttributeCache, bool) {
 	if e == nil || e.metadataCache == nil {
 		return nil, false
@@ -31,7 +30,8 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
 // set, validates the parquet system-column invariant, and computes the #255
-// cold-missing column set from the footer union the validation produced.
+// cold-missing and #371 cold-pinned column sets from the footer union the
+// validation produced.
 func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (scanSources, error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
 	// marked flushed at or after this instant may belong to a delta this
@@ -63,7 +63,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		}
 	}
 
-	var missing []sqlgen.NullScanColumn
+	var cold coldScanSet
 	// Pre-read schema-invariant validation (#189): the scan's union_by_name
 	// tolerates attribute-column drift across parquet generations, which
 	// would let a wrong-schema object's rows silently vanish (NULL row_id
@@ -77,15 +77,17 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// parquetcheck invariant codifies the PRODUCTION exporters, which never
 	// write those IDs (ValidateFixtureSchemaID reserves the range).
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		unionCols, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, stamps)
+		union, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, stamps)
 		if err != nil {
 			return scanSources{}, fmt.Errorf("pre-read parquet schema validation: %w", err)
 		}
-		// Never-flushed column augmentation (#255): only a COMPLETE footer
-		// union may drive it — augmenting a column that exists in an
-		// unprobed file would collide with the real column. Incomplete
-		// unions fall back to the unaugmented scan, whose binder failure
-		// stays loud, classified, and degradable (today's contract).
+		// Never-flushed column augmentation (#255) and stale-type pinning
+		// (#371): only a COMPLETE footer union may drive them — augmenting
+		// a column that exists in an unprobed file would collide with the
+		// real column, and a pin decided without the drifted file would
+		// miss it. Incomplete unions fall back to the plain guarded scan,
+		// whose binder or conversion failure stays loud, classified, and
+		// degradable (today's contract).
 		//
 		// Accepted listing skew (adjudicated): for a GLOB path set the
 		// validator expands the glob itself while read_parquet re-lists at
@@ -93,11 +95,11 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		// file in the scan while complete=true. The augmented NULL alias
 		// then collides with that file's real column — a one-time loud,
 		// classified binder failure that self-heals on the next query,
-		// because the missing set is recomputed per query. This is
+		// because the scan set is recomputed per query. This is
 		// accepted; do not widen the gate to avoid it.
 		if complete {
 			if cache, ok := e.schemaCacheByID(q.SchemaID); ok {
-				missing = coldMissingColumns(cache, unionCols)
+				cold = coldScanColumns(cache, union)
 			}
 		}
 	}
@@ -105,7 +107,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		paths:           paths,
 		fromSource:      fromSource,
 		graceCutoffMs:   graceCutoffMs,
-		coldMissing:     missing,
+		cold:            cold,
 		excludedCorrupt: excludedCorrupt,
 	}, nil
 }

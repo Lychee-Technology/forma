@@ -131,6 +131,11 @@ bun run cdc-init -- --dry-run
 
 # Single schema with custom target file size
 bun run cdc-init -- --schema-id 101 --target-file-size-mb 256
+
+# Re-init after `bun run cdc-flush` already wrote delta files (#371): without
+# the flag cdc-init refuses every schema that still has delta objects; with it
+# the base swap commits first, then the schema's delta tier is deleted.
+bun run cdc-init -- --replace-delta
 ```
 
 ### CDC Flush

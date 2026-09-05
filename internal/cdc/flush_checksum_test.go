@@ -170,6 +170,10 @@ func (c *hashableFullS3Client) GetObject(_ context.Context, _ *s3.GetObjectInput
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(c.body))}, nil
 }
 
+func (c *hashableFullS3Client) ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	return &s3.ListObjectsV2Output{}, nil
+}
+
 func TestNewChecksumSeamHashesThroughFullClient(t *testing.T) {
 	seam := newChecksumSeam(&hashableFullS3Client{body: []byte("hello parquet")}, "test-bucket")
 	require.NotNil(t, seam)

@@ -52,7 +52,7 @@ func validateOne(t *testing.T, v *parquetSchemaValidator, duck DuckDBQueryExecut
 	union, complete, err := v.Validate(context.Background(), duck, []string{stampCachePath}, stamps)
 	require.NoError(t, err)
 	require.True(t, complete, "a single validated path must produce a complete union")
-	return union
+	return union.types
 }
 
 // TestValidatorCacheHitsWhileStampIsUnchanged is the regression pin for the
@@ -216,8 +216,8 @@ func TestValidateStampedPathSkipsProbe(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, exec.probes, "a valid stamp must answer the invariant with zero DuckDB probes")
 	require.True(t, complete, "a stamped path contributed its columns, so the union is complete")
-	require.Contains(t, union, "score")
-	require.Equal(t, "UUID", union["row_id"])
+	require.Contains(t, union.types, "score")
+	require.Equal(t, "UUID", union.types["row_id"])
 
 	// The stamp feeds the same cache a probe would, and the cache owns its
 	// copy of BOTH halves of the entry: mutating the caller's map afterwards
@@ -236,7 +236,7 @@ func TestValidateStampedPathSkipsProbe(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, exec.probes, "an unchanged stamp keeps the path cached")
 	require.True(t, complete)
-	require.Contains(t, union, "score", "the cache holds a clone, not the caller's map")
+	require.Contains(t, union.types, "score", "the cache holds a clone, not the caller's map")
 }
 
 // A stamp violating the invariant must NOT fail the query by itself: the probe
@@ -254,9 +254,9 @@ func TestValidateBadStampFallsBackToProbe(t *testing.T) {
 	require.NoError(t, err, "a corrupt manifest stamp must not fail a healthy object")
 	require.Len(t, exec.probes, 1, "the rejected stamp falls through to exactly one footer probe")
 	require.True(t, complete)
-	require.Contains(t, union, "probed_only", "the union is built from the PROBED footer")
-	require.NotContains(t, union, "stamp_only", "the rejected stamp must not contribute columns")
-	require.Equal(t, "UUID", union["row_id"])
+	require.Contains(t, union.types, "probed_only", "the union is built from the PROBED footer")
+	require.NotContains(t, union.types, "stamp_only", "the rejected stamp must not contribute columns")
+	require.Equal(t, "UUID", union.types["row_id"])
 }
 
 // Bad stamp + probe confirming the violation keeps today's loud failure.
@@ -290,8 +290,8 @@ func TestValidateMixedStampedAndUnstamped(t *testing.T) {
 	require.Len(t, exec.probes, 1, "only the unstamped path reaches DuckDB")
 	require.Contains(t, exec.probes[0], "unstamped.parquet")
 	require.True(t, complete)
-	require.Contains(t, union, "stamped_col", "the stamped path contributes its columns")
-	require.Contains(t, union, "probed", "the probed path contributes its columns")
+	require.Contains(t, union.types, "stamped_col", "the stamped path contributes its columns")
+	require.Contains(t, union.types, "probed", "the probed path contributes its columns")
 }
 
 // nil stamps map preserves today's behavior byte-for-byte (regression pin for
@@ -306,7 +306,7 @@ func TestValidateNilStampsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, exec.probes, 1, "without a stamp the footer probe still runs")
 	require.True(t, complete)
-	require.Contains(t, union, "score")
+	require.Contains(t, union.types, "score")
 
 	_, _, err = v.Validate(context.Background(), exec, []string{"s3://b/1/good.parquet"}, nil)
 	require.NoError(t, err)
@@ -335,5 +335,5 @@ func TestValidateGlobMatchesConsumeStamps(t *testing.T) {
 	require.Len(t, exec.probes, 2, "the glob listing plus one DESCRIBE for the unstamped match only")
 	require.Contains(t, exec.probes[1], "plain.parquet")
 	require.True(t, complete)
-	require.Contains(t, union, "stamped_col")
+	require.Contains(t, union.types, "stamped_col")
 }

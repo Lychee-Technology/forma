@@ -491,3 +491,80 @@ cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败�
 
 两条路径都依赖 #290 起 cdc-init 与 reconcile 共持的那把 per-schema advisory lock：此锁下
 出现的 init 形态孤儿必非 in-flight init。
+
+## cdc-init 重跑与 delta 层（#371）
+
+`cdc-init` 全量重导出只替换 manifest 的 **base** 层。此前 delta 层原样保留，于是一次
+schema 类型修改（例如 `text`→`list`、`integer`→`text`）之后重跑 cdc-init，新 base 与
+旧类型的 delta 会同时进入同一次 federated 扫描：类型不兼容时 DuckDB 直接报
+Conversion Error；类型可以静默拓宽时（INTEGER 与 VARCHAR 并存）则 `union_by_name`
+绑成 VARCHAR，ORDER BY 悄悄变成字典序。读路径现在对这类列做选择性 `CAST` 重钉
+（见 `docs/federated-query/design.md` 中的 #371 段落），但那只是读守卫；把旧代
+delta 真正退役的是 cdc-init 本身：
+
+- **默认拒绝。** 每个 schema 在导出前、在 per-schema advisory lock 之下先盘点 delta 层：
+  manifest 的 delta 条目，加上 `--delta-prefix`（默认 `delta`，与 `cdc-flush --s3-prefix`
+  对齐）下 `{prefix}/{schemaID}/` 直接子键中 delta 形态（`<uuid>.parquet`）的对象。
+  盘点非空且未传 `--replace-delta` 时，该 schema 以 `cdc.ErrDeltaTierPresent` 失败，
+  错误信息给出 manifest 已列 / 未列的数量，其它 schema 照常继续；`--dry-run` 同样
+  报告拒绝。`--delta-prefix ""` 关闭对象列举，只看 manifest。
+- **先换 base，再删 delta。** 传 `--replace-delta` 后，manifest 发布是一次原子 CAS：
+  base 层替换为本次导出的条目，delta 层同时清空（412 重试时重新拼接两层，期间新
+  出现的 delta 条目并入清理集）。**只有 manifest 保存成功之后**才逐个删除清理集中的
+  对象。删除失败会记录 key 并让该 schema 返回带 key 列表的错误，但已发布的 manifest
+  不回滚：读者此时只会看到新 base，残留对象成为未列孤儿，可由下文规则处理。
+  `--dry-run` 只打印 `would delete N delta objects`。
+- **无 live 行的 schema 不换 base，也不动 delta。** 这类 schema 没有可发布的 swap，
+  带 `--replace-delta` 时只记一条 warning。
+- **清理集只认命名空间，不认 `tier` 标签。** 可删除的 key 必须是本 schema delta 命名
+  空间里的 delta 形态对象：`{delta-prefix}/{schemaID}/<uuid>.parquet`（`--delta-prefix ""`
+  时前缀部分不限，但 `/{schemaID}/<uuid>.parquet` 尾部仍然必须匹配）。manifest 里标为
+  delta 却指向其它 schema、base 形态 key 的条目，以及 glob 条目或指向其它 bucket 的
+  `s3://` 条目，都属于"清理无法兑现"的条目：不带 `--replace-delta` 时计入拒绝理由，
+  带 `--replace-delta` 时该 schema 在导出前即失败并逐条列出（fail-closed），412 重试
+  重新加载 manifest 时同样检查。删除是不可逆的，标签本身不构成删除的授权。
+- **列举不完整即失败。** `ListObjectsV2` 返回 `IsTruncated` 却不带（或带空的）
+  continuation token，或重复给出已经用过的 token 时，盘点无法跟到末页；此时该 schema 以
+  `cdc.ErrIncompleteObjectListing` 在预检阶段失败，不导出、不发布、不删除。否则一页残缺
+  的列表会被当成完整的 delta 层，`--replace-delta` 只删掉看见的那部分，剩下的旧 delta 成为
+  未列孤儿，被下一次 `--repair` 重新收养。
+- **manifest 身份与模板先校验。** `--manifest-template` 在打开任何连接之前先做读路径
+  同样的双 schema 探测（#300）：渲染不随 schema 变化、渲染为空或 `<no value>` 的模板
+  直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别
+  的 schema 的 delta 层。每次加载 manifest（预检、每次发布、412 重新加载）都校验其
+  `schema_id` 与当前 schema 一致，不一致以 `forma.ErrManifestSchemaMismatch` 失败，
+  既不发布也不删除。`schema_id` 为 0 的 manifest 在 cdc-init 里比读路径更严格（Forma
+  的写入方从未产生过这种对象：该字段自 manifest 包首次提交起就存在，`LoadOrCreate` 总会
+  盖章，零戳记只可能来自手工编辑）：其中列有条目时以 `cdc.ErrManifestUnstamped` 失败，
+  因为双 schema 探测排除不了只在未探测到的 ID 上碰撞的模板，零戳记证明不了这些条目属于
+  谁；没有条目时在内存中盖上当前 schema 的戳记，随后的保存把它落盘，此后每次加载都受
+  校验。模板本身还要先过读路径同样的首尾空白检查：带空白的模板会让 cdc-init 写到一个
+  服务端 `ValidateManifestRead` 拒绝配置的 key 下。
+- **保存结果不明时先确认再清理。** manifest CAS 返回的不是确认的 412（例如连接被重置）
+  时，PUT 可能已经提交。带 `--replace-delta` 的运行会重新加载 manifest：如果 base 层恰好
+  是本次导出的条目集合（#416 之后每个 key 一次性写入，集合相同只能是本次发布）且 delta
+  层为空，则视为 swap 已提交并继续清理——否则旧 delta 对象会变成未列孤儿，被下一次
+  `--repair` 重新收养。重新加载显示 swap 未提交、或重新加载本身失败时，返回错误且不删
+  任何对象，重跑 `cdc-init --replace-delta` 即可（预检会重新盘点这些对象，无论 manifest
+  是否仍列出它们）。
+
+**为什么就地删除，而不是交给 `--gc`。** 重 init 之后新 base 只含 live 行，旧 delta 里
+每个 tombstone 都"未被覆盖"且对应行在 Postgres 已死——这正是上文
+`classifyDeltaOrphan` 判定为"lost delete"并 **append 回 manifest** 的形态。若把旧
+delta 留给 reconcile，下一次 `--repair` 会把它重新列回 manifest，旧类型代再次污染
+读取，且永远到不了 GC。init 形态晋升的两轮收敛依赖这条判定，改分类器不是选项，
+所以清理必须在 swap 之后由 cdc-init 自己完成；同理，未列在 manifest 的 delta 形态
+孤儿也一并删除。
+
+**读者窗口。** 与 compaction（#461）不同，`--replace-delta` 没有 sighting grace：
+在 swap 之前解析了 manifest 的读者可能对已列出的 delta key 撞到一次 missing-object
+失败，下一次查询重新解析 manifest 即自愈。请在低流量窗口执行 `cdc-init --replace-delta`
+——全量重导出本来就该如此。默认拒绝把破坏性步骤挡在误配置路径之外：prefix 或
+template 指错只会让 init 拒绝，不会删任何东西（#463 教训）。
+
+```bash
+# 类型修改后的重跑：先看会拒绝什么 / 会删什么
+forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta --dry-run
+# 低流量窗口内真正执行：base swap 提交后清空 delta 层
+forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta
+```

@@ -375,7 +375,14 @@ s3_source AS (
     -- a live row would otherwise reach the caller with a NULL created_at,
     -- ordered by its NULL bucket rather than its creation time. Its COLUMN
     -- presence is independently enforced before the read by the parquetcheck
-    -- invariant. Both scan sites render
+    -- invariant. Attribute columns get the same re-pin SELECTIVELY (#371):
+    -- when the pre-read validator sees a column under two parquet types
+    -- across the scan set, or under a type other than the current schema's
+    -- export type, a `CAST(col AS <type>) AS col` item joins this REPLACE
+    -- list so a stale-typed generation cannot widen the union (a VARCHAR
+    -- generation of an INTEGER attribute would otherwise make ORDER BY
+    -- lexicographic without any error). A healthy set renders no attribute
+    -- item, so this text is unchanged for it. Both scan sites render
     -- sqlgen.BuildParquetScanSource, which also appends the #255 typed
     -- NULLs for never-flushed columns.
     FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
@@ -562,6 +569,52 @@ sets the validator's listing and the scan's listing are separate S3 LISTs, so a
 flush landing between them can collide the NULL alias with the newly-landed real
 column — a one-time loud classified failure that self-heals on the next query,
 since the missing set is recomputed per query.
+
+**Stale-typed attribute generations (#371).** The system-column guard above
+re-pins `changed_at`, `deleted_at` and `ltbase_created_at`, but attribute
+columns used to be left to `union_by_name` widening. A parquet generation
+written under an older attribute type (a `cdc-init` re-run after an
+`integer`→`text` schema edit, or a delta file that survived a re-init) then
+either fails loudly (`text`→`list`, a DuckDB Conversion Error before the
+REPLACE list is reached) or drifts quietly: an INTEGER attribute with one
+VARCHAR generation binds as VARCHAR and sorts lexicographically. The pre-read
+validator now records, per column, whether the scan set carries more than one
+parquet type, and `coldScanColumns` compares the union type with
+`sqlgen.DuckDBNullScanType(meta)`, the type the exporters write. A column that
+is mixed across files, or whose union type differs from the export type, is
+rendered `CAST(col AS <type>) AS col` inside the same `* REPLACE (…)` list as
+the system items:
+`(SELECT * REPLACE (<system items>, CAST(score AS INTEGER) AS score) FROM read_parquet(…)) AS cold_scan`.
+The pin is selective: a healthy scan set renders no attribute item and the
+SQL stays byte-identical to the §5 sketch, so attribute filters are not wrapped
+in a CAST on the common path and the compiled-plan cache is unaffected.
+VARCHAR and UUID are treated as compatible because a column-bound `uuid`
+attribute exports as parquet UUID while the null-scan type is VARCHAR. Numeric
+strings coerce value-preservingly (`'9'` → 9, restoring numeric order); a
+value the pin cannot convert fails with DuckDB's own Conversion Error, but only
+on a read that consumes the column, because DuckDB prunes an unused CAST —
+the same scope as the `changed_at` re-pin. The pinned set is a separate
+`cold-pinned` component of the plan-scope hash next to `cold-missing`, so a
+pinned shape never shares a skeleton with an unpinned one. The pin is a read
+guard, not the fix: the stale generation itself is retired by `cdc-init
+--replace-delta` (see `docs/manifest-reconcile.md`), which is what makes the
+scan set single-typed again.
+
+The pin's trust boundary is the same as the #256 stamp trust below: the union
+it compares against is fed by manifest column stamps that pass the
+system-column invariant, with no footer probe, and `parquetcheck.Check`
+validates system columns only. A stamp that reports an attribute at the export
+type is therefore believed for that attribute even if the bytes at the path
+carry another type, and the drift would then bind unpinned. That state needs a
+same-key rewrite under an unchanged stamp — a legacy deterministic init key
+overwritten in place, or a manual or old-writer mutation — which no current
+writer performs: since #416 every init batch lands on a write-once key, flush
+and compaction never reuse a key, and re-runs go through `cdc-init
+--replace-delta`. Probing attribute columns on every read would give back the
+cost #256 removed, and binding a stamp to an object version is a manifest
+format change; the offline detector for a stamp that no longer matches its
+object is `manifest-reconcile --verify-stamps`, which re-describes each listed
+object and reports stamp/footer disagreements.
 
 **Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
 compaction merge) `DESCRIBE` each parquet object they publish and record its

@@ -113,6 +113,10 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 type InitOverrides struct {
 	Config *cdc.CDCConfig // nil: e.CDC
 	DryRun bool
+	// ReplaceDelta opts the run into purging the schema's delta tier after
+	// the base swap (#371). Without it a schema with delta objects refuses
+	// with cdc.ErrDeltaTierPresent, exactly as the CLI does.
+	ReplaceDelta bool
 }
 
 // RunInitWith executes one real init pass with per-run overrides. In dry-run
@@ -138,9 +142,13 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 		AutoEstimateRowBytes: true,
 		Logger:               e.logger,
 		SchemaRegistry:       e.Registry,
+		ReplaceDelta:         ov.ReplaceDelta,
+		// The harness keeps delta and base under one data prefix (they only
+		// differ by filename shape), so the delta inventory lists it.
+		DeltaPrefix: e.S3Prefix,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cdc init schema %d (dry=%t): %w", schema.ID, ov.DryRun, err)
+		return nil, fmt.Errorf("cdc init schema %d (dry=%t, replace_delta=%t): %w", schema.ID, ov.DryRun, ov.ReplaceDelta, err)
 	}
 
 	keysAfter, err := e.listS3Keys(ctx)

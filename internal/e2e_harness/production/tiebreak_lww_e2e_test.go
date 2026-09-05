@@ -62,10 +62,12 @@ func testEqualVertsIdenticalCopies(ctx context.Context, t *testing.T, env *Env, 
 		CreateEvent(wide, map[string]any{"title": "copy-c", "count": float64(30)}),
 	}
 	mustApplyEvents(ctx, t, env, "identical-copy creates", creates...)
-	mustFlush(ctx, t, env) // delta copies @ create-ts
-	if _, err := env.RunInit(ctx, wide); err != nil {
+	// Init first, then flush (#371: init refuses over a populated delta
+	// tier); both copies still carry the create-ts, so the tie is the same.
+	if _, err := env.RunInit(ctx, wide); err != nil { // base copies @ create-ts
 		t.Fatalf("run init: %v", err)
 	}
+	mustFlush(ctx, t, env)                     // delta copies @ create-ts
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "count"}}, Limit: 10}
@@ -115,8 +117,10 @@ func testInitRestampBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env,
 	mustApplyEvents(ctx, t, env, "restamp update", upd)
 	assertStrictlyNewer(t, []*Event{target}, []*Event{upd}) // v2 is a genuinely later write
 
-	if _, err := env.RunInit(ctx, wide); err != nil { // base v2 attrs @ ver_ts = update T2 (#210)
-		t.Fatalf("run init: %v", err)
+	// A fresh base over an older delta is the legacy pre-#371 re-init layout;
+	// RunInitKeepingDelta reconstructs it (a plain RunInit now refuses).
+	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil { // base v2 attrs @ ver_ts = update T2 (#210)
+		t.Fatalf("run init keeping delta: %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 

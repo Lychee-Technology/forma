@@ -24,6 +24,8 @@ type cdcInitOptions struct {
 	schemaIDFilter       int
 	dryRun               bool
 	autoEstimateRowBytes bool
+	replaceDelta         bool
+	deltaPrefix          string
 }
 
 // parseCDCInitFlags registers, parses and validates the cdc-init flag set.
@@ -89,6 +91,8 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	maxBatchSize := fs.Int("max-batch-size", 10000000, "Maximum batch size to cap memory usage")
 	schemaIDFilter := fs.Int("schema-id", 0, "Specific schema ID to init (0 = all schemas)")
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual export)")
+	replaceDelta := fs.Bool("replace-delta", false, "Purge the schema's delta tier after the base swap commits; without it init refuses while delta objects exist (#371)")
+	deltaPrefix := fs.String("delta-prefix", "delta", "S3 prefix cdc-flush writes delta files under; listed for delta objects the manifest does not mention (empty = manifest only)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -119,6 +123,8 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 		schemaIDFilter:       *schemaIDFilter,
 		dryRun:               *dryRun,
 		autoEstimateRowBytes: autoEstimateRowBytes,
+		replaceDelta:         *replaceDelta,
+		deltaPrefix:          *deltaPrefix,
 	}, nil
 }
 
@@ -204,7 +210,9 @@ func runCDCInit(ctx context.Context, args []string) error {
 		zap.Int("fallback_batch_size", cfg.BatchSize),
 		zap.Int("schema_id_filter", opts.schemaIDFilter),
 		zap.Bool("dry_run", opts.dryRun),
-		zap.Bool("auto_estimate_row_bytes", opts.autoEstimateRowBytes))
+		zap.Bool("auto_estimate_row_bytes", opts.autoEstimateRowBytes),
+		zap.Bool("replace_delta", opts.replaceDelta),
+		zap.String("delta_prefix", opts.deltaPrefix))
 
 	if _, err := cdc.RunInit(ctx, cdc.InitOptions{
 		Config:               cfg,
@@ -215,6 +223,8 @@ func runCDCInit(ctx context.Context, args []string) error {
 		AutoEstimateRowBytes: opts.autoEstimateRowBytes,
 		Logger:               logger,
 		SchemaRegistry:       registry,
+		ReplaceDelta:         opts.replaceDelta,
+		DeltaPrefix:          opts.deltaPrefix,
 	}); err != nil {
 		return fmt.Errorf("CDC init failed: %w", err)
 	}

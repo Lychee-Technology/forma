@@ -4,12 +4,15 @@
  * Initializes S3 parquet base files from existing entity_main + eav_data
  * This is used when enabling CDC on an existing Forma deployment
  * 
- * Usage: bun run scripts/cdc-init.ts [--dry-run] [--schema-id <id>] [--target-file-size-mb <mb>]
+ * Usage: bun run scripts/cdc-init.ts [--dry-run] [--schema-id <id>] [--target-file-size-mb <mb>] [--replace-delta]
  * 
  * Options:
  *   --dry-run               Run without actually exporting files
  *   --schema-id <id>        Filter to a specific schema ID (default: all)
  *   --target-file-size-mb   Target parquet file size in MB (default: 256)
+ *   --replace-delta         Purge the delta tier after the base swap commits (#371).
+ *                           Without it cdc-init refuses schemas that already have
+ *                           delta files (i.e. after `bun run cdc-flush`).
  */
 
 import { resolve, dirname } from 'path';
@@ -35,6 +38,7 @@ interface CDCInitReport {
     schemaDir: string;
     schemaIdFilter: number;
     dryRun: boolean;
+    replaceDelta: boolean;
   };
   execution: {
     exitCode: number;
@@ -53,7 +57,7 @@ interface CDCInitReport {
   s3Validation?: CDCValidation;
 }
 
-function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number } {
+function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number; replaceDelta: boolean } {
   const args = process.argv.slice(2);
   let schemaId = 0;
   let targetFileSizeMB = 256; // Default: 256MB target file size
@@ -73,10 +77,11 @@ function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: num
     dryRun: args.includes('--dry-run'),
     schemaId,
     targetFileSizeMB,
+    replaceDelta: args.includes('--replace-delta'),
   };
 }
 
-async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: number): Promise<CDCInitReport> {
+async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: number, replaceDelta: boolean): Promise<CDCInitReport> {
   const startTime = Date.now();
   
   const report: CDCInitReport = {
@@ -94,6 +99,7 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
       schemaDir: config.schemaDir,
       schemaIdFilter: schemaId,
       dryRun,
+      replaceDelta,
     },
     execution: {
       exitCode: -1,
@@ -126,7 +132,14 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
     '--target-file-size-mb', String(targetFileSizeMB),
     '--schema-registry-table', config.tables.schemaRegistry,
     '--schema-dir', config.schemaDir,
+    // cdc-flush writes delta under config.s3.prefix; the delta inventory
+    // (#371) has to look there, not under the 'base' prefix above.
+    '--delta-prefix', config.s3.prefix,
   ];
+
+  if (replaceDelta) {
+    args.push('--replace-delta');
+  }
 
   if (schemaId > 0) {
     args.push('--schema-id', String(schemaId));
@@ -211,7 +224,7 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
 }
 
 async function main() {
-  const { dryRun, schemaId, targetFileSizeMB } = parseArgs();
+  const { dryRun, schemaId, targetFileSizeMB, replaceDelta } = parseArgs();
 
   console.log('='.repeat(60));
   console.log('Forma E2E: CDC Init');
@@ -223,12 +236,13 @@ async function main() {
   console.log(`Target File Size: ${targetFileSizeMB}MB`);
   console.log(`Schema ID Filter: ${schemaId === 0 ? 'all' : schemaId}`);
   console.log(`Dry Run: ${dryRun}`);
+  console.log(`Replace Delta: ${replaceDelta}`);
   console.log('');
 
   // cdc-init writes base parquet to S3; ensure the bucket exists first.
   await ensureBucket(amzDate(new Date()));
 
-  const report = await runCDCInit(dryRun, schemaId, targetFileSizeMB);
+  const report = await runCDCInit(dryRun, schemaId, targetFileSizeMB, replaceDelta);
 
   console.log('');
   console.log('='.repeat(60));

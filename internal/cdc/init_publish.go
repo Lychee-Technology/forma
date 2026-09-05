@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/manifest"
@@ -15,6 +16,48 @@ import (
 // apart at most, so a handful of reloads is plenty.
 const initPublishConflictRetries = 3
 
+// ErrManifestUnstamped marks a cdc-init run that loaded a manifest listing
+// entries under schema_id 0 (#371 review). LoadOrCreateForSchema lets a zero
+// stamp through for the read path, but cdc-init writes — and with
+// --replace-delta deletes — on the strength of the manifest's identity, and
+// a zero stamp proves nothing: the two-probe template check cannot rule out
+// a collision at schema IDs it never renders, so such a manifest may hold
+// another schema's tiers. No Forma writer has ever produced a zero stamp
+// (the field has been on the manifest, and set by LoadOrCreate, since the
+// manifest package's first commit), so the state is hand-made and the remedy
+// is to confirm ownership and set schema_id on the object.
+var ErrManifestUnstamped = errors.New("manifest lists entries under schema_id 0; cdc-init cannot prove which schema owns them")
+
+// loadInitManifest loads the schema's manifest for a cdc-init read or
+// publish. It goes through manifest.LoadOrCreateForSchema: a manifest whose
+// stamp names another schema is a collided or mis-pointed
+// --manifest-template, and with --replace-delta acting on it would purge
+// that other schema's delta tier and publish this schema's base under its
+// identity (#371 review). A manifest with no stamp at all is held to a
+// stricter rule than the read path's: with entries it fails closed
+// (ErrManifestUnstamped); empty, it is stamped for this schema in memory so
+// the coming save persists the stamp and every later load is checked. Every
+// load in the run — the pre-flight inventory and each publish attempt,
+// including a 412 or ambiguous-save reload — fails closed here.
+func loadInitManifest(ctx context.Context, runCtx *initRunContext, schemaID int16, manifestPath string) (*manifest.Manifest, string, error) {
+	m, etag, err := manifest.LoadOrCreateForSchema(ctx, runCtx.manifestStore, manifestPath, schemaID)
+	if err != nil {
+		return nil, "", fmt.Errorf("load manifest %s for schema %d: %w", manifestPath, schemaID, err)
+	}
+	if m.SchemaID != 0 {
+		return m, etag, nil
+	}
+	if len(m.Files) > 0 {
+		return nil, "", fmt.Errorf("load manifest %s for schema %d: %d entries listed under schema_id 0; confirm the object belongs to schema %d and set schema_id before rerunning: %w",
+			manifestPath, schemaID, len(m.Files), schemaID, ErrManifestUnstamped)
+	}
+	runCtx.logger.Info("empty manifest carries no schema stamp; stamping it for this schema",
+		zap.Int16("schema_id", schemaID),
+		zap.String("manifest_path", manifestPath))
+	m.SchemaID = schemaID
+	return m, etag, nil
+}
+
 // updateSchemaManifest records the exported base files in the schema
 // manifest. Failures propagate: base files absent from the manifest are
 // invisible to manifest consumers (e.g. compaction), and a silent miss here
@@ -26,12 +69,18 @@ const initPublishConflictRetries = 3
 // unlisted and reclaimed by `forma-tools manifest-reconcile --gc` (#203) —
 // never overwritten under a listed entry's stamp.
 //
-// The publish is a CAS under the loaded etag. A CONFIRMED 412 means a
-// compactor swap landed during the export; the run reloads the manifest and
-// re-splices its base tier rather than discard hours of export (#416). Only a
-// confirmed 412 is retried, and only initPublishConflictRetries times — an
-// ambiguous save error may have committed, and a blind retry could publish
-// twice.
+// With ReplaceDelta (#371) the same save also empties the delta tier, so the
+// manifest never publishes a state of new base plus stale delta; the delta
+// entries it drops join state.deltaPurge for the post-swap purge. The
+// publish is a CAS under the loaded etag. A CONFIRMED 412 means a compactor
+// swap landed during the export; the run reloads the manifest and re-splices
+// its tiers rather than discard hours of export (#416). Only a confirmed 412
+// is retried, and only initPublishConflictRetries times. Any other save
+// error is ambiguous — the put may have committed before the response was
+// lost — and is never blindly retried; with ReplaceDelta it is resolved by
+// confirmAmbiguousSwap instead, because a committed swap whose purge is
+// skipped would leave the old delta objects as unlisted orphans that
+// manifest-reconcile --repair re-adopts as lost deletes.
 func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
 		return nil
@@ -42,11 +91,17 @@ func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *sc
 		return fmt.Errorf("resolve manifest path: %w", err)
 	}
 	for attempt := 0; ; attempt++ {
-		err := manifest.ReplaceTierFiles(ctx, runCtx.manifestStore, manifestPath, state.schemaID, "base", state.fileEntries)
+		err := publishInitTiers(ctx, runCtx, state, manifestPath)
 		if err == nil {
 			break
 		}
-		if !manifest.IsPreconditionFailed(err) || attempt >= initPublishConflictRetries {
+		if !manifest.IsPreconditionFailed(err) {
+			if runCtx.replaceDelta {
+				return confirmAmbiguousSwap(ctx, runCtx, state, manifestPath, err)
+			}
+			return fmt.Errorf("update manifest: %w", err)
+		}
+		if attempt >= initPublishConflictRetries {
 			return fmt.Errorf("update manifest: %w", err)
 		}
 		runCtx.logger.Warn("manifest publish lost a conditional-put race; reloading and re-splicing the base tier",
@@ -58,6 +113,84 @@ func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *sc
 	runCtx.logger.Info("manifest updated",
 		zap.Int16("schema_id", state.schemaID),
 		zap.String("manifest_path", manifestPath),
-		zap.Int("files_added", len(state.fileEntries)))
+		zap.Int("files_added", len(state.fileEntries)),
+		zap.Bool("delta_tier_replaced", runCtx.replaceDelta))
 	return nil
+}
+
+// publishInitTiers is one CAS attempt. Without ReplaceDelta it is the
+// base-only splice; with it, base and delta are spliced under one etag so
+// no intermediate manifest carries both the new base and the old delta.
+// Both modes load through loadInitManifest so a foreign-schema manifest is
+// rejected on every attempt, not only at the pre-flight.
+func publishInitTiers(ctx context.Context, runCtx *initRunContext, state *schemaInitState, manifestPath string) error {
+	m, etag, err := loadInitManifest(ctx, runCtx, state.schemaID, manifestPath)
+	if err != nil {
+		return err
+	}
+	if runCtx.replaceDelta {
+		// Delta entries that appeared since the pre-flight (a lost 412 race
+		// reloads a manifest another writer changed) are purged too; one
+		// the purge could not honour fails the publish rather than silently
+		// surviving under the new base or deleting outside the namespace.
+		keys, unnormalizable, foreign := classifyDeltaEntries(runCtx, state.schemaID, manifest.FilterByTier(m, "delta"))
+		if err := refuseUnpurgeable(runCtx, state.schemaID, unnormalizable, foreign); err != nil {
+			return err
+		}
+		state.deltaPurge = mergeKeys(state.deltaPurge, keys)
+		manifest.SpliceTierFiles(m, "delta", nil)
+	}
+	manifest.SpliceTierFiles(m, "base", state.fileEntries)
+	if _, err := manifest.Save(ctx, runCtx.manifestStore, manifestPath, m, etag); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+	return nil
+}
+
+// confirmAmbiguousSwap resolves a non-412 save failure of the ReplaceDelta
+// publish (#371 review). The put may have committed before the response was
+// lost, so the manifest is reloaded and compared with what this run set out
+// to publish: its base entries — write-once keys since #416, so a matching
+// path set can only be this publish — and an empty delta tier. A match means
+// the swap is committed and the purge must follow; the delete-after-swap
+// ordering is intact because the swap is now confirmed. Anything else —
+// the pre-swap manifest still in place, or a reload that fails too — keeps
+// the outcome ambiguous: the error is returned, nothing is deleted, and the
+// operator reruns `cdc-init --replace-delta`, whose pre-flight inventories
+// the delta objects again whether or not the manifest still lists them.
+func confirmAmbiguousSwap(ctx context.Context, runCtx *initRunContext, state *schemaInitState, manifestPath string, saveErr error) error {
+	m, _, reloadErr := loadInitManifest(ctx, runCtx, state.schemaID, manifestPath)
+	if reloadErr != nil {
+		return fmt.Errorf("update manifest: save outcome ambiguous and the reload failed too; delta objects not deleted, rerun cdc-init --replace-delta: %w", errors.Join(saveErr, reloadErr))
+	}
+	if !swapCommitted(m, state.fileEntries) {
+		return fmt.Errorf("update manifest: reload shows the swap did not commit; delta tier left listed and nothing deleted: %w", saveErr)
+	}
+	runCtx.logger.Warn("manifest save reported an error but the reload shows this run's swap committed; proceeding to the delta purge",
+		zap.Int16("schema_id", state.schemaID),
+		zap.String("manifest_path", manifestPath),
+		zap.Error(saveErr))
+	return nil
+}
+
+// swapCommitted reports whether m carries exactly the run's base entries
+// and no delta entry — the state the ReplaceDelta publish writes.
+func swapCommitted(m *manifest.Manifest, entries []manifest.FileEntry) bool {
+	if len(manifest.FilterByTier(m, "delta")) != 0 {
+		return false
+	}
+	base := manifest.ListPaths(m, "base")
+	if len(base) != len(entries) {
+		return false
+	}
+	want := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		want[e.Path] = struct{}{}
+	}
+	for _, p := range base {
+		if _, ok := want[p]; !ok {
+			return false
+		}
+	}
+	return true
 }
