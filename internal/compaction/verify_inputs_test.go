@@ -148,21 +148,25 @@ func TestVerifySourceChecksums_DisabledIssuesNoReads(t *testing.T) {
 	})
 }
 
-// An absolute path in another bucket is unreachable through the compactor's
-// own client, so it is skipped with a WARN — the same handling deleteObjects
-// gives it. Verification default-on must not turn a foreign path into a
-// spurious corruption verdict.
-func TestVerifySourceChecksums_ForeignBucketPathSkippedWithWarning(t *testing.T) {
-	core, logs := observer.New(zap.WarnLevel)
+// Defence in depth for the #417 ruling: even when called on its own, the
+// checksum gate refuses a stamped source in another bucket instead of
+// skipping it — it cannot hash bytes it cannot reach, and an unverifiable
+// stamped source must not merge.
+func TestVerifySourceChecksums_ForeignBucketPathRefused(t *testing.T) {
+	core, logs := observer.New(zap.ErrorLevel)
 	c, s3c := newVerifyFixture(zap.New(core))
 
 	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
 		stampedEntry("s3://other-bkt/p/1/foreign.parquet", sourcePayload),
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrForeignSource)
+	require.ErrorContains(t, err, "s3://other-bkt/p/1/foreign.parquet")
 	require.Empty(t, s3c.gets)
-	require.Len(t, logs.All(), 1)
-	require.Equal(t, "s3://other-bkt/p/1/foreign.parquet", logs.All()[0].ContextMap()["path"])
+
+	entries := logs.All()
+	require.Len(t, entries, 1, "the standalone gate logs its own refusal")
+	require.Equal(t, "s3://other-bkt/p/1/foreign.parquet", entries[0].ContextMap()["path"])
+	require.Equal(t, "bkt", entries[0].ContextMap()["bucket"])
 }
 
 // An absolute path inside the compactor's own bucket is verified against the
@@ -176,6 +180,22 @@ func TestVerifySourceChecksums_OwnBucketAbsolutePathVerified(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrSourceChecksumMismatch)
 	require.Equal(t, []string{"p/1/aaa.parquet"}, s3c.gets)
+}
+
+// An own-bucket URI names its key verbatim: s3://bkt//p/x is key "/p/x", the
+// object objectURI hands DuckDB through the unchanged URI. The gate must hash
+// that same object, not a slash-trimmed neighbour, or it verifies one key
+// while the merge reads another (#515 review). The leading-slash trim is for
+// relative paths only.
+func TestVerifySourceChecksums_OwnBucketURIKeyPreservedVerbatim(t *testing.T) {
+	c, s3c := newVerifyFixture(zap.NewNop())
+	s3c.putObject("/p/1/aaa.parquet", sourcePayload)
+
+	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
+		stampedEntry("s3://bkt//p/1/aaa.parquet", sourcePayload),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"/p/1/aaa.parquet"}, s3c.gets, "the gate must hash the key the merge will read")
 }
 
 // stampedRewriteManifest is rewrite-eligible (10% dirty ratio, sub-threshold
@@ -218,10 +238,13 @@ func newGateRewriteFixture() (*Compactor, *loadCountingProvider, *fakeMerger, *f
 	return c, provider, merger, s3c
 }
 
-// The gate's reason for existing: runRewrite merges the sources and then
-// DELETES them, so a corrupt source must stop the pass before MergeToTmp —
-// nothing merged, nothing committed, nothing deleted, and the corrupt object
-// still on hand for the operator.
+// The gate's reason for existing: runRewrite folds the sources into one new
+// base and splices their entries out of the manifest (the objects are
+// retained for in-flight readers, #461, and reclaimed later by
+// manifest-reconcile --gc), so after the swap the corrupt bytes are no longer
+// attributable to a listed name. A corrupt source must therefore stop the
+// pass before MergeToTmp — nothing merged, nothing committed, nothing
+// deleted, and the corrupt object still listed for the operator.
 func TestCompactor_Rewrite_MismatchingSourceRefusesTheMerge(t *testing.T) {
 	c, provider, merger, s3c := newGateRewriteFixture()
 	s3c.putObject("p/1/ddd.parquet", corruptPayload)

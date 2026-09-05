@@ -26,11 +26,10 @@ func (c *Compactor) canRewrite() bool {
 //
 // Ordering is what makes this safe under manifest-driven reads
 // (manifest ⊆ live objects, internal/manifest/query_source.go):
-//  0. verify every stamped source still hashes to its manifest checksum and
-//     refuse the whole pass otherwise (#347) — subject to the exceptions on
-//     verifySourceChecksums' godoc: it covers stamped sources inside this
-//     compactor's own bucket, and does nothing when the config opts out or no
-//     ObjectReader is wired,
+//  0. refuse the whole pass if any source lies outside this compactor's
+//     bucket (#417) or any stamped source no longer hashes to its manifest
+//     checksum (#347) — verifyRewriteInputs; the checksum half is subject to
+//     the exceptions on verifySourceChecksums' godoc (opt-out, nil reader),
 //  1. merge to a _tmp key (never listed),
 //  2. copy to a UUID-named final base key (never reused, so no listed object
 //     is ever overwritten),
@@ -57,12 +56,8 @@ func (c *Compactor) runRewrite(
 	sources []manifest.FileEntry,
 	analysis CompactionResult,
 ) (CompactionResult, error) {
-	// Fail closed before anything is merged: past this point the sources are
-	// folded into one object and spliced out of the manifest, so a corrupt
-	// input would be laundered into the new base and lose its listed name —
-	// the retained bytes (#461) are unlisted orphans on a GC countdown, not a
-	// named copy anyone would consult (#347).
-	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
+	// Fail closed before anything is merged (#347, #417); see verifyRewriteInputs.
+	if err := c.verifyRewriteInputs(ctx, schemaID, sources); err != nil {
 		return CompactionResult{}, err
 	}
 
@@ -189,6 +184,8 @@ func spliceManifest(m *manifest.Manifest, mergedPaths map[string]bool, newBase m
 
 // objectURI renders a manifest path as an s3:// URI against the compactor's
 // bucket; absolute URIs pass through (mirrors manifest.QuerySource.Paths).
+// runRewrite never reaches it with a foreign-bucket path: rejectForeignSources
+// refuses those first (#417).
 func (c *Compactor) objectURI(path string) string {
 	if strings.HasPrefix(path, "s3://") {
 		return path
@@ -196,22 +193,19 @@ func (c *Compactor) objectURI(path string) string {
 	return fmt.Sprintf("s3://%s/%s", c.Bucket, strings.TrimPrefix(path, "/"))
 }
 
-// deleteObjects best-effort deletes bucket-relative keys. Failures (and
-// absolute foreign-bucket paths) are logged and left to #203 reconciliation.
-// Since #461 the rewrite only calls it for a confirmed-412 attempt's own
-// never-listed staged base — merged sources are retained for the
-// in-flight-reader window and reclaimed by manifest-reconcile's GC grace.
+// deleteObjects best-effort deletes bucket-relative keys. Failures (and paths
+// bucketRelativeKey cannot resolve inside this bucket) are logged and left to
+// #203 reconciliation. Since #461 the rewrite only calls it for a
+// confirmed-412 attempt's own never-listed staged base — merged sources are
+// retained for the in-flight-reader window and reclaimed by
+// manifest-reconcile's GC grace.
 func (c *Compactor) deleteObjects(ctx context.Context, schemaID int16, paths []string) {
 	for _, path := range paths {
-		key := path
-		if strings.HasPrefix(path, "s3://") {
-			trimmed := strings.TrimPrefix(path, "s3://"+c.Bucket+"/")
-			if trimmed == path {
-				c.Logger.Warn("skipping deletion of object outside compactor bucket",
-					zap.Int16("schema_id", schemaID), zap.String("path", path))
-				continue
-			}
-			key = trimmed
+		key, ok := c.bucketRelativeKey(path)
+		if !ok {
+			c.Logger.Warn("skipping deletion: path is outside the compactor bucket or names no key",
+				zap.Int16("schema_id", schemaID), zap.String("path", path), zap.String("bucket", c.Bucket))
+			continue
 		}
 		if err := cdc.DeleteObjectKey(ctx, c.S3, c.Bucket, key); err != nil {
 			c.Logger.Warn("failed to delete merged source object; leaving orphan for manifest-reconcile (#203; base/tmp shapes need --gc, delta shapes --repair --gc)",

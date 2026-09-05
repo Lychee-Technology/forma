@@ -84,12 +84,16 @@ type CompactionConfig struct {
 	MaxParallelFiles    int           // optional parallelism for rewrites
 
 	// SkipInputChecksumVerify opts out of the pre-merge verification of
-	// rewrite inputs (#347). The zero value verifies: a rewrite merges its
-	// sources and then deletes them, so the gate is the last moment silent
-	// corruption is both detectable and attributable to a named object, and
-	// that has to hold for deployments that never set this struct field.
+	// rewrite inputs (#347). The zero value verifies: a rewrite folds its
+	// sources into one new base and splices their entries out of the
+	// manifest (the objects themselves are retained for in-flight readers,
+	// #461), so the gate is the last moment silent corruption is both
+	// detectable and attributable to a named, still-listed object, and that
+	// has to hold for deployments that never set this struct field.
 	// Setting it true trades that detection away to save one GET per stamped
-	// source.
+	// source. It waives hashing only: a source outside the compactor's bucket
+	// is still refused (compaction.ErrForeignSource, #417), because that is a
+	// scope check, not a checksum check.
 	SkipInputChecksumVerify bool
 
 	// Backoff parameters for S3/manifest operations
