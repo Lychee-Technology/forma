@@ -255,3 +255,86 @@ func TestRunInit_RejectsCollapsingManifestTemplate(t *testing.T) {
 		require.Contains(t, err.Error(), "cdc init pre-flight")
 	}
 }
+
+// collidingOutsideProbesTemplate renders distinct paths for the two probe
+// IDs (1 and 2) and one shared path for every other schema, so it passes
+// forma.ValidateManifestPathTemplate; a zero-stamped manifest at the shared
+// path is then invisible to the schema-identity check, and cdc-init must not
+// export, publish or purge on its strength (#371 review, round four).
+const collidingOutsideProbesTemplate = "{{if lt .SchemaID 3}}manifest/{{.SchemaID}}.json{{else}}manifest/shared.json{{end}}"
+
+func seedUnstampedSharedManifest(t *testing.T, st manifest.Store, files ...manifest.FileEntry) {
+	t.Helper()
+	m := &manifest.Manifest{Files: append([]manifest.FileEntry{}, files...)}
+	_, err := manifest.Save(context.Background(), st, "manifest/shared.json", m, "")
+	require.NoError(t, err)
+}
+
+func unstampedRunContext(st manifest.Store, events *[]string) *initRunContext {
+	runCtx := deltaRunContext(st, []string{})
+	runCtx.manifestResolver = manifest.PathResolver{PathTemplate: collidingOutsideProbesTemplate}
+	runCtx.deleteObject = recordingDelete(events)
+	return runCtx
+}
+
+// The pre-flight for schema 4 reaches schema 3's zero-stamped manifest
+// through the shared path and refuses it, named, in both flag modes.
+func TestPreflightDeltaTier_RefusesUnstampedManifestWithEntries(t *testing.T) {
+	require.NoError(t, forma.ValidateManifestPathTemplate("manifest-template", collidingOutsideProbesTemplate),
+		"the two-probe check cannot see a collision at schema IDs 3 and 4")
+
+	for _, flag := range []bool{false, true} {
+		var events []string
+		st := &recordingStore{events: &events}
+		seedUnstampedSharedManifest(t, st, manifest.FileEntry{Tier: "base", Path: "base/3/a_b.parquet"})
+		events = nil
+		runCtx := unstampedRunContext(st, &events)
+		runCtx.replaceDelta = flag
+
+		_, err := preflightDeltaTier(context.Background(), runCtx, 4)
+		require.ErrorIs(t, err, ErrManifestUnstamped, "replaceDelta=%t", flag)
+		require.Contains(t, err.Error(), "manifest/shared.json")
+		require.Contains(t, err.Error(), "1 entries listed under schema_id 0")
+		require.Empty(t, events, "replaceDelta=%t: nothing saved or deleted", flag)
+	}
+}
+
+// The publish for schema 4 — base-only and --replace-delta — refuses the
+// same manifest: zero saves, zero deletes, the stored bytes untouched, so
+// neither schema 3's base nor its delta is replaced or purged.
+func TestUpdateSchemaManifest_RefusesUnstampedManifestWithEntries(t *testing.T) {
+	for _, flag := range []bool{false, true} {
+		var events []string
+		st := &recordingStore{events: &events}
+		seedUnstampedSharedManifest(t, st,
+			manifest.FileEntry{Tier: "base", Path: "base/3/a_b.parquet"},
+			manifest.FileEntry{Tier: "delta", Path: "delta/3/0b2f1b6e-3333-4c1d-8e57-000000000003.parquet"})
+		before := append([]byte{}, st.data["manifest/shared.json"]...)
+		events = nil
+		runCtx := unstampedRunContext(st, &events)
+		runCtx.replaceDelta = flag
+		state := initStateWithOneEntry(4)
+		state.deltaPurge = []string{"delta/4/0b2f1b6e-4444-4c1d-8e57-000000000004.parquet"}
+
+		err := publishAndPurge(context.Background(), runCtx, state)
+		require.ErrorIs(t, err, ErrManifestUnstamped, "replaceDelta=%t", flag)
+		require.Empty(t, events, "replaceDelta=%t: nothing saved or deleted", flag)
+		require.Equal(t, before, st.data["manifest/shared.json"], "replaceDelta=%t", flag)
+	}
+}
+
+// An empty zero-stamped manifest has nothing another schema could own: the
+// publish stamps it, so the saved manifest is checked on every later load.
+func TestUpdateSchemaManifest_StampsEmptyUnstampedManifest(t *testing.T) {
+	st := &memManifestStore{}
+	_, err := manifest.Save(context.Background(), st, "manifest/1.json", &manifest.Manifest{Files: []manifest.FileEntry{}}, "")
+	require.NoError(t, err)
+	runCtx := deltaRunContext(st, nil)
+
+	require.NoError(t, updateSchemaManifest(context.Background(), runCtx, initStateWithOneEntry(1)))
+
+	m, _, err := manifest.Load(context.Background(), st, "manifest/1.json")
+	require.NoError(t, err)
+	require.Equal(t, int16(1), m.SchemaID)
+	require.Len(t, m.Files, 1)
+}

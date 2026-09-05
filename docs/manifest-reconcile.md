@@ -533,7 +533,13 @@ delta 真正退役的是 cdc-init 本身：
   直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别
   的 schema 的 delta 层。每次加载 manifest（预检、每次发布、412 重新加载）都校验其
   `schema_id` 与当前 schema 一致，不一致以 `forma.ErrManifestSchemaMismatch` 失败，
-  既不发布也不删除。
+  既不发布也不删除。`schema_id` 为 0 的 manifest 在 cdc-init 里比读路径更严格（Forma
+  的写入方从未产生过这种对象：该字段自 manifest 包首次提交起就存在，`LoadOrCreate` 总会
+  盖章，零戳记只可能来自手工编辑）：其中列有条目时以 `cdc.ErrManifestUnstamped` 失败，
+  因为双 schema 探测排除不了只在未探测到的 ID 上碰撞的模板，零戳记证明不了这些条目属于
+  谁；没有条目时在内存中盖上当前 schema 的戳记，随后的保存把它落盘，此后每次加载都受
+  校验。模板本身还要先过读路径同样的首尾空白检查：带空白的模板会让 cdc-init 写到一个
+  服务端 `ValidateManifestRead` 拒绝配置的 key 下。
 - **保存结果不明时先确认再清理。** manifest CAS 返回的不是确认的 412（例如连接被重置）
   时，PUT 可能已经提交。带 `--replace-delta` 的运行会重新加载 manifest：如果 base 层恰好
   是本次导出的条目集合（#416 之后每个 key 一次性写入，集合相同只能是本次发布）且 delta

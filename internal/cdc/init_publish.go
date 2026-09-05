@@ -16,18 +16,45 @@ import (
 // apart at most, so a handful of reloads is plenty.
 const initPublishConflictRetries = 3
 
+// ErrManifestUnstamped marks a cdc-init run that loaded a manifest listing
+// entries under schema_id 0 (#371 review). LoadOrCreateForSchema lets a zero
+// stamp through for the read path, but cdc-init writes — and with
+// --replace-delta deletes — on the strength of the manifest's identity, and
+// a zero stamp proves nothing: the two-probe template check cannot rule out
+// a collision at schema IDs it never renders, so such a manifest may hold
+// another schema's tiers. No Forma writer has ever produced a zero stamp
+// (the field has been on the manifest, and set by LoadOrCreate, since the
+// manifest package's first commit), so the state is hand-made and the remedy
+// is to confirm ownership and set schema_id on the object.
+var ErrManifestUnstamped = errors.New("manifest lists entries under schema_id 0; cdc-init cannot prove which schema owns them")
+
 // loadInitManifest loads the schema's manifest for a cdc-init read or
 // publish. It goes through manifest.LoadOrCreateForSchema: a manifest whose
 // stamp names another schema is a collided or mis-pointed
 // --manifest-template, and with --replace-delta acting on it would purge
 // that other schema's delta tier and publish this schema's base under its
-// identity (#371 review). Every load in the run — the pre-flight inventory
-// and each publish attempt, including a 412 reload — fails closed here.
+// identity (#371 review). A manifest with no stamp at all is held to a
+// stricter rule than the read path's: with entries it fails closed
+// (ErrManifestUnstamped); empty, it is stamped for this schema in memory so
+// the coming save persists the stamp and every later load is checked. Every
+// load in the run — the pre-flight inventory and each publish attempt,
+// including a 412 or ambiguous-save reload — fails closed here.
 func loadInitManifest(ctx context.Context, runCtx *initRunContext, schemaID int16, manifestPath string) (*manifest.Manifest, string, error) {
 	m, etag, err := manifest.LoadOrCreateForSchema(ctx, runCtx.manifestStore, manifestPath, schemaID)
 	if err != nil {
 		return nil, "", fmt.Errorf("load manifest %s for schema %d: %w", manifestPath, schemaID, err)
 	}
+	if m.SchemaID != 0 {
+		return m, etag, nil
+	}
+	if len(m.Files) > 0 {
+		return nil, "", fmt.Errorf("load manifest %s for schema %d: %d entries listed under schema_id 0; confirm the object belongs to schema %d and set schema_id before rerunning: %w",
+			manifestPath, schemaID, len(m.Files), schemaID, ErrManifestUnstamped)
+	}
+	runCtx.logger.Info("empty manifest carries no schema stamp; stamping it for this schema",
+		zap.Int16("schema_id", schemaID),
+		zap.String("manifest_path", manifestPath))
+	m.SchemaID = schemaID
 	return m, etag, nil
 }
 

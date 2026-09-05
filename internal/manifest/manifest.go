@@ -238,12 +238,19 @@ func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16
 // per-schema manifest consumer needs: a loaded manifest whose stamped
 // SchemaID names a different schema is a collided or mis-pointed path
 // template, and it is rejected with forma.ManifestSchemaMismatchError
-// instead of being read or written as the requested schema's. A zero stamp
-// is treated as unstamped rather than as schema 0: schema IDs are always
-// positive, and rejecting zero would break deployments still holding
-// manifests written before the field existed. Config validation samples two
-// schema IDs, which catches a collapsed template but cannot prove
-// injectivity over the whole domain — this is the enforcement.
+// instead of being read or written as the requested schema's.
+//
+// A zero stamp passes. That is the read path's pre-existing lenience, kept
+// so this helper is behaviour-preserving for QuerySource (removing it is
+// #522); it is not a legacy-format carve-out — SchemaID has been on the
+// manifest, and set by LoadOrCreate, since this package's first commit, so
+// no Forma writer emits a zero stamp. A writer that must not act on an
+// unproven identity applies its own rule on top: cdc-init refuses a
+// non-empty zero-stamped manifest with cdc.ErrManifestUnstamped.
+//
+// Config validation samples two schema IDs, which catches a collapsed
+// template but cannot prove injectivity over the whole domain — this check
+// is the enforcement for stamped manifests.
 func LoadOrCreateForSchema(ctx context.Context, st Store, path string, schemaID int16) (*Manifest, string, error) {
 	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
 	if err != nil {

@@ -120,12 +120,21 @@ func (d DuckDBConfig) validateManifestReadWhitespace() error {
 		{"duckdb.manifestTemplate", d.ManifestTemplate},
 	}
 	for _, field := range fields {
-		if field.value != strings.TrimSpace(field.value) {
-			return &ConfigError{
-				Field:   field.name,
-				Message: "must not have leading or trailing whitespace",
-			}
+		if err := rejectPaddedValue(field.name, field.value); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// rejectPaddedValue is the byte-parity rule of validateManifestReadWhitespace
+// for one field, shared with ValidateManifestPathTemplate so the cdc-init CLI
+// and the server reject the same padded template — otherwise the CLI resolves
+// the raw value and publishes under a key the read side refuses to configure
+// (#371 review).
+func rejectPaddedValue(field, value string) error {
+	if value != strings.TrimSpace(value) {
+		return &ConfigError{Field: field, Message: "must not have leading or trailing whitespace"}
 	}
 	return nil
 }
@@ -183,9 +192,15 @@ func (d DuckDBConfig) ValidateManifestRead() error {
 // setting in the returned ConfigError. Every manifest writer that resolves a
 // per-schema path must reject a template that collapses schemas onto one
 // object: for a destructive run such as `cdc-init --replace-delta` a collided
-// template would otherwise purge another schema's delta tier.
+// template would otherwise purge another schema's delta tier. The whitespace
+// rule comes first, as in ValidateManifestRead, and for the same reason: the
+// resolver renders the raw value, so a padded template addresses a different
+// object than the trimmed one an operator reads in the config.
 func ValidateManifestPathTemplate(field, pathTemplate string) error {
-	if strings.TrimSpace(pathTemplate) == "" {
+	if err := rejectPaddedValue(field, pathTemplate); err != nil {
+		return err
+	}
+	if pathTemplate == "" {
 		return &ConfigError{Field: field, Message: "must not be empty"}
 	}
 	tmpl, err := template.New("manifest").Parse(pathTemplate)
