@@ -124,10 +124,10 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 		return nil, err
 	}
 
-	tiers := q.PreferredTiers
-	if len(tiers) == 0 {
-		tiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
-	}
+	// PreferredTiers is forwarded as declared: empty stays empty, which the
+	// engine reads as the default all-tier form (#184), and only a non-empty
+	// list counts as the explicit coverage declaration that overrides the
+	// routing cost heuristics (#468) — exactly what the service layer does.
 	// An explicit render hint wins over the manifest-driven source (#184 pins
 	// that an explicit S3ParquetPathTemplate directs read_parquet at the
 	// specified location), so the default hint is only supplied when the Env
@@ -146,7 +146,7 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 			Limit:           q.Limit,
 			Offset:          q.Offset,
 		},
-		PreferredTiers:  tiers,
+		PreferredTiers:  q.PreferredTiers,
 		PreferHot:       q.PreferHot,
 		UseMainAsAnchor: q.UseMainAsAnchor,
 		KeysetCursor:    q.Keyset,

@@ -278,9 +278,10 @@ type QueryResult struct {
 	// actually took (DuckDB vs Postgres-only) and per-tier sources so callers
 	// can distinguish federated reads from hot-path reads without guessing.
 	ExecutionPlan *ExecutionPlan `json:"execution_plan,omitempty"`
-	// Partial marks a response answered from an incomplete data surface
-	// (#348); currently the only reason is the #251 corrupt-parquet
-	// exclusion. Nil/omitted for complete answers. Unlike ExecutionPlan it
+	// Partial marks a response answered from an incomplete data surface:
+	// the #251 corrupt-parquet exclusion (#348) or a hot-tier-only answer to
+	// a request that asked for more tiers (#468). Nil/omitted for complete
+	// answers. Unlike ExecutionPlan it
 	// does not require federated.include_execution_plan.
 	Partial *PartialResultInfo `json:"partial,omitempty"`
 }
@@ -343,12 +344,26 @@ type ExecutionMerge struct {
 type PartialResultInfo struct {
 	Reason              string `json:"reason"`
 	ExcludedObjectCount int    `json:"excluded_object_count,omitempty"`
+	// UnconsultedTiers accompanies PartialReasonHotTierOnly (#468): the
+	// tiers the request asked for that the answer never read.
+	UnconsultedTiers []string `json:"unconsulted_tiers,omitempty"`
 }
 
 // PartialReasonCorruptParquetExcluded reports a #251 partial read: one or
 // more verification-confirmed corrupt parquet objects were excluded and the
 // page was answered from the readable remainder plus the hot tier.
 const PartialReasonCorruptParquetExcluded = "corrupt_parquet_excluded"
+
+// PartialReasonHotTierOnly reports a #468 coverage gap: the request asked
+// for warm and/or cold tiers (explicitly, or all three by omitting
+// preferred_tiers) but was answered from the Postgres hot tier alone —
+// because the routing heuristic kept an implicit request on the small-page
+// shortcut, because DuckDB is disabled, or because the §7.2 degraded
+// fallback absorbed a DuckDB failure. UnconsultedTiers names what was
+// skipped. An explicit multi-tier preferred_tiers overrides the heuristic
+// instead of being marked, so under an enabled engine this reason appears
+// only for implicit requests and degraded answers.
+const PartialReasonHotTierOnly = "hot_tier_only"
 
 // CursorQueryResult represents cursor-based pagination results.
 type CursorQueryResult struct {

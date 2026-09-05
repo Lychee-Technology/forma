@@ -53,15 +53,23 @@ type FederatedQueryOptions struct {
 	PartialScan *PartialScan
 }
 
-// PartialScan reports that the DuckDB pass that answered this query ran over
-// a deliberately reduced object set: verification-confirmed corrupt parquet
-// objects (#251) were excluded and the page came from the readable remainder
-// plus the hot tier. Internal form — ExcludedObjects carries full storage
-// keys for embedders and operators; the public projection
-// (forma.QueryResult.Partial) surfaces only the reason and the count (#348,
-// #301/#306 boundary).
+// PartialScan reports that the answer to this query covers less than the
+// request asked for, in one of two mutually exclusive ways. Internal form —
+// the public projection (forma.QueryResult.Partial) surfaces a reason plus
+// either the excluded-object count or the unconsulted tiers, never storage
+// keys (#348, #301/#306 boundary).
 type PartialScan struct {
+	// ExcludedObjects names the verification-confirmed corrupt parquet
+	// objects (#251) a DuckDB pass excluded; the page came from the readable
+	// remainder plus the hot tier. Carries full storage keys for embedders
+	// and operators. Never set on a Postgres-only answer.
 	ExcludedObjects []string
+	// UnconsultedTiers names the tiers the request asked for (explicitly, or
+	// all three by omission) that a Postgres-only answer never read (#468):
+	// the routed small-page shortcut, a disabled engine, and the degraded
+	// fallback all answer from entity_main alone. Never set on a DuckDB
+	// pass, so it and ExcludedObjects are mutually exclusive.
+	UnconsultedTiers []DataTier
 }
 
 type RoutingDecision struct {

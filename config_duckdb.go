@@ -288,7 +288,10 @@ const (
 
 	// RoutingStrategyHybrid uses DuckDB by default but short-circuits to
 	// PostgreSQL when the result set is expected to be small or hot data is
-	// explicitly preferred.
+	// explicitly preferred. The small-result shortcut is a cost heuristic:
+	// a keyset cursor (#354) or an explicit multi-tier PreferredTiers
+	// (#468) overrides it onto the federated path, and a request it keeps
+	// on Postgres is marked partial (hot_tier_only) when it asked for more.
 	RoutingStrategyHybrid RoutingStrategy = "hybrid"
 )
 

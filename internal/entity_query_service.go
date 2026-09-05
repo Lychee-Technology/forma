@@ -12,8 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var defaultFederatedPreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
-
 type dataRecordConverter func(context.Context, string, *model.PersistentRecord) (*forma.DataRecord, error)
 type dataRecordEnricher func(context.Context, string, []string, ...*forma.DataRecord) error
 type storageTablesResolver func() model.StorageTables
@@ -133,83 +131,6 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	}, nil
 }
 
-// toExecutionPlan converts the engine's internal execution plan into the
-// public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
-// when no plan was recorded (non-federated requests, or federated requests that
-// did not ask for the plan), so QueryResult.ExecutionPlan stays omitted.
-func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
-	if plan == nil {
-		return nil
-	}
-
-	// SECURITY: do not project src.SQL / src.Params or plan.Notes / merge.Notes.
-	// Since #306, the database password is redacted at the source (plan SQL and
-	// failure notes carry password=***REDACTED***), but the rendered DuckDB SQL
-	// still embeds host/user/dbname, table internals; Params carry query arguments;
-	// notes carry storage keys and engine internals — surfacing them on the HTTP
-	// response would leak internals to any advanced_query caller. Only safe
-	// routing/tier metadata crosses into the public projection.
-	out := &forma.ExecutionPlan{
-		Routing: forma.ExecutionRouting{
-			UsedDuckDB: plan.Routing.UseDuckDB,
-			Tiers:      tiersToStrings(plan.Routing.Tiers),
-			Reason:     plan.Routing.Reason,
-		},
-		Timings: plan.Timings,
-	}
-
-	if len(plan.Sources) > 0 {
-		out.Sources = make([]forma.ExecutionSource, 0, len(plan.Sources))
-		for _, src := range plan.Sources {
-			out.Sources = append(out.Sources, forma.ExecutionSource{
-				Tier:              string(src.Tier),
-				Engine:            src.Engine,
-				RowEstimate:       src.RowEstimate,
-				ActualRows:        src.ActualRows,
-				PredicatePushdown: src.PredicatePushdown,
-				DurationMs:        src.DurationMs,
-				Reason:            src.Reason,
-			})
-		}
-	}
-
-	if plan.Merge.Strategy != "" || plan.Merge.PreferHot || len(plan.Merge.DedupKeys) > 0 {
-		out.Merge = &forma.ExecutionMerge{
-			Strategy:   string(plan.Merge.Strategy),
-			PreferHot:  plan.Merge.PreferHot,
-			DedupKeys:  plan.Merge.DedupKeys,
-			DurationMs: plan.Merge.DurationMs,
-		}
-	}
-
-	return out
-}
-
-// toPartialResult projects the engine's partial-scan report into the public
-// marker (#348). SECURITY: only the reason and the excluded-object COUNT
-// cross the boundary — the object keys are storage internals (#301/#306)
-// and stay on the internal plan Notes for embedders and operators.
-func toPartialResult(p *model.PartialScan) *forma.PartialResultInfo {
-	if p == nil || len(p.ExcludedObjects) == 0 {
-		return nil
-	}
-	return &forma.PartialResultInfo{
-		Reason:              forma.PartialReasonCorruptParquetExcluded,
-		ExcludedObjectCount: len(p.ExcludedObjects),
-	}
-}
-
-func tiersToStrings(tiers []model.DataTier) []string {
-	if len(tiers) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(tiers))
-	for _, t := range tiers {
-		out = append(out, string(t))
-	}
-	return out
-}
-
 func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest) (*model.PersistentRecordPage, error) {
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
@@ -244,19 +165,21 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *model.Pers
 	})
 }
 
+// federatedPreferredTiers forwards the caller's tier declaration to the
+// engine, keeping only known tier names. An omitted list — or one naming no
+// known tier — is forwarded as nil, NOT filled with the default three: the
+// engine, the DuckDB template and the plan-cache shape all read an empty
+// list as the default all-tier form (#184), and a non-empty list is what the
+// routing policy treats as an explicit coverage declaration that overrides
+// the cost heuristics (#468). Filling the default here would make every
+// request look explicit.
 func federatedPreferredTiers(tiers []string) []model.DataTier {
-	if len(tiers) == 0 {
-		return append([]model.DataTier(nil), defaultFederatedPreferredTiers...)
-	}
-	out := make([]model.DataTier, 0, len(tiers))
+	var out []model.DataTier
 	for _, tier := range tiers {
 		switch model.DataTier(tier) {
 		case model.DataTierHot, model.DataTierWarm, model.DataTierCold:
 			out = append(out, model.DataTier(tier))
 		}
-	}
-	if len(out) == 0 {
-		return append([]model.DataTier(nil), defaultFederatedPreferredTiers...)
 	}
 	return out
 }

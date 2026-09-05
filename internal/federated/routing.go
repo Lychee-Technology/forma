@@ -20,6 +20,13 @@ func isHotOnlyRequest(fq *model.FederatedAttributeQuery) bool {
 	return fq.PreferHot || (len(fq.PreferredTiers) == 1 && fq.PreferredTiers[0] == model.DataTierHot)
 }
 
+// hasExplicitTierCoverage reports whether the caller explicitly declared the
+// tiers to read. Non-empty means declared; the service layer forwards an
+// omitted preferred_tiers as nil so the two cannot be confused (#468).
+func hasExplicitTierCoverage(fq *model.FederatedAttributeQuery) bool {
+	return fq != nil && len(fq.PreferredTiers) > 0
+}
+
 // EvaluateRoutingPolicy makes a routing decision based on config, query hints and options.
 func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) model.RoutingDecision {
 	dec := model.RoutingDecision{
@@ -36,10 +43,16 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 		dec.Tiers = fq.PreferredTiers
 	}
 
-	// If DuckDB disabled, never use it
+	// If DuckDB disabled, never use it. The verdict is final, so the
+	// heuristics and overrides below are skipped — which means the common
+	// tier collapse at the end is skipped too. Collapse here as well: the
+	// Postgres-only path reads entity_main alone, and the plan must report
+	// that route, not the caller's declared tiers, or it would contradict
+	// the hot_tier_only coverage marker set on the same answer (#468).
 	if !cfg.Enabled {
 		dec.UseDuckDB = false
 		dec.Reason = "duckdb disabled"
+		dec.Tiers = []model.DataTier{model.DataTierHot}
 		return dec
 	}
 
@@ -85,6 +98,21 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 	if hasKeysetCursor(fq) && !dec.UseDuckDB && !isHotOnlyRequest(fq) && cfg.Enabled {
 		dec.UseDuckDB = true
 		dec.Reason += " (overridden: keyset cursor requires the federated path, #354)"
+	}
+
+	// An explicit PreferredTiers naming anything beyond hot is the caller's
+	// COVERAGE declaration (#468) and outranks the cost heuristics for the
+	// same reason a cursor does: the Postgres-only path reads entity_main
+	// alone, so honoring the heuristic would silently drop the declared
+	// warm/cold tiers. Same conjunct shape as #354 — !dec.UseDuckDB keeps the
+	// suffix truthful, !isHotOnlyRequest leaves a [hot] declaration where it
+	// asked to be, cfg.Enabled is the reordering invariant. An EMPTY
+	// PreferredTiers is the default all-tier form, not a declaration: it
+	// keeps the heuristic and is told what was consulted through the
+	// coverage marker (engine_tier_coverage.go, markHotTierOnly).
+	if hasExplicitTierCoverage(fq) && !dec.UseDuckDB && !isHotOnlyRequest(fq) && cfg.Enabled {
+		dec.UseDuckDB = true
+		dec.Reason += " (overridden: explicit preferred_tiers require the federated path, #468)"
 	}
 
 	// If DuckDB is disabled by decision, ensure tiers reflect that
