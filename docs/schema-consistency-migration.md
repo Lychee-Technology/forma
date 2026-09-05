@@ -125,6 +125,8 @@ It validates:
   preserved state (`#341`)
 - numeric/date/bool values are not incorrectly stored in `value_text`
 - text/uuid/list values are not incorrectly stored in `value_numeric`
+- no `list` attribute still carries a scalar row (`array_indices = ''` with a
+  value), left over from before the attribute became a list (`#372`)
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -433,6 +435,65 @@ Example validator output:
 This means the row uses the wrong physical value column for the declared `valueType`.
 
 Fix by rewriting the bad rows into the correct column and clearing the wrong one.
+
+### Scalar rows under list attributes (`#372`)
+
+Example validator output:
+
+```text
+- scalar rows stored under list attributes in eav_data_dev: schema=lead schema_id=100 attr_id=18 attribute=tags rows=7
+```
+
+The attribute's metadata now says `valueType: list` (typically because the
+schema property changed from a scalar to an array and `generate-attributes` was
+re-run), but these rows still hold the value the way a scalar is stored: one row
+with `array_indices = ''` and a non-NULL value column. List elements are stored
+one row per element with `array_indices` set to the element index (`'0'`,
+`'1'`, ...). The write path has rejected a scalar body for an array property
+since `#314`, so such rows are always pre-existing data, never new writes.
+
+The row is not lost, but the tiers disagree on its shape until it is rewritten:
+the OLTP read returns the scalar (`"alpha"`), while the parquet export and the
+DuckDB hot-tier pivot return a one-element list (`["alpha"]`). Before `#372`
+the DuckDB tiers returned `[]` instead, silently dropping the value.
+
+The explicit empty-list marker (`#204`), which is the same key with **both**
+value columns NULL, is a supported state and is never reported here.
+
+Inspect the rows:
+
+```sql
+SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric
+FROM eav_data_dev
+WHERE schema_id = 100 AND attr_id = 18 AND array_indices = ''
+  AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)
+LIMIT 50;
+```
+
+Fix by promoting each scalar row to element `'0'` of its list. The primary key
+is `(schema_id, row_id, attr_id, array_indices)`, so guard against an entity
+that already has an element `'0'` (a list written after the flip while the
+legacy row was left behind); those rows need a decision per entity, not a
+blanket update:
+
+```sql
+UPDATE eav_data_dev AS s
+SET array_indices = '0'
+WHERE s.schema_id = 100 AND s.attr_id = 18 AND s.array_indices = ''
+  AND (s.value_text IS NOT NULL OR s.value_numeric IS NOT NULL)
+  AND NOT EXISTS (
+    SELECT 1 FROM eav_data_dev AS d
+    WHERE d.schema_id = s.schema_id AND d.row_id = s.row_id
+      AND d.attr_id = s.attr_id AND d.array_indices = '0'
+  );
+```
+
+After the rewrite, re-run the validator. A direct SQL rewrite does not stamp
+`change_log`, so an entity that was already flushed keeps its last exported
+value until its next write re-flushes it. That is harmless for exports made
+after `#372`, which already carry the one-element list the rewritten row
+produces; parquet written before `#372` holds `[]` for the row and serves that
+from the warm/cold tiers until the entity is written again.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 

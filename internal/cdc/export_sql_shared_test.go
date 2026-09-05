@@ -278,15 +278,17 @@ func TestBuildSchemaDrivenProjection_ListAttrAggregatesElementsOrderedByIndex(t 
 	// Scalar attrs keep the MAX(CASE ...) pivot untouched.
 	require.Equal(t, "MAX(CASE WHEN attr_id = 7 THEN CAST(value_text AS VARCHAR) END) AS note", projection.eavAgg[0])
 	// List attrs aggregate one element per eav_data row, ordered by the
-	// numeric element index, element cast derived from items_type. The
-	// empty-list marker row (array_indices '') is excluded from the element
-	// aggregate but detected by the presence count, so an explicit empty
-	// list exports as [] while an absent attribute exports as NULL (#204).
+	// numeric element index, element cast derived from items_type. Only the
+	// empty-list marker row (array_indices '', no value) is excluded from
+	// the element aggregate, and the presence count still detects it, so an
+	// explicit empty list exports as [] while an absent attribute exports as
+	// NULL (#204); a legacy scalar row keeps its value as a one-element list
+	// (#372).
 	require.Equal(t,
-		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS DOUBLE) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND array_indices <> ''), []) END AS nums",
+		"CASE WHEN count(*) FILTER (WHERE attr_id = 19) > 0 THEN coalesce(list(TRY_CAST(value_numeric AS DOUBLE) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 19 AND (array_indices <> '' OR value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END AS nums",
 		projection.eavAgg[1])
 	require.Equal(t,
-		"CASE WHEN count(*) FILTER (WHERE attr_id = 18) > 0 THEN coalesce(list(CAST(value_text AS VARCHAR) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 18 AND array_indices <> ''), []) END AS tags",
+		"CASE WHEN count(*) FILTER (WHERE attr_id = 18) > 0 THEN coalesce(list(CAST(value_text AS VARCHAR) ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = 18 AND (array_indices <> '' OR value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END AS tags",
 		projection.eavAgg[2])
 	require.Equal(t, []string{"e.note", "e.nums", "e.tags"}, projection.eavSelect)
 	require.Equal(t, []int16{7, 19, 18}, projection.eavAttrIDs)

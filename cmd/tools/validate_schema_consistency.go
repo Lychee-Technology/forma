@@ -184,6 +184,12 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *sc
 	}
 	issues = append(issues, storageIssues...)
 
+	listIssues, err := v.checkScalarRowsUnderListAttrs(ctx, cache)
+	if err != nil {
+		return nil, err
+	}
+	issues = append(issues, listIssues...)
+
 	sort.Slice(issues, func(i, j int) bool {
 		if issues[i].category == issues[j].category {
 			return issues[i].details < issues[j].details

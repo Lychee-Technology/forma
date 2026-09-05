@@ -97,6 +97,8 @@ func TestValidateSchemaConsistencyReportsSuccess(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_numeric IS NOT NULL`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 
 	var out strings.Builder
 	validator := schemaConsistencyValidator{
@@ -135,6 +137,8 @@ func TestValidateSchemaConsistencyReportsIssues(t *testing.T) {
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_text IS NOT NULL`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}).AddRow(int16(100), int16(2), int64(3)))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_numeric IS NOT NULL`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 
 	var out strings.Builder
@@ -204,10 +208,11 @@ func writeSchemaConsistencyArtifacts(t *testing.T, dir, schemaName, schemaJSON, 
 	}
 }
 
-// newSchemaConsistencyMock wires the four queries validator.run issues, in
-// order: the schema registry, the attr_id census, then the two storage-column
-// censuses. Only the attr_id census varies across the #341 classification
-// tests, so the rest is fixed here.
+// newSchemaConsistencyMock wires the five queries validator.run issues, in
+// order: the schema registry, the attr_id census, the two storage-column
+// censuses, then the scalar-row census under list attributes (#372). Only the
+// attr_id census varies across the #341 classification tests, so the rest is
+// fixed here.
 func newSchemaConsistencyMock(t *testing.T, attrCensus *pgxmock.Rows) pgxmock.PgxPoolIface {
 	t.Helper()
 	mock, err := pgxmock.NewPool()
@@ -223,6 +228,8 @@ func newSchemaConsistencyMock(t *testing.T, attrCensus *pgxmock.Rows) pgxmock.Pg
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_text IS NOT NULL`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.value_numeric IS NOT NULL`).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	return mock
 }
