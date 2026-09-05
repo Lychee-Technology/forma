@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -71,11 +72,21 @@ func newDeltaTierSeams(client S3InitClient, bucket string) (
 	return list, del
 }
 
+// ErrIncompleteObjectListing marks a listing whose pages cannot be followed
+// to the end: a truncated page without a continuation token, or a token the
+// listing has already used. The inventory built on such a listing would be
+// short, and a short inventory under --replace-delta would purge less than
+// the delta tier holds, so the listing fails closed instead (#371 review).
+var ErrIncompleteObjectListing = errors.New("object listing incomplete")
+
 // ListObjectKeys returns every object key under prefix, following
-// continuation tokens.
+// continuation tokens. A page that claims to be truncated but carries no
+// usable token, or hands back a token already used, fails with
+// ErrIncompleteObjectListing rather than returning the keys seen so far.
 func ListObjectKeys(ctx context.Context, client S3InitClient, bucket, prefix string) ([]string, error) {
 	var keys []string
 	var token *string
+	seen := map[string]struct{}{}
 	for {
 		out, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
@@ -88,9 +99,19 @@ func ListObjectKeys(ctx context.Context, client S3InitClient, bucket, prefix str
 		for _, obj := range out.Contents {
 			keys = append(keys, aws.ToString(obj.Key))
 		}
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
+		if !aws.ToBool(out.IsTruncated) {
 			return keys, nil
 		}
-		token = out.NextContinuationToken
+		next := aws.ToString(out.NextContinuationToken)
+		if next == "" {
+			return nil, fmt.Errorf("list objects under %s: page %d is truncated but carries no continuation token: %w",
+				prefix, len(seen)+1, ErrIncompleteObjectListing)
+		}
+		if _, repeated := seen[next]; repeated {
+			return nil, fmt.Errorf("list objects under %s: page %d repeats continuation token %q: %w",
+				prefix, len(seen)+1, next, ErrIncompleteObjectListing)
+		}
+		seen[next] = struct{}{}
+		token = aws.String(next)
 	}
 }

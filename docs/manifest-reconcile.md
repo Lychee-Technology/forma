@@ -523,6 +523,11 @@ delta 真正退役的是 cdc-init 本身：
   `s3://` 条目，都属于"清理无法兑现"的条目：不带 `--replace-delta` 时计入拒绝理由，
   带 `--replace-delta` 时该 schema 在导出前即失败并逐条列出（fail-closed），412 重试
   重新加载 manifest 时同样检查。删除是不可逆的，标签本身不构成删除的授权。
+- **列举不完整即失败。** `ListObjectsV2` 返回 `IsTruncated` 却不带（或带空的）
+  continuation token，或重复给出已经用过的 token 时，盘点无法跟到末页；此时该 schema 以
+  `cdc.ErrIncompleteObjectListing` 在预检阶段失败，不导出、不发布、不删除。否则一页残缺
+  的列表会被当成完整的 delta 层，`--replace-delta` 只删掉看见的那部分，剩下的旧 delta 成为
+  未列孤儿，被下一次 `--repair` 重新收养。
 - **manifest 身份与模板先校验。** `--manifest-template` 在打开任何连接之前先做读路径
   同样的双 schema 探测（#300）：渲染不随 schema 变化、渲染为空或 `<no value>` 的模板
   直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别

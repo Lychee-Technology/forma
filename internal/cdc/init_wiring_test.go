@@ -224,3 +224,109 @@ func TestNewDeltaTierSeamsNilWithoutClient(t *testing.T) {
 	require.Nil(t, list)
 	require.Nil(t, del)
 }
+
+// malformedListClient answers ListObjectsV2 with a scripted sequence of
+// pages and records every key it is asked to delete.
+type malformedListClient struct {
+	hashableFullS3Client
+	pages   []*s3.ListObjectsV2Output
+	calls   int
+	deleted []string
+}
+
+func (c *malformedListClient) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	if c.calls >= len(c.pages) {
+		return nil, fmt.Errorf("unexpected ListObjectsV2 call %d", c.calls+1)
+	}
+	out := c.pages[c.calls]
+	c.calls++
+	return out, nil
+}
+
+func (c *malformedListClient) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	c.deleted = append(c.deleted, aws.ToString(in.Key))
+	return &s3.DeleteObjectOutput{}, nil
+}
+
+func listPage(truncated bool, token *string, keys ...string) *s3.ListObjectsV2Output {
+	out := &s3.ListObjectsV2Output{IsTruncated: aws.Bool(truncated), NextContinuationToken: token}
+	for _, k := range keys {
+		out.Contents = append(out.Contents, types.Object{Key: aws.String(k)})
+	}
+	return out
+}
+
+// A page that claims to be truncated but carries no usable continuation
+// token, or hands back a token the listing already used, cannot be followed
+// to the end. The listing fails closed with the named sentinel instead of
+// returning the keys seen so far as if they were the whole prefix (#371
+// review P1): a short inventory under --replace-delta would purge less than
+// the delta tier holds and leave stale objects for --repair to re-adopt.
+func TestListObjectKeys_UnfollowableTruncationFailsClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		pages []*s3.ListObjectsV2Output
+		calls int
+		want  string
+	}{
+		{
+			name:  "truncated without token",
+			pages: []*s3.ListObjectsV2Output{listPage(true, nil, "delta/7/a.parquet")},
+			calls: 1,
+			want:  "page 1 is truncated but carries no continuation token",
+		},
+		{
+			name:  "truncated with empty token",
+			pages: []*s3.ListObjectsV2Output{listPage(true, aws.String(""), "delta/7/a.parquet")},
+			calls: 1,
+			want:  "page 1 is truncated but carries no continuation token",
+		},
+		{
+			name: "repeated token",
+			pages: []*s3.ListObjectsV2Output{
+				listPage(true, aws.String("page-2"), "delta/7/a.parquet"),
+				listPage(true, aws.String("page-2"), "delta/7/b.parquet"),
+			},
+			calls: 2,
+			want:  `page 2 repeats continuation token "page-2"`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			client := &malformedListClient{pages: c.pages}
+			keys, err := ListObjectKeys(context.Background(), client, "test-bucket", "delta/7/")
+			require.ErrorIs(t, err, ErrIncompleteObjectListing)
+			require.Contains(t, err.Error(), "list objects under delta/7/: "+c.want)
+			require.Nil(t, keys, "an incomplete listing must not hand back a partial key set")
+			require.Equal(t, c.calls, client.calls)
+		})
+	}
+}
+
+// The malformed listing stops the schema at the pre-flight: with
+// --replace-delta and a manifest-listed delta entry, the run returns the
+// listing error, deletes nothing and leaves the manifest untouched. initSchema
+// returns that error before prepareSchemaInit, so no export, publish or
+// purge can follow it.
+func TestPreflightDeltaTier_IncompleteListingStopsBeforeAnySwapOrPurge(t *testing.T) {
+	listedKey := "delta/1/0b2f1b6e-1111-4c1d-8e57-000000000001.parquet"
+	client := &malformedListClient{pages: []*s3.ListObjectsV2Output{listPage(true, nil, listedKey)}}
+	cfg := CDCConfig{S3Bucket: "test-bucket", ManifestTemplate: deltaTestTemplate}
+	runCtx := &initRunContext{cfg: cfg, logger: zap.NewNop(), deltaPrefix: "delta", replaceDelta: true}
+	applyInitS3Wiring(runCtx, cfg, client)
+	// The listing seam is the wired one; the manifest lives in memory so the
+	// no-op PutObject of the fake client cannot mask a swap.
+	st := &memManifestStore{}
+	runCtx.manifestStore = st
+	seedDeltaManifest(t, st, listedKey)
+	before, _, err := st.Load(context.Background(), "manifest/1.json")
+	require.NoError(t, err)
+
+	_, err = preflightDeltaTier(context.Background(), runCtx, 1)
+	require.ErrorIs(t, err, ErrIncompleteObjectListing)
+	require.Contains(t, err.Error(), "list delta prefix delta/1/")
+	require.Empty(t, client.deleted, "an incomplete inventory must not purge anything")
+	after, _, err := st.Load(context.Background(), "manifest/1.json")
+	require.NoError(t, err)
+	require.Equal(t, before, after, "the manifest must not be swapped on a failed pre-flight")
+}
