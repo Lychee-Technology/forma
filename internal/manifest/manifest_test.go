@@ -3,7 +3,6 @@ package manifest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -199,7 +198,7 @@ type memStore struct {
 func (s *memStore) Load(_ context.Context, path string) ([]byte, string, error) {
 	b, ok := s.data[path]
 	if !ok {
-		return nil, "", errors.New("NoSuchKey: not found")
+		return nil, "", fmt.Errorf("mem store %s: %w", path, ErrObjectNotFound)
 	}
 	return b, fmt.Sprintf("e%d", s.gen), nil
 }

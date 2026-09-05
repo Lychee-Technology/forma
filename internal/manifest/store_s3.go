@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -34,12 +35,15 @@ func (s *S3Store) Load(ctx context.Context, path string) ([]byte, string, error)
 		Key:    aws.String(path),
 	})
 	if err != nil {
-		return nil, "", err
+		if isNoSuchKey(err) {
+			return nil, "", fmt.Errorf("get manifest object %s/%s: %w: %w", s.Bucket, path, ErrObjectNotFound, err)
+		}
+		return nil, "", fmt.Errorf("get manifest object %s/%s: %w", s.Bucket, path, err)
 	}
 	defer out.Body.Close()
 	data, err := io.ReadAll(out.Body)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("read manifest object %s/%s: %w", s.Bucket, path, err)
 	}
 	etag := ""
 	if out.ETag != nil {
@@ -76,6 +80,21 @@ func (s *S3Store) Save(ctx context.Context, path string, data []byte, etag strin
 		newETag = *out.ETag
 	}
 	return newETag, nil
+}
+
+// isNoSuchKey reports whether a GetObject error is a CONFIRMED missing key:
+// the SDK's modeled *types.NoSuchKey, or any API error carrying the
+// NoSuchKey code. The HTTP status alone is deliberately not consulted — a
+// NoSuchBucket is also a 404, and GetObject always returns an error body
+// from which the SDK derives the code, so the code is the only signal that
+// separates "the key is absent" from "the store call failed" (#464).
+func isNoSuchKey(err error) bool {
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"
 }
 
 // IsPreconditionFailed reports whether err is a CONFIRMED HTTP 412

@@ -3,6 +3,7 @@ package manifest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -134,15 +135,20 @@ func Decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-// IsNotFound reports whether a Store.Load error means the object does not
-// exist. Most S3-compatible stores return an error containing "NoSuchKey"
-// or "not found".
+// ErrObjectNotFound is the sentinel every Store.Load returns (wrapped) when the
+// object is confirmed absent. Each Store translates its backend's typed
+// signal into it (S3: NoSuchKey; FS: fs.ErrNotExist).
+var ErrObjectNotFound = errors.New("manifest object not found")
+
+// IsNotFound reports whether a Store.Load error means the object is
+// CONFIRMED absent, i.e. the Store wrapped ErrObjectNotFound. It never inspects
+// message text: a NoSuchBucket ("The specified bucket does not exist") or
+// any other store failure whose wording resembles a missing key used to
+// classify as "manifest absent", which turned LoadOrCreate into an empty
+// manifest and silently sent federated reads to the glob fallback (#464).
+// Those now surface to the caller.
 func IsNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "does not exist")
+	return errors.Is(err, ErrObjectNotFound)
 }
 
 // LoadOrCreate loads an existing manifest or creates a new empty one for the schema.

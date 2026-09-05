@@ -42,8 +42,8 @@ type S3Fault struct {
 
 // FaultInjectingS3 wraps the cluster's real S3 client and fails calls
 // matching Fault, breaking exactly one step of the CDC flush pipeline
-// (#179). The injected error text deliberately avoids the not-found phrases
-// manifest.LoadOrCreate interprets as "create a fresh manifest".
+// (#179). The injected error is a plain error, never manifest.ErrObjectNotFound,
+// so manifest.LoadOrCreate surfaces it instead of creating a fresh manifest.
 type FaultInjectingS3 struct {
 	Inner cdc.S3FullClient
 	Fault S3Fault
