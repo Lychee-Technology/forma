@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -165,4 +167,60 @@ func callPassesOptsS3Client(call *ast.CallExpr) bool {
 	}
 	ident, isIdent := sel.X.(*ast.Ident)
 	return isIdent && ident.Name == "opts"
+}
+
+// pagedListClient answers ListObjectsV2 in two pages so the continuation
+// loop is exercised, and records every key it is asked to delete.
+type pagedListClient struct {
+	hashableFullS3Client
+	calls   int
+	deleted []string
+}
+
+func (c *pagedListClient) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	c.calls++
+	if in.ContinuationToken == nil {
+		return &s3.ListObjectsV2Output{
+			Contents:              []types.Object{{Key: aws.String(aws.ToString(in.Prefix) + "a.parquet")}},
+			IsTruncated:           aws.Bool(true),
+			NextContinuationToken: aws.String("page-2"),
+		}, nil
+	}
+	return &s3.ListObjectsV2Output{
+		Contents: []types.Object{{Key: aws.String(aws.ToString(in.Prefix) + "b.parquet")}},
+	}, nil
+}
+
+func (c *pagedListClient) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	c.deleted = append(c.deleted, aws.ToString(in.Key))
+	return &s3.DeleteObjectOutput{}, nil
+}
+
+// The delta-tier seams (#371) are wired over the run's client: the listing
+// follows continuation tokens and the delete addresses the run's bucket.
+func TestApplyInitS3WiringWiresDeltaTierSeams(t *testing.T) {
+	client := &pagedListClient{}
+	runCtx := &initRunContext{logger: zap.NewNop()}
+	applyInitS3Wiring(runCtx, CDCConfig{S3Bucket: "test-bucket"}, client)
+
+	require.NotNil(t, runCtx.listObjectKeys)
+	require.NotNil(t, runCtx.deleteObject)
+	keys, err := runCtx.listObjectKeys(context.Background(), "delta/7/")
+	require.NoError(t, err)
+	require.Equal(t, []string{"delta/7/a.parquet", "delta/7/b.parquet"}, keys)
+	require.Equal(t, 2, client.calls, "the listing must follow the continuation token")
+	require.NoError(t, runCtx.deleteObject(context.Background(), "delta/7/a.parquet"))
+	require.Equal(t, []string{"delta/7/a.parquet"}, client.deleted)
+}
+
+// A nil or typed-nil client leaves both seams nil so the inventory skips the
+// listing and the purge refuses honestly instead of panicking (#302).
+func TestNewDeltaTierSeamsNilWithoutClient(t *testing.T) {
+	list, del := newDeltaTierSeams(nil, "b")
+	require.Nil(t, list)
+	require.Nil(t, del)
+	var typedNil *s3.Client
+	list, del = newDeltaTierSeams(typedNil, "b")
+	require.Nil(t, list)
+	require.Nil(t, del)
 }

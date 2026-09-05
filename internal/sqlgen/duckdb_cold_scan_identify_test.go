@@ -38,7 +38,7 @@ import (
 // singleFileScanSource renders the guarded scan over exactly one path, in the
 // shape formatDuckDBPathList yields for a single-element set.
 func singleFileScanSource(path string) string {
-	return BuildParquetScanSource(fmt.Sprintf("'%s'", path), nil)
+	return BuildParquetScanSource(fmt.Sprintf("'%s'", path), nil, nil)
 }
 
 // drainQuery runs one query and iterates it to exhaustion, returning whichever

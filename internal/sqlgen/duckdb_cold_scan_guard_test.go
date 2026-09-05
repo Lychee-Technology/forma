@@ -144,7 +144,7 @@ func TestParquetScanGuardFailsLoudlyOnRogueObject(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil)
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil, nil)
 	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan+
 		" WHERE CAST(row_id AS UUID) NOT IN (SELECT CAST('018f05c0-0000-7000-8000-0000000000ff' AS UUID))")
 
@@ -161,7 +161,7 @@ func TestParquetScanGuardFiresAtSemijoinSite(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil)
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), nil, nil)
 	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan+" WHERE (1=1)")
 
 	require.Error(t, err, "semijoin site must fail on the rogue object too; got rows %v", got)
@@ -175,7 +175,7 @@ func TestParquetScanGuardPassesHealthyScan(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.healthy), nil)
+	scan := BuildParquetScanSource(formatPathList(fx.healthy), nil, nil)
 	got, err := scanRowIDs(db, "SELECT row_id FROM "+scan)
 
 	require.NoError(t, err, "the guard must not fire on an object that satisfies the invariant")
@@ -198,7 +198,7 @@ func TestParquetScanGuardPreservesRowIDType(t *testing.T) {
 		{"benchmark_varchar", fx.varcharRowID, "VARCHAR"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			scan := BuildParquetScanSource(formatPathList(tc.path), nil)
+			scan := BuildParquetScanSource(formatPathList(tc.path), nil, nil)
 
 			var guarded string
 			require.NoError(t, db.QueryRow("SELECT typeof(row_id) FROM "+scan).Scan(&guarded),
@@ -223,7 +223,7 @@ func TestParquetScanGuardComposesWithNullAugmentation(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.healthy), []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})
+	scan := BuildParquetScanSource(formatPathList(fx.healthy), []ScanColumn{{Name: "score", DuckDBType: "INTEGER"}}, nil)
 	var rowID any
 	var score sql.NullInt64
 	var scoreType string
@@ -232,7 +232,7 @@ func TestParquetScanGuardComposesWithNullAugmentation(t *testing.T) {
 	require.Equal(t, "INTEGER", scoreType)
 
 	// And the guard still fires when the augmented scan hits a rogue object.
-	rogueScan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})
+	rogueScan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noRowID), []ScanColumn{{Name: "score", DuckDBType: "INTEGER"}}, nil)
 	_, err := scanRowIDs(db, "SELECT row_id FROM "+rogueScan)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "NULL row_id")
@@ -246,7 +246,7 @@ func TestParquetScanGuardFailsWhenRowIDAbsentEverywhere(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.noRowID), nil)
+	scan := BuildParquetScanSource(formatPathList(fx.noRowID), nil, nil)
 	got, err := scanRowIDs(db, "SELECT changed_at FROM "+scan)
 
 	require.Error(t, err, "a scan set with no row_id column anywhere must not bind; got rows %v", got)
@@ -263,7 +263,7 @@ func TestParquetScanGuardFailsLoudlyOnMissingChangedAt(t *testing.T) {
 	db := guardDuckDB(t)
 	fx := guardFixtures(t, db)
 
-	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noChangedAt), nil)
+	scan := BuildParquetScanSource(formatPathList(fx.healthy, fx.noChangedAt), nil, nil)
 	got, err := scanRowIDs(db, "SELECT changed_at FROM "+scan)
 
 	require.Error(t, err, "a scanned object without changed_at must fail the query, not enter LWW ordering as NULL; got rows %v", got)
@@ -311,7 +311,7 @@ func TestParquetScanGuardPinsSystemColumnTypes(t *testing.T) {
 	var guardedType string
 	var guardedMax, guardedMin int64
 	require.NoError(t, db.QueryRow("SELECT typeof(changed_at), max(changed_at) OVER (), min(changed_at) OVER () FROM "+
-		BuildParquetScanSource(paths, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
+		BuildParquetScanSource(paths, nil, nil)+" LIMIT 1").Scan(&guardedType, &guardedMax, &guardedMin),
 		"a numeric-string changed_at must coerce, not fail")
 	require.Equal(t, "BIGINT", guardedType, "the guard re-pins the LWW version type")
 	require.Equal(t, int64(100), guardedMax, "and the numeric winner is restored")
@@ -321,12 +321,12 @@ func TestParquetScanGuardPinsSystemColumnTypes(t *testing.T) {
 	// live-row NULL — the CAST must not turn that into a failure.
 	var deletedType string
 	require.NoError(t, db.QueryRow("SELECT typeof(deleted_at) FROM "+
-		BuildParquetScanSource(formatPathList(fx.healthy), nil)).Scan(&deletedType))
+		BuildParquetScanSource(formatPathList(fx.healthy), nil, nil)).Scan(&deletedType))
 	require.Equal(t, "BIGINT", deletedType)
 
 	// Garbage in the version column is loud, not coerced to some default.
 	_, err := scanRowIDs(db, "SELECT changed_at FROM "+
-		BuildParquetScanSource(formatPathList(fx.healthy, fx.garbageChangedAt), nil))
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.garbageChangedAt), nil, nil))
 	require.Error(t, err, "a non-numeric changed_at must fail loudly")
 	require.Contains(t, err.Error(), "not-a-number")
 }
@@ -351,12 +351,12 @@ func TestParquetScanGuardTolerateNullDeletedAt(t *testing.T) {
 
 	var deleted sql.NullInt64
 	require.NoError(t, db.QueryRow("SELECT deleted_at FROM "+
-		BuildParquetScanSource(formatPathList(fx.healthy), nil)).Scan(&deleted),
+		BuildParquetScanSource(formatPathList(fx.healthy), nil, nil)).Scan(&deleted),
 		"a legacy live delta row's NULL deleted_at is legitimate and must not fire the guard (#365)")
 	require.False(t, deleted.Valid)
 
 	got, err := scanRowIDs(db, "SELECT deleted_at FROM "+
-		BuildParquetScanSource(formatPathList(fx.healthy, fx.noDeletedAt), nil))
+		BuildParquetScanSource(formatPathList(fx.healthy, fx.noDeletedAt), nil, nil))
 	require.NoError(t, err,
 		"RESIDUAL (#365): an object missing deleted_at is NOT caught by the scan guard today")
 	require.Len(t, got, 2)

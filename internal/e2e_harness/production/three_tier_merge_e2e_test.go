@@ -214,16 +214,28 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 
 // testChangedAtBeatsTierLayout supersedes the ConflictingCreatedAndUpdatedAt
 // stub. Three physical copies of every row coexist across the cold tier: v1
-// and v2 in two delta generations plus the base duplicate of v2 written by
-// cdc-init (which since #210 stamps ltbase_updated_at as the version
-// timestamp, so the base copy ranks exactly at v2's delta). LWW must pick the
-// strictly newest changed_at (the update time) — not created_at, tier tags,
-// or file write order: a ranking keyed on created_at would see all three
-// copies tie and could surface v1.
+// and v2 in two delta generations plus the base copy of v1 written by
+// cdc-init before the first flush (#371: init refuses over a populated delta
+// tier; since #210 it stamps ltbase_updated_at as the version timestamp, so
+// the base copy ranks exactly at v1's delta). LWW must pick the strictly
+// newest changed_at (the update time) — not created_at, tier tags, or file
+// write order: a ranking keyed on created_at would see all three copies tie
+// and could surface v1, and so would a tier-priority ranking.
 func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 5})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
+	}
+	// Init before the first flush (#371: init refuses over a populated delta
+	// tier). The base therefore carries v1, which makes the layout a harder
+	// case than the former base-of-v2: a tier-priority ranking would now
+	// surface v1 from the base.
+	report, err := env.RunInit(ctx, wide) // base = v1 attrs @ create-time ver_ts (#210)
+	if err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	if report.RowsExported != 5 {
+		t.Fatalf("init exported %d rows, want 5", report.RowsExported)
 	}
 	mustFlush(ctx, t, env) // delta #1 = v1 @ create-time ver_ts
 
@@ -251,20 +263,15 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 		t.Fatalf("manifest holds %d delta files, want 2 (v1 and v2 generations)", got)
 	}
 
-	report, err := env.RunInit(ctx, wide) // base = v2 attrs @ update-time ver_ts (#210)
-	if err != nil {
-		t.Fatalf("run init: %v", err)
-	}
-	if report.RowsExported != 5 {
-		t.Fatalf("init exported %d rows, want 5", report.RowsExported)
-	}
 	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID) // no hot rows
 
 	// Physical precondition: three copies of every row — v1 and v2 in the two
-	// deltas plus the base duplicate of v2 — so dedup genuinely has to choose.
+	// deltas plus the base copy of v1 — so dedup genuinely has to choose.
 	assertBaseRows(ctx, t, env, report.Manifest, 5)
 	var deltaRows int64
-	for _, f := range manifest.FilterByTier(report.Manifest, "delta") {
+	// report.Manifest predates both flushes (init ran first); the delta
+	// entries live in the manifest the second flush published.
+	for _, f := range manifest.FilterByTier(flush2.Manifests[wide.ID], "delta") {
 		deltaRows += parquetRowCount(ctx, t, env, f.Path)
 	}
 	if deltaRows != 10 {

@@ -27,7 +27,7 @@ const wantGuardREPLACE = "* REPLACE (COALESCE(row_id, error('" + ParquetNullRowI
 // the guard is unconditional, because the object it protects against is
 // exactly the one no probe ran on.
 func TestBuildParquetScanSourceEmptyIsGuardOnly(t *testing.T) {
-	got := BuildParquetScanSource("'s3://b/base/a.parquet'", nil)
+	got := BuildParquetScanSource("'s3://b/base/a.parquet'", nil, nil)
 	require.Equal(t,
 		"(SELECT "+wantGuardREPLACE+
 			" FROM read_parquet('s3://b/base/a.parquet', union_by_name=true)) AS cold_scan",
@@ -35,10 +35,10 @@ func TestBuildParquetScanSourceEmptyIsGuardOnly(t *testing.T) {
 }
 
 func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
-	got := BuildParquetScanSource("['s3://b/a.parquet', 's3://b/b.parquet']", []NullScanColumn{
+	got := BuildParquetScanSource("['s3://b/a.parquet', 's3://b/b.parquet']", []ScanColumn{
 		{Name: "score", DuckDBType: "INTEGER"},
 		{Name: "tags", DuckDBType: "BIGINT[]"},
-	})
+	}, nil)
 	require.Equal(t,
 		"(SELECT "+wantGuardREPLACE+", "+
 			"NULL::INTEGER AS score, NULL::BIGINT[] AS tags "+
@@ -86,7 +86,7 @@ func TestDuckDBNullScanTypeMirrorsTierTypes(t *testing.T) {
 // the production param set (buildDuckDBQueryWithPlan) closely enough to render
 // the template directly, without going through BuildDuckDBQuery — so the two
 // scan sites can be counted in isolation.
-func minimalAdvancedParams(t *testing.T, missing []NullScanColumn) map[string]any {
+func minimalAdvancedParams(t *testing.T, missing []ScanColumn) map[string]any {
 	t.Helper()
 	return injectTestRenderParams(t, map[string]any{
 		"PG_CONN":              "dbname=forma host=localhost",
@@ -107,7 +107,7 @@ func minimalAdvancedParams(t *testing.T, missing []NullScanColumn) map[string]an
 		"PAGE_SIZE":            10,
 		"OFFSET":               0,
 		"NON_KEYSET_ORDER_BY":  "created_at DESC, row_id ASC",
-		"S3_SCAN_SOURCE":       BuildParquetScanSource("'s3://b/a.parquet'", missing),
+		"S3_SCAN_SOURCE":       BuildParquetScanSource("'s3://b/a.parquet'", missing, nil),
 	}, 1)
 }
 
@@ -118,12 +118,12 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	require.NoError(t, injectDuckDBTemplateParams(params, nil, nil))
 	// nil query keeps this a pure param-derivation probe.
 	src, _ := params["S3_SCAN_SOURCE"].(string)
-	require.Equal(t, BuildParquetScanSource("'s3://b/base/a.parquet'", nil), src)
+	require.Equal(t, BuildParquetScanSource("'s3://b/base/a.parquet'", nil, nil), src)
 	require.Contains(t, src, ParquetNullRowIDMessage)
 
 	params = map[string]any{
 		"S3_PATHS":           "'s3://b/base/a.parquet'",
-		"ColdMissingColumns": []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}},
+		"ColdMissingColumns": []ScanColumn{{Name: "score", DuckDBType: "INTEGER"}},
 	}
 	require.NoError(t, injectDuckDBTemplateParams(params, nil, nil))
 	src, _ = params["S3_SCAN_SOURCE"].(string)
@@ -132,7 +132,7 @@ func TestAdvancedTemplateRendersScanSourceAtBothSites(t *testing.T) {
 	// End-to-end render: exactly the template's two scan sites carry the
 	// wrapped source (rendered via the real advanced template).
 	var b strings.Builder
-	require.NoError(t, AdvancedQueryTemplateDuckDB.Execute(&b, minimalAdvancedParams(t, []NullScanColumn{{Name: "score", DuckDBType: "INTEGER"}})))
+	require.NoError(t, AdvancedQueryTemplateDuckDB.Execute(&b, minimalAdvancedParams(t, []ScanColumn{{Name: "score", DuckDBType: "INTEGER"}})))
 	require.Equal(t, 2, strings.Count(b.String(), "NULL::INTEGER AS score"))
 	require.Equal(t, 2, strings.Count(b.String(), "read_parquet("))
 	// The #256 guard reaches both sites too — the semijoin is where a

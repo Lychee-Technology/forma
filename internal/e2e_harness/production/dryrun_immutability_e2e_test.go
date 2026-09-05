@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -39,9 +41,10 @@ func TestDryRunImmutability(t *testing.T) {
 }
 
 // seedDryRunFixture builds a realistic pre-state across all three tiers:
-// flushed rows (delta parquet + manifest), base parquet from a real init,
+// base parquet from a real init, flushed rows (delta parquet + manifest),
 // then pending hot work (updates, a delete, a fresh create) that a real
-// flush would export.
+// flush would export. Init runs before the flush: since #371 an init over a
+// populated delta tier refuses, and the seed wants a plain init.
 func seedDryRunFixture(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) {
 	t.Helper()
 
@@ -55,11 +58,11 @@ func seedDryRunFixture(t *testing.T, ctx context.Context, env *Env, schema Schem
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
 	}
-	if _, err := env.RunFlush(ctx); err != nil {
-		t.Fatalf("seed flush: %v", err)
-	}
 	if _, err := env.RunInit(ctx, schema); err != nil {
 		t.Fatalf("seed init: %v", err)
+	}
+	if _, err := env.RunFlush(ctx); err != nil {
+		t.Fatalf("seed flush: %v", err)
 	}
 
 	pending := []*Event{
@@ -185,16 +188,26 @@ func testFlushDryRunMutatesNothing(t *testing.T, ctx context.Context, env *Env, 
 func testInitDryRunMutatesNothing(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) {
 	before := captureState(t, ctx, env, schema)
 
-	report, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true})
+	// #371: the seed left a delta tier behind, so a dry run without the
+	// purge permission refuses exactly like a real run would — and refusing
+	// mutates nothing either.
+	if _, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true}); !errors.Is(err, cdc.ErrDeltaTierPresent) {
+		t.Fatalf("dry-run init over delta tier: err = %v, want cdc.ErrDeltaTierPresent", err)
+	}
+	assertStateUnchanged(t, "init dry-run (refused)", before, captureState(t, ctx, env, schema))
+
+	// With the permission the dry run plans the export and the purge and
+	// still touches nothing: no objects, no manifest, no deletes.
+	report, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true, ReplaceDelta: true})
 	if err != nil {
-		t.Fatalf("dry-run init: %v", err)
+		t.Fatalf("dry-run init with replace-delta: %v", err)
 	}
 	if report.RowsExported == 0 {
 		t.Fatal("positive control: dry-run init planned zero rows")
 	}
 
 	after := captureState(t, ctx, env, schema)
-	assertStateUnchanged(t, "init dry-run", before, after)
+	assertStateUnchanged(t, "init dry-run (replace-delta)", before, after)
 }
 
 // testRealFlushAfterDryRunsFlushes is the suite-level positive control: the

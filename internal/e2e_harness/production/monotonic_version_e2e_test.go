@@ -147,8 +147,10 @@ func testUpdateAdvancesPastClockAheadVersion(ctx context.Context, t *testing.T, 
 		t.Fatalf("flush left %d rows dirty, want 0 — the clock-ahead version was not marked", flush.UnflushedAfter)
 	}
 	assertSoleLiveVersion(ctx, t, env, soleParquetKey(t, flush), upd)
-	if _, err := env.RunInit(ctx, wide); err != nil {
-		t.Fatalf("run init: %v", err)
+	// Base over the two deltas is the legacy pre-#371 re-init layout;
+	// RunInitKeepingDelta reconstructs it (a plain RunInit now refuses).
+	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil {
+		t.Fatalf("run init keeping delta: %v", err)
 	}
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 

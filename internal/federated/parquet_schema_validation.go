@@ -92,11 +92,14 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // today's classified execution failure (#187 CorruptBytes/Truncated).
 //
 // It also returns the union of the probed footers' columns (name → DuckDB
-// type) and whether that union is complete. The union feeds #255 NULL
-// augmentation for columns that no scanned parquet generation carries yet;
-// complete is true only when every path in the set contributed its columns, so
-// an incomplete union must not drive augmentation — augmenting a column that
-// an unprobed file actually carries would collide with the real column.
+// type, plus the names seen at more than one type; see columnUnion) and
+// whether that union is complete. The union feeds #255 NULL augmentation
+// for columns that no scanned parquet generation carries yet and the #371
+// type pin for columns whose generations disagree; complete is true only
+// when every path in the set contributed its columns, so an incomplete
+// union must drive neither — augmenting a column that an unprobed file
+// actually carries would collide with the real column, and a pin decided
+// on a partial view could miss the very generation that drifted.
 //
 // stamps carries manifest-recorded column maps keyed by the exact path strings
 // in paths (#256); it may be nil. A stamp that satisfies the invariant spares
@@ -131,11 +134,11 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
 	stamps map[string]map[string]string,
-) (map[string]string, bool, error) {
+) (columnUnion, bool, error) {
 	if v == nil || duck == nil {
-		return nil, false, nil
+		return columnUnion{}, false, nil
 	}
-	union, complete := map[string]string{}, true
+	union, complete := newColumnUnion(), true
 	for _, path := range paths {
 		if strings.ContainsAny(path, `'";`) {
 			// Cannot embed in a DuckDB literal; the main read fails on it
@@ -151,14 +154,14 @@ func (v *parquetSchemaValidator) Validate(
 			}
 			ok, err := v.validateConcrete(ctx, duck, expanded, union, stamps)
 			if err != nil {
-				return nil, false, err
+				return columnUnion{}, false, err
 			}
 			complete = complete && ok
 			continue
 		}
 		ok, err := v.validateConcrete(ctx, duck, []string{path}, union, stamps)
 		if err != nil {
-			return nil, false, err
+			return columnUnion{}, false, err
 		}
 		complete = complete && ok
 	}
@@ -170,7 +173,7 @@ func (v *parquetSchemaValidator) Validate(
 // manifest stamp (#256) or a footer probe. It merges every contributing column
 // map into union and reports whether all of the given paths contributed.
 func (v *parquetSchemaValidator) validateConcrete(
-	ctx context.Context, duck DuckDBQueryExecutor, paths []string, union map[string]string,
+	ctx context.Context, duck DuckDBQueryExecutor, paths []string, union columnUnion,
 	stamps map[string]map[string]string,
 ) (bool, error) {
 	complete := true
@@ -181,7 +184,7 @@ func (v *parquetSchemaValidator) validateConcrete(
 		}
 		stamp := currentStamp(stamps, path)
 		if cols, ok := v.lookupValidatedCols(path, stamp); ok {
-			mergeColumnUnion(union, cols)
+			union.merge(cols)
 			continue
 		}
 		if len(stamp) > 0 && parquetcheck.Check(path, stamp) == nil {
@@ -189,7 +192,7 @@ func (v *parquetSchemaValidator) validateConcrete(
 			// caller-owned map (a manifest entry in production), which
 			// would make it poisonable and racy.
 			v.markValidated(path, maps.Clone(stamp), maps.Clone(stamp))
-			mergeColumnUnion(union, stamp)
+			union.merge(stamp)
 			continue
 		}
 		// Either there is no stamp, or the stamp fails the invariant. A stamp
@@ -204,7 +207,7 @@ func (v *parquetSchemaValidator) validateConcrete(
 			complete = false // inconclusive: defer to the execution-path classifier
 			continue
 		}
-		mergeColumnUnion(union, cols)
+		union.merge(cols)
 	}
 	return complete, nil
 }
@@ -359,18 +362,6 @@ func (v *parquetSchemaValidator) warnStampDivergence(path string, stamp, probed 
 		zap.String("path", path),
 		zap.Any("stamp_cols", stamp),
 		zap.Any("footer_cols", probed))
-}
-
-// mergeColumnUnion folds one footer's columns into the running union.
-// First-seen type wins on a cross-generation type conflict: #255 consumes
-// only the names (a column present anywhere is never augmented), and the
-// scan's union_by_name owns type widening (#189).
-func mergeColumnUnion(union, cols map[string]string) {
-	for name, typ := range cols {
-		if _, ok := union[name]; !ok {
-			union[name] = typ
-		}
-	}
 }
 
 // lookupValidatedCols answers from the cache only while the entry's recorded

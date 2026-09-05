@@ -70,7 +70,7 @@ func TestTrustedStampAdmitsObjectMissingCreatedAt(t *testing.T) {
 	require.Empty(t, exec.probes,
 		"the trusted stamp spares the footer probe — the validator never sees the real bytes")
 	require.True(t, complete)
-	require.Contains(t, union, "ltbase_created_at",
+	require.Contains(t, union.types, "ltbase_created_at",
 		"the union is built from the STAMP, which claims the column the bytes lack")
 }
 
@@ -107,7 +107,7 @@ func TestScanGuardCatchesWhatTheTrustedStampAdmitted(t *testing.T) {
 
 	// GREEN half: the production scan source refuses it.
 	guarded, err := db.Query("SELECT ltbase_created_at FROM " +
-		sqlgen.BuildParquetScanSource(paths, nil))
+		sqlgen.BuildParquetScanSource(paths, nil, nil))
 	if err == nil {
 		for guarded.Next() {
 		}

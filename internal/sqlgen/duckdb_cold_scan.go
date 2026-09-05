@@ -7,19 +7,27 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-// NullScanColumn names one current-schema attribute column that is
-// physically absent from EVERY parquet file in a query's resolved scan set
-// (#255): an attribute added to the schema before its first flush. The scan
-// source projects it as a typed NULL so both the explicit projection
-// (S3SourceSelect) and the semijoin's logical clause bind, with exact SQL
-// NULL semantics for filters, sorts, and keysets.
-type NullScanColumn struct {
+// ScanColumn names one current-schema attribute column the scan source
+// projects explicitly, in one of two roles:
+//
+//   - MISSING (#255): the folded column is physically absent from EVERY
+//     parquet file in the resolved scan set (an attribute added before its
+//     first flush). It renders as NULL::<type> so both the explicit
+//     projection (S3SourceSelect) and the semijoin's logical clause bind,
+//     with exact SQL NULL semantics for filters, sorts, and keysets.
+//   - PINNED (#371): the column is present but its type is not the one the
+//     schema expects — the files disagree among themselves, or agree on a
+//     stale type. It renders as CAST(<col> AS <type>) inside the system
+//     REPLACE list, re-pinning the schema type the way the guard re-pins
+//     changed_at, so a stale generation cannot widen the union and turn an
+//     ORDER BY lexicographic.
+type ScanColumn struct {
 	// Name is the folded parquet column name (ParquetAttrColumn output).
 	Name string
-	// DuckDBType renders as NULL::<type>. It must type-unify with the
-	// pg_source leg of the UNION ALL, so it mirrors the hot-tier EAV pivot
-	// (buildEAVPivotExpr) and the CDC export (cdc.castEAVValue) — the #205
-	// no-widening parity.
+	// DuckDBType is the schema-expected DuckDB type. It must type-unify with
+	// the pg_source leg of the UNION ALL, so it mirrors the hot-tier EAV
+	// pivot (buildEAVPivotExpr) and the CDC export (cdc.castEAVValue) — the
+	// #205 no-widening parity.
 	DuckDBType string
 }
 
@@ -128,33 +136,69 @@ const (
 //
 // A scan set where NO object carries a guarded column fails to bind the
 // REPLACE list instead. Different message, same contract: loud, never silent.
-var parquetSystemColumnGuardItem = fmt.Sprintf(
-	"* REPLACE (COALESCE(row_id, error('%s')) AS row_id, "+
+//
+// ATTRIBUTE columns get the same TYPE pin, but selectively (#371): the
+// pre-read validator reports which attribute columns disagree across the
+// scan set or disagree with the schema's expected type, and only those are
+// appended to this REPLACE list as CAST(col AS <schema type>) AS col — see
+// BuildParquetScanSource. A healthy scan set renders exactly the items below,
+// so filter pushdown on attribute columns is not wrapped in a CAST in the
+// common case and the rendered SQL stays byte-identical to the unpinned form.
+var parquetSystemColumnGuardItems = fmt.Sprintf(
+	"COALESCE(row_id, error('%s')) AS row_id, "+
 		"CAST(COALESCE(changed_at, error('%s')) AS BIGINT) AS changed_at, "+
 		"CAST(deleted_at AS BIGINT) AS deleted_at, "+
 		"CASE WHEN ltbase_created_at IS NULL "+
 		"AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('%s') "+
-		"ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at)",
+		"ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at",
 	ParquetNullRowIDMessage, ParquetNullChangedAtMessage, ParquetNullCreatedAtMessage)
 
 // BuildParquetScanSource renders the parquet scan for the advanced
-// template's two scan sites: the system-column guard above, plus (#255) a
-// typed NULL for every current-schema column absent from every file in the
-// set.
+// template's two scan sites: the system-column guard above, extended with a
+// type pin for each `pinned` attribute column (#371), plus (#255) a typed
+// NULL for every current-schema column absent from every file in the set
+// (`missing`).
 //
 // The guard renders unconditionally, so this no longer has a "bare
 // read_parquet" idle state — the pre-#256 byte-identity of the zero-missing
 // output is deliberately retired. Every rendered-SQL contract that pinned it
 // (including the #214 design-doc guard and docs/federated-query/design.md §5)
-// moves in lockstep.
-func BuildParquetScanSource(pathsSQL string, missing []NullScanColumn) string {
+// moves in lockstep. With no pinned columns the REPLACE list is exactly the
+// system guard, so the #371 pin costs a healthy scan set nothing.
+//
+// A pinned CAST has the changed_at guard's semantics: a numeric string
+// coerces value-preservingly ('9' → 9, so ORDER BY is numeric again) and
+// garbage fails loudly with DuckDB's own conversion error, which the read
+// path already classifies as a loud read failure.
+func BuildParquetScanSource(pathsSQL string, missing, pinned []ScanColumn) string {
 	base := fmt.Sprintf("read_parquet(%s, union_by_name=true)", pathsSQL)
+	replace := make([]string, 0, len(pinned)+1)
+	replace = append(replace, parquetSystemColumnGuardItems)
+	for _, pc := range pinned {
+		replace = append(replace, fmt.Sprintf("CAST(%s AS %s) AS %s", pc.Name, pc.DuckDBType, pc.Name))
+	}
 	parts := make([]string, 0, len(missing)+1)
-	parts = append(parts, parquetSystemColumnGuardItem)
+	parts = append(parts, "* REPLACE ("+strings.Join(replace, ", ")+")")
 	for _, mc := range missing {
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
 	}
 	return fmt.Sprintf("(SELECT %s FROM %s) AS cold_scan", strings.Join(parts, ", "), base)
+}
+
+// ScanTypesCompatible reports whether a parquet column's observed DuckDB
+// type satisfies the schema-expected one without a pin. Beyond equality,
+// VARCHAR and UUID are compatible in both directions: a column-bound uuid
+// attribute exports as a parquet UUID while the EAV path exports it as
+// VARCHAR (#147's dual encoding), and DuckDBNullScanType answers VARCHAR
+// for both, so treating that pair as drift would pin every healthy uuid
+// column on every scan. Everything else — including INTEGER against VARCHAR,
+// the quiet lexicographic-ordering channel #371 closes — needs the pin.
+func ScanTypesCompatible(observed, expected string) bool {
+	if strings.EqualFold(observed, expected) {
+		return true
+	}
+	o, e := strings.ToUpper(observed), strings.ToUpper(expected)
+	return (o == "VARCHAR" && e == "UUID") || (o == "UUID" && e == "VARCHAR")
 }
 
 // DuckDBNullScanType maps an attribute's metadata to the DuckDB type its

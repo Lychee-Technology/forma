@@ -156,6 +156,8 @@ func TestParseCDCInitFlagsMapsArgsToConfig(t *testing.T) {
 		"-max-batch-size=99",
 		"-schema-id=3",
 		"-dry-run",
+		"-replace-delta",
+		"-delta-prefix=my-delta",
 	})
 	if err != nil {
 		t.Fatalf("parse cdc-init flags: %v", err)
@@ -189,6 +191,12 @@ func TestParseCDCInitFlagsMapsArgsToConfig(t *testing.T) {
 	}
 	if !opts.dryRun {
 		t.Error("dryRun = false, want true")
+	}
+	if !opts.replaceDelta {
+		t.Error("replaceDelta = false, want true")
+	}
+	if opts.deltaPrefix != "my-delta" {
+		t.Errorf("deltaPrefix = %q, want %q", opts.deltaPrefix, "my-delta")
 	}
 	// -estimated-row-bytes was not passed, so the auto-estimate path stays on.
 	// This flag is derived, not read back from cfg, and dropping the derivation
@@ -240,6 +248,15 @@ func TestParseCDCInitFlagsUsingDefaults(t *testing.T) {
 	}
 	if opts.cfg.S3Prefix != "base" {
 		t.Errorf("S3Prefix = %q, want %q", opts.cfg.S3Prefix, "base")
+	}
+	// The delta-tier flags (#371) are flag-layer only; WithDefaults never
+	// sees them. The default delta prefix matches cdc-flush --s3-prefix, and
+	// the purge is opt-in.
+	if opts.replaceDelta {
+		t.Error("replaceDelta = true, want false by default")
+	}
+	if opts.deltaPrefix != "delta" {
+		t.Errorf("deltaPrefix = %q, want %q", opts.deltaPrefix, "delta")
 	}
 	if opts.cfg.ManifestTemplate != "manifest/{{.SchemaID}}.json" {
 		t.Errorf("ManifestTemplate = %q, want %q", opts.cfg.ManifestTemplate, "manifest/{{.SchemaID}}.json")

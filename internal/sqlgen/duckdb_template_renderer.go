@@ -253,13 +253,15 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 		}
 	}
 	// The scan source folds the resolved path list with the cold-missing
-	// column set (#255). Derived here — the single point both the direct
-	// builder and CompileDuckDBQuery flow through — so the compiled skeleton
-	// and the direct render can never disagree.
+	// column set (#255) and the cold-pinned set (#371). Derived here — the
+	// single point both the direct builder and CompileDuckDBQuery flow
+	// through — so the compiled skeleton and the direct render can never
+	// disagree.
 	if _, ok := params["S3_SCAN_SOURCE"]; !ok {
 		if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
-			missing, _ := params["ColdMissingColumns"].([]NullScanColumn)
-			params["S3_SCAN_SOURCE"] = BuildParquetScanSource(pathsSQL, missing)
+			missing, _ := params["ColdMissingColumns"].([]ScanColumn)
+			pinned, _ := params["ColdPinnedColumns"].([]ScanColumn)
+			params["S3_SCAN_SOURCE"] = BuildParquetScanSource(pathsSQL, missing, pinned)
 		}
 	}
 

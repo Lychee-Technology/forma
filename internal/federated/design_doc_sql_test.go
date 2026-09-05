@@ -157,7 +157,7 @@ func TestDesignDocSQL_ScanSourceMatchesRuntimeGuard(t *testing.T) {
 
 	// The doc's path placeholder stands where the renderer splices its path
 	// list, so the rest of the source text must match byte for byte.
-	want := sqlgen.BuildParquetScanSource("$S3_PATHS", nil)
+	want := sqlgen.BuildParquetScanSource("$S3_PATHS", nil, nil)
 	require.Equal(t, 2, strings.Count(sqlText, want),
 		"§5 must render sqlgen.BuildParquetScanSource at both scan sites (s3_source FROM and the pushdown semijoin); got:\n%s", want)
 }

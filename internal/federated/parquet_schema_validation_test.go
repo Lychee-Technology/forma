@@ -208,7 +208,7 @@ func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
 	require.False(t, complete,
 		"a failed listing leaves the footer union unknown: it must not be reported complete, "+
 			"or #255 would augment columns the unlisted files may actually carry")
-	require.Empty(t, union, "nothing was probed, so nothing contributes to the union")
+	require.Empty(t, union.types, "nothing was probed, so nothing contributes to the union")
 }
 
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
@@ -309,9 +309,9 @@ func TestValidateReturnsCompleteColumnUnion(t *testing.T) {
 		[]string{"s3://b/base.parquet", "s3://b/delta.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
-	require.Contains(t, union, "name")
-	require.Contains(t, union, "score")
-	require.Contains(t, union, "row_id")
+	require.Contains(t, union.types, "name")
+	require.Contains(t, union.types, "score")
+	require.Contains(t, union.types, "row_id")
 }
 
 func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
@@ -324,7 +324,7 @@ func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
 		[]string{"s3://b/good.parquet", "s3://b/bad.parquet"}, nil)
 	require.NoError(t, err, "unreadable footer stays inconclusive, not an error")
 	require.False(t, complete)
-	require.Contains(t, union, "row_id", "probed files still contribute")
+	require.Contains(t, union.types, "row_id", "probed files still contribute")
 }
 
 // A cache hit must contribute its stored columns without a second probe.
@@ -340,7 +340,7 @@ func TestValidateCachedPathContributesColumnsWithoutReprobe(t *testing.T) {
 	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/a.parquet"}, nil)
 	require.NoError(t, err)
 	require.True(t, complete)
-	require.Contains(t, union, "score")
+	require.Contains(t, union.types, "score")
 	require.Len(t, exec.probes, probesAfterFirst, "cached path must not re-probe")
 }
 

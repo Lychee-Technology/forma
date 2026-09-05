@@ -491,3 +491,52 @@ cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败�
 
 两条路径都依赖 #290 起 cdc-init 与 reconcile 共持的那把 per-schema advisory lock：此锁下
 出现的 init 形态孤儿必非 in-flight init。
+
+## cdc-init 重跑与 delta 层（#371）
+
+`cdc-init` 全量重导出只替换 manifest 的 **base** 层。此前 delta 层原样保留，于是一次
+schema 类型修改（例如 `text`→`list`、`integer`→`text`）之后重跑 cdc-init，新 base 与
+旧类型的 delta 会同时进入同一次 federated 扫描：类型不兼容时 DuckDB 直接报
+Conversion Error；类型可以静默拓宽时（INTEGER 与 VARCHAR 并存）则 `union_by_name`
+绑成 VARCHAR，ORDER BY 悄悄变成字典序。读路径现在对这类列做选择性 `CAST` 重钉
+（见 `docs/federated-query/design.md` 中的 #371 段落），但那只是读守卫；把旧代
+delta 真正退役的是 cdc-init 本身：
+
+- **默认拒绝。** 每个 schema 在导出前、在 per-schema advisory lock 之下先盘点 delta 层：
+  manifest 的 delta 条目，加上 `--delta-prefix`（默认 `delta`，与 `cdc-flush --s3-prefix`
+  对齐）下 `{prefix}/{schemaID}/` 直接子键中 delta 形态（`<uuid>.parquet`）的对象。
+  盘点非空且未传 `--replace-delta` 时，该 schema 以 `cdc.ErrDeltaTierPresent` 失败，
+  错误信息给出 manifest 已列 / 未列的数量，其它 schema 照常继续；`--dry-run` 同样
+  报告拒绝。`--delta-prefix ""` 关闭对象列举，只看 manifest。
+- **先换 base，再删 delta。** 传 `--replace-delta` 后，manifest 发布是一次原子 CAS：
+  base 层替换为本次导出的条目，delta 层同时清空（412 重试时重新拼接两层，期间新
+  出现的 delta 条目并入清理集）。**只有 manifest 保存成功之后**才逐个删除清理集中的
+  对象。删除失败会记录 key 并让该 schema 返回带 key 列表的错误，但已发布的 manifest
+  不回滚：读者此时只会看到新 base，残留对象成为未列孤儿，可由下文规则处理。
+  `--dry-run` 只打印 `would delete N delta objects`。
+- **无 live 行的 schema 不换 base，也不动 delta。** 这类 schema 没有可发布的 swap，
+  带 `--replace-delta` 时只记一条 warning。
+- **manifest 条目无法归一化时先拒绝。** glob 条目或指向其它 bucket 的 `s3://` 条目无法
+  通过本客户端删除，带 `--replace-delta` 时该 schema 在导出前即失败（fail-closed）。
+
+**为什么就地删除，而不是交给 `--gc`。** 重 init 之后新 base 只含 live 行，旧 delta 里
+每个 tombstone 都"未被覆盖"且对应行在 Postgres 已死——这正是上文
+`classifyDeltaOrphan` 判定为"lost delete"并 **append 回 manifest** 的形态。若把旧
+delta 留给 reconcile，下一次 `--repair` 会把它重新列回 manifest，旧类型代再次污染
+读取，且永远到不了 GC。init 形态晋升的两轮收敛依赖这条判定，改分类器不是选项，
+所以清理必须在 swap 之后由 cdc-init 自己完成；同理，未列在 manifest 的 delta 形态
+孤儿也一并删除。
+
+**读者窗口。** 与 compaction（#461）不同，`--replace-delta` 没有 sighting grace：
+在 swap 之前解析了 manifest 的读者可能对已列出的 delta key 撞到一次 missing-object
+失败，下一次查询重新解析 manifest 即自愈。请在低流量窗口执行 `cdc-init --replace-delta`
+——全量重导出本来就该如此。默认拒绝把破坏性步骤挡在误配置路径之外：prefix 或
+template 指错只会让 init 拒绝，不会删任何东西（#463 教训）。
+
+```bash
+# 类型修改后的重跑：先看会拒绝什么 / 会删什么
+forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta --dry-run
+# 低流量窗口内真正执行：base swap 提交后清空 delta 层
+forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta
+```
+

@@ -47,7 +47,7 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 	// Only the second object's generation carries the "city" column; both
 	// stamps satisfy the system-column invariant.
 	secondCols := buildStampedSystemCols()
-	secondCols["city"] = "BIGINT"
+	secondCols["city"] = "INTEGER" // the column-bound integer export type; anything else would be pinned (#371)
 	src := &fakeParquetSource{
 		paths: paths,
 		stamps: map[string]map[string]string{
@@ -68,11 +68,12 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 		"a fully stamped path set must validate without a single footer probe")
 	// The stamps did not merely skip the probes, they fed the footer union, and
 	// that union is COMPLETE (an incomplete one may not drive #255 at all, so
-	// coldMissing would be empty). "city" came from the second stamp and is
+	// cold.missing would be empty). "city" came from the second stamp and is
 	// therefore not augmented; "age" appears in neither stamp and is.
-	require.Len(t, sc.coldMissing, 1,
+	require.Len(t, sc.cold.missing, 1,
 		"the stamped union must suppress augmentation of the column it reports")
-	require.Equal(t, "age", sc.coldMissing[0].Name)
+	require.Equal(t, "age", sc.cold.missing[0].Name)
+	require.Empty(t, sc.cold.pinned, "a healthy stamped set pins nothing (#371)")
 }
 
 // TestResolveScanSourcesHintPathsHaveNoStamps: hint-authored paths never pass

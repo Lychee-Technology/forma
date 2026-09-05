@@ -123,7 +123,7 @@ bun run cdc-flush
 bun run federated-check
 
 # Extended steps
-bun run cdc-init          # Backfill base parquet
+bun run cdc-init          # Backfill base parquet (add -- --replace-delta to re-init over existing delta files)
 bun run compactor -- --all # Merge delta into base
 ```
 

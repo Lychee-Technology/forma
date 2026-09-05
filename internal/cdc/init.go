@@ -26,6 +26,16 @@ type InitOptions struct {
 	AutoEstimateRowBytes bool
 	Logger               *zap.Logger
 	SchemaRegistry       forma.SchemaRegistry
+	// ReplaceDelta lets the run purge the schema's delta tier after its base
+	// swap commits (#371). Without it a schema whose delta tier is non-empty
+	// refuses with ErrDeltaTierPresent: a base-only swap would leave stale
+	// delta generations (possibly with a superseded column type) under the
+	// new base, and every read would fold them.
+	ReplaceDelta bool
+	// DeltaPrefix is the S3 prefix the flusher writes delta files under
+	// (cdc-flush --s3-prefix). It is listed for delta-shaped objects the
+	// manifest does not mention; empty skips the listing.
+	DeltaPrefix string
 }
 
 // InitSummary reports totals across all schemas processed by RunInit.
@@ -47,6 +57,8 @@ type initRunContext struct {
 	dryRun               bool
 	autoEstimateRowBytes bool
 	pgConnStr            string
+	replaceDelta         bool
+	deltaPrefix          string
 	// tryLock and initSchemaFn are test seams (nil→real impl below), mirroring the flusher's processSchemaFn seam.
 	tryLock      func(ctx context.Context, db *sql.DB, schemaID int16) (bool, func(), error)
 	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error)
@@ -59,6 +71,11 @@ type initRunContext struct {
 	// exportBaseFile is a test seam for the DuckDB base-file export (nil uses
 	// the exporter), mirroring the flusher's exportSnapshot seam.
 	exportBaseFile func(ctx context.Context, state *schemaInitState, batch schemaBatchExport) error
+	// listObjectKeys and deleteObject are the delta-tier inventory and purge
+	// seams (#371); nil means no usable S3 client. applyInitS3Wiring builds
+	// the real ones over the run's S3 client.
+	listObjectKeys func(ctx context.Context, prefix string) ([]string, error)
+	deleteObject   func(ctx context.Context, key string) error
 }
 
 // normalizeInitOptions applies the same config defaults as Runner.RunOnce.
@@ -79,6 +96,10 @@ type schemaInitState struct {
 	fileEntries  []manifest.FileEntry
 	rowsExported int64
 	filesCreated int
+	// deltaPurge is the set of bucket-relative delta keys the run deletes
+	// once its manifest swap has committed (#371): the pre-flight inventory
+	// plus any delta entry the publish finds in a reloaded manifest.
+	deltaPurge []string
 }
 
 type schemaBatchExport struct {
@@ -125,6 +146,8 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		dryRun:               opts.DryRun,
 		autoEstimateRowBytes: opts.AutoEstimateRowBytes,
 		pgConnStr:            pgConnStr,
+		replaceDelta:         opts.ReplaceDelta,
+		deltaPrefix:          opts.DeltaPrefix,
 	}
 	applyInitS3Wiring(runCtx, cfg, opts.S3Client)
 
@@ -240,20 +263,36 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 }
 
 // initSchema exports all existing data for a single schema to S3 base files.
+// The delta tier is inventoried first (#371): a non-empty delta tier refuses
+// the schema unless the run may replace it, and with that permission the
+// inventory is purged only after the manifest swap has committed.
 func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
+	inventory, err := preflightDeltaTier(ctx, runCtx, schemaID)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	state, err := prepareSchemaInit(ctx, runCtx, schemaID)
 	if err != nil {
 		return 0, 0, err
 	}
 	if state == nil {
+		if !inventory.empty() {
+			// No live rows means no base swap, and the purge is ordered
+			// strictly after the swap, so the delta tier stays in place.
+			runCtx.logger.Warn("schema has no live rows; delta tier left in place because there is no base swap to publish",
+				zap.Int16("schema_id", schemaID),
+				zap.Int("delta_objects", len(inventory.purgeKeys())))
+		}
 		return 0, 0, nil
 	}
+	state.deltaPurge = inventory.purgeKeys()
 
 	if err := processSchemaBatches(ctx, runCtx, state); err != nil {
 		return state.rowsExported, state.filesCreated, err
 	}
 
-	if err := updateSchemaManifest(ctx, runCtx, state); err != nil {
+	if err := publishAndPurge(ctx, runCtx, state); err != nil {
 		return state.rowsExported, state.filesCreated, err
 	}
 
@@ -263,6 +302,18 @@ func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (in
 		zap.Int("total_files_created", state.filesCreated))
 
 	return state.rowsExported, state.filesCreated, nil
+}
+
+// publishAndPurge orders the two post-export steps (#371): the manifest
+// swap commits first, and only then are the superseded delta objects
+// deleted. A failed publish therefore deletes nothing — the old manifest
+// still lists the delta, and the export is unreachable garbage on
+// write-once keys — while a failed delete leaves the swap published.
+func publishAndPurge(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
+	if err := updateSchemaManifest(ctx, runCtx, state); err != nil {
+		return err
+	}
+	return purgeDeltaTier(ctx, runCtx, state)
 }
 
 func prepareSchemaInit(ctx context.Context, runCtx *initRunContext, schemaID int16) (*schemaInitState, error) {
@@ -418,58 +469,4 @@ func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schem
 		zap.Int("files_created", state.filesCreated),
 		zap.String("final_key", batch.finalKey))
 	return nil
-}
-
-// getEntityMainCount returns the total number of non-deleted rows for a schema.
-func getEntityMainCount(ctx context.Context, db *sql.DB, tableName string, schemaID int16) (int64, error) {
-	if tableName == "" {
-		tableName = "entity_main"
-	}
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL",
-		sanitizeIdentifier(tableName))
-	row := db.QueryRowContext(ctx, query, schemaID)
-	var cnt int64
-	if err := row.Scan(&cnt); err != nil {
-		return 0, fmt.Errorf("count rows: %w", err)
-	}
-	return cnt, nil
-}
-
-// selectEntityMainBatch returns a batch of row IDs ordered by ltbase_row_id,
-// strictly after the `after` cursor (nil starts from the beginning). Keyset
-// pagination, not LIMIT/OFFSET: init runs against a live table (TrySchemaLock
-// excludes only flusher/init/reconcile, not CRUD), and with OFFSET a row
-// deleted below the cursor shifts the window left and silently drops one live
-// row from the wholesale-replaced base tier (#462). The row-id cursor is
-// immune — membership changes below it cannot move the window.
-func selectEntityMainBatch(ctx context.Context, db *sql.DB, tableName string, schemaID int16, after *uuid.UUID, limit int) ([]uuid.UUID, error) {
-	if tableName == "" {
-		tableName = "entity_main"
-	}
-	query := fmt.Sprintf(`
-		SELECT ltbase_row_id
-		FROM %s
-		WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL AND ($3::uuid IS NULL OR ltbase_row_id > $3)
-		ORDER BY ltbase_row_id
-		LIMIT $2`,
-		sanitizeIdentifier(tableName))
-
-	rows, err := db.QueryContext(ctx, query, schemaID, limit, after)
-	if err != nil {
-		return nil, fmt.Errorf("select batch: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan row id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate row ids: %w", err)
-	}
-	return ids, nil
 }

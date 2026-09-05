@@ -246,12 +246,13 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
 	}
-	mustFlush(ctx, t, env) // delta #1: v1 of both rows
-	// Init now exports base copies of the same versions: an equal-ver_ts
-	// base-vs-delta pair per row (#210 seed shape).
+	// Init exports base copies of v1, then the flush writes the same versions
+	// as delta: an equal-ver_ts base-vs-delta pair per row (#210 seed shape).
+	// Init runs first because since #371 it refuses over a populated delta.
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
+	mustFlush(ctx, t, env) // delta #1: v1 of both rows
 
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "multi-version-v2"})
 	if err := env.ApplyEvents(ctx, update); err != nil {
