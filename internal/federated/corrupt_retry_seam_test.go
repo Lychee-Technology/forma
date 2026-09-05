@@ -245,15 +245,17 @@ func TestCorruptRetryPageCarriesPartialMarker(t *testing.T) {
 	require.Equal(t, []string{retryCorruptPath1}, page.Partial.ExcludedObjects)
 }
 
-// TestDegradedFallbackClearsPartialMarker pins the #348 out-parameter's
+// TestDegradedFallbackReplacesPartialMarker pins the #348 out-parameter's
 // agreement with the page on the degraded path. The retry pass excludes the
 // first confirmed-corrupt object and therefore SETS opts.PartialScan; that
 // pass then fails too, and AllowPartialDegradedMode absorbs the failure into a
 // postgres-only answer. Because PartialScan is an out-parameter shared with the
 // caller, the marker left behind by the abandoned DuckDB pass would otherwise
-// describe a page that never scanned parquet at all — and the marker's scope
-// (#251 corrupt exclusion) never describes a postgres-only page.
-func TestDegradedFallbackClearsPartialMarker(t *testing.T) {
+// describe a page that never scanned parquet at all — the corrupt-exclusion
+// scope (#251) never describes a postgres-only page. Since #468 the
+// postgres-only answer carries its own marker instead: the cold tier the
+// request asked for was never consulted.
+func TestDegradedFallbackReplacesPartialMarker(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -271,9 +273,11 @@ func TestDegradedFallbackClearsPartialMarker(t *testing.T) {
 	require.NoError(t, err, "degraded mode must absorb the second retryable failure")
 	require.Len(t, duck.mainSQL, 2, "the retry pass must have run and set the marker before degrading")
 
-	require.Nil(t, page.Partial, "a postgres-only page must not be marked partial")
-	require.Nil(t, opts.PartialScan,
-		"the out-parameter must agree with the page: the abandoned DuckDB pass's marker must be cleared")
+	require.NotNil(t, page.Partial, "a postgres-only answer to a hot+cold request is marked hot-tier-only (#468)")
+	require.Empty(t, page.Partial.ExcludedObjects, "the abandoned DuckDB pass's corrupt-exclusion marker must not survive")
+	require.Equal(t, []model.DataTier{model.DataTierCold}, page.Partial.UnconsultedTiers)
+	require.Same(t, page.Partial, opts.PartialScan,
+		"the out-parameter must agree with the page")
 }
 
 // TestCleanQueryPageHasNoPartialMarker is the negative leg: a scan over the

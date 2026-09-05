@@ -62,6 +62,12 @@ type FederatedQueryOptions struct {
 // #301/#306 boundary).
 type PartialScan struct {
 	ExcludedObjects []string
+	// UnconsultedTiers names the tiers the request asked for (explicitly, or
+	// all three by omission) that a Postgres-only answer never read (#468):
+	// the routed small-page shortcut, a disabled engine, and the degraded
+	// fallback all answer from entity_main alone. Never set on a DuckDB
+	// pass, so it and ExcludedObjects are mutually exclusive.
+	UnconsultedTiers []DataTier
 }
 
 type RoutingDecision struct {
