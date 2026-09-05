@@ -119,10 +119,11 @@ func TestDeleteObjects_UsesBucketRelativeKey(t *testing.T) {
 	c.deleteObjects(context.Background(), 1, []string{
 		"s3://bkt/p/1/aaa.parquet",
 		"/p/1/bbb.parquet",
+		"s3://bkt//p/1/ddd.parquet", // own-bucket URI: key "/p/1/ddd.parquet", verbatim
 		"s3://other-bkt/p/1/ccc.parquet",
 		"s3://bkt/",
 	})
-	require.Equal(t, []string{"p/1/aaa.parquet", "p/1/bbb.parquet"}, s3c.deletes)
+	require.Equal(t, []string{"p/1/aaa.parquet", "p/1/bbb.parquet", "/p/1/ddd.parquet"}, s3c.deletes)
 	require.Len(t, logs.All(), 2, "one WARN per skipped path")
 	require.Equal(t, "s3://other-bkt/p/1/ccc.parquet", logs.All()[0].ContextMap()["path"])
 	require.Equal(t, "s3://bkt/", logs.All()[1].ContextMap()["path"])

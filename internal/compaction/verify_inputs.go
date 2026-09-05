@@ -115,19 +115,21 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 // empty key names nothing the compactor could merge, hash or delete, so it is
 // out of scope like a foreign one rather than passed on to fail downstream
 // (the refusal quotes the path so "" stays legible in the error).
-// It is the single path rule shared by the rewrite gates and deleteObjects:
-// objectURI's leading-slash trim for relative paths plus the own-bucket
-// prefix match for absolute URIs, an exact match so s3://bktX/ never passes
-// as bkt.
+// It is the single path rule shared by the rewrite gates and deleteObjects,
+// and it must resolve exactly the object objectURI hands DuckDB: a relative
+// path loses its leading slash (objectURI renders it that way), while an
+// own-bucket URI keeps its key verbatim (s3://bkt//x names key "/x", the
+// object the unchanged URI reads), so the gate never hashes one key while
+// the merge reads another. The prefix match is exact, so s3://bktX/ never
+// passes as bkt.
 func (c *Compactor) bucketRelativeKey(path string) (string, bool) {
-	key := path
+	key := strings.TrimPrefix(path, "/")
 	if strings.HasPrefix(path, "s3://") {
 		key = strings.TrimPrefix(path, "s3://"+c.Bucket+"/")
 		if key == path {
 			return "", false
 		}
 	}
-	key = strings.TrimPrefix(key, "/")
 	if key == "" {
 		return "", false
 	}

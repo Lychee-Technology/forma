@@ -182,6 +182,22 @@ func TestVerifySourceChecksums_OwnBucketAbsolutePathVerified(t *testing.T) {
 	require.Equal(t, []string{"p/1/aaa.parquet"}, s3c.gets)
 }
 
+// An own-bucket URI names its key verbatim: s3://bkt//p/x is key "/p/x", the
+// object objectURI hands DuckDB through the unchanged URI. The gate must hash
+// that same object, not a slash-trimmed neighbour, or it verifies one key
+// while the merge reads another (#515 review). The leading-slash trim is for
+// relative paths only.
+func TestVerifySourceChecksums_OwnBucketURIKeyPreservedVerbatim(t *testing.T) {
+	c, s3c := newVerifyFixture(zap.NewNop())
+	s3c.putObject("/p/1/aaa.parquet", sourcePayload)
+
+	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
+		stampedEntry("s3://bkt//p/1/aaa.parquet", sourcePayload),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"/p/1/aaa.parquet"}, s3c.gets, "the gate must hash the key the merge will read")
+}
+
 // stampedRewriteManifest is rewrite-eligible (10% dirty ratio, sub-threshold
 // delta bytes) with both merge sources stamped.
 func stampedRewriteManifest() *manifest.Manifest {
