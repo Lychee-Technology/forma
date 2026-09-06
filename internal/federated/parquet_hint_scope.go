@@ -11,10 +11,6 @@ import (
 // (federated.s3_parquet_path_template), applied after the opt-in gate and
 // template rendering in duckDBParquetPathsForQuery (#456, #477).
 
-// hintWildcardChars are the DuckDB glob metacharacters. A segment carrying any
-// of them is a pattern, not a literal name.
-const hintWildcardChars = "*?["
-
 // validateHintPathScope fails a caller-supplied parquet path set unless every
 // rendered path sits inside the permitted scope and has a safe shape.
 //
@@ -46,8 +42,14 @@ const hintWildcardChars = "*?["
 // reaching a render site, at the cost of refusing the rare object key that
 // legitimately contains one.
 //
-// The bucket is trimmed to match Config.ValidateCallerParquetPaths, which
-// rejects a whitespace-only bucket at startup; trimming here keeps a
+// The configured prefix is spliced verbatim into the scope, and the shape
+// rules below inspect only the key beneath it, so a prefix carrying a glob
+// metacharacter (`data/*`, `data/**`) would hand every hint a directory
+// wildcard the caller never wrote — `**` in the prefix reaches `_tmp/`
+// outright (#526 review). Config.ValidateCallerParquetPaths rejects such a
+// prefix at startup; the check here refuses every hint on a hand-built engine
+// that skipped it. The bucket is trimmed for the same reason: startup
+// validation rejects a whitespace-only bucket, and trimming keeps a
 // hand-built engine (tests, embedders that skip Config.Validate) consistent
 // rather than silently rejecting every hint against a padded bucket.
 func validateHintPathScope(paths []string, bucket, dataPrefix string) error {
@@ -56,6 +58,11 @@ func validateHintPathScope(paths []string, bucket, dataPrefix string) error {
 		return forma.WithOperatorDetail(
 			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
 			fmt.Errorf("duckdb.s3Bucket must be set to scope caller-supplied parquet paths"))
+	}
+	if strings.ContainsAny(dataPrefix, forma.ParquetGlobMetacharacters) {
+		return forma.WithOperatorDetail(
+			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
+			fmt.Errorf("duckdb.s3DataPrefix %q contains a glob metacharacter and cannot scope caller-supplied parquet paths", dataPrefix))
 	}
 	scope := "s3://" + bucket + "/"
 	if trimmed := strings.TrimSuffix(dataPrefix, "/"); trimmed != "" {
@@ -96,7 +103,7 @@ func validateHintPathShape(path, key string) error {
 			return forma.InvalidInputf(
 				"s3 parquet path %q is not permitted: _tmp/ staging objects are not readable", path)
 		}
-		if i != last && strings.ContainsAny(seg, hintWildcardChars) {
+		if i != last && strings.ContainsAny(seg, forma.ParquetGlobMetacharacters) {
 			return forma.InvalidInputf(
 				"s3 parquet path %q is not permitted: wildcards are allowed only in the final path segment", path)
 		}

@@ -381,3 +381,38 @@ func TestDuckDBBreakerConfigValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateDuckDBConfig_AllowCallerParquetPathsRejectsGlobPrefix pins the
+// #526 review finding: with the caller-path opt-in on, an S3DataPrefix that
+// carries a DuckDB glob metacharacter is rejected at startup. The hint scope
+// check splices the prefix verbatim into the permitted scope and applies the
+// wildcard-placement rules only to the key below it, so such a prefix would
+// hand every hint a directory wildcard the caller never wrote. With the opt-in
+// off the prefix is not a hint-scope concern and validates as before.
+func TestValidateDuckDBConfig_AllowCallerParquetPathsRejectsGlobPrefix(t *testing.T) {
+	t.Parallel()
+
+	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]"} {
+		config := DefaultConfig(NewMockSchemaRegistry())
+		config.DuckDB.S3Bucket = "forma-cdc"
+		config.DuckDB.ManifestTemplate = "manifest/{{.SchemaID}}.json"
+		config.DuckDB.S3DataPrefix = prefix
+
+		if err := config.Validate(); err != nil {
+			t.Fatalf("prefix %q: expected to validate with allowCallerParquetPaths off, got %v", prefix, err)
+		}
+
+		config.DuckDB.AllowCallerParquetPaths = true
+		err := config.Validate()
+		if err == nil {
+			t.Fatalf("prefix %q: expected Validate to reject a glob metacharacter in s3DataPrefix, got nil", prefix)
+		}
+		var configErr *ConfigError
+		if !errors.As(err, &configErr) {
+			t.Fatalf("prefix %q: expected ConfigError, got %T (%v)", prefix, err, err)
+		}
+		if configErr.Field != "duckdb.s3DataPrefix" {
+			t.Errorf("prefix %q: expected error field duckdb.s3DataPrefix, got %s", prefix, configErr.Field)
+		}
+	}
+}

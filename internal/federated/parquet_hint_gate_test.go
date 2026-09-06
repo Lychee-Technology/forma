@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -214,5 +215,29 @@ func TestHintEmptyDataPrefixKeepsBucketScope(t *testing.T) {
 		paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/anywhere/{{.SchemaID}}/*.parquet"), cfg)
 		require.NoError(t, err, "prefix %q", prefix)
 		require.Equal(t, []string{"s3://b/anywhere/7/*.parquet"}, paths, "prefix %q", prefix)
+	}
+}
+
+// TestHintGlobMetacharDataPrefixRejected pins the #526 review finding: the
+// configured S3DataPrefix is spliced verbatim into the permitted scope, and
+// the shape rules inspect only the key below it, so a prefix carrying a glob
+// metacharacter would let DuckDB expand a directory wildcard the caller never
+// wrote (`s3://b/data/*/7/x.parquet`, or `**` reaching `_tmp/`). Such a prefix
+// is rejected at startup by ValidateCallerParquetPaths; here the engine-level
+// guard refuses every hint on a hand-built config that skipped it, keeps the
+// prefix out of the published message, and leaves it in the operator copy.
+func TestHintGlobMetacharDataPrefixRejected(t *testing.T) {
+	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]", "*"} {
+		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		tmpl := "s3://b/" + prefix + "/{{.SchemaID}}/x.parquet" // sits "inside" the scope string
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
+		require.Nil(t, paths, "prefix %q", prefix)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "prefix %q", prefix)
+
+		var pub forma.PublicError
+		require.True(t, errors.As(err, &pub), "prefix %q: %v", prefix, err)
+		require.NotContains(t, pub.PublicMessage(), prefix, "prefix %q must stay operator-only", prefix)
+		require.True(t, forma.HasOperatorDetail(err), "prefix %q", prefix)
+		require.Contains(t, err.Error(), prefix, "prefix %q: operator copy must name the prefix", prefix)
 	}
 }
