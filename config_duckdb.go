@@ -50,14 +50,20 @@ type DuckDBConfig struct {
 	// manifests that index them. Required whenever ManifestTemplate is set.
 	S3Bucket string `json:"s3Bucket"`
 	// S3DataPrefix mirrors the CDC write side's S3Prefix (the prefix under
-	// which delta/base parquet files are written). It is used *only* for the
-	// legacy glob fallback covering schemas that have never been flushed and
-	// therefore have no manifest object yet. Empty disables that fallback: a
-	// schema without a manifest then resolves to zero parquet paths, and a
-	// DuckDB-routed read of it fails fast with ErrNoParquetPaths — a
-	// non-degradable read-path error naming the schema, distinct from the
-	// transient failures AllowPartialDegradedMode absorbs (#299). Leave this
-	// set unless every schema is known to be manifested.
+	// which delta/base parquet files are written): the reader's parquet root.
+	// It serves two purposes. First, the legacy glob fallback covering schemas
+	// that have never been flushed and therefore have no manifest object yet.
+	// Empty disables that fallback: a schema without a manifest then resolves
+	// to zero parquet paths, and a DuckDB-routed read of it fails fast with
+	// ErrNoParquetPaths — a non-degradable read-path error naming the schema,
+	// distinct from the transient failures AllowPartialDegradedMode absorbs
+	// (#299). Leave this set unless every schema is known to be manifested.
+	// Second, when AllowCallerParquetPaths is on, a non-empty prefix narrows
+	// the scope of caller-supplied parquet paths from the whole bucket to
+	// s3://<S3Bucket>/<S3DataPrefix>/ (#477); empty keeps bucket granularity.
+	// In that mode the prefix must not contain a glob metacharacter (`*`,
+	// `?`, `[`): it is spliced verbatim into every honored hint, where DuckDB
+	// would expand it (ValidateCallerParquetPaths rejects it at startup).
 	S3DataPrefix string `json:"s3DataPrefix"`
 	// ManifestPrefix is the root prefix for manifest objects in S3. It must
 	// match the CDC/compaction write side's ManifestPrefix.
@@ -76,8 +82,10 @@ type DuckDBConfig struct {
 	// to false: the field is a caller-controlled scan target, so on every
 	// existing deployment a request carrying it is rejected. When true, a
 	// caller template is still honored only for paths inside the configured
-	// S3Bucket (see the engine's path resolver) — the flag is necessary, not
-	// sufficient.
+	// S3Bucket — under S3DataPrefix too when one is set — and only in the
+	// fallback glob's shape: no `**`, wildcards in the object-name segment
+	// only, no `_tmp/` staging segment (#477; see the engine's path
+	// resolver). The flag is necessary, not sufficient.
 	AllowCallerParquetPaths bool `json:"allowCallerParquetPaths"`
 
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
@@ -386,21 +394,41 @@ func (c *Config) validateDuckDBConfig() error {
 	return nil
 }
 
+// ParquetGlobMetacharacters are the characters DuckDB's read_parquet treats as
+// glob metacharacters in an S3 path (`**` is two of the first). The federated
+// engine uses them to place caller-supplied wildcards, and
+// ValidateCallerParquetPaths refuses them in S3DataPrefix (#477, #526 review).
+const ParquetGlobMetacharacters = "*?["
+
 // ValidateCallerParquetPaths rejects the #456 caller-path opt-in when no bucket
-// is configured to scope hints against. Honoring
-// federated.s3_parquet_path_template requires a non-empty S3Bucket:
-// validateHintPathScope would otherwise reject every such request at run time,
-// turning an operator misconfiguration into invalid caller input. Like
-// ValidateManifestRead, validation is independent of Enabled — whether the
-// setting takes effect is the factory's gate, but an incoherent combination is
-// always a configuration error. Both cmd/server and the factory call this
-// beside ValidateManifestRead so the failure lands at startup, before any I/O,
-// rather than on the first hint-bearing request.
+// is configured to scope hints against, and when S3DataPrefix carries a glob
+// metacharacter. Honoring federated.s3_parquet_path_template requires a
+// non-empty S3Bucket: validateHintPathScope would otherwise reject every such
+// request at run time, turning an operator misconfiguration into invalid
+// caller input. The prefix rule closes a hole in the #477 shape rules: the
+// engine splices the configured prefix verbatim into the permitted scope and
+// checks wildcard placement only in the key below it, so a prefix such as
+// `data/*` or `data/**` would hand every hint a directory wildcard the caller
+// never wrote. The bucket needs no such rule — S3 bucket names cannot contain
+// these characters. Like ValidateManifestRead, validation is independent of
+// Enabled — whether the setting takes effect is the factory's gate, but an
+// incoherent combination is always a configuration error. Both cmd/server and
+// the factory call this beside ValidateManifestRead so the failure lands at
+// startup, before any I/O, rather than on the first hint-bearing request.
 func (d DuckDBConfig) ValidateCallerParquetPaths() error {
-	if d.AllowCallerParquetPaths && strings.TrimSpace(d.S3Bucket) == "" {
+	if !d.AllowCallerParquetPaths {
+		return nil
+	}
+	if strings.TrimSpace(d.S3Bucket) == "" {
 		return &ConfigError{
 			Field:   "duckdb.s3Bucket",
 			Message: "must be set when duckdb.allowCallerParquetPaths is enabled",
+		}
+	}
+	if strings.ContainsAny(d.S3DataPrefix, ParquetGlobMetacharacters) {
+		return &ConfigError{
+			Field:   "duckdb.s3DataPrefix",
+			Message: "must not contain a glob metacharacter (*, ?, [) when duckdb.allowCallerParquetPaths is enabled",
 		}
 	}
 	return nil
