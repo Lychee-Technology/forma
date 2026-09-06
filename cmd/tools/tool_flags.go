@@ -183,3 +183,20 @@ func (f *duckExportFlags) register(fs *flag.FlagSet, opts duckExportFlagOptions)
 	fs.StringVar(&f.parquetCompression, "parquet-compression", "zstd", "Parquet compression codec")
 	fs.IntVar(&f.parquetCompressionLevel, "parquet-compression-level", 3, "Parquet compression level")
 }
+
+// validateManifestTemplateFlag runs the read path's two-probe manifest
+// template check (#300) on a writer tool's --manifest-template, so a
+// constant path, a {{.SchemaId}} typo or a printf verb is a flag error
+// before any connection is opened — the same pre-flight cdc.RunInit runs
+// (#518, #520). An empty template is left alone: cdc-flush reads it as
+// "manifest tracking off" and manifest.PathResolver substitutes its
+// default for the compactor and manifest-reconcile.
+func validateManifestTemplateFlag(tmpl string) error {
+	if tmpl == "" {
+		return nil
+	}
+	if err := forma.ValidateManifestPathTemplate("manifest-template", tmpl); err != nil {
+		return fmt.Errorf("validate --manifest-template: %w", err)
+	}
+	return nil
+}

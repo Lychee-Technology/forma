@@ -3,12 +3,15 @@ package compaction
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type recordingManifestStore struct {
@@ -70,4 +73,89 @@ func TestManifestProvider_SaveManifest_AdvancesMetadataAndMutatesInput(t *testin
 	require.Equal(t, m.Version, persisted.Version)
 	require.Equal(t, m.UpdatedAtMs, persisted.UpdatedAtMs)
 	require.Equal(t, m.Files, persisted.Files)
+}
+
+// memManifestStore is a loadable in-memory manifest.Store: recordingManifestStore
+// only records saves, so the #520 identity check needs one that can load.
+type memManifestStore struct {
+	data  map[string][]byte
+	saves int
+}
+
+func (s *memManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
+	b, ok := s.data[path]
+	if !ok {
+		return nil, "", fmt.Errorf("mem store %s: %w", path, manifest.ErrObjectNotFound)
+	}
+	return b, "etag", nil
+}
+
+func (s *memManifestStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[path] = append([]byte(nil), data...)
+	s.saves++
+	return fmt.Sprintf("etag-%d", s.saves), nil
+}
+
+// A fixed-file template collapses every schema onto one manifest. Once that
+// manifest is stamped for schema 2, the compactor must not swap schema 1's
+// tiers on it (#520) while schema 2 keeps loading it. The typed error is
+// returned unwrapped so the compactor's "load manifest: %w" wrap is the only
+// layer above it.
+func TestManifestProvider_LoadManifest_RejectsForeignSchema(t *testing.T) {
+	ctx := context.Background()
+	store := &memManifestStore{}
+	provider := NewManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/shared.json"}, store)
+	_, err := manifest.Save(ctx, store, "manifest/shared.json", &manifest.Manifest{SchemaID: 2}, "")
+	require.NoError(t, err)
+
+	_, _, err = provider.LoadManifest(ctx, 1)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	var mismatch *forma.ManifestSchemaMismatchError
+	require.ErrorAs(t, err, &mismatch)
+	require.Equal(t, int16(1), mismatch.RequestedSchemaID)
+	require.Equal(t, int16(2), mismatch.ManifestSchemaID)
+	require.Equal(t, "manifest/shared.json", mismatch.Path)
+
+	m, _, err := provider.LoadManifest(ctx, 2)
+	require.NoError(t, err, "the manifest still loads for the schema it is stamped for")
+	require.Equal(t, int16(2), m.SchemaID)
+}
+
+// The zero stamp keeps the read path's lenience (see LoadOrCreateForSchema).
+func TestManifestProvider_LoadManifest_AcceptsZeroStamp(t *testing.T) {
+	store := &memManifestStore{data: map[string][]byte{
+		"manifest/1.json": []byte(`{"files":[{"tier":"delta","path":"data/1/a.parquet"}]}`),
+	}}
+	provider := NewManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, store)
+	m, _, err := provider.LoadManifest(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, m.Files, 1)
+}
+
+// End to end through the compactor: RunOnce over a foreign manifest fails
+// before any tier analysis and saves nothing.
+func TestCompactor_RunOnce_ForeignManifestFailsWithoutSave(t *testing.T) {
+	ctx := context.Background()
+	store := &memManifestStore{}
+	_, err := manifest.Save(ctx, store, "manifest/1.json", &manifest.Manifest{
+		SchemaID: 2,
+		Files: []manifest.FileEntry{
+			{Tier: "base", Path: "data/2/base.parquet", RowCount: 100, SizeBytes: 1 << 20},
+			{Tier: "delta", Path: "data/2/delta.parquet", RowCount: 100, SizeBytes: 1 << 20},
+		},
+	}, "")
+	require.NoError(t, err)
+	savesBefore := store.saves
+
+	c := &Compactor{
+		Logger:   zap.NewNop(),
+		Config:   cdc.CompactionConfig{SchemaID: 1}.WithDefaults(),
+		Provider: NewManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, store),
+	}
+	_, err = c.RunOnce(ctx)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	require.Equal(t, savesBefore, store.saves, "a refused compaction must not save")
 }

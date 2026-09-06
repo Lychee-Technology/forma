@@ -283,3 +283,23 @@ func TestExecuteBatchDescribeFailureLeavesEntryUnstamped(t *testing.T) {
 	entry := store.readLastEntry(t)
 	require.Nil(t, entry.Columns)
 }
+
+// A delta flush for schema 1 whose --manifest-template resolves to schema
+// 2's manifest must fail without touching that manifest (#520). The typed
+// error survives the wrap so the runner's log names both schema IDs.
+func TestUpdateManifest_RejectsForeignManifest(t *testing.T) {
+	ctx := context.Background()
+	store := newInMemoryManifestStore()
+	resolver := manifest.PathResolver{PathTemplate: "manifest/shared.json"}
+
+	path, err := resolver.Resolve(2)
+	require.NoError(t, err)
+	_, err = manifest.Save(ctx, store, path, &manifest.Manifest{SchemaID: 2}, "")
+	require.NoError(t, err)
+	before := store.saved
+
+	err = updateManifest(ctx, store, resolver, 1, "cdc/1/file.parquet", "delta",
+		nil, 1700000000000, 0, nil, "", zap.NewNop())
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	require.Equal(t, before, store.saved, "a rejected flush must not save the manifest")
+}

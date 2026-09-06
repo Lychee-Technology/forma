@@ -156,6 +156,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	if len(allowEmptyManifest) > 0 && !*gc {
 		return nil, fmt.Errorf("--allow-empty-manifest-schema only modifies --gc's empty-manifest guard; pass it together with --gc")
 	}
+	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
+		return nil, err
+	}
 
 	opts.manifest = cdc.ManifestConfig{
 		Bucket:       opts.s3.bucket,

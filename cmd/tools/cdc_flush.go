@@ -102,6 +102,9 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	if err := schemaRegistry.validate(false); err != nil {
 		return nil, err
 	}
+	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
+		return nil, err
+	}
 
 	password := pg.resolvedPassword("PGPASSWORD")
 	cfg := buildCDCConfig(pg, password, changeLogTable, entityMainTable, eavDataTable,

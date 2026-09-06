@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -71,6 +72,11 @@ func TestResolverManifestStore_SchemaIDMismatchFails(t *testing.T) {
 	require.Error(t, err, "schema 9 must not load schema 7's manifest")
 	require.Contains(t, err.Error(), "schema 7")
 	require.Contains(t, err.Error(), "schema 9")
+	// #520: the check is the shared manifest.LoadOrCreateForSchema; the
+	// typed error rides under the reconcile wording so callers can match it.
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	require.Contains(t, err.Error(), "claims schema 7, not requested schema 9")
+	require.Contains(t, err.Error(), "mis-pointed --manifest-prefix/--manifest-template")
 }
 
 func TestResolverManifestStore_LegacyZeroSchemaIDLoads(t *testing.T) {

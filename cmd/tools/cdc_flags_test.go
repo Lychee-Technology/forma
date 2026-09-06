@@ -327,3 +327,22 @@ func TestParseCDCInitFlagsEstimatedRowBytes(t *testing.T) {
 		t.Error("autoEstimateRowBytes = true, want false when -estimated-row-bytes is passed")
 	}
 }
+
+// A --manifest-template that collapses every schema onto one object would
+// append schema A's delta entries into schema B's manifest. cdc-init already
+// probes the template (#518); flush must refuse it before opening Postgres
+// or S3 (#520). An empty template keeps meaning "manifest tracking off".
+func TestParseCDCFlushFlagsRejectsCollapsedManifestTemplate(t *testing.T) {
+	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
+		_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template=" + tmpl})
+		if err == nil {
+			t.Fatalf("template %q must be rejected", tmpl)
+		}
+		if !strings.Contains(err.Error(), "manifest-template") {
+			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
+		}
+	}
+	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template="}); err != nil {
+		t.Fatalf("empty template disables manifests and must parse: %v", err)
+	}
+}

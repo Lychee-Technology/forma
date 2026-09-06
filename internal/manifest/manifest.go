@@ -169,9 +169,13 @@ func LoadOrCreate(ctx context.Context, st Store, path string, schemaID int16) (*
 }
 
 // AppendFile adds a FileEntry to the manifest and saves it.
-// Uses optimistic locking via etag to handle concurrent updates.
+// Uses optimistic locking via etag to handle concurrent updates. It loads
+// through LoadOrCreateForSchema, so a manifest stamped for another schema —
+// a collided or mis-pointed path template — is refused with
+// forma.ManifestSchemaMismatchError instead of receiving this schema's
+// entry (#520).
 func AppendFile(ctx context.Context, st Store, path string, schemaID int16, entry FileEntry) error {
-	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
@@ -184,12 +188,15 @@ func AppendFile(ctx context.Context, st Store, path string, schemaID int16, entr
 }
 
 // AppendFiles adds multiple FileEntry items to the manifest and saves it.
-// Uses optimistic locking via etag to handle concurrent updates.
+// Uses optimistic locking via etag to handle concurrent updates. Like
+// AppendFile it loads through LoadOrCreateForSchema, so a manifest stamped
+// for another schema is refused with forma.ManifestSchemaMismatchError
+// (#520).
 func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, entries []FileEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
+	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
