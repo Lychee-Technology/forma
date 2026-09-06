@@ -183,14 +183,17 @@ func spliceManifest(m *manifest.Manifest, mergedPaths map[string]bool, newBase m
 }
 
 // objectURI renders a manifest path as an s3:// URI against the compactor's
-// bucket; absolute URIs pass through (mirrors manifest.QuerySource.Paths).
-// runRewrite never reaches it with a foreign-bucket path: rejectForeignSources
-// refuses those first (#417).
+// bucket; absolute URIs pass through. It mirrors manifest.QuerySource.Paths
+// byte for byte: a relative path is the bucket-relative key verbatim (#516),
+// so a leading slash — what cdc.Build*Path emits under an empty prefix and
+// what the flush then stores — renders as s3://<bucket>//..., the object the
+// read path scans, never a slash-trimmed sibling. runRewrite never reaches it
+// with a foreign-bucket path: rejectForeignSources refuses those first (#417).
 func (c *Compactor) objectURI(path string) string {
 	if strings.HasPrefix(path, "s3://") {
 		return path
 	}
-	return fmt.Sprintf("s3://%s/%s", c.Bucket, strings.TrimPrefix(path, "/"))
+	return fmt.Sprintf("s3://%s/%s", c.Bucket, path)
 }
 
 // deleteObjects best-effort deletes bucket-relative keys. Failures (and paths

@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -23,7 +22,9 @@ import (
 // (#274: 0 is the canonical live encoding on every cold tier).
 func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string, winners map[uuid.UUID]*Event, absent []uuid.UUID) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	// The key is rendered verbatim: a manifest path is the bucket-relative
+	// key as stored, leading slash included (#516).
+	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, key)
 
 	var total, tombstones, nullDeleted int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
