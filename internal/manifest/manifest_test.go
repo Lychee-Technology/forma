@@ -373,3 +373,31 @@ func TestLoadOrCreateForSchema(t *testing.T) {
 	require.Equal(t, int16(7), mismatch.ManifestSchemaID)
 	require.Equal(t, "manifest/7.json", mismatch.Path)
 }
+
+// AppendFile and AppendFiles are cdc-flush's manifest writers. A manifest
+// stamped for another schema is a collided or mis-pointed template, and the
+// delta entry must not be appended to it (#520).
+func TestAppendFile_RejectsForeignManifestWithoutSave(t *testing.T) {
+	ctx := context.Background()
+	st := &memStore{}
+	path := "manifest/1.json"
+	foreign := &Manifest{SchemaID: 2, Files: []FileEntry{{Tier: "base", Path: "base/2/a.parquet"}}}
+	_, err := Save(ctx, st, path, foreign, "")
+	require.NoError(t, err)
+	before := append([]byte(nil), st.data[path]...)
+	genBefore := st.gen
+
+	err = AppendFile(ctx, st, path, 1, FileEntry{Tier: "delta", Path: "delta/1/x.parquet"})
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	var mismatch *forma.ManifestSchemaMismatchError
+	require.ErrorAs(t, err, &mismatch)
+	require.Equal(t, int16(1), mismatch.RequestedSchemaID)
+	require.Equal(t, int16(2), mismatch.ManifestSchemaID)
+	require.Equal(t, path, mismatch.Path)
+
+	err = AppendFiles(ctx, st, path, 1, []FileEntry{{Tier: "delta", Path: "delta/1/y.parquet"}})
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+
+	require.Equal(t, genBefore, st.gen, "a rejected append must not save")
+	require.Equal(t, before, st.data[path], "the foreign manifest must be byte-identical")
+}
