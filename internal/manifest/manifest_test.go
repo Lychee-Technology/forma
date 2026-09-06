@@ -396,6 +396,52 @@ func TestLoadOrCreateForSchema(t *testing.T) {
 	require.Equal(t, "manifest/7.json", mismatch.Path)
 }
 
+// #536: schema IDs are always positive, so a request for schema 0 (or a
+// negative ID) is never a schema. Without a guard it would satisfy the
+// equality branch against a zero-stamped manifest and admit its entries — the
+// one shape the #522 rule exists to refuse. The guard runs before any stamp is
+// compared, so it holds for every manifest shape and never stamps or saves.
+func TestVerifySchemaStamp_RefusesNonPositiveRequestedSchemaID(t *testing.T) {
+	shapes := map[string]func() *Manifest{
+		"zero-stamped with entries": func() *Manifest {
+			return &Manifest{Files: []FileEntry{{Tier: "base", Path: "base/a.parquet"}}}
+		},
+		"zero-stamped empty": func() *Manifest { return &Manifest{Files: []FileEntry{}} },
+		"stamped for schema 7": func() *Manifest {
+			return &Manifest{SchemaID: 7, Files: []FileEntry{{Tier: "base", Path: "base/7/a.parquet"}}}
+		},
+	}
+	for name, mk := range shapes {
+		for _, requested := range []int16{0, -1} {
+			t.Run(fmt.Sprintf("%s/requested %d", name, requested), func(t *testing.T) {
+				m := mk()
+				before := m.SchemaID
+				err := VerifySchemaStamp(m, "manifest/0.json", requested)
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "manifest/0.json")
+				require.Contains(t, err.Error(), fmt.Sprintf("requested schema id %d", requested))
+				require.NotErrorIs(t, err, forma.ErrManifestSchemaMismatch, "an invalid request is not a property of the manifest")
+				require.NotErrorIs(t, err, forma.ErrManifestUnstamped)
+				require.Equal(t, before, m.SchemaID, "the stamp is never written for an invalid request")
+			})
+		}
+	}
+
+	// Through LoadOrCreateForSchema the store is untouched: a populated
+	// zero-stamped object at the path schema 0 renders is refused, not
+	// loaded and not saved.
+	ctx := context.Background()
+	st := &memStore{}
+	unstamped := &Manifest{Files: []FileEntry{{Tier: "base", Path: "base/a.parquet"}}}
+	_, err := Save(ctx, st, "manifest/0.json", unstamped, "")
+	require.NoError(t, err)
+	genBefore := st.gen
+	m, _, err := LoadOrCreateForSchema(ctx, st, "manifest/0.json", 0)
+	require.Error(t, err)
+	require.Nil(t, m)
+	require.Equal(t, genBefore, st.gen, "refusal must not save")
+}
+
 // AppendFile and AppendFiles are cdc-flush's manifest writers. A manifest
 // stamped for another schema is a collided or mis-pointed template, and the
 // delta entry must not be appended to it (#520).
