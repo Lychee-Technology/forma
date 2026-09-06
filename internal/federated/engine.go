@@ -130,13 +130,34 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 	return e
 }
 
+// validateFederatedQueryTarget is the entry guard shared by Query and
+// ExecuteFederatedPaginatedQuery. A non-positive schema ID can never name a
+// schema (schema IDs are always positive), so a request carrying one is a
+// caller invariant violation (an unguarded enumerator or a hand-inserted
+// registry row), not a state of the read surface. It is refused here, before
+// routing, because nothing below classifies it: the manifest source reports
+// it as a plain error (#536), resolveParquetPaths relabels unclassified source
+// failures as ErrFederatedReadFailed, and AllowPartialDegradedMode would then
+// absorb it into a Postgres-only answer — the caller's error served as a
+// hot-only page (PR #537 review). The Postgres leg already rejects the same
+// ID, so the guard makes the two routes agree rather than adding a rule.
+func validateFederatedQueryTarget(fq *model.FederatedAttributeQuery) error {
+	if fq == nil {
+		return fmt.Errorf("federated query cannot be nil")
+	}
+	if fq.SchemaID <= 0 {
+		return fmt.Errorf("federated query for schema id %d cannot be served: schema id must be positive", fq.SchemaID)
+	}
+	return nil
+}
+
 // Query implements FederatedQueryEngine. Hot-only requests delegate directly
 // to Postgres; otherwise the routing policy decides between Postgres and the
 // DuckDB federated path, falling back to Postgres on DuckDB failure when
 // opts.AllowPartialDegradedMode is set.
 func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
-	if fq == nil {
-		return nil, fmt.Errorf("federated query cannot be nil")
+	if err := validateFederatedQueryTarget(fq); err != nil {
+		return nil, fmt.Errorf("validate federated query: %w", err)
 	}
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
