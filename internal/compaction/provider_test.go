@@ -124,15 +124,39 @@ func TestManifestProvider_LoadManifest_RejectsForeignSchema(t *testing.T) {
 	require.Equal(t, int16(2), m.SchemaID)
 }
 
-// The zero stamp keeps the read path's lenience (see LoadOrCreateForSchema).
-func TestManifestProvider_LoadManifest_AcceptsZeroStamp(t *testing.T) {
+// #522: a zero stamp proves nothing about ownership, and the compactor swaps
+// a schema's tiers on the strength of the manifest's identity. A zero-stamped
+// manifest that lists entries is refused for every schema, as the
+// schema-mismatch species whose remedy is naming the owner on the object.
+func TestManifestProvider_LoadManifest_RejectsUnstampedWithEntries(t *testing.T) {
 	store := &memManifestStore{data: map[string][]byte{
 		"manifest/1.json": []byte(`{"files":[{"tier":"delta","path":"data/1/a.parquet"}]}`),
 	}}
 	provider := NewManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, store)
+
+	_, _, err := provider.LoadManifest(context.Background(), 1)
+	require.ErrorIs(t, err, forma.ErrManifestUnstamped)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	var unstamped *forma.ManifestUnstampedError
+	require.ErrorAs(t, err, &unstamped)
+	require.Equal(t, int16(1), unstamped.RequestedSchemaID)
+	require.Equal(t, "manifest/1.json", unstamped.Path)
+	require.Equal(t, 1, unstamped.Entries)
+}
+
+// An empty zero-stamped manifest has nothing another schema could own: it
+// loads stamped for the requested schema in memory, so the compactor's save
+// persists the stamp.
+func TestManifestProvider_LoadManifest_StampsEmptyUnstamped(t *testing.T) {
+	store := &memManifestStore{data: map[string][]byte{
+		"manifest/1.json": []byte(`{"files":[]}`),
+	}}
+	provider := NewManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, store)
+
 	m, _, err := provider.LoadManifest(context.Background(), 1)
 	require.NoError(t, err)
-	require.Len(t, m.Files, 1)
+	require.Equal(t, int16(1), m.SchemaID)
+	require.Empty(t, m.Files)
 }
 
 // End to end through the compactor: RunOnce over a foreign manifest fails

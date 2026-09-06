@@ -734,10 +734,27 @@ being read. It is raised before any path reaches a scan.
   `claims schema N, not requested schema M` wording). All four CLI tools also
   probe `--manifest-template` at flag parsing with the same two-schema check
   the server applies to `duckdb.manifestTemplate` (#520).
-- **Compatibility.** A manifest whose `schema_id` is zero is treated as
-  unstamped rather than as schema 0 — schema IDs are always positive, and
-  rejecting zero would break reads for deployments still holding objects
-  written before the field existed.
+- **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
+  rather than schema 0 (schema IDs are always positive), and it is not a legacy
+  format either: the field has been on the manifest, and set by every Forma
+  writer, since the manifest package's first commit, so a zero stamp can only
+  come from a hand-made or hand-edited object. It proves nothing about which
+  schema owns the listed entries, and it was the blind spot of the two-probe
+  template check (a template that collides only at IDs the probe never renders
+  passes it, and a zero-stamped manifest at the shared path was served under
+  every colliding schema). So a zero-stamped manifest that lists entries is
+  refused for every schema with `forma.ErrManifestUnstamped`, carried by
+  `forma.ManifestUnstampedError{RequestedSchemaID, Path, Entries}`. The carrier
+  unwraps to **both** sentinels — it *is* a schema mismatch, so every
+  classification above (redaction class, non-degradable) applies unchanged —
+  and `ErrManifestUnstamped` tells the remedy apart: confirm ownership and set
+  `schema_id` on the object, rather than fix the template. An empty
+  zero-stamped manifest has nothing another schema could own and loads stamped
+  for the requested schema in memory; the consumer's next save persists it.
+- **Where the zero-stamp rule is enforced.** The same single site,
+  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by the
+  federated read path, `cdc-flush`, `cdc-init` and `manifest-reconcile`, and
+  directly by the compactor's manifest load.
 - **Operator action.** The message names both schema IDs and the manifest key.
   Fix the template so each schema resolves a distinct object, then repair the
   affected manifests (`docs/manifest-reconcile.md`).
@@ -1046,7 +1063,7 @@ body a client can correlate without an operator round-trip.
 `schema_id` is `omitempty` on `APIResponse`, and that encoding is lossless rather
 than lossy only because **schema IDs are always positive** — the same invariant
 that lets a manifest `schema_id` of zero read as *unstamped* rather than as
-schema 0 (see `ErrManifestSchemaMismatch` → Compatibility, above). A zero can
+schema 0 (see `ErrManifestSchemaMismatch` → Zero stamp, above). A zero can
 therefore only mean "the error named no schema". Pinned on the serialized bytes,
 not the struct field, by `TestRedactedBodyOmitsSchemaIDWithoutACarrier`.
 

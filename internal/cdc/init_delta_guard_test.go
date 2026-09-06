@@ -292,7 +292,7 @@ func TestPreflightDeltaTier_RefusesUnstampedManifestWithEntries(t *testing.T) {
 		runCtx.replaceDelta = flag
 
 		_, err := preflightDeltaTier(context.Background(), runCtx, 4)
-		require.ErrorIs(t, err, ErrManifestUnstamped, "replaceDelta=%t", flag)
+		require.ErrorIs(t, err, forma.ErrManifestUnstamped, "replaceDelta=%t", flag)
 		require.Contains(t, err.Error(), "manifest/shared.json")
 		require.Contains(t, err.Error(), "1 entries listed under schema_id 0")
 		require.Empty(t, events, "replaceDelta=%t: nothing saved or deleted", flag)
@@ -317,7 +317,7 @@ func TestUpdateSchemaManifest_RefusesUnstampedManifestWithEntries(t *testing.T) 
 		state.deltaPurge = []string{"delta/4/0b2f1b6e-4444-4c1d-8e57-000000000004.parquet"}
 
 		err := publishAndPurge(context.Background(), runCtx, state)
-		require.ErrorIs(t, err, ErrManifestUnstamped, "replaceDelta=%t", flag)
+		require.ErrorIs(t, err, forma.ErrManifestUnstamped, "replaceDelta=%t", flag)
 		require.Empty(t, events, "replaceDelta=%t: nothing saved or deleted", flag)
 		require.Equal(t, before, st.data["manifest/shared.json"], "replaceDelta=%t", flag)
 	}

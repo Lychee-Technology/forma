@@ -88,6 +88,42 @@ func (e *ManifestSchemaMismatchError) Error() string {
 
 func (e *ManifestSchemaMismatchError) Unwrap() error { return ErrManifestSchemaMismatch }
 
+// ErrManifestUnstamped marks a manifest object that lists entries under
+// schema_id 0 (#522). A zero stamp is not "schema 0" (schema IDs are always
+// positive) and it is not a legacy format either: SchemaID has been on the
+// manifest, and set by every writer, since the manifest package's first
+// commit, so a zero stamp can only come from a hand-made or hand-edited
+// object. It proves nothing about which schema owns the listed entries, and
+// the two-probe template check cannot rule out a template that collides only
+// at schema IDs it never renders — so such a manifest may hold another
+// schema's tiers and is refused for every schema.
+//
+// It is a species of ErrManifestSchemaMismatch: the carrier unwraps to both
+// sentinels, so every classification keyed on the mismatch (redaction class,
+// non-degradable federated read) applies unchanged, while this sentinel tells
+// the remedy apart — confirm ownership and set schema_id on the object,
+// rather than fix the path template.
+var ErrManifestUnstamped = errors.New("manifest lists entries under schema_id 0 and cannot prove which schema owns them")
+
+// ManifestUnstampedError names the manifest object, the schema it was loaded
+// for, and how many entries it lists without a stamp.
+type ManifestUnstampedError struct {
+	RequestedSchemaID int16
+	Path              string
+	Entries           int
+}
+
+func (e *ManifestUnstampedError) Error() string {
+	return fmt.Sprintf("manifest %s was loaded for schema %d but has %d entries listed under schema_id 0; "+
+		"confirm the object belongs to schema %d and set schema_id before rerunning",
+		e.Path, e.RequestedSchemaID, e.Entries, e.RequestedSchemaID)
+}
+
+// Unwrap yields both sentinels: see ErrManifestUnstamped.
+func (e *ManifestUnstampedError) Unwrap() []error {
+	return []error{ErrManifestUnstamped, ErrManifestSchemaMismatch}
+}
+
 // ErrParquetSetInconsistent marks a federated read whose manifest lists parquet
 // objects that do not exist in storage. The manifest is the authoritative record
 // of the schema's cold/warm tier, so a listed-but-absent object means that tier

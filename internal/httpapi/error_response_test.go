@@ -43,6 +43,12 @@ func TestErrorClassResolvesSentinelsThroughWraps(t *testing.T) {
 			want: errorClassManifestSchemaMismatch,
 		},
 		{
+			name: "manifest unstamped is a schema mismatch",
+			err: fmt.Errorf("manifest parquet source: %w",
+				&forma.ManifestUnstampedError{RequestedSchemaID: 1, Path: "manifests/shared.json", Entries: 2}),
+			want: errorClassManifestSchemaMismatch,
+		},
+		{
 			name: "unclassified falls back to internal",
 			err:  fmt.Errorf("db timeout"),
 			want: errorClassInternal,

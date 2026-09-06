@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -49,13 +48,15 @@ func NewFSManifestProvider(cfg cdc.ManifestConfig, rootFS fs.FS) *ManifestProvid
 
 // LoadManifest resolves the schema's manifest path and loads it. A missing
 // manifest surfaces as the store's wrapped manifest.ErrObjectNotFound (unlike
-// reconcile's LoadOrCreate semantics, nothing is synthesised here); the
-// compactor classifies that with manifest.IsNotFound and reports Noop, since
-// a never-flushed schema has nothing to compact (#524). A loaded manifest
-// stamped for another schema is a collided or mis-pointed path template and
-// is refused with forma.ManifestSchemaMismatchError before the compactor can
-// swap this schema's tiers on it (#520). The zero stamp keeps the read
-// path's lenience, see manifest.LoadOrCreateForSchema.
+// reconcile's LoadOrCreate semantics, no manifest is synthesised for a
+// missing object); the compactor classifies that with manifest.IsNotFound and reports Noop, since
+// a never-flushed schema has nothing to compact (#524). The loaded manifest
+// then passes manifest.VerifySchemaStamp, the one schema-identity rule: a
+// manifest stamped for another schema is a collided or mis-pointed path
+// template and is refused with forma.ManifestSchemaMismatchError (#520), and
+// one listing entries under schema_id 0 cannot prove which schema owns them
+// and is refused with forma.ManifestUnstampedError (#522) — either way
+// before the compactor can swap this schema's tiers on it.
 func (p *ManifestProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
 	if p == nil || p.Store == nil {
 		return nil, "", fmt.Errorf("manifest provider not configured")
@@ -68,12 +69,8 @@ func (p *ManifestProvider) LoadManifest(ctx context.Context, schemaID int16) (*m
 	if err != nil {
 		return nil, "", err
 	}
-	if m.SchemaID != 0 && m.SchemaID != schemaID {
-		return nil, "", &forma.ManifestSchemaMismatchError{
-			RequestedSchemaID: schemaID,
-			ManifestSchemaID:  m.SchemaID,
-			Path:              path,
-		}
+	if err := manifest.VerifySchemaStamp(m, path, schemaID); err != nil {
+		return nil, "", err
 	}
 	return m, etag, nil
 }

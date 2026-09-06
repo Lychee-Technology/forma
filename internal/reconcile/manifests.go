@@ -15,7 +15,8 @@ import (
 // compaction ManifestProvider errors on a missing manifest, which is wrong
 // for reconciliation: an empty manifest with live objects is exactly the
 // all-orphans case the tool must report). Load also rejects a manifest
-// whose stored SchemaID names a different schema (#481), through the shared
+// whose stored SchemaID names a different schema (#481) or lists entries
+// under schema_id 0 (#522), through the shared
 // manifest.LoadOrCreateForSchema check (#520).
 type ResolverManifestStore struct {
 	Store    manifest.Store
@@ -32,9 +33,10 @@ func (s *ResolverManifestStore) Load(ctx context.Context, schemaID int16) (*mani
 	// {{.SchemaID}}) — fail the schema before any classification rather
 	// than diff its data against a foreign manifest. The check is the
 	// shared manifest.LoadOrCreateForSchema (#520); the reconcile wording
-	// is kept on top because the report quotes it. SchemaID 0 is
-	// tolerated: manifests written before the field was stamped unmarshal
-	// to 0, and the #481 in-prefix GC guard still covers them.
+	// is kept on top because the report quotes it. A manifest listing
+	// entries under schema_id 0 is refused there too (#522) — its own
+	// message names the object and the remedy, so it passes through under
+	// the plain load wrap.
 	m, etag, err := manifest.LoadOrCreateForSchema(ctx, s.Store, path, schemaID)
 	var mismatch *forma.ManifestSchemaMismatchError
 	if errors.As(err, &mismatch) {
