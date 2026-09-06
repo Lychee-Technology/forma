@@ -25,8 +25,8 @@ import (
 // Guarded-first ordering is the cost choice: a healthy path costs exactly one
 // guarded drain, so the common one-rogue-in-N failure costs ~N+3 drains; the
 // bare confirmation leg runs only for paths already failing the guard twice.
-// Glob and quote-bearing entries are skipped — unverifiable per-file, exactly
-// as in verifyParquetPaths. A cancelled context attributes nothing.
+// Glob entries are skipped — unverifiable per-file, exactly as in
+// verifyParquetPaths. A cancelled context attributes nothing.
 //
 // Identification only (#351): callers must never exclude the returned paths —
 // unlike byte corruption, a schema-wrong object may legitimately own rows that
