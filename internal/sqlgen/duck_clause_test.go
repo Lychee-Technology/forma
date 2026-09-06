@@ -139,13 +139,18 @@ func TestBuildDuckClause_UnregisteredAttr_RefusesFoldOntoVisibleColumn(t *testin
 		{"row.id", "row_id"},
 		{"[row_id]", "row_id"},
 		{"Created.At", "Created_At"},
+		{"schema.id", "schema_id"},
+		{"attributes.json", "attributes_json"},
+		{"ltbase.row_id", "ltbase_row_id"},
 		{"rn", "rn"},
 		{"RN", "RN"},
+		{"[rn]", "rn"},
 		{"source_tier.priority", "source_tier_priority"},
 		{"source_tier_priority", "source_tier_priority"},
 		{"[]", "attr"},
 		{"`", "attr"},
 		{"[attr]", "attr"},
+		{"", "attr"},
 	}
 	for _, tc := range refused {
 		t.Run("refused/"+tc.attr, func(t *testing.T) {
@@ -172,7 +177,10 @@ func TestBuildDuckClause_UnregisteredAttr_RefusesFoldOntoVisibleColumn(t *testin
 // The production federated route builds all three clauses through
 // ToDualClauses, where an unregistered attribute is refused by the PG EAV
 // payload before the DuckDB clause is rendered (#512 investigation). This
-// pins that the folded spellings never reach DuckDB on that route either.
+// pins that the folded spellings never reach DuckDB on that route either,
+// and pins the ORDER: the error must be the PG EAV refusal, not the DuckDB
+// fold guard, so an emitter reorder that let the DuckDB guard fire first
+// would fail here rather than silently change the documented behaviour.
 func TestToDualClauses_UnregisteredAttr_RefusedBeforeDuckEmission(t *testing.T) {
 	for _, attr := range []string{"created.at", "rn", "[]", "ghost"} {
 		t.Run(attr, func(t *testing.T) {
@@ -181,6 +189,9 @@ func TestToDualClauses_UnregisteredAttr_RefusedBeforeDuckEmission(t *testing.T) 
 			_, err := ToDualClauses(cond, "eav_table", 22, forma.SchemaAttributeCache{}, &paramIndex)
 			require.Error(t, err)
 			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			require.Contains(t, err.Error(), "attribute not found in cache",
+				"PG EAV payload must refuse before the DuckDB fold guard runs")
+			require.NotContains(t, err.Error(), "folds")
 		})
 	}
 }

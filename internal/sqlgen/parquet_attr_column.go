@@ -107,8 +107,8 @@ func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
 	}
 	if _, ok := reservedParquetColumns[key]; ok && !strings.EqualFold(attr, folded) {
 		return forma.InvalidInputf(
-			"filter attribute %q is not registered and folds to %q, a reserved system column, which would silently filter on that column instead of the attribute named: filter on a registered schema attribute, or name the system column %s directly",
-			attr, folded, key)
+			"filter attribute %q is not registered and folds to %q, a reserved system column, which would silently filter on that column instead of the attribute named: filter on a registered schema attribute",
+			attr, folded)
 	}
 	return nil
 }
