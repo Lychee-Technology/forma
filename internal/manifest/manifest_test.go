@@ -359,11 +359,33 @@ func TestLoadOrCreateForSchema(t *testing.T) {
 	require.Len(t, m.Files, 1)
 	require.NotEmpty(t, etag)
 
-	legacy := &Manifest{Files: []FileEntry{{Tier: "base", Path: "base/7/a.parquet"}}}
-	_, err = Save(ctx, st, "manifest/legacy.json", legacy, "")
+	// #522: a zero stamp proves nothing about ownership. No Forma writer
+	// has ever produced one, so a zero-stamped manifest that lists entries
+	// is hand-made and refused for every schema, as a schema mismatch whose
+	// remedy is naming the owner on the object.
+	unstamped := &Manifest{Files: []FileEntry{{Tier: "base", Path: "base/7/a.parquet"}}}
+	_, err = Save(ctx, st, "manifest/unstamped.json", unstamped, "")
 	require.NoError(t, err)
-	_, _, err = LoadOrCreateForSchema(ctx, st, "manifest/legacy.json", 7)
-	require.NoError(t, err, "a pre-stamp manifest (schema_id 0) is accepted for any schema")
+	_, _, err = LoadOrCreateForSchema(ctx, st, "manifest/unstamped.json", 7)
+	require.ErrorIs(t, err, forma.ErrManifestUnstamped, "a zero-stamped manifest with entries is refused")
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch, "and classifies as a schema mismatch")
+	var unstampedErr *forma.ManifestUnstampedError
+	require.ErrorAs(t, err, &unstampedErr)
+	require.Equal(t, int16(7), unstampedErr.RequestedSchemaID)
+	require.Equal(t, "manifest/unstamped.json", unstampedErr.Path)
+	require.Equal(t, 1, unstampedErr.Entries)
+
+	// An empty zero-stamped manifest has nothing another schema could own:
+	// it loads stamped for the requested schema in memory, so the next save
+	// persists the stamp, and the store is not touched by the load.
+	_, err = Save(ctx, st, "manifest/empty.json", &Manifest{Files: []FileEntry{}}, "")
+	require.NoError(t, err)
+	genBefore := st.gen
+	m, etag, err = LoadOrCreateForSchema(ctx, st, "manifest/empty.json", 7)
+	require.NoError(t, err, "an empty zero-stamped manifest still loads")
+	require.Equal(t, int16(7), m.SchemaID, "stamped in memory for the requested schema")
+	require.NotEmpty(t, etag, "the loaded etag is kept so the stamping save is conditional")
+	require.Equal(t, genBefore, st.gen, "loading must not save")
 
 	_, _, err = LoadOrCreateForSchema(ctx, st, "manifest/7.json", 8)
 	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)

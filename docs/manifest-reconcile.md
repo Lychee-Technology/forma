@@ -293,10 +293,17 @@ manifest 同样被拒绝。拒绝信息同时引用原始条目数与 in-prefix 
 或 bucket 配置错误，而非合法的空 manifest；修复方式是校正 `--manifest-prefix`/
 `--manifest-template`/`--s3-bucket` 使之与写入端一致。
 
-另外，`ResolverManifestStore.Load` 自 #481 起校验加载到的 manifest 的 `schema_id`：与请求
-schema 不一致时按工具故障失败（计入 schema Err，退出码 1，先于任何分类），固定文件模板
-在加载阶段即被拦截。`schema_id` 为 0（旧版 manifest 未落此字段）保持兼容、照常加载，
-仍由 in-prefix 防护兜底。
+另外，`ResolverManifestStore.Load` 自 #481 起校验加载到的 manifest 的 `schema_id`（经由所有
+消费方共用的 `manifest.LoadOrCreateForSchema`，#520）：与请求 schema 不一致时按工具故障失败
+（计入 schema Err，退出码 1，先于任何分类），固定文件模板在加载阶段即被拦截。`schema_id`
+为 0 且列有条目的 manifest 自 #522 起同样对任何 schema 拒绝加载（以
+`forma.ErrManifestUnstamped` 失败，它同时也匹配 `forma.ErrManifestSchemaMismatch`）：Forma
+的写入方从未产生过零戳记（该字段自 manifest 包首次提交起就存在，`LoadOrCreate` 总会盖章），
+零戳记只可能来自手工制作或手工编辑的对象，证明不了其中条目属于谁；而双 schema 探测
+（#300）排除不了只在未探测到的 ID 上碰撞的模板，零戳记正是该检查的盲区。带 `--repair` 的
+运行因此不会把孤儿拼接到一个归属未证实的 manifest 下。没有条目的零戳记 manifest 照常加载，
+在内存中盖上当前 schema 的戳记，下一次保存把它落盘。修复方式是确认对象归属后在对象上补写
+`schema_id`（错误信息即如此指示）。
 
 排查手段：不带 `--repair`/`--gc` 的只读巡检即为 dry-run——报告对每个 schema 打印
 `inventory: N objects in storage, M manifest entries resolved (K in schema prefix); orphan candidates: ...`，
@@ -533,12 +540,12 @@ delta 真正退役的是 cdc-init 本身：
   直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别
   的 schema 的 delta 层。每次加载 manifest（预检、每次发布、412 重新加载）都校验其
   `schema_id` 与当前 schema 一致，不一致以 `forma.ErrManifestSchemaMismatch` 失败，
-  既不发布也不删除。`schema_id` 为 0 的 manifest 在 cdc-init 里比读路径更严格（Forma
-  的写入方从未产生过这种对象：该字段自 manifest 包首次提交起就存在，`LoadOrCreate` 总会
-  盖章，零戳记只可能来自手工编辑）：其中列有条目时以 `cdc.ErrManifestUnstamped` 失败，
-  因为双 schema 探测排除不了只在未探测到的 ID 上碰撞的模板，零戳记证明不了这些条目属于
-  谁；没有条目时在内存中盖上当前 schema 的戳记，随后的保存把它落盘，此后每次加载都受
-  校验。模板本身还要先过读路径同样的首尾空白检查：带空白的模板会让 cdc-init 写到一个
+  既不发布也不删除。`schema_id` 为 0 的 manifest 遵循所有消费方共用的同一条规则（#522；
+  Forma 的写入方从未产生过这种对象：该字段自 manifest 包首次提交起就存在，`LoadOrCreate`
+  总会盖章，零戳记只可能来自手工编辑）：其中列有条目时以 `forma.ErrManifestUnstamped`
+  失败，因为双 schema 探测排除不了只在未探测到的 ID 上碰撞的模板，零戳记证明不了这些
+  条目属于谁；没有条目时在内存中盖上当前 schema 的戳记，随后的保存把它落盘，此后每次
+  加载都受校验。模板本身还要先过读路径同样的首尾空白检查：带空白的模板会让 cdc-init 写到一个
   服务端 `ValidateManifestRead` 拒绝配置的 key 下。
 - **保存结果不明时先确认再清理。** manifest CAS 返回的不是确认的 412（例如连接被重置）
   时，PUT 可能已经提交。带 `--replace-delta` 的运行会重新加载 manifest：如果 base 层恰好

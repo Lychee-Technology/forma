@@ -238,6 +238,9 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 		"manifest schema mismatch": &forma.ManifestSchemaMismatchError{
 			RequestedSchemaID: 1, ManifestSchemaID: 2, Path: "manifests/1.json",
 		},
+		"manifest unstamped": &forma.ManifestUnstampedError{
+			RequestedSchemaID: 1, Path: "manifests/shared.json", Entries: 2,
+		},
 	}
 
 	for name, err := range errs {

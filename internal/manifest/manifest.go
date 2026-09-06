@@ -248,33 +248,66 @@ func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16
 }
 
 // LoadOrCreateForSchema is LoadOrCreate plus the schema-identity check every
-// per-schema manifest consumer needs: a loaded manifest whose stamped
-// SchemaID names a different schema is a collided or mis-pointed path
-// template, and it is rejected with forma.ManifestSchemaMismatchError
-// instead of being read or written as the requested schema's.
-//
-// A zero stamp passes. That is the read path's pre-existing lenience, kept
-// so this helper is behaviour-preserving for QuerySource (removing it is
-// #522); it is not a legacy-format carve-out — SchemaID has been on the
-// manifest, and set by LoadOrCreate, since this package's first commit, so
-// no Forma writer emits a zero stamp. A writer that must not act on an
-// unproven identity applies its own rule on top: cdc-init refuses a
-// non-empty zero-stamped manifest with cdc.ErrManifestUnstamped.
+// per-schema manifest consumer needs, see VerifySchemaStamp: a loaded
+// manifest whose stamped SchemaID names a different schema is a collided or
+// mis-pointed path template and is rejected with
+// forma.ManifestSchemaMismatchError; one that lists entries under schema_id
+// 0 cannot prove which schema owns them and is rejected with
+// forma.ManifestUnstampedError (#522). An empty zero-stamped manifest loads
+// stamped for the requested schema in memory, so the caller's next save
+// persists the stamp under the loaded etag.
 //
 // Config validation samples two schema IDs, which catches a collapsed
 // template but cannot prove injectivity over the whole domain — this check
-// is the enforcement for stamped manifests.
+// is the enforcement.
 func LoadOrCreateForSchema(ctx context.Context, st Store, path string, schemaID int16) (*Manifest, string, error) {
 	m, etag, err := LoadOrCreate(ctx, st, path, schemaID)
 	if err != nil {
 		return nil, "", err
 	}
-	if m.SchemaID != 0 && m.SchemaID != schemaID {
-		return nil, "", &forma.ManifestSchemaMismatchError{
+	if err := VerifySchemaStamp(m, path, schemaID); err != nil {
+		return nil, "", err
+	}
+	return m, etag, nil
+}
+
+// VerifySchemaStamp is the single schema-identity rule for a loaded manifest
+// (#520, #522). A manifest addresses one schema by path convention alone and
+// nothing downstream re-checks it — the parquet scan does not filter rows by
+// schema and the projection stamps whatever it scans as the requested
+// schema — so the stamp inside the object is the only proof of ownership:
+//
+//   - stamped for schemaID: accepted;
+//   - stamped for another schema: forma.ManifestSchemaMismatchError;
+//   - stamped 0 with entries: forma.ManifestUnstampedError — no Forma writer
+//     has ever produced a zero stamp (the field has been set by LoadOrCreate
+//     since this package's first commit), so the object is hand-made and its
+//     entries may belong to any schema a colliding template maps here;
+//   - stamped 0 and empty: nothing another schema could own, so the manifest
+//     is stamped for schemaID in place and accepted; the caller's next save
+//     persists the stamp and every later load is checked.
+//
+// Callers that load without LoadOrCreate semantics (the compactor) apply it
+// to the manifest they loaded; LoadOrCreateForSchema applies it for everyone
+// else.
+func VerifySchemaStamp(m *Manifest, path string, schemaID int16) error {
+	if m.SchemaID == schemaID {
+		return nil
+	}
+	if m.SchemaID != 0 {
+		return &forma.ManifestSchemaMismatchError{
 			RequestedSchemaID: schemaID,
 			ManifestSchemaID:  m.SchemaID,
 			Path:              path,
 		}
 	}
-	return m, etag, nil
+	if len(m.Files) > 0 {
+		return &forma.ManifestUnstampedError{
+			RequestedSchemaID: schemaID,
+			Path:              path,
+			Entries:           len(m.Files),
+		}
+	}
+	m.SchemaID = schemaID
+	return nil
 }

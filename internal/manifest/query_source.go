@@ -48,13 +48,16 @@ func (s *QuerySource) load(ctx context.Context, schemaID int16) (*Manifest, erro
 	// parquet scan does not filter by schema (files are per-schema by path) and
 	// the projection stamps whatever it scans as the requested schema, so the
 	// collision would serve another schema's rows under this identity.
-	// LoadOrCreateForSchema carries that check (shared with cdc-init, #371
-	// review) and surfaces it unwrapped as forma.ManifestSchemaMismatchError.
+	// LoadOrCreateForSchema carries that check (shared with every writer,
+	// #520) and returns the typed carriers unwrapped: a foreign stamp is
+	// forma.ManifestSchemaMismatchError, and a zero stamp over entries is
+	// forma.ManifestUnstampedError (#522), which is a schema mismatch too —
+	// both pass through as-is so the engine's classification is the only
+	// wrap above them.
 	m, _, err := LoadOrCreateForSchema(ctx, s.Store, path, schemaID)
 	if err != nil {
-		var mismatch *forma.ManifestSchemaMismatchError
-		if errors.As(err, &mismatch) {
-			return nil, mismatch
+		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("load manifest for schema %d: %w", schemaID, err)
 	}

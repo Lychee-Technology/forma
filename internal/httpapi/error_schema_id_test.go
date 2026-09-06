@@ -57,6 +57,12 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 			want: 41,
 		},
 		{
+			name: "manifest unstamped",
+			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
+				&forma.ManifestUnstampedError{RequestedSchemaID: 41, Path: "manifests/shared.json", Entries: 2})),
+			want: 41,
+		},
+		{
 			name: "multi-cause chain alongside driver text",
 			err: fmt.Errorf("execute duckdb query: %w: %w",
 				&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},

@@ -96,6 +96,13 @@ func errorSchemaID(err error) int16 {
 		return mismatch.RequestedSchemaID
 	}
 
+	// The unstamped species (#522) carries only the requested id: the
+	// object names no schema at all, so there is nothing foreign to leak.
+	var unstamped *forma.ManifestUnstampedError
+	if errors.As(err, &unstamped) {
+		return unstamped.RequestedSchemaID
+	}
+
 	return 0
 }
 

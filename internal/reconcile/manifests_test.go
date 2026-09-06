@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -79,9 +81,13 @@ func TestResolverManifestStore_SchemaIDMismatchFails(t *testing.T) {
 	require.Contains(t, err.Error(), "mis-pointed --manifest-prefix/--manifest-template")
 }
 
-func TestResolverManifestStore_LegacyZeroSchemaIDLoads(t *testing.T) {
-	// Manifests written before schema_id was stamped unmarshal to 0; they
-	// must keep loading (the in-prefix guard still covers them for --gc).
+// #522: a zero stamp proves nothing about ownership, and no Forma writer
+// has ever produced one. A zero-stamped manifest that lists entries is
+// refused for every schema — before any classification, so the tool never
+// diffs a schema's objects against entries it cannot attribute — as the
+// schema-mismatch species that names the remedy (set schema_id on the
+// object).
+func TestResolverManifestStore_UnstampedManifestWithEntriesFails(t *testing.T) {
 	mem := newMemManifestStore()
 	mem.data["manifest/7.json"] = []byte(`{"files":[{"tier":"delta","path":"data/7/a.parquet"}]}`)
 	mem.etags["manifest/7.json"] = "v0"
@@ -89,9 +95,76 @@ func TestResolverManifestStore_LegacyZeroSchemaIDLoads(t *testing.T) {
 		Store:    mem,
 		Resolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
 	}
-	m, _, err := store.Load(context.Background(), 7)
+	_, _, err := store.Load(context.Background(), 7)
+	require.ErrorIs(t, err, forma.ErrManifestUnstamped)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+	require.Contains(t, err.Error(), "manifest/7.json")
+	require.Contains(t, err.Error(), "1 entries listed under schema_id 0")
+	require.Zero(t, mem.saves, "a refused load must not save")
+}
+
+// An empty zero-stamped manifest has nothing another schema could own: it
+// loads stamped for the requested schema in memory, under the stored etag,
+// so the tool's next save persists the stamp.
+func TestResolverManifestStore_EmptyUnstampedManifestLoadsStamped(t *testing.T) {
+	mem := newMemManifestStore()
+	mem.data["manifest/7.json"] = []byte(`{"files":[]}`)
+	mem.etags["manifest/7.json"] = "v0"
+	store := &ResolverManifestStore{
+		Store:    mem,
+		Resolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+	}
+	m, etag, err := store.Load(context.Background(), 7)
 	require.NoError(t, err)
-	require.Len(t, m.Files, 1)
+	require.Equal(t, int16(7), m.SchemaID)
+	require.Equal(t, "v0", etag)
+	require.Empty(t, m.Files)
+	require.Zero(t, mem.saves)
+}
+
+// The end-to-end shape from #522: a --manifest-template that collides only
+// at schema IDs the two-probe check never renders, a zero-stamped manifest
+// at the shared path listing schema 3's tiers, and a --repair run for
+// schema 4 with an orphan to adopt. The schema fails at load, nothing is
+// spliced under the wrong identity, and nothing is saved.
+func TestReconcile_RepairRefusesUnstampedSharedManifest(t *testing.T) {
+	const colliding = "{{if lt .SchemaID 3}}manifest/{{.SchemaID}}.json{{else}}manifest/shared.json{{end}}"
+	require.NoError(t, forma.ValidateManifestPathTemplate("manifest-template", colliding),
+		"the two-probe check cannot see a collision at schema IDs 3 and 4")
+
+	mem := newMemManifestStore()
+	mem.data["manifest/shared.json"] = []byte(`{"files":[{"tier":"base","path":"data/3/base-` + uuidA + `.parquet"}]}`)
+	mem.etags["manifest/shared.json"] = "v0"
+	before := append([]byte(nil), mem.data["manifest/shared.json"]...)
+
+	orphan := "data/4/" + uuidB + ".parquet"
+	lister := &fakeLister{objects: map[string][]ObjectInfo{"data/4/": {oldObject(orphan)}}}
+	r := &Reconciler{
+		Lister:     lister,
+		Deleter:    &fakeDeleter{},
+		Manifests:  &ResolverManifestStore{Store: mem, Resolver: manifest.PathResolver{PathTemplate: colliding}},
+		Stats:      &fakeStats{uncovered: map[string][]compaction.UncoveredRow{orphan: {{RowID: uuidB}}}},
+		LiveRows:   &fakeLiveRows{},
+		Locker:     &fakeLocker{},
+		Schemas:    &fakeEnum{ids: []int16{4}},
+		GCStates:   newFakeGCState(),
+		Now:        testClock,
+		Bucket:     "bkt",
+		DataPrefix: "data",
+		Logger:     zap.NewNop(),
+		Opts:       Options{Repair: true, MaxETagRetries: 3},
+	}
+
+	report, err := r.Run(context.Background())
+	require.NoError(t, err, "a per-schema load failure is reported, not returned")
+	require.Len(t, report.Schemas, 1)
+	s := report.Schemas[0]
+	require.ErrorIs(t, s.Err, forma.ErrManifestUnstamped, "schema 4 must fail at manifest load")
+	require.ErrorIs(t, s.Err, forma.ErrManifestSchemaMismatch)
+	require.Contains(t, s.Err.Error(), "manifest/shared.json")
+	require.Empty(t, s.Repaired, "nothing may be spliced under an unproven identity")
+	require.Zero(t, mem.saves, "nothing may be saved")
+	require.Equal(t, before, mem.data["manifest/shared.json"], "the shared manifest is byte-identical")
 }
 
 func TestResolverManifestStore_SaveRoundTrip(t *testing.T) {

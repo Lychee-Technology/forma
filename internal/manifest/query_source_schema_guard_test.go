@@ -67,28 +67,69 @@ func TestQuerySource_MatchingManifestSchemaResolves(t *testing.T) {
 	require.Equal(t, []string{"s3://b/delta/7/a.parquet"}, paths)
 }
 
-// Compatibility carve-out: schema IDs are always positive, so a zero stamp means
-// the manifest predates the field rather than belonging to schema 0. Rejecting
-// those would break reads for any deployment holding pre-stamp objects, so the
-// guard skips them — every current writer stamps the field (LoadOrCreate is the
-// only construction site, and every Save path loads first).
-func TestQuerySource_UnstampedManifestIsAccepted(t *testing.T) {
-	t.Parallel()
+// A zero stamp proves nothing (#522). The two-probe template check renders
+// schema IDs 1 and 2 only, so a template that collides only from 3 upward
+// passes it; a zero-stamped manifest at the shared path would then be served
+// under whichever schema resolves it — the scan does not filter by schema and
+// the projection stamps every row as the requested schema. A stamped manifest
+// at that path is caught by the mismatch check; the zero stamp used to be the
+// blind spot. No Forma writer has ever produced a zero stamp, so refusing it
+// costs nothing a Forma-written deployment has.
+const collidingOutsideProbesTemplate = "{{if lt .SchemaID 3}}manifest/{{.SchemaID}}.json{{else}}manifest/shared.json{{end}}"
 
-	store := seedManifestStore(t, "manifest/7.json", &Manifest{
+func TestQuerySource_UnstampedManifestAtSharedPathFailsRead(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, forma.ValidateManifestPathTemplate("manifest-template", collidingOutsideProbesTemplate),
+		"the two-probe check cannot see a collision at schema IDs 3 and 4")
+
+	// Schema 3's delta, listed by a manifest that names no owner, at the
+	// path schema 4 resolves too.
+	store := seedManifestStore(t, "manifest/shared.json", &Manifest{
 		SchemaID: 0,
-		Files:    []FileEntry{{Path: "delta/7/a.parquet", Tier: "delta"}},
+		Files:    []FileEntry{{Path: "delta/3/a.parquet", Tier: "delta"}},
 	})
 
 	src := &QuerySource{
 		Store:    store,
-		Resolver: PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		Resolver: PathResolver{PathTemplate: collidingOutsideProbesTemplate},
 		Bucket:   "b",
 	}
 
+	paths, _, err := src.Paths(context.Background(), 4)
+	require.Error(t, err, "a zero-stamped manifest with entries must not serve paths for any schema")
+	require.Nil(t, paths, "no path may escape to the scanner")
+	require.ErrorIs(t, err, forma.ErrManifestUnstamped)
+	require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch, "so the read is classified, and not degradable")
+
+	var typed *forma.ManifestUnstampedError
+	require.True(t, errors.As(err, &typed))
+	require.Equal(t, int16(4), typed.RequestedSchemaID)
+	require.Equal(t, "manifest/shared.json", typed.Path)
+	require.Equal(t, 1, typed.Entries)
+
+	// Schema 3 is refused the same way: the manifest names no owner, so it
+	// is nobody's.
+	_, _, err = src.Paths(context.Background(), 3)
+	require.ErrorIs(t, err, forma.ErrManifestUnstamped)
+}
+
+// An empty zero-stamped manifest has nothing another schema could own; it
+// loads as empty and the read takes the fallback exactly as a stamped empty
+// manifest would.
+func TestQuerySource_EmptyUnstampedManifestFallsBack(t *testing.T) {
+	t.Parallel()
+
+	store := seedManifestStore(t, "manifest/7.json", &Manifest{SchemaID: 0, Files: []FileEntry{}})
+	src := &QuerySource{
+		Store:    store,
+		Resolver: PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
+		Bucket:   "b",
+		Fallback: func(schemaID int16) string { return "s3://b/delta/7/*.parquet" },
+	}
+
 	paths, _, err := src.Paths(context.Background(), 7)
-	require.NoError(t, err, "an unstamped (pre-existing) manifest must still resolve")
-	require.Equal(t, []string{"s3://b/delta/7/a.parquet"}, paths)
+	require.NoError(t, err)
+	require.Equal(t, []string{"s3://b/delta/7/*.parquet"}, paths)
 }
 
 // seedManifestStore returns a memStore holding one manifest at path.
