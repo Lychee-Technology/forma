@@ -48,8 +48,8 @@ func NewFSManifestProvider(cfg cdc.ManifestConfig, rootFS fs.FS) *ManifestProvid
 
 // LoadManifest resolves the schema's manifest path and loads it. A missing
 // manifest surfaces as the store's wrapped manifest.ErrObjectNotFound (unlike
-// reconcile's LoadOrCreate semantics, nothing is synthesised here); the
-// compactor classifies that with manifest.IsNotFound and reports Noop, since
+// reconcile's LoadOrCreate semantics, no manifest is synthesised for a
+// missing object); the compactor classifies that with manifest.IsNotFound and reports Noop, since
 // a never-flushed schema has nothing to compact (#524). The loaded manifest
 // then passes manifest.VerifySchemaStamp, the one schema-identity rule: a
 // manifest stamped for another schema is a collided or mis-pointed path
