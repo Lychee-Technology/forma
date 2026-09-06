@@ -54,6 +54,10 @@ type CompactionResult struct {
 
 // FileProvider fetches manifest and lists actual files (optionally cross-check).
 type FileProvider interface {
+	// LoadManifest returns the schema's manifest. A CONFIRMED-absent manifest
+	// (a schema that has never been flushed) must surface as a wrapped
+	// manifest.ErrObjectNotFound — never as a nil manifest with a nil error —
+	// so the compactor can report Noop for it and fail on everything else.
 	LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error)
 	// SaveManifest persists the manifest as a commit point.
 	// Implementations must mutate the provided manifest pointer in-place on
@@ -166,12 +170,16 @@ func isPreconditionFailed(err error) bool {
 
 func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.CompactionConfig) (CompactionResult, error) {
 	m, etag, err := c.Provider.LoadManifest(ctx, schemaID)
+	if manifest.IsNotFound(err) {
+		// A never-flushed schema has no manifest object. That is a confirmed
+		// absence (typed at the store boundary, #523), not a failure: there is
+		// nothing to compact. Every other load error — NoSuchBucket, access
+		// denied, transport — still fails the run below (#524).
+		c.Logger.Info("no manifest for schema, nothing to compact", zap.Int16("schema_id", schemaID))
+		return CompactionResult{Outcome: Noop, SchemaID: schemaID}, nil
+	}
 	if err != nil {
 		return CompactionResult{}, fmt.Errorf("load manifest: %w", err)
-	}
-	if m == nil {
-		c.Logger.Debug("no manifest for schema, skipping", zap.Int16("schema_id", schemaID))
-		return CompactionResult{Outcome: Noop, SchemaID: schemaID}, nil
 	}
 
 	baseFiles := manifest.FilterByTier(m, "base")

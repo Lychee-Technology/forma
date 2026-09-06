@@ -48,12 +48,14 @@ func NewFSManifestProvider(cfg cdc.ManifestConfig, rootFS fs.FS) *ManifestProvid
 }
 
 // LoadManifest resolves the schema's manifest path and loads it. A missing
-// manifest is an error here (unlike reconcile's LoadOrCreate semantics): the
-// compactor has nothing to compact without one. A loaded manifest stamped for
-// another schema is a collided or mis-pointed path template and is refused
-// with forma.ManifestSchemaMismatchError before the compactor can swap this
-// schema's tiers on it (#520). The zero stamp keeps the read path's
-// lenience, see manifest.LoadOrCreateForSchema.
+// manifest surfaces as the store's wrapped manifest.ErrObjectNotFound (unlike
+// reconcile's LoadOrCreate semantics, nothing is synthesised here); the
+// compactor classifies that with manifest.IsNotFound and reports Noop, since
+// a never-flushed schema has nothing to compact (#524). A loaded manifest
+// stamped for another schema is a collided or mis-pointed path template and
+// is refused with forma.ManifestSchemaMismatchError before the compactor can
+// swap this schema's tiers on it (#520). The zero stamp keeps the read
+// path's lenience, see manifest.LoadOrCreateForSchema.
 func (p *ManifestProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
 	if p == nil || p.Store == nil {
 		return nil, "", fmt.Errorf("manifest provider not configured")

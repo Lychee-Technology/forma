@@ -3,7 +3,10 @@ package compaction
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/cdc"
@@ -33,6 +36,11 @@ type mockProvider struct {
 func (m *mockProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
 	if m.loadErr != nil {
 		return nil, "", m.loadErr
+	}
+	if m.manifest == nil {
+		// Mirror the real stores: a missing manifest is a wrapped
+		// manifest.ErrObjectNotFound, never a nil manifest with a nil error.
+		return nil, "", fmt.Errorf("mock manifest for schema %d: %w", schemaID, manifest.ErrObjectNotFound)
 	}
 	return m.manifest, m.etag, nil
 }
@@ -89,17 +97,48 @@ func TestCompactor_RunOnce_RequiresProvider(t *testing.T) {
 	require.Empty(t, result.Outcome)
 }
 
-func TestCompactor_RunOnce_NoManifest(t *testing.T) {
-	logger := zap.NewNop()
+// A schema that has never been flushed has no manifest object. Driving the
+// real FSStore (not the mock) proves the compactor classifies the store's
+// wrapped manifest.ErrObjectNotFound as "nothing to compact" (#524).
+func TestCompactor_RunOnce_MissingManifestIsNoop(t *testing.T) {
+	provider := NewFSManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, fstest.MapFS{})
 	c := &Compactor{
-		Logger:   logger,
+		Logger:   zap.NewNop(),
 		Config:   cdc.CompactionConfig{SchemaID: 1},
-		Provider: &mockProvider{manifest: nil},
+		Provider: provider,
 	}
 
 	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, Noop, result.Outcome)
+	require.Equal(t, int16(1), result.SchemaID)
+}
+
+// permissionDeniedFS is an fs.FS whose every Open fails with fs.ErrPermission:
+// a load failure the store cannot classify as "confirmed absent".
+type permissionDeniedFS struct{}
+
+func (permissionDeniedFS) Open(name string) (fs.File, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+}
+
+// Only a CONFIRMED absence is a Noop. Any other load failure over the real
+// store must still fail the run, so an outage never masquerades as "nothing
+// to compact".
+func TestCompactor_RunOnce_UnclassifiedLoadErrorFails(t *testing.T) {
+	provider := NewFSManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, permissionDeniedFS{})
+	c := &Compactor{
+		Logger:   zap.NewNop(),
+		Config:   cdc.CompactionConfig{SchemaID: 1},
+		Provider: provider,
+	}
+
+	result, err := c.RunOnce(context.Background())
+	require.Error(t, err)
+	require.ErrorIs(t, err, fs.ErrPermission)
+	require.False(t, manifest.IsNotFound(err))
+	require.Contains(t, err.Error(), "load manifest")
+	require.Empty(t, result.Outcome)
 }
 
 func TestCompactor_RunOnce_NoFilesToCompact(t *testing.T) {
