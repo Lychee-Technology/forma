@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 type verifyFakeRows struct {
@@ -133,15 +135,40 @@ func TestVerifyParquetPathsPersistentFailureConfirmedOnSecondDrain(t *testing.T)
 	}
 }
 
-func TestVerifyParquetPathsSkipsUnverifiableEntries(t *testing.T) {
+func TestVerifyParquetPathsSkipsGlobEntries(t *testing.T) {
 	duck := &verifyFakeDuck{}
 	corrupt := verifyParquetPaths(context.Background(), duck,
-		[]string{"s3://b/*.parquet", "s3://b/it's.parquet"})
+		[]string{"s3://b/*.parquet", "s3://b/part-?.parquet", "s3://b/part-[0-9].parquet"})
 	if corrupt != nil {
-		t.Fatalf("glob/quote entries must be skipped, got %v", corrupt)
+		t.Fatalf("glob entries must be skipped, got %v", corrupt)
 	}
 	if len(duck.queries) != 0 {
-		t.Fatalf("unverifiable entries must not be probed: %v", duck.queries)
+		t.Fatalf("glob entries must not be probed: %v", duck.queries)
+	}
+}
+
+// TestVerifyParquetPathsVerifiesQuoteBearingPath pins #479: since #456 the
+// drain escapes the path, so an object key that legitimately carries a quote
+// (or a semicolon, or a double quote) is verifiable on its own and must be
+// individually excludable rather than left to all-or-nothing behavior.
+func TestVerifyParquetPathsVerifiesQuoteBearingPath(t *testing.T) {
+	const quoted = "s3://b/it's;\"odd\".parquet"
+	escaped := sqlutil.EscapeLiteral(quoted)
+	duck := &verifyFakeDuck{failOpen: map[string]bool{escaped: true}}
+	corrupt := verifyParquetPaths(context.Background(), duck,
+		[]string{"s3://b/good.parquet", quoted})
+	if len(corrupt) != 1 || corrupt[0] != quoted {
+		t.Fatalf("quote-bearing path must be individually confirmed, got %v", corrupt)
+	}
+	// One drain for the healthy path, two for the corrupt one; every drain of
+	// the quote-bearing path must render the quote doubled, never raw.
+	if len(duck.queries) != 3 {
+		t.Fatalf("expected 3 drains, got %d: %v", len(duck.queries), duck.queries)
+	}
+	for _, q := range duck.queries[1:] {
+		if !strings.Contains(q, "read_parquet('"+escaped+"')") {
+			t.Fatalf("quote-bearing path must render escaped, got: %s", q)
+		}
 	}
 }
 

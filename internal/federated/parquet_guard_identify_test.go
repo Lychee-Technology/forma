@@ -8,6 +8,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -91,12 +92,27 @@ func TestIdentifyGuardViolationsTransientGuardedFailureNotAttributed(t *testing.
 	require.Empty(t, got)
 }
 
-func TestIdentifyGuardViolationsSkipsUnverifiableEntries(t *testing.T) {
+func TestIdentifyGuardViolationsSkipsGlobEntries(t *testing.T) {
 	duck := &identifyFakeDuck{}
 	got := identifyGuardViolations(context.Background(), duck,
-		[]string{"s3://b/glob-*.parquet", "s3://b/it's.parquet"})
+		[]string{"s3://b/glob-*.parquet", "s3://b/part-?.parquet", "s3://b/part-[0-9].parquet"})
 	require.Empty(t, got)
-	require.Empty(t, duck.queries, "glob and quote-bearing entries are unverifiable per-file — no drains at all")
+	require.Empty(t, duck.queries, "glob entries name a set, not one object — no drains at all")
+}
+
+// TestIdentifyGuardViolationsAttributesQuoteBearingPath pins #479: the guarded
+// drain escapes the path (#456), so a schema-wrong object whose key carries a
+// quote is nameable on its own instead of hiding behind all-or-nothing.
+func TestIdentifyGuardViolationsAttributesQuoteBearingPath(t *testing.T) {
+	const quoted = "s3://b/it's.parquet"
+	escaped := sqlutil.EscapeLiteral(quoted)
+	duck := &identifyFakeDuck{guardFailN: map[string]int{escaped: -1}}
+	got := identifyGuardViolations(context.Background(), duck,
+		[]string{"s3://b/healthy.parquet", quoted})
+	require.Equal(t, []string{quoted}, got)
+	for _, q := range duck.queries {
+		require.NotContains(t, q, "'"+quoted+"'", "quote-bearing path must never render raw: %s", q)
+	}
 }
 
 func TestIdentifyGuardViolationsCancelledContextIdentifiesNothing(t *testing.T) {

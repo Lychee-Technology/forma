@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -29,9 +30,9 @@ import (
 // while a transient object-level fault (an S3 timeout, a reset connection)
 // that fails once and reads clean on the immediate re-drain must NOT be
 // cached as corruption; a single failure is inconclusive and leaves the
-// query on the ordinary RecordFailure path. Glob and quote-bearing entries
-// are skipped: unverifiable means unexcludable, and the main scan keeps its
-// all-or-nothing behavior for them. A cancelled context confirms nothing —
+// query on the ordinary RecordFailure path. Glob entries are skipped:
+// unverifiable means unexcludable, and the main scan keeps its all-or-nothing
+// behavior for them. A cancelled context confirms nothing —
 // cancellation is indistinguishable from corruption for the remaining
 // paths. Runs only on the read-failure path, so its cost is bounded by
 // failures, not by queries.
@@ -59,13 +60,16 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 	return corrupt
 }
 
-// unverifiablePath reports whether a path cannot be probed on its own: both
-// per-file drains interpolate it straight into SQL, so a quote-bearing entry
-// is unquotable and a glob names a set rather than one object. These are
-// exactly the entries the main scan keeps all-or-nothing behavior for —
-// unverifiable means neither excludable (#251) nor nameable (#351).
+// unverifiablePath reports whether a path cannot be probed on its own: a glob
+// names a set rather than one object, so a solo drain of it proves nothing
+// about any single object. These are exactly the entries the main scan keeps
+// all-or-nothing behavior for — unverifiable means neither excludable (#251)
+// nor nameable (#351). Quote-bearing entries used to be skipped too, back
+// when both drains interpolated the path raw; since #456 every render site
+// escapes it via sqlutil.EscapeLiteral, so a quote, double quote, or
+// semicolon in an object key no longer withholds per-file coverage (#479).
 func unverifiablePath(path string) bool {
-	return strings.ContainsAny(path, `'";`) || strings.ContainsAny(path, "*?[")
+	return strings.ContainsAny(path, forma.ParquetGlobMetacharacters)
 }
 
 // drainParquet opens one parquet object and iterates it to exhaustion.
