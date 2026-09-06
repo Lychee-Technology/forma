@@ -728,6 +728,12 @@ being read. It is raised before any path reaches a scan.
   template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
   injectivity over the whole schema domain. This error is the runtime
   enforcement of what that check can only sample.
+- **Where it is enforced.** Every per-schema manifest consumer: the federated
+  read path, `cdc-init` (#518), `cdc-flush`'s delta append, the compactor's
+  manifest load and `manifest-reconcile` (which wraps it in its own
+  `claims schema N, not requested schema M` wording). All four CLI tools also
+  probe `--manifest-template` at flag parsing with the same two-schema check
+  the server applies to `duckdb.manifestTemplate` (#520).
 - **Compatibility.** A manifest whose `schema_id` is zero is treated as
   unstamped rather than as schema 0 — schema IDs are always positive, and
   rejecting zero would break reads for deployments still holding objects
