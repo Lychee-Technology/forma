@@ -123,3 +123,75 @@ func TestParseDateValue_ISO8601EncodingFromUnixMs(t *testing.T) {
 	_, err = ParseDateValue("not-a-date", meta)
 	require.Error(t, err)
 }
+
+// An unregistered filter attribute must never fold onto a column the visible
+// CTE projects (#512). ParquetAttrColumn is lossy, so "created.at" would
+// otherwise render as created_at and silently filter on the creation
+// timestamp. The rule mirrors federated.validateKeysetCursor (#509): a
+// non-identity fold onto the "attr" placeholder or a reserved parquet column
+// is refused, the dedup machinery is refused under any spelling, and an
+// identity-up-to-case fold stays admitted.
+func TestBuildDuckClause_UnregisteredAttr_RefusesFoldOntoVisibleColumn(t *testing.T) {
+	refused := []struct{ attr, folded string }{
+		{"created.at", "created_at"},
+		{"ver.ts", "ver_ts"},
+		{"deleted.ts", "deleted_ts"},
+		{"row.id", "row_id"},
+		{"[row_id]", "row_id"},
+		{"Created.At", "Created_At"},
+		{"schema.id", "schema_id"},
+		{"attributes.json", "attributes_json"},
+		{"ltbase.row_id", "ltbase_row_id"},
+		{"rn", "rn"},
+		{"RN", "RN"},
+		{"[rn]", "rn"},
+		{"source_tier.priority", "source_tier_priority"},
+		{"source_tier_priority", "source_tier_priority"},
+		{"[]", "attr"},
+		{"`", "attr"},
+		{"[attr]", "attr"},
+		{"", "attr"},
+	}
+	for _, tc := range refused {
+		t.Run("refused/"+tc.attr, func(t *testing.T) {
+			cond := &forma.KvCondition{Attr: tc.attr, Value: "equals:1"}
+			clause, _, err := buildDuckClause(cond, forma.SchemaAttributeCache{})
+			require.Error(t, err, "clause %q emitted for unregistered attribute %q", clause, tc.attr)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			require.Contains(t, err.Error(), tc.attr)
+			require.Contains(t, err.Error(), tc.folded)
+		})
+	}
+
+	admitted := []string{"created_at", "Created_At", "attr", "Attr", "unknown_ts"}
+	for _, attr := range admitted {
+		t.Run("admitted/"+attr, func(t *testing.T) {
+			cond := &forma.KvCondition{Attr: attr, Value: "equals:1"}
+			clause, _, err := buildDuckClause(cond, forma.SchemaAttributeCache{})
+			require.NoError(t, err)
+			require.Contains(t, clause, attr)
+		})
+	}
+}
+
+// The production federated route builds all three clauses through
+// ToDualClauses, where an unregistered attribute is refused by the PG EAV
+// payload before the DuckDB clause is rendered (#512 investigation). This
+// pins that the folded spellings never reach DuckDB on that route either,
+// and pins the ORDER: the error must be the PG EAV refusal, not the DuckDB
+// fold guard, so an emitter reorder that let the DuckDB guard fire first
+// would fail here rather than silently change the documented behaviour.
+func TestToDualClauses_UnregisteredAttr_RefusedBeforeDuckEmission(t *testing.T) {
+	for _, attr := range []string{"created.at", "rn", "[]", "ghost"} {
+		t.Run(attr, func(t *testing.T) {
+			paramIndex := 1
+			cond := &forma.KvCondition{Attr: attr, Value: "equals:1"}
+			_, err := ToDualClauses(cond, "eav_table", 22, forma.SchemaAttributeCache{}, &paramIndex)
+			require.Error(t, err)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			require.Contains(t, err.Error(), "attribute not found in cache",
+				"PG EAV payload must refuse before the DuckDB fold guard runs")
+			require.NotContains(t, err.Error(), "folds")
+		})
+	}
+}
