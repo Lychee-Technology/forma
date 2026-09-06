@@ -145,11 +145,18 @@ func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID
 }
 
 // CopyTmpToFinal copies a parquet file from tmp key to final key and deletes tmp.
+//
+// CopySource names the tmp key verbatim (#516): the exporter wrote the object
+// at s3://<bucket>/<tmpKey> byte for byte, so an empty data prefix yields a
+// tmp key of "/1/_tmp/<uuid>.parquet" and a copy source of
+// "<bucket>//1/_tmp/<uuid>.parquet". Trimming the leading slash here would
+// name the sibling key "1/_tmp/..." that was never written and fail every
+// promotion under an empty prefix.
 func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, finalKey string, logger *zap.Logger) error {
 	if client == nil {
 		return fmt.Errorf("s3 client is nil")
 	}
-	src := fmt.Sprintf("%s/%s", bucket, strings.TrimPrefix(tmpKey, "/"))
+	src := bucket + "/" + tmpKey
 	if _, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     &bucket,
 		CopySource: &src,
