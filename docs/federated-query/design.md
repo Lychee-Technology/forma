@@ -296,6 +296,19 @@ only because a fold onto a `visible` column, system or dedup, is refused before
 it can reach the generator. It is deferred to the caller-facing cursor surface
 the Postgres-side keyset feature introduces.
 
+Filter attributes follow the same fold rule (#512). The predicate normalizer
+does not require a filter attribute to be registered either: the PG EAV
+payload refuses an unregistered name with `attribute not found in cache`, and
+because `ToDualClauses` renders that payload before the DuckDB one, the
+federated route answers 4xx before any DuckDB clause exists. The DuckDB payload
+is nevertheless guarded on its own, so the rule holds whatever emitter order a
+caller uses: for an unregistered name, `sqlgen.ValidateUnregisteredParquetAttrColumn`
+refuses a non-identity fold onto the `attr` placeholder or onto any reserved
+parquet column, refuses `rn` and `source_tier_priority` under any spelling, and
+admits an identity-up-to-case fold, exactly as `validateKeysetCursor` does for
+cursor columns. Registered names never reach it: `ValidateParquetAttrColumns`
+already rejected any whose fold collides with a reserved column.
+
 ## **5. SQL Execution Template**
 
 This SQL template represents the core logic of the Federated Query Engine.

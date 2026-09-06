@@ -61,6 +61,58 @@ var reservedParquetColumns = map[string]struct{}{
 	"ltbase_deleted_at":    {},
 }
 
+// parquetAttrPlaceholder is the column ParquetAttrColumn substitutes when the
+// fold empties a name ("", "[]", a lone backtick); a name like "[attr]"
+// strips down onto it directly.
+const parquetAttrPlaceholder = "attr"
+
+// federatedDedupColumns are the visible-CTE columns that are dedup machinery,
+// not data: a filter on either binds successfully and compares against the
+// dedup rank, so it fails silently-wrong rather than loudly. Refused under
+// any spelling, identity fold included (the keyset counterpart is
+// federated.keysetRejectedColumns).
+var federatedDedupColumns = map[string]struct{}{
+	"rn":                   {},
+	"source_tier_priority": {},
+}
+
+// ValidateUnregisteredParquetAttrColumn guards a filter attribute the schema
+// cache does not know (#512). ValidateParquetAttrColumns cannot cover it: it
+// checks registered attributes at registration, and an unregistered filter
+// name is an arbitrary caller-supplied string that never went through it.
+// The fold is lossy, so "created.at" lands on created_at and the DuckDB
+// clause would silently filter on the creation timestamp instead of failing
+// at the binder — the silent-wrong-answer family of #354.
+//
+// The rule mirrors federated.validateKeysetCursor (#509), judged on the
+// FOLDED name because that is the identifier the generator emits, with the
+// lookups lower-cased because DuckDB resolves unquoted identifiers
+// case-insensitively. A non-identity fold onto the "attr" placeholder or onto
+// any reserved parquet column is refused; the dedup machinery is refused
+// under any spelling; an identity-up-to-case fold ("created_at",
+// "Created_At") is admitted and left to fail at the binder or, on the
+// federated route, at the PG EAV payload. Caller fault, so the error is a
+// forma.InvalidInputf carrier that keeps the caller's spelling.
+func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
+	if strings.EqualFold(folded, parquetAttrPlaceholder) && !strings.EqualFold(attr, parquetAttrPlaceholder) {
+		return forma.InvalidInputf(
+			"filter attribute %q is not registered and folds onto the placeholder column %q, which would silently filter on a real attribute of that name: filter on a registered schema attribute",
+			attr, folded)
+	}
+	key := strings.ToLower(folded)
+	if _, ok := federatedDedupColumns[key]; ok {
+		return forma.InvalidInputf(
+			"filter attribute %q folds to %q, which is federated dedup machinery, not a queryable column: filter on a registered schema attribute",
+			attr, folded)
+	}
+	if _, ok := reservedParquetColumns[key]; ok && !strings.EqualFold(attr, folded) {
+		return forma.InvalidInputf(
+			"filter attribute %q is not registered and folds to %q, a reserved system column, which would silently filter on that column instead of the attribute named: filter on a registered schema attribute, or name the system column %s directly",
+			attr, folded, key)
+	}
+	return nil
+}
+
 // ValidateParquetAttrColumns rejects attribute sets whose folded parquet
 // column names land on a reserved system column or collide with each other
 // (the fold is lossy: "contact.name" and "contact_name" both become

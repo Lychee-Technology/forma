@@ -381,7 +381,11 @@ func normalizePgMainPayload(
 
 // normalizeDuckPayload converts a leaf for the DuckDB emitter, keeping the
 // no-metadata fallback inference (detectValueType) and the text/LIKE
-// no-cast emission.
+// no-cast emission. An unregistered attribute keeps that lenient path only
+// if its folded column is not a visible-CTE system or dedup column (#512):
+// the fold is lossy, and an unchecked "created.at" would silently filter
+// on created_at. Registered names were already checked at registration by
+// ValidateParquetAttrColumns.
 func normalizeDuckPayload(
 	kv *forma.KvCondition,
 	meta forma.AttributeMetadata,
@@ -394,6 +398,11 @@ func normalizeDuckPayload(
 	}
 
 	column := resolveDuckDBColumn(kv.Attr)
+	if !hasMeta {
+		if err := ValidateUnregisteredParquetAttrColumn(kv.Attr, column); err != nil {
+			return DuckLeafPayload{Err: err}
+		}
+	}
 
 	if lenientSQL.SQLOperator == "LIKE" {
 		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, TextLike: true, Param: lenientSQL.Value}
