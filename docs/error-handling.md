@@ -751,6 +751,19 @@ being read. It is raised before any path reaches a scan.
   `schema_id` on the object, rather than fix the template. An empty
   zero-stamped manifest has nothing another schema could own and loads stamped
   for the requested schema in memory; the consumer's next save persists it.
+  The *requested* schema ID must be positive too (#536): a request for schema
+  0 is never a schema, and without the guard it would satisfy the stamp
+  equality against a zero-stamped manifest and admit its entries.
+  `VerifySchemaStamp` refuses a non-positive request before comparing any
+  stamp, as a plain error (an invariant violation by the caller, not a
+  property of the manifest), so it does not classify as a schema mismatch.
+  Because it is unclassified, the federated engine must not let it reach the
+  parquet source at all: `resolveParquetPaths` relabels every unclassified
+  source failure as `ErrFederatedReadFailed`, which `AllowPartialDegradedMode`
+  absorbs into a Postgres-only answer. So `Query` and
+  `ExecuteFederatedPaginatedQuery` refuse a non-positive `SchemaID` at entry,
+  before routing (PR #537 review) — the same `schema id must be positive`
+  invariant the OLTP repository enforces — and no degraded fallback runs.
 - **Where the zero-stamp rule is enforced.** The same single site,
   `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by the
   federated read path, `cdc-flush`, `cdc-init` and `manifest-reconcile`, and

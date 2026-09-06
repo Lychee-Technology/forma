@@ -211,7 +211,7 @@ func TestDBFederatedQueryEngine_NilQueryReturnsError(t *testing.T) {
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, nil, nil)
 
 	require.Nil(t, page)
-	require.EqualError(t, err, "federated query cannot be nil")
+	require.ErrorContains(t, err, "federated query cannot be nil")
 }
 
 func TestDBFederatedQueryEngine_ExecutionPlanPopulated(t *testing.T) {

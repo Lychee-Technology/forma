@@ -23,8 +23,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
-	if fq == nil {
-		return nil, 0, fmt.Errorf("federated query cannot be nil")
+	if err := validateFederatedQueryTarget(fq); err != nil {
+		return nil, 0, fmt.Errorf("validate federated query: %w", err)
 	}
 	if limit <= 0 {
 		limit = model.DefaultPageSize

@@ -287,10 +287,21 @@ func LoadOrCreateForSchema(ctx context.Context, st Store, path string, schemaID 
 //     is stamped for schemaID in place and accepted; the caller's next save
 //     persists the stamp and every later load is checked.
 //
+// The requested schemaID must itself be positive (#536): schema IDs are
+// always positive, so a request for schema 0 is never a schema and would
+// otherwise satisfy the equality branch against a zero-stamped manifest and
+// admit its entries. A non-positive request is refused before any stamp is
+// compared or written, as a plain error — it is an invariant violation by the
+// caller (an unguarded enumerator or a hand-inserted registry row), not a
+// property of the manifest.
+//
 // Callers that load without LoadOrCreate semantics (the compactor) apply it
 // to the manifest they loaded; LoadOrCreateForSchema applies it for everyone
 // else.
 func VerifySchemaStamp(m *Manifest, path string, schemaID int16) error {
+	if schemaID <= 0 {
+		return fmt.Errorf("manifest %s: requested schema id %d is not a schema (schema IDs are positive); refusing to verify the stamp", path, schemaID)
+	}
 	if m.SchemaID == schemaID {
 		return nil
 	}
