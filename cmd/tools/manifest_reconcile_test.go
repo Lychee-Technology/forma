@@ -236,3 +236,22 @@ func TestNewReconciler_WiresEmptyManifestAllowance(t *testing.T) {
 		t.Fatalf("AllowEmptyManifestSchemas = %v, want [7 9]", r.Opts.AllowEmptyManifestSchemas)
 	}
 }
+
+// manifest-reconcile already fails a schema whose manifest is stamped for
+// another schema (#481); a collapsed --manifest-template is now refused at
+// flag parsing too, before Postgres or S3 is opened (#520).
+func TestParseReconcileFlags_RejectsCollapsedManifestTemplate(t *testing.T) {
+	base := []string{"--s3-bucket", "bkt", "--schema-registry-table", "t"}
+	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
+		_, err := parseReconcileFlags(append(append([]string{}, base...), "--manifest-template", tmpl))
+		if err == nil {
+			t.Fatalf("template %q must be rejected", tmpl)
+		}
+		if !strings.Contains(err.Error(), "manifest-template") {
+			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
+		}
+	}
+	if _, err := parseReconcileFlags(append(append([]string{}, base...), "--manifest-template", "")); err != nil {
+		t.Fatalf("empty template falls back to the resolver default and must parse: %v", err)
+	}
+}

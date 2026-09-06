@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -135,5 +136,24 @@ func TestOpenMergeEngine_EnvCredentialsReachEngineValidation(t *testing.T) {
 	}
 	if called {
 		t.Fatal("merge engine must not load the AWS default credential chain (#329)")
+	}
+}
+
+// The compactor rewrites a schema's base from its manifest; a collapsed
+// --manifest-template would rewrite schema B's base from schema A's delta.
+// Refuse it at flag parsing, before any connection (#520).
+func TestParseCompactorFlags_RejectsCollapsedManifestTemplate(t *testing.T) {
+	base := []string{"--schema-id", "7", "--s3-bucket", "bkt"}
+	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
+		_, err := parseCompactorFlags(append(append([]string{}, base...), "--manifest-template", tmpl))
+		if err == nil {
+			t.Fatalf("template %q must be rejected", tmpl)
+		}
+		if !strings.Contains(err.Error(), "manifest-template") {
+			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
+		}
+	}
+	if _, err := parseCompactorFlags(append(append([]string{}, base...), "--manifest-template", "")); err != nil {
+		t.Fatalf("empty template falls back to the resolver default and must parse: %v", err)
 	}
 }

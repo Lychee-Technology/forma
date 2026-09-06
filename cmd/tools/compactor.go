@@ -70,6 +70,9 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	if err := opts.s3.validate(true); err != nil {
 		return nil, fmt.Errorf("validate s3 flags: %w", err)
 	}
+	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
+		return nil, err
+	}
 
 	opts.compact = cdc.CompactionConfig{
 		SchemaID:                int16(*schemaID),
