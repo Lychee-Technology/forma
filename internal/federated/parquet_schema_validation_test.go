@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -325,6 +326,47 @@ func TestValidateUnionIncompleteOnProbeFailure(t *testing.T) {
 	require.NoError(t, err, "unreadable footer stays inconclusive, not an error")
 	require.False(t, complete)
 	require.Contains(t, union.types, "row_id", "probed files still contribute")
+}
+
+// TestValidateProbesQuoteBearingPath pins #529: describeParquetColumns
+// escapes the path (#456), so a manifest key that legitimately carries a
+// quote, a semicolon, or a double quote is validated up front like any other
+// and contributes to a COMPLETE union, instead of being deferred to the
+// execution-path classifier with #255/#371 switched off for the whole query.
+func TestValidateProbesQuoteBearingPath(t *testing.T) {
+	const quoted = "s3://b/it's;\"odd\".parquet"
+	escaped := sqlutil.EscapeLiteral(quoted)
+	exec := &scriptedDescribeExecutor{cols: map[string][][2]string{
+		"plain.parquet": buildValidSystemCols(),
+		escaped:         append(buildValidSystemCols(), [2]string{"score", "INTEGER"}),
+	}}
+	v := newParquetSchemaValidator()
+	union, complete, err := v.Validate(context.Background(), exec,
+		[]string{"s3://b/plain.parquet", quoted}, nil)
+	require.NoError(t, err)
+	require.True(t, complete, "a quote-bearing path renders safely and must not mark the union incomplete")
+	require.Contains(t, union.types, "score", "the quote-bearing path must contribute its columns")
+	require.Len(t, exec.probes, 2, "one DESCRIBE per path")
+	require.Contains(t, exec.probes[1], "read_parquet('"+escaped+"')", "the quote must render doubled")
+	require.NotContains(t, exec.probes[1], "'"+quoted+"'", "the quote must never render raw")
+}
+
+// The glob branch feeds validateConcrete with whatever the listing returns,
+// so a quote-bearing match must be probed there too (#529).
+func TestValidateProbesQuoteBearingGlobMatch(t *testing.T) {
+	const quoted = "s3://b/1/it's.parquet"
+	escaped := sqlutil.EscapeLiteral(quoted)
+	exec := &scriptedDescribeExecutor{
+		cols:  map[string][][2]string{escaped: append(buildValidSystemCols(), [2]string{"score", "INTEGER"})},
+		globs: map[string][]string{"1/*.parquet": {quoted}},
+	}
+	v := newParquetSchemaValidator()
+	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/*.parquet"}, nil)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Contains(t, union.types, "score")
+	require.Len(t, exec.probes, 2, "the glob listing plus one DESCRIBE")
+	require.Contains(t, exec.probes[1], "read_parquet('"+escaped+"')")
 }
 
 // A cache hit must contribute its stored columns without a second probe.

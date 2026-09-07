@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/parquetcheck"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
@@ -131,6 +132,12 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 //
 // When a probe DOES run on a stamped path, the two are cross-checked and any
 // divergence is logged — see warnStampDivergence.
+//
+// Quote-bearing paths used to be skipped (and marked the union incomplete)
+// back when the probes interpolated the path raw; since #456 both
+// globParquetPaths and describeParquetColumns escape it via
+// sqlutil.EscapeLiteral, so a quote, double quote, or semicolon in an object
+// key is validated like any other path (#529, the #479 precedent).
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
 	stamps map[string]map[string]string,
@@ -140,13 +147,7 @@ func (v *parquetSchemaValidator) Validate(
 	}
 	union, complete := newColumnUnion(), true
 	for _, path := range paths {
-		if strings.ContainsAny(path, `'";`) {
-			// Cannot embed in a DuckDB literal; the main read fails on it
-			// with its own classification either way.
-			complete = false
-			continue
-		}
-		if strings.ContainsAny(path, "*?[") {
+		if strings.ContainsAny(path, forma.ParquetGlobMetacharacters) {
 			expanded, err := globParquetPaths(ctx, duck, path)
 			if err != nil {
 				complete = false // inconclusive: defer to the execution-path classifier
@@ -178,10 +179,6 @@ func (v *parquetSchemaValidator) validateConcrete(
 ) (bool, error) {
 	complete := true
 	for _, path := range paths {
-		if strings.ContainsAny(path, `'";`) {
-			complete = false
-			continue
-		}
 		stamp := currentStamp(stamps, path)
 		if cols, ok := v.lookupValidatedCols(path, stamp); ok {
 			union.merge(cols)
