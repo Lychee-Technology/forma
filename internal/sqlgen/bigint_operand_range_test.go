@@ -35,6 +35,11 @@ func TestBigIntOperandRangeAllBinders(t *testing.T) {
 		{"2p63_bare", "9223372036854775808", nil},
 		{"negative_1e19", "-1e19", nil},
 		{"hex_float_2p70", "0x1p70", nil},
+		// The bound is on magnitude, not integrality: a fractional literal
+		// past int64 is rejected too, exactly as the write funnel rejects a
+		// non-integral out-of-range value. Contrast fractional_in_range.
+		{"fractional_out_of_range", "1.5e30", nil},
+		{"negative_fractional_out_of_range", "-9.5e18", nil},
 		{"inf", "Inf", nil},
 		{"negative_inf", "-Inf", nil},
 		{"nan", "NaN", nil},
