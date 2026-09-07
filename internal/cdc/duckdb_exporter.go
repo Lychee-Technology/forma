@@ -3,6 +3,7 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -123,20 +124,25 @@ func (e *DuckExporter) executeExportSQL(ctx context.Context, cfg CDCConfig, logM
 }
 
 func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
-	if len(rowIDs) == 0 {
-		modeName := "base"
-		if spec.useChangeLog {
-			modeName = "snapshot"
-		}
-		return exportSQLPlan{}, fmt.Errorf("export %s: no row ids provided", modeName)
+	if len(rowIDs) == 0 && spec.useChangeLog {
+		return exportSQLPlan{}, errors.New("export snapshot: no row ids provided")
 	}
 
 	pgEsc := sqlutil.EscapeLiteral(pgConnStr)
 	s3Esc := sqlutil.EscapeLiteral(s3TmpPath)
 	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
-	rowList := quoteUUIDList(rowIDs)
-	mFilter := fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
-	eFilter := fmt.Sprintf("row_id IN (%s)", rowList)
+	// A base export with no row ids is a legitimate request (#519): a schema
+	// with zero live rows still needs one zero-row base object carrying the
+	// full projected column set, so its manifest never lists nothing (an
+	// empty manifest sends readers to the legacy glob fallback, see
+	// manifest.QuerySource.Paths). The FALSE filters keep the projection
+	// intact while selecting no rows.
+	mFilter, eFilter := "FALSE", "FALSE"
+	if len(rowIDs) > 0 {
+		rowList := quoteUUIDList(rowIDs)
+		mFilter = fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
+		eFilter = fmt.Sprintf("row_id IN (%s)", rowList)
+	}
 
 	plan := exportSQLPlan{}
 	if spec.useChangeLog {
@@ -144,7 +150,7 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 		if changeLog == "" {
 			changeLog = "change_log"
 		}
-		clFilter := fmt.Sprintf("row_id IN (%s)", rowList)
+		clFilter := fmt.Sprintf("row_id IN (%s)", quoteUUIDList(rowIDs))
 		plan.changeLogQuery = fmt.Sprintf(
 			"SELECT schema_id, row_id, changed_at, deleted_at FROM %s WHERE schema_id = %d AND flushed_at = 0 AND changed_at <= %d AND %s",
 			changeLog, schemaID, snapshotTS, clFilter,

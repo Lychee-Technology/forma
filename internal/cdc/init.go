@@ -275,7 +275,8 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 // initSchema exports all existing data for a single schema to S3 base files.
 // The delta tier is inventoried first (#371): a non-empty delta tier refuses
 // the schema unless the run may replace it, and with that permission the
-// inventory is purged only after the manifest swap has committed.
+// inventory is purged only after the manifest swap has committed — for a
+// schema with zero live rows that swap is an empty one (#519).
 func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
 	inventory, err := preflightDeltaTier(ctx, runCtx, schemaID)
 	if err != nil {
@@ -287,14 +288,11 @@ func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (in
 		return 0, 0, err
 	}
 	if state == nil {
-		if !inventory.empty() {
-			// No live rows means no base swap, and the purge is ordered
-			// strictly after the swap, so the delta tier stays in place.
-			runCtx.logger.Warn("schema has no live rows; delta tier left in place because there is no base swap to publish",
-				zap.Int16("schema_id", schemaID),
-				zap.Int("delta_objects", len(inventory.purgeKeys())))
+		state, err = finishEmptySchema(ctx, runCtx, schemaID, inventory)
+		if err != nil || state == nil {
+			return 0, 0, err
 		}
-		return 0, 0, nil
+		return state.rowsExported, state.filesCreated, nil
 	}
 	state.deltaPurge = inventory.purgeKeys()
 
@@ -436,8 +434,14 @@ func exportBaseFileForBatch(ctx context.Context, runCtx *initRunContext, state *
 }
 
 func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {
-	batch := buildSchemaBatchExport(runCtx, state, rowIDs)
+	return exportBatch(ctx, runCtx, state, buildSchemaBatchExport(runCtx, state, rowIDs))
+}
 
+// exportBatch runs one prepared batch end to end: the tmp export, the
+// tmp->final copy, the size stat, and the manifest entry record. Dry-run
+// counts the batch and writes nothing. The zero-row base of an emptied
+// schema (finishEmptySchema, #519) goes through the same steps.
+func exportBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, batch schemaBatchExport) error {
 	runCtx.logger.Info("exporting batch",
 		zap.Int16("schema_id", state.schemaID),
 		zap.Int("batch_size", len(batch.rowIDs)),

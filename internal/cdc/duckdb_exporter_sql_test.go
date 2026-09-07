@@ -214,8 +214,10 @@ func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
 // TestExportToTmpWrapsPlanErrors pins the caller-side context on both export
 // entry points: a plan failure must name the operation the caller was
 // performing, not arrive as a bare pass-through (#276, coding-standard.md).
-// Empty rowIDs is the cheapest plan failure — it returns before any DB or S3
-// use, so a zero-value DuckExporter is enough.
+// The cheapest plan failures return before any DB or S3 use, so a zero-value
+// DuckExporter is enough: empty rowIDs for the snapshot (a base export with
+// no row ids is a legitimate zero-row export since #519) and a missing
+// attribute cache for the base.
 func TestExportToTmpWrapsPlanErrors(t *testing.T) {
 	exporter := &DuckExporter{}
 	cfg := CDCConfig{}
@@ -230,9 +232,9 @@ func TestExportToTmpWrapsPlanErrors(t *testing.T) {
 
 	t.Run("base export", func(t *testing.T) {
 		err := exporter.ExportBaseFileToTmp(context.Background(), cfg,
-			"postgres://user@host/db", "s3://bucket/base/7/_tmp/f.parquet", 7, nil, testAttrCache())
+			"postgres://user@host/db", "s3://bucket/base/7/_tmp/f.parquet", 7, nil, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "export base file to tmp for schema 7")
-		require.Contains(t, err.Error(), "no row ids provided")
+		require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	})
 }
