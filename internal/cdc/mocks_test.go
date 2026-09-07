@@ -129,9 +129,13 @@ type recordingS3Client struct {
 	copyErr     error
 	deleteErr   error
 	deletedKeys []string
+	copySources []string // CopySource of each CopyObject call, in order
+	copiedKeys  []string // destination Key of each CopyObject call, in order
 }
 
 func (c *recordingS3Client) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	c.copySources = append(c.copySources, aws.ToString(in.CopySource))
+	c.copiedKeys = append(c.copiedKeys, aws.ToString(in.Key))
 	if c.copyErr != nil {
 		return nil, fmt.Errorf("mock copy object to %s: %w", aws.ToString(in.Key), c.copyErr)
 	}

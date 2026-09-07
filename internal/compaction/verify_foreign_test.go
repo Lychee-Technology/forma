@@ -74,7 +74,9 @@ func TestRejectForeignSources_BucketPrefixCollisionRefused(t *testing.T) {
 
 // A path that resolves to no key at all is out of scope too: the compactor
 // could not merge, hash or delete "s3://bkt/" or "/", so it refuses rather
-// than handing an empty key downstream.
+// than handing an empty key downstream. The bare-"/" refusal is relative
+// only: the own-bucket URI s3://bkt// names the valid key "/", which every
+// other consumer resolves it to, so it is accepted like any absolute entry.
 func TestRejectForeignSources_EmptyKeyRefused(t *testing.T) {
 	c, _ := newVerifyFixture(zap.NewNop())
 
@@ -83,6 +85,9 @@ func TestRejectForeignSources_EmptyKeyRefused(t *testing.T) {
 		require.ErrorIs(t, err, ErrForeignSource, "path %q", path)
 		require.ErrorContains(t, err, fmt.Sprintf("rewrite source %q", path), "the refusal quotes the path so an empty one stays legible")
 	}
+
+	require.NoError(t, c.rejectForeignSources(1, []manifest.FileEntry{{Tier: "base", Path: "s3://bkt//"}}),
+		"s3://bkt// is the own-bucket key \"/\", not an empty key")
 }
 
 // The gate order is load-bearing: when a source set would trip both gates, the
@@ -110,7 +115,9 @@ func TestVerifyRewriteInputs_ScopeRefusalPrecedesChecksum(t *testing.T) {
 }
 
 // deleteObjects shares bucketRelativeKey: an own-bucket URI is deleted by its
-// relative key, a foreign or empty one is skipped with a WARN, never deleted.
+// relative key, a relative path by that path verbatim (a leading slash is
+// part of the key, #516), and a foreign or empty one is skipped with a WARN,
+// never deleted.
 func TestDeleteObjects_UsesBucketRelativeKey(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
 	c, s3c := newVerifyFixture(zap.New(core))
@@ -118,15 +125,18 @@ func TestDeleteObjects_UsesBucketRelativeKey(t *testing.T) {
 
 	c.deleteObjects(context.Background(), 1, []string{
 		"s3://bkt/p/1/aaa.parquet",
-		"/p/1/bbb.parquet",
+		"/p/1/bbb.parquet",          // relative key with a leading slash: verbatim
 		"s3://bkt//p/1/ddd.parquet", // own-bucket URI: key "/p/1/ddd.parquet", verbatim
+		"s3://bkt//",                // own-bucket URI: key "/", a valid key, deleted as such
 		"s3://other-bkt/p/1/ccc.parquet",
 		"s3://bkt/",
+		"/", // relative bare "/": empty, skipped
 	})
-	require.Equal(t, []string{"p/1/aaa.parquet", "p/1/bbb.parquet", "/p/1/ddd.parquet"}, s3c.deletes)
-	require.Len(t, logs.All(), 2, "one WARN per skipped path")
+	require.Equal(t, []string{"p/1/aaa.parquet", "/p/1/bbb.parquet", "/p/1/ddd.parquet", "/"}, s3c.deletes)
+	require.Len(t, logs.All(), 3, "one WARN per skipped path")
 	require.Equal(t, "s3://other-bkt/p/1/ccc.parquet", logs.All()[0].ContextMap()["path"])
 	require.Equal(t, "s3://bkt/", logs.All()[1].ContextMap()["path"])
+	require.Equal(t, "/", logs.All()[2].ContextMap()["path"])
 }
 
 // foreignSourceManifest is rewrite-eligible (10% dirty ratio, sub-threshold

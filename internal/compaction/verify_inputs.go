@@ -114,24 +114,30 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 // for a path that resolves to no key at all ("", "/", "s3://<bucket>/"): an
 // empty key names nothing the compactor could merge, hash or delete, so it is
 // out of scope like a foreign one rather than passed on to fail downstream
-// (the refusal quotes the path so "" stays legible in the error).
+// (the refusal quotes the path so "" stays legible in the error). A bare
+// relative "/" counts as empty: no writer mints it, and it is the one
+// relative shape that carries no object name after the slash. The refusal is
+// relative-only: the own-bucket URI s3://<bucket>// passes through as key
+// "/", the object every other consumer resolves it to (#516 review).
 // It is the single path rule shared by the rewrite gates and deleteObjects,
-// and it must resolve exactly the object objectURI hands DuckDB: a relative
-// path loses its leading slash (objectURI renders it that way), while an
-// own-bucket URI keeps its key verbatim (s3://bkt//x names key "/x", the
-// object the unchanged URI reads), so the gate never hashes one key while
-// the merge reads another. The prefix match is exact, so s3://bktX/ never
-// passes as bkt.
+// and it follows the manifest path contract every other consumer applies
+// (#516; manifest.QuerySource.MissingIn, cdc.NormalizeObjectKey for
+// manifest-reconcile): a relative path IS the bucket-relative key, verbatim
+// — a leading slash is part of the key, not a separator to trim — and an
+// own-bucket URI keeps its key verbatim too (s3://bkt//x names key "/x").
+// That is exactly the object objectURI hands DuckDB, so the gate never hashes
+// one key while the merge reads another. The prefix match is exact, so
+// s3://bktX/ never passes as bkt.
 func (c *Compactor) bucketRelativeKey(path string) (string, bool) {
-	key := strings.TrimPrefix(path, "/")
 	if strings.HasPrefix(path, "s3://") {
-		key = strings.TrimPrefix(path, "s3://"+c.Bucket+"/")
-		if key == path {
+		key, found := strings.CutPrefix(path, "s3://"+c.Bucket+"/")
+		if !found || key == "" {
 			return "", false
 		}
+		return key, true
 	}
-	if key == "" {
+	if path == "" || path == "/" {
 		return "", false
 	}
-	return key, true
+	return path, true
 }

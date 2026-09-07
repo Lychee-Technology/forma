@@ -185,8 +185,8 @@ func TestVerifySourceChecksums_OwnBucketAbsolutePathVerified(t *testing.T) {
 // An own-bucket URI names its key verbatim: s3://bkt//p/x is key "/p/x", the
 // object objectURI hands DuckDB through the unchanged URI. The gate must hash
 // that same object, not a slash-trimmed neighbour, or it verifies one key
-// while the merge reads another (#515 review). The leading-slash trim is for
-// relative paths only.
+// while the merge reads another (#515 review). Relative paths are verbatim
+// keys too (#516; TestVerifySourceChecksums_LeadingSlashRelativeKeyVerbatim).
 func TestVerifySourceChecksums_OwnBucketURIKeyPreservedVerbatim(t *testing.T) {
 	c, s3c := newVerifyFixture(zap.NewNop())
 	s3c.putObject("/p/1/aaa.parquet", sourcePayload)
