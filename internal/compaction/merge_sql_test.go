@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,14 +36,45 @@ func TestBuildMergeSQL_Validation(t *testing.T) {
 	_, err := buildMergeSQL(nil, "s3://b/t.parquet", "")
 	require.ErrorContains(t, err, "at least one source")
 
-	_, err = buildMergeSQL([]string{"s3://b/a'.parquet"}, "s3://b/t.parquet", "")
-	require.ErrorContains(t, err, "quote or semicolon")
-
-	_, err = buildMergeSQL([]string{"s3://b/a.parquet"}, "s3://b/t';drop.parquet", "")
+	_, err = buildMergeSQL([]string{"s3://b/a.parquet"}, "", "")
 	require.ErrorContains(t, err, "tmp target")
+	require.ErrorContains(t, err, "empty parquet URI")
 
 	_, err = buildMergeSQL([]string{""}, "s3://b/t.parquet", "")
+	require.ErrorContains(t, err, "merge source")
 	require.ErrorContains(t, err, "empty parquet URI")
+}
+
+// TestMergeSQL_QuoteBearingURIsRenderEscaped pins #546, the writer-side
+// twin of internal/federated's TestValidateProbesQuoteBearingPath (#529):
+// every compaction render site wraps the URI in sqlutil.EscapeLiteral
+// (#478), so an object key that legitimately carries a quote, a double
+// quote, or a semicolon is accepted and rendered with the quote doubled,
+// never raw. Before #546 validateMergeURI refused such keys outright, so a
+// manifest entry the read path served could be neither compacted nor
+// reconciled.
+func TestMergeSQL_QuoteBearingURIsRenderEscaped(t *testing.T) {
+	const quoted = "s3://b/p/1/it's;\"odd\".parquet"
+	const quotedTmp = "s3://b/p/1/_tmp/it's;\"odd\".parquet"
+	escaped := sqlutil.EscapeLiteral(quoted)
+	escapedTmp := sqlutil.EscapeLiteral(quotedTmp)
+	require.NotEqual(t, quoted, escaped, "the fixture must actually need escaping")
+
+	merge, err := buildMergeSQL([]string{"s3://b/p/1/plain.parquet", quoted}, quotedTmp, "")
+	require.NoError(t, err, "a quote-bearing source and target render safely and must be accepted")
+	require.Contains(t, merge, "read_parquet(['s3://b/p/1/plain.parquet', '"+escaped+"'], union_by_name=true)")
+	require.NotContains(t, merge, "'"+quoted+"'", "the source quote must never render raw")
+	require.Contains(t, merge, "TO '"+escapedTmp+"'")
+	require.NotContains(t, merge, "'"+quotedTmp+"'", "the target quote must never render raw")
+
+	rowsIn, err := buildMergeRowsInSQL([]string{quoted})
+	require.NoError(t, err)
+	require.Equal(t, "SELECT COUNT(*) FROM read_parquet(['"+escaped+"'], union_by_name=true)", rowsIn)
+
+	stats, err := buildMergeStatsSQL(quotedTmp)
+	require.NoError(t, err)
+	require.Contains(t, stats, "FROM read_parquet('"+escapedTmp+"')")
+	require.NotContains(t, stats, "'"+quotedTmp+"'")
 }
 
 func TestBuildMergeStatsSQL_CoalescesZeroRowMerge(t *testing.T) {
@@ -53,8 +85,9 @@ func TestBuildMergeStatsSQL_CoalescesZeroRowMerge(t *testing.T) {
 	require.Contains(t, sql, `COALESCE(MIN(CAST(row_id AS VARCHAR)), '')`)
 	require.Contains(t, sql, "COALESCE(MIN(changed_at), 0)")
 
-	_, err = buildMergeStatsSQL("bad'uri")
-	require.Error(t, err)
+	_, err = buildMergeStatsSQL("")
+	require.ErrorContains(t, err, "stats target")
+	require.ErrorContains(t, err, "empty parquet URI")
 }
 
 func TestBuildMergeRowsInSQL(t *testing.T) {

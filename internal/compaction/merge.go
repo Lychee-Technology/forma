@@ -131,9 +131,10 @@ var _ Merger = (*DuckMerger)(nil)
 
 // validateMergeSourceSchemas checks every merge source against the
 // parquetcheck system-column invariant. Compaction sources are
-// manifest-listed and URI-validated by buildMergeSQL's quoting rules, but a
-// rogue registration (the #187 fabrication class) must abort the merge
-// before it can misfold rows.
+// manifest-listed and rendered through sqlutil.EscapeLiteral at every
+// site (#478, #546), so their spelling cannot break the SQL, but a rogue
+// registration (the #187 fabrication class) must abort the merge before
+// it can misfold rows.
 func validateMergeSourceSchemas(ctx context.Context, db *sql.DB, sourceURIs []string) error {
 	for _, uri := range sourceURIs {
 		if err := validateMergeURI(uri); err != nil {
