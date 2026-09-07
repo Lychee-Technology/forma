@@ -114,9 +114,11 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 // for a path that resolves to no key at all ("", "/", "s3://<bucket>/"): an
 // empty key names nothing the compactor could merge, hash or delete, so it is
 // out of scope like a foreign one rather than passed on to fail downstream
-// (the refusal quotes the path so "" stays legible in the error). A bare "/"
-// counts as empty: no writer mints it, and it is the one relative shape that
-// carries no object name after the slash.
+// (the refusal quotes the path so "" stays legible in the error). A bare
+// relative "/" counts as empty: no writer mints it, and it is the one
+// relative shape that carries no object name after the slash. The refusal is
+// relative-only: the own-bucket URI s3://<bucket>// passes through as key
+// "/", the object every other consumer resolves it to (#516 review).
 // It is the single path rule shared by the rewrite gates and deleteObjects,
 // and it follows the manifest path contract every other consumer applies
 // (#516; manifest.QuerySource.MissingIn, cdc.NormalizeObjectKey for
@@ -127,15 +129,15 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 // one key while the merge reads another. The prefix match is exact, so
 // s3://bktX/ never passes as bkt.
 func (c *Compactor) bucketRelativeKey(path string) (string, bool) {
-	key := path
 	if strings.HasPrefix(path, "s3://") {
-		key = strings.TrimPrefix(path, "s3://"+c.Bucket+"/")
-		if key == path {
+		key, found := strings.CutPrefix(path, "s3://"+c.Bucket+"/")
+		if !found || key == "" {
 			return "", false
 		}
+		return key, true
 	}
-	if key == "" || key == "/" {
+	if path == "" || path == "/" {
 		return "", false
 	}
-	return key, true
+	return path, true
 }

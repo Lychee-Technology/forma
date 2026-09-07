@@ -21,7 +21,7 @@ import (
 // (QuerySource.Paths), the missing-object probe (QuerySource.MissingIn),
 // manifest-reconcile (cdc.NormalizeObjectKey, which reconcile.normalizeKey
 // delegates to) and compaction (objectURI / bucketRelativeKey). A plain
-// relative key and an own-bucket absolute URI ride along as controls.
+// relative key and two own-bucket absolute URIs ride along as controls.
 func TestManifestPathContract_ConsumersAgreeOnKey(t *testing.T) {
 	cases := []struct {
 		path    string
@@ -31,6 +31,10 @@ func TestManifestPathContract_ConsumersAgreeOnKey(t *testing.T) {
 		{"/1/lead.parquet", "/1/lead.parquet", "s3://bkt//1/lead.parquet"},
 		{"p/1/plain.parquet", "p/1/plain.parquet", "s3://bkt/p/1/plain.parquet"},
 		{"s3://bkt//1/abs.parquet", "/1/abs.parquet", "s3://bkt//1/abs.parquet"},
+		// An own-bucket URI whose key is a bare "/" is a valid S3 key and
+		// passes through like any absolute entry; only the relative "/" is
+		// refused as empty (TestRejectForeignSources_EmptyKeyRefused).
+		{"s3://bkt//", "/", "s3://bkt//"},
 	}
 
 	files := make([]manifest.FileEntry, 0, len(cases))
