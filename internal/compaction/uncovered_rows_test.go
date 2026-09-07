@@ -92,11 +92,37 @@ func TestUncoveredRows_NoListedFilesEverythingUncovered(t *testing.T) {
 	}, uncovered)
 }
 
-func TestUncoveredRows_RejectsInvalidURI(t *testing.T) {
+func TestUncoveredRows_RejectsEmptyURI(t *testing.T) {
 	db, _ := uncoveredDB(t)
 
-	_, err := UncoveredRows(context.Background(), db, "bad'uri.parquet", nil)
-	require.Error(t, err)
-	_, err = UncoveredRows(context.Background(), db, "ok.parquet", []string{"bad'listed.parquet"})
-	require.Error(t, err)
+	_, err := UncoveredRows(context.Background(), db, "", nil)
+	require.ErrorContains(t, err, "uncovered-rows orphan")
+	require.ErrorContains(t, err, "empty parquet URI")
+	_, err = UncoveredRows(context.Background(), db, "ok.parquet", []string{""})
+	require.ErrorContains(t, err, "uncovered-rows listed file")
+	require.ErrorContains(t, err, "empty parquet URI")
+}
+
+// TestUncoveredRows_QuoteBearingPaths pins #546: an orphan or listed file
+// whose key carries a quote, a double quote, or a semicolon is rendered
+// through sqlutil.EscapeLiteral (#478) and therefore accepted, so
+// manifest-reconcile (#203) can build a repair verdict for the same entry
+// the federated read path already serves (#529). The verdict must match
+// what plain names produce.
+func TestUncoveredRows_QuoteBearingPaths(t *testing.T) {
+	db, dir := uncoveredDB(t)
+
+	orphan := filepath.Join(dir, `it's;"orphan".parquet`)
+	writeParquetFixture(t, db, orphan, []mergeFixtureRow{
+		{rowID: rowA, changedAt: 500, deletedAt: "NULL", title: "a-newer"},
+		{rowID: rowB, changedAt: 200, deletedAt: "NULL", title: "b-old"},
+	})
+	listed := filepath.Join(dir, `it's;"base".parquet`)
+	writeParquetFixture(t, db, listed, []mergeFixtureRow{
+		{rowID: rowB, changedAt: 400, deletedAt: "0", title: "b-new"},
+	})
+
+	uncovered, err := UncoveredRows(context.Background(), db, orphan, []string{listed})
+	require.NoError(t, err, "quote-bearing orphan and listed paths render escaped and must be accepted")
+	require.Equal(t, []UncoveredRow{{RowID: rowA, Tombstone: false}}, uncovered)
 }

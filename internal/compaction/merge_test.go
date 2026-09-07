@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma/internal/parquetcheck"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +38,7 @@ func writeParquetFixture(t *testing.T, db *sql.DB, path string, rows []mergeFixt
 			"SELECT CAST('%s' AS UUID) AS row_id, CAST(%d AS BIGINT) AS changed_at, CAST(%s AS BIGINT) AS deleted_at, CAST(50 AS BIGINT) AS ltbase_created_at, %s AS title",
 			r.rowID, r.changedAt, r.deletedAt, title))
 	}
-	q := fmt.Sprintf("COPY (%s) TO '%s' (FORMAT PARQUET)", joinSQL(selects), path)
+	q := fmt.Sprintf("COPY (%s) TO '%s' (FORMAT PARQUET)", joinSQL(selects), sqlutil.EscapeLiteral(path))
 	_, err := db.Exec(q)
 	require.NoError(t, err)
 }
@@ -241,4 +242,44 @@ func TestDuckMerger_RejectsWrongSchemaSource(t *testing.T) {
 	// Positive control: the good source alone merges cleanly.
 	_, err = merger.MergeToTmp(context.Background(), []string{goodPath}, tmpPath)
 	require.NoError(t, err)
+}
+
+// TestDuckMerger_QuoteBearingSourceAndTarget pins #546 end to end: a source
+// file and a tmp target whose keys carry a quote, a double quote, and a
+// semicolon pass validateMergeSourceSchemas, buildMergeSQL,
+// buildMergeRowsInSQL, and buildMergeStatsSQL, because every render site
+// escapes the path (#478). The merge itself must produce the same fold a
+// plain-named source does.
+func TestDuckMerger_QuoteBearingSourceAndTarget(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.parquet")
+	deltaPath := filepath.Join(dir, `it's;"delta".parquet`)
+	tmpPath := filepath.Join(dir, `it's;"merged".parquet`)
+
+	writeParquetFixture(t, db, basePath, []mergeFixtureRow{
+		{rowA, 100, "0", "a-v1"},
+		{rowB, 100, "0", "b-v1"},
+	})
+	writeParquetFixture(t, db, deltaPath, []mergeFixtureRow{
+		{rowA, 200, "0", "a-v2"},
+		{rowB, 300, "300", "NULL"},
+	})
+
+	merger := &DuckMerger{DB: db}
+	stats, err := merger.MergeToTmp(context.Background(), []string{basePath, deltaPath}, tmpPath)
+	require.NoError(t, err, "a quote-bearing source and target render escaped and must merge")
+	require.Equal(t, int64(4), stats.RowsIn)
+	require.Equal(t, int64(1), stats.RowsOut)
+	require.Equal(t, rowA, stats.RowIDMin)
+	require.Equal(t, rowA, stats.RowIDMax)
+
+	var title string
+	err = db.QueryRow(fmt.Sprintf(
+		"SELECT title FROM read_parquet('%s')", sqlutil.EscapeLiteral(tmpPath))).Scan(&title)
+	require.NoError(t, err)
+	require.Equal(t, "a-v2", title)
 }

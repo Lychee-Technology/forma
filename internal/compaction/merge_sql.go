@@ -28,18 +28,20 @@ const mergeLWWOrderBy = "changed_at DESC, deleted_at DESC NULLS LAST, row_id ASC
 // (internal/cdc/export_sql_builder.go buildParquetCopyOptions defaults).
 const defaultMergeCopyOptions = "FORMAT PARQUET, PARQUET_VERSION V2, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 3"
 
-// validateMergeURI rejects URIs that cannot be embedded in a single-quoted
-// DuckDB literal. Production keys are prefix/schemaID/uuid-ish and never
-// carry quotes; this guards against SQL breakage, not hostile input. The
-// render sites additionally wrap every URI in sqlutil.EscapeLiteral (#478)
-// as defense-in-depth, so escaping is an identity transform on anything
-// this validator admits; the validator stays as the operator-facing error.
+// validateMergeURI refuses the one URI the writer cannot render: the empty
+// string, which is a manifest or path-contract bug rather than an object
+// key. Quote-bearing keys are NOT refused here (#546): every compaction
+// render site wraps the URI in sqlutil.EscapeLiteral (#478), and in a
+// single-quoted DuckDB literal only a single quote can alter SQL structure
+// once doubled — a double quote or semicolon is inert inside the literal.
+// The escaping is the safety boundary; a character gate on top of it
+// would only refuse manifest entries the federated read path already
+// serves (#529), leaving them impossible to compact or reconcile. The
+// caller-supplied template gate in internal/federated/parquet_hint_scope.go
+// (#456) is a different trust domain and keeps its own rejection on purpose.
 func validateMergeURI(uri string) error {
 	if uri == "" {
 		return fmt.Errorf("empty parquet URI")
-	}
-	if strings.ContainsAny(uri, `'";`) {
-		return fmt.Errorf("parquet URI %q contains a quote or semicolon; cannot embed in DuckDB SQL", uri)
 	}
 	return nil
 }
