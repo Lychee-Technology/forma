@@ -36,8 +36,8 @@ var ErrIncompleteObjectListing = errors.New("object listing incomplete")
 // listing at that page and is returned unwrapped, so callers keep the
 // context they attached themselves.
 //
-// Every production and harness paginator routes through here so the
-// fail-closed rule has exactly one copy (#521).
+// Every production and harness ListObjectsV2 caller routes through here so
+// the fail-closed rule has exactly one copy (#521).
 func ForEachObject(ctx context.Context, client S3ListClient, bucket, prefix string, fn func(types.Object) error) error {
 	var token *string
 	seen := map[string]struct{}{}

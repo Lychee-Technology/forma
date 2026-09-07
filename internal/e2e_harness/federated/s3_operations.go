@@ -14,6 +14,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/lychee-technology/forma/internal/cdc"
 )
 
 // WriteParquet writes records to a parquet file in S3.
@@ -187,23 +190,26 @@ func (h *FederatedTestHarness) uploadToS3(ctx context.Context, localPath, s3Key 
 	return err
 }
 
-// ListParquetFiles lists parquet files in a tier.
+// ListParquetFiles lists parquet files in a tier, following every
+// ListObjectsV2 page through the shared paginator so a tier holding more
+// than one page of files is counted in full (#521).
 func (h *FederatedTestHarness) ListParquetFiles(ctx context.Context, tier string) ([]string, error) {
 	prefix := fmt.Sprintf("%s/%d/%s/", h.S3Prefix, h.SchemaID, tier)
+	return listParquetKeys(ctx, h.s3Client, h.S3Bucket, prefix)
+}
 
-	resp, err := h.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(h.S3Bucket),
-		Prefix: aws.String(prefix),
+// listParquetKeys returns every ".parquet" key under prefix. It takes the
+// narrow listing surface so a unit test can drive it with a scripted client.
+func listParquetKeys(ctx context.Context, client cdc.S3ListClient, bucket, prefix string) ([]string, error) {
+	var files []string
+	err := cdc.ForEachObject(ctx, client, bucket, prefix, func(obj types.Object) error {
+		if key := aws.ToString(obj.Key); strings.HasSuffix(key, ".parquet") {
+			files = append(files, key)
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, err
-	}
-
-	var files []string
-	for _, obj := range resp.Contents {
-		if strings.HasSuffix(*obj.Key, ".parquet") {
-			files = append(files, *obj.Key)
-		}
+		return nil, fmt.Errorf("list parquet files in bucket %s: %w", bucket, err)
 	}
 	return files, nil
 }
@@ -243,20 +249,32 @@ func (h *FederatedTestHarness) ReadParquetMetadata(ctx context.Context, s3Key st
 	return meta, nil
 }
 
-// deleteS3Prefix deletes all objects under a prefix.
-func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string) error {
-	resp, err := h.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(h.S3Bucket),
-		Prefix: aws.String(prefix),
-	})
-	if err != nil {
-		return err
-	}
+// s3PrefixClient is the surface deleteAllUnderPrefix needs: the shared
+// listing method plus DeleteObject. *s3.Client satisfies it.
+type s3PrefixClient interface {
+	cdc.S3ListClient
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+}
 
-	for _, obj := range resp.Contents {
-		_, _ = h.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(h.S3Bucket),
-			Key:    obj.Key,
+// deleteS3Prefix deletes all objects under a prefix, across every listing
+// page, so a cleanup between cases cannot leave later-page objects behind
+// for the next case to see (#521).
+func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string) error {
+	return deleteAllUnderPrefix(ctx, h.s3Client, h.S3Bucket, prefix)
+}
+
+// deleteAllUnderPrefix lists the whole prefix first, then deletes each key.
+// The listing fails closed through the shared paginator; individual delete
+// failures stay best-effort, as the cleanup callers expect.
+func deleteAllUnderPrefix(ctx context.Context, client s3PrefixClient, bucket, prefix string) error {
+	keys, err := cdc.ListObjectKeys(ctx, client, bucket, prefix)
+	if err != nil {
+		return fmt.Errorf("list objects to delete in bucket %s: %w", bucket, err)
+	}
+	for _, key := range keys {
+		_, _ = client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
 		})
 	}
 	return nil
