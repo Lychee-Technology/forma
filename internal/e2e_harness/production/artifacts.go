@@ -14,7 +14,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -188,31 +190,20 @@ func uuidString(b [16]byte) string {
 
 func (e *Env) dumpS3Listing(ctx context.Context, dir string) error {
 	var listing []map[string]any
-	var token *string
-	for {
-		out, err := e.Cluster.S3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(e.Cluster.Bucket),
-			Prefix:            aws.String(e.S3Prefix + "/"),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return fmt.Errorf("list s3 objects: %w", err)
+	err := cdc.ForEachObject(ctx, e.Cluster.S3, e.Cluster.Bucket, e.S3Prefix+"/", func(obj types.Object) error {
+		entry := map[string]any{
+			"key":  aws.ToString(obj.Key),
+			"size": aws.ToInt64(obj.Size),
+			"etag": aws.ToString(obj.ETag),
 		}
-		for _, obj := range out.Contents {
-			entry := map[string]any{
-				"key":  aws.ToString(obj.Key),
-				"size": aws.ToInt64(obj.Size),
-				"etag": aws.ToString(obj.ETag),
-			}
-			if obj.LastModified != nil {
-				entry["last_modified"] = obj.LastModified.UTC().Format(time.RFC3339)
-			}
-			listing = append(listing, entry)
+		if obj.LastModified != nil {
+			entry["last_modified"] = obj.LastModified.UTC().Format(time.RFC3339)
 		}
-		if out.NextContinuationToken == nil {
-			break
-		}
-		token = out.NextContinuationToken
+		listing = append(listing, entry)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list s3 objects: %w", err)
 	}
 	return writeJSONArtifact(dir, "s3_listing.json", listing)
 }

@@ -248,14 +248,6 @@ func (c *malformedListClient) DeleteObject(_ context.Context, in *s3.DeleteObjec
 	return &s3.DeleteObjectOutput{}, nil
 }
 
-func listPage(truncated bool, token *string, keys ...string) *s3.ListObjectsV2Output {
-	out := &s3.ListObjectsV2Output{IsTruncated: aws.Bool(truncated), NextContinuationToken: token}
-	for _, k := range keys {
-		out.Contents = append(out.Contents, types.Object{Key: aws.String(k)})
-	}
-	return out
-}
-
 // A page that claims to be truncated but carries no usable continuation
 // token, or hands back a token the listing already used, cannot be followed
 // to the end. The listing fails closed with the named sentinel instead of

@@ -366,27 +366,15 @@ func (e *Env) deleteS3Prefix(ctx context.Context) {
 	}
 }
 
-// listS3Keys returns all object keys under the Env's S3 prefix.
+// listS3Keys returns all object keys under the Env's S3 prefix through the
+// shared paginator, so a truncated page without a token fails the listing
+// instead of passing as its end (#521).
 func (e *Env) listS3Keys(ctx context.Context) ([]string, error) {
-	var keys []string
-	var token *string
-	for {
-		out, err := e.Cluster.S3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(e.Cluster.Bucket),
-			Prefix:            aws.String(e.S3Prefix + "/"),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list objects under %s: %w", e.S3Prefix, err)
-		}
-		for _, obj := range out.Contents {
-			keys = append(keys, aws.ToString(obj.Key))
-		}
-		if out.NextContinuationToken == nil {
-			return keys, nil
-		}
-		token = out.NextContinuationToken
+	keys, err := cdc.ListObjectKeys(ctx, e.Cluster.S3, e.Cluster.Bucket, e.S3Prefix+"/")
+	if err != nil {
+		return nil, fmt.Errorf("list env s3 keys: %w", err)
 	}
+	return keys, nil
 }
 
 func deriveSeed(clusterSeed int64, testName string, override *int64) int64 {

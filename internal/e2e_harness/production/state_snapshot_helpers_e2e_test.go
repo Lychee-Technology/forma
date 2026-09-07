@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
 
@@ -34,28 +35,18 @@ type s3ObjectStat struct {
 func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env, prefix string) map[string]s3ObjectStat {
 	t.Helper()
 	inv := make(map[string]s3ObjectStat)
-	var token *string
-	for {
-		out, err := env.Cluster.S3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(env.Cluster.Bucket),
-			Prefix:            aws.String(prefix),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			t.Fatalf("snapshot s3 inventory: %v", err)
+	err := cdc.ForEachObject(ctx, env.Cluster.S3, env.Cluster.Bucket, prefix, func(obj types.Object) error {
+		stat := s3ObjectStat{Size: aws.ToInt64(obj.Size), ETag: aws.ToString(obj.ETag)}
+		if obj.LastModified != nil {
+			stat.LastModified = obj.LastModified.UTC()
 		}
-		for _, obj := range out.Contents {
-			stat := s3ObjectStat{Size: aws.ToInt64(obj.Size), ETag: aws.ToString(obj.ETag)}
-			if obj.LastModified != nil {
-				stat.LastModified = obj.LastModified.UTC()
-			}
-			inv[aws.ToString(obj.Key)] = stat
-		}
-		if out.NextContinuationToken == nil {
-			return inv
-		}
-		token = out.NextContinuationToken
+		inv[aws.ToString(obj.Key)] = stat
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot s3 inventory: %v", err)
 	}
+	return inv
 }
 
 // snapshotManifest returns the manifest's raw bytes and ETag. Callers snapshot
