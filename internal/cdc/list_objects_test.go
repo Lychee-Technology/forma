@@ -27,6 +27,17 @@ func (c *scriptedListClient) ListObjectsV2(_ context.Context, in *s3.ListObjects
 	return c.pages[len(c.tokens)-1], nil
 }
 
+// listPage builds one ListObjectsV2 page carrying only keys. It lives with
+// the paginator it exercises; init_wiring_test.go reuses it for the
+// ListObjectKeys and pre-flight cases.
+func listPage(truncated bool, token *string, keys ...string) *s3.ListObjectsV2Output {
+	out := &s3.ListObjectsV2Output{IsTruncated: aws.Bool(truncated), NextContinuationToken: token}
+	for _, k := range keys {
+		out.Contents = append(out.Contents, types.Object{Key: aws.String(k)})
+	}
+	return out
+}
+
 // ForEachObject hands the callback every listed object with its metadata
 // intact, across pages, forwarding each page's continuation token (#521:
 // reconcile needs Size and LastModified, so the shared paginator must not
