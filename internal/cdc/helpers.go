@@ -146,17 +146,25 @@ func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID
 
 // CopyTmpToFinal copies a parquet file from tmp key to final key and deletes tmp.
 //
-// CopySource names the tmp key verbatim (#516): the exporter wrote the object
-// at s3://<bucket>/<tmpKey> byte for byte, so an empty data prefix yields a
-// tmp key of "/1/_tmp/<uuid>.parquet" and a copy source of
+// CopySource names the tmp key as the exporter wrote it (#516): the object
+// sits at s3://<bucket>/<tmpKey> byte for byte, so an empty data prefix yields
+// a tmp key of "/1/_tmp/<uuid>.parquet" and a copy source of
 // "<bucket>//1/_tmp/<uuid>.parquet". Trimming the leading slash here would
 // name the sibling key "1/_tmp/..." that was never written and fail every
 // promotion under an empty prefix.
+//
+// The header value is percent-encoded (encodeCopySourceKey): S3 URL-decodes
+// x-amz-copy-source, and the SDK sets the header verbatim, so a key holding a
+// reserved byte ("?", "#", "%", "+", whitespace, non-ASCII) would otherwise be
+// misread or rejected. The encoding leaves "/" and unreserved characters
+// alone, so the logical key, leading slash included, is unchanged, and every
+// key the Build*Path helpers mint under an ordinary prefix encodes to itself.
+// The destination Key is a plain SDK field and stays unencoded.
 func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, finalKey string, logger *zap.Logger) error {
 	if client == nil {
 		return fmt.Errorf("s3 client is nil")
 	}
-	src := bucket + "/" + tmpKey
+	src := bucket + "/" + encodeCopySourceKey(tmpKey)
 	if _, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     &bucket,
 		CopySource: &src,
@@ -174,6 +182,42 @@ func CopyTmpToFinal(ctx context.Context, client S3ObjectClient, bucket, tmpKey, 
 		logger.Sugar().Warnw("failed to delete tmp object", "err", err)
 	}
 	return nil
+}
+
+// encodeCopySourceKey percent-encodes an object key for the x-amz-copy-source
+// header. S3 URL-decodes the header, so the key must be encoded on the way in
+// (AWS SDK: "The value must be URL-encoded"). Unreserved characters (RFC 3986
+// §2.3: ALPHA, DIGIT, "-", ".", "_", "~") and "/" pass through, which keeps an
+// ordinary key byte-identical and a leading slash intact; every other byte is
+// escaped as %XX. That deliberately covers "?" (S3 would read the rest as a
+// versionId query), "+" (decoded as a space), "%" (decoded as an escape), and
+// whitespace and non-ASCII bytes (invalid header content). url.PathEscape is
+// not used because it escapes "/" and leaves "+" and other sub-delims alone.
+func encodeCopySourceKey(key string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(key))
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if isCopySourceSafe(c) {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0x0f])
+	}
+	return b.String()
+}
+
+func isCopySourceSafe(c byte) bool {
+	switch {
+	case 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z', '0' <= c && c <= '9':
+		return true
+	case c == '-', c == '.', c == '_', c == '~', c == '/':
+		return true
+	}
+	return false
 }
 
 // DeleteObjectKey deletes one S3 object.

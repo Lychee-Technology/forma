@@ -84,3 +84,43 @@ func TestCopyTmpToFinal_PrefixedTmpKeyCopySource(t *testing.T) {
 	require.Equal(t, []string{"test-bucket/" + testTmpKey}, client.copySources)
 	require.Equal(t, []string{testFinalKey}, client.copiedKeys)
 }
+
+// x-amz-copy-source is URL-decoded by S3 and set verbatim by the SDK, so a
+// data prefix carrying a reserved byte must be percent-encoded in the header
+// while the logical key, leading slash included, stays the one the exporter
+// wrote. The destination Key and the tmp cleanup use the raw key.
+func TestCopyTmpToFinal_ReservedCharsTmpKeyEncodedCopySource(t *testing.T) {
+	const (
+		tmpKey   = "/a b?c#d%e+f\u00e9/1/_tmp/file.parquet"
+		finalKey = "/a b?c#d%e+f\u00e9/1/delta-file.parquet"
+	)
+	client := &recordingS3Client{}
+
+	err := CopyTmpToFinal(context.Background(), client, "test-bucket", tmpKey, finalKey, zap.NewNop())
+	require.NoError(t, err)
+	require.Equal(t, []string{"test-bucket//a%20b%3Fc%23d%25e%2Bf%C3%A9/1/_tmp/file.parquet"}, client.copySources)
+	require.Equal(t, []string{finalKey}, client.copiedKeys, "destination Key is a plain SDK field, not encoded")
+	require.Equal(t, []string{tmpKey}, client.deletedKeys, "the tmp cleanup names the raw key")
+}
+
+func TestEncodeCopySourceKey(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"/", "/"},
+		{"/1/_tmp/file.parquet", "/1/_tmp/file.parquet"},
+		{"cdc/7/_tmp/0192f3a0-1c2b-7def-8a9b-0123456789ab.parquet", "cdc/7/_tmp/0192f3a0-1c2b-7def-8a9b-0123456789ab.parquet"},
+		{"A-Z_a-z.0~9/", "A-Z_a-z.0~9/"},
+		{"a b", "a%20b"},
+		{"a?v=1", "a%3Fv%3D1"},
+		{"a#b", "a%23b"},
+		{"a%b", "a%25b"},
+		{"a+b", "a%2Bb"},
+		{"a'b\"c", "a%27b%22c"},
+		{"a:b@c&d,e;f$g", "a%3Ab%40c%26d%2Ce%3Bf%24g"},
+		{"\u00e9", "%C3%A9"},
+		{"\t\n", "%09%0A"},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, encodeCopySourceKey(tc.in), "input %q", tc.in)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -77,8 +78,13 @@ func (f *fakeObjectS3) putObject(key string, body []byte) {
 func (f *fakeObjectS3) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	f.copies = append(f.copies, key)
-	// CopySource is "<bucket>/<key>"; carry the bytes over when we hold them.
-	src := strings.TrimPrefix(aws.ToString(in.CopySource), aws.ToString(in.Bucket)+"/")
+	// CopySource is "<bucket>/<percent-encoded key>" (S3 URL-decodes the
+	// header); decode it like S3 would and carry the bytes over when we hold
+	// them.
+	src, err := url.PathUnescape(strings.TrimPrefix(aws.ToString(in.CopySource), aws.ToString(in.Bucket)+"/"))
+	if err != nil {
+		return nil, fmt.Errorf("fake s3: undecodable CopySource %q: %w", aws.ToString(in.CopySource), err)
+	}
 	if body, ok := f.objects[src]; ok {
 		f.putObject(key, body)
 	}
