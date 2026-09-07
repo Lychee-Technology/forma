@@ -31,6 +31,11 @@ func MapValueTypeToDuckDBType(v forma.ValueType) string {
 		// answered normally; at DOUBLE any magnitude simply compares.
 		return "DOUBLE"
 	case forma.ValueTypeBigInt:
+		// Stays BIGINT: bigint columns are physically int64 on every tier
+		// and must compare exactly above 2^53 (#281/#357). The cast is
+		// strict, so an operand outside int64 is refused by every predicate
+		// binder before it reaches here (checkBigIntOperandRange, #502)
+		// rather than raising a Conversion Error on this route alone.
 		return "BIGINT"
 	case forma.ValueTypeNumeric:
 		// #384: every numeric column on every tier is DOUBLE (EAV pivot,

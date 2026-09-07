@@ -296,6 +296,9 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 			// 2^53 (#384) — see NarrowEAVNumericOperand.
 			return "value_numeric", NarrowEAVNumericOperand(meta.ValueType, v), nil
 		case float64:
+			if err := checkBigIntOperandRange(attr, valStr, meta.ValueType, v); err != nil {
+				return "", nil, err
+			}
 			return "value_numeric", v, nil
 		default:
 			return "", nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)

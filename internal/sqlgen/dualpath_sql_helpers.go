@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,9 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 		case int64:
 			return v, nil
 		case float64:
+			if err := checkBigIntOperandRange(attr, valStr, meta.ValueType, v); err != nil {
+				return nil, err
+			}
 			return v, nil
 		default:
 			return nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
@@ -155,6 +159,9 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		case int64:
 			return v, nil
 		case float64:
+			if err := checkBigIntOperandRange(attr, valStr, valueType, v); err != nil {
+				return nil, err
+			}
 			return v, nil
 		default:
 			return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
@@ -172,6 +179,33 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 	default:
 		return valStr, nil
 	}
+}
+
+// checkBigIntOperandRange rejects a bigint predicate operand that does not fit
+// int64 (#502). TryParseNumber already binds every integral literal within
+// int64 range as an exact int64, so a float64 here is either a genuinely
+// fractional literal (kept: lt:1.5 is a meaningful range bound) or an integral
+// one beyond int64 — or an Inf/NaN spelling ParseFloat accepts. Those cannot
+// be compared on the DuckDB route (CAST(? AS BIGINT) raises a Conversion
+// Error) while Postgres would answer against NUMERIC, so the shared
+// normalization refuses them on every binder instead. The bound mirrors the
+// #384 write funnel (checkDeclaredIntegerFit): float64(MaxInt64) is exactly
+// 2^63, so `< 2^63` rejects the first float64 that no longer fits, and NaN
+// fails both halves. A literal one below MinInt64 rounds to the float64 image
+// -2^63 and is accepted as that image, exactly as the write side would.
+// Widening the operand instead (HUGEINT) is not an option: no legal data can
+// sit beyond int64 on either side, and every rejected literal has an exact
+// in-range equivalent (gt:1e30 ≡ gt:9223372036854775807).
+func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v float64) error {
+	if valueType != forma.ValueTypeBigInt {
+		return nil
+	}
+	if v >= math.MinInt64 && v < math.MaxInt64 {
+		return nil
+	}
+	return forma.InvalidInputf(
+		"value %s out of range for bigint attribute '%s' (operand must fit [%d, %d])",
+		valStr, attr, int64(math.MinInt64), int64(math.MaxInt64))
 }
 
 // resolveMainTableColumn returns the column name prefixed with "m." for main table queries.
