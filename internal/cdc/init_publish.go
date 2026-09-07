@@ -74,8 +74,17 @@ func loadInitManifest(ctx context.Context, runCtx *initRunContext, schemaID int1
 // confirmAmbiguousSwap instead, because a committed swap whose purge is
 // skipped would leave the old delta objects as unlisted orphans that
 // manifest-reconcile --repair re-adopts as lost deletes.
+//
+// An empty entry set is never published, flag or no flag: splicing nothing
+// into the base tier would leave a manifest that lists nothing, and a
+// manifest with zero entries sends every read to the legacy per-schema glob
+// (manifest.QuerySource.Paths), which scans the unlisted old base and
+// resurrects the rows its tombstones had deleted. A schema with zero live
+// rows therefore exports one zero-row base object and publishes that
+// (finishEmptySchema, #519), the same rule compaction follows for an
+// all-tombstone merge.
 func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
-	if runCtx.manifestStore == nil || len(state.fileEntries) == 0 || runCtx.dryRun {
+	if runCtx.manifestStore == nil || runCtx.dryRun || len(state.fileEntries) == 0 {
 		return nil
 	}
 

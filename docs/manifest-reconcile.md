@@ -521,8 +521,20 @@ delta 真正退役的是 cdc-init 本身：
   对象。删除失败会记录 key 并让该 schema 返回带 key 列表的错误，但已发布的 manifest
   不回滚：读者此时只会看到新 base，残留对象成为未列孤儿，可由下文规则处理。
   `--dry-run` 只打印 `would delete N delta objects`。
-- **无 live 行的 schema 不换 base，也不动 delta。** 这类 schema 没有可发布的 swap，
-  带 `--replace-delta` 时只记一条 warning。
+- **无 live 行的 schema 用一个 0 行 base 完成 swap（#519）。** 所有行都已删除的 schema 没有
+  行可导出，但 manifest 可能仍列着旧类型的 base 与 delta。带 `--replace-delta` 时，这类
+  schema 先导出**一个 0 行的 base 对象**（`{prefix}/{schemaID}/base-<uuid>.parquet`，
+  与 compaction 全墓碑合并写出的形态相同，manifest 条目 `row_count: 0`、无 row-id 范围），
+  再走同一条 CAS 路径发布 swap：base 层替换为仅此一条、delta 层清空，保存成功后再删除
+  清理集中的 delta 对象；`--dry-run` 同样只报告（计 1 个文件、0 行）。manifest **绝不会
+  变成空集**：零条目的 manifest 会让读路径退回按 schema 前缀的 glob 扫描，把未列出的旧
+  base 连同其已被墓碑删除的行一起“复活”。旧 base 对象**只下架、不删除**（与任何重跑一致，
+  #416 起 init 从不删 base），由 `manifest-reconcile --gc` 作为普通未列孤儿回收——manifest
+  仍有一条本前缀内的 base 条目，#463 的空 manifest 防护不会触发，无需 `--allow-empty-manifest-schema`；
+  `--repair` 的晋升守卫（#292）对没有存活行的 schema 一律拒绝晋升，所以这些对象不会被
+  重新列回 manifest。manifest 本身不存在（或没有任何条目）、也没有任何 delta 对象的 schema
+  没有东西可下架，不会为此导出 0 行 base、也不会生成 manifest。不带 `--replace-delta`
+  时行为不变：delta 盘点非空即拒绝，否则不做任何事。
 - **清理集只认命名空间，不认 `tier` 标签。** 可删除的 key 必须是本 schema delta 命名
   空间里的 delta 形态对象：`{delta-prefix}/{schemaID}/<uuid>.parquet`（`--delta-prefix ""`
   时前缀部分不限，但 `/{schemaID}/<uuid>.parquet` 尾部仍然必须匹配）。manifest 里标为

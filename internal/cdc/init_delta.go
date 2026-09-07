@@ -198,7 +198,7 @@ func loadManifestDeltaEntries(ctx context.Context, runCtx *initRunContext, schem
 	}
 	m, _, err := loadInitManifest(ctx, runCtx, schemaID, manifestPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load manifest delta entries: %w", err)
 	}
 	return manifest.FilterByTier(m, "delta"), nil
 }
@@ -281,4 +281,94 @@ func purgeDeltaTier(ctx context.Context, runCtx *initRunContext, state *schemaIn
 			state.schemaID, len(failed), len(state.deltaPurge), strings.Join(failed, ", "), errors.Join(errs...))
 	}
 	return nil
+}
+
+// finishEmptySchema is the zero-live-rows tail of initSchema (#519). A
+// schema whose every row is dead has no rows to export, yet its manifest
+// may still list an old-typed base and delta tier. Without ReplaceDelta
+// nothing changes (the pre-flight already refused a non-empty inventory).
+// With it the run exports ONE zero-row base object and publishes it as the
+// schema's whole base tier under the same CAS path as a populated schema —
+// old base unlisted, delta tier emptied — and only then purges the
+// inventoried delta objects, so the flag retires the stale tiers and the
+// next init once rows exist no longer refuses.
+//
+// The zero-row object is not optional: a manifest that lists nothing sends
+// every read to the legacy per-schema glob (manifest.QuerySource.Paths),
+// which scans the unlisted old base and resurrects the rows its tombstones
+// had deleted. Compaction keeps the same invariant when a merge yields no
+// rows (a RowCount 0 base entry so the manifest never empties), and the
+// object takes compaction's UUID-only key shape (BuildMergedBasePath): an
+// init-shaped `{min}_{max}_{uuid}` name needs a row-id range, and a range-
+// less stem is unclassifiable garbage for manifest-reconcile --gc. The
+// unlisted old base objects are left for --gc, as after any re-init.
+//
+// A schema that lists nothing and has no delta objects has nothing to
+// retire; no base is exported and no manifest is minted for it. The same
+// holds for a run without a manifest template: there is no store to load a
+// manifest from and no swap to publish (updateSchemaManifest no-ops on the
+// populated path for the same reason), and the pre-flight only reaches this
+// branch storeless with an empty inventory. The returned state carries the
+// run's counts (nil when nothing was done).
+func finishEmptySchema(ctx context.Context, runCtx *initRunContext, schemaID int16, inventory deltaInventory) (*schemaInitState, error) {
+	if !runCtx.replaceDelta {
+		return nil, nil
+	}
+	if runCtx.manifestStore == nil {
+		runCtx.logger.Info("schema has no live rows and the run has no manifest template; no manifest to swap, nothing to retire",
+			zap.Int16("schema_id", schemaID))
+		return nil, nil
+	}
+	listed, err := countListedManifestEntries(ctx, runCtx, schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("retire tiers of schema %d with no live rows: %w", schemaID, err)
+	}
+	state := &schemaInitState{schemaID: schemaID, deltaPurge: inventory.purgeKeys()}
+	if listed == 0 && len(state.deltaPurge) == 0 {
+		runCtx.logger.Info("schema has no live rows, lists nothing and has no delta objects; nothing to retire",
+			zap.Int16("schema_id", schemaID))
+		return nil, nil
+	}
+	// Cache was resolved and validated by the processInitSchemas pre-flight (#193).
+	state.attrCache = runCtx.attrCaches[schemaID]
+	runCtx.logger.Info("schema has no live rows; exporting a zero-row base to retire its listed tiers before the delta purge",
+		zap.Int16("schema_id", schemaID),
+		zap.Int("listed_entries", listed),
+		zap.Int("delta_objects", len(state.deltaPurge)),
+		zap.Bool("dry_run", runCtx.dryRun))
+	if err := exportBatch(ctx, runCtx, state, buildEmptyBaseExport(runCtx, schemaID)); err != nil {
+		return nil, fmt.Errorf("export zero-row base of schema %d with no live rows: %w", schemaID, err)
+	}
+	if err := publishAndPurge(ctx, runCtx, state); err != nil {
+		return nil, fmt.Errorf("retire tiers of schema %d with no live rows: %w", schemaID, err)
+	}
+	return state, nil
+}
+
+// countListedManifestEntries returns how many entries the schema's manifest
+// lists, zero for an absent manifest.
+func countListedManifestEntries(ctx context.Context, runCtx *initRunContext, schemaID int16) (int, error) {
+	manifestPath, err := runCtx.manifestResolver.Resolve(schemaID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve manifest path: %w", err)
+	}
+	m, _, err := loadInitManifest(ctx, runCtx, schemaID, manifestPath)
+	if err != nil {
+		return 0, fmt.Errorf("count listed manifest entries: %w", err)
+	}
+	return len(m.Files), nil
+}
+
+// buildEmptyBaseExport is the batch for the zero-row base object of an
+// emptied schema (#519): no row ids, no row-id range, a fresh write-once key
+// in compaction's merged-base shape (see finishEmptySchema), with tmp and
+// final sharing the UUID as every init batch does.
+func buildEmptyBaseExport(runCtx *initRunContext, schemaID int16) schemaBatchExport {
+	fileUUID := uuid.Must(uuid.NewV7()).String()
+	tmpKey := BuildBaseTempPath(runCtx.cfg.S3Prefix, schemaID, fileUUID)
+	return schemaBatchExport{
+		tmpKey:    tmpKey,
+		finalKey:  BuildMergedBasePath(runCtx.cfg.S3Prefix, schemaID, fileUUID),
+		s3TmpPath: fmt.Sprintf("s3://%s/%s", runCtx.cfg.S3Bucket, tmpKey),
+	}
 }
