@@ -276,7 +276,9 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 // The delta tier is inventoried first (#371): a non-empty delta tier refuses
 // the schema unless the run may replace it, and with that permission the
 // inventory is purged only after the manifest swap has committed — for a
-// schema with zero live rows that swap is an empty one (#519).
+// schema with zero live rows that swap publishes one zero-row base object
+// as the whole base tier, never an empty entry set (finishEmptySchema,
+// #519).
 func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
 	inventory, err := preflightDeltaTier(ctx, runCtx, schemaID)
 	if err != nil {

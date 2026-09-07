@@ -198,7 +198,7 @@ func loadManifestDeltaEntries(ctx context.Context, runCtx *initRunContext, schem
 	}
 	m, _, err := loadInitManifest(ctx, runCtx, schemaID, manifestPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load manifest delta entries: %w", err)
 	}
 	return manifest.FilterByTier(m, "delta"), nil
 }
@@ -304,10 +304,19 @@ func purgeDeltaTier(ctx context.Context, runCtx *initRunContext, state *schemaIn
 // unlisted old base objects are left for --gc, as after any re-init.
 //
 // A schema that lists nothing and has no delta objects has nothing to
-// retire; no base is exported and no manifest is minted for it. The
-// returned state carries the run's counts (nil when nothing was done).
+// retire; no base is exported and no manifest is minted for it. The same
+// holds for a run without a manifest template: there is no store to load a
+// manifest from and no swap to publish (updateSchemaManifest no-ops on the
+// populated path for the same reason), and the pre-flight only reaches this
+// branch storeless with an empty inventory. The returned state carries the
+// run's counts (nil when nothing was done).
 func finishEmptySchema(ctx context.Context, runCtx *initRunContext, schemaID int16, inventory deltaInventory) (*schemaInitState, error) {
 	if !runCtx.replaceDelta {
+		return nil, nil
+	}
+	if runCtx.manifestStore == nil {
+		runCtx.logger.Info("schema has no live rows and the run has no manifest template; no manifest to swap, nothing to retire",
+			zap.Int16("schema_id", schemaID))
 		return nil, nil
 	}
 	listed, err := countListedManifestEntries(ctx, runCtx, schemaID)
@@ -345,7 +354,7 @@ func countListedManifestEntries(ctx context.Context, runCtx *initRunContext, sch
 	}
 	m, _, err := loadInitManifest(ctx, runCtx, schemaID, manifestPath)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("count listed manifest entries: %w", err)
 	}
 	return len(m.Files), nil
 }

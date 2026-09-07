@@ -224,3 +224,24 @@ func TestFinishEmptySchema_NothingListedButUnlistedDeltaStillRetires(t *testing.
 	require.Len(t, m.Files, 1)
 	require.Equal(t, int64(0), m.Files[0].RowCount)
 }
+
+// Without a manifest template there is no manifest store (applyInitS3Wiring)
+// and so no manifest to swap: the flag over an emptied schema is a no-op, as
+// updateSchemaManifest is on the populated path, rather than a nil-store
+// panic in the manifest load. The pre-flight only reaches this branch with
+// an empty inventory (a non-empty one is refused without a store).
+func TestFinishEmptySchema_NoManifestStoreIsNoOp(t *testing.T) {
+	var events []string
+	runCtx := emptySchemaRunContext(t, nil, []string{}, &events)
+	runCtx.manifestStore = nil
+	runCtx.manifestResolver = manifest.PathResolver{}
+	runCtx.replaceDelta = true
+
+	inv, err := preflightDeltaTier(context.Background(), runCtx, 1)
+	require.NoError(t, err)
+	require.True(t, inv.empty())
+	state, err := finishEmptySchema(context.Background(), runCtx, 1, inv)
+	require.NoError(t, err)
+	require.Nil(t, state)
+	require.Empty(t, events, "no store: nothing exported, saved or deleted")
+}
