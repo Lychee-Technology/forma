@@ -8,7 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/parquetcheck"
 )
@@ -41,11 +43,11 @@ type ObjectReader interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
-// s3ObjectAPI is the slice of *s3.Client the reconciler consumes. None of
-// the production S3 interfaces (cdc.S3ObjectClient, manifest.S3Client)
-// expose ListObjectsV2, so the tool declares its own.
+// s3ObjectAPI is the slice of *s3.Client the reconciler consumes: the
+// listing surface shared with cdc-init (cdc.S3ListClient, the client
+// cdc.ForEachObject paginates over) plus DeleteObject for --gc.
 type s3ObjectAPI interface {
-	ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input, opts ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	cdc.S3ListClient
 	DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, opts ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
@@ -56,32 +58,25 @@ type S3ObjectStore struct {
 	Bucket string
 }
 
-// ListObjects lists all objects under prefix, following continuation tokens
-// until the listing is exhausted.
+// ListObjects lists all objects under prefix through the shared paginator,
+// following continuation tokens until the listing is exhausted. A page the
+// paginator cannot follow fails with cdc.ErrIncompleteObjectListing instead
+// of returning the objects seen so far (#521): the reconciler must not
+// diff a schema against a listing that stopped short.
 func (s *S3ObjectStore) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	var objs []ObjectInfo
-	var token *string
-	for {
-		out, err := s.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(s.Bucket),
-			Prefix:            aws.String(prefix),
-			ContinuationToken: token,
+	err := cdc.ForEachObject(ctx, s.Client, s.Bucket, prefix, func(obj types.Object) error {
+		objs = append(objs, ObjectInfo{
+			Key:          aws.ToString(obj.Key),
+			Size:         aws.ToInt64(obj.Size),
+			LastModified: aws.ToTime(obj.LastModified),
 		})
-		if err != nil {
-			return nil, fmt.Errorf("list s3 objects under %s/%s: %w", s.Bucket, prefix, err)
-		}
-		for _, obj := range out.Contents {
-			objs = append(objs, ObjectInfo{
-				Key:          aws.ToString(obj.Key),
-				Size:         aws.ToInt64(obj.Size),
-				LastModified: aws.ToTime(obj.LastModified),
-			})
-		}
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
-			return objs, nil
-		}
-		token = out.NextContinuationToken
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list s3 objects in bucket %s: %w", s.Bucket, err)
 	}
+	return objs, nil
 }
 
 // DeleteObject deletes one object by key.
