@@ -848,7 +848,17 @@ applied on both sides:
   shortest round-trip form (`strconv.FormatFloat(v, 'g', -1, 64)`), so the
   DuckDB side recovers the identical float64 the PG side binds — `%.15g`
   dropped the 16th-17th significant digits. `bigint` stays `BIGINT` with
-  exact int64/decimal-string binds (#281/#357).
+  exact int64/decimal-string binds (#281/#357), so it cannot take the DOUBLE
+  widening: an integral `bigint` operand outside int64 range (`gt:1e30`,
+  `equals:9223372036854775808`, and the `Inf`/`NaN` spellings) is instead
+  rejected as user-facing invalid input by every predicate binder
+  (`sqlgen.checkBigIntOperandRange`, #502) — the same bound the write funnel
+  enforces, so no legal data sits on either side of such a comparison and
+  every rejected literal has an exact in-range equivalent
+  (`gt:9223372036854775807`). Before #502 the Postgres route answered against
+  `NUMERIC` while the DuckDB route raised a Conversion Error on
+  `CAST('1e+30' AS BIGINT)`. Fractional `bigint` operands in range are
+  unaffected.
 * **Bool**: both engines compare the `value_numeric <> 0` truthiness — the PG
   EAV EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` — and
   parse operands under one shared rule (`ParseBool` spellings, else any
