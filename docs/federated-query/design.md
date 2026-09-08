@@ -174,7 +174,16 @@ generator (read side) and cannot diverge: the logical WHERE clause is applied
 both against raw `read_parquet` output (physical columns) and against the
 `visible` CTE (unified columns), so both must expose the same names (#260).
 The fold is lossy, so both sides fail fast if two attributes of one schema
-collide on the same folded column.
+collide on the same folded column. `sqlgen.ValidateParquetAttrColumns`, the
+registration guard behind that, compares **case-insensitively** for the same
+reason the keyset and filter guards below do: DuckDB resolves an unquoted
+identifier without regard to case, so `Created_At` reaches the `created_at`
+system column and `Contact_Name` reaches the same column as `contact_name`
+(#532). The emitted names stay byte-stable either way — `ParquetAttrColumn`
+preserves the caller's spelling, and so do the diagnostics, which name the
+resolved lower-case column beside it. This is what makes the premise stated
+under the filter rule below — "registered names never reach it" — hold for
+case variants and not merely for exact-case ones.
 
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,
