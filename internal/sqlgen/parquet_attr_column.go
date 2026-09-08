@@ -116,7 +116,9 @@ func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
 // ValidateParquetAttrColumns rejects attribute sets whose folded parquet
 // column names land on a reserved system column or collide with each other
 // (the fold is lossy: "contact.name" and "contact_name" both become
-// contact_name). Schema registration calls it so an unusable schema is
+// contact_name). DuckDB resolves unquoted identifiers case-insensitively, so
+// comparisons use lower-cased folded names while errors preserve the caller's
+// spelling. Schema registration calls it so an unusable schema is
 // rejected before it accepts hot-tier writes; the CDC writer and the
 // federated reader call it again as defense in depth. Plain operator
 // error, never forma.ErrInvalidInput. Attributes are checked in sorted
@@ -131,17 +133,18 @@ func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 	colToAttr := make(map[string]string, len(names))
 	for _, name := range names {
 		col := ParquetAttrColumn(name)
-		if _, ok := reservedParquetColumns[col]; ok {
+		key := strings.ToLower(col)
+		if _, ok := reservedParquetColumns[key]; ok {
 			return fmt.Errorf(
 				"attribute %q folds to parquet column %q, which is reserved for system columns; rename the attribute",
 				name, col)
 		}
-		if prev, ok := colToAttr[col]; ok {
+		if prev, ok := colToAttr[key]; ok {
 			return fmt.Errorf(
 				"attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
 				prev, name, col)
 		}
-		colToAttr[col] = name
+		colToAttr[key] = name
 	}
 	return nil
 }

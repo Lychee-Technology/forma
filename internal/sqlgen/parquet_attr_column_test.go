@@ -51,6 +51,27 @@ func TestValidateParquetAttrColumns_ReservedSystemColumn(t *testing.T) {
 	}
 }
 
+// TestValidateParquetAttrColumns_CaseVariantReservedSystemColumn pins #532:
+// DuckDB resolves unquoted identifiers case-insensitively, so case variants
+// of system columns must be refused at registration before they can bind to a
+// system value on the federated read path.
+func TestValidateParquetAttrColumns_CaseVariantReservedSystemColumn(t *testing.T) {
+	for _, attr := range []string{
+		"Created_At",
+		"Row_ID",
+		"RN",
+		"Source_Tier_Priority",
+	} {
+		err := ValidateParquetAttrColumns(forma.SchemaAttributeCache{
+			attr: {AttributeID: 1, ValueType: forma.ValueTypeText},
+		})
+		require.Error(t, err, "attribute %q must be rejected", attr)
+		require.Contains(t, err.Error(), attr, "error must preserve the caller spelling")
+		require.Contains(t, err.Error(), ParquetAttrColumn(attr))
+		require.Contains(t, err.Error(), "reserved")
+	}
+}
+
 // TestValidateParquetAttrColumns_AttrCollision keeps the attr-vs-attr half
 // of the guard on the shared validator.
 func TestValidateParquetAttrColumns_AttrCollision(t *testing.T) {
@@ -61,6 +82,19 @@ func TestValidateParquetAttrColumns_AttrCollision(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "contact.name")
 	require.Contains(t, err.Error(), "contact_name")
+}
+
+// TestValidateParquetAttrColumns_CaseVariantAttrCollision pins #532:
+// contact_name and Contact_Name resolve to the same DuckDB column even though
+// ParquetAttrColumn preserves their spelling.
+func TestValidateParquetAttrColumns_CaseVariantAttrCollision(t *testing.T) {
+	err := ValidateParquetAttrColumns(forma.SchemaAttributeCache{
+		"contact_name": {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"Contact_Name": {AttributeID: 2, ValueType: forma.ValueTypeText},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "contact_name")
+	require.Contains(t, err.Error(), "Contact_Name")
 }
 
 func TestValidateParquetAttrColumns_ValidCachePasses(t *testing.T) {
