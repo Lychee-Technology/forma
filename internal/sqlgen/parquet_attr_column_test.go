@@ -217,3 +217,36 @@ func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
 			"duckdbFoldIdentifier disagrees with DuckDB on %q / %q", p.a, p.b)
 	}
 }
+
+// TestParquetAttrColumnUsesPlaceholderConst pins that the empty-name fallback
+// and the exported placeholder are the same string by construction (#531).
+// ParquetAttrColumn used to return a bare "attr" literal beside a const of the
+// same value, so a change to one silently left the other behind. The literal
+// assertion stays: the value is a byte-stable contract with parquet files
+// already flushed to S3, so it is pinned as a value, not only as an identity.
+func TestParquetAttrColumnUsesPlaceholderConst(t *testing.T) {
+	require.Equal(t, "attr", ParquetAttrPlaceholder)
+	for _, empty := range []string{"", "[]", "`", "``", "[`]"} {
+		require.Equal(t, ParquetAttrPlaceholder, ParquetAttrColumn(empty),
+			"ParquetAttrColumn(%q) must fall back to the placeholder", empty)
+	}
+}
+
+// TestFederatedDedupColumnsIsACopy pins the accessor internal/federated derives
+// its keyset reject set from (#531). The set decides whether a query is
+// refused, so the accessor must hand out a copy: a caller that edits what it
+// gets back must not be able to edit the guard, in either direction.
+func TestFederatedDedupColumnsIsACopy(t *testing.T) {
+	want := map[string]struct{}{"rn": {}, "source_tier_priority": {}}
+	require.Equal(t, want, FederatedDedupColumns())
+
+	tampered := FederatedDedupColumns()
+	delete(tampered, "rn")
+	tampered["contact_name"] = struct{}{}
+
+	require.Equal(t, want, FederatedDedupColumns(), "the accessor must not return the live map")
+	require.Error(t, ValidateUnregisteredParquetAttrColumn("rn", ParquetAttrColumn("rn")),
+		"deleting from a returned copy must not unblock a dedup column")
+	require.NoError(t, ValidateUnregisteredParquetAttrColumn("contact_name", ParquetAttrColumn("contact_name")),
+		"adding to a returned copy must not block an ordinary attribute")
+}

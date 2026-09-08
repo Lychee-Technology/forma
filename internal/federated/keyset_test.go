@@ -8,6 +8,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -306,4 +307,56 @@ func TestPaginatedQueryTakesKeysetPathOnCursorAlone(t *testing.T) {
 	require.Contains(t, err.Error(), `expected "row_id"`)
 	require.Zero(t, pg.runOptimizedCalls,
 		"the keyset path runs, not the in-memory merge path which calls RunOptimizedQuery")
+}
+
+// TestKeysetCursorRejectsEverySqlgenDedupColumn is the cross-package drift
+// guard from #531. The dedup-machinery set is defined once, in sqlgen, and
+// enforced twice: on the filter path by
+// sqlgen.ValidateUnregisteredParquetAttrColumn and on the cursor path by
+// validateKeysetCursor. This test drives the cursor path from the sqlgen set
+// itself rather than from a literal list, so a column added there that this
+// guard does not refuse — or a local set reintroduced here and left behind —
+// fails CI instead of reopening the #354 silent-wrong-answer class on
+// whichever path was missed.
+//
+// Every column is exercised under the spellings the fold and DuckDB's
+// case-insensitive resolution reach it by, so the guard is pinned as a rule
+// about the folded, lower-cased name rather than about a bare literal.
+func TestKeysetCursorRejectsEverySqlgenDedupColumn(t *testing.T) {
+	dedup := sqlgen.FederatedDedupColumns()
+	require.NotEmpty(t, dedup, "sqlgen must define the dedup column set this guard enforces")
+
+	for col := range dedup {
+		spellings := []string{col, strings.ToUpper(col), "[" + col + "]", "[" + strings.ToUpper(col) + "]"}
+		if i := strings.Index(col, "_"); i >= 0 {
+			spellings = append(spellings, col[:i]+"."+col[i+1:], col[:i]+" "+col[i+1:])
+		}
+		for _, spelling := range spellings {
+			err := validateKeysetCursor(keysetCursorOn(spelling, "row_id"), nil)
+			require.Error(t, err, "cursor column %q folds onto dedup column %q and must be refused", spelling, col)
+			require.Contains(t, err.Error(), "dedup machinery",
+				"cursor column %q must be refused as dedup machinery, not by some other rule", spelling)
+			require.Contains(t, err.Error(), spelling, "the error must keep the caller's spelling")
+		}
+	}
+}
+
+// TestKeysetCursorPlaceholderTracksSqlgen pins the other half of #531: the
+// placeholder rule reads sqlgen.ParquetAttrPlaceholder instead of restating
+// "attr", so changing the placeholder in ParquetAttrColumn cannot leave this
+// guard enforcing the old string. Driven from the const, not from a literal.
+func TestKeysetCursorPlaceholderTracksSqlgen(t *testing.T) {
+	placeholder := sqlgen.ParquetAttrPlaceholder
+	require.Equal(t, placeholder, sqlgen.ParquetAttrColumn(""),
+		"the placeholder must be what the fold actually substitutes")
+
+	// A name the fold TRANSFORMS onto the placeholder is refused; the
+	// placeholder under its own name is a legitimate attribute and is not.
+	err := validateKeysetCursor(keysetCursorOn("["+placeholder+"]", "row_id"), nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "folds onto the placeholder")
+	require.Contains(t, err.Error(), placeholder)
+
+	require.NoError(t, validateKeysetCursor(keysetCursorOn(placeholder, "row_id"), nil))
+	require.NoError(t, validateKeysetCursor(keysetCursorOn(strings.ToUpper(placeholder), "row_id"), nil))
 }
