@@ -83,10 +83,14 @@ var federatedDedupColumns = map[string]struct{}{
 	"source_tier_priority": {},
 }
 
-// FederatedDedupColumns returns the dedup-machinery column set, lower-cased
-// the way both guards look it up. The map is a fresh copy on every call: the
-// set is package state that decides whether a query is refused, so handing out
-// the live map would let any importer edit the guard rather than read it.
+// FederatedDedupColumns returns the dedup-machinery column set. Its entries
+// are stored lower-cased, matching the keys both guards look up: each folds
+// the caller's name and lower-cases the result before the map lookup, because
+// DuckDB resolves unquoted identifiers case-insensitively.
+//
+// The map is a fresh copy on every call: the set is package state that decides
+// whether a query is refused, so handing out the live map would let any
+// importer edit the guard rather than read it.
 func FederatedDedupColumns() map[string]struct{} {
 	cols := make(map[string]struct{}, len(federatedDedupColumns))
 	for col := range federatedDedupColumns {
