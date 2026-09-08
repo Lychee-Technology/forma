@@ -1,8 +1,12 @@
 package sqlgen
 
 import (
+	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
+
+	_ "github.com/duckdb/duckdb-go/v2"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
@@ -140,4 +144,76 @@ func TestValidateParquetAttrColumns_ValidCachePasses(t *testing.T) {
 		"Contact_Phone": {AttributeID: 5, ValueType: forma.ValueTypeText},
 		"Attr":          {AttributeID: 6, ValueType: forma.ValueTypeText},
 	}))
+}
+
+// TestValidateParquetAttrColumns_NonASCIICaseVariantsPass is the counterpart
+// to the ASCII rejection tests above: the case-insensitive comparison must
+// stop where DuckDB's does. Every pair here is two distinct DuckDB
+// identifiers, so merging them would report a collision that the engine
+// would not, and one such legacy schema fails registry construction for the
+// whole directory. "row_İd" is the reserved half of the same defect: Go maps
+// U+0130 onto "i", so a Unicode fold reads it as the reserved "row_id"
+// (review F1 on PR #548).
+func TestValidateParquetAttrColumns_NonASCIICaseVariantsPass(t *testing.T) {
+	require.NoError(t, ValidateParquetAttrColumns(forma.SchemaAttributeCache{
+		"Á":      {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"á":      {AttributeID: 2, ValueType: forma.ValueTypeText},
+		"Ж":      {AttributeID: 3, ValueType: forma.ValueTypeText},
+		"ж":      {AttributeID: 4, ValueType: forma.ValueTypeText},
+		"cafÉ":   {AttributeID: 5, ValueType: forma.ValueTypeText},
+		"café":   {AttributeID: 6, ValueType: forma.ValueTypeText},
+		"row_İd": {AttributeID: 7, ValueType: forma.ValueTypeText},
+	}))
+
+	// The ASCII half still bites in the same cache: adding a case variant of
+	// an existing ASCII name is refused, so the pass above is the boundary
+	// being respected, not the guard being switched off.
+	require.Error(t, ValidateParquetAttrColumns(forma.SchemaAttributeCache{
+		"Á":            {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"á":            {AttributeID: 2, ValueType: forma.ValueTypeText},
+		"contact_name": {AttributeID: 3, ValueType: forma.ValueTypeText},
+		"Contact_Name": {AttributeID: 4, ValueType: forma.ValueTypeText},
+	}))
+}
+
+// TestDuckDBIdentifierFoldIsASCIIOnly pins duckdbFoldIdentifier against the
+// engine instead of against DuckDB's documentation. Two attribute names
+// share a parquet column exactly when DuckDB refuses to create a table
+// holding both as quoted columns, so that refusal is the oracle: the guard
+// must merge a pair if and only if DuckDB does. Every non-ASCII pair here is
+// one Go's strings.ToLower merges, which is what makes it the wrong
+// primitive (#532, review F1 on PR #548).
+func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	pairs := []struct {
+		a, b string
+		same bool // DuckDB resolves both onto one identifier
+	}{
+		{a: "col_A", b: "col_a", same: true},
+		{a: "Contact_Name", b: "contact_name", same: true},
+		{a: "Row_ID", b: "row_id", same: true},
+		{a: "Á", b: "á", same: false},
+		{a: "Ж", b: "ж", same: false},
+		{a: "ẞ", b: "ß", same: false},
+		{a: "cafÉ", b: "café", same: false},
+		{a: "K", b: "k", same: false}, // U+212A KELVIN SIGN
+		{a: "row_İd", b: "row_id", same: false},
+	}
+
+	for i, p := range pairs {
+		_, err := db.Exec(fmt.Sprintf(`CREATE TABLE t%d ("%s" INT, "%s" INT)`, i, p.a, p.b))
+		duckDBMerges := err != nil
+		if duckDBMerges {
+			require.Contains(t, err.Error(), "already exists",
+				"unexpected DDL failure for %q / %q", p.a, p.b)
+		}
+		require.Equal(t, p.same, duckDBMerges,
+			"DuckDB identifier folding changed for %q / %q; the guard's premise must be rechecked", p.a, p.b)
+		require.Equal(t, duckDBMerges,
+			duckdbFoldIdentifier(p.a) == duckdbFoldIdentifier(p.b),
+			"duckdbFoldIdentifier disagrees with DuckDB on %q / %q", p.a, p.b)
+	}
 }

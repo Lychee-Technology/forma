@@ -185,6 +185,20 @@ resolved lower-case column beside it. This is what makes the premise stated
 under the filter rule below — "registered names never reach it" — hold for
 case variants and not merely for exact-case ones.
 
+That case-insensitivity is **ASCII-only**, because DuckDB's is: the engine
+folds `A`–`Z` and nothing else, so `Á` and `á`, `Ж` and `ж`, and `cafÉ` and
+`café` are distinct identifiers to it, and U+212A KELVIN SIGN does not
+resolve onto `k`. The guard therefore keys on `duckdbFoldIdentifier`, not on
+`strings.ToLower`: Go's Unicode case mappings would merge every one of those
+pairs and reject a schema DuckDB serves correctly, and because they also map
+U+0130 (`İ`) onto `i`, they would read the legitimate attribute `row_İd` as
+the reserved `row_id`. Since a registration failure fails the whole registry,
+a false rejection here is a boot failure, so the boundary is pinned against
+the engine itself rather than its documentation
+(`TestDuckDBIdentifierFoldIsASCIIOnly`). The two runtime guards below still
+fold with `strings.ToLower` and are narrower than DuckDB in the same way;
+that is tracked in #550.
+
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,
 `federated.validateKeysetCursor`, binds every entry point onto the keyset
