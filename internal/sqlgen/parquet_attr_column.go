@@ -93,6 +93,13 @@ var federatedDedupColumns = map[string]struct{}{
 // "Created_At") is admitted and left to fail at the binder or, on the
 // federated route, at the PG EAV payload. Caller fault, so the error is a
 // forma.InvalidInputf carrier that keeps the caller's spelling.
+//
+// The case folding below is still strings.ToLower, so this guard is narrower
+// than DuckDB for non-ASCII names — it can refuse a filter the engine would
+// have bound. That over-rejects a query rather than answering one wrongly,
+// and unlike ValidateParquetAttrColumns it cannot fail registration, so it
+// is tracked separately in #550 rather than changed here; see
+// duckdbFoldIdentifier.
 func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
 	if strings.EqualFold(folded, parquetAttrPlaceholder) && !strings.EqualFold(attr, parquetAttrPlaceholder) {
 		return forma.InvalidInputf(
@@ -113,10 +120,46 @@ func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
 	return nil
 }
 
+// duckdbFoldIdentifier lower-cases a folded column name the way DuckDB
+// resolves an unquoted identifier: ASCII only. strings.ToLower is the wrong
+// primitive here — it applies Unicode case mappings DuckDB does not, so it
+// merges identifiers DuckDB keeps distinct and would reject valid schemas
+// (#532). Verified against the pinned DuckDB (see
+// TestDuckDBIdentifierFoldIsASCIIOnly, which asserts this function against
+// the engine rather than against the documentation): "Á"/"á", "Ж"/"ж",
+// "ẞ"/"ß" and "cafÉ"/"café" are distinct columns, and U+212A KELVIN SIGN
+// does not resolve onto "k". The reserved half matters too: Go maps U+0130
+// LATIN CAPITAL LETTER I WITH DOT ABOVE onto "i", so a Unicode fold would
+// collapse the legitimate attribute "row_İd" onto the reserved "row_id" and
+// fail registry construction for every schema in the directory.
+func duckdbFoldIdentifier(col string) string {
+	var folded []byte
+	for i := 0; i < len(col); i++ {
+		c := col[i]
+		if c < 'A' || c > 'Z' {
+			continue
+		}
+		if folded == nil {
+			folded = []byte(col)
+		}
+		folded[i] = c + ('a' - 'A')
+	}
+	if folded == nil {
+		return col
+	}
+	return string(folded)
+}
+
 // ValidateParquetAttrColumns rejects attribute sets whose folded parquet
 // column names land on a reserved system column or collide with each other
 // (the fold is lossy: "contact.name" and "contact_name" both become
-// contact_name). Schema registration calls it so an unusable schema is
+// contact_name). DuckDB resolves unquoted identifiers case-insensitively, so
+// comparisons run on duckdbFoldIdentifier keys — ASCII-only, matching the
+// engine, so non-ASCII names DuckDB keeps distinct are not merged here —
+// while errors preserve the caller's spelling and name the resolved column
+// beside it, so a case-variant rejection stays legible against the reserved
+// set an operator can grep.
+// Schema registration calls it so an unusable schema is
 // rejected before it accepts hot-tier writes; the CDC writer and the
 // federated reader call it again as defense in depth. Plain operator
 // error, never forma.ErrInvalidInput. Attributes are checked in sorted
@@ -128,20 +171,55 @@ func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 	}
 	sort.Strings(names)
 
-	colToAttr := make(map[string]string, len(names))
+	type foldedAttr struct {
+		name string
+		col  string
+	}
+	colToAttr := make(map[string]foldedAttr, len(names))
 	for _, name := range names {
 		col := ParquetAttrColumn(name)
-		if _, ok := reservedParquetColumns[col]; ok {
-			return fmt.Errorf(
-				"attribute %q folds to parquet column %q, which is reserved for system columns; rename the attribute",
-				name, col)
+		key := duckdbFoldIdentifier(col)
+		if _, ok := reservedParquetColumns[key]; ok {
+			return reservedParquetColumnError(name, col, key)
 		}
-		if prev, ok := colToAttr[col]; ok {
-			return fmt.Errorf(
-				"attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
-				prev, name, col)
+		if prev, ok := colToAttr[key]; ok {
+			return foldedColumnCollisionError(prev.name, prev.col, name, col, key)
 		}
-		colToAttr[col] = name
+		colToAttr[key] = foldedAttr{name: name, col: col}
 	}
 	return nil
+}
+
+// reservedParquetColumnError explains a reserved-column rejection. When the
+// folded name is already lower case it is itself the reserved entry and the
+// message says so plainly; when the caller's case differs, the message must
+// also name the reserved column the identifier resolves onto, because that
+// lower-cased name — not the caller's spelling — is what an operator finds in
+// reservedParquetColumns (#532).
+func reservedParquetColumnError(name, col, key string) error {
+	if col == key {
+		return fmt.Errorf(
+			"attribute %q folds to parquet column %q, which is reserved for system columns; rename the attribute",
+			name, col)
+	}
+	return fmt.Errorf(
+		"attribute %q folds to parquet column %q, which DuckDB resolves case-insensitively onto the reserved system column %q; rename the attribute",
+		name, col, key)
+}
+
+// foldedColumnCollisionError explains an intra-schema collision. Two
+// attributes that fold to the same string share one parquet column and the
+// message says exactly that; two that differ only in case keep distinct
+// parquet columns — ParquetAttrColumn is byte-stable — and are merged only by
+// DuckDB's case-insensitive identifier matching, so the message names both
+// columns rather than claiming a single one that no parquet footer holds.
+func foldedColumnCollisionError(prevName, prevCol, name, col, key string) error {
+	if prevCol == col {
+		return fmt.Errorf(
+			"attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
+			prevName, name, col)
+	}
+	return fmt.Errorf(
+		"attributes %q and %q map to parquet columns %q and %q, which DuckDB resolves case-insensitively onto the same column %q; attribute names must remain distinct after identifier folding",
+		prevName, name, prevCol, col, key)
 }

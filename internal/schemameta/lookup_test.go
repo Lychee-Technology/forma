@@ -161,6 +161,24 @@ func TestFileSchemaRegistryRejectsReservedFoldedColumnAtLoad(t *testing.T) {
 	assert.Contains(t, err.Error(), "reserved")
 }
 
+// TestFileSchemaRegistryRejectsCaseVariantReservedColumnAtLoad pins #532 at
+// the registration seam: Created_At resolves to the created_at system column
+// in DuckDB and must not be accepted into a schema cache.
+func TestFileSchemaRegistryRejectsCaseVariantReservedColumnAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeJSONFile(t, fmt.Sprintf("%s/created.json", dir), map[string]any{
+		"type": "object",
+	})
+	writeJSONFile(t, fmt.Sprintf("%s/created_attributes.json", dir), map[string]any{
+		"Created_At": map[string]any{"attributeID": float64(1), "valueType": "text"},
+	})
+
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Created_At")
+	assert.Contains(t, err.Error(), "reserved")
+}
+
 // TestFileSchemaRegistryRejectsFoldedAttrCollisionAtLoad: two attributes
 // whose folded parquet columns collide are likewise rejected at load.
 func TestFileSchemaRegistryRejectsFoldedAttrCollisionAtLoad(t *testing.T) {
@@ -177,4 +195,22 @@ func TestFileSchemaRegistryRejectsFoldedAttrCollisionAtLoad(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "contact.name")
 	assert.Contains(t, err.Error(), "contact_name")
+}
+
+// TestFileSchemaRegistryRejectsCaseVariantFoldedAttrCollisionAtLoad pins
+// #532: DuckDB treats these two physical parquet aliases as one column.
+func TestFileSchemaRegistryRejectsCaseVariantFoldedAttrCollisionAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	writeJSONFile(t, fmt.Sprintf("%s/fold.json", dir), map[string]any{
+		"type": "object",
+	})
+	writeJSONFile(t, fmt.Sprintf("%s/fold_attributes.json", dir), map[string]any{
+		"contact_name": map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"Contact_Name": map[string]any{"attributeID": float64(2), "valueType": "text"},
+	})
+
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contact_name")
+	assert.Contains(t, err.Error(), "Contact_Name")
 }
