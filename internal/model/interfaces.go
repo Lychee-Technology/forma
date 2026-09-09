@@ -42,9 +42,21 @@ type PersistentRecordKey struct {
 	RowID    uuid.UUID
 }
 
+// PersistentRecordMerge computes the record to store from the row as it
+// exists inside the write transaction. existing is nil when the row is
+// absent — the caller owns that decision, because the user-facing 404 text
+// belongs to the service layer, not to storage. Returning an error aborts
+// the write and rolls the transaction back.
+type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord) (*PersistentRecord, error)
+
 type PersistentRecordWriter interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
 	UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
+	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
+	// the per-row advisory lock create and delete take, reads the row inside
+	// the write transaction, hands it to merge, and stores what merge returns
+	// — all in one transaction. It answers the stored record.
+	MergePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID, merge PersistentRecordMerge) (*PersistentRecord, error)
 	DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error
 }
 

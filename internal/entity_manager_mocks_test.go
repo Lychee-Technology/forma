@@ -72,6 +72,19 @@ func (m *mockPersistentRecordRepository) UpdatePersistentRecord(ctx context.Cont
 	return nil
 }
 
+func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, merge model.PersistentRecordMerge) (*model.PersistentRecord, error) {
+	var existing *model.PersistentRecord
+	if schemaRecords, ok := m.records[schemaID]; ok {
+		existing = schemaRecords[rowID]
+	}
+	record, err := merge(ctx, existing)
+	if err != nil {
+		return nil, err
+	}
+	m.storeRecord(record)
+	return record, nil
+}
+
 func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	m.deleteCalls++
 	if schemaRecords, ok := m.records[schemaID]; ok {
