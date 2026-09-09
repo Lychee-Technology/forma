@@ -227,43 +227,6 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
-	if record == nil {
-		return fmt.Errorf("record cannot be nil")
-	}
-	if err := validateWriteTables(tables); err != nil {
-		return fmt.Errorf("validate tables for update: %w", err)
-	}
-
-	record.UpdatedAt = r.nowMillis()
-
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
-	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-		return fmt.Errorf("update main row for %s: %w", record.RowID, err)
-	}
-
-	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
-		return fmt.Errorf("replace eav attributes for %s: %w", record.RowID, err)
-	}
-
-	if tables.ChangeLog != "" {
-		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-			return fmt.Errorf("upsert change log for %s: %w", record.RowID, err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	return nil
-}
-
 func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)

@@ -20,82 +20,11 @@ import (
 // postgres_persistent_repository_repo_test.go to keep both under the
 // 500-line source limit. The #274 monotonic-version plumbing pins live here.
 
-func TestUpdatePersistentRecordWithMockPool(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-	mock.MatchExpectationsInOrder(true)
-
-	// The update path scopes its EAV delete to the attributeIDs the current
-	// schema can address (#294), so the repository needs a registered cache.
-	mc := schemameta.NewMetadataCache()
-	require.NoError(t, mc.RegisterSchema("mock_schema", 1, forma.SchemaAttributeCache{
-		"a": {AttributeName: "a", AttributeID: 11, ValueType: forma.ValueTypeText},
-	}))
-	repo := NewDBPersistentRecordRepository(mock, mc)
-	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
-	repo.withClock(func() time.Time { return fixed })
-
-	rowID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	text := "bar"
-	record := &model.PersistentRecord{
-		SchemaID: 1,
-		RowID:    rowID,
-		TextItems: map[string]string{
-			"text_01": "hello",
-		},
-		OtherAttributes: []model.EAVRecord{
-			{SchemaID: 1, RowID: rowID, AttrID: 11, ArrayIndices: "", ValueText: &text},
-		},
-	}
-
-	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
-	fixedMillis := fixed.UnixMilli()
-
-	expected := *record
-	expected.UpdatedAt = fixedMillis
-
-	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, &expected)
-	require.NoError(t, err)
-	_, eavArgs, err := buildAttributeValuesClause(record.OtherAttributes)
-	require.NoError(t, err)
-
-	// PG computes GREATEST($now, prev + 1) and RETURNING hands it back; a
-	// same-millisecond prior write makes the effective version run AHEAD of
-	// the frozen clock (#274). change_log must receive that effective value,
-	// never the raw clock read.
-	effectiveMillis := fixedMillis + 5
-
-	mock.ExpectBegin()
-	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
-		WithArgs(updateArgs...).
-		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(effectiveMillis))
-	mock.ExpectExec(`^DELETE FROM "eav_table" WHERE schema_id = \$1 AND row_id = \$2 AND attr_id = ANY\(\$3\)$`).
-		WithArgs(int16(1), rowID, []int16{11}).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
-	mock.ExpectExec(`^INSERT INTO "eav_table"`).
-		WithArgs(eavArgs...).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`^INSERT INTO "change_log"`).
-		WithArgs(int16(1), rowID, int64(0), effectiveMillis, nil).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectCommit()
-	mock.ExpectRollback()
-
-	err = repo.UpdatePersistentRecord(ctx, tables, record)
-	require.NoError(t, err)
-	assert.Equal(t, effectiveMillis, record.UpdatedAt,
-		"UpdatePersistentRecord must adopt the effective version PG computed (#274)")
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete pins the #294
+// TestMergePersistentRecord_NoSchemaCache_FailsBeforeDelete pins the #294
 // read-path consistency class: without metadata the repository cannot know
 // which attrIDs the current schema addresses, so it must fail rather than fall
 // back to an unscoped delete that would purge dropped-attribute EAV rows.
-func TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
+func TestMergePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
 	ctx := context.Background()
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
@@ -116,14 +45,27 @@ func TestUpdatePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery(`SELECT .* FROM "entity_main" m`).
+		WithArgs(int16(7), rowID).
+		WillReturnRows(pgxmock.NewRows(singleRowColumns()).AddRow(singleRowValues(map[string]any{
+			"ltbase_schema_id": int64(7),
+			"ltbase_row_id":    rowID.String(),
+		}, `[]`)...))
 	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 		WithArgs(updateArgs...).
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(fixed.UnixMilli()))
 	// No EAV delete, no EAV insert, no changelog upsert — transaction rolls back.
 	mock.ExpectRollback()
 
-	err = repo.UpdatePersistentRecord(ctx, tables, record)
+	stored, err := repo.MergePersistentRecord(ctx, tables, 7, rowID,
+		func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+			return record, nil
+		})
 	require.Error(t, err)
+	require.Nil(t, stored)
 	require.Contains(t, err.Error(), "no cache for schema id 7")
 	require.NotErrorIs(t, err, forma.ErrInvalidInput)
 
@@ -222,84 +164,6 @@ func TestDeletePersistentRecord_WhenRowMissing_DoesNotWriteChangelog(t *testing.
 	mock.ExpectRollback()
 
 	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
-	require.Error(t, err)
-	require.ErrorIs(t, err, forma.ErrNotFound)
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestUpdatePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-	mock.MatchExpectationsInOrder(true)
-
-	repo := NewDBPersistentRecordRepository(mock, nil)
-	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
-	repo.withClock(func() time.Time { return fixed })
-	fixedMillis := fixed.UnixMilli()
-
-	rowID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
-	record := &model.PersistentRecord{
-		SchemaID:  1,
-		RowID:     rowID,
-		UpdatedAt: fixedMillis,
-		TextItems: map[string]string{"text_01": "hello"},
-	}
-	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
-
-	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, record)
-	require.NoError(t, err)
-
-	mock.ExpectBegin()
-	// UPDATE matches no row — RETURNING yields no rows
-	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
-		WithArgs(updateArgs...).
-		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}))
-	mock.ExpectRollback()
-
-	err = repo.UpdatePersistentRecord(ctx, tables, record)
-	require.Error(t, err)
-	require.ErrorIs(t, err, forma.ErrNotFound)
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestUpdatePersistentRecord_WhenRowMissing_DoesNotWriteEAVOrChangelog(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-	mock.MatchExpectationsInOrder(true)
-
-	repo := NewDBPersistentRecordRepository(mock, nil)
-	fixed := time.Date(2024, 4, 5, 6, 7, 8, 0, time.UTC)
-	repo.withClock(func() time.Time { return fixed })
-	fixedMillis := fixed.UnixMilli()
-
-	rowID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-	text := "v"
-	record := &model.PersistentRecord{
-		SchemaID:        1,
-		RowID:           rowID,
-		UpdatedAt:       fixedMillis,
-		TextItems:       map[string]string{"text_01": "hello"},
-		OtherAttributes: []model.EAVRecord{{SchemaID: 1, RowID: rowID, AttrID: 5, ValueText: &text}},
-	}
-	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
-
-	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, record)
-	require.NoError(t, err)
-
-	mock.ExpectBegin()
-	mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
-		WithArgs(updateArgs...).
-		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row matched
-	// No EAV delete, no EAV insert, no changelog upsert expected — transaction rolls back
-	mock.ExpectRollback()
-
-	err = repo.UpdatePersistentRecord(ctx, tables, record)
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrNotFound)
 

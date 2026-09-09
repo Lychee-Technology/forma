@@ -51,7 +51,6 @@ type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord)
 
 type PersistentRecordWriter interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
-	UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
 	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
 	// the per-row advisory lock create and delete take, reads the row inside
 	// the write transaction, hands it to merge, and stores what merge returns

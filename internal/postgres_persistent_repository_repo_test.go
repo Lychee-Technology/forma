@@ -173,14 +173,16 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestInsertUpdatePersistentRecordNilRecord(t *testing.T) {
+func TestInsertNilRecordAndMergeNilFunctionAreRejected(t *testing.T) {
 	repo := &DBPersistentRecordRepository{}
 
 	err := repo.InsertPersistentRecord(context.Background(), model.StorageTables{}, nil)
 	require.Error(t, err)
 
-	err = repo.UpdatePersistentRecord(context.Background(), model.StorageTables{}, nil)
+	stored, err := repo.MergePersistentRecord(context.Background(), model.StorageTables{}, 1, uuid.New(), nil)
 	require.Error(t, err)
+	require.Nil(t, stored)
+	require.Contains(t, err.Error(), "merge function cannot be nil")
 }
 
 func TestQueryPersistentRecordsWithMockPool(t *testing.T) {

@@ -22,6 +22,14 @@ import (
 // contract (frozen clock; split from the main integration file to keep both
 // under the 500-line source limit).
 
+// returnRecord is the merge body a test uses when it wants the write to store
+// a fixture verbatim: the merge base is irrelevant to what is being pinned.
+func returnRecord(record *model.PersistentRecord) model.PersistentRecordMerge {
+	return func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+		return record, nil
+	}
+}
+
 // TestSameMillisecondWritesStayStrictlyOrderedIntegration pins the #274
 // write-side version contract against real PostgreSQL: serialized writes to
 // one row NEVER share a version timestamp, even when the wall clock does not
@@ -73,14 +81,16 @@ func TestSameMillisecondWritesStayStrictlyOrderedIntegration(t *testing.T) {
 	// Update #1 on the same frozen millisecond: the effective version must
 	// advance past the create, in both stores.
 	record.TextItems["text_01"] = "v2"
-	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
-	require.Equal(t, frozenMillis+1, record.UpdatedAt, "same-millisecond update must advance the version by 1")
+	stored, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, returnRecord(record))
+	require.NoError(t, err)
+	require.Equal(t, frozenMillis+1, stored.UpdatedAt, "same-millisecond update must advance the version by 1")
 	assertChangeLogStamp(frozenMillis+1, nil)
 
 	// Update #2, still on the same frozen millisecond: strictly ordered again.
 	record.TextItems["text_01"] = "v3"
-	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
-	require.Equal(t, frozenMillis+2, record.UpdatedAt)
+	stored, err = repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, returnRecord(record))
+	require.NoError(t, err)
+	require.Equal(t, frozenMillis+2, stored.UpdatedAt)
 	assertChangeLogStamp(frozenMillis+2, nil)
 
 	// Delete, same frozen millisecond: the tombstone must rank strictly after

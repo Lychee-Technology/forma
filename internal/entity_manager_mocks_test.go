@@ -26,7 +26,10 @@ func newFileSchemaRegistryFromDir(schemaDir string) (forma.SchemaRegistry, error
 
 // Mock repository for testing
 type mockPersistentRecordRepository struct {
-	records            map[int16]map[uuid.UUID]*model.PersistentRecord
+	records map[int16]map[uuid.UUID]*model.PersistentRecord
+	// beforeMerge runs inside MergePersistentRecord just before the merge
+	// base is read, standing in for a concurrent committer.
+	beforeMerge        func()
 	insertedRecords    []*model.PersistentRecord
 	deleteCalls        int
 	lastQuery          *model.PersistentRecordQuery
@@ -67,12 +70,10 @@ func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Cont
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
-	m.storeRecord(record)
-	return nil
-}
-
 func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, merge model.PersistentRecordMerge) (*model.PersistentRecord, error) {
+	if m.beforeMerge != nil {
+		m.beforeMerge()
+	}
 	var existing *model.PersistentRecord
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		existing = schemaRecords[rowID]
@@ -201,10 +202,7 @@ func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx contex
 			m.records = snapshot
 			return fmt.Errorf("forced atomic update failure at index %d", i)
 		}
-		if err := m.UpdatePersistentRecord(ctx, tables, record); err != nil {
-			m.records = snapshot
-			return err
-		}
+		m.storeRecord(record)
 	}
 	return nil
 }
