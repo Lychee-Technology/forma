@@ -109,9 +109,13 @@ func rowVersionLockKey(schemaID int16, rowID uuid.UUID) int64 {
 // inserts a new one), so without this a recreate could read the row's
 // version history while a concurrent delete commits a tombstone the
 // recreate then ties — and an equal-ver_ts live/tombstone pair resolves
-// tombstone-wins, hiding the recreate in cold reads for good. Updates need
-// no advisory lock: their version is computed inside the row UPDATE under
-// the row lock, which every competing delete also takes. Batch writers
+// tombstone-wins, hiding the recreate in cold reads for good. Updates take
+// it too (#457): their version is safe under the row lock alone, but their
+// merge base is not — an update reads the whole document, merges, and
+// rewrites every EAV row, so two updates that only took the row lock at
+// write time would each merge onto a pre-write snapshot and the second would
+// drop the first's fields. Holding this lock across the read makes the read
+// and the write one critical section. Batch writers
 // acquire these locks in input order, the same discipline as their existing
 // row locks; an order inversion between two batches is detected and errored
 // by PostgreSQL's deadlock checker like any row-lock inversion. The lock
