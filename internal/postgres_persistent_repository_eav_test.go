@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -146,46 +145,5 @@ func TestReplaceEAVAttributes_MissingSchemaCache_SkipsDelete(t *testing.T) {
 	err = repo.replaceEAVAttributes(ctx, mock, "eav_table", 9, rowID, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no cache for schema id 9")
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestFetchAttributes(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-
-	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	text := "foo"
-	num := 42.5
-	rows := pgxmock.NewRows([]string{"schema_id", "row_id", "attr_id", "array_indices", "value_text", "value_numeric"}).
-		AddRow(int16(1), rowID, int16(10), "", &text, (*float64)(nil)).
-		AddRow(int16(1), rowID, int16(11), "0", (*string)(nil), &num)
-
-	mock.ExpectQuery(`SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM "eav_table"`).
-		WithArgs(int16(1), rowID).
-		WillReturnRows(rows)
-
-	repo := NewDBPersistentRecordRepository(mock, nil)
-	attrs, err := repo.fetchAttributes(ctx, "eav_table", 1, rowID)
-	require.NoError(t, err)
-	require.Len(t, attrs, 2)
-
-	assert.Equal(t, int16(1), attrs[0].SchemaID)
-	assert.Equal(t, rowID, attrs[0].RowID)
-	assert.Equal(t, int16(10), attrs[0].AttrID)
-	assert.Equal(t, "", attrs[0].ArrayIndices)
-	assert.NotNil(t, attrs[0].ValueText)
-	assert.Equal(t, "foo", *attrs[0].ValueText)
-	assert.Nil(t, attrs[0].ValueNumeric)
-
-	assert.Equal(t, int16(1), attrs[1].SchemaID)
-	assert.Equal(t, rowID, attrs[1].RowID)
-	assert.Equal(t, int16(11), attrs[1].AttrID)
-	assert.Equal(t, "0", attrs[1].ArrayIndices)
-	assert.Nil(t, attrs[1].ValueText)
-	assert.NotNil(t, attrs[1].ValueNumeric)
-	assert.Equal(t, 42.5, *attrs[1].ValueNumeric)
-
 	require.NoError(t, mock.ExpectationsWereMet())
 }

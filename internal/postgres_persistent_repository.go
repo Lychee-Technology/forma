@@ -314,26 +314,14 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	return nil
 }
 
+// GetPersistentRecord reads one row's main columns and EAV attributes in a
+// single statement, so the two can never come from different snapshots
+// (#457). See loadRecordWithAttributes.
 func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
 	if err := validateTables(tables); err != nil {
 		return nil, err
 	}
-
-	record, err := r.loadMainRecord(ctx, tables.EntityMain, schemaID, rowID)
-	if err != nil {
-		return nil, err
-	}
-	if record == nil {
-		return nil, nil
-	}
-
-	attributes, err := r.fetchAttributes(ctx, tables.EAVData, schemaID, rowID)
-	if err != nil {
-		return nil, err
-	}
-	record.OtherAttributes = attributes
-
-	return record, nil
+	return r.loadRecordWithAttributes(ctx, r.pool, tables, schemaID, rowID)
 }
 
 func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
