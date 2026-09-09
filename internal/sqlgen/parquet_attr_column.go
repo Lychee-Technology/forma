@@ -26,7 +26,7 @@ var parquetAttrReplacer = strings.NewReplacer("`", "", ".", "_", " ", "_", "[", 
 func ParquetAttrColumn(attr string) string {
 	col := parquetAttrReplacer.Replace(attr)
 	if col == "" {
-		return "attr"
+		return ParquetAttrPlaceholder
 	}
 	return col
 }
@@ -61,19 +61,42 @@ var reservedParquetColumns = map[string]struct{}{
 	"ltbase_deleted_at":    {},
 }
 
-// parquetAttrPlaceholder is the column ParquetAttrColumn substitutes when the
+// ParquetAttrPlaceholder is the column ParquetAttrColumn substitutes when the
 // fold empties a name ("", "[]", a lone backtick); a name like "[attr]"
-// strips down onto it directly.
-const parquetAttrPlaceholder = "attr"
+// strips down onto it directly. ParquetAttrColumn itself returns it rather
+// than a bare literal, and it is exported because internal/federated's cursor
+// guard enforces the same placeholder rule: one definition of the string, not
+// one per package (#531). A const, so a consumer cannot reassign it.
+const ParquetAttrPlaceholder = "attr"
 
 // federatedDedupColumns are the visible-CTE columns that are dedup machinery,
 // not data: a filter on either binds successfully and compares against the
 // dedup rank, so it fails silently-wrong rather than loudly. Refused under
-// any spelling, identity fold included (the keyset counterpart is
-// federated.keysetRejectedColumns).
+// any spelling, identity fold included.
+//
+// This is the single definition of the set. internal/federated applies the
+// same rule to keyset cursors and derives its own set from
+// FederatedDedupColumns rather than redeclaring one, so a column added here
+// reaches both guards (#531).
 var federatedDedupColumns = map[string]struct{}{
 	"rn":                   {},
 	"source_tier_priority": {},
+}
+
+// FederatedDedupColumns returns the dedup-machinery column set. Its entries
+// are stored lower-cased, matching the keys both guards look up: each folds
+// the caller's name and lower-cases the result before the map lookup, because
+// DuckDB resolves unquoted identifiers case-insensitively.
+//
+// The map is a fresh copy on every call: the set is package state that decides
+// whether a query is refused, so handing out the live map would let any
+// importer edit the guard rather than read it.
+func FederatedDedupColumns() map[string]struct{} {
+	cols := make(map[string]struct{}, len(federatedDedupColumns))
+	for col := range federatedDedupColumns {
+		cols[col] = struct{}{}
+	}
+	return cols
 }
 
 // ValidateUnregisteredParquetAttrColumn guards a filter attribute the schema
@@ -101,7 +124,7 @@ var federatedDedupColumns = map[string]struct{}{
 // is tracked separately in #550 rather than changed here; see
 // duckdbFoldIdentifier.
 func ValidateUnregisteredParquetAttrColumn(attr, folded string) error {
-	if strings.EqualFold(folded, parquetAttrPlaceholder) && !strings.EqualFold(attr, parquetAttrPlaceholder) {
+	if strings.EqualFold(folded, ParquetAttrPlaceholder) && !strings.EqualFold(attr, ParquetAttrPlaceholder) {
 		return forma.InvalidInputf(
 			"filter attribute %q is not registered and folds onto the placeholder column %q, which would silently filter on a real attribute of that name: filter on a registered schema attribute",
 			attr, folded)

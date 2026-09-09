@@ -73,10 +73,15 @@ var keysetSystemColumns = map[string]struct{}{
 // caught by mistake: schema registration rejects an attribute whose fold
 // collides with a reserved parquet column, and rn and source_tier_priority are
 // both in that reserved set (sqlgen.ValidateParquetAttrColumns).
-var keysetRejectedColumns = map[string]struct{}{
-	"rn":                   {},
-	"source_tier_priority": {},
-}
+//
+// The set is DERIVED from sqlgen, not redeclared here (#531). The same columns
+// are refused on the filter path by
+// sqlgen.ValidateUnregisteredParquetAttrColumn, and layering forbids the
+// reverse import, so sqlgen owns the definition and a column added there
+// reaches this guard too. The map below is this package's own copy:
+// FederatedDedupColumns hands out a fresh one per call, so neither package can
+// edit the other's guard.
+var keysetRejectedColumns = sqlgen.FederatedDedupColumns()
 
 // safeSQLIdentifier matches a bare, unquoted DuckDB identifier. Cursor
 // attributes are interpolated into SQL as identifiers, not bound as
@@ -86,15 +91,6 @@ var keysetRejectedColumns = map[string]struct{}{
 // attribute like "contact.annualIncome" passes, while a quote, semicolon,
 // parenthesis or leading digit does not.
 var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// parquetAttrFallbackColumn is the placeholder column name ParquetAttrColumn
-// substitutes when the fold empties an attribute name. It is a legitimate
-// attribute name in its own right, so the cursor rule can only reject a name
-// that FOLDS ONTO it — a folded "attr" whose raw attribute was something else,
-// whether the fold emptied the name (the empty string, "[]", a bare pair of
-// backticks) or merely stripped it down to the literal placeholder, as
-// "[attr]" and a backtick-wrapped attr do.
-const parquetAttrFallbackColumn = "attr"
 
 // validateKeysetCursor is THE keyset cursor contract, and the only validation
 // entry point. Both seams call it — the engine gate (engine.go) and the
@@ -151,14 +147,18 @@ func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOr
 		// name the code generator emits, so a rule applied to the raw name
 		// guards a string that never reaches SQL.
 		folded := sqlgen.ParquetAttrColumn(col.Attribute)
-		if strings.EqualFold(folded, parquetAttrFallbackColumn) && !strings.EqualFold(col.Attribute, parquetAttrFallbackColumn) {
-			// The literal "attr" is ParquetAttrColumn's placeholder: it
-			// substitutes it whenever the fold empties the name — "", "[]",
+		if strings.EqualFold(folded, sqlgen.ParquetAttrPlaceholder) &&
+			!strings.EqualFold(col.Attribute, sqlgen.ParquetAttrPlaceholder) {
+			// sqlgen.ParquetAttrPlaceholder is the column ParquetAttrColumn
+			// substitutes whenever the fold empties the name — "", "[]",
 			// "``" — and a name like "[attr]" or "`attr`" strips down onto it
-			// directly. That placeholder exists for the export writer, which
-			// needs some column name for every attribute; here either route
-			// would silently retarget the cursor at a real attribute called
-			// "attr".
+			// directly. It is read from sqlgen rather than restated here so
+			// the guard cannot outlive the literal it guards (#531); it is
+			// also a legitimate attribute name in its own right, which is why
+			// the rule can only reject a name that FOLDS ONTO it. That
+			// placeholder exists for the export writer, which needs some
+			// column name for every attribute; here either route would
+			// silently retarget the cursor at a real attribute called "attr".
 			//
 			// Both comparisons are case-insensitive, for the same reason the
 			// two map lookups below are: DuckDB resolves unquoted identifiers
