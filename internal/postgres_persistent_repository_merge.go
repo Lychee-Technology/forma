@@ -23,10 +23,12 @@ import (
 // released only after the previous holder commits, and re-reads that commit
 // before merging.
 //
-// The transaction deliberately stays at the default READ COMMITTED. A
-// snapshot isolation level would freeze the waiter's view at BEGIN — before
-// the lock was granted — and hand the merge the very stale base this exists
-// to prevent.
+// The transaction pins READ COMMITTED explicitly rather than inheriting the
+// cluster default, because here the level is load-bearing: a snapshot
+// isolation level would freeze the waiter's view at BEGIN — before the lock
+// was granted — and hand the merge the very stale base this exists to
+// prevent, silently. READ COMMITTED takes a fresh snapshot per statement, so
+// the post-lock read sees the previous holder's commit.
 //
 // The optimistic ltbase_updated_at predicate stays deferred: a failed assert
 // needs a caller-facing conflict protocol (409 mapping, retry) that does not
@@ -45,7 +47,7 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 		return nil, fmt.Errorf("validate tables for update: %w", err)
 	}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
@@ -62,8 +64,9 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 
 	// Deliberately a bare return rather than the usual wrap: merge is the
 	// caller's own body, which has already attached its context, and its error
-	// is frequently a published forma carrier whose message the API answers
-	// with. A prefix here would land in that body.
+	// is frequently a published forma carrier (NotFoundf/InvalidInputf). Kept
+	// bare so the service seam owns both the published message and the log
+	// line; a wrap here would only duplicate context the caller already set.
 	record, err := merge(ctx, existing)
 	if err != nil {
 		return nil, err

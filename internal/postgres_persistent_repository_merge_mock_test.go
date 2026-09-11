@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
@@ -67,7 +68,10 @@ func TestMergePersistentRecordLocksThenReadsInsideTransaction(t *testing.T) {
 
 	effectiveMillis := fixed.UnixMilli() + 5
 
-	mock.ExpectBegin()
+	// READ COMMITTED is load-bearing, not incidental: a snapshot isolation
+	// level would freeze this transaction's view at BEGIN — before the lock
+	// below was granted — and hand the merge the stale base #457 is about.
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
@@ -118,7 +122,7 @@ func TestMergePersistentRecordWhenRowMissingHandsNilAndWritesNothing(t *testing.
 	rowID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
-	mock.ExpectBegin()
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))

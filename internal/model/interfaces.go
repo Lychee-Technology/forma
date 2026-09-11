@@ -47,6 +47,15 @@ type PersistentRecordKey struct {
 // absent — the caller owns that decision, because the user-facing 404 text
 // belongs to the service layer, not to storage. Returning an error aborts
 // the write and rolls the transaction back.
+//
+// The result must be the COMPLETE record to store, not a delta, because it
+// is both what gets written and what the repository answers with. The EAV
+// attributes it carries replace the row's whole in-scope attribute set, so a
+// dropped attribute is deleted. A dropped typed column keeps its stored
+// value but is missing from the answered record; DeletedAt is written
+// verbatim, so dropping it clears a stored tombstone. CreatedAt is never
+// written, only echoed, so a result that omits it answers a zero timestamp.
+// UpdatedAt is the one field the repository stamps itself.
 type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord) (*PersistentRecord, error)
 
 type PersistentRecordWriter interface {

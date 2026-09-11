@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
@@ -44,7 +45,7 @@ func TestMergePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
 	updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, &expected)
 	require.NoError(t, err)
 
-	mock.ExpectBegin()
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
