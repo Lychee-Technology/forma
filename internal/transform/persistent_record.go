@@ -165,10 +165,9 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 }
 
 func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) error {
-	// Ignore system column bindings - system columns can only be set internally by code
-	switch binding.ColumnName {
-	case forma.MainColumnRowID, forma.MainColumnSchemaID,
-		forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt:
+	// System column bindings are read-only views: the record's own fields are
+	// the source of truth and are set internally by code.
+	if isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 
@@ -444,4 +443,17 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 	}
 
 	return nil, false, nil
+}
+
+// isSystemManagedColumn reports the main columns the record owns itself
+// (row id, schema id, lifecycle timestamps). A binding to one of them is a
+// read-only alias — storeInMainColumn skips it, and so does checkStorageFit,
+// because the caller's value is never what gets written there.
+func isSystemManagedColumn(col forma.MainColumn) bool {
+	switch col {
+	case forma.MainColumnRowID, forma.MainColumnSchemaID,
+		forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt:
+		return true
+	}
+	return false
 }
