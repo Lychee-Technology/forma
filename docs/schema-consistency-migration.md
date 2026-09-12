@@ -459,7 +459,25 @@ before deploying:
   and admissible value already has that shape.
 
 Existing rows in the old column are not moved by either change; migrate them
-with SQL first if they must survive.
+with SQL first if they must survive. For the shipped `log` schema, which #459
+rebound `leadId` from `uuid_02` to `text_02` and `visitId` from `uuid_01` to
+`text_03`:
+
+```sql
+-- shipped `log` schema: leadId uuid_02 -> text_02, visitId uuid_01 -> text_03
+UPDATE entity_main
+   SET text_02 = uuid_02::text
+ WHERE ltbase_schema_id = <log schema id> AND uuid_02 IS NOT NULL;
+UPDATE entity_main
+   SET text_03 = uuid_01::text
+ WHERE ltbase_schema_id = <log schema id> AND uuid_01 IS NOT NULL;
+-- NULL the old columns once the new binding is live
+```
+
+Parquet tiers (delta/base) are keyed by attribute name, not by main column, so
+they need no rewrite. The shipped `cmd/server/schemas/log_attributes.json`
+itself was rebound in #459; a deployment still carrying the old copy must apply
+this migration before upgrading, or the server refuses to load the schema.
 
 Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`numeric`
 → smallint/integer/bigint/double (a value that does not fit the column's
