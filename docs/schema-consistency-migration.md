@@ -119,6 +119,10 @@ It validates:
 - every referenced `<schema>_attributes.json` parses successfully
 - each schema’s metadata has unique `attributeID` values
 - each schema’s metadata has unique `column_binding.col_name` values
+- every active `column_binding` can round-trip its `valueType` through the
+  bound column and encoding (`#459`) — e.g. `text`→`uuid_02` or `bool` with
+  the default encoding are refused; the server refuses to start on the same
+  shapes, so run this before deploying a build carrying the guard
 - `eav_data.attr_id` values all map to known metadata IDs for the same
   `schema_id` — ids belonging to a `retired` ledger entry (`#342`) are reported
   as informational rather than as failures, because those rows are the `#294`
@@ -435,6 +439,33 @@ Example validator output:
 This means the row uses the wrong physical value column for the declared `valueType`.
 
 Fix by rewriting the bad rows into the correct column and clearing the wrong one.
+
+### valueType/column-encoding binding mismatches (`#459`)
+
+Example validator output:
+
+```text
+- valueType/column-encoding binding mismatches: schema=log attribute leadId (valueType text) cannot round-trip through main column uuid_02 (uuid column, encoding default): text binds only to text columns (default encoding)
+```
+
+The attribute's `valueType` and its `column_binding` disagree about the
+physical encoding. Before the guard, such a write answered a redacted 500
+(text into a uuid column) or silently dropped the value (text into a numeric
+column). The server now refuses to load the schema; fix the attributes file
+before deploying:
+
+- rebind the attribute to a column of the right family (e.g. `text_02`), or
+- change `valueType` to what the column stores (e.g. `uuid`) if every stored
+  and admissible value already has that shape.
+
+Existing rows in the old column are not moved by either change; migrate them
+with SQL first if they must survive.
+
+Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`numeric`
+→ smallint/integer/bigint/double (a value that does not fit the column's
+width is refused at write time as invalid input); `date`/`datetime`→bigint
+(`unix_ms` or default) or text (`iso8601`); `bool`→smallint (`bool_smallint`)
+or text (`bool_text`); `list` never binds.
 
 ### Scalar rows under list attributes (`#372`)
 
