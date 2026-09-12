@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -109,6 +110,22 @@ func TestCheckStorageFit_FamilyMismatch(t *testing.T) {
 		{"numeric declared, bound to bigint_01 default encoding, value 1e19 rejected",
 			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), 1e19,
 			"bound column bigint_01 (bigint)"},
+		// #459 review F1: a numeric-declared value carries no exact int64
+		// sidecar, so the bigint column is written from the float64 image
+		// (2^63 for MaxInt64), which int64() wraps to MinInt64. The exact
+		// shortcut must not admit it on the strength of the raw literal.
+		{"numeric declared, bigint column, MaxInt64 string rejected",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), "9223372036854775807",
+			"value 9223372036854775808 out of range for bound column bigint_01 (bigint)"},
+		{"numeric declared, bigint column, MaxInt64 int64 rejected",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), int64(math.MaxInt64),
+			"value 9223372036854775808 out of range for bound column bigint_01 (bigint)"},
+		{"numeric declared, bigint column, MinInt64 int64 accepted (float image is exact)",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), int64(math.MinInt64), ""},
+		{"numeric declared, bigint column, 2^62 accepted",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), int64(1) << 62, ""},
+		{"bigint declared, bigint column, MaxInt64 int64 accepted via exact sidecar",
+			boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), int64(math.MaxInt64), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +139,84 @@ func TestCheckStorageFit_FamilyMismatch(t *testing.T) {
 			msg, ok := forma.ResolvePublicMessage(err)
 			require.True(t, ok)
 			require.Contains(t, msg, tc.wantErr)
+		})
+	}
+}
+
+// #459 review F1: whatever checkStorageFit admits into a bigint column,
+// storeInMainColumn must write without wrapping. For a numeric-declared
+// attribute the store consumes the float64 image, so the admitted set is
+// exactly the float64s that convert to int64 exactly; a declared bigint
+// carries the exact sidecar and admits the full int64 range.
+func TestCheckStorageFit_BigintColumnStoreParity(t *testing.T) {
+	tr := &persistentRecordTransformer{}
+	values := []any{
+		int64(math.MaxInt64), "9223372036854775807", float64(math.MaxInt64),
+		int64(math.MinInt64), "-9223372036854775808", float64(math.MinInt64),
+		int64(1) << 62, int64(-1) << 62, "9223372036854775000", 1e18, 0, -1,
+	}
+	for _, vt := range []forma.ValueType{forma.ValueTypeNumeric, forma.ValueTypeBigInt} {
+		meta := boundMeta(vt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault)
+		for _, value := range values {
+			name := fmt.Sprintf("%s/%v(%T)", vt, value, value)
+			t.Run(name, func(t *testing.T) {
+				var rec model.EAVRecord
+				_, err := populateTypedValue(&rec, "n", value, meta)
+				if err != nil {
+					require.ErrorIs(t, err, forma.ErrInvalidInput)
+					return
+				}
+				record := &model.PersistentRecord{Int64Items: map[string]int64{}}
+				require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+				stored, ok := record.Int64Items[string(forma.MainColumnBigint01)]
+				require.True(t, ok)
+				if rec.ValueInt64 != nil {
+					require.Equal(t, *rec.ValueInt64, stored, "exact sidecar must be stored verbatim")
+					return
+				}
+				require.Equal(t, *rec.ValueNumeric, float64(stored), "float image must convert to int64 without wrapping")
+			})
+		}
+	}
+	// The declared-bigint sidecar admits the boundary the float image cannot.
+	var rec model.EAVRecord
+	_, err := populateTypedValue(&rec, "n", int64(math.MaxInt64), boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault))
+	require.NoError(t, err)
+	require.NotNil(t, rec.ValueInt64)
+	require.Equal(t, int64(math.MaxInt64), *rec.ValueInt64)
+}
+
+// #459 review O4: a rejected value prints as the caller wrote it (plain
+// digits), not in exponent form — epoch millis and 3e9 were rendering as
+// 1.7040672e+12 and 3e+09.
+func TestCheckStorageFit_MessageRendersPlainDigits(t *testing.T) {
+	cases := []struct {
+		name  string
+		meta  forma.AttributeMetadata
+		value any
+		want  string
+	}{
+		{"3e9 into integer",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnInteger01, forma.MainColumnEncodingDefault), 3e9,
+			"value 3000000000 out of range"},
+		{"epoch millis into integer",
+			boundMeta(forma.ValueTypeDate, forma.MainColumnInteger01, forma.MainColumnEncodingDefault), "2024-01-01T00:00:00Z",
+			"value 1704067200000 out of range"},
+		{"fractional into integer",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnInteger01, forma.MainColumnEncodingDefault), 1.5,
+			"non-integral value 1.5 does not fit"},
+		{"huge magnitude keeps the short form",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnInteger01, forma.MainColumnEncodingDefault), 1e300,
+			"value 1e+300 out of range"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec model.EAVRecord
+			_, err := populateTypedValue(&rec, "n", tc.value, tc.meta)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok)
+			require.Contains(t, msg, tc.want)
 		})
 	}
 }

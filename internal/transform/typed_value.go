@@ -85,7 +85,7 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 
 	// One fidelity rule for every destination (#384 declared type, #459
 	// bound column): the value must fit where it is physically going.
-	if err := checkStorageFit(attr, value, meta); err != nil {
+	if err := checkStorageFit(attr, meta); err != nil {
 		return handleConversionError(err)
 	}
 	return true, nil

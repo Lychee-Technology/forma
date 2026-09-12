@@ -485,6 +485,17 @@ width is refused at write time as invalid input); `date`/`datetime`→bigint
 (`unix_ms` or default) or text (`iso8601`); `bool`→smallint (`bool_smallint`)
 or text (`bool_text`); `list` never binds.
 
+Some refused pairs do store and read back losslessly on the Postgres path:
+`uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,
+and `date`/`datetime`→double with the default encoding. They are refused as a
+matter of policy, not because stored data is at risk: the filter rendering
+and the DuckDB projection key on the declared type and the encoding, so a
+`bool` with the default encoding is compared as text `'1'`/`'0'` and a `uuid`
+attribute is projected from a UUID-typed column. If a deployment carries one
+of these shapes, no row is corrupted; rebind with the explicit encoding
+(`bool_smallint`, `bool_text`, `unix_ms`) or to the column family the
+valueType names, and migrate the existing column values with SQL as above.
+
 ### Scalar rows under list attributes (`#372`)
 
 Example validator output:

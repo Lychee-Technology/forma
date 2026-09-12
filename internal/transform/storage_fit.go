@@ -3,6 +3,7 @@ package transform
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -21,9 +22,9 @@ import (
 // The declared-type check runs first even for bound attributes: the column
 // may be wider than the declared type (smallint declared, integer column),
 // and the declared type is what every DuckDB tier projects by (#384).
-func checkStorageFit(attr *model.EAVRecord, raw any, meta forma.AttributeMetadata) error {
+func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error {
 	if isNumericFamily(meta.ValueType) && attr.ValueNumeric != nil {
-		if err := checkIntegerFit(raw, *attr.ValueNumeric, meta.ValueType, "declared type "+string(meta.ValueType)); err != nil {
+		if err := checkIntegerFit(attr, meta.ValueType, "declared type "+string(meta.ValueType)); err != nil {
 			return err
 		}
 	}
@@ -31,7 +32,7 @@ func checkStorageFit(attr *model.EAVRecord, raw any, meta forma.AttributeMetadat
 	if binding == nil || isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
-	return checkBoundColumnFit(attr, raw, meta.ValueType, binding)
+	return checkBoundColumnFit(attr, meta.ValueType, binding)
 }
 
 // checkBoundColumnFit mirrors storeInMainColumn's dispatch: the same
@@ -44,7 +45,7 @@ func checkStorageFit(attr *model.EAVRecord, raw any, meta forma.AttributeMetadat
 // storeWithDefaultEncoding's int16()/int32() narrowing wraps (#459). The
 // registration matrix refuses date→integer, but the funnel must not depend on
 // registration: a deployed or programmatic registry can supply the binding.
-func checkBoundColumnFit(attr *model.EAVRecord, raw any, vt forma.ValueType, binding *forma.MainColumnBinding) error {
+func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) error {
 	col := binding.ColumnName
 	colType := binding.ColumnType()
 	switch binding.Encoding {
@@ -65,7 +66,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, raw any, vt forma.ValueType, bin
 		}
 	}
 	if fitType, ok := columnFitType(colType); ok {
-		return checkIntegerFit(raw, *attr.ValueNumeric, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
+		return checkIntegerFit(attr, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
 	}
 	return nil
 }
@@ -127,13 +128,24 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 	return "", false
 }
 
-// checkIntegerFit rejects a numeric-family value that cannot fit the integer
-// width vt names. dest labels the destination in the message ("declared type
-// integer", "bound column smallint_01 (smallint)"). eav_data.value_numeric is
-// an unconstrained NUMERIC and Go's int16()/int32() conversions wrap, so this
-// funnel is the only place the width can be enforced (#384, #459). numeric
-// stays unconstrained (#205 owns its float64 ceiling).
-func checkIntegerFit(raw any, numVal float64, vt forma.ValueType, dest string) error {
+// checkIntegerFit rejects a value in the numeric slot that cannot fit the
+// integer width vt names. dest labels the destination in the message
+// ("declared type integer", "bound column smallint_01 (smallint)").
+// eav_data.value_numeric is an unconstrained NUMERIC and Go's int16()/int32()
+// conversions wrap, so this funnel is the only place the width can be
+// enforced (#384, #459). numeric stays unconstrained (#205 owns its float64
+// ceiling). The caller guarantees attr.ValueNumeric is non-nil.
+//
+// The check judges the slot the store consumes, not the caller's raw value:
+// storeWithDefaultEncoding's bigint arm and the unix_ms arm write the exact
+// ValueInt64 sidecar when it is populated and int64(*ValueNumeric) otherwise,
+// and populateTypedValue fills the sidecar for declared bigint and
+// date/datetime only. A numeric-declared 9223372036854775807 is therefore
+// stored from its float64 image (2^63, which int64() wraps), so the image is
+// what must fit; deriving an exact int64 from the raw value here would admit
+// it (#459 review F1).
+func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
+	numVal := *attr.ValueNumeric
 	var lo, hi float64
 	switch vt {
 	case forma.ValueTypeSmallInt:
@@ -141,10 +153,11 @@ func checkIntegerFit(raw any, numVal float64, vt forma.ValueType, dest string) e
 	case forma.ValueTypeInteger:
 		lo, hi = math.MinInt32, math.MaxInt32
 	case forma.ValueTypeBigInt:
-		// An exactly-representable int64 fits by construction; this also
-		// admits boundary literals like "9223372036854775807" whose float64
-		// image rounds up to 2^63 and would fail the bound check below.
-		if _, ok := toInt64ExactForEAV(raw); ok {
+		// The exact sidecar is an int64 and fits by construction; it is also
+		// how a declared bigint admits boundary literals like
+		// "9223372036854775807", whose float64 image rounds up to 2^63 and
+		// would fail the bound check below.
+		if attr.ValueInt64 != nil {
 			return nil
 		}
 		// Constant conversion: math.MinInt64 converts to exactly -2^63
@@ -154,7 +167,7 @@ func checkIntegerFit(raw any, numVal float64, vt forma.ValueType, dest string) e
 			return errNonIntegralFor(numVal, dest)
 		}
 		if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
-			return fmt.Errorf("value %v out of range for %s (allowed [-9223372036854775808, 9223372036854775807])", numVal, dest)
+			return fmt.Errorf("value %s out of range for %s (allowed [-9223372036854775808, 9223372036854775807])", formatFitValue(numVal), dest)
 		}
 		return nil
 	default:
@@ -164,11 +177,27 @@ func checkIntegerFit(raw any, numVal float64, vt forma.ValueType, dest string) e
 		return errNonIntegralFor(numVal, dest)
 	}
 	if numVal < lo || numVal > hi {
-		return fmt.Errorf("value %v out of range for %s (allowed [%.0f, %.0f])", numVal, dest, lo, hi)
+		return fmt.Errorf("value %s out of range for %s (allowed [%.0f, %.0f])", formatFitValue(numVal), dest, lo, hi)
 	}
 	return nil
 }
 
 func errNonIntegralFor(numVal float64, dest string) error {
-	return fmt.Errorf("non-integral value %v does not fit %s (whole number required)", numVal, dest)
+	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", formatFitValue(numVal), dest)
+}
+
+// formatFitValue renders the rejected value in plain digits for the
+// magnitudes an integer column can be asked to hold (epoch millis print as
+// 1704067200000, not 1.7040672e+12). An integral value prints exactly, so a
+// caller who sent 9223372036854775807 sees the 9223372036854775808 its
+// float64 image became. Beyond 1e21 the shortest round-trip form keeps 1e300
+// from becoming 301 digits.
+func formatFitValue(numVal float64) string {
+	if math.Abs(numVal) >= 1e21 {
+		return strconv.FormatFloat(numVal, 'g', -1, 64)
+	}
+	if numVal == math.Trunc(numVal) {
+		return strconv.FormatFloat(numVal, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(numVal, 'f', -1, 64)
 }
