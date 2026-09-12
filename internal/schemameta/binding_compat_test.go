@@ -16,7 +16,9 @@ func bindingMeta(vt forma.ValueType, col forma.MainColumn, enc forma.MainColumnE
 }
 
 // #459: the registration matrix admits exactly the (valueType, column type,
-// encoding) triples every storage surface round-trips.
+// encoding) triples the write path, the Postgres read path and the CDC export
+// round-trip. The DuckDB hot-leg projection of date/datetime → text (iso8601)
+// is unverified; see #555.
 func TestValidateColumnBinding_Matrix(t *testing.T) {
 	d, u, i, b, bt := forma.MainColumnEncodingDefault, forma.MainColumnEncodingUnixMs,
 		forma.MainColumnEncodingISO8601, forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText

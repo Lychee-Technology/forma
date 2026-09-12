@@ -152,3 +152,56 @@ func TestStoreInMainColumn_EmptySlotIsAnError(t *testing.T) {
 	require.Empty(t, record.TextItems)
 	require.Empty(t, record.Int16Items)
 }
+
+// #459 review: the width cap applies to every value serialized from the
+// numeric slot into a smallint/integer/bigint column, not only to the
+// numeric family. Epoch millis (~1.7e12) do not fit integer or smallint, and
+// storeWithDefaultEncoding's int32()/int16() narrowing would wrap them; the
+// registration matrix refuses those pairs, but the funnel must not depend on
+// registration (a deployed or programmatic registry can supply the binding).
+func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
+	cases := []struct {
+		name    string
+		meta    forma.AttributeMetadata
+		value   any
+		wantErr []string // substrings of the published message; empty means accepted
+	}{
+		{"date to integer default encoding rejected",
+			boundMeta(forma.ValueTypeDate, forma.MainColumnInteger01, forma.MainColumnEncodingDefault), "2024-01-01",
+			[]string{"bound column integer_01 (integer)", "out of range"}},
+		{"datetime to smallint unix_ms rejected",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnSmallint01, forma.MainColumnEncodingUnixMs), "2024-01-01T00:00:00Z",
+			[]string{"bound column smallint_01 (smallint)", "out of range"}},
+		{"datetime to integer unix_ms rejected",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnInteger02, forma.MainColumnEncodingUnixMs), "2024-01-01T00:00:00Z",
+			[]string{"bound column integer_02 (integer)", "out of range"}},
+		{"datetime to bigint unix_ms accepted",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs), "2024-01-01T00:00:00Z", nil},
+		{"date to bigint default encoding accepted",
+			boundMeta(forma.ValueTypeDate, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), "2024-01-01", nil},
+		{"bool to smallint bool_smallint accepted",
+			boundMeta(forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolInt), true, nil},
+		{"datetime to text iso8601 accepted",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnText01, forma.MainColumnEncodingISO8601), "2024-01-01T00:00:00Z", nil},
+		{"bool to text bool_text accepted",
+			boundMeta(forma.ValueTypeBool, forma.MainColumnText01, forma.MainColumnEncodingBoolText), false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec model.EAVRecord
+			set, err := populateTypedValue(&rec, "when", tc.value, tc.meta)
+			if len(tc.wantErr) == 0 {
+				require.NoError(t, err)
+				require.True(t, set)
+				return
+			}
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "fit rejection must be user-facing invalid input")
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok, "fit rejection must publish its message")
+			for _, want := range tc.wantErr {
+				require.Contains(t, msg, want)
+			}
+			require.Contains(t, msg, "attribute 'when'")
+		})
+	}
+}

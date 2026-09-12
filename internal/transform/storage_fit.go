@@ -36,21 +36,44 @@ func checkStorageFit(attr *model.EAVRecord, raw any, meta forma.AttributeMetadat
 
 // checkBoundColumnFit mirrors storeInMainColumn's dispatch: the same
 // (encoding, column type) decides which EAVRecord slot is serialized, so the
-// slot must be populated, and a narrow integer column caps the value at the
-// column's width no matter how wide the declared type is (#459).
+// slot must be populated. Every value serialized from the numeric slot into a
+// smallint, integer or bigint column — a numeric-family value, epoch millis
+// (date/datetime, default or unix_ms) or 0/1 (bool_smallint) — is then
+// width-checked against the COLUMN's width, whatever the declared type or
+// encoding: epoch millis (~1.7e12) overflow integer and smallint, and
+// storeWithDefaultEncoding's int16()/int32() narrowing wraps (#459). The
+// registration matrix refuses date→integer, but the funnel must not depend on
+// registration: a deployed or programmatic registry can supply the binding.
 func checkBoundColumnFit(attr *model.EAVRecord, raw any, vt forma.ValueType, binding *forma.MainColumnBinding) error {
 	col := binding.ColumnName
+	colType := binding.ColumnType()
 	switch binding.Encoding {
-	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt,
-		forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
-		// These encodings serialize the numeric slot (epoch millis or 0/1).
+	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
+		// Text renderings of the numeric slot: nothing to width-check.
 		if attr.ValueNumeric == nil {
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
 		}
 		return nil
+	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
+		// Integer renderings of the numeric slot; width-checked below.
+		if attr.ValueNumeric == nil {
+			return errSlotMismatch(vt, col, "a date, datetime or bool value")
+		}
+	default:
+		if err := checkDefaultEncodingSlot(attr, vt, col, colType); err != nil {
+			return err
+		}
 	}
+	if fitType, ok := columnFitType(colType); ok {
+		return checkIntegerFit(raw, *attr.ValueNumeric, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
+	}
+	return nil
+}
 
-	colType := binding.ColumnType()
+// checkDefaultEncodingSlot verifies that the slot storeWithDefaultEncoding
+// serializes for colType is populated (and, for uuid columns, parseable).
+// On success an integer or double column is guaranteed a non-nil numeric slot.
+func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn, colType forma.MainColumnType) error {
 	switch colType {
 	case forma.MainColumnTypeText:
 		if attr.ValueText == nil {
@@ -63,18 +86,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, raw any, vt forma.ValueType, bin
 		if _, err := uuid.Parse(*attr.ValueText); err != nil {
 			return fmt.Errorf("%s value %q is not a UUID: bound column %s requires one", vt, *attr.ValueText, col)
 		}
-	case forma.MainColumnTypeSmallint, forma.MainColumnTypeInteger, forma.MainColumnTypeBigint:
-		if attr.ValueNumeric == nil {
-			return errSlotMismatch(vt, col, "a numeric value")
-		}
-		// Epoch millis (date/datetime) and 0/1 (bool) always fit; only the
-		// numeric family carries caller-chosen magnitude.
-		if !isNumericFamily(vt) {
-			return nil
-		}
-		fitType, _ := columnFitType(colType)
-		return checkIntegerFit(raw, *attr.ValueNumeric, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
-	case forma.MainColumnTypeDouble:
+	case forma.MainColumnTypeSmallint, forma.MainColumnTypeInteger, forma.MainColumnTypeBigint, forma.MainColumnTypeDouble:
 		if attr.ValueNumeric == nil {
 			return errSlotMismatch(vt, col, "a numeric value")
 		}
@@ -88,9 +100,11 @@ func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) e
 	return fmt.Errorf("%s value cannot be stored in main column %s, which stores %s: the attribute's valueType and column binding disagree", vt, col, expects)
 }
 
-// isNumericFamily reports the valueTypes whose magnitude is caller-chosen and
-// therefore subject to width checks. date/datetime and bool also occupy the
-// numeric slot, but their images (epoch millis, 0/1) fit every integer column.
+// isNumericFamily reports the valueTypes whose magnitude is caller-chosen, so
+// checkStorageFit runs the declared-type width check on them (numeric itself
+// passes that check unconstrained, #205). date/datetime and bool also occupy
+// the numeric slot (epoch millis, 0/1); their declared type carries no width,
+// and only the bound column's width (checkBoundColumnFit) constrains them.
 func isNumericFamily(vt forma.ValueType) bool {
 	switch vt {
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:

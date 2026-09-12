@@ -38,8 +38,11 @@ func TestValidateSchemaConsistencyReportsBindingMismatches(t *testing.T) {
 			t.Fatalf("missing %q in output:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "name") {
+	if strings.Contains(got, "attribute name (") {
 		t.Fatalf("compatible binding must not be reported:\n%s", got)
+	}
+	if n := strings.Count(got, "- valueType/column-encoding binding mismatches:"); n != 2 {
+		t.Fatalf("expected exactly two binding mismatch lines, got %d:\n%s", n, got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("EAV checks must still run: %v", err)
