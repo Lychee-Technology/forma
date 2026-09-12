@@ -171,90 +171,119 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 		return nil
 	}
 
-	columnName := string(binding.ColumnName)
+	// checkStorageFit enforces the funnel rule: the value must fit where it is
+	// physically going (#459); an empty slot here means a caller bypassed the
+	// funnel, and dropping the value silently would confirm to the client
+	// something that was never written.
+	stored, err := t.storeWithEncoding(record, attr, binding)
+	if err != nil {
+		return err
+	}
+	if !stored {
+		return fmt.Errorf("no value to store in main column %s: attr id %d of schema %d (row %s) has an empty %s slot",
+			binding.ColumnName, attr.AttrID, attr.SchemaID, attr.RowID, binding.ColumnType())
+	}
+	return nil
+}
 
+// storeWithEncoding dispatches on the binding's encoding, then on the column
+// type for the default encoding. It reports whether a value was written so
+// the caller can refuse an empty slot instead of dropping it (#459).
+func (t *persistentRecordTransformer) storeWithEncoding(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) (bool, error) {
+	columnName := string(binding.ColumnName)
 	switch binding.Encoding {
 	case forma.MainColumnEncodingUnixMs:
 		// Date stored as Unix milliseconds in bigint column
 		if attr.ValueInt64 != nil {
 			record.Int64Items[columnName] = *attr.ValueInt64
-		} else if attr.ValueNumeric != nil {
-			record.Int64Items[columnName] = int64(*attr.ValueNumeric)
+			return true, nil
 		}
-
+		if attr.ValueNumeric != nil {
+			record.Int64Items[columnName] = int64(*attr.ValueNumeric)
+			return true, nil
+		}
+		return false, nil
 	case forma.MainColumnEncodingBoolInt:
 		// Bool stored as smallint (1/0)
-		if attr.ValueNumeric != nil {
-			if float64ToBool(*attr.ValueNumeric) {
-				record.Int16Items[columnName] = 1
-			} else {
-				record.Int16Items[columnName] = 0
-			}
+		if attr.ValueNumeric == nil {
+			return false, nil
 		}
-
+		record.Int16Items[columnName] = 0
+		if float64ToBool(*attr.ValueNumeric) {
+			record.Int16Items[columnName] = 1
+		}
+		return true, nil
 	case forma.MainColumnEncodingBoolText:
 		// Bool stored as text ("1"/"0")
-		if attr.ValueNumeric != nil {
-			if float64ToBool(*attr.ValueNumeric) {
-				record.TextItems[columnName] = "1"
-			} else {
-				record.TextItems[columnName] = "0"
-			}
+		if attr.ValueNumeric == nil {
+			return false, nil
 		}
-
+		record.TextItems[columnName] = "0"
+		if float64ToBool(*attr.ValueNumeric) {
+			record.TextItems[columnName] = "1"
+		}
+		return true, nil
 	case forma.MainColumnEncodingISO8601:
 		// Date stored as ISO 8601 string in text column
-		if attr.ValueNumeric != nil {
-			record.TextItems[columnName] = unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339)
+		if attr.ValueNumeric == nil {
+			return false, nil
 		}
-
-	case forma.MainColumnEncodingDefault:
-		fallthrough
+		record.TextItems[columnName] = unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339)
+		return true, nil
 	default:
-		// Default encoding based on column type
-		switch binding.ColumnType() {
-		case forma.MainColumnTypeText:
-			if attr.ValueText != nil {
-				record.TextItems[columnName] = *attr.ValueText
-			}
-
-		case forma.MainColumnTypeSmallint:
-			if attr.ValueNumeric != nil {
-				record.Int16Items[columnName] = int16(*attr.ValueNumeric)
-			}
-
-		case forma.MainColumnTypeInteger:
-			if attr.ValueNumeric != nil {
-				record.Int32Items[columnName] = int32(*attr.ValueNumeric)
-			}
-
-		case forma.MainColumnTypeBigint:
-			if attr.ValueInt64 != nil {
-				record.Int64Items[columnName] = *attr.ValueInt64
-			} else if attr.ValueNumeric != nil {
-				record.Int64Items[columnName] = int64(*attr.ValueNumeric)
-			}
-
-		case forma.MainColumnTypeDouble:
-			if attr.ValueNumeric != nil {
-				record.Float64Items[columnName] = *attr.ValueNumeric
-			}
-		case forma.MainColumnTypeUUID:
-			if attr.ValueText != nil {
-				uuidValue, err := uuid.Parse(*attr.ValueText)
-				if err != nil {
-					return fmt.Errorf("failed to parse uuid: %w. schema id: %d, row id: %s, attr id: %d, array indices: %s, value: %s",
-						err, attr.SchemaID, attr.RowID, attr.AttrID, attr.ArrayIndices, *attr.ValueText)
-				}
-				record.UUIDItems[columnName] = uuidValue
-			}
-
-		default:
-			return fmt.Errorf("unsupported column type: %s", binding.ColumnType())
-		}
+		return t.storeWithDefaultEncoding(record, attr, binding)
 	}
+}
 
-	return nil
+// storeWithDefaultEncoding writes the slot the column type consumes. The
+// uuid branch cannot fail for a value that passed checkStorageFit; the
+// parse stays as an invariant check.
+func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) (bool, error) {
+	columnName := string(binding.ColumnName)
+	switch binding.ColumnType() {
+	case forma.MainColumnTypeText:
+		if attr.ValueText == nil {
+			return false, nil
+		}
+		record.TextItems[columnName] = *attr.ValueText
+	case forma.MainColumnTypeSmallint:
+		if attr.ValueNumeric == nil {
+			return false, nil
+		}
+		record.Int16Items[columnName] = int16(*attr.ValueNumeric)
+	case forma.MainColumnTypeInteger:
+		if attr.ValueNumeric == nil {
+			return false, nil
+		}
+		record.Int32Items[columnName] = int32(*attr.ValueNumeric)
+	case forma.MainColumnTypeBigint:
+		if attr.ValueInt64 != nil {
+			record.Int64Items[columnName] = *attr.ValueInt64
+			return true, nil
+		}
+		if attr.ValueNumeric == nil {
+			return false, nil
+		}
+		record.Int64Items[columnName] = int64(*attr.ValueNumeric)
+	case forma.MainColumnTypeDouble:
+		if attr.ValueNumeric == nil {
+			return false, nil
+		}
+		record.Float64Items[columnName] = *attr.ValueNumeric
+	case forma.MainColumnTypeUUID:
+		if attr.ValueText == nil {
+			return false, nil
+		}
+		uuidValue, err := uuid.Parse(*attr.ValueText)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse uuid: %w. schema id: %d, row id: %s, attr id: %d, array indices: %s, value: %s",
+				err, attr.SchemaID, attr.RowID, attr.AttrID, attr.ArrayIndices, *attr.ValueText)
+		}
+		record.UUIDItems[columnName] = uuidValue
+	default:
+		return false, fmt.Errorf("unsupported column type: %s", binding.ColumnType())
+	}
+	return true, nil
 }
 
 // readFromMainColumn reads an attribute value from the main table columns.

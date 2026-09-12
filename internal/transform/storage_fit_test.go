@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma"
@@ -76,4 +77,78 @@ func TestCheckStorageFit_BoundColumnWidth(t *testing.T) {
 			require.Contains(t, msg, "attribute 'qty'")
 		})
 	}
+}
+
+// #459 shapes 2 and 3: a valueType whose typed slot does not match the bound
+// column's family used to 500 (text→uuid: uuid.Parse in storeInMainColumn)
+// or silently drop (text→smallint: nil ValueNumeric, no else branch). Both
+// are now refused in the funnel as published invalid input.
+func TestCheckStorageFit_FamilyMismatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		meta    forma.AttributeMetadata
+		value   any
+		wantErr string
+	}{
+		{"text to uuid column, non-uuid rejected",
+			boundMeta(forma.ValueTypeText, forma.MainColumnUUID02, forma.MainColumnEncodingDefault), "abc",
+			`text value "abc" is not a UUID: bound column uuid_02 requires one`},
+		{"text to uuid column, uuid accepted",
+			boundMeta(forma.ValueTypeText, forma.MainColumnUUID02, forma.MainColumnEncodingDefault), "0190f3a4-2f1e-7c3b-9a2d-1b2c3d4e5f60", ""},
+		{"text to smallint column rejected, not dropped",
+			boundMeta(forma.ValueTypeText, forma.MainColumnSmallint01, forma.MainColumnEncodingDefault), "7",
+			"text value cannot be stored in main column smallint_01, which stores a numeric value"},
+		{"numeric to text column rejected",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnText01, forma.MainColumnEncodingDefault), 7,
+			"numeric value cannot be stored in main column text_01, which stores a text value"},
+		{"text to bigint unix_ms rejected",
+			boundMeta(forma.ValueTypeText, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs), "2024-01-01",
+			"text value cannot be stored in main column bigint_01, which stores a date, datetime or bool value"},
+		{"uuid to uuid column accepted",
+			boundMeta(forma.ValueTypeUUID, forma.MainColumnUUID01, forma.MainColumnEncodingDefault), "0190f3a4-2f1e-7c3b-9a2d-1b2c3d4e5f60", ""},
+		{"numeric declared, bound to bigint_01 default encoding, value 1e19 rejected",
+			boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), 1e19,
+			"bound column bigint_01 (bigint)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec model.EAVRecord
+			_, err := populateTypedValue(&rec, "leadId", tc.value, tc.meta)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok)
+			require.Contains(t, msg, tc.wantErr)
+		})
+	}
+}
+
+// storeInMainColumn is the last line of defense: if a record ever reaches it
+// with no value in the slot its column serializes, that is an error, not a
+// silent drop (#459 shape 3).
+func TestStoreInMainColumn_EmptySlotIsAnError(t *testing.T) {
+	tr := &persistentRecordTransformer{}
+	record := &model.PersistentRecord{
+		TextItems: map[string]string{}, Int16Items: map[string]int16{}, Int32Items: map[string]int32{},
+		Int64Items: map[string]int64{}, UUIDItems: map[string]uuid.UUID{}, Float64Items: map[string]float64{},
+	}
+	attr := model.EAVRecord{AttrID: 4} // no slot populated
+	for _, binding := range []forma.MainColumnBinding{
+		{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingDefault},
+		{ColumnName: forma.MainColumnText01, Encoding: forma.MainColumnEncodingDefault},
+		{ColumnName: forma.MainColumnUUID01, Encoding: forma.MainColumnEncodingDefault},
+		{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs},
+		{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText},
+	} {
+		b := binding
+		err := tr.storeInMainColumn(record, attr, &b)
+		require.Error(t, err, "binding %+v", b)
+		require.Contains(t, err.Error(), string(b.ColumnName))
+		require.Contains(t, err.Error(), "attr id 4")
+	}
+	require.Empty(t, record.TextItems)
+	require.Empty(t, record.Int16Items)
 }
