@@ -21,7 +21,7 @@
   "leadId": {
     "attributeID": 4,
     "valueType": "text",
-    "column_binding": {"col_name":"uuid_02"}
+    "column_binding": {"col_name":"text_02"}
   },
   "noteId": {
     "attributeID": 5,
@@ -56,6 +56,6 @@
   "visitId": {
     "attributeID": 10,
     "valueType": "text",
-    "column_binding": {"col_name":"uuid_01"}
+    "column_binding": {"col_name":"text_03"}
   }
 }

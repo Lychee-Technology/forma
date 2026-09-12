@@ -238,6 +238,10 @@ type MetadataLoader struct {
 	pool            DBPool
 	schemaTableName string
 	schemaDirectory string
+	// deferBindingCheck skips ValidateColumnBinding during load so a caller
+	// that reports mismatches itself (validate-schema-consistency) can see
+	// every one instead of the first. Runtime loads never set it.
+	deferBindingCheck bool
 }
 
 // NewMetadataLoader creates a new metadata loader
@@ -247,6 +251,14 @@ func NewMetadataLoader(pool DBPool, schemaTableName, schemaDirectory string) *Me
 		schemaTableName: schemaTableName,
 		schemaDirectory: schemaDirectory,
 	}
+}
+
+// DeferColumnBindingCheck makes LoadMetadata admit bindings that cannot
+// round-trip (#459) so the caller can report all of them; it returns the
+// receiver for chaining. Only validate-schema-consistency should use it.
+func (ml *MetadataLoader) DeferColumnBindingCheck() *MetadataLoader {
+	ml.deferBindingCheck = true
+	return ml
 }
 
 // LoadMetadata loads all metadata and returns a cache
@@ -357,7 +369,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 			schemaCache[attrName] = meta
 		}
 		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
-		if err := validateSchemaAttributeCache(schemaName, schemaCache); err != nil {
+		if err := validateSchemaAttributeCacheOpts(schemaName, schemaCache, !ml.deferBindingCheck); err != nil {
 			return fmt.Errorf("attributes file %s: %w", attributesFile, err)
 		}
 		active := activeAttributeCache(schemaCache)

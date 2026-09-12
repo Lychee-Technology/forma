@@ -333,3 +333,24 @@ func TestPersistentRecordTransformer_InjectsBaseTimestamps(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, updated, updatedAt.UnixMilli())
 }
+
+// #459 shape 1 end to end: an out-of-range value for a narrow bound column
+// is refused by ToPersistentRecord as published invalid input and never
+// reaches Int32Items wrapped.
+func TestPersistentRecordTransformer_RejectsOutOfRangeBoundColumn(t *testing.T) {
+	ctx := context.Background()
+	registry := newPersistentTransformerRegistry()
+	transformer := NewPersistentRecordTransformer(registry)
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("persistent_test")
+	require.NoError(t, err)
+
+	_, err = transformer.ToPersistentRecord(ctx, schemaID, uuid.Must(uuid.NewV7()), map[string]any{
+		"name": "Tester",
+		"age":  float64(3e9),
+	})
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok)
+	assert.Contains(t, msg, "attribute 'age'")
+	assert.Contains(t, msg, "bound column integer_01 (integer)")
+}

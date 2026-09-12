@@ -119,6 +119,10 @@ It validates:
 - every referenced `<schema>_attributes.json` parses successfully
 - each schema’s metadata has unique `attributeID` values
 - each schema’s metadata has unique `column_binding.col_name` values
+- every active `column_binding` can round-trip its `valueType` through the
+  bound column and encoding (`#459`) — e.g. `text`→`uuid_02` or `bool` with
+  the default encoding are refused; the server refuses to start on the same
+  shapes, so run this before deploying a build carrying the guard
 - `eav_data.attr_id` values all map to known metadata IDs for the same
   `schema_id` — ids belonging to a `retired` ledger entry (`#342`) are reported
   as informational rather than as failures, because those rows are the `#294`
@@ -435,6 +439,62 @@ Example validator output:
 This means the row uses the wrong physical value column for the declared `valueType`.
 
 Fix by rewriting the bad rows into the correct column and clearing the wrong one.
+
+### valueType/column-encoding binding mismatches (`#459`)
+
+Example validator output:
+
+```text
+- valueType/column-encoding binding mismatches: schema=log attribute leadId (valueType text) cannot round-trip through main column uuid_02 (uuid column, encoding default): text binds only to text columns (default encoding)
+```
+
+The attribute's `valueType` and its `column_binding` disagree about the
+physical encoding. Before the guard, such a write answered a redacted 500
+(text into a uuid column) or silently dropped the value (text into a numeric
+column). The server now refuses to load the schema; fix the attributes file
+before deploying:
+
+- rebind the attribute to a column of the right family (e.g. `text_02`), or
+- change `valueType` to what the column stores (e.g. `uuid`) if every stored
+  and admissible value already has that shape.
+
+Existing rows in the old column are not moved by either change; migrate them
+with SQL first if they must survive. For the shipped `log` schema, which #459
+rebound `leadId` from `uuid_02` to `text_02` and `visitId` from `uuid_01` to
+`text_03`:
+
+```sql
+-- shipped `log` schema: leadId uuid_02 -> text_02, visitId uuid_01 -> text_03
+UPDATE entity_main
+   SET text_02 = uuid_02::text
+ WHERE ltbase_schema_id = <log schema id> AND uuid_02 IS NOT NULL;
+UPDATE entity_main
+   SET text_03 = uuid_01::text
+ WHERE ltbase_schema_id = <log schema id> AND uuid_01 IS NOT NULL;
+-- NULL the old columns once the new binding is live
+```
+
+Parquet tiers (delta/base) are keyed by attribute name, not by main column, so
+they need no rewrite. The shipped `cmd/server/schemas/log_attributes.json`
+itself was rebound in #459; a deployment still carrying the old copy must apply
+this migration before upgrading, or the server refuses to load the schema.
+
+Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`numeric`
+→ smallint/integer/bigint/double (a value that does not fit the column's
+width is refused at write time as invalid input); `date`/`datetime`→bigint
+(`unix_ms` or default) or text (`iso8601`); `bool`→smallint (`bool_smallint`)
+or text (`bool_text`); `list` never binds.
+
+Some refused pairs do store and read back losslessly on the Postgres path:
+`uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,
+and `date`/`datetime`→double with the default encoding. They are refused as a
+matter of policy, not because stored data is at risk: the filter rendering
+and the DuckDB projection key on the declared type and the encoding, so a
+`bool` with the default encoding is compared as text `'1'`/`'0'` and a `uuid`
+attribute is projected from a UUID-typed column. If a deployment carries one
+of these shapes, no row is corrupted; rebind with the explicit encoding
+(`bool_smallint`, `bool_text`, `unix_ms`) or to the column family the
+valueType names, and migrate the existing column values with SQL as above.
 
 ### Scalar rows under list attributes (`#372`)
 

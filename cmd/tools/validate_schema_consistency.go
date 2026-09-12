@@ -113,7 +113,9 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 }
 
 func (v schemaConsistencyValidator) run(ctx context.Context) error {
-	loader := schemameta.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir)
+	// Deferred so checkColumnBindings can list every mismatch across the
+	// deployed set instead of the loader stopping at the first (#459).
+	loader := schemameta.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir).DeferColumnBindingCheck()
 	cache, err := loader.LoadMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("load schema metadata: %w", err)
@@ -171,6 +173,8 @@ func (v schemaConsistencyValidator) report(failures, notices []validationIssue, 
 
 func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	var issues []validationIssue
+
+	issues = append(issues, v.checkColumnBindings(cache)...)
 
 	unknownIssues, err := v.checkUnknownAttributeIDs(ctx, cache)
 	if err != nil {

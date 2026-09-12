@@ -465,3 +465,34 @@ func TestSchemaFingerprintTracksContent(t *testing.T) {
 	_, ok = mcA.SchemaFingerprint(42)
 	require.False(t, ok)
 }
+
+// #459: the runtime loader refuses a binding that cannot round-trip; the
+// validation tool defers that check so it can list every mismatch itself.
+func TestLoadMetadata_IncompatibleBindingRejectedUnlessDeferred(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeJSONFile(t, filepath.Join(dir, "log_attributes.json"), map[string]any{
+		"leadId": map[string]any{"attributeID": float64(4), "valueType": "text",
+			"column_binding": map[string]any{"col_name": "uuid_02"}},
+	})
+
+	strict, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer strict.Close()
+	strict.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("reg"))).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("log", int16(7)))
+	_, err = NewMetadataLoader(strict, "reg", dir).LoadMetadata(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uuid_02")
+
+	lenient, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer lenient.Close()
+	lenient.ExpectQuery(regexp.QuoteMeta(`SELECT schema_name, schema_id FROM ` + sanitizeIdentifier("reg"))).
+		WillReturnRows(pgxmock.NewRows([]string{"schema_name", "schema_id"}).AddRow("log", int16(7)))
+	cache, err := NewMetadataLoader(lenient, "reg", dir).DeferColumnBindingCheck().LoadMetadata(ctx)
+	require.NoError(t, err)
+	schemaCache, ok := cache.GetSchemaCache("log")
+	require.True(t, ok)
+	assert.Contains(t, schemaCache, "leadId")
+}

@@ -10,6 +10,12 @@ Forma Tools CLI
 - `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
   `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
+- `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，
+  使用与服务端相同的元数据加载路径。检查项包括：
+  - 重复的 `attributeID` / `column_binding.col_name`；
+  - `valueType`↔column-encoding 绑定无法 round-trip 的情况（#459）；
+  - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行。
+  详见 `docs/schema-consistency-migration.md`。
 
 generate-attributes
 -------------------

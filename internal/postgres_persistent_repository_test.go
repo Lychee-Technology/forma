@@ -131,6 +131,7 @@ func TestBuildHybridConditionsBoundAuditColumn(t *testing.T) {
 	require.NoError(t, cache.RegisterSchema("log", 1, forma.SchemaAttributeCache{
 		"createdBy": {
 			AttributeName: "createdBy",
+			ValueType:     forma.ValueTypeText,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnCreatedBy},
 		},
 	}))

@@ -23,11 +23,20 @@ func parseAttributeID(raw any, attrName, source string) (int16, error) {
 }
 
 // validateSchemaAttributeCache rejects attributeID, main-column, and folded
-// parquet-column collisions across the FULL cache, retired entries included.
-// Every error it returns begins with "schema <name>", so callers wrap it with
-// what it cannot know — the attributes file the metadata came from, or the
-// numeric schema id — never with the name again.
+// parquet-column collisions across the FULL cache, retired entries included,
+// and (#459) any active binding whose valueType cannot round-trip through its
+// column. Every error it returns begins with "schema <name>", so callers wrap
+// it with what it cannot know — the attributes file the metadata came from,
+// or the numeric schema id — never with the name again.
 func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttributeCache) error {
+	return validateSchemaAttributeCacheOpts(schemaName, cache, true)
+}
+
+// validateSchemaAttributeCacheOpts is the form validate-schema-consistency
+// loads through with checkBindings=false: it reports every binding mismatch
+// itself (via ValidateColumnBinding) instead of stopping at the first. Every
+// runtime load path passes true.
+func validateSchemaAttributeCacheOpts(schemaName string, cache forma.SchemaAttributeCache, checkBindings bool) error {
 	seenAttrIDs := make(map[int16]string, len(cache))
 	seenBindings := make(map[forma.MainColumn]string)
 	for attrName, meta := range cache {
@@ -43,6 +52,14 @@ func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttribute
 			return bindingCollisionError(schemaName, cache, meta.ColumnBinding.ColumnName, existingAttr, attrName)
 		}
 		seenBindings[meta.ColumnBinding.ColumnName] = attrName
+
+		// Retired entries are a ledger, never a write destination (#342).
+		if !checkBindings || meta.Retired {
+			continue
+		}
+		if err := ValidateColumnBinding(attrName, meta); err != nil {
+			return fmt.Errorf("schema %s: %w", schemaName, err)
+		}
 	}
 
 	// Reject attribute names whose folded parquet columns land on a CDC/read
