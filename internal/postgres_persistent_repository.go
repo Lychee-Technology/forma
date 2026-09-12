@@ -109,13 +109,18 @@ func rowVersionLockKey(schemaID int16, rowID uuid.UUID) int64 {
 // inserts a new one), so without this a recreate could read the row's
 // version history while a concurrent delete commits a tombstone the
 // recreate then ties — and an equal-ver_ts live/tombstone pair resolves
-// tombstone-wins, hiding the recreate in cold reads for good. Updates need
-// no advisory lock: their version is computed inside the row UPDATE under
-// the row lock, which every competing delete also takes. Batch writers
-// acquire these locks in input order, the same discipline as their existing
-// row locks; an order inversion between two batches is detected and errored
-// by PostgreSQL's deadlock checker like any row-lock inversion. The lock
-// releases at transaction end.
+// tombstone-wins, hiding the recreate in cold reads for good. Single-row
+// updates take it too (#457): their version is safe under the row lock
+// alone, but their merge base is not — an update reads the whole document,
+// merges, and rewrites every EAV row, so two updates that only took the row
+// lock at write time would each merge onto a pre-write snapshot and the
+// second would drop the first's fields. Holding this lock across the read
+// makes the read and the write one critical section. Batch insert and batch
+// delete acquire these locks in input order, the same discipline as their
+// existing row locks; an order inversion between two batches is detected and
+// errored by PostgreSQL's deadlock checker like any row-lock inversion.
+// Batch update does not take it yet and still has the #457 lost-update
+// shape; that is #554. The lock releases at transaction end.
 func lockRowVersion(ctx context.Context, tx pgx.Tx, schemaID int16, rowID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", rowVersionLockKey(schemaID, rowID)); err != nil {
 		return fmt.Errorf("acquire row version lock for %s: %w", rowID, err)
@@ -227,43 +232,6 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) UpdatePersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
-	if record == nil {
-		return fmt.Errorf("record cannot be nil")
-	}
-	if err := validateWriteTables(tables); err != nil {
-		return fmt.Errorf("validate tables for update: %w", err)
-	}
-
-	record.UpdatedAt = r.nowMillis()
-
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
-	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-		return fmt.Errorf("update main row for %s: %w", record.RowID, err)
-	}
-
-	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes); err != nil {
-		return fmt.Errorf("replace eav attributes for %s: %w", record.RowID, err)
-	}
-
-	if tables.ChangeLog != "" {
-		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-			return fmt.Errorf("upsert change log for %s: %w", record.RowID, err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	return nil
-}
-
 func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)
@@ -314,26 +282,14 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	return nil
 }
 
+// GetPersistentRecord reads one row's main columns and EAV attributes in a
+// single statement, so the two can never come from different snapshots
+// (#457). See loadRecordWithAttributes.
 func (r *DBPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
 	if err := validateTables(tables); err != nil {
 		return nil, err
 	}
-
-	record, err := r.loadMainRecord(ctx, tables.EntityMain, schemaID, rowID)
-	if err != nil {
-		return nil, err
-	}
-	if record == nil {
-		return nil, nil
-	}
-
-	attributes, err := r.fetchAttributes(ctx, tables.EAVData, schemaID, rowID)
-	if err != nil {
-		return nil, err
-	}
-	record.OtherAttributes = attributes
-
-	return record, nil
+	return r.loadRecordWithAttributes(ctx, r.pool, tables, schemaID, rowID)
 }
 
 func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {

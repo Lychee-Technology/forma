@@ -9,7 +9,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lychee-technology/forma"
@@ -209,30 +208,4 @@ func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx
 	}
 	record.UpdatedAt = effectiveUpdatedAt
 	return nil
-}
-
-func (r *DBPersistentRecordRepository) loadMainRecord(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
-	query := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
-		model.EntityMainProjection,
-		sanitizeIdentifier(table),
-	)
-
-	row := r.pool.QueryRow(ctx, query, schemaID, rowID)
-
-	// Reuse the column scan buffers from postgres_row_scanner.go
-	scanBuffers := newColumnScanBuffers()
-	scanArgs := buildScanArgs(scanBuffers)
-
-	if err := row.Scan(scanArgs...); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("select entity_main row: %w", err)
-	}
-
-	record := buildRecordFromScanBuffers(scanBuffers)
-	model.CleanupEmptyMaps(record)
-
-	return record, nil
 }

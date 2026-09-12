@@ -173,93 +173,16 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestInsertUpdatePersistentRecordNilRecord(t *testing.T) {
+func TestInsertNilRecordAndMergeNilFunctionAreRejected(t *testing.T) {
 	repo := &DBPersistentRecordRepository{}
 
 	err := repo.InsertPersistentRecord(context.Background(), model.StorageTables{}, nil)
 	require.Error(t, err)
 
-	err = repo.UpdatePersistentRecord(context.Background(), model.StorageTables{}, nil)
+	stored, err := repo.MergePersistentRecord(context.Background(), model.StorageTables{}, 1, uuid.New(), nil)
 	require.Error(t, err)
-}
-
-func TestGetPersistentRecordNotFound(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-
-	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
-	for _, desc := range model.EntityMainColumnDescriptors {
-		columns = append(columns, desc.Name)
-	}
-	rows := pgxmock.NewRows(columns)
-
-	mock.ExpectQuery(`SELECT .* FROM "entity_main"`).
-		WithArgs(int16(1), rowID).
-		WillReturnRows(rows)
-
-	repo := NewDBPersistentRecordRepository(mock, nil)
-	record, err := repo.GetPersistentRecord(ctx, model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
-	require.NoError(t, err)
-	assert.Nil(t, record)
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetPersistentRecordWithAttributes(t *testing.T) {
-	ctx := context.Background()
-	mock, err := pgxmock.NewPool()
-	require.NoError(t, err)
-	defer mock.Close()
-
-	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	columns := make([]string, 0, len(model.EntityMainColumnDescriptors))
-	values := make([]any, 0, len(model.EntityMainColumnDescriptors))
-	for _, desc := range model.EntityMainColumnDescriptors {
-		columns = append(columns, desc.Name)
-		switch desc.Name {
-		case "ltbase_schema_id":
-			values = append(values, int64(1))
-		case "ltbase_row_id":
-			values = append(values, rowID.String())
-		case "ltbase_created_at":
-			values = append(values, int64(100))
-		case "ltbase_updated_at":
-			values = append(values, int64(200))
-		case "text_01":
-			values = append(values, "hello")
-		default:
-			values = append(values, nil)
-		}
-	}
-	mainRows := pgxmock.NewRows(columns).AddRow(values...)
-
-	text := "foo"
-	num := 42.5
-	attrRows := pgxmock.NewRows([]string{"schema_id", "row_id", "attr_id", "array_indices", "value_text", "value_numeric"}).
-		AddRow(int16(1), rowID, int16(10), "", &text, (*float64)(nil)).
-		AddRow(int16(1), rowID, int16(11), "0", (*string)(nil), &num)
-
-	mock.ExpectQuery(`SELECT .* FROM "entity_main"`).
-		WithArgs(int16(1), rowID).
-		WillReturnRows(mainRows)
-	mock.ExpectQuery(`SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM "eav_table"`).
-		WithArgs(int16(1), rowID).
-		WillReturnRows(attrRows)
-
-	repo := NewDBPersistentRecordRepository(mock, nil)
-	record, err := repo.GetPersistentRecord(ctx, model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table"}, 1, rowID)
-	require.NoError(t, err)
-	require.NotNil(t, record)
-
-	assert.Equal(t, int16(1), record.SchemaID)
-	assert.Equal(t, rowID, record.RowID)
-	assert.Equal(t, map[string]string{"text_01": "hello"}, record.TextItems)
-	require.Len(t, record.OtherAttributes, 2)
-
-	require.NoError(t, mock.ExpectationsWereMet())
+	require.Nil(t, stored)
+	require.Contains(t, err.Error(), "merge function cannot be nil")
 }
 
 func TestQueryPersistentRecordsWithMockPool(t *testing.T) {

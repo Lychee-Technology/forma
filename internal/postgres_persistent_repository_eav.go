@@ -119,37 +119,3 @@ func (r *DBPersistentRecordRepository) replaceEAVAttributesScoped(ctx context.Co
 	}
 	return r.insertEAVAttributes(ctx, tx, table, attributes)
 }
-
-func (r *DBPersistentRecordRepository) fetchAttributes(ctx context.Context, table string, schemaID int16, rowID uuid.UUID) ([]model.EAVRecord, error) {
-	query := fmt.Sprintf(
-		"SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM %s WHERE schema_id = $1 AND row_id = $2",
-		sanitizeIdentifier(table),
-	)
-	rows, err := r.pool.Query(ctx, query, schemaID, rowID)
-	if err != nil {
-		return nil, fmt.Errorf("query eav attributes: %w", err)
-	}
-	defer rows.Close()
-
-	var attributes []model.EAVRecord
-	for rows.Next() {
-		var attr model.EAVRecord
-		if err := rows.Scan(
-			&attr.SchemaID,
-			&attr.RowID,
-			&attr.AttrID,
-			&attr.ArrayIndices,
-			&attr.ValueText,
-			&attr.ValueNumeric,
-		); err != nil {
-			return nil, fmt.Errorf("scan eav attribute: %w", err)
-		}
-		attributes = append(attributes, attr)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate eav attributes: %w", err)
-	}
-
-	return attributes, nil
-}

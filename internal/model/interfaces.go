@@ -42,9 +42,29 @@ type PersistentRecordKey struct {
 	RowID    uuid.UUID
 }
 
+// PersistentRecordMerge computes the record to store from the row as it
+// exists inside the write transaction. existing is nil when the row is
+// absent — the caller owns that decision, because the user-facing 404 text
+// belongs to the service layer, not to storage. Returning an error aborts
+// the write and rolls the transaction back.
+//
+// The result must be the COMPLETE record to store, not a delta, because it
+// is both what gets written and what the repository answers with. The EAV
+// attributes it carries replace the row's whole in-scope attribute set, so a
+// dropped attribute is deleted. A dropped typed column keeps its stored
+// value but is missing from the answered record; DeletedAt is written
+// verbatim, so dropping it clears a stored tombstone. CreatedAt is never
+// written, only echoed, so a result that omits it answers a zero timestamp.
+// UpdatedAt is the one field the repository stamps itself.
+type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord) (*PersistentRecord, error)
+
 type PersistentRecordWriter interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
-	UpdatePersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
+	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
+	// the per-row advisory lock create and delete take, reads the row inside
+	// the write transaction, hands it to merge, and stores what merge returns
+	// — all in one transaction. It answers the stored record.
+	MergePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID, merge PersistentRecordMerge) (*PersistentRecord, error)
 	DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error
 }
 

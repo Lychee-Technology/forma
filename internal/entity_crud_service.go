@@ -211,16 +211,49 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	tables := s.resolveTables()
-	existingRecord, err := s.repository.GetPersistentRecord(ctx, tables, schemaID, req.RowID)
+	// The whole read-modify-write happens inside the repository's write
+	// transaction, under the per-row advisory lock create and delete take
+	// (#457): the merge base is read after the lock is granted, so two
+	// concurrent updates to disjoint fields both survive instead of the
+	// second committer replacing the first's document wholesale.
+	stored, err := s.repository.MergePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID,
+		func(ctx context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+			return s.mergeUpdateRecord(ctx, req, schemaID, schemaCache, existing)
+		})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load existing record: %w", err)
+		return nil, fmt.Errorf("failed to update persistent record: %w", err)
 	}
-	if existingRecord == nil {
+
+	// The response is the storage round-trip, as Create's is: echoing the
+	// pre-write merge confirmed values that may not have been stored (#457).
+	attributes, err := s.transformer.FromPersistentRecord(ctx, stored)
+	if err != nil {
+		return nil, fmt.Errorf("failed to transform stored record: %w", err)
+	}
+
+	return &forma.DataRecord{
+		SchemaName: req.SchemaName,
+		RowID:      req.RowID,
+		Attributes: attributes,
+	}, nil
+}
+
+// mergeUpdateRecord is Update's merge body, run by the repository inside the
+// locked write transaction with the row as it exists there. existing is nil
+// when the row is absent: the 404 is authored here because it names the
+// caller's schema and row, which storage does not know.
+func (s *entityCRUDService) mergeUpdateRecord(
+	ctx context.Context,
+	req *forma.EntityOperation,
+	schemaID int16,
+	schemaCache forma.SchemaAttributeCache,
+	existing *model.PersistentRecord,
+) (*model.PersistentRecord, error) {
+	if existing == nil {
 		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	existingData, err := s.transformer.FromPersistentRecord(ctx, existingRecord)
+	existingData, err := s.transformer.FromPersistentRecord(ctx, existing)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
@@ -249,18 +282,10 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to transform merged data: %w", err)
 	}
 
-	updatedRecord.CreatedAt = existingRecord.CreatedAt
-	updatedRecord.DeletedAt = existingRecord.DeletedAt
+	updatedRecord.CreatedAt = existing.CreatedAt
+	updatedRecord.DeletedAt = existing.DeletedAt
 
-	if err := s.repository.UpdatePersistentRecord(ctx, tables, updatedRecord); err != nil {
-		return nil, fmt.Errorf("failed to update persistent record: %w", err)
-	}
-
-	return &forma.DataRecord{
-		SchemaName: req.SchemaName,
-		RowID:      req.RowID,
-		Attributes: mergedData,
-	}, nil
+	return updatedRecord, nil
 }
 
 func (s *entityCRUDService) Delete(ctx context.Context, req *forma.EntityOperation) error {

@@ -120,14 +120,18 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	updatedAt := time.Date(2024, 1, 2, 4, 5, 6, 0, time.UTC)
 	repo.withClock(func() time.Time { return updatedAt })
 	record.TextItems["text_01"] = "updated"
-	require.NoError(t, repo.UpdatePersistentRecord(ctx, tables, record))
+	_, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, record.RowID,
+		func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+			return record, nil
+		})
+	require.NoError(t, err)
 
 	var (
 		changeTimestamp int64
 		deletedStamp    pgtype.Int8
 	)
 	query := fmt.Sprintf(`SELECT changed_at, deleted_at FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0`, sanitizeIdentifier(tables.ChangeLog))
-	err := pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&changeTimestamp, &deletedStamp)
+	err = pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&changeTimestamp, &deletedStamp)
 	require.NoError(t, err)
 	assert.Equal(t, updatedAt.UnixMilli(), changeTimestamp)
 	assert.False(t, deletedStamp.Valid)
