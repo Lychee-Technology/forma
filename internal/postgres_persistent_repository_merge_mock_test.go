@@ -143,6 +143,12 @@ func TestMergePersistentRecordWhenRowMissingHandsNilAndWritesNothing(t *testing.
 	require.True(t, called)
 	assert.Nil(t, stored)
 	require.ErrorIs(t, err, forma.ErrNotFound)
+	// The repository adds its row context to the log line without touching the
+	// published body: the wrap is plain, so the carrier's message still resolves.
+	assert.ErrorContains(t, err, "merge record for "+rowID.String())
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok, "merge callback's published message must survive the repository wrap")
+	assert.Equal(t, "entity not found: mock_schema/"+rowID.String(), msg)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

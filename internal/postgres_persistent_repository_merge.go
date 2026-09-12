@@ -62,14 +62,13 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 		return nil, fmt.Errorf("load merge base for %s: %w", rowID, err)
 	}
 
-	// Deliberately a bare return rather than the usual wrap: merge is the
-	// caller's own body, which has already attached its context, and its error
-	// is frequently a published forma carrier (NotFoundf/InvalidInputf). Kept
-	// bare so the service seam owns both the published message and the log
-	// line; a wrap here would only duplicate context the caller already set.
+	// A plain wrap, never WrapPublicf: merge's error is frequently a published
+	// forma carrier (NotFoundf/InvalidInputf), and ResolvePublicMessage walks
+	// past a plain wrapper to that inner publication, so the row context lands
+	// in Error() and the log while the caller's message stays the body (#313).
 	record, err := merge(ctx, existing)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("merge record for %s: %w", rowID, err)
 	}
 	if record == nil {
 		return nil, fmt.Errorf("merge returned no record for row %s", rowID)
