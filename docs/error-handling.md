@@ -582,6 +582,34 @@ already flushed does not re-enter the federated dirty set on a hand-delete, and
 DuckDB keeps serving the stale copy from `/delta/` or `/base/` while
 PostgreSQL-only reads see the value gone.
 
+## Value/column fidelity on the write path (#384, #459)
+
+One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
+**a value must fit its physical destination, else `forma.InvalidInputf`.**
+
+- EAV-only attribute: the destination is the declared `valueType`.
+  `smallint`/`integer`/`bigint` must be integral and inside the type's
+  range; `numeric` is unconstrained (#205 owns its float64 ceiling).
+- Column-bound attribute: the declared type **and** the column's own width.
+  `numeric`→`integer_01` refuses `1.5` and `3e9`; `integer`→`smallint_01`
+  refuses `40000`. Before #459 these wrapped (`int16(40000) = -25536`) into
+  `entity_main`.
+- `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
+  redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
+- A value whose typed slot does not match the column family is refused, never
+  dropped.
+
+The published message names the attribute, the value, the destination and
+the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
+40000 out of range for bound column smallint_01 (smallint) (allowed [-32768,
+32767])`.
+
+Registration (`schemameta.ValidateColumnBinding`) refuses a
+`valueType`↔column-encoding pair that cannot round-trip at all, so the runtime
+rule only ever sees width and UUID-shape questions on a well-formed schema;
+`validate-schema-consistency` lists such pairs across an already-deployed set
+(see `docs/schema-consistency-migration.md`).
+
 ## Read-path consistency errors
 
 Read operations return plain errors when persisted data and metadata disagree.
