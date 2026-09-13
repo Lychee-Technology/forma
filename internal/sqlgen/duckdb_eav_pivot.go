@@ -36,8 +36,9 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 			a.attrID, eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
 	}
 	if a.meta.ValueType == forma.ValueTypeBool {
-		// Wrap in <> 0 so the pivot column is BOOLEAN, not DOUBLE (#182).
-		return fmt.Sprintf("(MAX(CASE WHEN attr_id = %d THEN value_numeric END) <> 0)", a.attrID)
+		// Wrap in the truthiness comparison so the pivot column is BOOLEAN,
+		// not DOUBLE (#182), spelled by the shared #404 rule.
+		return BoolTruthiness(fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN value_numeric END)", a.attrID))
 	}
 	base := fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END)",
 		a.attrID, eavValueColumn(a.meta.ValueType))
@@ -74,7 +75,7 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 func eavElementCastExpr(vt forma.ValueType) string {
 	switch vt {
 	case forma.ValueTypeBool:
-		return "(value_numeric <> 0)"
+		return BoolTruthiness("value_numeric")
 	case forma.ValueTypeBigInt, forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return "TRY_CAST(value_numeric AS BIGINT)"
 	case forma.ValueTypeInteger, forma.ValueTypeSmallInt:
@@ -103,12 +104,14 @@ func eavValueColumn(vt forma.ValueType) string {
 
 // mainColBoolExpr returns a DuckDB boolean expression that normalises a
 // column-bound bool main-table column to a BOOLEAN value.
-// bool_text encoding stores "1"/"0" as text; bool_smallint stores 0/1 as SMALLINT.
-// Both must produce a BOOLEAN so that COALESCE(hot_vals.<attr>, <expr>) is type-safe.
+// bool_text encoding stores "1"/"0" as text and is read by that contract;
+// bool_smallint stores 0/1 as SMALLINT and is read by the shared #404
+// truthiness. Both must produce a BOOLEAN so that
+// COALESCE(hot_vals.<attr>, <expr>) is type-safe.
 func mainColBoolExpr(colName string, enc forma.MainColumnEncoding) string {
 	if enc == forma.MainColumnEncodingBoolText {
 		return fmt.Sprintf("m.%s = '1'", colName)
 	}
 	// Default covers MainColumnEncodingBoolInt and any other numeric-like encoding.
-	return fmt.Sprintf("m.%s <> 0", colName)
+	return BoolTruthiness("m." + colName)
 }

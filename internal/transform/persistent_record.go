@@ -392,7 +392,11 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 	case forma.MainColumnEncodingBoolText:
 		// Read text ("1"/"0") and convert to bool
 		if val, ok := record.TextItems[columnName]; ok {
-			b := boolToFloat64(val == "1")
+			parsed, err := boolFromBoolText(val)
+			if err != nil {
+				return nil, false, fmt.Errorf("column %s: %w", columnName, err)
+			}
+			b := boolToFloat64(parsed)
 			attr.ValueNumeric = &b
 			return attr, true, nil
 		}

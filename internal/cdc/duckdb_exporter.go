@@ -294,9 +294,13 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 	case forma.ValueTypeBool:
 		switch meta.ColumnBinding.Encoding {
 		case forma.MainColumnEncodingBoolInt:
-			return fmt.Sprintf("CASE WHEN %s <> 0 THEN TRUE ELSE FALSE END", col)
+			// The shared #404 read-side truthiness, as the hot-leg
+			// sqlgen.mainColBoolExpr derives it.
+			return fmt.Sprintf("CASE WHEN %s THEN TRUE ELSE FALSE END", sqlgen.BoolTruthiness(col))
 		case forma.MainColumnEncodingBoolText:
-			return fmt.Sprintf("CASE WHEN LOWER(%s) IN ('true','1') THEN TRUE ELSE FALSE END", col)
+			// bool_text stores "1"/"0"; read by that contract, as the hot leg
+			// does (#404) — not a wider spelling set only this leg accepts.
+			return fmt.Sprintf("CASE WHEN %s = '1' THEN TRUE ELSE FALSE END", col)
 		default:
 			return fmt.Sprintf("TRY_CAST(%s AS BOOLEAN)", col)
 		}
@@ -343,7 +347,7 @@ func castDateMainValue(col string, meta forma.AttributeMetadata) string {
 func castEAVValue(meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:
-		return "(value_numeric <> 0)"
+		return sqlgen.BoolTruthiness("value_numeric")
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return "TRY_CAST(value_numeric AS BIGINT)"
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger:

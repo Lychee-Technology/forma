@@ -312,7 +312,7 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 		return "value_numeric", parsed, nil
 
 	case forma.ValueTypeBool:
-		// The bind is a Go bool compared against the (value_numeric <> 0)
+		// The bind is a Go bool compared against the BoolTruthiness (#404)
 		// truthiness expression, not the raw column — the payload's Truthy
 		// flag drives the emitters. The operand parse is the engine-shared
 		// parseBoolOperand rule (#384 P2b).

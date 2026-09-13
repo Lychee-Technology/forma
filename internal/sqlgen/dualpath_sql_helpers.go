@@ -54,39 +54,27 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 	}
 }
 
-// convertPgBoolValue converts a boolean string value respecting column encoding.
+// convertPgBoolValue converts a boolean string value respecting column
+// encoding. The operand parse is the engine-shared parseBoolOperand rule
+// (#384 P2b); this route used to run strconv.Atoi alone, so `equals:true`
+// was a 400 here and a match on the EAV and DuckDB routes (#404).
 func convertPgBoolValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
-	parsedInt, err := strconv.Atoi(valStr)
-	if err != nil {
+	parsed, ok := parseBoolOperand(valStr)
+	if !ok {
 		return nil, forma.InvalidInputf("invalid boolean value for '%s': %s", attr, valStr)
 	}
 
-	if meta.ColumnBinding == nil {
-		// default to text "1"/"0"
-		if parsedInt > 0 {
-			return "1", nil
-		}
-		return "0", nil
-	}
-
-	switch meta.ColumnBinding.Encoding {
-	case forma.MainColumnEncodingBoolInt:
-		if parsedInt > 0 {
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingBoolInt {
+		if parsed {
 			return int64(1), nil
 		}
 		return int64(0), nil
-	case forma.MainColumnEncodingBoolText:
-		if parsedInt > 0 {
-			return "1", nil
-		}
-		return "0", nil
-	default:
-		// default to text "1"/"0"
-		if parsedInt > 0 {
-			return "1", nil
-		}
-		return "0", nil
 	}
+	// bool_text and the unbound default both bind the "1"/"0" text contract.
+	if parsed {
+		return "1", nil
+	}
+	return "0", nil
 }
 
 // detectValueType infers the forma.ValueType from a string literal when no metadata is available.

@@ -149,9 +149,9 @@ func TestSQLGenerator_BoolEAV_UsesValueNumeric(t *testing.T) {
 			gen := NewSQLGenerator()
 			clause, args, err := gen.ToSQLClauses(cond, "eav_data", 1, cache, &paramIndex)
 			require.NoError(t, err)
-			// #384: bool compares (value_numeric <> 0) truthiness with a
+			// #384/#404: bool compares (value_numeric > 0.5) truthiness with a
 			// BOOLEAN bind, matching every DuckDB leg's derivation.
-			require.Contains(t, clause, "(x.value_numeric <> 0) "+tc.wantOp,
+			require.Contains(t, clause, "(x.value_numeric > 0.5) "+tc.wantOp,
 				"bool filter must compare value_numeric truthiness")
 			require.NotContains(t, clause, "value_text", "bool filter must not use value_text column")
 			require.Len(t, args, 2)

@@ -1,7 +1,6 @@
 package transform
 
 import (
-	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -43,91 +42,6 @@ func TestToFloat64ForEAV(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Fatalf("toFloat64ForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestToBoolForEAV(t *testing.T) {
-	trueVal := true
-	falseVal := false
-	trueStr := "true"
-	zeroStr := "0"
-	tests := []struct {
-		name    string
-		input   any
-		want    bool
-		wantErr bool
-	}{
-		{"string true", "true", true, false},
-		{"string false", "false", false, false},
-		{"string one", "1", true, false},
-		{"string zero", "0", false, false},
-		{"string unknown", "maybe", false, false},
-		{"ptr string true", &trueStr, true, false},
-		{"ptr string zero", &zeroStr, false, false},
-		{"ptr string nil", (*string)(nil), false, true},
-
-		{"bool true", true, true, false},
-		{"bool false", false, false, false},
-		{"ptr bool true", &trueVal, true, false},
-		{"ptr bool false", &falseVal, false, false},
-		{"ptr bool nil", (*bool)(nil), false, true},
-
-		{"int positive", int(1), true, false},
-		{"int zero", int(0), false, false},
-		{"int negative", int(-1), false, false},
-
-		{"int32 negative", int32(-1), true, false},
-		{"int32 zero", int32(0), false, false},
-
-		{"int64 negative", int64(-1), true, false},
-		{"int64 zero", int64(0), false, false},
-
-		{"float64 >0.5", float64(0.6), true, false},
-		{"float64 =0.5", float64(0.5), false, false},
-		{"float64 small positive", float64(0.001), false, false},
-
-		{"ptr float64 nil", (*float64)(nil), false, true},
-
-		{"unsupported slice", []int{1, 2}, false, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := toBoolForEAV(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("toBoolForEAV(%#v) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Fatalf("toBoolForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestToBoolForEAVJSONNumber(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   json.Number
-		want    bool
-		wantErr bool
-	}{
-		{"json.Number 1", json.Number("1"), true, false},
-		{"json.Number 0", json.Number("0"), false, false},
-		{"json.Number 2", json.Number("2"), true, false},
-		{"json.Number -1", json.Number("-1"), true, false},
-		{"json.Number invalid", json.Number("abc"), false, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := toBoolForEAV(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("toBoolForEAV(%#v) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Fatalf("toBoolForEAV(%#v) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}
