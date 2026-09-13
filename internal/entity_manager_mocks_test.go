@@ -31,7 +31,9 @@ type mockPersistentRecordRepository struct {
 	// base is read, standing in for a concurrent committer.
 	beforeMerge        func()
 	insertedRecords    []*model.PersistentRecord
+	getCalls           int
 	deleteCalls        int
+	batchUpdateCalls   int
 	lastQuery          *model.PersistentRecordQuery
 	queries            []*model.PersistentRecordQuery
 	queryFunc          func(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
@@ -95,6 +97,7 @@ func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Cont
 }
 
 func (m *mockPersistentRecordRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
+	m.getCalls++
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		if record, ok := schemaRecords[rowID]; ok {
 			return record, nil
@@ -195,6 +198,7 @@ func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx contex
 }
 
 func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
+	m.batchUpdateCalls++
 	snapshot := cloneRecordStore(m.records)
 
 	for i, record := range records {

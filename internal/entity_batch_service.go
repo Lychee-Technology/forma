@@ -270,7 +270,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectDuplicateAtomicUpdateTargets(req.Operations); err != nil {
+	if err := validateAtomicUpdateOperations(req.Operations); err != nil {
 		return nil, err
 	}
 
@@ -281,16 +281,6 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 
 	relationRoots := newRelationRootMemo(s.relations)
 	for i, op := range req.Operations {
-		if op.SchemaName == "" {
-			return nil, forma.InvalidInputf("operation[%d]: schema name is required", i)
-		}
-		if op.RowID == (uuid.UUID{}) {
-			return nil, forma.InvalidInputf("operation[%d]: row id is required for update operation", i)
-		}
-		if op.Updates == nil {
-			return nil, forma.InvalidInputf("operation[%d]: updates are required for update operation", i)
-		}
-
 		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
