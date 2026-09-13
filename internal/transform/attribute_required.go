@@ -1,8 +1,99 @@
 package transform
 
 import (
+	"fmt"
+	"slices"
 	"strings"
+
+	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
+
+// relationRootsFor resolves the relation roots of schemaID, translating the ID
+// to the schema name the lookup is keyed by.
+func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, error) {
+	if c.relationRoots == nil {
+		return nil, nil
+	}
+	schemaName, _, err := c.registry.GetSchemaByID(schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve schema name for id %d: %w", schemaID, err)
+	}
+	return c.relationRoots(schemaName), nil
+}
+
+// checkRequiredAttributes enforces each attribute's required policy against the
+// attribute names the records actually carried, per array-index context.
+func (c *AttributeConverter) checkRequiredAttributes(
+	schemaID int16,
+	cache forma.SchemaAttributeCache,
+	presentAttrIndices map[string]map[string]struct{},
+) error {
+	relationRoots, err := c.relationRootsFor(schemaID)
+	if err != nil {
+		return fmt.Errorf("resolve relation roots for required-policy check: %w", err)
+	}
+
+	missingRequired := make(map[int16]string)
+	for attrName, metadata := range cache {
+		// #314/#315: relation-root data is derived on read and never
+		// schema-validated on write — since #318 the whole subtree is stripped
+		// from the payload before validation — so required policies beneath a
+		// root must follow the same rule, otherwise expanding a root's
+		// attributes (#315 resolved contactSnapshot's $ref) turns payloads #314
+		// ruled acceptable into 400s.
+		//
+		// The carve-out belongs to this check, not to the read path: ToAttributes
+		// reaches FromEAVRecords on every create and update (transformer.go). The
+		// write path's own required check (validateRequiredAttributesFromInput,
+		// transformer.go) has none, so a required_always beneath a root still
+		// rejects the stripped payload there. Documented in docs/error-handling.md.
+		if relationRoots.Covers(attrName) {
+			continue
+		}
+		switch metadata.EffectiveRequiredPolicy() {
+		case forma.RequiredPolicyAlways:
+			if isRequiredAttributeMissing(attrName, presentAttrIndices, true) {
+				missingRequired[metadata.AttributeID] = attrName
+			}
+		case forma.RequiredPolicyIfParentPresent:
+			if isRequiredAttributeMissing(attrName, presentAttrIndices, false) {
+				missingRequired[metadata.AttributeID] = attrName
+			}
+		}
+	}
+	if len(missingRequired) == 0 {
+		return nil
+	}
+
+	zap.S().Infow("missing EAV records for attrIDs.", "idToName", missingRequired)
+	names := make([]string, 0, len(missingRequired))
+	idsByName := make(map[string]int16, len(missingRequired))
+	for id, name := range missingRequired {
+		names = append(names, name)
+		idsByName[name] = id
+	}
+	// Name the alphabetically first missing attribute, not whichever the map
+	// yields first, so the same drift produces the same error on every run.
+	missingAttrName := slices.Min(names)
+
+	// Plain error, deliberately. FromEAVRecords is not write-only: the read
+	// path rebuilds already-stored records through it
+	// (persistent_record.go's FromPersistentRecord), so a persisted row
+	// missing a required EAV row reaches here too. Wrapping
+	// forma.ErrInvalidInput here — as an earlier #301 sweep did — made the
+	// HTTP boundary answer that persisted-drift case with a verbatim 400,
+	// inverting the split AGENTS.md and this repo's error-handling doc
+	// draw: write validation carries the sentinel, read-path consistency
+	// failures stay plain and operator-visible.
+	//
+	// The write path's 400 does not depend on this wrap. It has its own
+	// write-only validator, validateRequiredAttributesFromInput
+	// (transformer.go), which ToAttributes runs against the caller's input
+	// before flattening and which does carry the sentinel.
+	return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
+		missingAttrName, idsByName[missingAttrName])
+}
 
 // shouldEnforceRequiredAttribute applies RequiredPolicyIfParentPresent semantics
 // to an attribute using the observed EAV array-index context.
