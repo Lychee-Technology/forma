@@ -292,15 +292,19 @@ func duckTypeForValue(v forma.ValueType) string {
 func castMainValue(col string, meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:
+		// Both spellings are the hot leg's (sqlgen.mainColBoolExpr, #404) and
+		// both yield a nullable BOOLEAN: an unset optional bool is NULL in
+		// the column, NULL on the hot leg, and must stay NULL in parquet. A
+		// CASE ... ELSE FALSE wrapper here used to turn that NULL into a
+		// persisted false, so `equals:false` and the returned entity changed
+		// at the flush boundary (PR #564 review).
 		switch meta.ColumnBinding.Encoding {
 		case forma.MainColumnEncodingBoolInt:
-			// The shared #404 read-side truthiness, as the hot-leg
-			// sqlgen.mainColBoolExpr derives it.
-			return fmt.Sprintf("CASE WHEN %s THEN TRUE ELSE FALSE END", sqlgen.BoolTruthiness(col))
+			return sqlgen.BoolTruthiness(col)
 		case forma.MainColumnEncodingBoolText:
-			// bool_text stores "1"/"0"; read by that contract, as the hot leg
-			// does (#404) — not a wider spelling set only this leg accepts.
-			return fmt.Sprintf("CASE WHEN %s = '1' THEN TRUE ELSE FALSE END", col)
+			// bool_text stores "1"/"0"; read by that contract — not a wider
+			// spelling set only this leg accepts.
+			return fmt.Sprintf("%s = '1'", col)
 		default:
 			return fmt.Sprintf("TRY_CAST(%s AS BOOLEAN)", col)
 		}

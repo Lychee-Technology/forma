@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -38,10 +39,16 @@ func toTimeForEAV(value any) (time.Time, error) {
 //   - bool: the value.
 //   - string: strconv.ParseBool; anything else is rejected. "banana" → false
 //     is silent corruption, and rejecting is the write-validation posture.
-//   - any numeric width, pointer or not, and json.Number: finite (#322), then
+//   - every numeric width the write path knows — int, int16, int32, int64,
+//     float32, float64, pointers to each (numutil.Float64's set, the same one
+//     toFloat64ForEAV accepts for numeric attributes) — finite (#322), then
 //     exactly 0 or 1. The read side's float64ToBool threshold is a tolerance
 //     for persisted images, not an acceptance rule — for 0.3 either answer is
-//     a guess, so the funnel does not guess.
+//     a guess, so the funnel does not guess. int8 and the unsigned widths are
+//     rejected here exactly as the numeric funnel rejects them; widening is a
+//     package-wide change (#566), not a bool-only one.
+//   - json.Number: decided on its decimal text (boolFromNumberLiteral), so a
+//     literal that merely rounds to 0 or 1 in float64 is still rejected.
 //   - anything else: rejected.
 func boolFromAny(value any) (bool, error) {
 	switch v := value.(type) {
@@ -76,9 +83,12 @@ func boolFromNumeric(value any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if literal, ok := scalar.(json.Number); ok {
+		return boolFromNumberLiteral(literal)
+	}
 	image, err := numutil.Float64(scalar)
 	if err != nil {
-		return false, fmt.Errorf("cannot convert %T to bool", value)
+		return false, fmt.Errorf("cannot convert %T value %v to bool: %w", value, scalar, err)
 	}
 	if err := finiteBoolInput(image); err != nil {
 		return false, err
@@ -91,6 +101,34 @@ func boolFromNumeric(value any) (bool, error) {
 	default:
 		return false, fmt.Errorf("value %v is not a boolean image; must be 0 or 1", image)
 	}
+}
+
+// boolFromNumberLiteral decides a json.Number on its decimal text, not on its
+// float64 image: "1.0000000000000001" rounds to float64(1) yet is not the
+// image 1, and the strict rule must not accept it (PR #564 review). This is
+// the HTTP path — httpapi decodes with UseNumber, so every JSON number
+// arrives here. strconv.ParseFloat is the acceptance authority, as in
+// numutil.TryParseNumber; that helper then refines any literal denoting an
+// integer exactly ("1.0", "1e0", "-0") to int64 and leaves genuine fractions,
+// integers past int64, and the Inf/NaN spellings as float64.
+func boolFromNumberLiteral(literal json.Number) (bool, error) {
+	if _, err := strconv.ParseFloat(string(literal), 64); err != nil {
+		return false, fmt.Errorf("cannot convert json.Number %q to bool: %w", literal, err)
+	}
+	switch parsed := numutil.TryParseNumber(string(literal)).(type) {
+	case int64:
+		switch parsed {
+		case 0:
+			return false, nil
+		case 1:
+			return true, nil
+		}
+	case float64:
+		if err := finiteBoolInput(parsed); err != nil {
+			return false, err
+		}
+	}
+	return false, fmt.Errorf("value %s is not a boolean image; must be 0 or 1", literal)
 }
 
 // derefNumericPointer unwraps the numeric pointer shapes ToEAVRecord accepts

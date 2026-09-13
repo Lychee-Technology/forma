@@ -1,9 +1,12 @@
 package sqlgen
 
 import (
+	"database/sql"
 	"testing"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,4 +64,86 @@ func TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling(t *testing.T) {
 	}
 	_, err := ConvertPgMainValue("banana", "flag", boolInt)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// TestBuildPGSelectNoEAV_BoolColumnsUseMainColBoolExpr: the no-EAV hot
+// projection (live for any production schema whose attributes are all
+// column-bound) must derive a bound bool through the same mainColBoolExpr the
+// EAV-joined projection uses. It used to project the raw column and leave the
+// outer CAST(attr AS BOOLEAN) to read it — SMALLINT -1 → true and VARCHAR
+// 'true' → true on that one route, while `> 0.5` / `= '1'` read them as
+// false everywhere else, including the CDC export the same row lands in at
+// flush (#404, PR #564 review, finding 2).
+func TestBuildPGSelectNoEAV_BoolColumnsUseMainColBoolExpr(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
+		"flagInt": {AttributeID: 2, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolInt}},
+		"flagText": {AttributeID: 3, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText}},
+	}
+	sp, err := BuildSchemaProjection(7, cache)
+	require.NoError(t, err)
+	require.False(t, sp.HasEAVAttrs, "fixture must qualify for the no-EAV shortcut")
+
+	noEAV := sp.BuildPGSelectNoEAV()
+	require.Contains(t, noEAV, "(m.smallint_01 > 0.5) AS flagInt")
+	require.Contains(t, noEAV, "m.text_02 = '1' AS flagText")
+	require.Contains(t, noEAV, "m.text_01 AS name", "non-bool columns still project raw")
+	require.NotContains(t, noEAV, "m.smallint_01 AS", "the raw bool column must not reach the outer CAST")
+	require.NotContains(t, noEAV, "m.text_02 AS")
+
+	// Same spelling as the EAV-joined projection's COALESCE fallback.
+	require.Contains(t, sp.PGSourceSelect, "(m.smallint_01 > 0.5)) AS flagInt")
+	require.Contains(t, sp.PGSourceSelect, "m.text_02 = '1') AS flagText")
+}
+
+// TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn: the outer select
+// aliases a bound bool to its entity_main column, and the federated reader
+// scans that column by kind (SMALLINT → sql.NullInt64, text →
+// sql.NullString). CAST(attr AS BOOLEAN) fed a Go bool into the SMALLINT
+// slot — a scan error that made every bound bool_smallint attribute
+// unreadable through DuckDB — and "true"/"false" into the text slot the
+// bool_text funnel reads by its "1"/"0" contract. The verdict is cast back
+// to the stored image instead. Executed against DuckDB with the reader's
+// own scan types so the assertion is on the scan, not the SQL text.
+func TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"flagInt": {AttributeID: 2, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolInt}},
+		"flagText": {AttributeID: 3, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText}},
+	}
+	sp, err := BuildSchemaProjection(7, cache)
+	require.NoError(t, err)
+	require.Contains(t, sp.OuterSelect, "CAST(flagInt AS SMALLINT) AS smallint_01")
+	require.Contains(t, sp.OuterSelect, "CAST(CAST(flagText AS TINYINT) AS VARCHAR) AS text_02")
+	require.NotContains(t, sp.OuterSelect, "AS BOOLEAN")
+
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	for _, tc := range []struct {
+		verdict  string // the BOOLEAN every leg hands the outer select
+		wantInt  sql.NullInt64
+		wantText sql.NullString
+	}{
+		{"TRUE", sql.NullInt64{Int64: 1, Valid: true}, sql.NullString{String: "1", Valid: true}},
+		{"FALSE", sql.NullInt64{Int64: 0, Valid: true}, sql.NullString{String: "0", Valid: true}},
+		{"NULL::BOOLEAN", sql.NullInt64{}, sql.NullString{}},
+	} {
+		t.Run(tc.verdict, func(t *testing.T) {
+			var gotInt sql.NullInt64
+			var gotText sql.NullString
+			query := "SELECT " + duckDBMainColCast("flagInt", forma.ValueTypeBool, model.ColumnKindSmallint) +
+				", " + duckDBMainColCast("flagText", forma.ValueTypeBool, model.ColumnKindText) +
+				" FROM (SELECT " + tc.verdict + " AS flagInt, " + tc.verdict + " AS flagText) t"
+			require.NoError(t, db.QueryRow(query).Scan(&gotInt, &gotText),
+				"outer select must scan with the reader's types")
+			require.Equal(t, tc.wantInt, gotInt)
+			require.Equal(t, tc.wantText, gotText)
+		})
+	}
 }
