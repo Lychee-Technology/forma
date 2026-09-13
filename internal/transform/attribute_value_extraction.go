@@ -95,7 +95,13 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		return toBoolForEAV(record.ValueNumeric)
+		// Read-side rule (#404): a persisted image is the nearest of 0/1,
+		// never the strict write funnel — a stored 0.3 is float noise, not
+		// caller input to reject. Non-finite still has no truth value (#322).
+		if err := finiteBoolInput(*record.ValueNumeric); err != nil {
+			return nil, err
+		}
+		return float64ToBool(*record.ValueNumeric), nil
 
 	default:
 		// Fallback: try text first, then numeric

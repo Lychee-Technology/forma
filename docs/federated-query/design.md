@@ -882,11 +882,18 @@ applied on both sides:
   `NUMERIC` while the DuckDB route raised a Conversion Error on
   `CAST('1e+30' AS BIGINT)`. Fractional `bigint` operands in range are
   unaffected.
-* **Bool**: both engines compare the `value_numeric <> 0` truthiness — the PG
-  EAV EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` — and
-  parse operands under one shared rule (`ParseBool` spellings, else any
-  integer with `>0` truthiness), so no spelling errors on exactly one route.
-  (The write-side bool truth table is #404.)
+* **Bool**: both engines compare the `value_numeric > 0.5` truthiness
+  (`sqlgen.BoolTruthiness`) — the PG EAV EXISTS predicate renders
+  `(x.value_numeric > 0.5) =/!= <bool>` — and parse operands under one shared
+  rule (`ParseBool` spellings, else any integer with `>0` truthiness), so no
+  spelling errors on exactly one route. The threshold is the #404 read-side
+  rule shared with the Go read path (`transform.float64ToBool`): a persisted
+  image is the nearest of 0/1, so float noise around either end does not flip
+  the answer. The write side is strict (`transform.boolFromAny`): a bool
+  input is a Go bool, a `ParseBool` string, or a number that is exactly 0 or
+  1; anything else is rejected rather than coerced. A `bool_text` main column
+  is read by its `"1"`/`"0"` contract on every leg (Go, DuckDB hot leg, CDC
+  export); other text is a storage consistency error on the Go read path.
 
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
