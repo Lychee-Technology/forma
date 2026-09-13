@@ -270,6 +270,9 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectDuplicateAtomicUpdateTargets(req.Operations); err != nil {
+		return nil, err
+	}
 
 	startTime := time.Now()
 	tables := s.resolveTables()

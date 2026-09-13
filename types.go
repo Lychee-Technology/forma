@@ -86,10 +86,24 @@ type EntityOperation struct {
 	Updates map[string]any `json:"updates,omitempty"`
 }
 
-// BatchOperation represents batch entity operations
+// BatchOperation represents batch entity operations.
+//
+// The two execution modes treat a row that appears more than once in
+// Operations differently:
+//
+//   - Best-effort (Atomic == false) applies operations in list order, each one
+//     re-reading the row first, so a later update on the same row merges onto
+//     the earlier one. The final state is last-wins by execution order.
+//   - Atomic (Atomic == true) rejects a batch that names the same
+//     (schema, row_id) twice up front with an ErrInvalidInput carrier, before
+//     any read or write. The atomic path merges every operation onto the base
+//     it read before writing, so duplicates would otherwise silently discard
+//     all but the last one while reporting every operation successful.
 type BatchOperation struct {
 	Operations []EntityOperation `json:"operations"`
-	Atomic     bool              `json:"atomic"` // Request all-or-nothing execution; may be rejected when unsupported.
+	// Atomic requests all-or-nothing execution; may be rejected when
+	// unsupported. See the type comment for how duplicates are treated.
+	Atomic bool `json:"atomic"`
 }
 
 // BatchResult represents results from batch operations

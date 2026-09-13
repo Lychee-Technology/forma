@@ -18,6 +18,9 @@ type EntityReader interface {
 
 type EntityBatchOperator interface {
 	BatchCreate(ctx context.Context, req *BatchOperation) (*BatchResult, error)
+	// BatchUpdate applies partial updates. A best-effort batch applies them in
+	// order (last-wins on a repeated row); an atomic batch refuses a repeated
+	// (schema, row_id) with ErrInvalidInput. See BatchOperation.
 	BatchUpdate(ctx context.Context, req *BatchOperation) (*BatchResult, error)
 	BatchDelete(ctx context.Context, req *BatchOperation) (*BatchResult, error)
 }
