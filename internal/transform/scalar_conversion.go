@@ -10,8 +10,10 @@ import (
 	"github.com/lychee-technology/forma/internal/numutil"
 )
 
-// Scalar coercion helpers behind AttributeConverter.ToEAVRecord and
-// populateTypedValue (typed_value.go).
+// Scalar coercion helpers shared by the EAV write funnels
+// (AttributeConverter.ToEAVRecord, populateTypedValue in typed_value.go) and
+// the read path (extractValueFromEAVRecord sends a stored ValueNumeric back
+// through toBoolForEAV). derefPointer is also reused by numeric_conversion.go.
 //
 // The numeric coercion helpers (toFloat64ForEAV, parseTrimmedFloat64) live in
 // numeric_conversion.go alongside the finiteForEAV guard they feed.
@@ -196,7 +198,7 @@ func toBool(value any) (bool, error) {
 	}
 }
 
-// ToFloat64Ok is an exported helper that behaves like the legacy optimizer helper:
+// ToFloat64 is an exported helper that behaves like the legacy optimizer helper:
 // it returns (float64, bool) where bool indicates success.
 func ToFloat64(v any) (float64, bool) {
 	return numutil.ToFloat64(v)
