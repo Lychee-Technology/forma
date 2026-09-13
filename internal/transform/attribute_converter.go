@@ -93,7 +93,7 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 		}
 
 	case forma.ValueTypeBool:
-		boolVal, err := toBoolForEAV(attr.Value)
+		boolVal, err := boolFromAny(attr.Value)
 		if err != nil {
 			return record, fmt.Errorf("convert to bool for attrID %d: %w", attr.AttrID, err)
 		}

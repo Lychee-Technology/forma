@@ -13,12 +13,11 @@ import (
 
 // TestPopulateTypedValueRejectsNonFiniteBool pins the bool half of #322's
 // transform guard. A bool attribute stores boolToFloat64 in ValueNumeric, so a
-// non-finite handed in for a bool used to be coerced silently — toBool answers
-// `NaN != 0` == true — and the row was written as if the caller had said so.
-// Rejecting is the only honest answer: no non-finite has a truth value.
-//
-// toBool has no float32 or pointer cases, so only the shapes it accepts are
-// exercised here; toBoolForEAV's wider set is covered by the sibling test.
+// non-finite handed in for a bool used to be coerced silently — the pre-#404
+// toBool answered `NaN != 0` == true — and the row was written as if the
+// caller had said so. Rejecting is the only honest answer: no non-finite has
+// a truth value. Both funnels now share boolFromAny; the sibling test keeps
+// the wider float32/pointer shapes on the ToEAVRecord side.
 func TestPopulateTypedValueRejectsNonFiniteBool(t *testing.T) {
 	meta := forma.AttributeMetadata{AttributeID: 3, ValueType: forma.ValueTypeBool}
 	for name, value := range map[string]any{
@@ -41,10 +40,9 @@ func TestPopulateTypedValueRejectsNonFiniteBool(t *testing.T) {
 }
 
 // TestToEAVRecordRejectsNonFiniteBool pins the second bool funnel. It matters
-// beyond symmetry: toBoolForEAV coerces through float64ToBool's threshold, so
-// before the guard the two funnels disagreed about the same NaN — toBool
-// persisted true, toBoolForEAV persisted false. Plain error on purpose, like
-// the rest of this converter's errors.
+// beyond symmetry: before the guard the two funnels disagreed about the same
+// NaN — the pre-#404 toBool persisted true, toBoolForEAV's threshold persisted
+// false. Plain error on purpose, like the rest of this converter's errors.
 func TestToEAVRecordRejectsNonFiniteBool(t *testing.T) {
 	c := NewAttributeConverter(nil)
 	negInf32 := float32(math.Inf(-1))

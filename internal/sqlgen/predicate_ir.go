@@ -124,19 +124,19 @@ type PgEavLeafPayload struct {
 	ValueColumn string
 	SQLOp       string
 	Value       any
-	// Truthy marks a bool leaf: the comparison runs on the value_numeric <> 0
-	// truthiness every DuckDB leg already derives, with Value a Go bool, so a
+	// Truthy marks a bool leaf: the comparison runs on the BoolTruthiness
+	// image every DuckDB leg already derives, with Value a Go bool, so a
 	// stored 2 answers the same on the OLTP route and the federated tiers
-	// (#384; the write-side truth table is #404).
+	// (#384; the spelling is the #404 read-side rule).
 	Truthy bool
 }
 
 // ComparisonLHS renders the left-hand side of the EAV EXISTS comparison for
 // the payload's value column, qualified by the eav_data alias. Bool leaves
-// compare the <> 0 truthiness instead of the raw column (#384).
+// compare the BoolTruthiness image instead of the raw column (#384).
 func (p PgEavLeafPayload) ComparisonLHS(alias string) string {
 	if p.Truthy {
-		return "(" + alias + "." + p.ValueColumn + " <> 0)"
+		return BoolTruthiness(alias + "." + p.ValueColumn)
 	}
 	return alias + "." + p.ValueColumn
 }

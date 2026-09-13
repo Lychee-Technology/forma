@@ -24,7 +24,7 @@ const eavExportFixture = "(SELECT CAST(1 AS DOUBLE) AS value_numeric, CAST('x' A
 // the UNION ALL and re-opens #205.
 //
 // The comparison is on typeof() rather than on the rendered SQL text: bool
-// renders as `(value_numeric <> 0)`, which carries no type literal to
+// renders as `(value_numeric > 0.5)`, which carries no type literal to
 // extract — only the engine knows the resulting type.
 func TestCastEAVValueMatchesNullScanTypeof(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")

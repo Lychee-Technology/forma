@@ -156,7 +156,7 @@ const eavFixtureSubquery = "(SELECT CAST(1 AS DOUBLE) AS value_numeric, CAST('x'
 // pg_source leg and the NULL-augmented parquet leg and re-opens #205.
 //
 // The comparison is on typeof() rather than on the rendered SQL text: bool
-// renders as `(value_numeric <> 0)` and text as a bare `value_text`, so
+// renders as `(value_numeric > 0.5)` and text as a bare `value_text`, so
 // neither carries a type literal to extract — only the engine knows.
 func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")

@@ -16,7 +16,7 @@ import (
 // Postgres and every DuckDB tier must answer the same filter identically —
 // projection and operand casts by storage width (DOUBLE: the write funnel
 // narrows everything through float64), and one bool truth rule
-// (value_numeric <> 0) with one operand parse rule on both routes.
+// (value_numeric > 0.5, #404) with one operand parse rule on both routes.
 //
 // Out-of-range values are planted by direct eav_data UPDATEs: the write
 // funnel rejects them since #384 (TestEAVIntegerWidthWriteRejection), so the
@@ -201,7 +201,7 @@ func TestEAVIntegerWidthWriteRejection(t *testing.T) {
 }
 
 // TestEAVBoolTruthinessParityBothDialects pins the #384 bool ruling: both
-// routes compare the value_numeric <> 0 truthiness. Pre-#384 the OLTP route
+// routes compare the value_numeric > 0.5 truthiness (#404). Pre-#384 the OLTP route
 // bound equality against exactly 1.0/0.0, so a stored 2 (planted; the write
 // funnels store only 1/0, #404) matched equals:1 on the DuckDB tiers and not
 // on the hot route.

@@ -81,19 +81,19 @@ func isNonFinite(value float64) bool {
 	return math.IsNaN(value) || math.IsInf(value, 0)
 }
 
-// finiteBoolInput guards the bool funnels, which reach storage through the same
-// ValueNumeric column as the numeric ones (boolToFloat64) and so need the same
-// rejection. Coercion cannot stand in for it: no non-finite has a truth value,
-// and the two funnels do not even agree on the one they invent — toBool's
-// `!= 0` turns NaN into true, toBoolForEAV's float64ToBool threshold turns the
-// same NaN into false. Absorbed under report-only mode that silently persisted
-// a bool the caller never wrote (#322, PR #403 review).
+// finiteBoolInput guards the bool funnel (boolFromAny), which reaches storage
+// through the same ValueNumeric column as the numeric ones (boolToFloat64) and
+// so needs the same rejection. Coercion cannot stand in for it: no non-finite
+// has a truth value, and before #404 the two funnels did not even agree on
+// the one they invented — `!= 0` turned NaN into true, the float64ToBool
+// threshold turned the same NaN into false. Absorbed under report-only mode
+// that silently persisted a bool the caller never wrote (#322, PR #403 review).
 //
 // The message is its own rather than finiteForEAV's: "is not storable" is
 // numeric prose, and the fault here is not that the value cannot be stored but
 // that it does not denote true or false. That reading also has to hold on the
-// read path — extractValueFromEAVRecord sends a stored ValueNumeric back
-// through toBoolForEAV — where the subject is a persisted value, not input.
+// read path — extractValueFromEAVRecord guards a stored ValueNumeric with it
+// before float64ToBool — where the subject is a persisted value, not input.
 func finiteBoolInput(value float64) error {
 	if isNonFinite(value) {
 		return fmt.Errorf("non-finite value %v has no truth value; a finite value is required", value)

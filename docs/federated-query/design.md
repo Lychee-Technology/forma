@@ -882,11 +882,33 @@ applied on both sides:
   `NUMERIC` while the DuckDB route raised a Conversion Error on
   `CAST('1e+30' AS BIGINT)`. Fractional `bigint` operands in range are
   unaffected.
-* **Bool**: both engines compare the `value_numeric <> 0` truthiness — the PG
-  EAV EXISTS predicate renders `(x.value_numeric <> 0) =/!= <bool>` — and
-  parse operands under one shared rule (`ParseBool` spellings, else any
-  integer with `>0` truthiness), so no spelling errors on exactly one route.
-  (The write-side bool truth table is #404.)
+* **Bool**: both engines compare the `value_numeric > 0.5` truthiness
+  (`sqlgen.BoolTruthiness`) — the PG EAV EXISTS predicate renders
+  `(x.value_numeric > 0.5) =/!= <bool>` — and parse operands under one shared
+  rule (`ParseBool` spellings, else any integer with `>0` truthiness), so no
+  spelling errors on exactly one route. The threshold is the #404 read-side
+  rule shared with the Go read path (`transform.float64ToBool`): a persisted
+  image is the nearest of 0/1, so float noise around either end does not flip
+  the answer. The write side is strict (`transform.boolFromAny`): a bool
+  input is a Go bool, a `ParseBool` string, or a number that is exactly 0 or
+  1 — any width the numeric funnel accepts (`numutil.Float64`: int, int16,
+  int32, int64, float32, float64, pointers to each; int8 and the unsigned
+  widths are rejected on every funnel until #566), and a `json.Number` is
+  decided on its decimal text, so a literal that merely rounds to 0 or 1
+  (`1.0000000000000001`) is rejected too. Anything else is rejected rather
+  than coerced. A `bool_text` main column is read by its `"1"`/`"0"` contract
+  on every leg (Go, DuckDB hot leg, CDC export); other text is a storage
+  consistency error on the Go read path. A column-bound bool keeps its
+  nullability end to end: the CDC export emits the bare truthiness (never
+  `CASE … ELSE FALSE`), so an unset optional bool is NULL in parquet exactly
+  as it is in `entity_main`, and `equals:false` does not start matching it
+  after a flush. The no-EAV hot projection (`BuildPGSelectNoEAV`, live for
+  any schema whose attributes are all column-bound) derives the bool through
+  the same `mainColBoolExpr` as the EAV-joined projection, and the outer
+  select casts the verdict back to the physical column's shape (`SMALLINT`
+  1/0, `VARCHAR` '1'/'0') so the federated reader scans it by column kind.
+  The one route still comparing the raw stored image is the pg-main
+  pushdown (#565); under the enforced 0/1 contract it agrees.
 
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans

@@ -56,6 +56,11 @@ type SchemaProjection struct {
 
 	// itemsTypes maps a list attribute's name to its effective element type.
 	itemsTypes map[string]forma.ValueType
+
+	// boundBoolEncodings maps a column-bound bool attribute's name to its
+	// storage encoding, so every hot-leg projection — the EAV-joined one and
+	// BuildPGSelectNoEAV alike — reads the column through mainColBoolExpr.
+	boundBoolEncodings map[string]forma.MainColumnEncoding
 }
 
 // attrProjectionInfo holds the projection-relevant metadata for one schema attribute.
@@ -79,9 +84,10 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 			"ver_ts":     forma.ValueTypeBigInt,
 			"deleted_ts": forma.ValueTypeBigInt,
 		},
-		AttrToMainColumn: make(map[string]string),
-		attrIDs:          make(map[string]int),
-		itemsTypes:       make(map[string]forma.ValueType),
+		AttrToMainColumn:   make(map[string]string),
+		attrIDs:            make(map[string]int),
+		itemsTypes:         make(map[string]forma.ValueType),
+		boundBoolEncodings: make(map[string]forma.MainColumnEncoding),
 	}
 
 	attrs := make([]attrProjectionInfo, 0, len(cache))
@@ -92,6 +98,9 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		if meta.ColumnBinding != nil {
 			ai.isColumn = true
 			sp.AttrToMainColumn[name] = string(meta.ColumnBinding.ColumnName)
+			if meta.ValueType == forma.ValueTypeBool {
+				sp.boundBoolEncodings[name] = meta.ColumnBinding.Encoding
+			}
 		} else {
 			sp.EAVAttrs = append(sp.EAVAttrs, name)
 		}
@@ -268,7 +277,7 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 	for _, desc := range allMainCols {
 		if attr, ok := mainColToAttr[desc.Name]; ok {
 			parts = append(parts, fmt.Sprintf("%s AS %s",
-				duckDBAttrCast(ParquetAttrColumn(attr), sp.UnifiedColumnTypes[attr]), desc.Name))
+				duckDBMainColCast(ParquetAttrColumn(attr), sp.UnifiedColumnTypes[attr], desc.Kind), desc.Name))
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s",
@@ -284,6 +293,12 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 
 // BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
 // (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
+//
+// Bool columns go through mainColBoolExpr exactly as buildPGProjection's
+// COALESCE leg does: projecting the raw column left the outer
+// CAST(attr AS BOOLEAN) to read it, which is a different truth table
+// (SMALLINT -1 → true, VARCHAR 'true' → true) from the `> 0.5` / `= '1'`
+// every other reader and the CDC export spell (#404, PR #564 review).
 func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
 	selectParts := []string{
 		"cl.row_id::VARCHAR AS row_id",
@@ -301,7 +316,11 @@ func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
 
 	for _, attr := range attrs {
 		col := sp.AttrToMainColumn[attr]
-		selectParts = append(selectParts, fmt.Sprintf("m.%s AS %s", col, ParquetAttrColumn(attr)))
+		expr := "m." + col
+		if enc, ok := sp.boundBoolEncodings[attr]; ok {
+			expr = mainColBoolExpr(col, enc)
+		}
+		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", expr, ParquetAttrColumn(attr)))
 	}
 
 	return strings.Join(selectParts, ",\n\t\t\t")
@@ -335,6 +354,29 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 		return id
 	}
 	return 0
+}
+
+// duckDBMainColCast renders the outer-select cast for an attribute that lands
+// in an entity_main column. The alias is the physical column and the reader
+// scans it by the column's kind (federated.duckDBScanBuffers), so the cast
+// must produce that kind, not the logical value type. The two diverge only
+// for bool: every leg derives a BOOLEAN (mainColBoolExpr, the parquet
+// column), and CAST(attr AS BOOLEAN) then failed the SMALLINT scan
+// ("converting driver.Value type bool") and put "true" into the text slot a
+// bool_text reader expects "1"/"0" in. The stored image is re-derived from
+// the verdict: 1/0 for bool_smallint, '1'/'0' for bool_text, NULL kept.
+func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) string {
+	if vt != forma.ValueTypeBool {
+		return duckDBAttrCast(attr, vt)
+	}
+	switch kind {
+	case model.ColumnKindSmallint:
+		return fmt.Sprintf("CAST(%s AS SMALLINT)", attr)
+	case model.ColumnKindText:
+		return fmt.Sprintf("CAST(CAST(%s AS TINYINT) AS VARCHAR)", attr)
+	default:
+		return duckDBAttrCast(attr, vt)
+	}
 }
 
 func duckDBAttrCast(attr string, vt forma.ValueType) string {

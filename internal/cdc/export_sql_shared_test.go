@@ -217,7 +217,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 	require.Contains(t, projection.eavAgg[0], "TRY_CAST(value_numeric AS DOUBLE)")
 	require.Contains(t, projection.eavAgg[0], "AS employee_count")
 	require.Contains(t, projection.eavAgg[1], "attr_id = 22")
-	require.Contains(t, projection.eavAgg[1], "(value_numeric <> 0)")
+	require.Contains(t, projection.eavAgg[1], "(value_numeric > 0.5)")
 	require.Contains(t, projection.eavAgg[1], "AS is_active")
 	require.Equal(t, []string{"e.employee_count", "e.is_active"}, projection.eavSelect)
 	require.Equal(t, []int16{21, 22}, projection.eavAttrIDs)
