@@ -28,7 +28,7 @@ func dottedCache() forma.SchemaAttributeCache {
 // well-formed document and actually checks the value. Left flat, the key is an
 // unknown property and its value is never examined at all (#314).
 func TestNormalizeExpandsDottedKey(t *testing.T) {
-	out := NormalizeDottedKeys(map[string]any{"contact.email": "x"}, dottedCache(), nil)
+	out := mustNormalize(t, map[string]any{"contact.email": "x"}, dottedCache(), nil)
 	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 }
 
@@ -41,7 +41,7 @@ func TestNormalizeExpandsDottedKeyNamingParentPath(t *testing.T) {
 		"contact.snapshot.code": {AttributeID: 20, ValueType: forma.ValueTypeText},
 	}
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact.snapshot": map[string]any{"code": 99999},
 	}, cache, nil)
 
@@ -56,7 +56,7 @@ func TestNormalizeExpandsNestedDottedKey(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"a.b.c": {AttributeID: 4, ValueType: forma.ValueTypeText},
 	}
-	out := NormalizeDottedKeys(map[string]any{"a": map[string]any{"b.c": "v"}}, cache, nil)
+	out := mustNormalize(t, map[string]any{"a": map[string]any{"b.c": "v"}}, cache, nil)
 	require.Equal(t, map[string]any{
 		"a": map[string]any{"b": map[string]any{"c": "v"}},
 	}, out)
@@ -75,7 +75,7 @@ func TestNormalizeExpandsInsideArrayElements(t *testing.T) {
 	// test blind to that, since nil means "nothing is an array".
 	arrays := schemavalidate.ArrayPaths{"tags": {}}
 
-	out := NormalizeDottedKeys(map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, arrays)
+	out := mustNormalize(t, map[string]any{"tags": []any{map[string]any{"a.b": 1}}}, cache, arrays)
 
 	require.Equal(t, map[string]any{
 		"tags": []any{map[string]any{"a": map[string]any{"b": 1}}},
@@ -91,7 +91,7 @@ func TestNormalizeLiteralWinsOverNested(t *testing.T) {
 		"contact":       map[string]any{"email": "old"},
 		"contact.email": "x",
 	}
-	out := NormalizeDottedKeys(in, dottedCache(), nil)
+	out := mustNormalize(t, in, dottedCache(), nil)
 	require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 }
 
@@ -104,7 +104,7 @@ func TestNormalizeThreeSegmentLiteralWins(t *testing.T) {
 		"contact.snapshot.code": {AttributeID: 20, ValueType: forma.ValueTypeText},
 	}
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact.snapshot":      map[string]any{"code": "MIDDLE"},
 		"contact.snapshot.code": "LITERAL",
 	}, cache, nil)
@@ -121,7 +121,7 @@ func TestNormalizePreservesSiblings(t *testing.T) {
 	cache := dottedCache()
 	cache["contact.phone"] = forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeText}
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact":       map[string]any{"phone": "555", "email": "old"},
 		"contact.email": "x",
 	}, cache, nil)
@@ -146,7 +146,7 @@ func TestNormalizeMergesSiblingsAtDepth(t *testing.T) {
 		"contact.snapshot.deep.b": {AttributeID: 51, ValueType: forma.ValueTypeText},
 	}
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact":          map[string]any{"snapshot": map[string]any{"deep": map[string]any{"a": "A"}}},
 		"contact.snapshot": map[string]any{"deep": map[string]any{"b": "B"}},
 	}, cache, nil)
@@ -162,7 +162,7 @@ func TestNormalizeMergesSiblingsAtDepth(t *testing.T) {
 // cache knows are expanded. An unknown dotted key stays put so the writer's
 // "attribute is not defined for schema" error still fires with its own message.
 func TestNormalizeLeavesUnknownDottedKeyAlone(t *testing.T) {
-	out := NormalizeDottedKeys(map[string]any{"nope.missing": 1}, dottedCache(), nil)
+	out := mustNormalize(t, map[string]any{"nope.missing": 1}, dottedCache(), nil)
 	require.Equal(t, map[string]any{"nope.missing": 1}, out)
 }
 
@@ -176,7 +176,7 @@ func TestNormalizeIsDeterministic(t *testing.T) {
 		"contact.email": "x",
 	}
 	for i := 0; i < 200; i++ {
-		out := NormalizeDottedKeys(in, dottedCache(), nil)
+		out := mustNormalize(t, in, dottedCache(), nil)
 		require.Equal(t, map[string]any{"contact": map[string]any{"email": "x"}}, out)
 	}
 }
@@ -225,7 +225,7 @@ func TestNormalizeNormalizingIsPure(t *testing.T) {
 	before := toEAV(t, registry, rowID, payload())
 
 	shared := payload()
-	NormalizeDottedKeys(shared, cache, arrays)
+	mustNormalize(t, shared, cache, arrays)
 	after := toEAV(t, registry, rowID, shared)
 
 	require.ElementsMatch(t, before, after,
@@ -263,7 +263,7 @@ func TestNormalizeDoesNotMutateInput(t *testing.T) {
 	}
 	// contact.phones is an array, but it is not on contact.snapshot.code's path:
 	// an unrelated array must not suppress expansion.
-	out := NormalizeDottedKeys(in, cache, schemavalidate.ArrayPaths{"contact.phones": {}})
+	out := mustNormalize(t, in, cache, schemavalidate.ArrayPaths{"contact.phones": {}})
 
 	require.Equal(t, map[string]any{
 		"contact": map[string]any{
@@ -305,7 +305,7 @@ func TestNormalizePreservesTypedNilContainers(t *testing.T) {
 	var nilMap map[string]any
 	var nilSlice []any
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact": nilMap,
 		"tags":    nilSlice,
 	}, dottedCache(), nil)
@@ -324,7 +324,7 @@ func TestNormalizePreservesTypedNilContainers(t *testing.T) {
 func TestNormalizeExpandsOverTypedNilContainer(t *testing.T) {
 	var nilMap map[string]any
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact":       nilMap,
 		"contact.email": "x",
 	}, dottedCache(), nil)
@@ -341,7 +341,7 @@ func TestNormalizeMergesObjectOverTypedNilContainer(t *testing.T) {
 	}
 	var nilMap map[string]any
 
-	out := NormalizeDottedKeys(map[string]any{
+	out := mustNormalize(t, map[string]any{
 		"contact":          map[string]any{"snapshot": nilMap},
 		"contact.snapshot": map[string]any{"code": "C"},
 	}, cache, nil)
@@ -368,4 +368,19 @@ func requireNotAliased(t *testing.T, label string, input, output map[string]any)
 		reflect.ValueOf(input).Pointer(),
 		reflect.ValueOf(output).Pointer(),
 		"output map at %s must not alias the input's", label)
+}
+
+// mustNormalize is NormalizeDottedKeys for fixtures that are finite and
+// acyclic by construction, so the depth cap (payload_depth.go) cannot fire
+// and its error is a test bug rather than an outcome.
+func mustNormalize(
+	t *testing.T,
+	data map[string]any,
+	cache forma.SchemaAttributeCache,
+	arrays schemavalidate.ArrayPaths,
+) map[string]any {
+	t.Helper()
+	out, err := NormalizeDottedKeys(data, cache, arrays)
+	require.NoError(t, err)
+	return out
 }

@@ -166,6 +166,22 @@ narrows where to look; the e2e pass above is still what licenses the flip.
   would write the document with *zero* validation while a log line claimed it
   had merely failed a check — and, for the missing schema, would blame the
   caller for a server fault.
+- **The payload depth cap is a carrier, yet is also returned regardless of
+  enforcement** (#406). `internal/transform` bounds both of its recursions
+  over the caller's nesting — `NormalizeDottedKeys`, which runs before
+  `Validate`, and `flattenToAttributes`, which runs on every write — at
+  `maxPayloadNestingDepth` (1000, `payload_depth.go`), and past it builds
+  `forma.InvalidInputf("payload nesting exceeds 1000 levels beneath attribute
+  …; the payload is cyclic or too deeply nested")`, naming only the top-level
+  key. Only a Go embedder can trigger it: HTTP JSON cannot express a cycle and
+  `encoding/json` bounds decode nesting, so before the cap a cyclic
+  `map[string]any` exhausted the stack fatally before any validation ran.
+  Report-only mode does not absorb it because it is not a violation an
+  operator repairs in stored data, and the write could never succeed anyway —
+  the flattener refuses the same payload with the same cap. A consequence for
+  the marshal-refusal path below: the validator's own capped walk, and the
+  `encoding/json` cycle text it falls back to, are no longer reachable from
+  the write path for a cyclic payload, and stay as defence in depth.
 
 ### Startup fails closed
 
@@ -1005,7 +1021,9 @@ The marshal-refusal carrier's published width is bounded by the refusal's
 kind (#402). A refusal the payload walk can locate publishes an owned message
 naming the attribute. One it cannot publishes `encoding/json`'s own text only
 for a `*json.UnsupportedValueError` — prose about a value, and for a cycle the
-only truthful description; a `*json.UnsupportedTypeError` or a
+only truthful description (since #406 the transform layer's depth cap refuses a
+cyclic payload before the validator sees it, so that branch is defence in
+depth); a `*json.UnsupportedTypeError` or a
 `*json.MarshalerError` publishes an owned message naming the Go type and keeps
 the library's text — for a `MarshalerError`, the embedder's own error prose —
 behind `forma.WithOperatorDetail`. Any kind the code does not classify closes
