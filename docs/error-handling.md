@@ -153,12 +153,14 @@ narrows where to look; the e2e pass above is still what licenses the flip.
 
 - A genuine violation wraps `forma.ErrInvalidInput` → `400`. So does a payload
   `json.Marshal` refuses — `NaN`/`Inf` from a Go embedder (#322); no HTTP body
-  can encode one. Report-only mode absorbs exactly this carrier class, logging
-  it at `Warn` and proceeding — safely even for the marshal case, because the
-  transform layer independently rejects non-finite numbers with the attribute
-  name before anything reaches storage.
+  can encode one — and a numeric literal outside `float64` range such as
+  `1e400` (#402), which an HTTP body *can* carry. Report-only mode absorbs
+  exactly this carrier class, logging it at `Warn` and proceeding — safely
+  even for the marshal and out-of-range cases, because the transform layer
+  independently rejects non-finite numbers and unparseable `json.Number`s
+  with the attribute name before anything reaches storage.
 - **Everything else is returned regardless of enforcement** — a missing
-  resolved schema, plus the one caller-input case misfiled here (#402), both
+  resolved schema, or a failure to decode the marshaller's own output, both
   enumerated under "Public HTTP error surface". Those are plain errors,
   therefore `500`, therefore operator-visible. Absorbing them into report-only
   would write the document with *zero* validation while a log line claimed it
@@ -992,13 +994,25 @@ Since #314 there is a **second** write-path validator on the same footing,
 `InvalidInputf` carrier for a JSON Schema violation — `enum`, `pattern`,
 `type`, `minimum`/`maximum`, and the schema's own `required` — and, since #322,
 for a payload `json.Marshal` refuses to encode (`NaN`/`Inf` from a Go
-embedder), which is caller input just the same. It is independent of the
-`required_policy` row above: the two check different things and both run. Its
-*remaining* errors currently stay plain, so a `500` — a missing resolved
-schema, and a numeric literal that fits neither `int64` nor `float64`. Only the
-first of those is a deliberate `500`; the numeric literal is caller input
-misfiled on the operator side, a known gap tracked in #402. See "JSON Schema
-enforcement on write" for the split.
+embedder), and since #402 for a numeric literal outside `float64` range
+(`1e400`, which an HTTP body can carry) — caller input just the same. It is
+independent of the `required_policy` row above: the two check different things
+and both run. Its *remaining* errors stay plain, so a `500` — a missing
+resolved schema, and a failure to decode the marshaller's own output — both
+deliberate. See "JSON Schema enforcement on write" for the split.
+
+The marshal-refusal carrier's published width is bounded by the refusal's
+kind (#402). A refusal the payload walk can locate publishes an owned message
+naming the attribute. One it cannot publishes `encoding/json`'s own text only
+for a `*json.UnsupportedValueError` — prose about a value, and for a cycle the
+only truthful description; a `*json.UnsupportedTypeError` or a
+`*json.MarshalerError` publishes an owned message naming the Go type and keeps
+the library's text — for a `MarshalerError`, the embedder's own error prose —
+behind `forma.WithOperatorDetail`. Any kind the code does not classify closes
+the same way by default — an owned message naming nothing, library text as
+operator detail — so a kind a future toolchain adds (the `GOEXPERIMENT=jsonv2`
+shim already returns a `*json.SyntaxError` for a malformed `json.RawMessage`)
+cannot widen the body just by existing.
 
 Its published message deliberately includes the third-party `jsonschema-go`
 violation prose (decision recorded at the wrap site, `validator.go`): that text

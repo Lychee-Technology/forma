@@ -2,6 +2,7 @@ package schemavalidate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -45,14 +46,10 @@ type invalidNumberLiteral struct {
 // triggered by nothing but a go.mod bump. The raw library error rides along
 // as operator detail, so the log keeps it while the body never sees it.
 //
-// If the walk comes back empty, the library's text is published unchanged: it
-// is then the only description of the fault that exists. That covers a failing
-// json.Marshaler and an unsupported type such as a channel or func — and a
-// cycle, which reaches this branch because the walk is depth-capped and gives
-// up on one rather than following it (see marshalRefusalPaths). There the
-// library's text begins "json: unsupported value: encountered a cycle" and
-// goes on to name the type it was found via; publishing it is the honest
-// answer, because no single attribute is at fault.
+// If the walk comes back empty, the refusal is explained by its kind instead
+// (see unexplainedRefusalError): the library's text is published only when it
+// is prose about a value, and otherwise an owned message names the Go type
+// while the library's text stays operator-only.
 func marshalRefusalError(doc any, marshalErr error) error {
 	nonFinite, invalidLiterals := marshalRefusalPaths(doc)
 	if len(nonFinite) > 0 {
@@ -66,7 +63,54 @@ func marshalRefusalError(doc any, marshalErr error) error {
 			invalidLiterals[0].path, invalidLiterals[0].literal, moreSuffix(len(invalidLiterals))),
 			marshalErr)
 	}
-	return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+	return unexplainedRefusalError(marshalErr)
+}
+
+// unexplainedRefusalError classifies a refusal the walk could not locate, by
+// the concrete error encoding/json returned (#402). Every branch is HTTP
+// unreachable — a decoded body holds only maps, slices, strings, bools,
+// nils and grammar-valid json.Numbers — so this is embedder-facing prose, but
+// it still crosses the public transport and is held to the same width rule.
+//
+// A *json.MarshalerError carries an embedder type's own MarshalJSON error:
+// text this repo neither wrote nor reviewed, which must not be forwarded
+// into a body. A *json.UnsupportedTypeError is library-authored, but its
+// wording is a function of the toolchain (#453). Both publish an owned
+// message naming the Go type — the only fact the caller can act on — and
+// keep the library's text as operator detail.
+//
+// A *json.UnsupportedValueError is the one kind whose text publishes: a
+// non-finite in a shape the walk does not cover ([]float64, a struct field),
+// or a cycle, which reaches here because the walk is depth-capped and gives
+// up on one rather than following it (see marshalRefusalPaths). Its text is
+// prose about the value — "encountered a cycle via ..." names the path the
+// cycle was found through — and no single attribute is at fault, so the
+// library's text is the only truthful description and is published unchanged.
+//
+// Anything else closes by default: an owned message that names nothing, with
+// the library's text as operator detail. The default toolchain produces no
+// fourth kind today, but the GOEXPERIMENT=jsonv2 shim's transformMarshalError
+// already falls through to a *json.SyntaxError (a malformed json.RawMessage),
+// and a kind this build has not reviewed must not widen the body just by
+// existing (#453).
+func unexplainedRefusalError(marshalErr error) error {
+	var marshalerErr *json.MarshalerError
+	if errors.As(marshalErr, &marshalerErr) {
+		return forma.WithOperatorDetail(forma.InvalidInputf(
+			"payload cannot be encoded as JSON: the MarshalJSON method of Go type %s refused the value",
+			marshalerErr.Type), marshalErr)
+	}
+	var typeErr *json.UnsupportedTypeError
+	if errors.As(marshalErr, &typeErr) {
+		return forma.WithOperatorDetail(forma.InvalidInputf(
+			"payload cannot be encoded as JSON: Go type %s is not encodable", typeErr.Type), marshalErr)
+	}
+	var valueErr *json.UnsupportedValueError
+	if errors.As(marshalErr, &valueErr) {
+		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+	}
+	return forma.WithOperatorDetail(forma.InvalidInputf(
+		"payload cannot be encoded as JSON; no offending attribute could be identified"), marshalErr)
 }
 
 // moreSuffix renders the " (and N more)" tail shared by both owned messages:
@@ -101,7 +145,9 @@ const maxMarshalRefusalWalkDepth = 1000
 // the payload — and is never on a successful write.
 //
 // The walk is depth-capped, and exceeding the cap abandons it entirely: nil
-// comes back for both kinds, and the caller publishes the library's text. That
+// comes back for both kinds, and the caller classifies the refusal by its
+// kind instead (unexplainedRefusalError; a cycle publishes the library's
+// text). That
 // is what makes a cyclic payload safe here — json.Marshal detects a cycle and
 // refuses, so this walk runs precisely when a cycle is possible, and following
 // one has no natural end, so the cap is the end. A merely deep acyclic payload
@@ -119,7 +165,7 @@ const maxMarshalRefusalWalkDepth = 1000
 // ("NaN"/"Inf"/"Infinity") or as garbage that is not JSON number grammar; the
 // two gates on that case are documented at the case itself.
 //
-// Everything else yields nothing and falls back to the library text. That
+// Everything else yields nothing and falls back to unexplainedRefusalError. That
 // includes shapes which do refuse and which an embedder could plausibly hand
 // in — a []float64 or map[string]float64 holding a non-finite refuses exactly
 // like []any would, but is not walked, because type-switching every concrete
@@ -214,7 +260,8 @@ func (w *marshalRefusalWalker) appendIfNonFinite(path string, value float64) {
 }
 
 // appendInvalidLiteral mirrors appendIfNonFinite's root rule: a fault at the
-// document root has no attribute to name and falls back to the library text.
+// document root has no attribute to name and falls back to
+// unexplainedRefusalError.
 func (w *marshalRefusalWalker) appendInvalidLiteral(path, literal string) {
 	if path == "" {
 		return

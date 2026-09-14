@@ -72,3 +72,121 @@ func TestValidateNestedNumbersAbove2p53(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
+
+// TestValidateClassifiesOutOfRangeLiteralAsInvalidInput is issue #402's
+// headline: a literal that fits neither int64 nor float64 — {"score": 1e400},
+// which reaches Validate intact because httpapi decodes with UseNumber and
+// json.Marshal re-emits a json.Number verbatim — is the caller's own value
+// and must carry the sentinel rather than answer a redacted 500. The
+// published message names the attribute path and the literal, and the stdlib
+// range text stays operator-only (#453's toolchain-drift ruling).
+func TestValidateClassifiesOutOfRangeLiteralAsInvalidInput(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object","properties":{"score":{"type":"number"},"o":{"type":"object"},"xs":{"type":"array"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		doc      map[string]any
+		wantPath string
+		wantLit  string
+	}{
+		"top level": {
+			doc: map[string]any{"score": json.Number("1e400")}, wantPath: "score", wantLit: "1e400"},
+		"negative": {
+			doc: map[string]any{"score": json.Number("-1e400")}, wantPath: "score", wantLit: "-1e400"},
+		"nested object": {
+			doc:      map[string]any{"o": map[string]any{"deep": json.Number("1e400")}},
+			wantPath: "o.deep", wantLit: "1e400"},
+		"array index": {
+			doc:      map[string]any{"xs": []any{json.Number("1"), json.Number("1e400")}},
+			wantPath: "xs[1]", wantLit: "1e400"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := v.Validate(3, tc.doc)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+			require.Contains(t, msg, `attribute "`+tc.wantPath+`"`)
+			require.Contains(t, msg, `"`+tc.wantLit+`"`)
+			require.NotContains(t, msg, "strconv", "stdlib text is operator detail, never published")
+			require.NotContains(t, msg, "value out of range", "stdlib text is operator detail, never published")
+
+			require.True(t, forma.HasOperatorDetail(err))
+			require.Contains(t, err.Error(), "value out of range", "the log keeps the stdlib text")
+		})
+	}
+}
+
+// TestExactNumberInstanceRootLiteralHasNoAttribute mirrors the marshal walk's
+// root rule: a literal at the document root has no attribute to name, so the
+// published message carries the literal alone.
+func TestExactNumberInstanceRootLiteralHasNoAttribute(t *testing.T) {
+	_, err := exactNumberInstance(json.Number("1e400"))
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok)
+	require.NotContains(t, msg, "attribute")
+	require.Contains(t, msg, `"1e400"`)
+}
+
+// TestValidateRewriteWrapIsDistinctFromDecodeWrap pins the split #402 asked
+// for: the out-of-range carrier must not be bought by blanket-classifying the
+// decode wrap. The rewrite site and the redecode site must carry distinct wrap
+// text so an operator reading a log can tell the internal fault from caller
+// input — pinned from both sides, so the rewrite text cannot silently drift
+// back onto the decode wording either.
+func TestValidateRewriteWrapIsDistinctFromDecodeWrap(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	err = v.Validate(3, map[string]any{"score": json.Number("1e400")})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to rewrite numeric literals for schema 3",
+		"the rewrite wrap is the operator's handle on the caller-input branch")
+	require.NotContains(t, err.Error(), "failed to decode payload",
+		"the redecode wrap is reserved for the genuinely internal branch")
+}
+
+// TestValidateOutOfRangeLiteralSelectionIsDeterministic pins that a payload
+// holding several out-of-range literals always names the same one: map keys
+// are visited in sorted order, so the smallest key's subtree wins, exactly as
+// marshalRefusalPaths and walkField already do. Go randomises map iteration
+// per range, so one run passes by chance; the loop makes a regression fail
+// with overwhelming probability rather than flake.
+func TestValidateOutOfRangeLiteralSelectionIsDeterministic(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object"}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		doc      map[string]any
+		wantPath string
+	}{
+		"sibling literals name the smaller key": {
+			doc:      map[string]any{"z": json.Number("1e400"), "a": json.Number("1e400")},
+			wantPath: "a"},
+		"smaller key's subtree wins over a larger key's literal": {
+			doc: map[string]any{
+				"z": json.Number("1e400"),
+				"m": map[string]any{"deep": json.Number("1e400")},
+				"n": []any{json.Number("1e400")},
+			},
+			wantPath: "m.deep"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 64; i++ {
+				err := v.Validate(3, tc.doc)
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				msg, ok := forma.ResolvePublicMessage(err)
+				require.True(t, ok)
+				require.Contains(t, msg, `attribute "`+tc.wantPath+`"`, "run %d", i)
+			}
+		})
+	}
+}
