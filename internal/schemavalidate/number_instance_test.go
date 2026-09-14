@@ -132,10 +132,12 @@ func TestExactNumberInstanceRootLiteralHasNoAttribute(t *testing.T) {
 	require.Contains(t, msg, `"1e400"`)
 }
 
-// TestValidateRedecodeFailureStaysPlain pins the split #402 asked for: the
-// out-of-range carrier must not be bought by blanket-classifying the decode
-// wrap. The rewrite site and the redecode site must carry distinct wrap text
-// so an operator reading a log can tell the internal fault from caller input.
+// TestValidateRewriteWrapIsDistinctFromDecodeWrap pins the split #402 asked
+// for: the out-of-range carrier must not be bought by blanket-classifying the
+// decode wrap. The rewrite site and the redecode site must carry distinct wrap
+// text so an operator reading a log can tell the internal fault from caller
+// input — pinned from both sides, so the rewrite text cannot silently drift
+// back onto the decode wording either.
 func TestValidateRewriteWrapIsDistinctFromDecodeWrap(t *testing.T) {
 	dir := shippedSchemaDir(t)
 	schema := `{"type":"object","properties":{"score":{"type":"number"}}}`
@@ -144,6 +146,8 @@ func TestValidateRewriteWrapIsDistinctFromDecodeWrap(t *testing.T) {
 
 	err = v.Validate(3, map[string]any{"score": json.Number("1e400")})
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to rewrite numeric literals for schema 3",
+		"the rewrite wrap is the operator's handle on the caller-input branch")
 	require.NotContains(t, err.Error(), "failed to decode payload",
 		"the redecode wrap is reserved for the genuinely internal branch")
 }

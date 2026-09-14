@@ -1008,7 +1008,11 @@ for a `*json.UnsupportedValueError` — prose about a value, and for a cycle the
 only truthful description; a `*json.UnsupportedTypeError` or a
 `*json.MarshalerError` publishes an owned message naming the Go type and keeps
 the library's text — for a `MarshalerError`, the embedder's own error prose —
-behind `forma.WithOperatorDetail`.
+behind `forma.WithOperatorDetail`. Any kind the code does not classify closes
+the same way by default — an owned message naming nothing, library text as
+operator detail — so a kind a future toolchain adds (the `GOEXPERIMENT=jsonv2`
+shim already returns a `*json.SyntaxError` for a malformed `json.RawMessage`)
+cannot widen the body just by existing.
 
 Its published message deliberately includes the third-party `jsonschema-go`
 violation prose (decision recorded at the wrap site, `validator.go`): that text

@@ -79,14 +79,20 @@ func marshalRefusalError(doc any, marshalErr error) error {
 // message naming the Go type — the only fact the caller can act on — and
 // keep the library's text as operator detail.
 //
-// A *json.UnsupportedValueError is the remaining kind: a non-finite in a
-// shape the walk does not cover ([]float64, a struct field), or a cycle,
-// which reaches here because the walk is depth-capped and gives up on one
-// rather than following it (see marshalRefusalPaths). Its text is prose about
-// the value — "encountered a cycle via ..." names the path the cycle was
-// found through — and no single attribute is at fault, so the library's text
-// is the only truthful description and is published unchanged. Anything else
-// (there is nothing else today) takes the same honest fallback.
+// A *json.UnsupportedValueError is the one kind whose text publishes: a
+// non-finite in a shape the walk does not cover ([]float64, a struct field),
+// or a cycle, which reaches here because the walk is depth-capped and gives
+// up on one rather than following it (see marshalRefusalPaths). Its text is
+// prose about the value — "encountered a cycle via ..." names the path the
+// cycle was found through — and no single attribute is at fault, so the
+// library's text is the only truthful description and is published unchanged.
+//
+// Anything else closes by default: an owned message that names nothing, with
+// the library's text as operator detail. The default toolchain produces no
+// fourth kind today, but the GOEXPERIMENT=jsonv2 shim's transformMarshalError
+// already falls through to a *json.SyntaxError (a malformed json.RawMessage),
+// and a kind this build has not reviewed must not widen the body just by
+// existing (#453).
 func unexplainedRefusalError(marshalErr error) error {
 	var marshalerErr *json.MarshalerError
 	if errors.As(marshalErr, &marshalerErr) {
@@ -99,7 +105,12 @@ func unexplainedRefusalError(marshalErr error) error {
 		return forma.WithOperatorDetail(forma.InvalidInputf(
 			"payload cannot be encoded as JSON: Go type %s is not encodable", typeErr.Type), marshalErr)
 	}
-	return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+	var valueErr *json.UnsupportedValueError
+	if errors.As(marshalErr, &valueErr) {
+		return forma.InvalidInputf("payload cannot be encoded as JSON: %v", marshalErr)
+	}
+	return forma.WithOperatorDetail(forma.InvalidInputf(
+		"payload cannot be encoded as JSON; no offending attribute could be identified"), marshalErr)
 }
 
 // moreSuffix renders the " (and N more)" tail shared by both owned messages:

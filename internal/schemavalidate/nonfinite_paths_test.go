@@ -164,6 +164,33 @@ func TestValidateKeepsMarshalerErrorOperatorOnly(t *testing.T) {
 	require.Contains(t, err.Error(), "secret internal detail", "the log keeps the embedder's text")
 }
 
+// TestUnexplainedRefusalClosesByDefault pins the fallback's default posture
+// (#570 review): encoding/json's text publishes only for the one kind whose
+// prose is about the value, *json.UnsupportedValueError. Any kind this build
+// does not classify — none exists under the default toolchain today, but the
+// GOEXPERIMENT=jsonv2 shim already hands back a *json.SyntaxError for a
+// malformed json.RawMessage — takes an owned message and keeps the library's
+// text as operator detail, so a new kind can never widen the body by default.
+func TestUnexplainedRefusalClosesByDefault(t *testing.T) {
+	t.Run("unclassified kind is operator-only", func(t *testing.T) {
+		err := unexplainedRefusalError(errors.New("json: some kind this build never saw"))
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+		require.Equal(t, "payload cannot be encoded as JSON; no offending attribute could be identified", msg)
+		require.True(t, forma.HasOperatorDetail(err))
+		require.Contains(t, err.Error(), "some kind this build never saw", "the log keeps the library text")
+	})
+	t.Run("unsupported value still publishes the library text", func(t *testing.T) {
+		err := unexplainedRefusalError(&json.UnsupportedValueError{Str: "NaN"})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok)
+		require.Equal(t, "payload cannot be encoded as JSON: json: unsupported value: NaN", msg)
+		require.False(t, forma.HasOperatorDetail(err), "nothing is held back: the text is the whole message")
+	})
+}
+
 // TestNonFinitePathsAbortsOnCycle pins PR #403 round-2's P1. json.Marshal
 // refuses a cyclic payload safely, so the walk that runs *after* that refusal
 // used to be the only thing in the process that could not survive one: it
