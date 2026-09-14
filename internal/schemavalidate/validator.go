@@ -282,7 +282,8 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 		// publishes. encoding/json's text names the offending value ("json:
 		// unsupported value: NaN") but not where it sits, so marshalRefusalError
 		// walks the payload to derive the attribute path the library does not
-		// carry, and falls back to that text when the walk explains nothing.
+		// carry; when the walk explains nothing the refusal is classified by
+		// its concrete kind and only value prose is published (#402).
 		// The transform layer independently rejects non-finite floats with the
 		// attribute name (finiteForEAV), which is what keeps report-only mode —
 		// which absorbs this carrier like any violation — from writing an

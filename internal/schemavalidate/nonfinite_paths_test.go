@@ -2,6 +2,7 @@ package schemavalidate
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -114,10 +115,12 @@ func TestValidateNamesNonFiniteAttribute(t *testing.T) {
 	}
 }
 
-// TestValidateFallsBackToLibraryTextWithoutNonFinite pins the other half: a
-// marshal refusal the walk cannot explain must still publish encoding/json's
-// text, which is then the only description of the fault that exists.
-func TestValidateFallsBackToLibraryTextWithoutNonFinite(t *testing.T) {
+// TestValidateOwnsUnsupportedTypeMessage pins the other half: a marshal
+// refusal the walk cannot explain still publishes a carrier — but for a type
+// encoding/json cannot encode at all, the published message is owned (#402):
+// it names the Go type and nothing else, and the library's own text is kept as
+// operator detail so the body does not drift with the toolchain (#453).
+func TestValidateOwnsUnsupportedTypeMessage(t *testing.T) {
 	const schema = `{"type":"object","properties":{"score":{"type":"number"}}}`
 	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
 	require.NoError(t, err)
@@ -126,9 +129,39 @@ func TestValidateFallsBackToLibraryTextWithoutNonFinite(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 	msg, ok := forma.ResolvePublicMessage(err)
 	require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
-	require.Contains(t, msg, "payload cannot be encoded as JSON")
-	require.Contains(t, msg, "unsupported type")
-	require.NotContains(t, msg, "non-finite")
+	require.Equal(t, "payload cannot be encoded as JSON: Go type chan int is not encodable", msg)
+	require.True(t, forma.HasOperatorDetail(err))
+	require.Contains(t, err.Error(), "unsupported type", "the log keeps the library text")
+}
+
+// refusingMarshaler stands in for an embedder type whose MarshalJSON fails
+// with its own prose.
+type refusingMarshaler struct{}
+
+func (refusingMarshaler) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("secret internal detail from the embedder")
+}
+
+// TestValidateKeepsMarshalerErrorOperatorOnly pins the guard #402 added on
+// the fallback's publish width: an embedder's failing MarshalJSON must not
+// have its own error text forwarded into the 4xx body. The published message
+// names the Go type whose method refused; the method's prose stays in
+// Error() for the log.
+func TestValidateKeepsMarshalerErrorOperatorOnly(t *testing.T) {
+	const schema = `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), t.TempDir())
+	require.NoError(t, err)
+
+	err = v.Validate(3, map[string]any{"x": refusingMarshaler{}})
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+	require.Equal(t,
+		"payload cannot be encoded as JSON: the MarshalJSON method of Go type schemavalidate.refusingMarshaler refused the value",
+		msg)
+	require.NotContains(t, msg, "secret internal detail")
+	require.True(t, forma.HasOperatorDetail(err))
+	require.Contains(t, err.Error(), "secret internal detail", "the log keeps the embedder's text")
 }
 
 // TestNonFinitePathsAbortsOnCycle pins PR #403 round-2's P1. json.Marshal
