@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
@@ -93,6 +94,34 @@ func TestCreateSucceedsWithRequiredAlwaysBeneathRelationRoot(t *testing.T) {
 	require.Len(t, h.spy.seen, 1)
 	require.NotContains(t, h.spy.seen[0].keys, "contactSnapshot.email",
 		"the relation subtree still never reaches storage")
+}
+
+// TestUpdateSucceedsWithRequiredAlwaysBeneathRelationRoot is the update half:
+// Update merges the stored document with the caller's changes and runs the
+// merged document through the same ToAttributes, so the carve-out has to hold
+// there too — the seeded row never held contactSnapshot.email either, since
+// the strip removed it on create.
+func TestUpdateSucceedsWithRequiredAlwaysBeneathRelationRoot(t *testing.T) {
+	h := newPatchedShippedSchemaHarness(t, func(ledger map[string]map[string]any) {
+		ledger["contactSnapshot.email"]["required_policy"] = string(forma.RequiredPolicyAlways)
+	})
+
+	seed := validVisit()
+	rowID := uuid.MustParse(seed["id"].(string))
+	h.repo.storeRecord(buildPersistentRecord(t, h.transformer, h.visitSchemaID, rowID, seed))
+
+	_, err := h.manager.Update(context.Background(), &forma.EntityOperation{
+		Type:             forma.OperationUpdate,
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit", RowID: rowID},
+		Updates:          map[string]any{"feedback": "ok", "contactSnapshot.email": "ada@example.com"},
+	})
+	require.NoError(t, err,
+		"a required_always beneath a relation root must not reject the merged update document (#389)")
+
+	require.Len(t, h.spy.seen, 1)
+	require.NotContains(t, h.spy.seen[0].keys, "contactSnapshot.email")
+	require.NotContains(t, h.spy.seen[0].keys, "contactSnapshot")
+	require.Contains(t, h.spy.seen[0].keys, "feedback", "the rest of the update still lands")
 }
 
 // TestCreateStillRejectsMissingRequiredAlwaysOutsideRelationRoot is the control

@@ -16,7 +16,7 @@ package transform
 // What consults this set is the required-policy checks, which skip policies
 // beneath a relation root: the one in AttributeConverter.FromEAVRecords (#315)
 // and the write path's input-side one, validateRequiredAttributesFromInput
-// (transformer.go, #389). The first is not read-only — ToAttributes runs
+// (input_required.go, #389). The first is not read-only — ToAttributes runs
 // FromEAVRecords on every create and update, and FromPersistentRecord runs it
 // on read — so a transformer that only ever serves writes still needs the set
 // installed.

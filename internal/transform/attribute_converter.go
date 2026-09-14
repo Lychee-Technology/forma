@@ -139,8 +139,26 @@ func (c *AttributeConverter) ToEAVRecords(attributes []model.EntityAttribute, ro
 	return records, nil
 }
 
-// FromEAVRecords converts a slice of EAVRecords to EntityAttributes
+// FromEAVRecords converts a slice of EAVRecords to EntityAttributes.
+//
+// It resolves the relation roots for the required-policy check itself, which
+// suits the read path (FromPersistentRecord), where this is the only
+// resolution on the call. The write path's ToAttributes has already resolved
+// them for its own input-side check and hands that snapshot to
+// fromEAVRecords directly, so one write consults the registry once (#389).
 func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.EntityAttribute, error) {
+	if len(records) == 0 {
+		return []model.EntityAttribute{}, nil
+	}
+	relationRoots, err := c.relationRootsFor(records[0].SchemaID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve relation roots for required-policy check: %w", err)
+	}
+	return c.fromEAVRecords(records, relationRoots)
+}
+
+// fromEAVRecords is FromEAVRecords with the relation roots already resolved.
+func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationRoots RelationRoots) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
@@ -198,7 +216,7 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 		logSkippedAttrIDs(schemaID, records[0].RowID, ids)
 	}
 
-	if err := c.checkRequiredAttributes(schemaID, cache, presentAttrIndices); err != nil {
+	if err := c.checkRequiredAttributes(cache, presentAttrIndices, relationRoots); err != nil {
 		return nil, fmt.Errorf("required-policy check for schema %d: %w", schemaID, err)
 	}
 

@@ -901,7 +901,7 @@ only it.
 | site | caller mistake |
 | --- | --- |
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
-| `internal/transform/transformer.go` (`validateRequiredAttributesFromInput`) | create/update body omitting an attribute whose metadata `required_policy` demands it |
+| `internal/transform/input_required.go` (`validateRequiredAttributesFromInput`) | create/update body omitting an attribute whose metadata `required_policy` demands it |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
