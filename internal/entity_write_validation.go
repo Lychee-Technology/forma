@@ -80,16 +80,16 @@ type writeValidation struct {
 //
 // Anything without the sentinel is returned regardless of enforce. Validate
 // decides that by wrapping forma.ErrInvalidInput for the caller input it
-// recognises — a genuine violation, or a payload json.Marshal refuses (NaN/Inf,
-// #322) — and returning a plain error otherwise: a missing resolved schema, or
-// a numeric literal that fits neither int64 nor float64. That last one is
-// caller input too and still answers a 500 for want of the sentinel: a known
-// gap, tracked in #402, not a claim that it belongs on this side. Those must
-// not be absorbed by report-only mode: the document would be written with
-// *zero* validation while a log line claimed it had been checked and merely
-// failed (docs/error-handling.md). The absorbed marshal case cannot write a
-// non-finite row: transform's finiteForEAV independently rejects NaN/Inf with
-// the attribute name before anything is staged for storage.
+// recognises — a genuine violation, a payload json.Marshal refuses (NaN/Inf,
+// #322), or a numeric literal outside float64 range (1e400, #402) — and
+// returning a plain error otherwise: a missing resolved schema, or a failure
+// to decode the marshaller's own output. Those must not be absorbed by
+// report-only mode: the document would be written with *zero* validation
+// while a log line claimed it had been checked and merely failed
+// (docs/error-handling.md). Neither absorbed carrier can write an unreadable
+// row: transform's finiteForEAV independently rejects NaN/Inf, and
+// json.Number.Float64 fails on an out-of-range literal, both with the
+// attribute name and before anything is staged for storage.
 //
 // A nil validator means validation is unconfigured and both steps are skipped.
 // Validate on a nil validator returns an error rather than doing nothing, so

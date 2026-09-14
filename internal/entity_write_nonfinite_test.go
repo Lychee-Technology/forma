@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"testing"
@@ -138,4 +139,45 @@ func TestReportOnlyUpdateRejectsNonFiniteBool(t *testing.T) {
 		FromPersistentRecord(context.Background(), repo.records[100][created.RowID])
 	require.NoError(t, err)
 	require.Equal(t, true, stored["active"], "the stored bool must be untouched")
+}
+
+// TestCreateClassifiesOutOfRangeLiteralAsInvalidInput is issue #402's
+// headline at the seam that matters: a json.Number carrying 1e400 — the shape
+// an HTTP body produces, since httpapi decodes with UseNumber — gets invalid
+// input (4xx) from a strict write, not the redacted 500 it answered before.
+func TestCreateClassifiesOutOfRangeLiteralAsInvalidInput(t *testing.T) {
+	manager, _ := newNumericValidatingManager(t, true)
+
+	_, err := manager.Create(context.Background(),
+		createOp(map[string]any{"name": "x", "score": json.Number("1e400")}))
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+	require.Contains(t, msg, `attribute "score"`)
+	require.Contains(t, msg, `"1e400"`)
+}
+
+// TestReportOnlyUpdateStillRejectsOutOfRangeLiteral pins what makes #402's
+// reclassification safe, exactly as TestReportOnlyUpdateStillRejectsNonFinite
+// does for #322: report-only mode now absorbs the out-of-range carrier like
+// any violation, so transform's own conversion is what stands between the
+// absorbed literal and a stored row. json.Number.Float64 fails on 1e400, so
+// the numeric attribute rejects it and the stored value survives.
+func TestReportOnlyUpdateStillRejectsOutOfRangeLiteral(t *testing.T) {
+	manager, repo := newNumericValidatingManager(t, false)
+	created, err := manager.Create(context.Background(),
+		createOp(map[string]any{"name": "x", "score": 1.5}))
+	require.NoError(t, err)
+
+	_, err = manager.Update(context.Background(),
+		updateOp(created.RowID, map[string]any{"score": json.Number("1e400")}))
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Contains(t, err.Error(), "score", "the transform rejection names the attribute")
+
+	stored, err := transform.NewPersistentRecordTransformer(numericValidationRegistry{}).
+		FromPersistentRecord(context.Background(), repo.records[100][created.RowID])
+	require.NoError(t, err)
+	require.EqualValues(t, 1.5, stored["score"], "the finite value must have survived the rejected update")
 }

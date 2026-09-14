@@ -72,3 +72,78 @@ func TestValidateNestedNumbersAbove2p53(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
+
+// TestValidateClassifiesOutOfRangeLiteralAsInvalidInput is issue #402's
+// headline: a literal that fits neither int64 nor float64 — {"score": 1e400},
+// which reaches Validate intact because httpapi decodes with UseNumber and
+// json.Marshal re-emits a json.Number verbatim — is the caller's own value
+// and must carry the sentinel rather than answer a redacted 500. The
+// published message names the attribute path and the literal, and the stdlib
+// range text stays operator-only (#453's toolchain-drift ruling).
+func TestValidateClassifiesOutOfRangeLiteralAsInvalidInput(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object","properties":{"score":{"type":"number"},"o":{"type":"object"},"xs":{"type":"array"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		doc      map[string]any
+		wantPath string
+		wantLit  string
+	}{
+		"top level": {
+			doc: map[string]any{"score": json.Number("1e400")}, wantPath: "score", wantLit: "1e400"},
+		"negative": {
+			doc: map[string]any{"score": json.Number("-1e400")}, wantPath: "score", wantLit: "-1e400"},
+		"nested object": {
+			doc:      map[string]any{"o": map[string]any{"deep": json.Number("1e400")}},
+			wantPath: "o.deep", wantLit: "1e400"},
+		"array index": {
+			doc:      map[string]any{"xs": []any{json.Number("1"), json.Number("1e400")}},
+			wantPath: "xs[1]", wantLit: "1e400"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := v.Validate(3, tc.doc)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok, "the carrier must publish, not earn a redacted body (#313)")
+			require.Contains(t, msg, `attribute "`+tc.wantPath+`"`)
+			require.Contains(t, msg, `"`+tc.wantLit+`"`)
+			require.NotContains(t, msg, "strconv", "stdlib text is operator detail, never published")
+			require.NotContains(t, msg, "value out of range", "stdlib text is operator detail, never published")
+
+			require.True(t, forma.HasOperatorDetail(err))
+			require.Contains(t, err.Error(), "value out of range", "the log keeps the stdlib text")
+		})
+	}
+}
+
+// TestExactNumberInstanceRootLiteralHasNoAttribute mirrors the marshal walk's
+// root rule: a literal at the document root has no attribute to name, so the
+// published message carries the literal alone.
+func TestExactNumberInstanceRootLiteralHasNoAttribute(t *testing.T) {
+	_, err := exactNumberInstance(json.Number("1e400"))
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok)
+	require.NotContains(t, msg, "attribute")
+	require.Contains(t, msg, `"1e400"`)
+}
+
+// TestValidateRedecodeFailureStaysPlain pins the split #402 asked for: the
+// out-of-range carrier must not be bought by blanket-classifying the decode
+// wrap. The rewrite site and the redecode site must carry distinct wrap text
+// so an operator reading a log can tell the internal fault from caller input.
+func TestValidateRewriteWrapIsDistinctFromDecodeWrap(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object","properties":{"score":{"type":"number"}}}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	err = v.Validate(3, map[string]any{"score": json.Number("1e400")})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "failed to decode payload",
+		"the redecode wrap is reserved for the genuinely internal branch")
+}

@@ -250,11 +250,11 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 // to decode the marshaller's own output: marshalling already succeeded, so
 // that is an internal fault, not something the caller handed in.
 //
-// exactNumberInstance is the one honest gap. A literal that fits neither int64
-// nor float64 — {"score": 1e400}, which arrives intact because httpapi decodes
-// with UseNumber and json.Marshal re-emits a json.Number verbatim — is caller
-// input, yet it answers a plain error here and so a 500. That is a known
-// misclassification, tracked in #402, not a decision this comment is defending.
+// A literal that fits neither int64 nor float64 — {"score": 1e400}, which
+// arrives intact because httpapi decodes with UseNumber and json.Marshal
+// re-emits a json.Number verbatim — is caller input too, and since #402
+// exactNumberInstance says so with its own carrier. Only the redecode of the
+// marshaller's output stays plain.
 //
 // doc is marshalled before validating. Native Go values do not carry their JSON
 // types: time.Time presents as an object and fails a "type":"string" property
@@ -297,7 +297,12 @@ func (v *Validator) Validate(schemaID int16, doc any) error {
 	}
 	instance, err = exactNumberInstance(instance)
 	if err != nil {
-		return fmt.Errorf("failed to decode payload for schema %d: %w", schemaID, err)
+		// A literal outside float64 range — caller input, so the carrier
+		// inside publishes (#402). The wrap is plain on purpose: it adds
+		// operator context, not caller-actionable identification, so its
+		// prefix stays out of the body. Its text is distinct from the decode
+		// wrap above so a log line tells the two apart.
+		return fmt.Errorf("failed to rewrite numeric literals for schema %d: %w", schemaID, err)
 	}
 
 	if err := resolved.Validate(instance); err != nil {
