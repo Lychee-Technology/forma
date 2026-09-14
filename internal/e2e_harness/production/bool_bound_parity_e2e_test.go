@@ -74,30 +74,48 @@ func plantOffContract(ctx context.Context, t *testing.T, env *Env, schema Schema
 		schema.ID, rows.textTrue.RowID)
 }
 
+// boolSpellingProbes expands one attribute's truthy/falsy row sets over the
+// operand spellings every route must read under the one parseBoolOperand
+// rule (#503): the ParseBool words and the integer spellings, where any
+// positive integer is truthy. Before #564 `equals:true` was a 400 on the
+// PreferHot route alone (strconv.Atoi), so the spellings are pinned side by
+// side rather than through `true`/`false` only.
+func boolSpellingProbes(attr string, truthy, falsy []*Event) []widthProbe {
+	return []widthProbe{
+		{attr + "_true", Filter{Attr: attr, Op: "equals", Value: "true"}, truthy},
+		{attr + "_2", Filter{Attr: attr, Op: "equals", Value: "2"}, truthy},
+		{attr + "_false", Filter{Attr: attr, Op: "equals", Value: "false"}, falsy},
+		{attr + "_0", Filter{Attr: attr, Op: "equals", Value: "0"}, falsy},
+	}
+}
+
+// boolRejectionProbes: a spelling outside the shared rule is invalid input
+// on every route, never an answer on one and a 400 on the other.
+func boolRejectionProbes() []rejectionProbe {
+	return []rejectionProbe{
+		{"flagInt_banana", Filter{Attr: "flagInt", Op: "equals", Value: "banana"}},
+		{"flagText_banana", Filter{Attr: "flagText", Op: "equals", Value: "banana"}},
+	}
+}
+
 // onContractProbes is the truth table while every image is still 1/0 and
 // "1"/"0": the same on every route, pushdown or not. The unset row matches
 // neither side of either attribute.
 func onContractProbes(rows boundBoolRows) []widthProbe {
-	return []widthProbe{
-		{"flagInt_true", Filter{Attr: "flagInt", Op: "equals", Value: "true"}, []*Event{rows.trueRow}},
-		{"flagInt_false", Filter{Attr: "flagInt", Op: "equals", Value: "false"},
-			[]*Event{rows.falseRow, rows.negOne, rows.two}},
-		{"flagText_true", Filter{Attr: "flagText", Op: "equals", Value: "true"}, []*Event{rows.trueRow}},
-		{"flagText_false", Filter{Attr: "flagText", Op: "equals", Value: "false"},
-			[]*Event{rows.falseRow, rows.textTrue}},
-	}
+	return append(
+		boolSpellingProbes("flagInt", []*Event{rows.trueRow}, []*Event{rows.falseRow, rows.negOne, rows.two}),
+		boolSpellingProbes("flagText", []*Event{rows.trueRow}, []*Event{rows.falseRow, rows.textTrue})...,
+	)
 }
 
 // parquetProbes is the truth table once the planted images have been
 // flushed: the parquet legs carry the exported verdict, so `> 0.5` places 2
 // with true and -1 with false, and `= '1'` places 'true' with false.
 func parquetProbes(rows boundBoolRows) []widthProbe {
-	return []widthProbe{
-		{"flagInt_true", Filter{Attr: "flagInt", Op: "equals", Value: "true"}, []*Event{rows.trueRow, rows.two}},
-		{"flagInt_false", Filter{Attr: "flagInt", Op: "equals", Value: "false"}, []*Event{rows.falseRow, rows.negOne}},
-		{"flagText_true", Filter{Attr: "flagText", Op: "equals", Value: "true"}, []*Event{rows.trueRow}},
-		{"flagText_false", Filter{Attr: "flagText", Op: "equals", Value: "false"}, []*Event{rows.falseRow, rows.textTrue}},
-	}
+	return append(
+		boolSpellingProbes("flagInt", []*Event{rows.trueRow, rows.two}, []*Event{rows.falseRow, rows.negOne}),
+		boolSpellingProbes("flagText", []*Event{rows.trueRow}, []*Event{rows.falseRow, rows.textTrue})...,
+	)
 }
 
 // boundBoolImage is what one record carries in the two bound columns.
@@ -186,6 +204,8 @@ func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	// (no-EAV projection, bool pushdown into the Postgres scan) agree.
 	runWidthProbes(ctx, t, env, "hot-pg", hotPG, false, onContractProbes(rows))
 	runWidthProbes(ctx, t, env, "hot-duck", duck, true, onContractProbes(rows))
+	runRejectionProbes(ctx, t, env, "hot-pg", hotPG, boolRejectionProbes())
+	runRejectionProbes(ctx, t, env, "hot-duck", duck, boolRejectionProbes())
 
 	// Off-contract images reach the hot leg through mainColBoolExpr.
 	plantOffContract(ctx, t, env, simple, rows)
@@ -195,11 +215,13 @@ func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 		t.Fatalf("flush: %v", err)
 	}
 	runWidthProbes(ctx, t, env, "warm-duck", duck, true, parquetProbes(rows))
+	runRejectionProbes(ctx, t, env, "warm-duck", duck, boolRejectionProbes())
 	assertBoundBoolImages(ctx, t, env, "warm-duck", simple, rows)
 
 	if _, err := env.RunCompaction(ctx, simple); err != nil {
 		t.Fatalf("compaction: %v", err)
 	}
 	runWidthProbes(ctx, t, env, "cold-duck", duck, true, parquetProbes(rows))
+	runRejectionProbes(ctx, t, env, "cold-duck", duck, boolRejectionProbes())
 	assertBoundBoolImages(ctx, t, env, "cold-duck", simple, rows)
 }

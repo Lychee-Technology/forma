@@ -66,6 +66,67 @@ func TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
 
+// TestToDualClauses_BoundBoolOperandSpellingParity is the #503 acceptance
+// at the emitter level: one operand spelling on a column-bound bool must
+// reach the same verdict on every route the dual-path generator serves —
+// the pg-main pushdown bind (int64 1/0 or "1"/"0" per encoding), the PG-EAV
+// truthy bind and the DuckDB CAST(? AS BOOLEAN) bind — or be rejected as
+// invalid input on all of them. Before #564 the pg-main bind ran
+// strconv.Atoi alone, so `equals:true` was a 400 on the PreferHot route and
+// a match through DuckDB; the converter-level pin above cannot see that
+// split, this one can.
+func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
+	cache := characterizationCache()
+	type encoding struct {
+		attr   string
+		column string
+		bind   func(truthy bool) any
+	}
+	encodings := []encoding{
+		{"active", "m.bool_01", func(v bool) any {
+			if v {
+				return int64(1)
+			}
+			return int64(0)
+		}},
+		{"verified", "m.text_02", func(v bool) any {
+			if v {
+				return "1"
+			}
+			return "0"
+		}},
+	}
+	spellings := []struct {
+		operand string
+		truthy  bool
+	}{
+		{"true", true},
+		{"2", true},
+		{"0", false},
+	}
+	for _, enc := range encodings {
+		attrID := int16(cache[enc.attr].AttributeID)
+		for _, sp := range spellings {
+			t.Run(enc.attr+"/equals:"+sp.operand, func(t *testing.T) {
+				paramIndex := 0
+				dc, err := ToDualClauses(charKv(enc.attr, "equals:"+sp.operand), "eav_table", 7, cache, &paramIndex)
+				require.NoError(t, err)
+				require.Equal(t, DualClauses{
+					PgMainClause: enc.column + " = ?", PgMainArgs: []any{enc.bind(sp.truthy)},
+					PgClause: charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)", PgArgs: []any{attrID, sp.truthy},
+					DuckClause: enc.attr + " = CAST(? AS BOOLEAN)", DuckArgs: []any{sp.truthy},
+				}, dc)
+			})
+		}
+		t.Run(enc.attr+"/equals:banana rejected on every route", func(t *testing.T) {
+			paramIndex := 0
+			_, err := ToDualClauses(charKv(enc.attr, "equals:banana"), "eav_table", 7, cache, &paramIndex)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			require.Contains(t, err.Error(), "invalid boolean value for '"+enc.attr+"': banana")
+		})
+	}
+}
+
 // TestBuildPGSelectNoEAV_BoolColumnsUseMainColBoolExpr: the no-EAV hot
 // projection (live for any production schema whose attributes are all
 // column-bound) must derive a bound bool through the same mainColBoolExpr the
