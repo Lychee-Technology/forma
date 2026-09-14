@@ -413,11 +413,11 @@ checked is what is stored. The values are derived on read from the parent
 entity, which replaces the whole subtree, so a caller-written value there is
 unreadable wherever that enrichment applies.
 
-Dropping is silent — unless an attribute policy beneath the root demands the
-value; see below. Short of that, neither spelling produces a `4xx`: the nested
-spelling has always been dropped without a rejection, and #318 brought the
-dotted spelling into line rather than adding a new rejection to payloads that
-were accepted before.
+Dropping is silent: neither spelling produces a `4xx`. The nested spelling
+has always been dropped without a rejection, and #318 brought the dotted
+spelling into line rather than adding a new rejection to payloads that were
+accepted before. An attribute policy beneath the root does not change that —
+see "inert, not refused" below.
 
 Because the subtree never reaches the validator, constraints declared under an
 `x-relation` `$ref` are **decorative on the child**. They still apply on the
@@ -531,28 +531,21 @@ Two costs come with that, and both are deliberate:
   carries an `error_id` matching its `Warnw` line. Today `visit` is the only
   shipped schema with a relation root, so that is the only entity affected.
 
-**A `required_always` attribute policy beneath a relation root breaks the entity
-the same way, and this one is *not* caught at startup.** The attribute-metadata
-required check that runs on write — `validateRequiredAttributesFromInput`,
-called from `transform`'s `ToAttributes` after the strip and after JSON Schema
-validation — walks the whole attribute cache with no relation carve-out, so it
-looks for the value the strip has just removed and answers
-`400 missing required attribute '<name>'` on every create and update, again
-unfixably by sending the field. The startup check cannot see this one:
-it reads the JSON Schema document and never the `<name>_attributes.json` ledger,
-which is where the `required_always` policy lives.
-
-Note the asymmetry with the *other* required check on the same write.
-`ToAttributes` also runs `AttributeConverter.FromEAVRecords` over the flattened
-records, and that check *does* carve relation roots out (#315). The carve-out
-belongs to that check, not to the read path: `FromEAVRecords` runs on both
-paths — `ToAttributes` on every create and update, `FromPersistentRecord` on
-read. This is pre-existing behaviour, not something #318 introduced.
-
-The shipped schemas are safe. The only policy beneath `contactSnapshot` is
-`contactSnapshot.isAnonymous`, and it is `required_if_parent_present` — with the
-parent stripped away it reports nothing missing. `required_always` is the shape
-to keep out from under a relation root.
+**A `required_policy` beneath a relation root is inert, not refused.** The
+startup check reads the JSON Schema document and never the
+`<name>_attributes.json` ledger, so it cannot see a `required_always` declared
+there — and the strip would make any such policy unsatisfiable on every write.
+Both required checks `ToAttributes` runs on a create or update therefore skip
+names strictly beneath a relation root (`transform.RelationRoots.Covers`):
+`validateRequiredAttributesFromInput`, against the caller's input before
+flattening (#389), and `AttributeConverter.checkRequiredAttributes`, against
+the flattened records (#315). The root's own policy stays enforced. The
+carve-out lives in the checks rather than on the read path because
+`FromEAVRecords` runs on both — `ToAttributes` on every write,
+`FromPersistentRecord` on read. Pinned by
+`TestCreateSucceedsWithRequiredAlwaysBeneathRelationRoot`, over a copy of the
+shipped ledger; the shipped ledgers themselves declare only
+`contactSnapshot.isAnonymous = required_if_parent_present` beneath a root.
 
 Only `visit.json`'s `contactSnapshot` carries `x-relation` today.
 

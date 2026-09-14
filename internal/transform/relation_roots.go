@@ -13,13 +13,13 @@ package transform
 // the whole relation subtree before validation, because it is derived on read and
 // never persisted.
 //
-// What consults this set is one check: the required-policy check in
-// AttributeConverter.FromEAVRecords, which skips policies beneath a relation root
-// (#315). That check is not read-only — ToAttributes runs FromEAVRecords on every
-// create and update (transformer.go), and FromPersistentRecord runs it on read —
-// so a transformer that only ever serves writes still needs the set installed.
-// The write path's other required check, validateRequiredAttributesFromInput
-// (transformer.go), has no such carve-out and never consults this set.
+// What consults this set is the required-policy checks, which skip policies
+// beneath a relation root: the one in AttributeConverter.FromEAVRecords (#315)
+// and the write path's input-side one, validateRequiredAttributesFromInput
+// (transformer.go, #389). The first is not read-only — ToAttributes runs
+// FromEAVRecords on every create and update, and FromPersistentRecord runs it
+// on read — so a transformer that only ever serves writes still needs the set
+// installed.
 type RelationRoots map[string]struct{}
 
 // Covers reports whether name lies strictly beneath a relation root.
@@ -31,7 +31,8 @@ type RelationRoots map[string]struct{}
 //
 // A name that *is* a relation root is not covered: this reports names strictly
 // beneath one, so the root's own required policy stays enforced — pinned by
-// TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself. The write path's
+// TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself and its input-side
+// twin TestToAttributesEnforcesRequiredAlwaysOnRelationRootItself. The write path's
 // strip predicate (RelationIndex.coversRelationSubtree) deliberately differs
 // there and matches the bare root as well, because the root is the nested
 // spelling the strip removes.

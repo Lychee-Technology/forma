@@ -76,7 +76,13 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 	}
 
 	// Validate required attributes with parent-aware semantics before flattening.
-	if err := validateRequiredAttributesFromInput(data, cache); err != nil {
+	// The relation roots come from the converter, which already holds the lookup
+	// for its own required check; both checks carve the same names out (#389).
+	relationRoots, err := t.converter.relationRootsFor(schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve relation roots for required-attribute check: %w", err)
+	}
+	if err := validateRequiredAttributesFromInput(data, cache, relationRoots); err != nil {
 		return nil, err
 	}
 
@@ -371,13 +377,25 @@ func (t *transformer) flattenToAttributes(
 	return nil
 }
 
-func validateRequiredAttributesFromInput(data map[string]any, cache forma.SchemaAttributeCache) error {
+// validateRequiredAttributesFromInput enforces each attribute's required policy
+// against the caller's input, before flattening.
+//
+// Names strictly beneath a relation root are skipped, on the same boundary as
+// AttributeConverter.checkRequiredAttributes (#315): the relation subtree is
+// removed from every payload before validation (#318), so a policy there could
+// only ever fail, and unfixably — sending the value gives the strip more to
+// remove (#389). The root's own policy stays enforced; a nil or empty
+// relationRoots leaves enforcement exactly as it was.
+func validateRequiredAttributesFromInput(data map[string]any, cache forma.SchemaAttributeCache, relationRoots RelationRoots) error {
 	if len(cache) == 0 {
 		return nil
 	}
 
 	requiredNames := make([]string, 0, len(cache))
 	for attrName, meta := range cache {
+		if relationRoots.Covers(attrName) {
+			continue
+		}
 		switch meta.EffectiveRequiredPolicy() {
 		case forma.RequiredPolicyAlways, forma.RequiredPolicyIfParentPresent:
 			requiredNames = append(requiredNames, attrName)

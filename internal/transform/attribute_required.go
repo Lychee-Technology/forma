@@ -46,8 +46,8 @@ func (c *AttributeConverter) checkRequiredAttributes(
 		// The carve-out belongs to this check, not to the read path: ToAttributes
 		// reaches FromEAVRecords on every create and update (transformer.go). The
 		// write path's own required check (validateRequiredAttributesFromInput,
-		// transformer.go) has none, so a required_always beneath a root still
-		// rejects the stripped payload there. Documented in docs/error-handling.md.
+		// transformer.go) carves out the same names, on the same boundary
+		// (#389), so the two checks on one write cannot disagree.
 		if relationRoots.Covers(attrName) {
 			continue
 		}

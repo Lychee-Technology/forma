@@ -121,11 +121,11 @@ func (em *entityManager) Close() error {
 //   - StripComputedFields is an identity function on a nil receiver, so the
 //     relation subtree becomes caller-writable and persistable again — the exact
 //     state #318 exists to remove — and nothing says so at any point afterwards;
-//   - RelationRoots answers nil on the same receiver, and the required-policy
-//     check reads an empty set as "this attribute is not beneath a relation
-//     root" (transform.RelationRoots.Covers, attribute_converter.go), so #315's
-//     carve-out stops applying and payloads #314 ruled acceptable begin failing
-//     with missing-required errors.
+//   - RelationRoots answers nil on the same receiver, and both required-policy
+//     checks read an empty set as "this attribute is not beneath a relation
+//     root" (transform.RelationRoots.Covers, consulted by attribute_required.go
+//     and transformer.go), so the #315/#389 carve-out stops applying and
+//     payloads #314 ruled acceptable begin failing with missing-required errors.
 //
 // Neither is visible to the caller on the returned manager, and both last for
 // the process lifetime. So a registry fault that used to become a warning now
