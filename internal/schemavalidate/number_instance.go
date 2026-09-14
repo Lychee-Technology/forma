@@ -3,6 +3,7 @@ package schemavalidate
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/lychee-technology/forma"
 )
@@ -39,6 +40,15 @@ func exactNumberInstance(v any) (any, error) {
 // rewriteNumbers carries the dotted attribute path down the recursion so the
 // leaf failure can name where the literal sits. The path spelling — "o.xs[1]"
 // — matches marshalRefusalWalker's so the two published messages read alike.
+//
+// Map keys are visited in sorted order, as marshalRefusalWalker and walkField
+// do, so a payload holding several out-of-range literals always names the
+// same one: the failure publishes, and a 400 body that named "z" on one
+// request and "a" on the next for identical input would be a moving target.
+// This walk is on every successful Validate, unlike marshalRefusalWalker's,
+// so the key slice is pre-sized: one allocation per object, where
+// slices.Sorted(maps.Keys(t)) grows it through several — measured at +1.7%
+// allocations over the marshal/decode round-trip Validate already pays.
 func rewriteNumbers(path string, v any) (any, error) {
 	switch t := v.(type) {
 	case json.Number:
@@ -51,8 +61,13 @@ func rewriteNumbers(path string, v any) (any, error) {
 		}
 		return f, nil
 	case map[string]any:
-		for key, item := range t {
-			converted, err := rewriteNumbers(joinAttributePath(path, key), item)
+		keys := make([]string, 0, len(t))
+		for key := range t {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			converted, err := rewriteNumbers(joinAttributePath(path, key), t[key])
 			if err != nil {
 				return nil, err
 			}

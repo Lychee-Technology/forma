@@ -151,3 +151,42 @@ func TestValidateRewriteWrapIsDistinctFromDecodeWrap(t *testing.T) {
 	require.NotContains(t, err.Error(), "failed to decode payload",
 		"the redecode wrap is reserved for the genuinely internal branch")
 }
+
+// TestValidateOutOfRangeLiteralSelectionIsDeterministic pins that a payload
+// holding several out-of-range literals always names the same one: map keys
+// are visited in sorted order, so the smallest key's subtree wins, exactly as
+// marshalRefusalPaths and walkField already do. Go randomises map iteration
+// per range, so one run passes by chance; the loop makes a regression fail
+// with overwhelming probability rather than flake.
+func TestValidateOutOfRangeLiteralSelectionIsDeterministic(t *testing.T) {
+	dir := shippedSchemaDir(t)
+	schema := `{"type":"object"}`
+	v, err := New(registryWith(t, "ev", schema, 3), dir)
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		doc      map[string]any
+		wantPath string
+	}{
+		"sibling literals name the smaller key": {
+			doc:      map[string]any{"z": json.Number("1e400"), "a": json.Number("1e400")},
+			wantPath: "a"},
+		"smaller key's subtree wins over a larger key's literal": {
+			doc: map[string]any{
+				"z": json.Number("1e400"),
+				"m": map[string]any{"deep": json.Number("1e400")},
+				"n": []any{json.Number("1e400")},
+			},
+			wantPath: "m.deep"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 64; i++ {
+				err := v.Validate(3, tc.doc)
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				msg, ok := forma.ResolvePublicMessage(err)
+				require.True(t, ok)
+				require.Contains(t, msg, `attribute "`+tc.wantPath+`"`, "run %d", i)
+			}
+		})
+	}
+}
