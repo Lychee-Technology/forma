@@ -24,16 +24,17 @@ func (c *AttributeConverter) relationRootsFor(schemaID int16) (RelationRoots, er
 
 // checkRequiredAttributes enforces each attribute's required policy against the
 // attribute names the records actually carried, per array-index context.
+//
+// relationRoots is taken resolved rather than looked up here so that the two
+// required checks on one write — this one and validateRequiredAttributesFromInput
+// (input_required.go) — read the same snapshot: forma.SchemaRegistry promises
+// nothing about repeated reads (SnapshotSchemaDocuments, package internal), so
+// a second lookup could answer differently, or fail, after the first passed.
 func (c *AttributeConverter) checkRequiredAttributes(
-	schemaID int16,
 	cache forma.SchemaAttributeCache,
 	presentAttrIndices map[string]map[string]struct{},
+	relationRoots RelationRoots,
 ) error {
-	relationRoots, err := c.relationRootsFor(schemaID)
-	if err != nil {
-		return fmt.Errorf("resolve relation roots for required-policy check: %w", err)
-	}
-
 	missingRequired := make(map[int16]string)
 	for attrName, metadata := range cache {
 		// #314/#315: relation-root data is derived on read and never
@@ -44,10 +45,11 @@ func (c *AttributeConverter) checkRequiredAttributes(
 		// ruled acceptable into 400s.
 		//
 		// The carve-out belongs to this check, not to the read path: ToAttributes
-		// reaches FromEAVRecords on every create and update (transformer.go). The
+		// reaches fromEAVRecords on every create and update (transformer.go). The
 		// write path's own required check (validateRequiredAttributesFromInput,
-		// transformer.go) has none, so a required_always beneath a root still
-		// rejects the stripped payload there. Documented in docs/error-handling.md.
+		// input_required.go) carves out the same names, on the same boundary
+		// and from the same resolved set (#389), so the two checks on one write
+		// cannot disagree.
 		if relationRoots.Covers(attrName) {
 			continue
 		}
@@ -89,7 +91,7 @@ func (c *AttributeConverter) checkRequiredAttributes(
 	//
 	// The write path's 400 does not depend on this wrap. It has its own
 	// write-only validator, validateRequiredAttributesFromInput
-	// (transformer.go), which ToAttributes runs against the caller's input
+	// (input_required.go), which ToAttributes runs against the caller's input
 	// before flattening and which does carry the sentinel.
 	return fmt.Errorf("missing required attribute '%s' (attrID=%d) in EAV records",
 		missingAttrName, idsByName[missingAttrName])
