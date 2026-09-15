@@ -91,6 +91,14 @@ type writeValidation struct {
 // json.Number.Float64 fails on an out-of-range literal, both with the
 // attribute name and before anything is staged for storage.
 //
+// One ErrInvalidInput carrier is returned regardless of enforce as well:
+// normalization's own depth cap (transform/payload_depth.go, #406), which
+// fires before Validate runs on a cyclic or absurdly deep payload. Report-only
+// mode exists to let a schema violation in stored data be repaired later, and a
+// cyclic document is not that — it can never be written, because the
+// flattener rejects it with the same cap, so absorbing it would only trade a
+// clear rejection for the same rejection one step later.
+//
 // A nil validator means validation is unconfigured and both steps are skipped.
 // Validate on a nil validator returns an error rather than doing nothing, so
 // calling through would fail every write for the embedders and tests that
@@ -103,8 +111,11 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 		return nil
 	}
 
-	normalized := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID))
-	err := v.validator.Validate(v.schemaID, normalized)
+	normalized, err := transform.NormalizeDottedKeys(v.data, v.cache, v.validator.ArrayPaths(v.schemaID))
+	if err != nil {
+		return fmt.Errorf("failed to normalize payload for schema %d: %w", v.schemaID, err)
+	}
+	err = v.validator.Validate(v.schemaID, normalized)
 	if err == nil {
 		return nil
 	}

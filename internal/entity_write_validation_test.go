@@ -456,3 +456,29 @@ func TestStrictRejectionEmitsNoAggregate(t *testing.T) {
 
 	require.Zero(t, emits, "rejected writes must not increment the report-only aggregate")
 }
+
+// TestReportOnlyUpdateRejectsCyclicPayload pins the other boundary of
+// report-only mode (#406). Normalization's depth cap is an ErrInvalidInput
+// carrier like a violation, yet it is returned before Validate runs and
+// regardless of enforce: a cyclic document is not a violation an operator
+// repairs later, and the write could never succeed anyway — the flattener
+// rejects it with the same cap. Before the cap this call exhausted the stack.
+func TestReportOnlyUpdateRejectsCyclicPayload(t *testing.T) {
+	manager, repo := newValidatingManager(t, false)
+	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
+	require.NoError(t, err)
+
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+	_, err = manager.Update(context.Background(), updateOp(created.RowID, cyclic))
+
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	msg, ok := forma.ResolvePublicMessage(err)
+	require.True(t, ok, "the cap must publish: %v", err)
+	require.Contains(t, msg, `payload nesting exceeds 1000 levels beneath attribute "self"`)
+
+	stored, err := transform.NewPersistentRecordTransformer(validationRegistry{}).
+		FromPersistentRecord(context.Background(), repo.records[100][created.RowID])
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"name": "open"}, stored, "a rejected update must not reach storage")
+}

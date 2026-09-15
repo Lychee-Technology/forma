@@ -293,11 +293,12 @@ func TestWriteValidationAttachesNoDiagnosisWithoutRelationRoots(t *testing.T) {
 	// and the assertion below is textual. This payload has no dotted key, so the
 	// two documents are equal today — normalizing here is what stops that
 	// coincidence being load-bearing.
-	bare := validator.Validate(schemaID,
-		transform.NormalizeDottedKeys(payload, nil, validator.ArrayPaths(schemaID)))
+	normalized, err := transform.NormalizeDottedKeys(payload, nil, validator.ArrayPaths(schemaID))
+	require.NoError(t, err)
+	bare := validator.Validate(schemaID, normalized)
 	require.Error(t, bare, "the fixture must fail validation for this to say anything")
 
-	err := validateWritePayload(context.Background(), writeValidation{
+	err = validateWritePayload(context.Background(), writeValidation{
 		validator:  validator,
 		schemaID:   schemaID,
 		schemaName: "child",

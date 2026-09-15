@@ -297,6 +297,9 @@ func (t *transformer) flattenToAttributes(
 ) error {
 	switch v := data.(type) {
 	case map[string]any:
+		if err := checkPayloadDepth(flattenPosition(path, indices)); err != nil {
+			return err
+		}
 		keys := make([]string, 0, len(v))
 		for key := range v {
 			keys = append(keys, key)
@@ -317,6 +320,9 @@ func (t *transformer) flattenToAttributes(
 			}
 		}
 	case []any:
+		if err := checkPayloadDepth(flattenPosition(path, indices)); err != nil {
+			return err
+		}
 		if len(v) == 0 {
 			// An explicit empty list persists a marker row (array_indices "",
 			// both value columns NULL) so it round-trips as [] instead of

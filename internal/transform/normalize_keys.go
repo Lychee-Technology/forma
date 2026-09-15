@@ -85,7 +85,7 @@ func NormalizeDottedKeys(
 	data map[string]any,
 	cache forma.SchemaAttributeCache,
 	arrays schemavalidate.ArrayPaths,
-) map[string]any {
+) (map[string]any, error) {
 	if data == nil {
 		// A nil document is returned unchanged rather than as an empty map, so
 		// this function never fabricates a document the caller did not send.
@@ -95,9 +95,9 @@ func NormalizeDottedKeys(
 		// fails the root `"type": "object"`, while {} fails `required`. Every
 		// shipped schema declares that root type, so there is no schema here for
 		// which one passes and the other does not.
-		return nil
+		return nil, nil
 	}
-	return normalizeMap(data, "", schemaView{cache: cache, arrays: arrays})
+	return normalizeMap(data, "", schemaView{cache: cache, arrays: arrays}, payloadPosition{})
 }
 
 // schemaView bundles the schema-derived inputs the walk consults. Both are fixed
@@ -109,8 +109,17 @@ type schemaView struct {
 }
 
 // normalizeMap rebuilds src with dotted keys expanded, where prefix is the
-// dotted attribute-name prefix of src's own position in the document.
-func normalizeMap(src map[string]any, prefix string, view schemaView) map[string]any {
+// dotted attribute-name prefix of src's own position in the document and pos
+// its depth for the cap (payload_depth.go). The cap is checked at every
+// container and nowhere else: the caller's nesting is the only thing that can
+// be cyclic, and the merge helpers below recurse only over output this walk
+// has already rebuilt, which is finite by construction.
+func normalizeMap(
+	src map[string]any, prefix string, view schemaView, pos payloadPosition,
+) (map[string]any, error) {
+	if err := checkPayloadDepth(pos); err != nil {
+		return nil, err
+	}
 	dst := make(map[string]any, len(src))
 
 	keys := make([]string, 0, len(src))
@@ -121,7 +130,10 @@ func normalizeMap(src map[string]any, prefix string, view schemaView) map[string
 
 	for _, key := range keys {
 		name := joinName(prefix, key)
-		value := normalizeValue(src[key], name, view)
+		value, err := normalizeValue(src[key], name, view, pos.into(key))
+		if err != nil {
+			return nil, err
+		}
 
 		parts := strings.Split(key, ".")
 		if shouldExpand(dst, parts, prefix, name, view) {
@@ -130,7 +142,7 @@ func normalizeMap(src map[string]any, prefix string, view schemaView) map[string
 		}
 		mergeValue(dst, key, value)
 	}
-	return dst
+	return dst, nil
 }
 
 // normalizeValue descends into containers and copies everything else through.
@@ -145,20 +157,20 @@ func normalizeMap(src map[string]any, prefix string, view schemaView) map[string
 // nil and emitted no attributes. Preserved as nil, the round-trip in Validate
 // presents it as null and the schema's own "type" decides, which is the answer
 // that matches what gets stored.
-func normalizeValue(value any, name string, view schemaView) any {
+func normalizeValue(value any, name string, view schemaView, pos payloadPosition) (any, error) {
 	switch typed := value.(type) {
 	case map[string]any:
 		if typed == nil {
-			return value
+			return value, nil
 		}
-		return normalizeMap(typed, name, view)
+		return normalizeMap(typed, name, view, pos)
 	case []any:
 		if typed == nil {
-			return value
+			return value, nil
 		}
-		return normalizeSlice(typed, name, view)
+		return normalizeSlice(typed, name, view, pos)
 	default:
-		return value
+		return value, nil
 	}
 }
 
@@ -166,12 +178,19 @@ func normalizeValue(value any, name string, view schemaView) any {
 // name because an index is not part of an attribute name — flattenToAttributes
 // carries indices separately and recurses into elements with the path unchanged
 // — so {"tags":[{"a.b":1}]} must expand the same as {"tags":{"a.b":1}} would.
-func normalizeSlice(src []any, prefix string, view schemaView) []any {
+func normalizeSlice(src []any, prefix string, view schemaView, pos payloadPosition) ([]any, error) {
+	if err := checkPayloadDepth(pos); err != nil {
+		return nil, err
+	}
 	dst := make([]any, len(src))
 	for i, item := range src {
-		dst[i] = normalizeValue(item, prefix, view)
+		value, err := normalizeValue(item, prefix, view, pos.into(""))
+		if err != nil {
+			return nil, err
+		}
+		dst[i] = value
 	}
-	return dst
+	return dst, nil
 }
 
 func joinName(prefix, key string) string {
