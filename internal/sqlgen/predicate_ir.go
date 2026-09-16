@@ -112,6 +112,10 @@ type HybridLeafPayload struct {
 	MainColumn string // physical column name, unsanitized
 	MainSQLOp  string
 	MainValue  any
+	// MainBoolRange replaces MainSQLOp/MainValue for a bool_smallint leaf
+	// under = / != (#565): the emitter renders it with two placeholders
+	// and binds Args(). Nil for every other main-branch leaf.
+	MainBoolRange *BoolSmallintRange
 
 	// EAV branch — computed identically to PgEavLeafPayload (strict parse).
 	Eav PgEavLeafPayload
@@ -150,6 +154,9 @@ type PgMainLeafPayload struct {
 	Column string
 	SQLOp  string
 	Value  any
+	// BoolRange replaces SQLOp/Value for a bool_smallint leaf under = / !=
+	// (#565): the emitter renders it with two placeholders and binds Args().
+	BoolRange *BoolSmallintRange
 }
 
 // DuckLeafPayload is the DuckDB emission payload (lenient parse policy).

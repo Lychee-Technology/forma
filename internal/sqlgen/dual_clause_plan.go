@@ -104,6 +104,9 @@ func bindPgMainValues(leaf *PredicateLeaf) ([]any, bool, error) {
 	if p.Err != nil || p.Skip {
 		return nil, false, p.Err
 	}
+	if p.BoolRange != nil {
+		return p.BoolRange.Args(), true, nil
+	}
 	return []any{p.Value}, true, nil
 }
 
