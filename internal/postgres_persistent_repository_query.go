@@ -334,20 +334,24 @@ func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (strin
 
 	predicate, args := b.mainPredicate(p)
 	if b.useMainTableAsAnchor {
-		return "m." + predicate, args, nil
+		return predicate, args, nil
 	}
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.%s)",
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND %s)",
 		sanitizeIdentifier(b.mainTable), predicate), args, nil
 }
 
-// mainPredicate renders the unqualified main-table comparison and its binds.
-// A bool_smallint equality leaf is the #565 BETWEEN range (two placeholders,
-// same text for every operand); every other leaf is `<col> <op> $n`.
+// mainPredicate renders the m-qualified main-table comparison and its binds.
+// A bool-encoded equality leaf is the #565 truthiness predicate (same text
+// for every operand, Arity() placeholders); every other leaf is
+// `m.<col> <op> $n`.
 func (b *hybridConditionBuilder) mainPredicate(p sqlgen.HybridLeafPayload) (string, []any) {
-	column := sanitizeIdentifier(p.MainColumn)
-	if p.MainBoolRange != nil {
-		lo, hi := b.nextPlaceholder(), b.nextPlaceholder()
-		return p.MainBoolRange.Render(column, lo, hi), p.MainBoolRange.Args()
+	column := "m." + sanitizeIdentifier(p.MainColumn)
+	if p.MainBool != nil {
+		placeholders := make([]string, p.MainBool.Arity())
+		for i := range placeholders {
+			placeholders[i] = b.nextPlaceholder()
+		}
+		return p.MainBool.Render(column, placeholders...), p.MainBool.Args()
 	}
 	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, b.nextPlaceholder()), []any{p.MainValue}
 }

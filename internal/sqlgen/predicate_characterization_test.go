@@ -168,10 +168,10 @@ func buildCharNumericBoolCases() []charCase {
 			span: 4,
 		},
 		{
-			name: "bool bool-text encoding zero: main \"0\", eav truthy bool, duck false",
+			name: "bool bool-text encoding zero: main `= '1'` contract against false (#565), eav truthy bool, duck false",
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
-				PgMainClause: "m.text_02 = ?", PgMainArgs: []any{"0"},
+				PgMainClause: "(m.text_02 = '1') = ?", PgMainArgs: []any{false},
 				PgClause: charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)", PgArgs: []any{int16(6), false},
 				DuckClause: "verified = CAST(? AS BOOLEAN)", DuckArgs: []any{false},
 			},

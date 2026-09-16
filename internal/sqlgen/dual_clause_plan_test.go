@@ -17,6 +17,8 @@ func dualPlanTestCache() forma.SchemaAttributeCache {
 		"score": {AttributeID: 8, ValueType: forma.ValueTypeNumeric},
 		"active": {AttributeID: 9, ValueType: forma.ValueTypeBool,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("smallint_01"), Encoding: forma.MainColumnEncodingBoolInt}},
+		"verified": {AttributeID: 10, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingBoolText}},
 	}
 }
 
@@ -64,6 +66,7 @@ func TestPlanBindEquivalenceMatrix(t *testing.T) {
 		"nil condition":      nil,
 		"unsupported op":     &forma.KvCondition{Attr: "age", Value: "contains:1"},
 		"bool range leaf":    &forma.KvCondition{Attr: "active", Value: "not_equals:true"},
+		"bool text leaf":     &forma.KvCondition{Attr: "verified", Value: "not_equals:true"},
 	}
 	for name, cond := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -118,19 +121,29 @@ func TestPlanBindParamSpan(t *testing.T) {
 	require.Equal(t, 3+plan.ParamSpan, idx)
 }
 
-// TestPlanBindReusesBoolRangeAcrossOperands is the constraint that shaped
-// #565's spelling: the plan cache hands `equals:false` the clause text it
-// compiled for `equals:true`, so only the binds may differ.
-func TestPlanBindReusesBoolRangeAcrossOperands(t *testing.T) {
+// TestPlanBindReusesBoolPredicateAcrossOperands is the constraint that
+// shaped #565's spelling: the plan cache hands `equals:false` the clause
+// text it compiled for `equals:true`, so only the binds may differ.
+func TestPlanBindReusesBoolPredicateAcrossOperands(t *testing.T) {
 	cache := dualPlanTestCache()
-	plan, err := PlanDualClauses(&forma.KvCondition{Attr: "active", Value: "equals:true"}, "eav_table", 7, cache, 0)
-	require.NoError(t, err)
-	require.Equal(t, "m.smallint_01 BETWEEN ? AND ?", plan.PgMainClause)
+	for _, tc := range []struct {
+		attr, clause string
+		falsyArgs    []any
+	}{
+		{"active", "m.smallint_01 BETWEEN ? AND ?", []any{int64(-32768), int64(0)}},
+		{"verified", "(m.text_02 = '1') = ?", []any{false}},
+	} {
+		t.Run(tc.attr, func(t *testing.T) {
+			plan, err := PlanDualClauses(&forma.KvCondition{Attr: tc.attr, Value: "equals:true"}, "eav_table", 7, cache, 0)
+			require.NoError(t, err)
+			require.Equal(t, tc.clause, plan.PgMainClause)
 
-	idx := 0
-	bound, err := plan.Bind(&forma.KvCondition{Attr: "active", Value: "equals:false"}, cache, &idx)
-	require.NoError(t, err)
-	require.Equal(t, plan.PgMainClause, bound.PgMainClause)
-	require.Equal(t, []any{int64(-32768), int64(0)}, bound.PgMainArgs)
-	require.Equal(t, plan.ParamSpan, idx)
+			idx := 0
+			bound, err := plan.Bind(&forma.KvCondition{Attr: tc.attr, Value: "equals:false"}, cache, &idx)
+			require.NoError(t, err)
+			require.Equal(t, plan.PgMainClause, bound.PgMainClause)
+			require.Equal(t, tc.falsyArgs, bound.PgMainArgs)
+			require.Equal(t, plan.ParamSpan, idx)
+		})
+	}
 }

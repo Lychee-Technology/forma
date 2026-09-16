@@ -185,7 +185,7 @@ func TestHealth_BoolEncoding(t *testing.T) {
 	paramIndex = 0
 	sql, args, err = buildPgMainClause(kv, cacheText, &paramIndex)
 	require.NoError(t, err)
-	require.NotEmpty(t, sql)
-	require.Len(t, args, 1)
-	require.Equal(t, "1", args[0])
+	require.Equal(t, "(m.text_03 = '1') = ?", sql)
+	require.Equal(t, []any{true}, args)
+	require.Equal(t, 1, paramIndex)
 }

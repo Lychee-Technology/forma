@@ -328,13 +328,35 @@ func TestHybrid_BoolIntRangeAdvancesArgCounter(t *testing.T) {
 	require.Equal(t, []any{int64(1), int64(32767), int64(25)}, args)
 }
 
+// TestHybrid_BoolTextEncoding: bool_text compares the `= '1'` read contract
+// against a bool bind (#565), so a stored 'true' is falsy here exactly as
+// the projection and the export read it.
 func TestHybrid_BoolTextEncoding(t *testing.T) {
-	h := newHybridTestHelper(true)
-	cond := &forma.KvCondition{Attr: "active_text", Value: "equals:1"}
-	clause, args, err := h.build(cond)
-	require.NoError(t, err)
-	require.Equal(t, "m.\"text_03\" = $2", clause)
-	require.Equal(t, []any{"1"}, args)
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"equals:1", true},
+		{"equals:false", false},
+		{"not_equals:true", false},
+		{"not_equals:0", true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			h := newHybridTestHelper(true)
+			clause, args, err := h.build(&forma.KvCondition{Attr: "active_text", Value: tc.value})
+			require.NoError(t, err)
+			require.Equal(t, `(m."text_03" = '1') = $2`, clause)
+			require.Equal(t, []any{tc.want}, args)
+
+			h = newHybridTestHelper(false)
+			clause, args, err = h.build(&forma.KvCondition{Attr: "active_text", Value: tc.value})
+			require.NoError(t, err)
+			require.Equal(t,
+				`EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND (m."text_03" = '1') = $2)`,
+				clause)
+			require.Equal(t, []any{tc.want}, args)
+		})
+	}
 }
 
 func TestHybrid_UnsupportedOperatorErrors(t *testing.T) {
