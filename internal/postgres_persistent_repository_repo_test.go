@@ -136,6 +136,10 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
+	// Both locks are taken up front, in sorted order (#554).
+	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
@@ -148,9 +152,6 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	mock.ExpectExec(`^INSERT INTO "change_log"`).
 		WithArgs(int16(1), rowID1, int64(0), fixedMillis, nil).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery(`^SELECT COALESCE\(MAX\(changed_at\), 0\) FROM "change_log"`).
 		WithArgs(int16(1), rowID2).
 		WillReturnRows(pgxmock.NewRows([]string{"coalesce"}).AddRow(int64(0)))

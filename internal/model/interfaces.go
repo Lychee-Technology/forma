@@ -58,6 +58,13 @@ type PersistentRecordKey struct {
 // UpdatedAt is the one field the repository stamps itself.
 type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord) (*PersistentRecord, error)
 
+// PersistentRecordBatchMerge is PersistentRecordMerge for one row of a batch:
+// index is the row's position in the keys handed to
+// BatchMergePersistentRecords, so the caller can author per-operation
+// errors. The contract on existing and on the result is
+// PersistentRecordMerge's; an error aborts the whole batch.
+type PersistentRecordBatchMerge func(ctx context.Context, index int, existing *PersistentRecord) (*PersistentRecord, error)
+
 type PersistentRecordWriter interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
 	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
@@ -89,6 +96,12 @@ type PersistentRecordRepository interface {
 
 type AtomicBatchPersistentRecordRepository interface {
 	BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error
-	BatchUpdatePersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error
+	// BatchMergePersistentRecords is the batch analogue of
+	// MergePersistentRecord (#554): one transaction, every row's advisory
+	// lock taken up front in sorted (schemaID, rowID) order, each merge base
+	// read inside the transaction and handed to merge with its input index,
+	// every result stored, all committed together. It answers the stored
+	// records positionally.
+	BatchMergePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey, merge PersistentRecordBatchMerge) ([]*PersistentRecord, error)
 	BatchDeletePersistentRecords(ctx context.Context, tables StorageTables, keys []PersistentRecordKey) error
 }

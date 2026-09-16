@@ -197,18 +197,40 @@ func (m *mockPersistentRecordRepository) BatchInsertPersistentRecords(ctx contex
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
+// BatchMergePersistentRecords mirrors the real one's contract: beforeMerge
+// runs before any base is read (a concurrent committer), every base is
+// served at merge time, and the stored version is stamped from the row's
+// previous one — the mock's stand-in for GREATEST(now, prev + 1) — so a
+// caller that echoes its own pre-write merge answers the wrong version.
+func (m *mockPersistentRecordRepository) BatchMergePersistentRecords(ctx context.Context, tables model.StorageTables, keys []model.PersistentRecordKey, merge model.PersistentRecordBatchMerge) ([]*model.PersistentRecord, error) {
 	m.batchUpdateCalls++
+	if m.beforeMerge != nil {
+		m.beforeMerge()
+	}
 	snapshot := cloneRecordStore(m.records)
 
-	for i, record := range records {
+	stored := make([]*model.PersistentRecord, len(keys))
+	for i, key := range keys {
 		if m.atomicUpdateFailAt > 0 && i+1 == m.atomicUpdateFailAt {
 			m.records = snapshot
-			return fmt.Errorf("forced atomic update failure at index %d", i)
+			return nil, fmt.Errorf("forced atomic update failure at index %d", i)
+		}
+		var existing *model.PersistentRecord
+		if schemaRecords, ok := m.records[key.SchemaID]; ok {
+			existing = schemaRecords[key.RowID]
+		}
+		record, err := merge(ctx, i, existing)
+		if err != nil {
+			m.records = snapshot
+			return nil, err
+		}
+		if existing != nil {
+			record.UpdatedAt = existing.UpdatedAt + 1
 		}
 		m.storeRecord(record)
+		stored[i] = record
 	}
-	return nil
+	return stored, nil
 }
 
 func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.Context, tables model.StorageTables, keys []model.PersistentRecordKey) error {

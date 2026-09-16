@@ -189,6 +189,10 @@ func TestBatchDeletePersistentRecordsRollsBackOnError(t *testing.T) {
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: ""}
 
 	mock.ExpectBegin()
+	// Both locks are taken up front, in sorted order (#554).
+	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
@@ -198,9 +202,6 @@ func TestBatchDeletePersistentRecordsRollsBackOnError(t *testing.T) {
 	mock.ExpectExec(`^DELETE FROM "eav_table"`).
 		WithArgs(int16(1), rowID1).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
-	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID2).
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(100)))
@@ -234,10 +235,14 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_ReturnsNotFound(t *testing.
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_table", ChangeLog: "change_log"}
 
 	mock.ExpectBegin()
-	// First key deletes successfully.
+	// Both locks are taken up front, in sorted order (#554).
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	// First key deletes successfully.
 	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID1).
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(100)))
@@ -248,9 +253,6 @@ func TestBatchDeletePersistentRecords_WhenRowMissing_ReturnsNotFound(t *testing.
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// Second key row does not exist — RETURNING yields no rows.
-	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery(`^DELETE FROM "entity_main"`).
 		WithArgs(int16(1), rowID2).
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}))
