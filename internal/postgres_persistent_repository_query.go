@@ -332,14 +332,30 @@ func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (strin
 		return "", nil, p.Err
 	}
 
-	b.argCounter++
-	placeholder := fmt.Sprintf("$%d", b.argCounter)
-
+	predicate, args := b.mainPredicate(p)
 	if b.useMainTableAsAnchor {
-		return fmt.Sprintf("m.%s %s %s", sanitizeIdentifier(p.MainColumn), p.MainSQLOp, placeholder), []any{p.MainValue}, nil
+		return "m." + predicate, args, nil
 	}
-	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.%s %s %s)",
-		sanitizeIdentifier(b.mainTable), sanitizeIdentifier(p.MainColumn), p.MainSQLOp, placeholder), []any{p.MainValue}, nil
+	return fmt.Sprintf("EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.%s)",
+		sanitizeIdentifier(b.mainTable), predicate), args, nil
+}
+
+// mainPredicate renders the unqualified main-table comparison and its binds.
+// A bool_smallint equality leaf is the #565 BETWEEN range (two placeholders,
+// same text for every operand); every other leaf is `<col> <op> $n`.
+func (b *hybridConditionBuilder) mainPredicate(p sqlgen.HybridLeafPayload) (string, []any) {
+	column := sanitizeIdentifier(p.MainColumn)
+	if p.MainBoolRange != nil {
+		lo, hi := b.nextPlaceholder(), b.nextPlaceholder()
+		return p.MainBoolRange.Render(column, lo, hi), p.MainBoolRange.Args()
+	}
+	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, b.nextPlaceholder()), []any{p.MainValue}
+}
+
+// nextPlaceholder allocates the next $n placeholder.
+func (b *hybridConditionBuilder) nextPlaceholder() string {
+	b.argCounter++
+	return fmt.Sprintf("$%d", b.argCounter)
 }
 
 // emitEAVLeaf formats the EAV EXISTS subquery directly against the anchor
@@ -360,10 +376,8 @@ func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string
 		schemaAlias, rowAlias = "m.ltbase_schema_id", "m.ltbase_row_id"
 	}
 
-	b.argCounter++
-	attrPlaceholder := fmt.Sprintf("$%d", b.argCounter)
-	b.argCounter++
-	valuePlaceholder := fmt.Sprintf("$%d", b.argCounter)
+	attrPlaceholder := b.nextPlaceholder()
+	valuePlaceholder := b.nextPlaceholder()
 
 	clause := fmt.Sprintf(
 		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s AND %s %s %s)",

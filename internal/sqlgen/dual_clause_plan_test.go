@@ -15,6 +15,8 @@ func dualPlanTestCache() forma.SchemaAttributeCache {
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
 		"tag":   {AttributeID: 7, ValueType: forma.ValueTypeText},
 		"score": {AttributeID: 8, ValueType: forma.ValueTypeNumeric},
+		"active": {AttributeID: 9, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("smallint_01"), Encoding: forma.MainColumnEncodingBoolInt}},
 	}
 }
 
@@ -61,6 +63,7 @@ func TestPlanBindEquivalenceMatrix(t *testing.T) {
 		"empty or":           &forma.CompositeCondition{Logic: forma.LogicOr},
 		"nil condition":      nil,
 		"unsupported op":     &forma.KvCondition{Attr: "age", Value: "contains:1"},
+		"bool range leaf":    &forma.KvCondition{Attr: "active", Value: "not_equals:true"},
 	}
 	for name, cond := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -113,4 +116,21 @@ func TestPlanBindParamSpan(t *testing.T) {
 	_, err = plan.Bind(cond, cache, &idx)
 	require.NoError(t, err)
 	require.Equal(t, 3+plan.ParamSpan, idx)
+}
+
+// TestPlanBindReusesBoolRangeAcrossOperands is the constraint that shaped
+// #565's spelling: the plan cache hands `equals:false` the clause text it
+// compiled for `equals:true`, so only the binds may differ.
+func TestPlanBindReusesBoolRangeAcrossOperands(t *testing.T) {
+	cache := dualPlanTestCache()
+	plan, err := PlanDualClauses(&forma.KvCondition{Attr: "active", Value: "equals:true"}, "eav_table", 7, cache, 0)
+	require.NoError(t, err)
+	require.Equal(t, "m.smallint_01 BETWEEN ? AND ?", plan.PgMainClause)
+
+	idx := 0
+	bound, err := plan.Bind(&forma.KvCondition{Attr: "active", Value: "equals:false"}, cache, &idx)
+	require.NoError(t, err)
+	require.Equal(t, plan.PgMainClause, bound.PgMainClause)
+	require.Equal(t, []any{int64(-32768), int64(0)}, bound.PgMainArgs)
+	require.Equal(t, plan.ParamSpan, idx)
 }

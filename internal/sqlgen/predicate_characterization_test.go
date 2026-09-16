@@ -158,14 +158,14 @@ func buildCharNumericBoolCases() []charCase {
 			span: 3,
 		},
 		{
-			name: "bool bool-int encoding: main int64(1), eav truthy bool, duck true",
+			name: "bool bool-int encoding: main BETWEEN range (#565), eav truthy bool, duck true",
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
-				PgMainClause: "m.bool_01 = ?", PgMainArgs: []any{int64(1)},
-				PgClause: charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)", PgArgs: []any{int16(5), true},
+				PgMainClause: "m.bool_01 BETWEEN ? AND ?", PgMainArgs: []any{int64(1), int64(32767)},
+				PgClause: charEXISTS + "$3 AND (x.value_numeric > 0.5) = $4)", PgArgs: []any{int16(5), true},
 				DuckClause: "active = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
-			span: 3,
+			span: 4,
 		},
 		{
 			name: "bool bool-text encoding zero: main \"0\", eav truthy bool, duck false",
