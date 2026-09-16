@@ -27,16 +27,18 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
 
-	for i, record := range records {
-		if record == nil {
-			return fmt.Errorf("record[%d] cannot be nil", i)
-		}
+	// Recreates must outrank their retained tombstone (#274); see
+	// InsertPersistentRecord. The lock pass runs in sorted order before any
+	// write, the write loop below in input order (#554).
+	keys, err := recordKeys(records)
+	if err != nil {
+		return err
+	}
+	if err := lockRowKeys(ctx, tx, keys); err != nil {
+		return fmt.Errorf("lock row versions for batch insert: %w", err)
+	}
 
-		// Recreates must outrank their retained tombstone (#274); see
-		// InsertPersistentRecord. Lock order follows input order.
-		if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
-			return fmt.Errorf("lock row version for record[%d]: %w", i, err)
-		}
+	for i, record := range records {
 		effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
 		if err != nil {
 			return fmt.Errorf("stamp create version for record[%d]: %w", i, err)
@@ -49,60 +51,6 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		}
 		if err := r.insertEAVAttributes(ctx, tx, tables.EAVData, record.OtherAttributes); err != nil {
 			return fmt.Errorf("insert eav attributes for record[%d]: %w", i, err)
-		}
-		if tables.ChangeLog != "" {
-			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
-				return fmt.Errorf("upsert change log for record[%d]: %w", i, err)
-			}
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
-}
-
-func (r *DBPersistentRecordRepository) BatchUpdatePersistentRecords(ctx context.Context, tables model.StorageTables, records []*model.PersistentRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-	if err := validateWriteTables(tables); err != nil {
-		return fmt.Errorf("validate tables for batch update: %w", err)
-	}
-
-	now := r.nowMillis()
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
-	// Records in a batch usually share one schema; resolve the #294 delete
-	// scope once per schemaID instead of once per record.
-	scopeBySchema := make(map[int16][]int16)
-
-	for i, record := range records {
-		if record == nil {
-			return fmt.Errorf("record[%d] cannot be nil", i)
-		}
-
-		record.UpdatedAt = now
-
-		if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-			return fmt.Errorf("update main row for record[%d]: %w", i, err)
-		}
-		knownIDs, ok := scopeBySchema[record.SchemaID]
-		if !ok {
-			var err error
-			knownIDs, err = r.knownAttrIDs(record.SchemaID)
-			if err != nil {
-				return fmt.Errorf("resolve replace scope for record[%d]: %w", i, err)
-			}
-			scopeBySchema[record.SchemaID] = knownIDs
-		}
-		if err := r.replaceEAVAttributesScoped(ctx, tx, tables.EAVData, record.SchemaID, record.RowID, record.OtherAttributes, knownIDs); err != nil {
-			return fmt.Errorf("replace eav attributes for record[%d]: %w", i, err)
 		}
 		if tables.ChangeLog != "" {
 			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, record.UpdatedAt, record.DeletedAt); err != nil {
@@ -137,18 +85,16 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	deleteMain := fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at", sanitizeIdentifier(tables.EntityMain))
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 
+	if err := validateRecordKeys(keys); err != nil {
+		return err
+	}
+	// Sorted lock pass first, input-order writes after (#554).
+	if err := lockRowKeys(ctx, tx, keys); err != nil {
+		return fmt.Errorf("lock row versions for batch delete: %w", err)
+	}
+
 	now := r.nowMillis()
 	for i, key := range keys {
-		if key.SchemaID <= 0 {
-			return fmt.Errorf("key[%d] has invalid schema id %d", i, key.SchemaID)
-		}
-		if key.RowID == uuid.Nil {
-			return fmt.Errorf("key[%d] has empty row id", i)
-		}
-
-		if err := lockRowVersion(ctx, tx, key.SchemaID, key.RowID); err != nil {
-			return fmt.Errorf("lock row version for key[%d]: %w", i, err)
-		}
 		var prevUpdatedAt int64
 		if err := tx.QueryRow(ctx, deleteMain, key.SchemaID, key.RowID).Scan(&prevUpdatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -170,6 +116,31 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// recordKeys projects a batch's records onto their (schemaID, rowID) keys for
+// the lock pass, refusing a nil record before any lock is taken.
+func recordKeys(records []*model.PersistentRecord) ([]model.PersistentRecordKey, error) {
+	keys := make([]model.PersistentRecordKey, len(records))
+	for i, record := range records {
+		if record == nil {
+			return nil, fmt.Errorf("record[%d] cannot be nil", i)
+		}
+		keys[i] = model.PersistentRecordKey{SchemaID: record.SchemaID, RowID: record.RowID}
+	}
+	return keys, nil
+}
+
+func validateRecordKeys(keys []model.PersistentRecordKey) error {
+	for i, key := range keys {
+		if key.SchemaID <= 0 {
+			return fmt.Errorf("key[%d] has invalid schema id %d", i, key.SchemaID)
+		}
+		if key.RowID == uuid.Nil {
+			return fmt.Errorf("key[%d] has empty row id", i)
+		}
 	}
 	return nil
 }

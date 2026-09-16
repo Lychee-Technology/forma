@@ -115,12 +115,13 @@ func rowVersionLockKey(schemaID int16, rowID uuid.UUID) int64 {
 // merges, and rewrites every EAV row, so two updates that only took the row
 // lock at write time would each merge onto a pre-write snapshot and the
 // second would drop the first's fields. Holding this lock across the read
-// makes the read and the write one critical section. Batch insert and batch
-// delete acquire these locks in input order, the same discipline as their
-// existing row locks; an order inversion between two batches is detected and
-// errored by PostgreSQL's deadlock checker like any row-lock inversion.
-// Batch update does not take it yet and still has the #457 lost-update
-// shape; that is #554. The lock releases at transaction end.
+// makes the read and the write one critical section. The batch writers —
+// insert, delete and the batch merge behind atomic BatchUpdate — take every
+// row's lock up front in ascending (schemaID, rowID) order (#554, see
+// sortedRowKeys): two overlapping batches of any kind then request the
+// shared locks in the same sequence and cannot invert, and because this
+// lock precedes the main-table row lock in every writer, the sort orders
+// that acquisition too. The lock releases at transaction end.
 func lockRowVersion(ctx context.Context, tx pgx.Tx, schemaID int16, rowID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", rowVersionLockKey(schemaID, rowID)); err != nil {
 		return fmt.Errorf("acquire row version lock for %s: %w", rowID, err)
