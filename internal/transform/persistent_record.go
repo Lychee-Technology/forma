@@ -186,53 +186,99 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 	return nil
 }
 
-// storeWithEncoding dispatches on the binding's encoding, then on the column
-// type for the default encoding. It reports whether a value was written so
-// the caller can refuse an empty slot instead of dropping it (#459).
+// storeWithEncoding places the value by (encoding, ColumnType()), the same
+// pair checkBoundColumnFit keys on (#559). An explicit encoding names a
+// rendering of the numeric slot — unix_ms and bool_smallint render a number,
+// bool_text and iso8601 render text — and the column type names the map the
+// rendering lands in; the default encoding writes the slot the column
+// consumes. It reports whether a value was written so the caller can refuse
+// an empty slot instead of dropping it (#459).
 func (t *persistentRecordTransformer) storeWithEncoding(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) (bool, error) {
-	columnName := string(binding.ColumnName)
 	switch binding.Encoding {
 	case forma.MainColumnEncodingUnixMs:
-		// Date stored as Unix milliseconds in bigint column
-		if attr.ValueInt64 != nil {
-			record.Int64Items[columnName] = *attr.ValueInt64
-			return true, nil
+		// Date as epoch millis; the exact sidecar wins where the column keeps it.
+		if attr.ValueNumeric == nil {
+			return false, nil
 		}
-		if attr.ValueNumeric != nil {
-			record.Int64Items[columnName] = int64(*attr.ValueNumeric)
-			return true, nil
-		}
-		return false, nil
+		return storeNumericRendering(record, binding, *attr.ValueNumeric, attr.ValueInt64)
 	case forma.MainColumnEncodingBoolInt:
-		// Bool stored as smallint (1/0)
+		// Bool as 1/0
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		record.Int16Items[columnName] = 0
-		if float64ToBool(*attr.ValueNumeric) {
-			record.Int16Items[columnName] = 1
-		}
-		return true, nil
+		return storeNumericRendering(record, binding, boolToFloat64(float64ToBool(*attr.ValueNumeric)), nil)
 	case forma.MainColumnEncodingBoolText:
-		// Bool stored as text ("1"/"0")
+		// Bool as "1"/"0"
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		record.TextItems[columnName] = "0"
+		text := "0"
 		if float64ToBool(*attr.ValueNumeric) {
-			record.TextItems[columnName] = "1"
+			text = "1"
 		}
-		return true, nil
+		return storeTextRendering(record, binding, text)
 	case forma.MainColumnEncodingISO8601:
-		// Date stored as ISO 8601 string in text column
+		// Date as an ISO 8601 string
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		record.TextItems[columnName] = unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339)
-		return true, nil
+		return storeTextRendering(record, binding, unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339))
 	default:
 		return t.storeWithDefaultEncoding(record, attr, binding)
 	}
+}
+
+// storeNumericRendering writes a number into the map of the bound column's
+// type: the integer maps at the column's width (checkIntegerFit has already
+// bounded the value, so int16()/int32() cannot wrap), the double map, or the
+// exact int64 sidecar for a bigint column when the caller has one. A text or
+// uuid column cannot hold a number; checkBoundColumnFit refuses the pair, so
+// reaching it here is a funnel bypass, reported as such.
+func storeNumericRendering(record *model.PersistentRecord, binding *forma.MainColumnBinding, numeric float64, exact *int64) (bool, error) {
+	columnName := string(binding.ColumnName)
+	switch binding.ColumnType() {
+	case forma.MainColumnTypeSmallint:
+		record.Int16Items[columnName] = int16(numeric)
+	case forma.MainColumnTypeInteger:
+		record.Int32Items[columnName] = int32(numeric)
+	case forma.MainColumnTypeBigint:
+		if exact != nil {
+			record.Int64Items[columnName] = *exact
+			return true, nil
+		}
+		record.Int64Items[columnName] = int64(numeric)
+	case forma.MainColumnTypeDouble:
+		record.Float64Items[columnName] = numeric
+	default:
+		return false, errNoSlotForRendering(binding, "a numeric value")
+	}
+	return true, nil
+}
+
+// storeTextRendering writes a string into a text column; no other column
+// type holds text, so anything else is the same funnel bypass as above.
+func storeTextRendering(record *model.PersistentRecord, binding *forma.MainColumnBinding, text string) (bool, error) {
+	if binding.ColumnType() != forma.MainColumnTypeText {
+		return false, errNoSlotForRendering(binding, "a text value")
+	}
+	record.TextItems[string(binding.ColumnName)] = text
+	return true, nil
+}
+
+// numericRenderingColumn reports the column types storeNumericRendering
+// serializes into; checkBoundColumnFit admits unix_ms and bool_smallint on
+// exactly these.
+func numericRenderingColumn(colType forma.MainColumnType) bool {
+	switch colType {
+	case forma.MainColumnTypeSmallint, forma.MainColumnTypeInteger, forma.MainColumnTypeBigint, forma.MainColumnTypeDouble:
+		return true
+	}
+	return false
+}
+
+func errNoSlotForRendering(binding *forma.MainColumnBinding, renders string) error {
+	return fmt.Errorf("encoding %s renders %s that main column %s (%s) cannot hold",
+		binding.Encoding, renders, binding.ColumnName, binding.ColumnType())
 }
 
 // storeWithDefaultEncoding writes the slot the column type consumes. The
@@ -246,30 +292,6 @@ func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.Per
 			return false, nil
 		}
 		record.TextItems[columnName] = *attr.ValueText
-	case forma.MainColumnTypeSmallint:
-		if attr.ValueNumeric == nil {
-			return false, nil
-		}
-		record.Int16Items[columnName] = int16(*attr.ValueNumeric)
-	case forma.MainColumnTypeInteger:
-		if attr.ValueNumeric == nil {
-			return false, nil
-		}
-		record.Int32Items[columnName] = int32(*attr.ValueNumeric)
-	case forma.MainColumnTypeBigint:
-		if attr.ValueInt64 != nil {
-			record.Int64Items[columnName] = *attr.ValueInt64
-			return true, nil
-		}
-		if attr.ValueNumeric == nil {
-			return false, nil
-		}
-		record.Int64Items[columnName] = int64(*attr.ValueNumeric)
-	case forma.MainColumnTypeDouble:
-		if attr.ValueNumeric == nil {
-			return false, nil
-		}
-		record.Float64Items[columnName] = *attr.ValueNumeric
 	case forma.MainColumnTypeUUID:
 		if attr.ValueText == nil {
 			return false, nil
@@ -280,6 +302,11 @@ func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.Per
 				err, attr.SchemaID, attr.RowID, attr.AttrID, attr.ArrayIndices, *attr.ValueText)
 		}
 		record.UUIDItems[columnName] = uuidValue
+	case forma.MainColumnTypeSmallint, forma.MainColumnTypeInteger, forma.MainColumnTypeBigint, forma.MainColumnTypeDouble:
+		if attr.ValueNumeric == nil {
+			return false, nil
+		}
+		return storeNumericRendering(record, binding, *attr.ValueNumeric, attr.ValueInt64)
 	default:
 		return false, fmt.Errorf("unsupported column type: %s", binding.ColumnType())
 	}

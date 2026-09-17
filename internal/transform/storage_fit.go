@@ -35,14 +35,17 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
 }
 
-// checkBoundColumnFit mirrors storeInMainColumn's dispatch: the same
-// (encoding, column type) decides which EAVRecord slot is serialized, so the
-// slot must be populated. Every value serialized from the numeric slot into a
-// smallint, integer or bigint column — a numeric-family value, epoch millis
-// (date/datetime, default or unix_ms) or 0/1 (bool_smallint) — is then
-// width-checked against the COLUMN's width, whatever the declared type or
-// encoding: epoch millis (~1.7e12) overflow integer and smallint, and
-// storeWithDefaultEncoding's int16()/int32() narrowing wraps (#459). The
+// checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
+// (encoding, column type) decides which EAVRecord slot is serialized and
+// which PersistentRecord map it lands in (#559), so the slot must be
+// populated and the column must hold the encoding's rendering — a number for
+// unix_ms and bool_smallint (any numeric column), text for bool_text and
+// iso8601 (a text column only). Every value serialized from the numeric slot
+// into a smallint, integer or bigint column — a numeric-family value, epoch
+// millis (date/datetime, default or unix_ms) or 0/1 (bool_smallint) — is
+// then width-checked against the COLUMN's width, whatever the declared type
+// or encoding: epoch millis (~1.7e12) overflow integer and smallint, and
+// storeNumericRendering's int16()/int32() narrowing wraps (#459). The
 // registration matrix refuses date→integer, but the funnel must not depend on
 // registration: a deployed or programmatic registry can supply the binding.
 func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) error {
@@ -51,12 +54,18 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	switch binding.Encoding {
 	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
 		// Text renderings of the numeric slot: nothing to width-check.
+		if colType != forma.MainColumnTypeText {
+			return errEncodingMismatch(vt, binding, "a text value")
+		}
 		if attr.ValueNumeric == nil {
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
 		// Integer renderings of the numeric slot; width-checked below.
+		if !numericRenderingColumn(colType) {
+			return errEncodingMismatch(vt, binding, "a numeric value")
+		}
 		if attr.ValueNumeric == nil {
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
 		}
@@ -101,6 +110,14 @@ func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) e
 	return fmt.Errorf("%s value cannot be stored in main column %s, which stores %s: the attribute's valueType and column binding disagree", vt, col, expects)
 }
 
+// errEncodingMismatch refuses a binding whose encoding renders something the
+// column has no map for; it is the published twin of the store's
+// errNoSlotForRendering.
+func errEncodingMismatch(vt forma.ValueType, binding *forma.MainColumnBinding, renders string) error {
+	return fmt.Errorf("%s value cannot be stored in main column %s (%s) with encoding %s, which renders %s: the column binding's encoding and column type disagree",
+		vt, binding.ColumnName, binding.ColumnType(), binding.Encoding, renders)
+}
+
 // isNumericFamily reports the valueTypes whose magnitude is caller-chosen, so
 // checkStorageFit runs the declared-type width check on them (numeric itself
 // passes that check unconstrained, #205). date/datetime and bool also occupy
@@ -137,9 +154,9 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // ceiling). The caller guarantees attr.ValueNumeric is non-nil.
 //
 // The check judges the slot the store consumes, not the caller's raw value:
-// storeWithDefaultEncoding's bigint arm and the unix_ms arm write the exact
-// ValueInt64 sidecar when it is populated and int64(*ValueNumeric) otherwise,
-// and populateTypedValue fills the sidecar for declared bigint and
+// storeNumericRendering's bigint arm (default and unix_ms encodings) writes
+// the exact ValueInt64 sidecar when it is populated and int64(*ValueNumeric)
+// otherwise, and populateTypedValue fills the sidecar for declared bigint and
 // date/datetime only. A numeric-declared 9223372036854775807 is therefore
 // stored from its float64 image (2^63, which int64() wraps), so the image is
 // what must fit; deriving an exact int64 from the raw value here would admit
