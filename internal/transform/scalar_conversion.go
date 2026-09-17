@@ -186,9 +186,3 @@ func toTime(value any) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("cannot convert %T to time.Time", value)
 	}
 }
-
-// ToFloat64 is an exported helper that behaves like the legacy optimizer helper:
-// it returns (float64, bool) where bool indicates success.
-func ToFloat64(v any) (float64, bool) {
-	return numutil.ToFloat64(v)
-}
