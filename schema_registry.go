@@ -26,7 +26,8 @@ type MainColumn string
 // The constants below are the complete entity_main column set: a
 // column_binding to any other name is refused at registration (#557), and
 // the runtime's column list (internal/model) and the init-db DDL are pinned
-// to the same set by tests (#585).
+// to the same set by tests (#585). The deprecated block that follows is not
+// part of the set.
 const (
 	MainColumnText01     MainColumn = "text_01"
 	MainColumnText02     MainColumn = "text_02"
@@ -60,6 +61,22 @@ const (
 	MainColumnDeletedBy  MainColumn = "ltbase_deleted_by"
 	MainColumnSchemaID   MainColumn = "ltbase_schema_id"
 	MainColumnRowID      MainColumn = "ltbase_row_id"
+)
+
+// Deprecated: the four constants below name columns entity_main never had
+// at runtime. v0.2.0 exported them and its init-db created the columns, but
+// the writer's allowlist, the read projection and the CDC column order all
+// stopped at bigint_03 and double_03, so every write to a binding on them
+// failed with "unsupported column". Since #585 init-db no longer creates
+// them, and a column_binding naming one is refused at registration (#557).
+// They are kept so v0.2.0 callers still compile; they will be removed in the
+// next breaking release. Bind to MainColumnBigint01..03 or
+// MainColumnDouble01..03 instead.
+const (
+	MainColumnBigint04 MainColumn = "bigint_04"
+	MainColumnBigint05 MainColumn = "bigint_05"
+	MainColumnDouble04 MainColumn = "double_04"
+	MainColumnDouble05 MainColumn = "double_05"
 )
 
 // MainColumnType represents the data type of a main column.

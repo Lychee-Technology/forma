@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,16 +15,27 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
+// isDeprecated reports whether a declaration carries the Go "Deprecated:"
+// marker, on the const block or on the spec itself.
+func isDeprecated(gen *ast.GenDecl, vs *ast.ValueSpec) bool {
+	for _, doc := range []*ast.CommentGroup{gen.Doc, vs.Doc} {
+		if doc != nil && strings.Contains(doc.Text(), "Deprecated:") {
+			return true
+		}
+	}
+	return false
+}
+
 // mainColumnConstants reads every forma.MainColumn constant out of the root
-// package's source, so the contract below cannot be satisfied by a stale
-// hand-written list: a constant added or removed in schema_registry.go is
-// seen here without touching this test.
-func mainColumnConstants(t *testing.T) []string {
+// package's source, split into the active set and the ones marked
+// Deprecated, so the contracts below cannot be satisfied by a stale
+// hand-written list: a constant added, removed or deprecated in
+// schema_registry.go is seen here without touching this test.
+func mainColumnConstants(t *testing.T) (active, deprecated []string) {
 	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filepath.Join("..", "..", "schema_registry.go"), nil, 0)
+	file, err := parser.ParseFile(fset, filepath.Join("..", "..", "schema_registry.go"), nil, parser.ParseComments)
 	require.NoError(t, err)
-	var names []string
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.CONST {
@@ -39,13 +51,18 @@ func mainColumnConstants(t *testing.T) []string {
 				require.True(t, ok && lit.Kind == token.STRING, "MainColumn constant %v is not a string literal", vs.Names)
 				name, err := strconv.Unquote(lit.Value)
 				require.NoError(t, err)
-				names = append(names, name)
+				if isDeprecated(gen, vs) {
+					deprecated = append(deprecated, name)
+				} else {
+					active = append(active, name)
+				}
 			}
 		}
 	}
-	require.NotEmpty(t, names, "no forma.MainColumn constants found")
-	sort.Strings(names)
-	return names
+	require.NotEmpty(t, active, "no forma.MainColumn constants found")
+	sort.Strings(active)
+	sort.Strings(deprecated)
+	return active, deprecated
 }
 
 // #585: the public forma.MainColumn* constants and the runtime column set
@@ -60,7 +77,20 @@ func TestMainColumnConstantsMatchRuntimeSet(t *testing.T) {
 		runtime = append(runtime, desc.Name)
 	}
 	sort.Strings(runtime)
-	require.Equal(t, runtime, mainColumnConstants(t))
+	active, _ := mainColumnConstants(t)
+	require.Equal(t, runtime, active)
+}
+
+// A constant kept only for source compatibility (marked Deprecated) names a
+// column the runtime does not have: it must never be silently promoted into
+// the set, because the marker is what tells a caller that a binding to it is
+// refused at registration (#557). Removing the block is a deliberate act and
+// leaves this test green.
+func TestDeprecatedMainColumnConstantsAreOutsideRuntimeSet(t *testing.T) {
+	_, deprecated := mainColumnConstants(t)
+	for _, name := range deprecated {
+		require.False(t, IsMainTableColumn(name), "deprecated constant %q is a runtime column: either undeprecate it or drop it from the runtime set", name)
+	}
 }
 
 // ColumnType() infers a column's type from its name; for every runtime column

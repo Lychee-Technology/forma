@@ -12,8 +12,9 @@ import (
 // This is the one statement of the entity_main column set: the writer's
 // allowlist, the read projection and the CDC column order derive from it,
 // registration refuses a binding outside it (#557), and tests pin the
-// forma.MainColumn* constants (columns_contract_test.go) and every DDL copy
-// (EntityMainDDLDrift) to it (#585). Extend all three together.
+// forma.MainColumn* constants (columns_contract_test.go) and each production-
+// shaped DDL copy (EntityMainDDLDrift) to it (#585). Extend all three
+// together.
 var (
 	TextColumns     = []string{"ltbase_created_by", "ltbase_deleted_by", "ltbase_updated_by", "text_01", "text_02", "text_03", "text_04", "text_05", "text_06", "text_07", "text_08", "text_09", "text_10"}
 	SmallintColumns = []string{"smallint_01", "smallint_02", "smallint_03"}

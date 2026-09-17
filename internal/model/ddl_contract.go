@@ -28,9 +28,13 @@ var columnKindSQLType = map[ColumnKind]string{
 // runtime cannot write, project or flush, or a type that differs from the
 // descriptor's kind. nil means the DDL declares exactly the runtime set.
 //
-// The DDL is hand-maintained in several places (#440); each copy's test pins
-// it with this so the set the writer's allowlist, the read projection and the
-// CDC column order derive from cannot drift from what the table has (#585).
+// The DDL is hand-maintained in three places (#440): cmd/tools/init_db.go,
+// internal/e2e_harness/production/ddl.go and
+// internal/e2e_harness/federated/ddl.go. Each copy's package pins it with
+// this so the set the writer's allowlist, the read projection and the CDC
+// column order derive from cannot drift from what the table has (#585). The
+// toy entity_main in internal/e2e_harness/fixtures.go is deliberately
+// minimal and is not a copy of the production DDL, so it is not pinned.
 func EntityMainDDLDrift(ddl string) []string {
 	declared := make(map[string]string)
 	for _, m := range entityMainDDLColumn.FindAllStringSubmatch(ddl, -1) {

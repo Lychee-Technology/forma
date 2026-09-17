@@ -1,20 +1,12 @@
-package production
+package federated
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-// productionDDL is the authoritative table DDL for the production harness.
-// Column types mirror the real production DDL created by cmd/tools/init_db.go
-// (production `init-db`, lines ~120-215), which is the authority — NOT the
-// federated harness copy in internal/e2e_harness/federated/ddl.go (that
-// copy serves 68 existing federated test cases and must not be modified). The
-// seed INSERT for schema_id=1 is intentionally omitted — production fixtures
-// register their own schemas via RegisterSchemas.
-var productionDDL = []string{
+// federatedDDL is the table DDL the federated harness creates. It is a
+// hand-maintained copy of the init-db DDL (#440); ddl_test.go pins its
+// entity_main statement to the runtime column set so it cannot drift from
+// what the writer, the read projection and the CDC column order are built
+// for (#585). The seed row for schema_id=1 is what the federated fixtures
+// expect.
+var federatedDDL = []string{
 	`CREATE TABLE IF NOT EXISTS schema_registry (
 		schema_id SMALLINT PRIMARY KEY,
 		schema_name TEXT NOT NULL UNIQUE,
@@ -61,26 +53,16 @@ var productionDDL = []string{
 		attr_id SMALLINT NOT NULL,
 		array_indices TEXT NOT NULL DEFAULT '',
 		value_text TEXT,
-		value_numeric NUMERIC,
+		value_numeric DOUBLE PRECISION,
 		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
 	)`,
 	`CREATE TABLE IF NOT EXISTS change_log (
 		schema_id SMALLINT NOT NULL,
 		row_id UUID NOT NULL,
 		changed_at BIGINT NOT NULL,
-		deleted_at BIGINT,
+		deleted_at BIGINT DEFAULT 0,
 		flushed_at BIGINT DEFAULT 0,
 		PRIMARY KEY (schema_id, row_id, flushed_at)
 	)`,
-}
-
-// applyProductionDDL creates the standard production tables in the per-test
-// database.
-func applyProductionDDL(ctx context.Context, pool *pgxpool.Pool) error {
-	for _, stmt := range productionDDL {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("apply ddl %q: %w", stmt[:40], err)
-		}
-	}
-	return nil
+	`INSERT INTO schema_registry (schema_id, schema_name) VALUES (1, 'test_entity') ON CONFLICT DO NOTHING`,
 }

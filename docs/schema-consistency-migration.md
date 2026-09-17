@@ -472,7 +472,12 @@ CDC column order derive from) all state it, and tests pin the three together
 `double_04` and `double_05`, which the runtime never wrote, projected or
 flushed; a database initialised by an older build still carries them as
 empty columns, and a binding to one of them is refused like any other
-unknown name. They can be dropped or left in place.
+unknown name. They can be dropped or left in place. The v0.2.0 constants
+`forma.MainColumnBigint04`, `MainColumnBigint05`, `MainColumnDouble04` and
+`MainColumnDouble05` still compile, marked `Deprecated`, so a dependent
+build does not break on update; a binding built from one is refused at
+registration with the same error. Rebind to `bigint_01..03` or
+`double_01..03` before the next breaking release removes them.
 
 ### valueType/column-encoding binding mismatches (`#459`)
 

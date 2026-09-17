@@ -31,7 +31,9 @@ func TestValidateColumnBinding_RefusesUnknownColumn(t *testing.T) {
 		// Created by init-db before #585 and still present on older
 		// deployments, but the writer's allowlist and the read projection stop
 		// at bigint_03: every write to it fails with "unsupported column".
-		{"column dropped from the DDL", bindingMeta(forma.ValueTypeBigInt, "bigint_04", d)},
+		// The v0.2.0 constant still compiles (kept as Deprecated for source
+		// compatibility) and is refused here like any other unknown name.
+		{"deprecated constant, column dropped from the DDL", bindingMeta(forma.ValueTypeBigInt, forma.MainColumnBigint04, d)}, //nolint:staticcheck // SA1019: the deprecated constant is the case under test
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
