@@ -115,3 +115,30 @@ func mainColBoolExpr(colName string, enc forma.MainColumnEncoding) string {
 	// Default covers MainColumnEncodingBoolInt and any other numeric-like encoding.
 	return BoolTruthiness("m." + colName)
 }
+
+// mainColISO8601Expr returns a DuckDB expression that normalises a
+// column-bound date/datetime main-table column stored with the iso8601
+// encoding (an RFC3339 string in a text column) to epoch-ms BIGINT, the
+// convention every other tier projects (#200). It is the CDC export's
+// spelling (cdc.castDateMainValue, #219) so the hot leg and the parquet legs
+// agree on the value, and TRY_CAST so a non-date string reads NULL on every
+// tier alike instead of failing the read (#555).
+func mainColISO8601Expr(colName string) string {
+	return fmt.Sprintf("epoch_ms(TRY_CAST(m.%s AS TIMESTAMP))", colName)
+}
+
+// boundMainExpr returns the hot-leg read of a column-bound attribute whose
+// stored image is not the unified column type the parquet legs carry, or
+// false when the raw column already is that image.
+func boundMainExpr(meta forma.AttributeMetadata) (string, bool) {
+	colName := string(meta.ColumnBinding.ColumnName)
+	switch meta.ValueType {
+	case forma.ValueTypeBool:
+		return mainColBoolExpr(colName, meta.ColumnBinding.Encoding), true
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		if meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
+			return mainColISO8601Expr(colName), true
+		}
+	}
+	return "", false
+}
