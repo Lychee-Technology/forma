@@ -44,23 +44,19 @@ type BoolMainPredicate struct {
 	Truthy bool
 }
 
-// Arity is the number of placeholders the predicate consumes, in the order
-// Args returns them.
-func (p BoolMainPredicate) Arity() int {
+// Render spells the predicate over an already-qualified column, drawing
+// each placeholder it needs from next in bind order (one call per bind, so
+// the emitter's counter advances exactly as many times as Args has
+// entries). It is the one spelling both pushdown emitters use (#575); because the
+// predicate allocates its own placeholders there is no arity for a caller
+// to get wrong.
+func (p BoolMainPredicate) Render(column string, next func() string) string {
 	if p.Encoding == forma.MainColumnEncodingBoolText {
-		return 1
+		return "(" + column + " = '1') = " + next()
 	}
-	return 2
-}
-
-// Render spells the predicate over an already-qualified column and the
-// Arity() placeholders the emitter allocated, in bind order. It is the one
-// spelling both pushdown emitters use.
-func (p BoolMainPredicate) Render(column string, placeholders ...string) string {
-	if p.Encoding == forma.MainColumnEncodingBoolText {
-		return "(" + column + " = '1') = " + placeholders[0]
-	}
-	return column + " BETWEEN " + placeholders[0] + " AND " + placeholders[1]
+	lo := next()
+	hi := next()
+	return column + " BETWEEN " + lo + " AND " + hi
 }
 
 // Args returns the binds in placeholder order.
@@ -76,20 +72,26 @@ func (p BoolMainPredicate) Args() []any {
 
 // pgMainBoolPredicate classifies an entity_main leaf: ok is true only for a
 // bool attribute bound with a bool encoding under `=` or `!=`, in which
-// case the returned predicate replaces the value bind. Any other leaf
-// (other value types, other operators) keeps the ConvertPgMainValue bind.
-// The operand parse is the engine-shared parseBoolOperand rule, so an
-// invalid spelling is the same user-facing rejection ConvertPgMainValue
-// raises.
-func pgMainBoolPredicate(meta forma.AttributeMetadata, sqlOp, valStr, attr string) (BoolMainPredicate, bool, error) {
-	if meta.ValueType != forma.ValueTypeBool || meta.ColumnBinding == nil {
+// case the returned predicate replaces the value bind. A bool attribute
+// under any other operator is rejected with the EAV whitelist's message:
+// the pg-main route already refused it through classifyPredicate, and the
+// hybrid route used to compare the raw 1/0 image (`m.<col> > $n`, #575), the one
+// place a bool range operator was still accepted. Any other leaf (other
+// value types) keeps the ConvertPgMainValue bind. The operand parse is the
+// engine-shared parseBoolOperand rule, so an invalid spelling is the same
+// user-facing rejection ConvertPgMainValue raises.
+func pgMainBoolPredicate(meta forma.AttributeMetadata, opStr, sqlOp, valStr, attr string) (BoolMainPredicate, bool, error) {
+	if meta.ValueType != forma.ValueTypeBool {
+		return BoolMainPredicate{}, false, nil
+	}
+	if sqlOp != "=" && sqlOp != "!=" {
+		return BoolMainPredicate{}, false, forma.InvalidInputf("operator '%s' not supported for boolean attributes", opStr)
+	}
+	if meta.ColumnBinding == nil {
 		return BoolMainPredicate{}, false, nil
 	}
 	enc := meta.ColumnBinding.Encoding
 	if enc != forma.MainColumnEncodingBoolInt && enc != forma.MainColumnEncodingBoolText {
-		return BoolMainPredicate{}, false, nil
-	}
-	if sqlOp != "=" && sqlOp != "!=" {
 		return BoolMainPredicate{}, false, nil
 	}
 	parsed, ok := parseBoolOperand(valStr)

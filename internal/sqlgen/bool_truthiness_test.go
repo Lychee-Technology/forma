@@ -229,13 +229,10 @@ func TestBoolMainPredicate_MatchesReadContract(t *testing.T) {
 	} {
 		for _, truthy := range []bool{true, false} {
 			p := BoolMainPredicate{Encoding: enc.encoding, Truthy: truthy}
-			placeholders := make([]string, p.Arity())
-			for i := range placeholders {
-				placeholders[i] = "?"
-			}
+			positional := func() string { return "?" }
 			for _, image := range enc.images {
 				t.Run(fmt.Sprintf("%s/truthy=%t/image=%s", enc.encoding, truthy, image), func(t *testing.T) {
-					query := "SELECT " + p.Render("m.v", placeholders...) + ", (" + mainColBoolExpr("v", enc.encoding) + ") = ? " +
+					query := "SELECT " + p.Render("m.v", positional) + ", (" + mainColBoolExpr("v", enc.encoding) + ") = ? " +
 						"FROM (SELECT CAST(" + image + " AS " + enc.cast + ") AS v) m"
 					args := append(p.Args(), truthy)
 					var gotPushdown, gotContract sql.NullBool

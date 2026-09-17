@@ -359,6 +359,32 @@ func TestHybrid_BoolTextEncoding(t *testing.T) {
 	}
 }
 
+// TestHybrid_BoolNonEqualityOperatorRejected: a bound bool under a range
+// or LIKE operator is the EAV whitelist's 400 on the hybrid main branch
+// too. It used to render `m.<col> > $n` against the raw 1/0 bind (a stored
+// 2 was "greater than true") and `m.<col> LIKE $n` against an int, a
+// Postgres-side type error; the pg-main and EAV routes always rejected it.
+func TestHybrid_BoolNonEqualityOperatorRejected(t *testing.T) {
+	for _, tc := range []struct {
+		attr, value, wantOp string
+	}{
+		{"active_int", "gt:true", "gt"},
+		{"active_int", "lte:0", "lte"},
+		{"active_int", "starts_with:1", "starts_with"},
+		{"active_text", "gte:1", "gte"},
+		{"active_text", "contains:1", "contains"},
+	} {
+		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
+			for _, anchor := range []bool{true, false} {
+				h := newHybridTestHelper(anchor)
+				_, _, err := h.build(&forma.KvCondition{Attr: tc.attr, Value: tc.value})
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				require.Contains(t, err.Error(), "operator '"+tc.wantOp+"' not supported for boolean attributes")
+			}
+		})
+	}
+}
+
 func TestHybrid_UnsupportedOperatorErrors(t *testing.T) {
 	h := newHybridTestHelper(true)
 	cond := &forma.KvCondition{Attr: "age", Value: "nope:1"}

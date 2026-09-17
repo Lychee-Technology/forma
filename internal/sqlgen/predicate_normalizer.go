@@ -103,7 +103,7 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 		leaf.Duck = normalizeDuckPayload(kv, meta, hasMeta, lenientSQL, lenientSQLErr)
 	}
 	if targets&targetHybrid != 0 {
-		leaf.Hybrid = normalizeHybridPayload(kv, meta, hasMeta, lenientSQL, lenientSQLErr)
+		leaf.Hybrid = normalizeHybridPayload(kv, meta, hasMeta, lenient, lenientSQL, lenientSQLErr)
 	}
 	return leaf
 }
@@ -119,6 +119,7 @@ func normalizeHybridPayload(
 	kv *forma.KvCondition,
 	meta forma.AttributeMetadata,
 	hasMeta bool,
+	lenient conditionexpr.OperatorValue,
 	lenientSQL conditionexpr.SQLOperatorResult,
 	lenientSQLErr error,
 ) HybridLeafPayload {
@@ -141,7 +142,7 @@ func normalizeHybridPayload(
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	}
-	if p, ok, err := pgMainBoolPredicate(leafMeta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+	if p, ok, err := pgMainBoolPredicate(leafMeta, lenient.Operator, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	} else if ok {
 		return HybridLeafPayload{IsMain: true, MainColumn: colName, MainBool: &p}
@@ -378,7 +379,7 @@ func normalizePgMainPayload(
 	}
 
 	column := resolveMainTableColumn(kv.Attr, meta)
-	if p, ok, err := pgMainBoolPredicate(meta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+	if p, ok, err := pgMainBoolPredicate(meta, lenient.Operator, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
 		return PgMainLeafPayload{Err: err}
 	} else if ok {
 		return PgMainLeafPayload{Column: column, Bool: &p}

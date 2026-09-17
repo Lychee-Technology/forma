@@ -63,9 +63,9 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 // normalizers take the BoolMainPredicate first (#565), because `= 1` read a
 // stored 2 as neither true nor false and `= '0'` read a stored 'true' as
 // neither, while every reader derives the bool through the truthiness
-// contract. The 1/0 binds below are left for the hybrid route's
-// non-equality operators on a bool column, which the EAV and pg-main routes
-// reject and which this route has always compared raw.
+// contract. A bool leaf under any other operator is rejected there as
+// well, so the 1/0 binds below only serve a bool attribute bound with a
+// non-bool column encoding.
 func convertPgBoolValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	parsed, ok := parseBoolOperand(valStr)
 	if !ok {

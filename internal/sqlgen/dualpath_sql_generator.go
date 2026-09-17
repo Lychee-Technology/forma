@@ -113,12 +113,11 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 	// which shares this counter and does use "$n", keeps its numbering stable.
 	if p.Bool != nil {
 		// One positional bind and one counter tick per placeholder (#565).
-		placeholders := make([]string, p.Bool.Arity())
-		for i := range placeholders {
-			placeholders[i] = "?"
+		next := func() string {
+			*e.paramIndex++
+			return "?"
 		}
-		*e.paramIndex += len(placeholders)
-		return p.Bool.Render(p.Column, placeholders...), p.Bool.Args(), nil
+		return p.Bool.Render(p.Column, next), p.Bool.Args(), nil
 	}
 	*e.paramIndex++
 	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
