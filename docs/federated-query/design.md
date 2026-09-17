@@ -188,16 +188,27 @@ case variants and not merely for exact-case ones.
 That case-insensitivity is **ASCII-only**, because DuckDB's is: the engine
 folds `A`–`Z` and nothing else, so `Á` and `á`, `Ж` and `ж`, and `cafÉ` and
 `café` are distinct identifiers to it, and U+212A KELVIN SIGN does not
-resolve onto `k`. The guard therefore keys on `duckdbFoldIdentifier`, not on
-`strings.ToLower`: Go's Unicode case mappings would merge every one of those
-pairs and reject a schema DuckDB serves correctly, and because they also map
-U+0130 (`İ`) onto `i`, they would read the legitimate attribute `row_İd` as
-the reserved `row_id`. Since a registration failure fails the whole registry,
-a false rejection here is a boot failure, so the boundary is pinned against
-the engine itself rather than its documentation
-(`TestDuckDBIdentifierFoldIsASCIIOnly`). The two runtime guards below still
-fold with `strings.ToLower` and are narrower than DuckDB in the same way;
-that is tracked in #550.
+resolve onto `k`. The guard therefore keys on `sqlgen.DuckDBFoldIdentifier`,
+not on `strings.ToLower`: Go's Unicode case mappings would merge every one of
+those pairs and reject a schema DuckDB serves correctly, and because they also
+map U+0130 (`İ`) onto `i`, they would read the legitimate attribute `row_İd`
+as the reserved `row_id`. Since a registration failure fails the whole
+registry, a false rejection here is a boot failure, so the boundary is pinned
+against the engine itself rather than its documentation
+(`TestDuckDBIdentifierFoldIsASCIIOnly`). The two runtime guards below key on
+the same primitive, with `sqlgen.DuckDBEqualFold` as its `strings.EqualFold`
+counterpart, so one identifier fold backs every seam of this contract (#550).
+Before that they folded with `strings.ToLower`, which refused a filter on
+`row.İd` as the reserved `row_id` and, on the keyset side, read a cursor
+column `row_İd` as the system column under an identity fold and admitted it
+past the identifier barrier; DuckDB keeps both distinct from `row_id`. Each
+guard is pinned against the engine the same way
+(`TestValidateUnregisteredParquetAttrColumn_FoldsLikeDuckDB`,
+`federated.TestKeysetCursorFoldsIdentifiersLikeDuckDB`). The one comparison
+outside `sqlgen`'s reach — `model.KeysetCursor.ValidateShape` matching the
+trailing tiebreak with `strings.EqualFold` against the literal `row_id` — is
+exactly the ASCII fold for that literal, because no non-ASCII rune sits in
+Go's simple case-fold orbit of `r`, `o`, `w`, `i` or `d`.
 
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,

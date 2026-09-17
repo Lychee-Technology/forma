@@ -176,13 +176,34 @@ func TestValidateParquetAttrColumns_NonASCIICaseVariantsPass(t *testing.T) {
 	}))
 }
 
-// TestDuckDBIdentifierFoldIsASCIIOnly pins duckdbFoldIdentifier against the
-// engine instead of against DuckDB's documentation. Two attribute names
-// share a parquet column exactly when DuckDB refuses to create a table
-// holding both as quoted columns, so that refusal is the oracle: the guard
-// must merge a pair if and only if DuckDB does. Every non-ASCII pair here is
-// one Go's strings.ToLower merges, which is what makes it the wrong
-// primitive (#532, review F1 on PR #548).
+// duckDBMergesIdentifiers asks the engine itself whether it resolves a and b
+// onto one identifier: DuckDB refuses to create a table holding both as
+// quoted columns exactly when it does. It is the oracle every fold test in
+// this file and in internal/federated is pinned against, so a DuckDB upgrade
+// that changed identifier folding would fail the build rather than leave a
+// guard silently narrower or wider than the engine.
+func duckDBMergesIdentifiers(t *testing.T, db *sql.DB, a, b string) bool {
+	t.Helper()
+	_, err := db.Exec(fmt.Sprintf(`CREATE TABLE "%s" ("%s" INT, "%s" INT)`, t.Name(), a, b))
+	if err == nil {
+		_, err = db.Exec(fmt.Sprintf(`DROP TABLE "%s"`, t.Name()))
+		require.NoError(t, err)
+		return false
+	}
+	require.Contains(t, err.Error(), "already exists",
+		"unexpected DDL failure for %q / %q", a, b)
+	return true
+}
+
+// TestDuckDBIdentifierFoldIsASCIIOnly pins DuckDBFoldIdentifier and
+// DuckDBEqualFold against the engine instead of against DuckDB's
+// documentation. Two attribute names share a parquet column exactly when
+// DuckDB refuses to create a table holding both as quoted columns, so that
+// refusal is the oracle: the guard must merge a pair if and only if DuckDB
+// does. Every non-ASCII pair here is one Go's strings.ToLower or
+// strings.EqualFold merges, which is what makes them the wrong primitives
+// (#532, review F1 on PR #548; #550 for the EqualFold half: U+212A KELVIN
+// SIGN and U+017F LONG S are merged by EqualFold, U+0130 by ToLower).
 func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -200,21 +221,71 @@ func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
 		{a: "ẞ", b: "ß", same: false},
 		{a: "cafÉ", b: "café", same: false},
 		{a: "K", b: "k", same: false}, // U+212A KELVIN SIGN
+		{a: "ſ", b: "s", same: false}, // U+017F LATIN SMALL LETTER LONG S
 		{a: "row_İd", b: "row_id", same: false},
 	}
 
-	for i, p := range pairs {
-		_, err := db.Exec(fmt.Sprintf(`CREATE TABLE t%d ("%s" INT, "%s" INT)`, i, p.a, p.b))
-		duckDBMerges := err != nil
-		if duckDBMerges {
-			require.Contains(t, err.Error(), "already exists",
-				"unexpected DDL failure for %q / %q", p.a, p.b)
-		}
+	for _, p := range pairs {
+		duckDBMerges := duckDBMergesIdentifiers(t, db, p.a, p.b)
 		require.Equal(t, p.same, duckDBMerges,
 			"DuckDB identifier folding changed for %q / %q; the guard's premise must be rechecked", p.a, p.b)
 		require.Equal(t, duckDBMerges,
-			duckdbFoldIdentifier(p.a) == duckdbFoldIdentifier(p.b),
-			"duckdbFoldIdentifier disagrees with DuckDB on %q / %q", p.a, p.b)
+			DuckDBFoldIdentifier(p.a) == DuckDBFoldIdentifier(p.b),
+			"DuckDBFoldIdentifier disagrees with DuckDB on %q / %q", p.a, p.b)
+		require.Equal(t, duckDBMerges, DuckDBEqualFold(p.a, p.b),
+			"DuckDBEqualFold disagrees with DuckDB on %q / %q", p.a, p.b)
+		require.Equal(t, duckDBMerges, DuckDBEqualFold(p.b, p.a),
+			"DuckDBEqualFold is not symmetric on %q / %q", p.a, p.b)
+	}
+}
+
+// TestValidateUnregisteredParquetAttrColumn_FoldsLikeDuckDB pins the filter
+// guard against the engine the same way (#550). Every attribute here folds
+// non-identically onto a reserved column, or is dedup machinery under some
+// spelling, so the guard must refuse it exactly when DuckDB resolves the
+// folded name onto the column it targets. The non-ASCII rows are the ones a
+// Unicode fold got wrong: strings.ToLower reads "row.İd" as row_id and
+// "source_tİer_priority" as the dedup rank, and refused a filter DuckDB
+// would have bound to a column of its own. The ASCII rows are the control:
+// the pass on the non-ASCII rows is the boundary being respected, not the
+// guard switched off.
+func TestValidateUnregisteredParquetAttrColumn_FoldsLikeDuckDB(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	cases := []struct {
+		attr   string
+		target string // the reserved or dedup column the fold aims at
+		same   bool   // DuckDB resolves the folded name onto target
+	}{
+		{attr: "row.id", target: "row_id", same: true},
+		{attr: "Row.ID", target: "row_id", same: true},
+		{attr: "attributes.json", target: "attributes_json", same: true},
+		{attr: "RN", target: "rn", same: true},
+		{attr: "Source_Tier.Priority", target: "source_tier_priority", same: true},
+		{attr: "row.İd", target: "row_id", same: false},
+		{attr: "ltbase.row_İd", target: "ltbase_row_id", same: false},
+		{attr: "attrİbutes.json", target: "attributes_json", same: false},
+		{attr: "source_tİer_priority", target: "source_tier_priority", same: false},
+		{attr: "source_tİer.priority", target: "source_tier_priority", same: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.attr, func(t *testing.T) {
+			folded := ParquetAttrColumn(tc.attr)
+			duckDBMerges := duckDBMergesIdentifiers(t, db, folded, tc.target)
+			require.Equal(t, tc.same, duckDBMerges,
+				"DuckDB identifier folding changed for %q / %q; the guard's premise must be rechecked", folded, tc.target)
+
+			err := ValidateUnregisteredParquetAttrColumn(tc.attr, folded)
+			if !duckDBMerges {
+				require.NoError(t, err, "DuckDB keeps %q distinct from %q, so the guard must admit it", folded, tc.target)
+				return
+			}
+			require.Error(t, err, "DuckDB resolves %q onto %q, so the guard must refuse it", folded, tc.target)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			require.Contains(t, err.Error(), tc.attr)
+		})
 	}
 }
 
