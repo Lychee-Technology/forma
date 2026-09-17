@@ -20,12 +20,15 @@ import (
 //
 // Off-contract images (SMALLINT -1 / 2, VARCHAR 'true') are planted by
 // direct entity_main UPDATEs: the write funnel rejects them, so they stand in
-// for history written before the rejection existed. On the unflushed hot leg
-// they are observed through the projected image only: a filter on the bool
-// itself is pushed down into the Postgres scan as a raw compare
-// (`smallint_01 = 1`), which is #565's route and hides those rows from both
-// sides of the filter. Once flushed there is no pushdown, and the filter
-// probes pin the truthiness verdict on parquet.
+// for history written before the rejection existed. They are probed on every
+// tier, the unflushed hot routes included: a filter on the bool itself is
+// pushed down into entity_main on both the Postgres route and the DuckDB hot
+// leg's postgres_scan, and since #565 that pushdown carries the read
+// contract's verdict — `smallint_01 BETWEEN 1 AND 32767` for the truthy
+// side of bool_smallint, `(text_02 = '1') = false` for the falsy side of
+// bool_text — so the planted 2 answers `equals:true` and the planted 'true'
+// answers `equals:false` the way the projection reads them, instead of the
+// raw `= 1` / `= '0'` compare matching neither operand.
 
 const boundBoolProps = `{
     "name": { "type": "string" },
@@ -86,6 +89,11 @@ func boolSpellingProbes(attr string, truthy, falsy []*Event) []widthProbe {
 		{attr + "_2", Filter{Attr: attr, Op: "equals", Value: "2"}, truthy},
 		{attr + "_false", Filter{Attr: attr, Op: "equals", Value: "false"}, falsy},
 		{attr + "_0", Filter{Attr: attr, Op: "equals", Value: "0"}, falsy},
+		// not_equals is the complement on a two-valued domain: the pushdown
+		// binds the opposite range under the same clause text (#565), and
+		// the unset row still matches neither side.
+		{attr + "_ne_true", Filter{Attr: attr, Op: "not_equals", Value: "true"}, falsy},
+		{attr + "_ne_false", Filter{Attr: attr, Op: "not_equals", Value: "false"}, truthy},
 	}
 }
 
@@ -108,9 +116,10 @@ func onContractProbes(rows boundBoolRows) []widthProbe {
 	)
 }
 
-// parquetProbes is the truth table once the planted images have been
-// flushed: the parquet legs carry the exported verdict, so `> 0.5` places 2
-// with true and -1 with false, and `= '1'` places 'true' with false.
+// parquetProbes is the truth table once the off-contract images are planted,
+// on every tier: the hot routes push the #565 range / `= '1'` compare into
+// entity_main and the parquet legs carry the exported verdict, so 2 sits
+// with true, -1 with false, and 'true' with false on all of them.
 func parquetProbes(rows boundBoolRows) []widthProbe {
 	return append(
 		boolSpellingProbes("flagInt", []*Event{rows.trueRow, rows.two}, []*Event{rows.falseRow, rows.negOne}),
@@ -180,7 +189,8 @@ func assertBoundBoolImages(ctx context.Context, t *testing.T, env *Env, label st
 // CASE ... ELSE FALSE so an unset bool became false once flushed, and the
 // outer CAST(attr AS BOOLEAN) could not be scanned into the SMALLINT slot at
 // all. All three are pinned here across the unflushed DuckDB hot leg, delta
-// parquet and base parquet.
+// parquet and base parquet, and the planted images are additionally probed
+// through both hot routes' pushdown (#565).
 func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -207,8 +217,13 @@ func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	runRejectionProbes(ctx, t, env, "hot-pg", hotPG, boolRejectionProbes())
 	runRejectionProbes(ctx, t, env, "hot-duck", duck, boolRejectionProbes())
 
-	// Off-contract images reach the hot leg through mainColBoolExpr.
+	// Off-contract images: the unfiltered read derives the truthiness image
+	// through mainColBoolExpr, and a filter on the bool pushes the #565
+	// BETWEEN range into entity_main on both hot routes, so the planted 2 is
+	// returned by equals:true here exactly as it is once flushed.
 	plantOffContract(ctx, t, env, simple, rows)
+	runWidthProbes(ctx, t, env, "hot-pg-planted", hotPG, false, parquetProbes(rows))
+	runWidthProbes(ctx, t, env, "hot-duck-planted", duck, true, parquetProbes(rows))
 	assertBoundBoolImages(ctx, t, env, "hot-duck", simple, rows)
 
 	if _, err := env.RunFlush(ctx); err != nil {

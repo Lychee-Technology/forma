@@ -141,6 +141,11 @@ func normalizeHybridPayload(
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	}
+	if p, ok, err := pgMainBoolPredicate(leafMeta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+		return HybridLeafPayload{IsMain: true, Err: err}
+	} else if ok {
+		return HybridLeafPayload{IsMain: true, MainColumn: colName, MainBool: &p}
+	}
 	value, err := ConvertPgMainValue(lenientSQL.Value, kv.Attr, leafMeta)
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
@@ -347,7 +352,8 @@ func NarrowEAVNumericOperand(vt forma.ValueType, v int64) any {
 
 // normalizePgMainPayload converts a leaf for entity_main pushdown: unknown
 // attributes and unbound columns skip silently, bound-but-unclassifiable
-// operators error, and values convert per column encoding.
+// operators error, and values convert per column encoding; a bool-encoded
+// equality leaf carries a BoolMainPredicate instead of a value bind (#565).
 func normalizePgMainPayload(
 	kv *forma.KvCondition,
 	meta forma.AttributeMetadata,
@@ -371,12 +377,18 @@ func normalizePgMainPayload(
 		return PgMainLeafPayload{Err: lenientSQLErr}
 	}
 
+	column := resolveMainTableColumn(kv.Attr, meta)
+	if p, ok, err := pgMainBoolPredicate(meta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+		return PgMainLeafPayload{Err: err}
+	} else if ok {
+		return PgMainLeafPayload{Column: column, Bool: &p}
+	}
 	parsedValue, err := ConvertPgMainValue(lenientSQL.Value, kv.Attr, meta)
 	if err != nil {
 		return PgMainLeafPayload{Err: err}
 	}
 	return PgMainLeafPayload{
-		Column: resolveMainTableColumn(kv.Attr, meta),
+		Column: column,
 		SQLOp:  lenientSQL.SQLOperator,
 		Value:  parsedValue,
 	}

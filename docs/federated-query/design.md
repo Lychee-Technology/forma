@@ -907,8 +907,23 @@ applied on both sides:
   the same `mainColBoolExpr` as the EAV-joined projection, and the outer
   select casts the verdict back to the physical column's shape (`SMALLINT`
   1/0, `VARCHAR` '1'/'0') so the federated reader scans it by column kind.
-  The one route still comparing the raw stored image is the pg-main
-  pushdown (#565); under the enforced 0/1 contract it agrees.
+  The entity_main pushdown is on the same contract (#565): a filter on a
+  column-bound bool reaches `entity_main` through the pg-main clause the
+  DuckDB hot leg embeds in its `postgres_scan` and through the hybrid
+  builder's main branch on the Postgres route, and both render
+  `sqlgen.BoolMainPredicate` rather than a raw `= 1` / `= '0'` compare —
+  `<col> BETWEEN $lo AND $hi` with bounds `(1, 32767)` for the truthy side
+  and `(-32768, 0)` for the falsy side of a `bool_smallint` column (exactly
+  `> 0.5` / `<= 0.5` on a SMALLINT), `(<col> = '1') = $b` with a bool bind
+  for a `bool_text` column. `not_equals:X` is `equals:!X`. The clause text
+  is the same for every operand because the federated plan cache keys on
+  the query shape without operands and reuses the cached pg-main clause on
+  a hit; only the binds may differ. The smallint bounds are integer binds so
+  the predicate stays on the `integer_ops` btree family (a `0.5` literal
+  would cast the column). So a stored image outside the write contract (a
+  `2`, a `'true'`) answers `equals:true` / `equals:false` the way the
+  projection, the export and the Go read path already read it, on the
+  unflushed hot routes exactly as on parquet.
 
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans

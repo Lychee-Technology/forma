@@ -112,6 +112,10 @@ type HybridLeafPayload struct {
 	MainColumn string // physical column name, unsanitized
 	MainSQLOp  string
 	MainValue  any
+	// MainBool replaces MainSQLOp/MainValue for a bool-encoded leaf under
+	// = / != (#565): the emitter allocates Arity() placeholders, renders
+	// it over them and binds Args(). Nil for every other main-branch leaf.
+	MainBool *BoolMainPredicate
 
 	// EAV branch — computed identically to PgEavLeafPayload (strict parse).
 	Eav PgEavLeafPayload
@@ -150,6 +154,10 @@ type PgMainLeafPayload struct {
 	Column string
 	SQLOp  string
 	Value  any
+	// Bool replaces SQLOp/Value for a bool-encoded leaf under = / != (#565):
+	// the emitter allocates Arity() placeholders, renders it over them and
+	// binds Args().
+	Bool *BoolMainPredicate
 }
 
 // DuckLeafPayload is the DuckDB emission payload (lenient parse policy).

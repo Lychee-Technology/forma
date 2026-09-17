@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -69,8 +70,9 @@ func TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling(t *testing.T) {
 // TestToDualClauses_BoundBoolOperandSpellingParity is the #503 acceptance
 // at the emitter level: one operand spelling on a column-bound bool must
 // reach the same verdict on every route the dual-path generator serves —
-// the pg-main pushdown bind (int64 1/0 or "1"/"0" per encoding), the PG-EAV
-// truthy bind and the DuckDB CAST(? AS BOOLEAN) bind — or be rejected as
+// the pg-main pushdown bind (the BETWEEN range for bool_smallint, the bool
+// bind against `= '1'` for bool_text; #565), the PG-EAV truthy bind and the
+// DuckDB CAST(? AS BOOLEAN) bind — or be rejected as
 // invalid input on all of them. Before #564 the pg-main bind ran
 // strconv.Atoi alone, so `equals:true` was a 400 on the PreferHot route and
 // a match through DuckDB; the converter-level pin above cannot see that
@@ -79,22 +81,20 @@ func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
 	cache := characterizationCache()
 	type encoding struct {
 		attr   string
-		column string
-		bind   func(truthy bool) any
+		clause string
+		bind   func(truthy bool) []any
+		eav    string // the PG-EAV clause after the pg-main ticks
 	}
 	encodings := []encoding{
-		{"active", "m.bool_01", func(v bool) any {
+		{"active", "m.bool_01 BETWEEN ? AND ?", func(v bool) []any {
 			if v {
-				return int64(1)
+				return []any{int64(1), int64(32767)}
 			}
-			return int64(0)
-		}},
-		{"verified", "m.text_02", func(v bool) any {
-			if v {
-				return "1"
-			}
-			return "0"
-		}},
+			return []any{int64(-32768), int64(0)}
+		}, charEXISTS + "$3 AND (x.value_numeric > 0.5) = $4)"},
+		{"verified", "(m.text_02 = '1') = ?", func(v bool) []any {
+			return []any{v}
+		}, charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)"},
 	}
 	spellings := []struct {
 		operand string
@@ -112,8 +112,8 @@ func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
 				dc, err := ToDualClauses(charKv(enc.attr, "equals:"+sp.operand), "eav_table", 7, cache, &paramIndex)
 				require.NoError(t, err)
 				require.Equal(t, DualClauses{
-					PgMainClause: enc.column + " = ?", PgMainArgs: []any{enc.bind(sp.truthy)},
-					PgClause: charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)", PgArgs: []any{attrID, sp.truthy},
+					PgMainClause: enc.clause, PgMainArgs: enc.bind(sp.truthy),
+					PgClause: enc.eav, PgArgs: []any{attrID, sp.truthy},
 					DuckClause: enc.attr + " = CAST(? AS BOOLEAN)", DuckArgs: []any{sp.truthy},
 				}, dc)
 			})
@@ -207,4 +207,95 @@ func TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn(t *testing.T) {
 			require.Equal(t, tc.wantText, gotText)
 		})
 	}
+}
+
+// TestBoolMainPredicate_MatchesReadContract executes the pushdown predicate
+// and the read contract (mainColBoolExpr: `> 0.5` for bool_smallint, `= '1'`
+// for bool_text) side by side on DuckDB over the images the write funnel
+// does not produce (#565): the pushdown must reach the contract's verdict
+// on every image and stay NULL on NULL.
+func TestBoolMainPredicate_MatchesReadContract(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	for _, enc := range []struct {
+		encoding forma.MainColumnEncoding
+		cast     string
+		images   []string
+	}{
+		{forma.MainColumnEncodingBoolInt, "SMALLINT", []string{"-32768", "-1", "0", "1", "2", "32767", "NULL"}},
+		{forma.MainColumnEncodingBoolText, "VARCHAR", []string{"'1'", "'0'", "'true'", "'2'", "''", "NULL"}},
+	} {
+		for _, truthy := range []bool{true, false} {
+			p := BoolMainPredicate{Encoding: enc.encoding, Truthy: truthy}
+			placeholders := make([]string, p.Arity())
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			for _, image := range enc.images {
+				t.Run(fmt.Sprintf("%s/truthy=%t/image=%s", enc.encoding, truthy, image), func(t *testing.T) {
+					query := "SELECT " + p.Render("m.v", placeholders...) + ", (" + mainColBoolExpr("v", enc.encoding) + ") = ? " +
+						"FROM (SELECT CAST(" + image + " AS " + enc.cast + ") AS v) m"
+					args := append(p.Args(), truthy)
+					var gotPushdown, gotContract sql.NullBool
+					require.NoError(t, db.QueryRow(query, args...).Scan(&gotPushdown, &gotContract))
+					require.Equal(t, gotContract, gotPushdown, "pushdown verdict must equal the read contract's verdict")
+				})
+			}
+		}
+	}
+}
+
+// TestPgMainAndHybridMain_BoolPredicateSpelling pins the entity_main
+// pushdown predicate for both bool encodings and both equality operators
+// (#565), the pg-main twin of TestPgEavLeafPayload_ComparisonLHSUsesBoolTruthiness.
+// The clause text is operand-independent — the plan cache reuses it across
+// operands, so `equals:true` and `equals:false` must differ only in their
+// binds: bool_smallint renders the BETWEEN range whose bounds equal the
+// `> 0.5` verdict on a SMALLINT, bool_text renders the `= '1'` contract
+// every other leg reads by against a bool bind. Every case consumes one
+// counter tick per placeholder.
+func TestPgMainAndHybridMain_BoolPredicateSpelling(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"flagInt": {AttributeID: 2, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolInt}},
+		"flagText": {AttributeID: 3, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText}},
+	}
+	truthy := []any{int64(1), int64(32767)}
+	falsy := []any{int64(-32768), int64(0)}
+	for _, tc := range []struct {
+		attr, value string
+		wantMain    string
+		wantArgs    []any
+	}{
+		{"flagInt", "equals:true", "m.smallint_01 BETWEEN ? AND ?", truthy},
+		{"flagInt", "equals:false", "m.smallint_01 BETWEEN ? AND ?", falsy},
+		{"flagInt", "not_equals:true", "m.smallint_01 BETWEEN ? AND ?", falsy},
+		{"flagInt", "not_equals:false", "m.smallint_01 BETWEEN ? AND ?", truthy},
+		{"flagInt", "equals:2", "m.smallint_01 BETWEEN ? AND ?", truthy},
+		{"flagText", "equals:true", "(m.text_02 = '1') = ?", []any{true}},
+		{"flagText", "equals:false", "(m.text_02 = '1') = ?", []any{false}},
+		{"flagText", "not_equals:true", "(m.text_02 = '1') = ?", []any{false}},
+		{"flagText", "not_equals:false", "(m.text_02 = '1') = ?", []any{true}},
+		{"flagText", "equals:2", "(m.text_02 = '1') = ?", []any{true}},
+	} {
+		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
+			paramIndex := 0
+			sqlText, args, err := buildPgMainClause(&forma.KvCondition{Attr: tc.attr, Value: tc.value}, cache, &paramIndex)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMain, sqlText)
+			require.Equal(t, tc.wantArgs, args)
+			require.Equal(t, len(tc.wantArgs), paramIndex, "one counter tick per placeholder")
+
+			leaf := normalizeLeaf(&forma.KvCondition{Attr: tc.attr, Value: tc.value}, cache, targetHybrid)
+			require.NoError(t, leaf.Hybrid.Err)
+			require.True(t, leaf.Hybrid.IsMain)
+			require.NotNil(t, leaf.Hybrid.MainBool)
+			require.Equal(t, tc.wantArgs, leaf.Hybrid.MainBool.Args())
+		})
+	}
+	_, _, err := buildPgMainClause(&forma.KvCondition{Attr: "flagInt", Value: "equals:banana"}, cache, new(int))
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }

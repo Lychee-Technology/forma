@@ -111,6 +111,15 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 	//
 	// paramIndex is still advanced so the sibling EAV EXISTS clause (PgClause),
 	// which shares this counter and does use "$n", keeps its numbering stable.
+	if p.Bool != nil {
+		// One positional bind and one counter tick per placeholder (#565).
+		placeholders := make([]string, p.Bool.Arity())
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		*e.paramIndex += len(placeholders)
+		return p.Bool.Render(p.Column, placeholders...), p.Bool.Args(), nil
+	}
 	*e.paramIndex++
 	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
 	return sql, []any{p.Value}, nil

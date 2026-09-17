@@ -167,10 +167,9 @@ func TestHealth_BoolEncoding(t *testing.T) {
 	kv := &forma.KvCondition{Attr: "flag", Value: "equals:1"}
 	sql, args, err := buildPgMainClause(kv, cacheInt, &paramIndex)
 	require.NoError(t, err)
-	require.NotEmpty(t, sql)
-	require.Len(t, args, 1)
-	// Expect int64(1)
-	require.EqualValues(t, int64(1), args[0])
+	require.Equal(t, "m.smallint_01 BETWEEN ? AND ?", sql)
+	require.Equal(t, []any{int64(1), int64(32767)}, args)
+	require.Equal(t, 2, paramIndex, "two placeholders, two ticks (#565)")
 
 	// bool -> text encoding
 	cacheText := forma.SchemaAttributeCache{
@@ -186,7 +185,7 @@ func TestHealth_BoolEncoding(t *testing.T) {
 	paramIndex = 0
 	sql, args, err = buildPgMainClause(kv, cacheText, &paramIndex)
 	require.NoError(t, err)
-	require.NotEmpty(t, sql)
-	require.Len(t, args, 1)
-	require.Equal(t, "1", args[0])
+	require.Equal(t, "(m.text_03 = '1') = ?", sql)
+	require.Equal(t, []any{true}, args)
+	require.Equal(t, 1, paramIndex)
 }
