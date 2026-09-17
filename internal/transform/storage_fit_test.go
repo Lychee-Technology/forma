@@ -280,6 +280,26 @@ func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
 			boundMeta(forma.ValueTypeDateTime, forma.MainColumnText01, forma.MainColumnEncodingISO8601), "2024-01-01T00:00:00Z", nil},
 		{"bool to text bool_text accepted",
 			boundMeta(forma.ValueTypeBool, forma.MainColumnText01, forma.MainColumnEncodingBoolText), false, nil},
+		// #559: an explicit encoding renders the numeric slot as text
+		// (bool_text, iso8601) or as a number (unix_ms, bool_smallint), and
+		// the column must be able to hold that rendering; the store places
+		// the value by the column's type, so the check keys on it too.
+		{"datetime to bigint iso8601 rejected",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingISO8601), "2024-01-01T00:00:00Z",
+			[]string{"datetime value cannot be stored in main column bigint_01 (bigint) with encoding iso8601, which renders a text value"}},
+		{"bool to smallint bool_text rejected",
+			boundMeta(forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolText), true,
+			[]string{"bool value cannot be stored in main column smallint_01 (smallint) with encoding bool_text, which renders a text value"}},
+		{"date to text unix_ms rejected",
+			boundMeta(forma.ValueTypeDate, forma.MainColumnText01, forma.MainColumnEncodingUnixMs), "2024-01-01",
+			[]string{"date value cannot be stored in main column text_01 (text) with encoding unix_ms, which renders a numeric value"}},
+		{"bool to uuid bool_smallint rejected",
+			boundMeta(forma.ValueTypeBool, forma.MainColumnUUID01, forma.MainColumnEncodingBoolInt), true,
+			[]string{"bool value cannot be stored in main column uuid_01 (uuid) with encoding bool_smallint, which renders a numeric value"}},
+		{"bool to integer bool_smallint accepted (numeric rendering, column width holds it)",
+			boundMeta(forma.ValueTypeBool, forma.MainColumnInteger01, forma.MainColumnEncodingBoolInt), true, nil},
+		{"date to double unix_ms accepted (numeric rendering, no width to check)",
+			boundMeta(forma.ValueTypeDate, forma.MainColumnDouble01, forma.MainColumnEncodingUnixMs), "2024-01-01", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
