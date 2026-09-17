@@ -13,6 +13,7 @@ Forma Tools CLI
 - `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，
   使用与服务端相同的元数据加载路径。检查项包括：
   - 重复的 `attributeID` / `column_binding.col_name`；
+  - `column_binding.col_name` 不是 `entity_main` 实际拥有的列（#557）；
   - `valueType`↔column-encoding 绑定无法 round-trip 的情况（#459）；
   - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行。
   详见 `docs/schema-consistency-migration.md`。

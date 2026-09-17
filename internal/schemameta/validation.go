@@ -24,18 +24,19 @@ func parseAttributeID(raw any, attrName, source string) (int16, error) {
 
 // validateSchemaAttributeCache rejects attributeID, main-column, and folded
 // parquet-column collisions across the FULL cache, retired entries included,
-// and (#459) any active binding whose valueType cannot round-trip through its
-// column. Every error it returns begins with "schema <name>", so callers wrap
-// it with what it cannot know — the attributes file the metadata came from,
-// or the numeric schema id — never with the name again.
+// and any active binding that names a column entity_main does not have (#557)
+// or whose valueType cannot round-trip through its column (#459). Every error
+// it returns begins with "schema <name>", so callers wrap it with what it
+// cannot know — the attributes file the metadata came from, or the numeric
+// schema id — never with the name again.
 func validateSchemaAttributeCache(schemaName string, cache forma.SchemaAttributeCache) error {
 	return validateSchemaAttributeCacheOpts(schemaName, cache, true)
 }
 
 // validateSchemaAttributeCacheOpts is the form validate-schema-consistency
-// loads through with checkBindings=false: it reports every binding mismatch
-// itself (via ValidateColumnBinding) instead of stopping at the first. Every
-// runtime load path passes true.
+// loads through with checkBindings=false: it reports every unknown column and
+// binding mismatch itself (via ValidateColumnBinding) instead of stopping at
+// the first. Every runtime load path passes true.
 func validateSchemaAttributeCacheOpts(schemaName string, cache forma.SchemaAttributeCache, checkBindings bool) error {
 	seenAttrIDs := make(map[int16]string, len(cache))
 	seenBindings := make(map[forma.MainColumn]string)

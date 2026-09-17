@@ -90,7 +90,10 @@ type MainColumnBinding struct {
 	Encoding   MainColumnEncoding `json:"encoding,omitempty"`
 }
 
-// ColumnType derives the column type from the column name prefix.
+// ColumnType derives the column type from the column name prefix. It is
+// lenient by design — an unrecognised name classifies as text — because it
+// runs on already-loaded metadata; whether the name is a column entity_main
+// has is checked once, at registration (schemameta.ValidateColumnBinding, #557).
 func (m *MainColumnBinding) ColumnType() MainColumnType {
 	name := strings.ToLower(string(m.ColumnName))
 	switch {
