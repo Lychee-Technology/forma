@@ -2,7 +2,9 @@ package federated
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -359,4 +361,72 @@ func TestKeysetCursorPlaceholderTracksSqlgen(t *testing.T) {
 
 	require.NoError(t, validateKeysetCursor(keysetCursorOn(placeholder, "row_id"), nil))
 	require.NoError(t, validateKeysetCursor(keysetCursorOn(strings.ToUpper(placeholder), "row_id"), nil))
+}
+
+// TestKeysetCursorFoldsIdentifiersLikeDuckDB pins the cursor guard against
+// the engine rather than against its documentation (#550), the way
+// sqlgen.TestDuckDBIdentifierFoldIsASCIIOnly pins the primitive it now
+// shares: DuckDB refuses to create a table holding two quoted columns exactly
+// when it resolves them onto one identifier, so that refusal is the oracle.
+// A cursor column DuckDB merges with row_id must take the system-column
+// branch — admitted under an identity fold, refused as a system column
+// otherwise. One DuckDB keeps distinct must never reach that branch: it is
+// an ordinary name, and a non-ASCII one ends at the identifier barrier.
+//
+// "row_İd" is the row that mattered. strings.ToLower maps U+0130 onto "i",
+// so the old guard read it as row_id, saw an identity fold, and ADMITTED it
+// — the continue on the system-column branch skips safeSQLIdentifier, so a
+// non-ASCII identifier was interpolated unquoted into the statement. DuckDB
+// then failed to bind it (loud, not silent), but the barrier had been
+// bypassed. "row.İd" was refused under the system-column message for a
+// column it never reaches.
+func TestKeysetCursorFoldsIdentifiersLikeDuckDB(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	cases := []struct {
+		attr    string
+		same    bool   // DuckDB resolves the folded name onto row_id
+		wantErr string // "" means accepted
+	}{
+		{attr: "ROW_ID", same: true, wantErr: ""},
+		{attr: "Row.ID", same: true, wantErr: `folds to "Row_ID", a system column`},
+		{attr: "row_İd", same: false, wantErr: "is not a safe SQL identifier"},
+		{attr: "row.İd", same: false, wantErr: "is not a safe SQL identifier"},
+		{attr: "row_\u212Ad", same: false, wantErr: "is not a safe SQL identifier"}, // U+212A KELVIN SIGN
+	}
+	for i, tc := range cases {
+		t.Run(tc.attr, func(t *testing.T) {
+			folded := sqlgen.ParquetAttrColumn(tc.attr)
+			_, err := db.Exec(fmt.Sprintf(`CREATE TABLE t%d ("%s" INT, "row_id" INT)`, i, folded))
+			duckDBMerges := err != nil
+			if duckDBMerges {
+				require.Contains(t, err.Error(), "already exists", "unexpected DDL failure for %q", folded)
+			}
+			require.Equal(t, tc.same, duckDBMerges,
+				"DuckDB identifier folding changed for %q / row_id; the guard's premise must be rechecked", folded)
+
+			err = validateKeysetCursor(keysetCursorOn(tc.attr, "row_id"), nil)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+			if !duckDBMerges {
+				require.NotContains(t, err.Error(), "a system column",
+					"DuckDB keeps %q distinct from row_id, so the guard must not judge it as row_id", folded)
+			}
+		})
+	}
+
+	// The trailing tiebreak is compared on model.KeysetCursor with
+	// strings.EqualFold against the literal "row_id". That is exactly the
+	// ASCII fold for this literal — no non-ASCII rune sits in Go's simple
+	// case-fold orbit of r, o, w, i or d — so "row_İd" is not the tiebreak
+	// there either, and model, which cannot import sqlgen, needs no change.
+	err = validateKeysetCursor(keysetCursorOn("created_at", "row_İd"), nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `expected "row_id"`)
 }

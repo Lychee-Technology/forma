@@ -3,7 +3,6 @@ package federated
 import (
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -27,11 +26,11 @@ import (
 // well-formed identifiers they now pass as ordinary attribute names and fail
 // at the binder, which is honest rather than falsely supported (#381).
 //
-// Looked up on the FOLDED name, LOWER-CASED, like every other map rule below.
-// DuckDB resolves an unquoted identifier case-insensitively, so a cursor on
-// "ROW_ID" or "Created_At" binds to exactly these columns; normalising the
-// lookup key routes those spellings through the system-column branch instead
-// of treating them as ordinary attribute names (#381).
+// Looked up on the FOLDED name, ASCII-LOWER-CASED, like every other map rule
+// below. DuckDB resolves an unquoted identifier case-insensitively, so a
+// cursor on "ROW_ID" or "Created_At" binds to exactly these columns;
+// normalising the lookup key routes those spellings through the system-column
+// branch instead of treating them as ordinary attribute names (#381).
 //
 // Case-insensitivity is the whole of the latitude: reaching one of these four
 // by a NON-IDENTITY fold is refused. ParquetAttrColumn is the identity on all
@@ -59,7 +58,7 @@ var keysetSystemColumns = map[string]struct{}{
 // the identifier rule below cannot catch. Both are in scope where the keyset
 // predicate renders: the visible CTE selects over ranked, which projects them.
 //
-// The lookup is on the FOLDED name, LOWER-CASED, because the raw name is not
+// The lookup is on the FOLDED name, ASCII-LOWER-CASED, because the raw name is not
 // the name that reaches SQL: ParquetAttrColumn maps dots and spaces onto
 // underscores and strips backticks and brackets, so "source_tier.priority" and
 // "[rn]" land on these columns just as surely as the bare spellings do, and it
@@ -118,7 +117,11 @@ var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //     safe SQL identifier. Case is the only latitude anywhere in that list:
 //     every rule below is matched case-insensitively because DuckDB resolves
 //     unquoted identifiers that way, and no rule admits a name that reached a
-//     column of visible by a non-identity fold.
+//     column of visible by a non-identity fold. The case-insensitivity is
+//     the engine's, ASCII-only, through sqlgen.DuckDBFoldIdentifier and
+//     sqlgen.DuckDBEqualFold (#550): a Unicode fold read "row_İd" as the
+//     system column row_id and, the fold being the identity, admitted it
+//     past the identifier barrier, while DuckDB keeps the two distinct.
 //
 // It deliberately does NOT check that an attribute is registered in the
 // schema: that needs the metadata cache, and an unregistered but well-formed
@@ -147,8 +150,8 @@ func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOr
 		// name the code generator emits, so a rule applied to the raw name
 		// guards a string that never reaches SQL.
 		folded := sqlgen.ParquetAttrColumn(col.Attribute)
-		if strings.EqualFold(folded, sqlgen.ParquetAttrPlaceholder) &&
-			!strings.EqualFold(col.Attribute, sqlgen.ParquetAttrPlaceholder) {
+		if sqlgen.DuckDBEqualFold(folded, sqlgen.ParquetAttrPlaceholder) &&
+			!sqlgen.DuckDBEqualFold(col.Attribute, sqlgen.ParquetAttrPlaceholder) {
 			// sqlgen.ParquetAttrPlaceholder is the column ParquetAttrColumn
 			// substitutes whenever the fold empties the name — "", "[]",
 			// "``" — and a name like "[attr]" or "`attr`" strips down onto it
@@ -165,20 +168,26 @@ func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOr
 			// case-insensitively, so a folded "Attr" reaches the very column
 			// "attr" does — the shift key must not be a bypass. The exemption
 			// is folded too, or an attribute legitimately named "Attr" (which
-			// folds to its own name) would be newly refused.
+			// folds to its own name) would be newly refused. The comparison
+			// is sqlgen's ASCII-only fold, not strings.EqualFold, which
+			// merges characters (U+212A KELVIN SIGN with "k") DuckDB does not.
 			return fmt.Errorf("keyset cursor column %q folds onto the placeholder %q, which would silently retarget the cursor at a real attribute of that name: name a visible-CTE system column (row_id, created_at, ver_ts, deleted_ts) or a schema attribute that folds to its own name", col.Attribute, folded)
 		}
 		// Both map lookups are case-normalised: DuckDB resolves unquoted
 		// identifiers case-insensitively, so "RN" reaches the same column
-		// as "rn". Only the LOOKUP KEY is lower-cased — the emitted name and
-		// every error message keep the caller's spelling.
-		key := strings.ToLower(folded)
+		// as "rn". Only the LOOKUP KEY is folded — the emitted name and
+		// every error message keep the caller's spelling — and it is folded
+		// the way the engine folds, ASCII only: strings.ToLower would map
+		// "row_İd" onto row_id, a column DuckDB does not resolve it to, and
+		// the identity-fold exemption below would then admit a non-ASCII
+		// identifier without it ever reaching safeSQLIdentifier (#550).
+		key := sqlgen.DuckDBFoldIdentifier(folded)
 		if _, ok := keysetSystemColumns[key]; ok {
 			// A system column is admitted only under its OWN name, case
 			// aside: the fold must have been the identity. Anything else
 			// reached the column by transformation, and the generator would
 			// emit the system column for a cursor that named something else.
-			if strings.EqualFold(col.Attribute, folded) {
+			if sqlgen.DuckDBEqualFold(col.Attribute, folded) {
 				continue
 			}
 			return fmt.Errorf("keyset cursor column %q folds to %q, a system column of the visible CTE, which would silently paginate on that column instead of the attribute named: cursor on %s under its own name, or on a schema attribute that folds to its own name", col.Attribute, folded, key)
