@@ -28,9 +28,9 @@ import (
 // any value that does not fit the column. System columns (ltbase_*) go through
 // the same matrix via ColumnType(). A nil binding is always valid.
 //
-// The write path, the Postgres read path and the CDC export round-trip every
-// admitted pair. For date/datetime → text (iso8601) the DuckDB hot-leg
-// projection is unverified; see #555.
+// The write path, the Postgres read path, the CDC export and the DuckDB
+// federated reader (hot-leg projection and outer select, #555) round-trip
+// every admitted pair.
 func ValidateColumnBinding(attrName string, meta forma.AttributeMetadata) error {
 	binding := meta.ColumnBinding
 	if binding == nil {

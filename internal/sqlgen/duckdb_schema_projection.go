@@ -57,10 +57,14 @@ type SchemaProjection struct {
 	// itemsTypes maps a list attribute's name to its effective element type.
 	itemsTypes map[string]forma.ValueType
 
-	// boundBoolEncodings maps a column-bound bool attribute's name to its
-	// storage encoding, so every hot-leg projection — the EAV-joined one and
-	// BuildPGSelectNoEAV alike — reads the column through mainColBoolExpr.
-	boundBoolEncodings map[string]forma.MainColumnEncoding
+	// boundMainExprs maps a column-bound attribute's name to the DuckDB
+	// expression that reads its main column normalised to the unified column
+	// type, for the bindings whose stored image is not that type: bool
+	// (mainColBoolExpr) and iso8601 date/datetime (mainColISO8601Expr).
+	// Every hot-leg projection — the EAV-joined one and BuildPGSelectNoEAV
+	// alike — reads such a column through this map; absent means the raw
+	// column is the image.
+	boundMainExprs map[string]string
 }
 
 // attrProjectionInfo holds the projection-relevant metadata for one schema attribute.
@@ -84,10 +88,10 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 			"ver_ts":     forma.ValueTypeBigInt,
 			"deleted_ts": forma.ValueTypeBigInt,
 		},
-		AttrToMainColumn:   make(map[string]string),
-		attrIDs:            make(map[string]int),
-		itemsTypes:         make(map[string]forma.ValueType),
-		boundBoolEncodings: make(map[string]forma.MainColumnEncoding),
+		AttrToMainColumn: make(map[string]string),
+		attrIDs:          make(map[string]int),
+		itemsTypes:       make(map[string]forma.ValueType),
+		boundMainExprs:   make(map[string]string),
 	}
 
 	attrs := make([]attrProjectionInfo, 0, len(cache))
@@ -98,8 +102,8 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		if meta.ColumnBinding != nil {
 			ai.isColumn = true
 			sp.AttrToMainColumn[name] = string(meta.ColumnBinding.ColumnName)
-			if meta.ValueType == forma.ValueTypeBool {
-				sp.boundBoolEncodings[name] = meta.ColumnBinding.Encoding
+			if expr, ok := boundMainExpr(meta); ok {
+				sp.boundMainExprs[name] = expr
 			}
 		} else {
 			sp.EAVAttrs = append(sp.EAVAttrs, name)
@@ -200,13 +204,12 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 		if a.isColumn {
 			colName := string(a.meta.ColumnBinding.ColumnName)
 			var expr string
-			if a.meta.ValueType == forma.ValueTypeBool {
-				// Normalize the main column to BOOLEAN so both sides of COALESCE
-				// are the same type. hot_vals.<attr> is already BOOLEAN (from the
-				// EAV pivot fix); m.<col> must be normalized by encoding.
-				mainBoolExpr := mainColBoolExpr(colName, a.meta.ColumnBinding.Encoding)
+			if mainExpr, ok := sp.boundMainExprs[a.name]; ok {
+				// Normalise the main column so both sides of COALESCE are the
+				// same type: hot_vals.<attr> is already BOOLEAN / epoch-ms
+				// BIGINT (the EAV pivot), m.<col> is normalised by encoding.
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
-					unified, mainBoolExpr, unified)
+					unified, mainExpr, unified)
 			} else if a.meta.ValueType == forma.ValueTypeUUID {
 				// hot_vals pivots uuid attributes out of value_text (VARCHAR);
 				// the UUID main column must be cast explicitly because DuckDB
@@ -294,11 +297,13 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 // BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
 // (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
 //
-// Bool columns go through mainColBoolExpr exactly as buildPGProjection's
-// COALESCE leg does: projecting the raw column left the outer
-// CAST(attr AS BOOLEAN) to read it, which is a different truth table
-// (SMALLINT -1 → true, VARCHAR 'true' → true) from the `> 0.5` / `= '1'`
-// every other reader and the CDC export spell (#404, PR #564 review).
+// Bool and iso8601 date/datetime columns go through boundMainExprs exactly
+// as buildPGProjection's COALESCE leg does: projecting the raw bool column
+// left the outer CAST(attr AS BOOLEAN) to read it, which is a different
+// truth table (SMALLINT -1 → true, VARCHAR 'true' → true) from the `> 0.5`
+// / `= '1'` every other reader and the CDC export spell (#404, PR #564
+// review), and projecting the raw ISO string put a VARCHAR in the epoch-ms
+// BIGINT column the parquet legs carry (#555).
 func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
 	selectParts := []string{
 		"cl.row_id::VARCHAR AS row_id",
@@ -317,8 +322,8 @@ func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
 	for _, attr := range attrs {
 		col := sp.AttrToMainColumn[attr]
 		expr := "m." + col
-		if enc, ok := sp.boundBoolEncodings[attr]; ok {
-			expr = mainColBoolExpr(col, enc)
+		if mainExpr, ok := sp.boundMainExprs[attr]; ok {
+			expr = mainExpr
 		}
 		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", expr, ParquetAttrColumn(attr)))
 	}
@@ -359,24 +364,33 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 // duckDBMainColCast renders the outer-select cast for an attribute that lands
 // in an entity_main column. The alias is the physical column and the reader
 // scans it by the column's kind (federated.duckDBScanBuffers), so the cast
-// must produce that kind, not the logical value type. The two diverge only
-// for bool: every leg derives a BOOLEAN (mainColBoolExpr, the parquet
-// column), and CAST(attr AS BOOLEAN) then failed the SMALLINT scan
-// ("converting driver.Value type bool") and put "true" into the text slot a
-// bool_text reader expects "1"/"0" in. The stored image is re-derived from
-// the verdict: 1/0 for bool_smallint, '1'/'0' for bool_text, NULL kept.
+// must produce that kind, not the logical value type. The two diverge for
+// bool and for an iso8601 date/datetime, and the stored image is re-derived
+// from the unified verdict in both cases:
+//   - bool: every leg derives a BOOLEAN (mainColBoolExpr, the parquet
+//     column), and CAST(attr AS BOOLEAN) then failed the SMALLINT scan
+//     ("converting driver.Value type bool") and put "true" into the text
+//     slot a bool_text reader expects "1"/"0" in. 1/0 for bool_smallint,
+//     '1'/'0' for bool_text, NULL kept.
+//   - date/datetime in a text column (iso8601): every leg carries epoch-ms
+//     BIGINT, and CAST(attr AS BIGINT) then landed "1704164645000" in the
+//     text slot transform.readWithEncoding parses as RFC3339 (#555). The
+//     write path's image — RFC3339, UTC, second precision — is re-derived.
 func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) string {
-	if vt != forma.ValueTypeBool {
-		return duckDBAttrCast(attr, vt)
+	switch vt {
+	case forma.ValueTypeBool:
+		switch kind {
+		case model.ColumnKindSmallint:
+			return fmt.Sprintf("CAST(%s AS SMALLINT)", attr)
+		case model.ColumnKindText:
+			return fmt.Sprintf("CAST(CAST(%s AS TINYINT) AS VARCHAR)", attr)
+		}
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		if kind == model.ColumnKindText {
+			return fmt.Sprintf("strftime(epoch_ms(CAST(%s AS BIGINT)), '%%Y-%%m-%%dT%%H:%%M:%%SZ')", attr)
+		}
 	}
-	switch kind {
-	case model.ColumnKindSmallint:
-		return fmt.Sprintf("CAST(%s AS SMALLINT)", attr)
-	case model.ColumnKindText:
-		return fmt.Sprintf("CAST(CAST(%s AS TINYINT) AS VARCHAR)", attr)
-	default:
-		return duckDBAttrCast(attr, vt)
-	}
+	return duckDBAttrCast(attr, vt)
 }
 
 func duckDBAttrCast(attr string, vt forma.ValueType) string {
