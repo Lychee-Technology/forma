@@ -324,22 +324,7 @@ func (t *transformer) flattenToAttributes(
 			return err
 		}
 		if len(v) == 0 {
-			// An explicit empty list persists a marker row (array_indices "",
-			// both value columns NULL) so it round-trips as [] instead of
-			// silently degrading to an absent attribute. Under merge-update
-			// semantics "tags": [] is the only way to clear a list (#204).
-			attrName := strings.Join(path, ".")
-			if meta, ok := cache[attrName]; ok && meta.ValueType == forma.ValueTypeList {
-				*result = append(*result, taggedEAVRecord{
-					record: model.EAVRecord{
-						SchemaID:     schemaID,
-						RowID:        rowID,
-						AttrID:       meta.AttributeID,
-						ArrayIndices: "",
-					},
-					spelling: spellingOf(path),
-				})
-			}
+			appendEmptyListMarker(schemaID, rowID, path, cache, result)
 			return nil
 		}
 		for i, item := range v {
@@ -383,6 +368,34 @@ func (t *transformer) flattenToAttributes(
 		}
 	}
 	return nil
+}
+
+// appendEmptyListMarker persists the explicit-empty-list marker row
+// (array_indices "", both value columns NULL) for a registered list attribute
+// so it round-trips as [] instead of silently degrading to an absent
+// attribute. Under merge-update semantics "tags": [] is the only way to clear
+// a list (#204). An unregistered name is silently skipped, as before.
+func appendEmptyListMarker(
+	schemaID int16,
+	rowID uuid.UUID,
+	path []string,
+	cache forma.SchemaAttributeCache,
+	result *[]taggedEAVRecord,
+) {
+	attrName := strings.Join(path, ".")
+	meta, ok := cache[attrName]
+	if !ok || meta.ValueType != forma.ValueTypeList {
+		return
+	}
+	*result = append(*result, taggedEAVRecord{
+		record: model.EAVRecord{
+			SchemaID:     schemaID,
+			RowID:        rowID,
+			AttrID:       meta.AttributeID,
+			ArrayIndices: "",
+		},
+		spelling: spellingOf(path),
+	})
 }
 
 // The input-side required-policy check (validateRequiredAttributesFromInput)
