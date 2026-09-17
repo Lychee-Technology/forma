@@ -37,28 +37,44 @@ func ParquetAttrColumn(attr string) string {
 // duplicate a SELECT-list column — binder ambiguity — or silently read the
 // system value as the attribute. The set covers the parquet export columns
 // (schema_id, row_id, changed_at, deleted_at, ltbase_*), the unified-CTE
-// system columns (created_at, ver_ts, deleted_ts), the dedup machinery
-// (source_tier_priority, rn), and the outer-select tail (attributes_json,
-// total_records, total_pages, current_page).
-var reservedParquetColumns = map[string]struct{}{
-	"row_id":               {},
-	"schema_id":            {},
-	"changed_at":           {},
-	"deleted_at":           {},
-	"created_at":           {},
-	"ver_ts":               {},
-	"deleted_ts":           {},
-	"source_tier_priority": {},
-	"rn":                   {},
-	"attributes_json":      {},
-	"total_records":        {},
-	"total_pages":          {},
-	"current_page":         {},
-	"ltbase_row_id":        {},
-	"ltbase_schema_id":     {},
-	"ltbase_created_at":    {},
-	"ltbase_updated_at":    {},
-	"ltbase_deleted_at":    {},
+// system columns (created_at, ver_ts, deleted_ts), the outer-select tail
+// (attributes_json, total_records, total_pages, current_page), and the dedup
+// machinery, composed in from federatedDedupColumns rather than restated as
+// literals. ValidateParquetAttrColumns reads only this set, so a dedup column
+// restated here could be left behind when the source gained one, and an
+// attribute folding onto the new column would register and then bind
+// against the dedup rank (#552). Package initialisation orders
+// federatedDedupColumns first because this declaration depends on it;
+// TestReservedParquetColumnsIsUnchanged pins the resulting contents.
+var reservedParquetColumns = buildReservedParquetColumns(federatedDedupColumns)
+
+// buildReservedParquetColumns unions the system columns with the dedup set it
+// is handed. The dedup set is a parameter rather than the package variable so
+// the composition can be exercised with a synthetic column in tests without
+// editing the guard every other test runs against.
+func buildReservedParquetColumns(dedup map[string]struct{}) map[string]struct{} {
+	cols := map[string]struct{}{
+		"row_id":            {},
+		"schema_id":         {},
+		"changed_at":        {},
+		"deleted_at":        {},
+		"created_at":        {},
+		"ver_ts":            {},
+		"deleted_ts":        {},
+		"attributes_json":   {},
+		"total_records":     {},
+		"total_pages":       {},
+		"current_page":      {},
+		"ltbase_row_id":     {},
+		"ltbase_schema_id":  {},
+		"ltbase_created_at": {},
+		"ltbase_updated_at": {},
+		"ltbase_deleted_at": {},
+	}
+	for col := range dedup {
+		cols[col] = struct{}{}
+	}
+	return cols
 }
 
 // ParquetAttrPlaceholder is the column ParquetAttrColumn substitutes when the
@@ -76,8 +92,9 @@ const ParquetAttrPlaceholder = "attr"
 //
 // This is the single definition of the set. internal/federated applies the
 // same rule to keyset cursors and derives its own set from
-// FederatedDedupColumns rather than redeclaring one, so a column added here
-// reaches both guards (#531).
+// FederatedDedupColumns rather than redeclaring one (#531), and
+// reservedParquetColumns composes it in rather than restating it (#552), so
+// a column added here reaches the filter, cursor, and registration guards.
 var federatedDedupColumns = map[string]struct{}{
 	"rn":                   {},
 	"source_tier_priority": {},

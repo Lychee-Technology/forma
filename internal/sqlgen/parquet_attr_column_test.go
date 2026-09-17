@@ -250,3 +250,82 @@ func TestFederatedDedupColumnsIsACopy(t *testing.T) {
 	require.NoError(t, ValidateUnregisteredParquetAttrColumn("contact_name", ParquetAttrColumn("contact_name")),
 		"adding to a returned copy must not block an ordinary attribute")
 }
+
+// TestReservedParquetColumnsIsUnchanged pins the contents of the reserved set
+// against a literal map. reservedParquetColumns gates schema registration, so
+// #552's move from a literal to a composition over federatedDedupColumns has
+// to be a pure identity on the current set: an entry gained here rejects a
+// schema that registers today, an entry lost admits one that binds onto a
+// system column. Asserting the outcome also pins the package-initialisation
+// order the composition depends on, rather than trusting it.
+func TestReservedParquetColumnsIsUnchanged(t *testing.T) {
+	want := map[string]struct{}{
+		"row_id":               {},
+		"schema_id":            {},
+		"changed_at":           {},
+		"deleted_at":           {},
+		"created_at":           {},
+		"ver_ts":               {},
+		"deleted_ts":           {},
+		"source_tier_priority": {},
+		"rn":                   {},
+		"attributes_json":      {},
+		"total_records":        {},
+		"total_pages":          {},
+		"current_page":         {},
+		"ltbase_row_id":        {},
+		"ltbase_schema_id":     {},
+		"ltbase_created_at":    {},
+		"ltbase_updated_at":    {},
+		"ltbase_deleted_at":    {},
+	}
+	require.Equal(t, want, reservedParquetColumns)
+}
+
+// TestBuildReservedParquetColumnsFollowsDedupSet proves the reserved set is
+// composed from the dedup set rather than restating it (#552): a column that
+// exists only in the dedup set handed to the builder must come out reserved.
+// Driven through a synthetic set instead of the package variable so the
+// package state other tests run against is never touched.
+func TestBuildReservedParquetColumnsFollowsDedupSet(t *testing.T) {
+	dedup := FederatedDedupColumns()
+	dedup["tier_rank"] = struct{}{}
+
+	got := buildReservedParquetColumns(dedup)
+
+	require.Contains(t, got, "tier_rank", "a dedup column must reach the reserved set by construction")
+	for col := range reservedParquetColumns {
+		require.Contains(t, got, col, "composing in a dedup column must not drop reserved column %q", col)
+	}
+	require.Len(t, got, len(reservedParquetColumns)+1)
+}
+
+// TestValidateParquetAttrColumnsRejectsEveryDedupColumn is the registration
+// half of the #531 drift guard, closing the gap #552 found: the filter and
+// cursor guards derive from federatedDedupColumns, but registration read a
+// separate literal, so a dedup column added to the source could be
+// registered as an attribute and then bind against the dedup rank through
+// the hasMeta branch of normalizeDuckPayload. This test drives
+// ValidateParquetAttrColumns from the dedup set itself, under every spelling
+// the fold and DuckDB's case-insensitive resolution reach a column by, so it
+// bites on drift rather than restating the list.
+func TestValidateParquetAttrColumnsRejectsEveryDedupColumn(t *testing.T) {
+	require.NotEmpty(t, federatedDedupColumns, "sqlgen must define the dedup column set this guard enforces")
+
+	for col := range federatedDedupColumns {
+		spellings := []string{col, strings.ToUpper(col), "[" + col + "]", "[" + strings.ToUpper(col) + "]"}
+		if i := strings.Index(col, "_"); i >= 0 {
+			spellings = append(spellings, col[:i]+"."+col[i+1:], col[:i]+" "+col[i+1:])
+		}
+		for _, spelling := range spellings {
+			err := ValidateParquetAttrColumns(forma.SchemaAttributeCache{
+				spelling: {AttributeID: 1, ValueType: forma.ValueTypeText},
+			})
+			require.Error(t, err, "attribute %q folds onto dedup column %q and must be refused at registration", spelling, col)
+			require.Contains(t, err.Error(), "reserved",
+				"attribute %q must be refused as a reserved column, not by some other rule", spelling)
+			require.Contains(t, err.Error(), spelling, "the error must keep the caller's spelling")
+			require.Contains(t, err.Error(), col, "the error must name the reserved column the fold resolves onto")
+		}
+	}
+}
