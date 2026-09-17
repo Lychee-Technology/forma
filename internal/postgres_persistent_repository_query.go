@@ -342,16 +342,12 @@ func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (strin
 
 // mainPredicate renders the m-qualified main-table comparison and its binds.
 // A bool-encoded equality leaf is the #565 truthiness predicate (same text
-// for every operand, Arity() placeholders); every other leaf is
+// for every operand, one $n per bind); every other leaf is
 // `m.<col> <op> $n`.
 func (b *hybridConditionBuilder) mainPredicate(p sqlgen.HybridLeafPayload) (string, []any) {
 	column := "m." + sanitizeIdentifier(p.MainColumn)
 	if p.MainBool != nil {
-		placeholders := make([]string, p.MainBool.Arity())
-		for i := range placeholders {
-			placeholders[i] = b.nextPlaceholder()
-		}
-		return p.MainBool.Render(column, placeholders...), p.MainBool.Args()
+		return p.MainBool.Render(column, b.nextPlaceholder), p.MainBool.Args()
 	}
 	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, b.nextPlaceholder()), []any{p.MainValue}
 }

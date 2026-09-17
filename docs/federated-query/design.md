@@ -923,7 +923,11 @@ applied on both sides:
   would cast the column). So a stored image outside the write contract (a
   `2`, a `'true'`) answers `equals:true` / `equals:false` the way the
   projection, the export and the Go read path already read it, on the
-  unflushed hot routes exactly as on parquet.
+  unflushed hot routes exactly as on parquet. A bool attribute under any
+  other operator (`gt`, `lte`, `starts_with`, …) is a 400 on every route:
+  the EAV and pg-main normalizers always refused it, and the hybrid main
+  branch, which used to compare the raw 1/0 image, refuses it through the
+  same classifier.
 
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
