@@ -10,7 +10,7 @@
 - **约束**：多租户、表按项目拆分（`entity_main_<client>_<project>` / `eav_<client>_<project>`），字段数量有限且存在类型 fallback；查询多为「按属性过滤 + 排序 + 分页」。
 
 ## 现有表与性能特征
-- **entity main（热属性表）**：包含 10 个 `text`、3 个 `smallint`、3 个 `integer`、3 个 `bigint`、5 个 `double precision`、2 个 `uuid` 以及 `ltbase_*` 元数据列。仅部分列有索引（text_01~03、smallint_01、integer_01、bigint_01、double_01~02、uuid_01），其他列只能顺序扫描或依赖位图索引合并。
+- **entity main（热属性表）**：包含 10 个 `text`、3 个 `smallint`、3 个 `integer`、3 个 `bigint`、3 个 `double precision`、2 个 `uuid` 以及 `ltbase_*` 元数据列。仅部分列有索引（text_01~03、smallint_01、integer_01、bigint_01、double_01~02、uuid_01），其他列只能顺序扫描或依赖位图索引合并。
 - **EAV 表**：`schema_id, row_id, attr_id, array_indices, value_text, value_numeric`，主键为 `(schema_id, row_id, attr_id, array_indices)`。当前模型文档只定义了 `value_text/value_numeric` 的部分索引。
 - **类型 fallback**：数字/日期/uuid/bool 在热表有 fallback 规则（如 int 存 double，uuid/bool 存 text），查询需做等值/范围的偏移重写；EAV 为强类型列，但依赖 attr_id 精确过滤。
 
@@ -81,7 +81,7 @@ ORDER BY <same as sorted>;
 
 ## 需要的数据库基础设施/统计建议
 - **索引补全**
-  - 热表：若排序/过滤常落在 `text_04~10`、`double_03~05` 等未建索引列，为热点项目按需追加异步索引；时间范围查询可为 `ltbase_created_at` 建 BRIN（低维护）。
+  - 热表：若排序/过滤常落在 `text_04~10`、`double_03` 等未建索引列，为热点项目按需追加异步索引；时间范围查询可为 `ltbase_created_at` 建 BRIN（低维护）。
 - **统计信息**
   - 定期 `ANALYZE`；为 `value_numeric` 设置更高统计目标（`ALTER TABLE ... ALTER COLUMN ... SET STATISTICS 500;`）。
   - 为 `(schema_id, attr_id, value_*)` 建 `CREATE STATISTICS`（ndistinct）以改善选择度估计，尤其多 attr 组合查询时。

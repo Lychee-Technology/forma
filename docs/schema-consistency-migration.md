@@ -452,21 +452,27 @@ Example validator output:
 - column bindings to unknown entity_main columns: schema=contact attribute nick (valueType text) binds to unknown main column text_99: column_binding.col_name must be one of ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, ltbase_deleted_at, ltbase_created_by, ltbase_deleted_by, ltbase_updated_by, text_01, text_02, text_03, text_04, text_05, text_06, text_07, text_08, text_09, text_10, smallint_01, smallint_02, smallint_03, integer_01, integer_02, integer_03, bigint_01, bigint_02, bigint_03, double_01, double_02, double_03, uuid_01, uuid_02
 ```
 
-The `column_binding.col_name` is not a column the runtime can write, project
-or flush. Before the guard, the binding loaded (a name like `text_99` or
-`foo` classifies as a text column by prefix) and every write to the attribute
-failed with `unsupported column`, while reads never returned it. The server
-now refuses to load the schema; fix the attributes file before deploying:
+The `column_binding.col_name` is not an `entity_main` column. Before the
+guard, the binding loaded (a name like `text_99` or `foo` classifies as a
+text column by prefix) and every write to the attribute failed with
+`unsupported column`, while reads never returned it. The server now refuses
+to load the schema; fix the attributes file before deploying:
 
 - rebind the attribute to a listed column of the right family (e.g.
   `text_04`), or
 - drop the `column_binding` so the attribute lives in EAV.
 
 No stored value can exist under the bad name, so no data migration is needed.
-The admitted set in the message is the runtime's column list
-(`internal/model/columns.go`), which is what the writer and the read
-projection use; a name outside it is refused even when the physical table
-happens to have such a column.
+
+The admitted set in the message is the one `entity_main` column set: the
+`init-db` DDL, the `forma.MainColumn*` constants and the runtime's column list
+(`internal/model/columns.go`, which the writer, the read projection and the
+CDC column order derive from) all state it, and tests pin the three together
+(`#585`). Before `#585` the DDL also created `bigint_04`, `bigint_05`,
+`double_04` and `double_05`, which the runtime never wrote, projected or
+flushed; a database initialised by an older build still carries them as
+empty columns, and a binding to one of them is refused like any other
+unknown name. They can be dropped or left in place.
 
 ### valueType/column-encoding binding mismatches (`#459`)
 

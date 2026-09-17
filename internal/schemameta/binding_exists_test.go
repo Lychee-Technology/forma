@@ -28,10 +28,10 @@ func TestValidateColumnBinding_RefusesUnknownColumn(t *testing.T) {
 		{"typo inside a family", bindingMeta(forma.ValueTypeText, "text_99", d)},
 		{"wrong case", bindingMeta(forma.ValueTypeText, "TEXT_01", d)},
 		{"unknown name, uuid valueType", bindingMeta(forma.ValueTypeUUID, "uuid_9", d)},
-		// Declared as forma.MainColumnBigint04, but the writer's allowlist and
-		// the read projection (internal/model) stop at bigint_03: every write
-		// to it fails with "unsupported column", so registration refuses it.
-		{"declared constant outside the runtime set", bindingMeta(forma.ValueTypeBigInt, forma.MainColumnBigint04, d)},
+		// Created by init-db before #585 and still present on older
+		// deployments, but the writer's allowlist and the read projection stop
+		// at bigint_03: every write to it fails with "unsupported column".
+		{"column dropped from the DDL", bindingMeta(forma.ValueTypeBigInt, "bigint_04", d)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

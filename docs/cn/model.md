@@ -67,8 +67,8 @@ type MainColumnBinding struct {
 | text_01 ~ 10      | text             | 文本列       |
 | smallint_01 ~ 03  | smallint         | smallint列   |
 | integer_01 ~ 03   | integer          | integer列    |
-| bigint_01 ~ 05    | bigint           | bigint列     |
-| double_01 ~ 05    | double precision | 数字列       |
+| bigint_01 ~ 03    | bigint           | bigint列     |
+| double_01 ~ 03    | double precision | 数字列       |
 | uuid_01 ~ 02      | uuid             | uuid列       |
 | ltbase_created_at | bigint           | 记录创建时间 |
 | ltbase_updated_at | bigint           | 记录更新时间 |
