@@ -522,12 +522,14 @@ Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`num
 → smallint/integer/bigint/double (a value that does not fit the column's
 width is refused at write time as invalid input); `date`/`datetime`→bigint
 (`unix_ms` or default) or text (`iso8601`, an RFC3339 string at whole
-seconds: a value whose epoch millis are off a whole second is refused at
-write time as invalid input rather than truncated, #582. Millis are the
-precision every date/datetime carries once written, bound or not; a finer
-fraction in the input is normalised to millis before any fit decision,
-#589); `bool`→smallint (`bool_smallint`) or text (`bool_text`); `list`
-never binds.
+seconds within the layout's four-digit year: a value whose epoch millis are
+off a whole second is refused at write time as invalid input rather than
+truncated, #582, and a value outside 0000-01-01T00:00:00Z to
+9999-12-31T23:59:59Z is refused rather than stored as an image the RFC3339
+reader cannot parse. Millis are the precision every date/datetime carries
+once written, bound or not; a finer fraction in the input is normalised to
+millis before any fit decision, #589); `bool`→smallint (`bool_smallint`) or
+text (`bool_text`); `list` never binds.
 
 Some refused pairs do store and read back losslessly on the Postgres path:
 `uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,

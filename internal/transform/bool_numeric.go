@@ -48,27 +48,55 @@ func unixMillisFloat64ToTimeUTC(value float64) time.Time {
 	return time.UnixMilli(int64(value)).UTC()
 }
 
+// The RFC3339 layout has a four-digit year, so the image the iso8601
+// encoding stores names an instant from 0000-01-01T00:00:00Z to
+// 9999-12-31T23:59:59Z. time.Format writes a wider year ("10000-01-01…",
+// "-0001-12-31…") that the read path's time.Parse(time.RFC3339) refuses, so
+// such a value would be written and never read back (#587 review). The
+// bounds are whole seconds far below 2^53, so the float comparison is exact,
+// and a slot inside them converts to int64 without wrapping.
+var (
+	minISO8601Millis = float64(time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli())
+	maxISO8601Millis = float64(time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC).UnixMilli())
+)
+
+// iso8601Rule is a property of the RFC3339 image, phrased as the clause the
+// fit message ("… with encoding iso8601, which keeps …") and the store's
+// bypass error ("encoding iso8601 keeps … and cannot hold …") attach to the
+// encoding. The empty rule means the image holds the value.
+type iso8601Rule string
+
+const (
+	iso8601KeepsWholeSeconds  iso8601Rule = "keeps whole seconds"
+	iso8601KeepsFourDigitYear iso8601Rule = "keeps years 0000 to 9999 (the RFC3339 four-digit year)"
+)
+
 // iso8601Rendering is the image the iso8601 encoding stores for the numeric
 // slot of a date/datetime: RFC3339, UTC, whole seconds (the layout has no
 // fractional field, and the DuckDB outer select re-derives the same shape,
-// #555). The slot holds a whole number of epoch millis — the precision the
-// funnel keeps for every date/datetime, bound or not (populateTypedValue and
-// ToEAVRecord both normalise a time.Time with UnixMilli) — so the image is
-// lossless iff those millis sit on a whole second. It reports false for a
-// value off a whole second, and for a slot that is not a whole, finite
-// number of millis (a funnel bypass, which int64() would silently round
-// before the whole-second test): checkBoundColumnFit refuses the former as
-// invalid input and storeWithEncoding refuses both rather than truncate, so
-// no path narrows the value silently (#582).
-func iso8601Rendering(value float64) (string, bool) {
+// #555), within the layout's four-digit year. The slot holds a whole number
+// of epoch millis — the precision the funnel keeps for every date/datetime,
+// bound or not (populateTypedValue and ToEAVRecord both normalise a
+// time.Time with UnixMilli) — so the image is lossless iff those millis sit
+// on a whole second of a year the reader can parse back. It returns the
+// image, or the rule the value breaks: a value off a whole second, a value
+// outside years 0000–9999, and a slot that is not a whole, finite number of
+// millis (a funnel bypass, which int64() would silently round before the
+// whole-second test). checkBoundColumnFit refuses each as invalid input and
+// storeWithEncoding refuses each rather than truncate, so no path narrows
+// the value silently or writes an image the read path cannot parse (#582).
+func iso8601Rendering(value float64) (string, iso8601Rule) {
 	if !isWholeMillis(value) {
-		return "", false
+		return "", iso8601KeepsWholeSeconds
+	}
+	if value < minISO8601Millis || value > maxISO8601Millis {
+		return "", iso8601KeepsFourDigitYear
 	}
 	t := unixMillisFloat64ToTimeUTC(value)
 	if t.Nanosecond() != 0 {
-		return "", false
+		return "", iso8601KeepsWholeSeconds
 	}
-	return t.Format(time.RFC3339), true
+	return t.Format(time.RFC3339), ""
 }
 
 // isWholeMillis reports whether a numeric slot holds what a date/datetime

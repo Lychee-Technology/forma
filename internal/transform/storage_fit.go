@@ -55,7 +55,8 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	switch binding.Encoding {
 	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
 		// Text renderings of the numeric slot: nothing to width-check, but
-		// the RFC3339 image keeps whole seconds and must not narrow (#582).
+		// the RFC3339 image keeps whole seconds within a four-digit year
+		// and must neither narrow nor outrun the read path's parser (#582).
 		if colType != forma.MainColumnTypeText {
 			return errEncodingMismatch(vt, binding, "a text value")
 		}
@@ -63,7 +64,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
 		}
 		if binding.Encoding == forma.MainColumnEncodingISO8601 {
-			return checkISO8601WholeSeconds(*attr.ValueNumeric, vt, col)
+			return checkISO8601Fit(*attr.ValueNumeric, vt, col)
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
@@ -111,24 +112,33 @@ func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col for
 	return nil
 }
 
-// checkISO8601WholeSeconds refuses an epoch-ms value the iso8601 rendering
-// would truncate. The message carries the millis (the wire form a read
-// returns) and the instant they name, so a caller who sent an RFC3339
-// string recognises the value.
-func checkISO8601WholeSeconds(numVal float64, vt forma.ValueType, col forma.MainColumn) error {
-	if _, ok := iso8601Rendering(numVal); ok {
+// checkISO8601Fit refuses an epoch-ms value the iso8601 rendering cannot
+// hold, naming the rule it breaks (whole seconds, or the RFC3339 four-digit
+// year). The message carries the millis (the wire form a read returns) and
+// the instant they name, so a caller who sent an RFC3339 string recognises
+// the value.
+func checkISO8601Fit(numVal float64, vt forma.ValueType, col forma.MainColumn) error {
+	_, rule := iso8601Rendering(numVal)
+	if rule == "" {
 		return nil
 	}
-	return fmt.Errorf("%s value %s cannot be stored in main column %s with encoding %s, which keeps whole seconds",
-		vt, describeEpochMillis(numVal), col, forma.MainColumnEncodingISO8601)
+	return fmt.Errorf("%s value %s cannot be stored in main column %s with encoding %s, which %s",
+		vt, describeEpochMillis(numVal), col, forma.MainColumnEncodingISO8601, rule)
 }
 
 // describeEpochMillis renders an epoch-ms value with the instant it names. A
 // slot that is not a whole number of millis names no instant (int64() would
-// round it to one that is not the caller's), so it is described as such.
+// round it to one that is not the caller's), and one beyond the int64 millis
+// time.UnixMilli takes names none either (int64() wraps it, on amd64 to
+// MinInt64), so each is described as such rather than as a made-up instant.
+// Inside that range the instant is rendered even outside the RFC3339 year
+// span, so a refused 253402300800000 shows its 10000-01-01T00:00:00Z.
 func describeEpochMillis(numVal float64) string {
 	if !isWholeMillis(numVal) {
 		return formatFitValue(numVal) + " (not a whole number of epoch milliseconds)"
+	}
+	if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
+		return formatFitValue(numVal) + " (beyond any epoch millisecond instant)"
 	}
 	return fmt.Sprintf("%s (%s)", formatFitValue(numVal), unixMillisFloat64ToTimeUTC(numVal).Format(time.RFC3339Nano))
 }

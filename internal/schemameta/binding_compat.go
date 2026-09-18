@@ -33,7 +33,7 @@ var ErrUnknownMainColumn = errors.New("unknown main column")
 //	uuid                             uuid                                default
 //	smallint/integer/bigint/numeric  smallint, integer, bigint, double   default (width enforced at write)
 //	date/datetime                    bigint                              default or unix_ms
-//	date/datetime                    text                                iso8601 (whole seconds enforced at write)
+//	date/datetime                    text                                iso8601 (whole seconds, years 0000–9999 enforced at write)
 //	bool                             smallint                            bool_smallint
 //	bool                             text                                bool_text
 //	list                             —                                   never bindable
