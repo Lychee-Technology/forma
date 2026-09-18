@@ -2,7 +2,6 @@ package transform
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -67,12 +66,15 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
 		}
 		if record.ValueInt64 != nil {
-			return time.UnixMilli(*record.ValueInt64).UTC(), nil
+			return unixMillisToTimeUTC(*record.ValueInt64), nil
 		}
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		timeVal := unixMillisFloat64ToTimeUTC(*record.ValueNumeric)
+		timeVal, err := unixMillisFloat64ToTimeUTC(*record.ValueNumeric)
+		if err != nil {
+			return nil, fmt.Errorf("%s value of attribute %d in value_numeric: %w", valueType, record.AttrID, err)
+		}
 		return timeVal, nil
 
 	case forma.ValueTypeUUID:

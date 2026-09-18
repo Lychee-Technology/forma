@@ -32,8 +32,13 @@ var ErrUnknownMainColumn = errors.New("unknown main column")
 //	text                             text                                default
 //	uuid                             uuid                                default
 //	smallint/integer/bigint/numeric  smallint, integer, bigint, double   default (width enforced at write)
-//	date/datetime                    bigint                              default or unix_ms
+//	date/datetime                    bigint                              default or unix_ms (full int64 epoch-ms range)
 //	date/datetime                    text                                iso8601 (whole seconds, years 0000–9999 enforced at write)
+//
+// An unbound date/datetime lives in eav_data.value_numeric as a float64
+// image and keeps |epoch millis| <= 2^53; the funnel refuses the rest at
+// write time (#582), so the per-destination ranges above are the contract.
+//
 //	bool                             smallint                            bool_smallint
 //	bool                             text                                bool_text
 //	list                             —                                   never bindable

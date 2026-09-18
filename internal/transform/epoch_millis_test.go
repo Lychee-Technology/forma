@@ -64,22 +64,43 @@ func TestDateTime_ExtremeTimeIsRefusedBeforeNormalisation(t *testing.T) {
 	require.Empty(t, record.TextItems)
 }
 
-// The admitted set is exactly the int64 millis range: both ends convert to
-// their exact millis in both funnels, and one millisecond past either end is
-// refused, whatever the time.Time's zone.
+// Invariant A (#582 redesign): normalisation admits exactly the int64
+// millis range. Both funnels turn either end into its exact millis in the
+// sidecar with the float image derived from it, whatever the time.Time's
+// zone, and refuse one millisecond past either end. Whether a destination
+// then holds the value is that destination's rule: a bigint column keeps
+// the whole range (pinned here through the store and read), eav_data keeps
+// |ms| <= 2^53 (TestDateTime_EAVFitIsTheFloat64ExactRange).
 func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 	c := NewAttributeConverter(nil)
+	tr := &persistentRecordTransformer{}
 	meta := forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}
+	bigint := []forma.AttributeMetadata{
+		boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs),
+		boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingDefault),
+	}
 	for _, ms := range []int64{math.MinInt64, math.MaxInt64, 0, -1, 1704067200123} {
 		for _, loc := range []*time.Location{time.UTC, time.FixedZone("plus14", 14*3600)} {
 			t.Run(fmt.Sprintf("%d in %s", ms, loc), func(t *testing.T) {
 				value := time.UnixMilli(ms).In(loc)
-				var rec model.EAVRecord
-				set, err := populateTypedValue(&rec, "seenAt", value, meta)
-				require.NoError(t, err)
-				require.True(t, set)
-				require.Equal(t, ms, *rec.ValueInt64)
-				require.Equal(t, float64(ms), *rec.ValueNumeric)
+				for _, bm := range bigint {
+					var rec model.EAVRecord
+					set, err := populateTypedValue(&rec, "seenAt", value, bm)
+					require.NoError(t, err)
+					require.True(t, set)
+					require.Equal(t, ms, *rec.ValueInt64)
+					require.Equal(t, float64(ms), *rec.ValueNumeric)
+
+					record := newEmptyPersistentRecord()
+					require.NoError(t, tr.storeInMainColumn(record, rec, bm.ColumnBinding))
+					require.Equal(t, ms, record.Int64Items["bigint_01"])
+					got, err := tr.readFromMainColumn(record, bm, bm.ColumnBinding)
+					require.NoError(t, err)
+					require.Equal(t, ms, *got.ValueInt64)
+					read, err := extractValueFromEAVRecord(*got, forma.ValueTypeDateTime)
+					require.NoError(t, err)
+					require.Equal(t, time.UnixMilli(ms).UTC(), read)
+				}
 
 				eav, err := c.ToEAVRecord(model.EntityAttribute{
 					SchemaID: 1, AttrID: 9, ValueType: forma.ValueTypeDateTime, Value: value,
@@ -95,11 +116,13 @@ func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 		"one ms below the floor":  time.UnixMilli(math.MinInt64).Add(-time.Millisecond),
 	} {
 		t.Run(name, func(t *testing.T) {
-			var rec model.EAVRecord
-			set, err := populateTypedValue(&rec, "seenAt", value, meta)
-			require.False(t, set)
-			require.ErrorIs(t, err, forma.ErrInvalidInput)
-			_, err = c.ToEAVRecord(model.EntityAttribute{
+			for _, m := range append(bigint, meta) {
+				var rec model.EAVRecord
+				set, err := populateTypedValue(&rec, "seenAt", value, m)
+				require.False(t, set)
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+			}
+			_, err := c.ToEAVRecord(model.EntityAttribute{
 				SchemaID: 1, AttrID: 9, ValueType: forma.ValueTypeDateTime, Value: value,
 			}, uuid.New())
 			require.Error(t, err)

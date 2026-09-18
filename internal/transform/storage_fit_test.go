@@ -433,49 +433,58 @@ func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
 	require.Empty(t, record.TextItems)
 }
 
-// #587 review: the rendering rule must judge the numeric slot as it is,
-// not after int64() has rounded or wrapped it, and must admit only an image
-// the read path can parse. A date/datetime slot holds a whole number of
-// millis by construction (both funnels write UnixMilli), so a fractional,
-// NaN or infinite slot is a bypass, refused with the reason; a value past
-// either end of the RFC3339 four-digit year (year 10000, year -0001, or a
-// magnitude int64() cannot even hold) is refused with the year rule. The
-// check names the rule and the store refuses the same values, never
-// truncating 1000.5 to 1970-01-01T00:00:01Z or writing 10000-01-01T00:00:00Z.
+// #587 review / #582 redesign: the check and the store judge the exact
+// millis (exactEpochMillis), never a rounded or wrapped int64() of the float
+// slot. A hand-built record with only a float slot is a funnel bypass: a
+// whole number inside the int64 range is still exact and is judged by the
+// iso8601 rule (year 10000 and year -0001 refused with the year rule); a
+// fraction, NaN, an infinity or a magnitude past int64 names no instant and
+// is refused as such by both. Nothing is written in either case, so 1000.5
+// is never truncated to 1970-01-01T00:00:01Z and 10000-01-01T00:00:00Z is
+// never stored.
 func TestISO8601_BypassSlotIsRefused(t *testing.T) {
 	tr := &persistentRecordTransformer{}
 	binding := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
+	noInstant := func(describe string) (string, string) {
+		return "datetime value %s " + describe + " names no epoch millisecond instant and cannot be stored in main column text_02 with encoding iso8601",
+			"encoding iso8601 cannot hold a slot in main column text_02: value %s " + describe + " names no epoch millisecond instant"
+	}
+	yearRule := func(instant string) (string, string) {
+		return "datetime value %s (" + instant + ") cannot be stored in main column text_02 with encoding iso8601, which " + string(iso8601KeepsFourDigitYear),
+			"encoding iso8601 " + string(iso8601KeepsFourDigitYear) + " and cannot hold value %s in main column text_02"
+	}
+	notWhole, beyond := "(not a whole number of epoch milliseconds)", "(beyond any epoch millisecond instant)"
 	cases := []struct {
-		numVal   float64
-		describe string      // the instant clause describeEpochMillis attaches
-		rule     iso8601Rule // the rule the check and the store name
+		numVal float64
+		check  string // the instant a whole in-range slot names; "" for a slot that names none
 	}{
-		{1000.5, "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{1704067200000.25, "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{-0.5, "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{math.NaN(), "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{math.Inf(1), "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{math.Inf(-1), "(not a whole number of epoch milliseconds)", iso8601KeepsWholeSeconds},
-		{253402300800000, "(10000-01-01T00:00:00Z)", iso8601KeepsFourDigitYear},
-		{-62167219201000, "(-0001-12-31T23:59:59Z)", iso8601KeepsFourDigitYear},
-		{math.MaxInt64, "(beyond any epoch millisecond instant)", iso8601KeepsFourDigitYear},
-		{1e300, "(beyond any epoch millisecond instant)", iso8601KeepsFourDigitYear},
-		{-1e300, "(beyond any epoch millisecond instant)", iso8601KeepsFourDigitYear},
+		{1000.5, ""}, {1704067200000.25, ""}, {-0.5, ""}, {math.NaN(), ""}, {math.Inf(1), ""}, {math.Inf(-1), ""},
+		{math.MaxInt64, ""}, {1e300, ""}, {-1e300, ""},
+		{253402300800000, "10000-01-01T00:00:00Z"}, {-62167219201000, "-0001-12-31T23:59:59Z"},
 	}
 	for _, tc := range cases {
 		t.Run(formatFitValue(tc.numVal), func(t *testing.T) {
+			var check, store string
+			switch {
+			case tc.check != "":
+				check, store = yearRule(tc.check)
+			case !isWholeMillis(tc.numVal):
+				check, store = noInstant(notWhole)
+			default:
+				check, store = noInstant(beyond)
+			}
 			v := tc.numVal
 			rec := model.EAVRecord{ValueNumeric: &v}
 
 			err := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, binding)
 			require.Error(t, err)
-			require.Equal(t, "datetime value "+formatFitValue(tc.numVal)+" "+tc.describe+" cannot be stored in main column text_02 with encoding iso8601, which "+string(tc.rule), err.Error())
+			require.Equal(t, fmt.Sprintf(check, formatFitValue(tc.numVal)), err.Error())
 
 			record := newEmptyPersistentRecord()
 			stored, err := tr.storeWithEncoding(record, rec, binding)
 			require.Error(t, err)
 			require.False(t, stored)
-			require.Contains(t, err.Error(), "encoding iso8601 "+string(tc.rule)+" and cannot hold value "+formatFitValue(tc.numVal))
+			require.Equal(t, fmt.Sprintf(store, formatFitValue(tc.numVal)), err.Error())
 			require.Empty(t, record.TextItems)
 		})
 	}

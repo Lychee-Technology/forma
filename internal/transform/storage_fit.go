@@ -30,10 +30,34 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 		}
 	}
 	binding := meta.ColumnBinding
-	if binding == nil || isSystemManagedColumn(binding.ColumnName) {
+	if binding == nil {
+		return checkEAVFit(attr, meta.ValueType)
+	}
+	if isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
+}
+
+// checkEAVFit is the unbound destination's rule (#582): eav_data persists
+// the float64 value_numeric image only, so a date/datetime must sit within
+// the range that image keeps exactly on every read route. Judged on the
+// exact millis, the same value storeInEAV writes; every other type keeps its
+// declared-type rule above (#205 owns the numeric family's float64 ceiling).
+func checkEAVFit(attr *model.EAVRecord, vt forma.ValueType) error {
+	if !isDateType(vt) || (attr.ValueInt64 == nil && attr.ValueNumeric == nil) {
+		return nil
+	}
+	ms, err := exactEpochMillis(attr)
+	if err != nil {
+		return fmt.Errorf("%s value cannot be stored in %s: %w", vt, eavValueNumericDest, err)
+	}
+	return checkFloat64ImageFit(ms, vt, eavValueNumericDest)
+}
+
+// isDateType reports the valueTypes whose numeric slot holds epoch millis.
+func isDateType(vt forma.ValueType) bool {
+	return vt == forma.ValueTypeDate || vt == forma.ValueTypeDateTime
 }
 
 // checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
@@ -64,7 +88,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
 		}
 		if binding.Encoding == forma.MainColumnEncodingISO8601 {
-			return checkISO8601Fit(*attr.ValueNumeric, vt, col)
+			return checkISO8601Fit(attr, vt, col)
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
@@ -83,7 +107,23 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	if fitType, ok := columnFitType(colType); ok {
 		return checkIntegerFit(attr, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
 	}
+	if colType == forma.MainColumnTypeDouble && isDateType(vt) {
+		return checkDoubleColumnDateFit(attr, vt, col)
+	}
 	return nil
+}
+
+// checkDoubleColumnDateFit applies the float64-image rule to a date/datetime
+// bound to a double column: the registration matrix refuses the pair, but the
+// funnel must not depend on registration, and storeNumericRendering writes
+// the float64 image there (#582).
+func checkDoubleColumnDateFit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
+	dest := fmt.Sprintf("main column %s (double)", col)
+	ms, err := exactEpochMillis(attr)
+	if err != nil {
+		return fmt.Errorf("%s value cannot be stored in %s: %w", vt, dest, err)
+	}
+	return checkFloat64ImageFit(ms, vt, dest)
 }
 
 // checkDefaultEncodingSlot verifies that the slot storeWithDefaultEncoding
@@ -112,35 +152,24 @@ func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col for
 	return nil
 }
 
-// checkISO8601Fit refuses an epoch-ms value the iso8601 rendering cannot
-// hold, naming the rule it breaks (whole seconds, or the RFC3339 four-digit
-// year). The message carries the millis (the wire form a read returns) and
-// the instant they name, so a caller who sent an RFC3339 string recognises
-// the value.
-func checkISO8601Fit(numVal float64, vt forma.ValueType, col forma.MainColumn) error {
-	_, rule := iso8601Rendering(numVal)
+// checkISO8601Fit refuses a date/datetime the iso8601 rendering cannot hold,
+// naming the rule it breaks (whole seconds, or the RFC3339 four-digit year).
+// It judges the exact millis storeWithEncoding renders; a slot that names no
+// instant (a funnel bypass) is refused with that reason. The message carries
+// the millis (the wire form a read returns) and the instant they name, so a
+// caller who sent an RFC3339 string recognises the value.
+func checkISO8601Fit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
+	ms, err := exactEpochMillis(attr)
+	if err != nil {
+		return fmt.Errorf("%s %w and cannot be stored in main column %s with encoding %s",
+			vt, err, col, forma.MainColumnEncodingISO8601)
+	}
+	_, rule := iso8601Rendering(ms)
 	if rule == "" {
 		return nil
 	}
-	return fmt.Errorf("%s value %s cannot be stored in main column %s with encoding %s, which %s",
-		vt, describeEpochMillis(numVal), col, forma.MainColumnEncodingISO8601, rule)
-}
-
-// describeEpochMillis renders an epoch-ms value with the instant it names. A
-// slot that is not a whole number of millis names no instant (int64() would
-// round it to one that is not the caller's), and one beyond the int64 millis
-// time.UnixMilli takes names none either (int64() wraps it, on amd64 to
-// MinInt64), so each is described as such rather than as a made-up instant.
-// Inside that range the instant is rendered even outside the RFC3339 year
-// span, so a refused 253402300800000 shows its 10000-01-01T00:00:00Z.
-func describeEpochMillis(numVal float64) string {
-	if !isWholeMillis(numVal) {
-		return formatFitValue(numVal) + " (not a whole number of epoch milliseconds)"
-	}
-	if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
-		return formatFitValue(numVal) + " (beyond any epoch millisecond instant)"
-	}
-	return fmt.Sprintf("%s (%s)", formatFitValue(numVal), unixMillisFloat64ToTimeUTC(numVal).Format(time.RFC3339Nano))
+	return fmt.Errorf("%s value %d (%s) cannot be stored in main column %s with encoding %s, which %s",
+		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), col, forma.MainColumnEncodingISO8601, rule)
 }
 
 func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) error {

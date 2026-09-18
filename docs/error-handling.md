@@ -598,12 +598,19 @@ PostgreSQL-only reads see the value gone.
 One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
 **a value must fit its physical destination, else `forma.InvalidInputf`.**
 
-- EAV-only attribute: the destination is the declared `valueType`.
-  `smallint`/`integer`/`bigint` must be integral and inside the type's
-  range; `numeric` is unconstrained (#205 owns its float64 ceiling).
+- EAV-only attribute: the destination is the declared `valueType`, stored
+  as the float64 image in `eav_data.value_numeric`. `smallint`/`integer`/
+  `bigint` must be integral and inside the type's range; `numeric` is
+  unconstrained (#205 owns its float64 ceiling). A `date`/`datetime` is
+  refused above |2^53| epoch millis (#582): that is the image's exact
+  range, and the in-memory int64 sidecar never reaches the table, so a
+  value past it would come back rounded (or, at the int64 ends, wrapped).
+  A `bigint` past 2^53 still rounds there (#205's documented ceiling).
 - Column-bound attribute: the declared type **and** the column's own width
-  (`double_*` is unconstrained; #205 owns the float64 ceiling, so
-  `bigint`→`double_01` rounds above 2^53 rather than refusing).
+  (`double_*` is unconstrained for the numeric family; #205 owns the
+  float64 ceiling, so `bigint`→`double_01` rounds above 2^53 rather than
+  refusing. A `date`/`datetime` in a double column takes the same |2^53|
+  epoch-ms rule as the EAV image, #582).
   `numeric`→`integer_01` refuses `1.5` and `3e9`; `integer`→`smallint_01`
   refuses `40000`. Before #459 these wrapped (`int16(40000) = -25536`) into
   `entity_main`. The width check judges the slot the store actually writes:

@@ -526,10 +526,15 @@ seconds within the layout's four-digit year: a value whose epoch millis are
 off a whole second is refused at write time as invalid input rather than
 truncated, #582, and a value outside 0000-01-01T00:00:00Z to
 9999-12-31T23:59:59Z is refused rather than stored as an image the RFC3339
-reader cannot parse. Millis are the precision every date/datetime carries
-once written, bound or not; a finer fraction in the input is normalised to
-millis before any fit decision, #589); `bool`→smallint (`bool_smallint`) or
-text (`bool_text`); `list` never binds.
+reader cannot parse). Epoch millis are the logical representation every
+date/datetime is normalised to before any fit decision (a finer fraction in
+the input is dropped there, #589), and each destination keeps its own exact
+range of them, enforced at write time (#582): a bigint column keeps the
+full int64 range; an unbound attribute's `eav_data.value_numeric` and a
+double column keep |millis| ≤ 2^53, the float64 image's exact range, and
+refuse anything past it as invalid input rather than rounding it; an
+iso8601 text column keeps whole seconds from year 0000 to 9999. `bool`→
+smallint (`bool_smallint`) or text (`bool_text`); `list` never binds.
 
 Some refused pairs do store and read back losslessly on the Postgres path:
 `uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,

@@ -104,12 +104,10 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 			if err := t.storeInMainColumn(record, eavRecord, meta.ColumnBinding); err != nil {
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
-		} else {
-			// EAV storage keeps the float64 ValueNumeric contract (2^53
-			// ceiling); clear the exact sidecar so the create-response echo
-			// matches what eav_data actually persists (#205).
-			eavRecord.ValueInt64 = nil
-			record.OtherAttributes = append(record.OtherAttributes, eavRecord)
+			continue
+		}
+		if err := storeInEAV(record, eavRecord, meta.ValueType); err != nil {
+			return nil, fmt.Errorf("failed to store attribute %s in eav_data: %w", attrName, err)
 		}
 	}
 
@@ -162,6 +160,31 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	}
 
 	return result, nil
+}
+
+// storeInEAV appends the record to the row's eav_data attributes. eav_data
+// persists the float64 ValueNumeric image only (#205): the exact sidecar is
+// memory-only and is cleared here so the create-response echo matches what
+// is written. For a date/datetime that image is exact only within 2^53
+// (checkFloat64ImageFit); checkStorageFit has already refused a wider value
+// as invalid input, so one reaching here is a funnel bypass, refused rather
+// than rounded, and the image written is derived from the exact value so
+// the persisted millis are the logical millis by construction (#582).
+func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType) error {
+	if isDateType(vt) && (attr.ValueInt64 != nil || attr.ValueNumeric != nil) {
+		ms, err := exactEpochMillis(&attr)
+		if err != nil {
+			return fmt.Errorf("attr id %d of schema %d (row %s): %w", attr.AttrID, attr.SchemaID, attr.RowID, err)
+		}
+		if err := checkFloat64ImageFit(ms, vt, eavValueNumericDest); err != nil {
+			return fmt.Errorf("attr id %d of schema %d (row %s): %w", attr.AttrID, attr.SchemaID, attr.RowID, err)
+		}
+		image := float64(ms)
+		attr.ValueNumeric = &image
+	}
+	attr.ValueInt64 = nil
+	record.OtherAttributes = append(record.OtherAttributes, attr)
+	return nil
 }
 
 func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) error {
@@ -223,13 +246,17 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		// so reaching one here is a funnel bypass: refuse it rather than
 		// truncate the caller's value or write an image the read path
 		// cannot parse (#582).
-		if attr.ValueNumeric == nil {
+		if attr.ValueNumeric == nil && attr.ValueInt64 == nil {
 			return false, nil
 		}
-		text, rule := iso8601Rendering(*attr.ValueNumeric)
+		ms, err := exactEpochMillis(&attr)
+		if err != nil {
+			return false, fmt.Errorf("encoding %s cannot hold a slot in main column %s: %w", binding.Encoding, binding.ColumnName, err)
+		}
+		text, rule := iso8601Rendering(ms)
 		if rule != "" {
-			return false, fmt.Errorf("encoding %s %s and cannot hold value %s in main column %s",
-				binding.Encoding, rule, formatFitValue(*attr.ValueNumeric), binding.ColumnName)
+			return false, fmt.Errorf("encoding %s %s and cannot hold value %d in main column %s",
+				binding.Encoding, rule, ms, binding.ColumnName)
 		}
 		return storeTextRendering(record, binding, text)
 	default:
