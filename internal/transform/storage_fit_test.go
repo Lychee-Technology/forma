@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -319,4 +320,91 @@ func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
 			require.Contains(t, msg, "attribute 'when'")
 		})
 	}
+}
+
+// #582: the iso8601 rendering is an RFC3339 string, which keeps whole
+// seconds. A sub-second instant used to be silently truncated on the way
+// into the text column (1704067200123 stored as 2024-01-01T00:00:00Z, read
+// back as 1704067200000) — the one admitted binding where the funnel
+// narrowed the caller's value. It is now refused as published invalid input;
+// the same instant unbound, or bound to a bigint column, still keeps its
+// millis.
+func TestCheckStorageFit_ISO8601WholeSeconds(t *testing.T) {
+	iso := boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601)
+	isoDate := boundMeta(forma.ValueTypeDate, forma.MainColumnText03, forma.MainColumnEncodingISO8601)
+	cases := []struct {
+		name    string
+		meta    forma.AttributeMetadata
+		value   any
+		wantErr string // substring of the published message; "" means accepted
+	}{
+		{"datetime with millis rejected", iso, "2024-01-01T00:00:00.123Z",
+			"datetime value 1704067200123 (2024-01-01T00:00:00.123Z) cannot be stored in main column text_02 with encoding iso8601, which keeps whole seconds"},
+		{"datetime whole second accepted", iso, "2024-01-01T00:00:00Z", ""},
+		{"datetime zero fraction accepted", iso, "2024-01-01T00:00:00.000Z", ""},
+		{"datetime epoch-ms string with millis rejected", iso, "1704067200123", "keeps whole seconds"},
+		{"datetime epoch-ms string whole second accepted", iso, "1704067200000", ""},
+		{"datetime time.Time with millis rejected", iso, time.UnixMilli(1704067200999).UTC(), "value 1704067200999"},
+		{"datetime pre-epoch sub-second rejected", iso, "-500",
+			"datetime value -500 (1969-12-31T23:59:59.5Z) cannot be stored"},
+		{"date with millis rejected", isoDate, "2024-01-01T00:00:00.001Z",
+			"date value 1704067200001 (2024-01-01T00:00:00.001Z) cannot be stored in main column text_03 with encoding iso8601, which keeps whole seconds"},
+		{"date day accepted", isoDate, "2024-01-01", ""},
+		{"unbound datetime keeps millis",
+			forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}, "2024-01-01T00:00:00.123Z", ""},
+		{"unix_ms bigint keeps millis",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs), "2024-01-01T00:00:00.123Z", ""},
+		{"default bigint keeps millis",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), "2024-01-01T00:00:00.123Z", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec model.EAVRecord
+			set, err := populateTypedValue(&rec, "seenAt", tc.value, tc.meta)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.True(t, set)
+				return
+			}
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "fit rejection must be user-facing invalid input")
+			msg, ok := forma.ResolvePublicMessage(err)
+			require.True(t, ok, "fit rejection must publish its message")
+			require.Contains(t, msg, tc.wantErr)
+			require.Contains(t, msg, "attribute 'seenAt'")
+		})
+	}
+}
+
+// #582: whatever the funnel admits into an iso8601 column reads back with
+// exactly the millis it was written with; the store refuses, rather than
+// truncates, a sub-second value that bypasses the check.
+func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
+	tr := &persistentRecordTransformer{}
+	meta := boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601)
+	for _, value := range []any{"2024-01-01T00:00:00Z", "1970-01-01T00:00:00Z", "-1000", "2099-12-31T23:59:59+02:00", "2024-01-01"} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			var rec model.EAVRecord
+			_, err := populateTypedValue(&rec, "seenAt", value, meta)
+			require.NoError(t, err)
+			record := &model.PersistentRecord{TextItems: map[string]string{}}
+			require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+			got, err := tr.readFromMainColumn(record, meta, meta.ColumnBinding)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, *rec.ValueNumeric, *got.ValueNumeric)
+		})
+	}
+
+	// A sub-second value that reaches the store is a funnel bypass: refused
+	// with the reason, not narrowed.
+	var rec model.EAVRecord
+	_, err := populateTypedValue(&rec, "seenAt", "2024-01-01T00:00:00.123Z", forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime})
+	require.NoError(t, err)
+	record := &model.PersistentRecord{TextItems: map[string]string{}}
+	err = tr.storeInMainColumn(record, rec, meta.ColumnBinding)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "keeps whole seconds")
+	require.Contains(t, err.Error(), "1704067200123")
+	require.Contains(t, err.Error(), "text_02")
+	require.Empty(t, record.TextItems)
 }

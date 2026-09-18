@@ -2,7 +2,6 @@ package transform
 
 import (
 	"fmt"
-	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -26,7 +25,10 @@ var parityEncodings = []forma.MainColumnEncoding{
 
 // paritySamples is one typed value per EAVRecord slot family. Every numeric
 // image fits a smallint so the width rule (covered by the other tests in
-// this package) never decides a pair here; only slot placement does.
+// this package) never decides a pair here; only slot placement does. The
+// sub-second datetime is the one rendering rule beyond placement (#582): the
+// check refuses it on iso8601 and the store must refuse it too, never
+// truncate.
 var paritySamples = []struct {
 	vt    forma.ValueType
 	value any
@@ -35,6 +37,7 @@ var paritySamples = []struct {
 	{forma.ValueTypeUUID, "0190f3a4-2f1e-7c3b-9a2d-1b2c3d4e5f60"},
 	{forma.ValueTypeNumeric, 1},
 	{forma.ValueTypeDate, "1970-01-01T00:00:01Z"},
+	{forma.ValueTypeDateTime, "1970-01-01T00:00:01.5Z"},
 	{forma.ValueTypeBool, true},
 }
 
@@ -71,14 +74,13 @@ func slotsHolding(record *model.PersistentRecord, col string) []forma.MainColumn
 }
 
 // renderedNumeric is what an encoding's rendering keeps of the numeric slot
-// when it is read back: the bool renderings collapse it to 0/1 and the
-// RFC3339 rendering keeps whole seconds; the rest are exact.
+// when it is read back: the bool renderings collapse it to 0/1; the rest are
+// exact. The RFC3339 rendering keeps whole seconds, and the check admits
+// only those (#582), so it is exact for every admitted value.
 func renderedNumeric(enc forma.MainColumnEncoding, v float64) float64 {
 	switch enc {
 	case forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText:
 		return boolToFloat64(float64ToBool(v))
-	case forma.MainColumnEncodingISO8601:
-		return math.Trunc(v/1000) * 1000
 	}
 	return v
 }

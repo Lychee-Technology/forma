@@ -218,11 +218,18 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		}
 		return storeTextRendering(record, binding, text)
 	case forma.MainColumnEncodingISO8601:
-		// Date as an ISO 8601 string
+		// Date as an RFC3339 string at whole seconds. checkBoundColumnFit
+		// refuses a sub-second value, so reaching one here is a funnel
+		// bypass: refuse it rather than truncate the caller's value (#582).
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		return storeTextRendering(record, binding, unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339))
+		text, ok := iso8601Rendering(*attr.ValueNumeric)
+		if !ok {
+			return false, fmt.Errorf("encoding %s keeps whole seconds and cannot hold value %s in main column %s",
+				binding.Encoding, formatFitValue(*attr.ValueNumeric), binding.ColumnName)
+		}
+		return storeTextRendering(record, binding, text)
 	default:
 		return t.storeWithDefaultEncoding(record, attr, binding)
 	}

@@ -46,3 +46,18 @@ func timeToUnixMillisFloat64(value time.Time) float64 {
 func unixMillisFloat64ToTimeUTC(value float64) time.Time {
 	return time.UnixMilli(int64(value)).UTC()
 }
+
+// iso8601Rendering is the image the iso8601 encoding stores for an epoch-ms
+// value: RFC3339, UTC, whole seconds (the layout has no fractional field,
+// and the DuckDB outer select re-derives the same shape, #555). It reports
+// false for an instant off a whole second, which the rendering would
+// truncate; checkBoundColumnFit refuses such a value as invalid input and
+// storeWithEncoding refuses it as a funnel bypass, so no path narrows it
+// silently (#582).
+func iso8601Rendering(value float64) (string, bool) {
+	t := unixMillisFloat64ToTimeUTC(value)
+	if t.Nanosecond() != 0 {
+		return "", false
+	}
+	return t.Format(time.RFC3339), true
+}

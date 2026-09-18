@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -53,12 +54,16 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	colType := binding.ColumnType()
 	switch binding.Encoding {
 	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
-		// Text renderings of the numeric slot: nothing to width-check.
+		// Text renderings of the numeric slot: nothing to width-check, but
+		// the RFC3339 image keeps whole seconds and must not narrow (#582).
 		if colType != forma.MainColumnTypeText {
 			return errEncodingMismatch(vt, binding, "a text value")
 		}
 		if attr.ValueNumeric == nil {
 			return errSlotMismatch(vt, col, "a date, datetime or bool value")
+		}
+		if binding.Encoding == forma.MainColumnEncodingISO8601 {
+			return checkISO8601WholeSeconds(*attr.ValueNumeric, vt, col)
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
@@ -104,6 +109,18 @@ func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col for
 		return fmt.Errorf("attribute bound to column %s of unsupported type %s", col, colType)
 	}
 	return nil
+}
+
+// checkISO8601WholeSeconds refuses an epoch-ms value the iso8601 rendering
+// would truncate. The message carries the millis (the wire form a read
+// returns) and the instant they name, so a caller who sent an RFC3339
+// string recognises the value.
+func checkISO8601WholeSeconds(numVal float64, vt forma.ValueType, col forma.MainColumn) error {
+	if _, ok := iso8601Rendering(numVal); ok {
+		return nil
+	}
+	return fmt.Errorf("%s value %s (%s) cannot be stored in main column %s with encoding %s, which keeps whole seconds",
+		vt, formatFitValue(numVal), unixMillisFloat64ToTimeUTC(numVal).Format(time.RFC3339Nano), col, forma.MainColumnEncodingISO8601)
 }
 
 func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) error {
