@@ -621,11 +621,13 @@ the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
 40000 out of range for bound column smallint_01 (smallint) (allowed [-32768,
 32767])`.
 
-Registration (`schemameta.ValidateColumnBinding`) refuses a
-`valueType`↔column-encoding pair that cannot round-trip at all, so the runtime
-rule only ever sees width and UUID-shape questions on a well-formed schema;
-`validate-schema-consistency` lists such pairs across an already-deployed set
-(see `docs/schema-consistency-migration.md`).
+Registration (`schemameta.ValidateColumnBinding`) refuses a `col_name` that
+is not a column `entity_main` has (#557: `foo` or `text_99` classify as text
+by prefix and used to fail only on the first write) and a
+`valueType`↔column-encoding pair that cannot round-trip at all (#459), so the
+runtime rule only ever sees width and UUID-shape questions on a well-formed
+schema; `validate-schema-consistency` lists both across an already-deployed
+set (see `docs/schema-consistency-migration.md`).
 
 ## Read-path consistency errors
 

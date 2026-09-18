@@ -1,17 +1,32 @@
 package schemameta
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
-// ValidateColumnBinding reports whether an attribute's valueType can
-// round-trip through its main-column binding (#459). A binding outside the
-// matrix below used to surface only at write time — as a redacted 500
-// (text→uuid column: uuid.Parse failure) or a silent drop (text→smallint:
-// empty numeric slot) — so registration refuses it up front, and
-// validate-schema-consistency reports it across an already-deployed set.
+// ErrUnknownMainColumn marks a binding whose col_name is not a column
+// entity_main has (#557). validate-schema-consistency matches it to file the
+// finding under its own category.
+var ErrUnknownMainColumn = errors.New("unknown main column")
+
+// ValidateColumnBinding reports whether an attribute's main-column binding
+// names a column entity_main has (#557) and whether its valueType can
+// round-trip through that column (#459). Both used to surface only at write
+// time — an unknown column as the writer's "unsupported column", a pair
+// outside the matrix below as a redacted 500 (text→uuid column: uuid.Parse
+// failure) or a silent drop (text→smallint: empty numeric slot) — so
+// registration refuses them up front, and validate-schema-consistency
+// reports them across an already-deployed set.
+//
+// The column set is the runtime's (internal/model): the writer's allowlist,
+// the read projection and the CDC column order all derive from it, so a
+// name outside it cannot round-trip whatever ColumnType() infers from its
+// prefix. "text_99" or "foo" classify as text and would pass the matrix
+// alone. The match is exact: the writer's map lookup is case-sensitive.
 //
 //	valueType                        column type                         encoding
 //	text                             text                                default
@@ -35,6 +50,11 @@ func ValidateColumnBinding(attrName string, meta forma.AttributeMetadata) error 
 	binding := meta.ColumnBinding
 	if binding == nil {
 		return nil
+	}
+	if !model.IsMainTableColumn(string(binding.ColumnName)) {
+		return fmt.Errorf(
+			"attribute %s (valueType %s) binds to %w %s: column_binding.col_name must be one of %s",
+			attrName, meta.ValueType, ErrUnknownMainColumn, binding.ColumnName, model.EntityMainProjection)
 	}
 	encoding := binding.Encoding
 	if encoding == "" {

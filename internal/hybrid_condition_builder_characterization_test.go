@@ -65,11 +65,6 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 			ValueType:     forma.ValueTypeNumeric,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("double_01")},
 		},
-		"badcol": {
-			AttributeID:   15,
-			ValueType:     forma.ValueTypeText,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_99")},
-		},
 	}); err != nil {
 		panic(err)
 	}
@@ -426,10 +421,23 @@ func TestHybrid_DoubleColumnIntegerLiteral(t *testing.T) {
 	require.Equal(t, []any{int64(25)}, args)
 }
 
+// Registration refuses a binding to a column entity_main does not have
+// (#557), so the builder is handed the cache directly: this characterizes
+// its own guard for a cache that never went through RegisterSchema.
 func TestHybrid_UnknownBoundColumnErrors(t *testing.T) {
 	h := newHybridTestHelper(true)
-	cond := &forma.KvCondition{Attr: "badcol", Value: "equals:x"}
-	_, _, err := h.build(cond)
+	b := &hybridConditionBuilder{
+		r: h.repo, eavTable: h.eavTable, mainTable: h.mainTable, schemaID: 1,
+		argCounter: h.initArgIndex, useMainTableAsAnchor: h.useMainAnchor,
+		cache: forma.SchemaAttributeCache{
+			"badcol": {
+				AttributeID:   15,
+				ValueType:     forma.ValueTypeText,
+				ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_99")},
+			},
+		},
+	}
+	_, _, err := b.build(&forma.KvCondition{Attr: "badcol", Value: "equals:x"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown main table column")
 }

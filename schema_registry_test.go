@@ -11,7 +11,7 @@ func TestMainColumnBindingColumnType(t *testing.T) {
 		{"text prefix", MainColumnText01, MainColumnTypeText},
 		{"smallint prefix", MainColumnSmallint02, MainColumnTypeSmallint},
 		{"integer prefix", MainColumnInteger03, MainColumnTypeInteger},
-		{"bigint prefix", MainColumnBigint04, MainColumnTypeBigint},
+		{"bigint prefix", MainColumnBigint03, MainColumnTypeBigint},
 		{"double prefix", MainColumnDouble02, MainColumnTypeDouble},
 		{"uuid prefix", MainColumnUUID01, MainColumnTypeUUID},
 		{"created at special", MainColumnCreatedAt, MainColumnTypeBigint},

@@ -239,8 +239,9 @@ type MetadataLoader struct {
 	schemaTableName string
 	schemaDirectory string
 	// deferBindingCheck skips ValidateColumnBinding during load so a caller
-	// that reports mismatches itself (validate-schema-consistency) can see
-	// every one instead of the first. Runtime loads never set it.
+	// that reports unknown columns and mismatches itself
+	// (validate-schema-consistency) can see every one instead of the first.
+	// Runtime loads never set it.
 	deferBindingCheck bool
 }
 
@@ -253,9 +254,10 @@ func NewMetadataLoader(pool DBPool, schemaTableName, schemaDirectory string) *Me
 	}
 }
 
-// DeferColumnBindingCheck makes LoadMetadata admit bindings that cannot
-// round-trip (#459) so the caller can report all of them; it returns the
-// receiver for chaining. Only validate-schema-consistency should use it.
+// DeferColumnBindingCheck makes LoadMetadata admit bindings that name a
+// column entity_main does not have (#557) or cannot round-trip (#459) so the
+// caller can report all of them; it returns the receiver for chaining. Only
+// validate-schema-consistency should use it.
 func (ml *MetadataLoader) DeferColumnBindingCheck() *MetadataLoader {
 	ml.deferBindingCheck = true
 	return ml

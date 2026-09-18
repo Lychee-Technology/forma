@@ -23,6 +23,11 @@ const (
 // MainColumn represents column names in the main entity table.
 type MainColumn string
 
+// The constants below are the complete entity_main column set: a
+// column_binding to any other name is refused at registration (#557), and
+// the runtime's column list (internal/model) and the init-db DDL are pinned
+// to the same set by tests (#585). The deprecated block that follows is not
+// part of the set.
 const (
 	MainColumnText01     MainColumn = "text_01"
 	MainColumnText02     MainColumn = "text_02"
@@ -36,19 +41,16 @@ const (
 	MainColumnText10     MainColumn = "text_10"
 	MainColumnSmallint01 MainColumn = "smallint_01"
 	MainColumnSmallint02 MainColumn = "smallint_02"
+	MainColumnSmallint03 MainColumn = "smallint_03"
 	MainColumnInteger01  MainColumn = "integer_01"
 	MainColumnInteger02  MainColumn = "integer_02"
 	MainColumnInteger03  MainColumn = "integer_03"
 	MainColumnBigint01   MainColumn = "bigint_01"
 	MainColumnBigint02   MainColumn = "bigint_02"
 	MainColumnBigint03   MainColumn = "bigint_03"
-	MainColumnBigint04   MainColumn = "bigint_04"
-	MainColumnBigint05   MainColumn = "bigint_05"
 	MainColumnDouble01   MainColumn = "double_01"
 	MainColumnDouble02   MainColumn = "double_02"
 	MainColumnDouble03   MainColumn = "double_03"
-	MainColumnDouble04   MainColumn = "double_04"
-	MainColumnDouble05   MainColumn = "double_05"
 	MainColumnUUID01     MainColumn = "uuid_01"
 	MainColumnUUID02     MainColumn = "uuid_02"
 	MainColumnCreatedAt  MainColumn = "ltbase_created_at"
@@ -59,6 +61,22 @@ const (
 	MainColumnDeletedBy  MainColumn = "ltbase_deleted_by"
 	MainColumnSchemaID   MainColumn = "ltbase_schema_id"
 	MainColumnRowID      MainColumn = "ltbase_row_id"
+)
+
+// Deprecated: the four constants below name columns entity_main never had
+// at runtime. v0.2.0 exported them and its init-db created the columns, but
+// the writer's allowlist, the read projection and the CDC column order all
+// stopped at bigint_03 and double_03, so every write to a binding on them
+// failed with "unsupported column". Since #585 init-db no longer creates
+// them, and a column_binding naming one is refused at registration (#557).
+// They are kept so v0.2.0 callers still compile; they will be removed in the
+// next breaking release. Bind to MainColumnBigint01..03 or
+// MainColumnDouble01..03 instead.
+const (
+	MainColumnBigint04 MainColumn = "bigint_04"
+	MainColumnBigint05 MainColumn = "bigint_05"
+	MainColumnDouble04 MainColumn = "double_04"
+	MainColumnDouble05 MainColumn = "double_05"
 )
 
 // MainColumnType represents the data type of a main column.
@@ -90,7 +108,10 @@ type MainColumnBinding struct {
 	Encoding   MainColumnEncoding `json:"encoding,omitempty"`
 }
 
-// ColumnType derives the column type from the column name prefix.
+// ColumnType derives the column type from the column name prefix. It is
+// lenient by design — an unrecognised name classifies as text — because it
+// runs on already-loaded metadata; whether the name is a column entity_main
+// has is checked once, at registration (schemameta.ValidateColumnBinding, #557).
 func (m *MainColumnBinding) ColumnType() MainColumnType {
 	name := strings.ToLower(string(m.ColumnName))
 	switch {
