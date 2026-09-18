@@ -119,8 +119,18 @@ func checkISO8601WholeSeconds(numVal float64, vt forma.ValueType, col forma.Main
 	if _, ok := iso8601Rendering(numVal); ok {
 		return nil
 	}
-	return fmt.Errorf("%s value %s (%s) cannot be stored in main column %s with encoding %s, which keeps whole seconds",
-		vt, formatFitValue(numVal), unixMillisFloat64ToTimeUTC(numVal).Format(time.RFC3339Nano), col, forma.MainColumnEncodingISO8601)
+	return fmt.Errorf("%s value %s cannot be stored in main column %s with encoding %s, which keeps whole seconds",
+		vt, describeEpochMillis(numVal), col, forma.MainColumnEncodingISO8601)
+}
+
+// describeEpochMillis renders an epoch-ms value with the instant it names. A
+// slot that is not a whole number of millis names no instant (int64() would
+// round it to one that is not the caller's), so it is described as such.
+func describeEpochMillis(numVal float64) string {
+	if !isWholeMillis(numVal) {
+		return formatFitValue(numVal) + " (not a whole number of epoch milliseconds)"
+	}
+	return fmt.Sprintf("%s (%s)", formatFitValue(numVal), unixMillisFloat64ToTimeUTC(numVal).Format(time.RFC3339Nano))
 }
 
 func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) error {

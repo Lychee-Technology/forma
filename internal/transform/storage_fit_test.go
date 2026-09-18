@@ -350,6 +350,12 @@ func TestCheckStorageFit_ISO8601WholeSeconds(t *testing.T) {
 		{"date with millis rejected", isoDate, "2024-01-01T00:00:00.001Z",
 			"date value 1704067200001 (2024-01-01T00:00:00.001Z) cannot be stored in main column text_03 with encoding iso8601, which keeps whole seconds"},
 		{"date day accepted", isoDate, "2024-01-01", ""},
+		// The funnel keeps millis for every date/datetime (UnixMilli in
+		// populateTypedValue), so a finer fraction is gone before any fit
+		// decision and the rule judges the millis: admitted, stored at the
+		// whole second. Whether ingestion should refuse sub-millisecond
+		// input is #589, a contract for every date attribute, not this one.
+		{"datetime sub-millisecond fraction is millis-normalised before the check", iso, "2024-01-01T00:00:00.000001Z", ""},
 		{"unbound datetime keeps millis",
 			forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}, "2024-01-01T00:00:00.123Z", ""},
 		{"unix_ms bigint keeps millis",
@@ -407,4 +413,31 @@ func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
 	require.Contains(t, err.Error(), "1704067200123")
 	require.Contains(t, err.Error(), "text_02")
 	require.Empty(t, record.TextItems)
+}
+
+// #587 review: the whole-second rule must judge the numeric slot as it is,
+// not after int64() has rounded it. A date/datetime slot holds a whole number
+// of millis by construction (both funnels write UnixMilli), so a fractional,
+// NaN or infinite slot is a bypass; the check refuses it with the reason and
+// the store refuses it too, never truncating 1000.5 to 1970-01-01T00:00:01Z.
+func TestISO8601_NonIntegralSlotIsRefused(t *testing.T) {
+	tr := &persistentRecordTransformer{}
+	binding := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
+	for _, numVal := range []float64{1000.5, 1704067200000.25, -0.5, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		t.Run(formatFitValue(numVal), func(t *testing.T) {
+			v := numVal
+			rec := model.EAVRecord{ValueNumeric: &v}
+
+			err := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, binding)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "datetime value "+formatFitValue(numVal)+" (not a whole number of epoch milliseconds) cannot be stored in main column text_02 with encoding iso8601, which keeps whole seconds")
+
+			record := newEmptyPersistentRecord()
+			stored, err := tr.storeWithEncoding(record, rec, binding)
+			require.Error(t, err)
+			require.False(t, stored)
+			require.Contains(t, err.Error(), "keeps whole seconds")
+			require.Empty(t, record.TextItems)
+		})
+	}
 }

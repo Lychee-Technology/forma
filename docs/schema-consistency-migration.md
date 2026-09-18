@@ -522,9 +522,12 @@ Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`num
 → smallint/integer/bigint/double (a value that does not fit the column's
 width is refused at write time as invalid input); `date`/`datetime`→bigint
 (`unix_ms` or default) or text (`iso8601`, an RFC3339 string at whole
-seconds: a sub-second instant is refused at write time as invalid input
-rather than truncated, #582); `bool`→smallint (`bool_smallint`) or text
-(`bool_text`); `list` never binds.
+seconds: a value whose epoch millis are off a whole second is refused at
+write time as invalid input rather than truncated, #582. Millis are the
+precision every date/datetime carries once written, bound or not; a finer
+fraction in the input is normalised to millis before any fit decision,
+#589); `bool`→smallint (`bool_smallint`) or text (`bool_text`); `list`
+never binds.
 
 Some refused pairs do store and read back losslessly on the Postgres path:
 `uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,
