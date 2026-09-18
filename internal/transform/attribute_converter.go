@@ -79,9 +79,12 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 		if err != nil {
 			return record, fmt.Errorf("convert to time: %w", err)
 		}
-		unixMillis := timeToUnixMillisFloat64(timeVal)
+		exactMs, err := epochMillisOf(timeVal)
+		if err != nil {
+			return record, fmt.Errorf("convert to time for attrID %d: %w", attr.AttrID, err)
+		}
+		unixMillis := float64(exactMs)
 		record.ValueNumeric = &unixMillis
-		exactMs := timeVal.UnixMilli()
 		record.ValueInt64 = &exactMs
 
 	case forma.ValueTypeUUID:

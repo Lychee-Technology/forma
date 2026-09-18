@@ -51,9 +51,12 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		if err != nil {
 			return handleConversionError(err)
 		}
-		unixMillis := timeToUnixMillisFloat64(timeVal)
+		exactMs, err := epochMillisOf(timeVal)
+		if err != nil {
+			return handleConversionError(err)
+		}
+		unixMillis := float64(exactMs)
 		attr.ValueNumeric = &unixMillis
-		exactMs := timeVal.UnixMilli()
 		attr.ValueInt64 = &exactMs
 	case forma.ValueTypeBool:
 		boolVal, err := boolFromAny(value)

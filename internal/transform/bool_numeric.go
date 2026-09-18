@@ -40,8 +40,38 @@ func boolFromBoolText(value string) (bool, error) {
 	}
 }
 
+// timeToUnixMillisFloat64 is the read side's conversion of an instant the
+// storage already holds (an RFC3339 image has a four-digit year, so it is
+// inside the int64 millis range by construction). The write funnels go
+// through epochMillisOf, which refuses an instant outside that range.
 func timeToUnixMillisFloat64(value time.Time) float64 {
 	return float64(value.UnixMilli())
+}
+
+// The instants an int64 of epoch millis names: the slot every date/datetime
+// is normalised into (value_numeric and the exact value_int64 sidecar).
+var (
+	minEpochMillisTime = time.UnixMilli(math.MinInt64)
+	maxEpochMillisTime = time.UnixMilli(math.MaxInt64)
+)
+
+// epochMillisOf is the write funnels' normalisation of a time.Time into the
+// epoch-millis slot. time.Time.UnixMilli is undefined outside the int64
+// millis range and wraps there (year 73069258127 came out as
+// 1970-04-08T20:07:28Z), so an extreme but valid time.Time used to be stored
+// as an unrelated in-range instant before any fit decision could see it
+// (#587 review). The comparison is on the instant, so it is exact for every
+// time.Time and zone; a value past either end is refused as the caller's
+// value, never narrowed. Sub-millisecond precision is floored as before
+// (#589 owns whether ingestion should refuse it).
+func epochMillisOf(value time.Time) (int64, error) {
+	if value.Before(minEpochMillisTime) || value.After(maxEpochMillisTime) {
+		return 0, fmt.Errorf("time value %s cannot be stored as epoch milliseconds, which name instants from %s to %s",
+			value.Format(time.RFC3339Nano),
+			minEpochMillisTime.UTC().Format(time.RFC3339Nano),
+			maxEpochMillisTime.UTC().Format(time.RFC3339Nano))
+	}
+	return value.UnixMilli(), nil
 }
 
 func unixMillisFloat64ToTimeUTC(value float64) time.Time {
