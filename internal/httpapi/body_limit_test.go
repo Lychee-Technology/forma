@@ -70,6 +70,101 @@ func TestOversizedBodyIsRefusedBeforeTheManager(t *testing.T) {
 	}
 }
 
+// TestBodyCapCoversBytesAfterTheFirstValue pins the review finding on #465:
+// json.Decoder stops at the end of the first value, so a body whose first
+// value fits under the cap and whose trailing bytes do not must still answer
+// 413. Before the drain, such a body decoded cleanly and reached the manager.
+func TestBodyCapCoversBytesAfterTheFirstValue(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	const limit = 64
+	small := `{"schema_name":"lead","condition":{"a":"s","v":"equals:x"}}`
+	if len(small) > limit {
+		t.Fatalf("the first value must fit under the limit: %d > %d", len(small), limit)
+	}
+
+	cases := []struct {
+		name string
+		tail string
+	}{
+		{"trailing whitespace", strings.Repeat(" ", 1000)},
+		{"trailing second value", strings.Repeat(" ", 1000) + `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newParseProbeManager()
+			srv := NewServer(manager, Options{MaxBodyBytes: limit})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", strings.NewReader(small+tc.tail))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("expected 413, got %d; body: %s", rec.Code, rec.Body.String())
+			}
+			var resp APIResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("body is not valid JSON: %v", err)
+			}
+			want := fmt.Sprintf("request body too large: request body exceeds %d bytes", limit)
+			if resp.Error != want {
+				t.Fatalf("body %q, want %q", resp.Error, want)
+			}
+		})
+	}
+}
+
+// TestSecondJSONValueUnderTheCapIsInvalidInput pins the other half of the
+// drain: a body that fits under the cap but carries a second value after the
+// first is a 400, not a request whose tail is silently discarded. Trailing
+// whitespace stays legal, so newline-terminated bodies keep working.
+func TestSecondJSONValueUnderTheCapIsInvalidInput(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	first := `{"schema_name":"lead","condition":{"a":"s","v":"equals:x"}}`
+	cases := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantErr  string
+	}{
+		{"second object", first + ` {}`, http.StatusBadRequest, "invalid json body: unexpected data after the JSON body"},
+		{"second scalar", first + "\n1", http.StatusBadRequest, "invalid json body: unexpected data after the JSON body"},
+		{"trailing garbage", first + "x", http.StatusBadRequest, "invalid json body: invalid character 'x' looking for beginning of value"},
+		{"trailing newline", first + "\n", http.StatusOK, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &mockEntityManager{advancedResult: &forma.QueryResult{Data: []*forma.DataRecord{}}}
+			srv := NewServer(manager, Options{})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("expected %d, got %d; body: %s", tc.wantCode, rec.Code, rec.Body.String())
+			}
+			if tc.wantCode == http.StatusOK {
+				if manager.advancedReq == nil {
+					t.Fatal("a newline-terminated body must reach the manager")
+				}
+				return
+			}
+			if manager.advancedReq != nil {
+				t.Fatal("a refused body must not reach the manager")
+			}
+			var resp APIResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("body is not valid JSON: %v", err)
+			}
+			if resp.Error != tc.wantErr {
+				t.Fatalf("body %q, want %q", resp.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestBodyUnderTheLimitReachesTheManager is the other half of the cap: the
 // limit is a ceiling, not a tax on ordinary requests.
 func TestBodyUnderTheLimitReachesTheManager(t *testing.T) {

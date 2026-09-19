@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -196,14 +198,33 @@ func parseUUID(s string) (uuid.UUID, error) {
 // gate's scrub still applies to it.
 //
 // The body is read through http.MaxBytesReader under the server's body limit
-// (#465), so a body past the cap fails the decode with *http.MaxBytesError
-// before the decoder materializes it; respondBodyError turns that into a 413.
+// (#465), so a body past the cap fails with *http.MaxBytesError before the
+// decoder materializes it; respondBodyError turns that into a 413. Decode
+// stops at the end of the first JSON value, so the helper then drains the
+// capped stream to EOF: bytes after the value still count against the cap,
+// and a second value is refused as invalid input rather than silently
+// ignored.
 func (s *Server) readJSONBody(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyLimit()))
 	dec.UseNumber()
-	return dec.Decode(v)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	_, err := dec.Token()
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errTrailingBodyValue
 }
+
+// errTrailingBodyValue is the decode failure for a body that carries a second
+// JSON value after the first; like encoding/json's own prose it is
+// caller-addressed and published verbatim by respondBodyError.
+var errTrailingBodyValue = errors.New("unexpected data after the JSON body")
 
 // parseCreateObjects parses create payloads that can be either a single object or an object array.
 func parseCreateObjects(rawBody any) ([]map[string]any, bool, error) {

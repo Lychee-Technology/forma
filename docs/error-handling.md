@@ -947,7 +947,11 @@ shape:
   `http.MaxBytesReader` before the decoder reads it. A body past the cap
   answers `413` through the gate with the published message `request body
   too large: request body exceeds N bytes`; the body is never materialized.
-  Every other decode failure keeps its `400`.
+  The cap covers the whole body, not only the first JSON value: after the
+  decode the reader is drained to EOF, so trailing bytes past the cap are
+  still `413`, and a second JSON value under the cap is `400` (`invalid json
+  body: unexpected data after the JSON body`). Trailing whitespace stays
+  legal. Every other decode failure keeps its `400`.
 - **Batch cap.** `PerformanceConfig.MaxBatchSize` (1000) is enforced at the
   manager, before any repository work, so library embedders get the same
   bound: `400` with `batch of N operations exceeds the maximum batch size of
@@ -974,6 +978,18 @@ shape:
   (`bootstrap.DefaultHTTPServerConfig`, `HTTP_*` overrides in the README).
   These bound the connection, not the handler's context, which is why the
   manager budgets exist alongside them.
+- **Boot-time validation.** The limits are configuration, so an out-of-range
+  value is a startup failure, never a silently widened limit. cmd/server and
+  cmd/lambda assemble the whole `forma.Config` from the environment and run
+  `Config.Validate` on it before opening the database: `Entity.MaxEntitySize`
+  must be positive, `Performance.MaxBatchSize` must be at least `BatchSize`,
+  and the three budgets may be zero (unbounded) but not negative. cmd/server
+  also runs `HTTPServerConfig.Validate`, which refuses a negative phase
+  timeout or header cap (net/http would read either as "no bound") and a
+  bounded `WriteTimeout` shorter than the query or transaction budget, since
+  that would cut a legitimately slow request's connection before its `504`
+  could leave. Library embedders that build a config by hand are not
+  validated; for them the zero-value semantics above apply.
 
 `QueryConfig.MaxRows` remains declared but unenforced; it is tracked
 separately from #465.

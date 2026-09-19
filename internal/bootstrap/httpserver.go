@@ -1,8 +1,11 @@
 package bootstrap
 
 import (
+	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/lychee-technology/forma"
 )
 
 // HTTPServerConfig holds the http.Server bounds cmd/server applies (#465).
@@ -49,6 +52,48 @@ func HTTPServerConfigFromEnv(defaults HTTPServerConfig) HTTPServerConfig {
 		IdleTimeout:       envSeconds("HTTP_IDLE_TIMEOUT_SECONDS", defaults.IdleTimeout),
 		MaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", defaults.MaxHeaderBytes),
 	}
+}
+
+// Validate refuses a configuration net/http would accept but that quietly
+// removes a protection (#465 review): a negative duration disables that
+// phase's timeout, and a negative MaxHeaderBytes silently falls back to
+// net/http's default. Zero stays legal and means "unbounded" or "default",
+// as NewHTTPServer documents.
+//
+// When budgets is non-nil, a bounded WriteTimeout must also cover the query
+// and transaction budgets, or a request that legitimately spends its budget
+// has its connection cut instead of receiving the 504. An unbounded budget
+// (zero) is left to the write timeout, so it needs no check.
+func (c HTTPServerConfig) Validate(budgets *forma.Config) error {
+	phases := []struct {
+		name string
+		d    time.Duration
+	}{
+		{"readHeaderTimeout", c.ReadHeaderTimeout},
+		{"readTimeout", c.ReadTimeout},
+		{"writeTimeout", c.WriteTimeout},
+		{"idleTimeout", c.IdleTimeout},
+	}
+	for _, phase := range phases {
+		if phase.d < 0 {
+			return &forma.ConfigError{Field: "http." + phase.name, Message: "must be greater than or equal to 0"}
+		}
+	}
+	if c.MaxHeaderBytes < 0 {
+		return &forma.ConfigError{Field: "http.maxHeaderBytes", Message: "must be greater than or equal to 0"}
+	}
+	if budgets == nil || c.WriteTimeout == 0 {
+		return nil
+	}
+	if budgets.Query.DefaultTimeout > c.WriteTimeout {
+		return &forma.ConfigError{Field: "http.writeTimeout",
+			Message: fmt.Sprintf("%s is shorter than the query budget %s", c.WriteTimeout, budgets.Query.DefaultTimeout)}
+	}
+	if budgets.Transaction.DefaultTimeout > c.WriteTimeout {
+		return &forma.ConfigError{Field: "http.writeTimeout",
+			Message: fmt.Sprintf("%s is shorter than the transaction budget %s", c.WriteTimeout, budgets.Transaction.DefaultTimeout)}
+	}
+	return nil
 }
 
 // NewHTTPServer builds the http.Server cmd/server listens on, with every

@@ -25,6 +25,8 @@ type serverRuntime struct {
 	pool    *pgxpool.Pool
 	manager forma.EntityManager
 	server  *httpapi.Server
+	// httpCfg holds the validated http.Server bounds main listens with.
+	httpCfg bootstrap.HTTPServerConfig
 }
 
 func main() {
@@ -55,12 +57,7 @@ func main() {
 
 	port := bootstrap.Env("PORT", "8080")
 	zap.S().Infow("starting server", "port", port)
-	// Every connection phase is bounded (#465); the defaults and the HTTP_*
-	// overrides are documented in the README. The manager's own per-request
-	// budgets run underneath these, since a server timeout never cancels a
-	// handler's context.
-	srv := bootstrap.NewHTTPServer(":"+port, runtime.server.Handler(),
-		bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig()))
+	srv := bootstrap.NewHTTPServer(":"+port, runtime.server.Handler(), runtime.httpCfg)
 	if err := runServer(rootCtx, srv); err != nil {
 		sugar.Fatalf("server error: %v", err)
 	}
@@ -127,46 +124,18 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	sugar.Infof("schemaDir: %s", schemaDir)
 
-	// Database configuration
-	dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
-		Host:                   "localhost",
-		Port:                   5432,
-		Database:               "forma",
-		Username:               "postgres",
-		Password:               "",
-		SSLMode:                "disable",
-		Schema:                 "public",
-		MaxConnections:         25,
-		MaxIdleConns:           5,
-		ConnMaxLifetimeSeconds: 3600,
-		ConnMaxIdleTimeSeconds: 300,
-		TimeoutSeconds:         30,
-	})
-
-	// Table names configuration
-	tableNames := bootstrap.TableNamesFromEnv(forma.TableNames{
-		SchemaRegistry: "schema_registry_dev",
-		EAVData:        "eav_data_dev",
-		EntityMain:     "entity_main_dev",
-		ChangeLog:      "change_log_dev",
-	})
-
-	// Invariant: the DuckDB manifest read surface is resolved and validated
-	// before the server opens any connection. The factory validates it too, but
-	// only after it has already queried the database — so doing it here is what
-	// makes the documented "invalid configuration fails at startup, before any
-	// I/O" contract (docs/federated-query/design.md §4.3.1) literally true for
-	// the server. Keep this block above NewPostgresPoolFromConfigContext.
-	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
-	if err := duckCfg.ValidateManifestRead(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	// Invariant: the whole configuration is resolved and validated before the
+	// server opens any connection. The factory validates the DuckDB manifest
+	// surface too, but only after it has already queried the database, so
+	// doing it here is what makes the documented "invalid configuration fails
+	// at startup, before any I/O" contract (docs/federated-query/design.md
+	// §4.3.1, README request limits) literally true for the server. Keep this
+	// call above NewPostgresPoolFromConfigContext.
+	config, httpCfg, err := serverConfigFromEnv(schemaDir)
+	if err != nil {
+		return nil, err
 	}
-	// #456: the caller-path opt-in needs a bucket to scope hints against; reject
-	// the enabled-without-bucket combination here, before any I/O, rather than
-	// 4xx-ing every hint-bearing request at run time.
-	if err := duckCfg.ValidateCallerParquetPaths(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
-	}
+	dbConfig := config.Database
 
 	startupTimeout := dbConfig.Timeout
 	if startupTimeout <= 0 {
@@ -181,40 +150,12 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	}
 
 	// Create file-based schema registry from database
-	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, pool, tableNames.SchemaRegistry, schemaDir)
+	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, pool, dbConfig.TableNames.SchemaRegistry, schemaDir)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
-
-	// Load configuration with schema registry
-	config := forma.DefaultConfig(registry)
-
-	// Set entity options from the environment, then the schema directory. The
-	// overlay runs first so it cannot clobber the directory resolved above.
-	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
-	config.Entity.SchemaDirectory = schemaDir
-
-	// Set database configuration
-	config.Database = dbConfig
-	config.Database.TableNames = tableNames
 	config.SchemaRegistry = registry
-
-	// Enable the federated DuckDB engine when configured (disabled by default).
-	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
-	// suite turns it on so its federated checks are genuinely federated. The
-	// value was resolved and validated above, before any I/O; re-resolving it
-	// here would risk the two copies drifting apart.
-	config.DuckDB = duckCfg
-
-	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
-	// on stdout (#423); unset, Forma's no-op default emits nothing.
-	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
-
-	// Request limits and budgets (#465): body cap, batch cap, query,
-	// transaction and DuckDB timeouts. Applied last so it sees the resolved
-	// DuckDB config; the factory validates the result.
-	bootstrap.ApplyLimitsFromEnv(config)
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)
@@ -226,11 +167,81 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	return &serverRuntime{
 		pool:    pool,
 		manager: manager,
+		httpCfg: httpCfg,
 		server: httpapi.NewServer(manager, httpapi.Options{
 			EnableHealth: true,
 			MaxBodyBytes: int64(config.Entity.MaxEntitySize),
 		}),
 	}, nil
+}
+
+// serverConfigFromEnv assembles the forma.Config and the http.Server bounds
+// this entry point starts with, entirely from the environment and defaults,
+// and validates both. It performs no I/O, so bootstrapServer can call it
+// before opening the database and an out-of-range value (a negative budget,
+// a zero body cap, a write timeout shorter than a budget) fails at boot
+// instead of silently widening a limit (#465). The schema registry is the
+// one field it cannot fill; bootstrapServer sets it once the pool exists.
+func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerConfig, error) {
+	config := forma.DefaultConfig(nil)
+
+	// Set entity options from the environment, then the schema directory. The
+	// overlay runs first so it cannot clobber the directory passed in.
+	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	config.Entity.SchemaDirectory = schemaDir
+
+	// Database configuration
+	config.Database = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+		Host:                   "localhost",
+		Port:                   5432,
+		Database:               "forma",
+		Username:               "postgres",
+		Password:               "",
+		SSLMode:                "disable",
+		Schema:                 "public",
+		MaxConnections:         25,
+		MaxIdleConns:           5,
+		ConnMaxLifetimeSeconds: 3600,
+		ConnMaxIdleTimeSeconds: 300,
+		TimeoutSeconds:         30,
+	})
+	config.Database.TableNames = bootstrap.TableNamesFromEnv(forma.TableNames{
+		SchemaRegistry: "schema_registry_dev",
+		EAVData:        "eav_data_dev",
+		EntityMain:     "entity_main_dev",
+		ChangeLog:      "change_log_dev",
+	})
+
+	// Enable the federated DuckDB engine when configured (disabled by default).
+	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
+	// suite turns it on so its federated checks are genuinely federated.
+	config.DuckDB = duckDBConfigFromEnv(config.DuckDB)
+
+	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
+	// on stdout (#423); unset, Forma's no-op default emits nothing.
+	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+
+	// Request limits and budgets (#465): body cap, batch cap, query,
+	// transaction and DuckDB timeouts. Applied last so it sees the resolved
+	// DuckDB config.
+	bootstrap.ApplyLimitsFromEnv(config)
+
+	// Validate covers every rule the manager relies on, the DuckDB manifest
+	// read surface and the #456 caller-path opt-in included, so a rejection
+	// here names the field rather than surfacing on the first request.
+	if err := config.Validate(); err != nil {
+		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	// Every connection phase is bounded (#465); the defaults and the HTTP_*
+	// overrides are documented in the README. The manager's own per-request
+	// budgets run underneath these, since a server timeout never cancels a
+	// handler's context, which is why WriteTimeout has to cover them.
+	httpCfg := bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig())
+	if err := httpCfg.Validate(config); err != nil {
+		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid http server configuration: %w", err)
+	}
+	return config, httpCfg, nil
 }
 
 // runServer starts srv in a background goroutine and blocks until either the

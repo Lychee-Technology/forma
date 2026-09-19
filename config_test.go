@@ -133,12 +133,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestConfigValidationDetailed(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      *Config
-		expectError bool
-		errorField  string
-	}{
+	tests := []validationCase{
 		{
 			name:        "valid config",
 			config:      DefaultConfig(NewMockSchemaRegistry()),
@@ -196,6 +191,19 @@ func TestConfigValidationDetailed(t *testing.T) {
 		},
 	}
 
+	runValidationCases(t, tests)
+}
+
+// validationCase is one row of a Config.Validate table test.
+type validationCase struct {
+	name        string
+	config      *Config
+	expectError bool
+	errorField  string
+}
+
+func runValidationCases(t *testing.T, tests []validationCase) {
+	t.Helper()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
@@ -216,6 +224,69 @@ func TestConfigValidationDetailed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigValidationRequestLimits pins the #465 rules: the entity size cap
+// doubles as the HTTP body cap and must stay positive; a budget may be zero
+// (unbounded) but never negative. Before these rules a negative
+// MAX_ENTITY_SIZE_BYTES or *_TIMEOUT_SECONDS overlay silently fell back to a
+// default or to "unbounded" instead of failing at boot.
+func TestConfigValidationRequestLimits(t *testing.T) {
+	tests := []validationCase{
+		{
+			name:        "zero entity size cap",
+			config:      configWith(func(c *Config) { c.Entity.MaxEntitySize = 0 }),
+			expectError: true,
+			errorField:  "entity.maxEntitySize",
+		},
+		{
+			name:        "negative entity size cap",
+			config:      configWith(func(c *Config) { c.Entity.MaxEntitySize = -1 }),
+			expectError: true,
+			errorField:  "entity.maxEntitySize",
+		},
+		{
+			name:        "negative query budget",
+			config:      configWith(func(c *Config) { c.Query.DefaultTimeout = -time.Second }),
+			expectError: true,
+			errorField:  "query.defaultTimeout",
+		},
+		{
+			name:        "negative transaction budget",
+			config:      configWith(func(c *Config) { c.Transaction.DefaultTimeout = -time.Second }),
+			expectError: true,
+			errorField:  "transaction.defaultTimeout",
+		},
+		{
+			name:        "negative duckdb budget",
+			config:      configWith(func(c *Config) { c.DuckDB.QueryTimeout = -time.Second }),
+			expectError: true,
+			errorField:  "duckdb.queryTimeout",
+		},
+		{
+			name:        "negative batch cap",
+			config:      configWith(func(c *Config) { c.Performance.MaxBatchSize = -1 }),
+			expectError: true,
+			errorField:  "performance.maxBatchSize",
+		},
+		{
+			name: "zero budgets are unbounded, not invalid",
+			config: configWith(func(c *Config) {
+				c.Query.DefaultTimeout = 0
+				c.Transaction.DefaultTimeout = 0
+				c.DuckDB.QueryTimeout = 0
+			}),
+			expectError: false,
+		},
+	}
+	runValidationCases(t, tests)
+}
+
+// configWith returns the default config after mutate has been applied to it.
+func configWith(mutate func(*Config)) *Config {
+	cfg := DefaultConfig(NewMockSchemaRegistry())
+	mutate(cfg)
+	return cfg
 }
 
 func TestConfigError(t *testing.T) {

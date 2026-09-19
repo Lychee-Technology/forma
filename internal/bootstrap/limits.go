@@ -5,9 +5,7 @@ import "github.com/lychee-technology/forma"
 // ApplyLimitsFromEnv overlays the operator-settable request limits (#465) on
 // cfg in place: the body/entity size cap, the batch cap, and the three
 // per-request budgets. It touches nothing else, so it composes with the other
-// overlays in this package in any order; config.Validate still runs after it
-// in every entry point, so an out-of-range value fails at boot rather than at
-// the first request.
+// overlays in this package in any order.
 //
 //	MAX_ENTITY_SIZE_BYTES          Entity.MaxEntitySize (HTTP body cap)
 //	MAX_BATCH_SIZE                 Performance.MaxBatchSize
@@ -15,9 +13,12 @@ import "github.com/lychee-technology/forma"
 //	TRANSACTION_TIMEOUT_SECONDS    Transaction.DefaultTimeout
 //	DUCKDB_QUERY_TIMEOUT_SECONDS   DuckDB.QueryTimeout
 //
-// A timeout of 0 disables that bound; the size and batch caps must stay
-// positive, which Validate enforces for the batch cap and the HTTP layer
-// enforces for the body cap by falling back to the default on zero.
+// The overlay itself only parses; the range rules live in forma.Config.Validate
+// (a timeout of 0 disables that bound and may not be negative; the size and
+// batch caps must stay positive), and both cmd/server and cmd/lambda call it
+// on the overlaid config before opening the database, so an out-of-range
+// value fails at boot rather than silently widening a limit. An unparsable
+// value keeps the default, like every other EnvInt overlay in this package.
 func ApplyLimitsFromEnv(cfg *forma.Config) {
 	if cfg == nil {
 		return

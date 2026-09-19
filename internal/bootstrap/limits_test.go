@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -79,4 +80,100 @@ func TestApplyLimitsFromEnv(t *testing.T) {
 		t.Fatalf("unset env must keep defaults")
 	}
 	ApplyLimitsFromEnv(nil)
+}
+
+// TestHTTPServerConfigValidate pins the boot-time rules on the HTTP_* overlay
+// (#465 review): a negative phase would disable that timeout in net/http, and
+// a bounded WriteTimeout shorter than a budget would cut a legitimately slow
+// request's connection instead of letting the 504 out.
+func TestHTTPServerConfigValidate(t *testing.T) {
+	budgets := forma.DefaultConfig(nil)
+	if err := DefaultHTTPServerConfig().Validate(budgets); err != nil {
+		t.Fatalf("defaults must validate against the default budgets: %v", err)
+	}
+
+	negative := map[string]func(*HTTPServerConfig){
+		"http.readHeaderTimeout": func(c *HTTPServerConfig) { c.ReadHeaderTimeout = -time.Second },
+		"http.readTimeout":       func(c *HTTPServerConfig) { c.ReadTimeout = -time.Second },
+		"http.writeTimeout":      func(c *HTTPServerConfig) { c.WriteTimeout = -time.Second },
+		"http.idleTimeout":       func(c *HTTPServerConfig) { c.IdleTimeout = -time.Second },
+		"http.maxHeaderBytes":    func(c *HTTPServerConfig) { c.MaxHeaderBytes = -1 },
+	}
+	for field, mutate := range negative {
+		cfg := DefaultHTTPServerConfig()
+		mutate(&cfg)
+		assertConfigError(t, cfg.Validate(budgets), field)
+	}
+
+	// Zero is "unbounded"/"default" everywhere, never an error.
+	if err := (HTTPServerConfig{}).Validate(budgets); err != nil {
+		t.Fatalf("an all-zero config must validate: %v", err)
+	}
+
+	// A bounded write timeout must cover both budgets; an unbounded write
+	// timeout or an unbounded budget needs no check.
+	short := DefaultHTTPServerConfig()
+	short.WriteTimeout = budgets.Query.DefaultTimeout - time.Second
+	assertConfigError(t, short.Validate(budgets), "http.writeTimeout")
+
+	txOnly := forma.DefaultConfig(nil)
+	txOnly.Query.DefaultTimeout = 0
+	assertConfigError(t, short.Validate(txOnly), "http.writeTimeout")
+
+	unboundedBudgets := forma.DefaultConfig(nil)
+	unboundedBudgets.Query.DefaultTimeout = 0
+	unboundedBudgets.Transaction.DefaultTimeout = 0
+	if err := short.Validate(unboundedBudgets); err != nil {
+		t.Fatalf("unbounded budgets need no write-timeout cover: %v", err)
+	}
+	short.WriteTimeout = 0
+	if err := short.Validate(budgets); err != nil {
+		t.Fatalf("an unbounded write timeout covers every budget: %v", err)
+	}
+	if err := short.Validate(nil); err != nil {
+		t.Fatalf("nil budgets skip the cross-check: %v", err)
+	}
+}
+
+// TestNegativeLimitOverlayFailsValidation is the end-to-end shape of the
+// boot-time contract: ApplyLimitsFromEnv only parses, and the value it lets
+// through is refused by forma.Config.Validate, which both entry points run
+// before opening the database.
+func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
+	cases := map[string]string{
+		"MAX_ENTITY_SIZE_BYTES":        "entity.maxEntitySize",
+		"MAX_BATCH_SIZE":               "performance.maxBatchSize",
+		"QUERY_TIMEOUT_SECONDS":        "query.defaultTimeout",
+		"TRANSACTION_TIMEOUT_SECONDS":  "transaction.defaultTimeout",
+		"DUCKDB_QUERY_TIMEOUT_SECONDS": "duckdb.queryTimeout",
+	}
+	for key, field := range cases {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "-1")
+			cfg := forma.DefaultConfig(nil)
+			ApplyLimitsFromEnv(cfg)
+			assertConfigError(t, cfg.Validate(), field)
+		})
+	}
+
+	// Zero budgets are the documented "disabled" value and must pass.
+	for _, key := range []string{"QUERY_TIMEOUT_SECONDS", "TRANSACTION_TIMEOUT_SECONDS", "DUCKDB_QUERY_TIMEOUT_SECONDS"} {
+		t.Setenv(key, "0")
+	}
+	cfg := forma.DefaultConfig(nil)
+	ApplyLimitsFromEnv(cfg)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("zero budgets must validate: %v", err)
+	}
+}
+
+func assertConfigError(t *testing.T, err error, field string) {
+	t.Helper()
+	var cfgErr *forma.ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("expected a ConfigError on %s, got %v", field, err)
+	}
+	if cfgErr.Field != field {
+		t.Fatalf("expected field %s, got %s (%v)", field, cfgErr.Field, err)
+	}
 }
