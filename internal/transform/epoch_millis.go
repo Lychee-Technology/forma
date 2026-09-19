@@ -31,9 +31,14 @@ import (
 
 // The instants an int64 of epoch millis names: the slot every date/datetime
 // is normalised into (value_numeric and the exact value_int64 sidecar).
+// UnixMilli floors an instant to its millisecond, so the instants that
+// normalise into the range run from the first millisecond's instant to the
+// last nanosecond of the last millisecond, not to that millisecond's instant
+// (#587 review).
 var (
-	minEpochMillisTime = time.UnixMilli(math.MinInt64)
-	maxEpochMillisTime = time.UnixMilli(math.MaxInt64)
+	minEpochMillisTime  = time.UnixMilli(math.MinInt64)
+	maxEpochMillisTime  = time.UnixMilli(math.MaxInt64)
+	lastEpochMillisTime = maxEpochMillisTime.Add(time.Millisecond - time.Nanosecond)
 )
 
 // epochMillisOf is the write funnels' normalisation of a time.Time into the
@@ -44,9 +49,11 @@ var (
 // (#587 review). The comparison is on the instant, so it is exact for every
 // time.Time and zone; a value past either end is refused as the caller's
 // value, never narrowed. Sub-millisecond precision is floored as before
-// (#589 owns whether ingestion should refuse it).
+// (#589 owns whether ingestion should refuse it), and the bound is on the
+// floored millis: an instant inside the last millisecond is admitted as
+// MaxInt64, the same value its epoch-ms string normalises to.
 func epochMillisOf(value time.Time) (int64, error) {
-	if value.Before(minEpochMillisTime) || value.After(maxEpochMillisTime) {
+	if value.Before(minEpochMillisTime) || value.After(lastEpochMillisTime) {
 		return 0, fmt.Errorf("time value %s cannot be stored as epoch milliseconds, which name instants from %s to %s",
 			value.Format(time.RFC3339Nano),
 			minEpochMillisTime.UTC().Format(time.RFC3339Nano),

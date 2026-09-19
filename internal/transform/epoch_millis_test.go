@@ -110,9 +110,38 @@ func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 			})
 		}
 	}
+	// The bound is on the floored millis, not the instant: the last
+	// nanosecond before the next millisecond still names MaxInt64, so it is
+	// admitted like the exact millisecond and the epoch-ms string are
+	// (#587 review); the first nanosecond past it names MaxInt64+1.
+	for name, tc := range map[string]struct {
+		value time.Time
+		want  int64
+	}{
+		"last ns inside the ceiling": {time.UnixMilli(math.MaxInt64).Add(time.Millisecond - time.Nanosecond), math.MaxInt64},
+		"first ns inside the floor":  {time.UnixMilli(math.MinInt64), math.MinInt64},
+		"sub-ms above the floor":     {time.UnixMilli(math.MinInt64).Add(time.Millisecond - time.Nanosecond), math.MinInt64},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.value.UnixMilli(), "test premise: UnixMilli floors into the range")
+			for _, bm := range bigint {
+				var rec model.EAVRecord
+				set, err := populateTypedValue(&rec, "seenAt", tc.value, bm)
+				require.NoError(t, err)
+				require.True(t, set)
+				require.Equal(t, tc.want, *rec.ValueInt64)
+			}
+			eav, err := c.ToEAVRecord(model.EntityAttribute{
+				SchemaID: 1, AttrID: 9, ValueType: forma.ValueTypeDateTime, Value: tc.value,
+			}, uuid.New())
+			require.NoError(t, err)
+			require.Equal(t, tc.want, *eav.ValueInt64)
+		})
+	}
 	for name, value := range map[string]time.Time{
 		"one ms past the ceiling": time.UnixMilli(math.MaxInt64).Add(time.Millisecond),
 		"one ms below the floor":  time.UnixMilli(math.MinInt64).Add(-time.Millisecond),
+		"one ns below the floor":  time.UnixMilli(math.MinInt64).Add(-time.Nanosecond),
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, m := range append(bigint, meta) {
