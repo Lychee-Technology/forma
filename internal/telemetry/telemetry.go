@@ -15,6 +15,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
@@ -68,11 +69,14 @@ func (s *Sink) emit(ctx context.Context, name string, labels map[string]string, 
 	})
 }
 
+// labelKeys lists the keys of a rejected label set in sorted order so the
+// drop log reads the same on every run.
 func labelKeys(labels map[string]string) []string {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 
@@ -83,7 +87,7 @@ func (s *Sink) EmitLatency(ctx context.Context, stage string, ms int64) {
 }
 
 // EmitRowCount records row counts per source.
-// name: "fed_query_row_count" with label {"source": "pg"|"s3"|"duckdb"}
+// name: "fed_query_row_count" with label {"source": "pg"|"duckdb"}
 func (s *Sink) EmitRowCount(ctx context.Context, source string, rows int64) {
 	s.emit(ctx, "fed_query_row_count", map[string]string{"source": source}, float64(rows))
 }

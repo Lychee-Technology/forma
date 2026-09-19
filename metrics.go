@@ -96,7 +96,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
 		Labels: []string{"source"},
-		Help:   "Rows contributed to federated query results per source (pg, s3, duckdb).",
+		Help:   "Rows contributed to federated query results per source (pg, duckdb).",
 	},
 	{
 		Name:   "fed_query_pushdown_efficiency",

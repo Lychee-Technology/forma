@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestFactoryWiring_MetricEmitter(t *testing.T) {
 		Name:   "entity_report_only_validation_violation_total",
 		Kind:   forma.MetricKindCounter,
 		Unit:   forma.MetricUnitCount,
-		Labels: map[string]string{"schema_id": "21", "schema_name": wide.Name, "kind": "constraint"},
+		Labels: map[string]string{"schema_id": fmt.Sprintf("%d", wide.ID), "schema_name": wide.Name, "kind": "constraint"},
 		Value:  1,
 	}
 	if got[0].Kind != want.Kind || got[0].Unit != want.Unit || got[0].Value != want.Value ||

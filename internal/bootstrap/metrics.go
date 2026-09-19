@@ -48,8 +48,13 @@ type jsonLineMetricEmitter struct {
 // NewJSONLineMetricEmitter writes one JSON object per emitted metric,
 // newline-terminated, to w. Writes are serialized so concurrent emissions
 // never interleave. A write error is dropped: telemetry never fails the
-// operation that emitted, and stdout has no better place to report to.
+// operation that emitted, and stdout has no better place to report to. A nil
+// w discards every line for the same reason: the emitter must stay total
+// rather than panic on first use.
 func NewJSONLineMetricEmitter(w io.Writer) forma.MetricEmitter {
+	if w == nil {
+		w = io.Discard
+	}
 	return &jsonLineMetricEmitter{w: w, now: time.Now}
 }
 

@@ -57,6 +57,13 @@ func TestJSONLineMetricEmitterSerializesConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestJSONLineMetricEmitterTreatsNilWriterAsDiscard(t *testing.T) {
+	e := NewJSONLineMetricEmitter(nil)
+	require.NotPanics(t, func() {
+		e.EmitMetric(context.Background(), forma.Metric{Name: "fed_query_row_count", Labels: map[string]string{"source": "pg"}, Value: 1})
+	})
+}
+
 // TestMetricEmitterFromEnv pins the entrypoint contract: unset or anything
 // but true/1 leaves Forma on its no-op default, so a deployment that never
 // heard of METRICS_STDOUT gets no new stdout output.
