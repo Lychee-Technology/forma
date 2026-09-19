@@ -933,7 +933,7 @@ only it.
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
-| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
+| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465) |
 | `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
@@ -952,15 +952,25 @@ shape:
   still `413` even when a second value began under it (the drain reads to
   the end before deciding), and trailing non-whitespace under the cap is
   `400` (`invalid json body: unexpected data after the JSON body`). Trailing
-  JSON whitespace stays legal. Every other decode failure keeps its `400`.
+  JSON whitespace stays legal. Every other decode failure keeps its `400`,
+  but only once the whole body has been read: a malformed prefix under the
+  cap followed by bytes past it is still `413`, because the cap is decided on
+  the whole body and never on JSON validity.
 - **Body read failures.** A failure the transport returns while the body is
   being read is tagged at the reader (`bodyReadError`) and never published as
   malformed JSON, since it is network prose. `http.Server.ReadTimeout`
   expiring mid-upload is `408` on the redacted branch with `error_class:
   "timeout"`, the fixed message `request timed out`, and `Connection: close`
   (the request stream is unrecoverable; RFC 9110 lets the client repeat the
-  request). Any other read failure is the client going away and stays a
-  redacted `500`, like `context.Canceled` below.
+  request). Any other transport failure (a reset, a body that ended before
+  its declared length) is the client going away and stays a redacted `500`,
+  like `context.Canceled` below. A body net/http could not frame — malformed
+  chunked encoding, say — is the caller's request rather than the
+  transport's failure and answers `400` with the published message `read
+  request body: malformed request body`; net/http's own framing prose is
+  operator detail and stays on the log line. Transport failures are
+  recognised positively (a `net.Error` or `io.ErrUnexpectedEOF`), since
+  net/http's framing errors are untyped.
 - **Batch cap.** `PerformanceConfig.MaxBatchSize` (1000) is enforced at the
   manager, before any repository work, so library embedders get the same
   bound: `400` with `batch of N operations exceeds the maximum batch size of
@@ -972,7 +982,10 @@ shape:
   `CrossSchemaSearch`; `TransactionConfig.DefaultTimeout` bounds each write
   transaction (`Create`, `Update`, `Delete`, and each atomic batch; a
   best-effort batch is bounded per operation); `DuckDBConfig.QueryTimeout`
-  bounds one DuckDB pass inside the query budget. All three are real context
+  bounds all the DuckDB-routed work of one federated request inside the
+  query budget: it is armed once, so the page pass, a corrupt-parquet retry,
+  the deep-page recount and a degraded Postgres fallback share one deadline
+  and a multi-pass request never spends more than one budget. All three are real context
   deadlines, so pgx cancels the running statement and duckdb-go interrupts the
   running scan. An exceeded budget surfaces as `context.DeadlineExceeded` and
   answers `504` on the redacted branch with `error_class: "timeout"` and the
@@ -1003,8 +1016,9 @@ shape:
   bounded `WriteTimeout` that does not strictly exceed `ReadTimeout` plus
   the largest bounded budget (`bootstrap.LargestRequestBudget`: the query
   budget, or the DuckDB budget when the query budget is unbounded since the
-  DuckDB pass runs inside the query budget, or the transaction budget,
-  whichever is longest), and a bounded `WriteTimeout` paired with an
+  DuckDB budget is armed once per request inside the query budget, or the
+  transaction budget, whichever is longest), and a bounded `WriteTimeout`
+  paired with an
   unbounded `ReadTimeout`, since an unbounded upload can spend any write
   deadline before the handler starts. Either would cut a legitimately slow
   request's connection before its `504` could leave. Library embedders that
