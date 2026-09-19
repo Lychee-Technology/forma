@@ -17,6 +17,7 @@ import (
 // OLTP query for one shape. Extracted from StreamOptimizedQuery (#319), which
 // sat one line under the 100-line cap.
 func (r *DBPersistentRecordRepository) renderOptimizedQuerySQL(
+	ctx context.Context,
 	tables model.StorageTables,
 	schemaID int16,
 	clause string,
@@ -54,7 +55,7 @@ func (r *DBPersistentRecordRepository) renderOptimizedQuerySQL(
 		SchemaID:      schemaID,
 		ShapeHash:     strconv.FormatUint(optimizedQueryShapeKey(tables, useMainTableAsAnchor, clause, argCount, attributeOrders), 16),
 	}
-	queryAny, cacheHit, err := r.planCache.GetOrBuild(renderKey, func() (any, error) {
+	queryAny, cacheHit, err := r.planCache.GetOrBuild(ctx, renderKey, func() (any, error) {
 		return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
 	})
 	if err != nil {
@@ -63,7 +64,11 @@ func (r *DBPersistentRecordRepository) renderOptimizedQuerySQL(
 	if !cacheHit {
 		zap.S().Debugw("optimized query render cache miss", "schemaID", schemaID)
 	}
-	return queryAny.(string), nil
+	query, ok := queryAny.(string)
+	if !ok {
+		return "", fmt.Errorf("optimized query render cache for schema %d holds a %T artifact, expected the rendered SQL string", schemaID, queryAny)
+	}
+	return query, nil
 }
 
 func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
@@ -95,7 +100,7 @@ func (r *DBPersistentRecordRepository) StreamOptimizedQuery(
 	// is the exact text this call site produced before #319 extracted it. Adding a
 	// second layer here would both duplicate the context and change the
 	// caller-visible message, which this behaviour-preserving refactor must not do.
-	query, err := r.renderOptimizedQuerySQL(tables, schemaID, clause, len(args), attributeOrders, useMainTableAsAnchor)
+	query, err := r.renderOptimizedQuerySQL(ctx, tables, schemaID, clause, len(args), attributeOrders, useMainTableAsAnchor)
 	if err != nil {
 		return 0, err
 	}

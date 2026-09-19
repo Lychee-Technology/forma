@@ -274,7 +274,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(tables, q, dirtyIDs, attributeOrders, limit, offset, src.paths, src.graceCutoffMs, src.cold, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, src.paths, src.graceCutoffMs, src.cold, planCtx)
 	if err != nil {
 		return 0, fmt.Errorf("build duckdb federated query: %w", err)
 	}
@@ -338,17 +338,17 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 // schema attribute cache for column bindings and EAV pivots.
 // schemaProjection returns the (cached) projection for schemaID; the hit flag
 // feeds the execution plan so cache behavior stays observable.
-func (e *DBFederatedQueryEngine) schemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*sqlgen.SchemaProjection, bool, error) {
+func (e *DBFederatedQueryEngine) schemaProjection(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) (*sqlgen.SchemaProjection, bool, error) {
 	var pc *sqlgen.ProjectionCache
 	if e != nil {
 		pc = e.projections
 	}
-	return pc.GetOrBuild(schemaID, func() (*sqlgen.SchemaProjection, error) {
+	return pc.GetOrBuild(ctx, schemaID, func() (*sqlgen.SchemaProjection, error) {
 		return sqlgen.BuildSchemaProjection(schemaID, cache)
 	})
 }
 
-func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) (projectionCacheHit bool, err error) {
+func (e *DBFederatedQueryEngine) injectSchemaProjections(ctx context.Context, sqlParams map[string]any, schemaID int16, cache forma.SchemaAttributeCache) (projectionCacheHit bool, err error) {
 	if isBenchmarkSchemaID(schemaID) {
 		// Benchmark schemas: use hardcoded benchmarks projections that match
 		// the benchmark parquet shape exactly (flat columns for column-bound
@@ -375,7 +375,7 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(sqlParams map[string]an
 	}
 
 	// Production schema: compute projections from the attribute cache
-	sp, hit, projErr := e.schemaProjection(schemaID, cache)
+	sp, hit, projErr := e.schemaProjection(ctx, schemaID, cache)
 	return hit, applySchemaProjection(sqlParams, schemaID, sp, projErr)
 }
 

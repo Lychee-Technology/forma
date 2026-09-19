@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 // are reported as one set per successful pass by emitDuckDBScanMetrics, so
 // a render that precedes a failed or retried DuckDB pass leaves no sample.
 func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
+	ctx context.Context,
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
 	dirtyIDs []uuid.UUID,
@@ -49,7 +51,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	// Compute schema-driven projections for the template
-	projectionCacheHit, err := e.injectSchemaProjections(sqlParams, q.SchemaID, cache)
+	projectionCacheHit, err := e.injectSchemaProjections(ctx, sqlParams, q.SchemaID, cache)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -67,7 +69,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// mismatched column counts (invalid SQL) and would silently drop hot
 	// rows' EAV values (#173).
 	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
-		sp, _, _ := e.schemaProjection(q.SchemaID, cache)
+		sp, _, _ := e.schemaProjection(ctx, q.SchemaID, cache)
 		if sp != nil && !sp.HasEAVAttrs {
 			sqlParams["HasEAVPivot"] = false
 			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
@@ -89,7 +91,7 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Compiled-plan cache (#142): skeleton + template args are reused per
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
 	// request. Test hooks and non-advanced templates bypass the cache.
-	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, cache, planCtx); ok {
+	if sqlStr, args, ok := e.serveFromPlanCache(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, cache, planCtx); ok {
 		return sqlStr, args, time.Since(startTranslate).Milliseconds(), nil
 	}
 
@@ -251,6 +253,7 @@ type duckCompiledEntry struct {
 // compile result serves the request too, so rendering happens at most once
 // per shape.
 func (e *DBFederatedQueryEngine) serveFromPlanCache(
+	ctx context.Context,
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
 	dirtyIDs []uuid.UUID,
@@ -287,7 +290,7 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
 	}
 
-	entryAny, hit, err := e.planCache.GetOrBuild(key, func() (any, error) {
+	entryAny, hit, err := e.planCache.GetOrBuild(ctx, key, func() (any, error) {
 		compiled, err := sqlgen.CompileDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, sqlParams, q, dc, len(dirtyIDs) > 0)
 		if err != nil || compiled == nil {
 			return nil, err
@@ -302,7 +305,12 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	if err != nil || entryAny == nil {
 		return "", nil, false
 	}
-	entry := entryAny.(*duckCompiledEntry)
+	entry, ok := entryAny.(*duckCompiledEntry)
+	if !ok {
+		// A foreign artifact under this key is a keying bug, not a request
+		// error: fall through to the direct builder like every other miss.
+		return "", nil, false
+	}
 	planCtx.recordPlanCache(hit)
 
 	bound := *dc
