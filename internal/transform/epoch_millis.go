@@ -5,26 +5,29 @@ import (
 	"math"
 	"time"
 
-	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// Epoch-millis helpers for date/datetime values (#582 redesign).
+// Epoch-millis helpers for date/datetime values (#582).
 //
 // The write funnels (populateTypedValue, ToEAVRecord) normalise every
-// accepted input into one exact int64 of epoch millis (invariant A). That
-// int64 is the logical value of the attribute (invariant B): the EAVRecord
-// carries it in ValueInt64 and derives the float64 ValueNumeric image from
-// it. Each physical destination then admits the subset of int64 values it
-// persists and reads back unchanged (invariant C), through one function the
-// fit check and the store share, and the read side of each accepts exactly
-// that subset, so a row that reads can always be rewritten:
+// accepted input into one exact int64 of epoch millis. That int64 is the
+// logical value of the attribute: the EAVRecord carries it in ValueInt64 and
+// derives the float64 ValueNumeric image from it. A destination that keeps
+// something narrower than the int64 admits, through one function the fit
+// check and the store share, exactly the values it persists and reads back
+// unchanged:
 //
-//   - eav_data.value_numeric and double_* columns keep a float64 image, exact
-//     for |ms| <= 2^53 (checkFloat64ImageFit);
 //   - bigint_* columns (default, unix_ms) keep the int64 itself;
 //   - text_* columns with iso8601 keep an RFC3339 image at whole seconds
 //     within the layout's four-digit year (iso8601Rendering).
+//
+// eav_data.value_numeric and double_* columns keep the float64 image as
+// before this change: exact within |ms| <= 2^53 and rounded past it on the
+// write, with the read side of every route (Postgres JSON_AGG, the DuckDB
+// scan of the hot tier, the Parquet tiers) applying its own conversion.
+// The contract for that image, the exact numeric transport and the legacy
+// read policy are #592.
 
 // The instants an int64 of epoch millis names: the slot every date/datetime
 // is normalised into (value_numeric and the exact value_int64 sidecar).
@@ -105,82 +108,14 @@ func unixMillisToTimeUTC(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()
 }
 
-// unixMillisFloat64ToTimeUTC is the read side's inverse of float64ImageOf:
-// the instant a persisted float64 image (eav_data.value_numeric, a double_*
-// column) names. It admits exactly the images float64ImageOf writes, a whole
-// number with |ms| <= 2^53, so what a float64 destination reads back is what
-// it admits, and a row that reads can always be rewritten: an update
-// reconstructs the whole document and re-enters the write funnel, so an image
-// the read accepted and the write refused would fail an update that never
-// mentioned the attribute, as the caller's fault (#587 review). An image
-// outside that set (a row written before #582, or by hand) is a storage
-// consistency error naming the rule it breaks, never the wrapped, rounded or
-// tier-dependent instant int64() would invent; the migration guide's census
-// finds such rows before the upgrade.
-func unixMillisFloat64ToTimeUTC(value float64) (time.Time, error) {
-	if !isWholeMillis(value) || !inInt64Range(value) {
-		return time.Time{}, fmt.Errorf("stored value %s names no epoch millisecond instant", describeEpochMillis(value))
-	}
-	ms := int64(value)
-	if !fitsFloat64Image(ms) {
-		return time.Time{}, fmt.Errorf("stored value %s is outside the epoch milliseconds a float64 image keeps exactly (up to %d, 2^53); rewrite the row or bind the attribute to a bigint column (docs/schema-consistency-migration.md)",
-			describeEpochMillis(value), maxFloat64ImageMillis)
-	}
-	return unixMillisToTimeUTC(ms), nil
-}
-
-// maxFloat64ImageMillis is the largest magnitude a float64 image of epoch
-// millis keeps exactly across every read route: Postgres renders the float64
-// as a decimal, JSON_AGG hands it back as a float64, and DuckDB casts it to
-// BIGINT. Every integer up to 2^53 survives all of them unchanged; above it
-// only sparse float64-representable integers do, with a decimal image that
-// can differ from the value, so the contiguous exact set ends here (#582).
-const maxFloat64ImageMillis = int64(1) << 53
-
-// fitsFloat64Image is the one statement of that range: the write side
-// (checkFloat64ImageFit) admits a value by it and the read side
-// (unixMillisFloat64ToTimeUTC) accepts a persisted image by it, so the two
-// cannot drift apart.
-func fitsFloat64Image(ms int64) bool {
-	return ms >= -maxFloat64ImageMillis && ms <= maxFloat64ImageMillis
-}
-
-// checkFloat64ImageFit refuses a value whose float64 image would not read
-// back as the same instant from dest ("eav_data value_numeric" or a bound
-// double column). The message names the millis, the instant and the way
-// out, and is published by the funnel.
-func checkFloat64ImageFit(ms int64, vt forma.ValueType, dest string) error {
-	if fitsFloat64Image(ms) {
-		return nil
-	}
-	return fmt.Errorf("%s value %d (%s) cannot be stored in %s, which keeps epoch milliseconds exactly up to %d (2^53); bind the attribute to a bigint column for the full int64 range",
-		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), dest, maxFloat64ImageMillis)
-}
-
-// float64ImageOf is the image a float64 destination (eav_data.value_numeric,
-// a double_* column) stores for a date/datetime record: float64 of the exact
-// millis, which checkFloat64ImageFit guarantees reads back as the same
-// instant. The fit check and the store both call it, so a record is admitted
-// by the one iff the other writes it, and what is written is derived from
-// the logical value, never copied from a float slot that may have been
-// rounded on its way in (#559 parity, #582).
-func float64ImageOf(attr *model.EAVRecord, vt forma.ValueType, dest string) (float64, error) {
-	ms, err := exactEpochMillis(attr)
-	if err != nil {
-		return 0, fmt.Errorf("%s value cannot be stored in %s: %w", vt, dest, err)
-	}
-	if err := checkFloat64ImageFit(ms, vt, dest); err != nil {
-		return 0, err
-	}
-	return float64(ms), nil
-}
-
-// eavValueNumericDest names the unbound destination in fit messages.
-const eavValueNumericDest = "eav_data value_numeric"
-
-// doubleColumnDest names a bound double column in fit messages.
-func doubleColumnDest(col forma.MainColumn) string {
-	return fmt.Sprintf("main column %s (double)", col)
+// unixMillisFloat64ToTimeUTC names the instant a persisted float64 image
+// (eav_data.value_numeric, a double_* column) is read as: int64() of the
+// image, as every read route did before #582. An image that is not a whole
+// number, or past the int64 range, is converted the same way it always was;
+// judging such an image against the attribute's contract instead is #592,
+// which owns the read side of the float64 destinations.
+func unixMillisFloat64ToTimeUTC(value float64) time.Time {
+	return unixMillisToTimeUTC(int64(value))
 }
 
 // The RFC3339 layout has a four-digit year, so the image the iso8601

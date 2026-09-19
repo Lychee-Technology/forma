@@ -101,14 +101,12 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 		}
 
 		if meta.ColumnBinding != nil {
-			if err := t.storeInMainColumn(record, eavRecord, meta.ValueType, meta.ColumnBinding); err != nil {
+			if err := t.storeInMainColumn(record, eavRecord, meta.ColumnBinding); err != nil {
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
 			continue
 		}
-		if err := storeInEAV(record, eavRecord, meta.ValueType); err != nil {
-			return nil, fmt.Errorf("failed to store attribute %s in eav_data: %w", attrName, err)
-		}
+		storeInEAV(record, eavRecord)
 	}
 
 	return record, nil
@@ -163,27 +161,17 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 }
 
 // storeInEAV appends the record to the row's eav_data attributes. eav_data
-// persists the float64 ValueNumeric image only (#205): the exact sidecar is
-// memory-only and is cleared here so the create-response echo matches what
-// is written. For a date/datetime the image is float64ImageOf's, the one
-// checkEAVFit judged: exact only within 2^53, derived from the exact value
-// so the persisted millis are the logical millis by construction. A value
-// outside that range reaching here is a funnel bypass, refused rather than
-// rounded (#582).
-func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType) error {
-	if isDateType(vt) && hasEpochMillis(&attr) {
-		image, err := float64ImageOf(&attr, vt, eavValueNumericDest)
-		if err != nil {
-			return fmt.Errorf("attr id %d of schema %d (row %s): %w", attr.AttrID, attr.SchemaID, attr.RowID, err)
-		}
-		attr.ValueNumeric = &image
-	}
+// persists the float64 ValueNumeric image only (#205, 2^53 ceiling): the
+// exact sidecar is memory-only and is cleared here so the create-response
+// echo matches what is written. The funnels derive the image from the exact
+// millis (setEpochMillis), so within 2^53 it is the logical value; the
+// contract past that is #592.
+func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord) {
 	attr.ValueInt64 = nil
 	record.OtherAttributes = append(record.OtherAttributes, attr)
-	return nil
 }
 
-func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) error {
+func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) error {
 	// System column bindings are read-only views: the record's own fields are
 	// the source of truth and are set internally by code.
 	if isSystemManagedColumn(binding.ColumnName) {
@@ -194,7 +182,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 	// physically going (#459); an empty slot here means a caller bypassed the
 	// funnel, and dropping the value silently would confirm to the client
 	// something that was never written.
-	stored, err := t.storeWithEncoding(record, attr, vt, binding)
+	stored, err := t.storeWithEncoding(record, attr, binding)
 	if err != nil {
 		return err
 	}
@@ -206,22 +194,20 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 }
 
 // storeWithEncoding places the value by (encoding, ColumnType()), the same
-// pair checkBoundColumnFit keys on (#559), and carries the declared vt the
-// check judged by, so the one destination rule that depends on it (a
-// date/datetime in a double column) is applied on both sides. An explicit
-// encoding names a rendering of the numeric slot — unix_ms and bool_smallint
-// render a number, bool_text and iso8601 render text — and the column type
-// names the map the rendering lands in; the default encoding writes the slot
-// the column consumes. It reports whether a value was written so the caller
-// can refuse an empty slot instead of dropping it (#459).
-func (t *persistentRecordTransformer) storeWithEncoding(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) (bool, error) {
+// pair checkBoundColumnFit keys on (#559). An explicit encoding names a
+// rendering of the numeric slot — unix_ms and bool_smallint render a number,
+// bool_text and iso8601 render text — and the column type names the map the
+// rendering lands in; the default encoding writes the slot the column
+// consumes. It reports whether a value was written so the caller can refuse
+// an empty slot instead of dropping it (#459).
+func (t *persistentRecordTransformer) storeWithEncoding(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) (bool, error) {
 	switch binding.Encoding {
 	case forma.MainColumnEncodingUnixMs:
 		// Date as epoch millis; the exact sidecar wins where the column keeps it.
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		return storeNumericSlot(record, attr, vt, binding)
+		return storeNumericRendering(record, binding, *attr.ValueNumeric, attr.ValueInt64)
 	case forma.MainColumnEncodingBoolInt:
 		// Bool as 1/0
 		if attr.ValueNumeric == nil {
@@ -258,27 +244,8 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		}
 		return storeTextRendering(record, binding, text)
 	default:
-		return t.storeWithDefaultEncoding(record, attr, vt, binding)
+		return t.storeWithDefaultEncoding(record, attr, binding)
 	}
-}
-
-// storeNumericSlot writes the numeric slot (default or unix_ms encoding)
-// into the bound column. A date/datetime headed for a double column takes
-// the image float64ImageOf derives from the exact millis, under the same
-// rule checkDoubleColumnDateFit applied, so a bypass record whose sidecar
-// outruns 2^53 is refused rather than written as its rounded float slot
-// (#582). Every other (type, column) pair is storeNumericRendering's; the
-// caller guarantees attr.ValueNumeric is non-nil.
-func storeNumericSlot(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) (bool, error) {
-	if binding.ColumnType() != forma.MainColumnTypeDouble || !isDateType(vt) {
-		return storeNumericRendering(record, binding, *attr.ValueNumeric, attr.ValueInt64)
-	}
-	image, err := float64ImageOf(&attr, vt, doubleColumnDest(binding.ColumnName))
-	if err != nil {
-		return false, fmt.Errorf("attr id %d of schema %d (row %s): %w", attr.AttrID, attr.SchemaID, attr.RowID, err)
-	}
-	record.Float64Items[string(binding.ColumnName)] = image
-	return true, nil
 }
 
 // storeNumericRendering writes a number into the map of the bound column's
@@ -337,7 +304,7 @@ func errNoSlotForRendering(binding *forma.MainColumnBinding, renders string) err
 // storeWithDefaultEncoding writes the slot the column type consumes. The
 // uuid branch cannot fail for a value that passed checkStorageFit; the
 // parse stays as an invariant check.
-func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.PersistentRecord, attr model.EAVRecord, vt forma.ValueType, binding *forma.MainColumnBinding) (bool, error) {
+func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) (bool, error) {
 	columnName := string(binding.ColumnName)
 	switch binding.ColumnType() {
 	case forma.MainColumnTypeText:
@@ -359,7 +326,7 @@ func (t *persistentRecordTransformer) storeWithDefaultEncoding(record *model.Per
 		if attr.ValueNumeric == nil {
 			return false, nil
 		}
-		return storeNumericSlot(record, attr, vt, binding)
+		return storeNumericRendering(record, binding, *attr.ValueNumeric, attr.ValueInt64)
 	default:
 		return false, fmt.Errorf("unsupported column type: %s", binding.ColumnType())
 	}

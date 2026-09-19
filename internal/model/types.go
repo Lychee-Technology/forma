@@ -37,10 +37,7 @@ type EAVRecord struct {
 	// paths keep the float64 ValueNumeric contract (2^53 ceiling), while
 	// main-column routing (storeInMainColumn) and read-back prefer
 	// ValueInt64 so column-bound bigint/unix_ms values carry the full
-	// int64 range without a float64 hop (#205). Because the sidecar never
-	// reaches eav_data, the EAV store refuses a date/datetime whose millis
-	// the float64 image cannot keep (|ms| > 2^53) instead of persisting a
-	// rounded image of a value the funnel admitted (#582).
+	// int64 range without a float64 hop (#205).
 	ValueInt64 *int64
 }
 

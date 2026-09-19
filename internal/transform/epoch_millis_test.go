@@ -60,17 +60,16 @@ func TestDateTime_ExtremeTimeIsRefusedBeforeNormalisation(t *testing.T) {
 	_, err := populateTypedValue(&rec, "seenAt", extreme, metas["iso8601"])
 	require.Error(t, err)
 	record := &model.PersistentRecord{TextItems: map[string]string{}}
-	require.Error(t, tr.storeInMainColumn(record, rec, metas["iso8601"].ValueType, metas["iso8601"].ColumnBinding))
+	require.Error(t, tr.storeInMainColumn(record, rec, metas["iso8601"].ColumnBinding))
 	require.Empty(t, record.TextItems)
 }
 
-// Invariant A (#582 redesign): normalisation admits exactly the int64
-// millis range. Both funnels turn either end into its exact millis in the
-// sidecar with the float image derived from it, whatever the time.Time's
-// zone, and refuse one millisecond past either end. Whether a destination
-// then holds the value is that destination's rule: a bigint column keeps
-// the whole range (pinned here through the store and read), eav_data keeps
-// |ms| <= 2^53 (TestDateTime_EAVFitIsTheFloat64ExactRange).
+// #582: normalisation admits exactly the int64 millis range. Both funnels
+// turn either end into its exact millis in the sidecar with the float image
+// derived from it, whatever the time.Time's zone, and refuse one
+// millisecond past either end. Whether a destination then holds the value
+// is that destination's rule: a bigint column keeps the whole range (pinned
+// here through the store and read); the float64 image of eav_data is #592.
 func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 	c := NewAttributeConverter(nil)
 	tr := &persistentRecordTransformer{}
@@ -92,7 +91,7 @@ func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 					require.Equal(t, float64(ms), *rec.ValueNumeric)
 
 					record := newEmptyPersistentRecord()
-					require.NoError(t, tr.storeInMainColumn(record, rec, bm.ValueType, bm.ColumnBinding))
+					require.NoError(t, tr.storeInMainColumn(record, rec, bm.ColumnBinding))
 					require.Equal(t, ms, record.Int64Items["bigint_01"])
 					got, err := tr.readFromMainColumn(record, bm, bm.ColumnBinding)
 					require.NoError(t, err)

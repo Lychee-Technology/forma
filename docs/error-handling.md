@@ -598,19 +598,12 @@ PostgreSQL-only reads see the value gone.
 One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
 **a value must fit its physical destination, else `forma.InvalidInputf`.**
 
-- EAV-only attribute: the destination is the declared `valueType`, stored
-  as the float64 image in `eav_data.value_numeric`. `smallint`/`integer`/
-  `bigint` must be integral and inside the type's range; `numeric` is
-  unconstrained (#205 owns its float64 ceiling). A `date`/`datetime` is
-  refused above |2^53| epoch millis (#582): that is the image's exact
-  range, and the in-memory int64 sidecar never reaches the table, so a
-  value past it would come back rounded (or, at the int64 ends, wrapped).
-  A `bigint` past 2^53 still rounds there (#205's documented ceiling).
+- EAV-only attribute: the destination is the declared `valueType`.
+  `smallint`/`integer`/`bigint` must be integral and inside the type's
+  range; `numeric` is unconstrained (#205 owns its float64 ceiling).
 - Column-bound attribute: the declared type **and** the column's own width
-  (`double_*` is unconstrained for the numeric family; #205 owns the
-  float64 ceiling, so `bigint`→`double_01` rounds above 2^53 rather than
-  refusing. A `date`/`datetime` in a double column takes the same |2^53|
-  epoch-ms rule as the EAV image, #582).
+  (`double_*` is unconstrained; #205 owns the float64 ceiling, so
+  `bigint`→`double_01` rounds above 2^53 rather than refusing).
   `numeric`→`integer_01` refuses `1.5` and `3e9`; `integer`→`smallint_01`
   refuses `40000`. Before #459 these wrapped (`int16(40000) = -25536`) into
   `entity_main`. The width check judges the slot the store actually writes:
@@ -622,6 +615,13 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never
   dropped.
+- `date`/`datetime` bound with `iso8601` (#582): the RFC3339 image keeps
+  whole seconds within the layout's four-digit year, so
+  `2024-01-01T00:00:00.123Z` and `10000-01-01T00:00:00Z` are refused. Before
+  #582 the first was silently truncated to `2024-01-01T00:00:00Z` and the
+  second stored as an image the reader cannot parse. The unbound
+  `eav_data.value_numeric` image keeps its pre-existing float64 behaviour
+  (#205; the contract past 2^53 is #592).
 
 The published message names the attribute, the value, the destination and
 the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
@@ -644,16 +644,6 @@ Examples:
 
 - duplicate schema IDs or duplicate attribute IDs during metadata loading
 - storage column mismatches such as a text attribute stored in `value_numeric`
-- a `date`/`datetime` float64 image (`eav_data.value_numeric`, a `double_*`
-  column) the write path would not admit: not a whole number, or past |2^53|
-  epoch millis (#582). The read side accepts exactly the set the write side
-  admits, so a row that reads can always be rewritten by an update that never
-  mentions the attribute; a row written before #582 outside that set fails
-  every read with `stored value 9007199254740994 (…) is outside the epoch
-  milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)`
-  rather than an invented instant, and is never modified by the server.
-  `validate-schema-consistency` lists such rows before the upgrade
-  ([migration](./schema-consistency-migration.md#date-images-the-read-path-refuses-582)).
 
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.

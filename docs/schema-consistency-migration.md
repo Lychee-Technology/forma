@@ -135,10 +135,6 @@ It validates:
 - text/uuid/list values are not incorrectly stored in `value_numeric`
 - no `list` attribute still carries a scalar row (`array_indices = ''` with a
   value), left over from before the attribute became a list (`#372`)
-- no unbound `date`/`datetime` attribute (or list of them) carries an
-  `eav_data.value_numeric` image the upgraded read path refuses: a value that
-  is not a whole number, or one past 2^53 epoch milliseconds (`#582`); such a
-  row, and every update of it, is a consistency error after the upgrade
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -525,24 +521,13 @@ this migration before upgrading, or the server refuses to load the schema.
 Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`numeric`
 → smallint/integer/bigint/double (a value that does not fit the column's
 width is refused at write time as invalid input); `date`/`datetime`→bigint
-(`unix_ms` or default) or text (`iso8601`, an RFC3339 string at whole
-seconds within the layout's four-digit year: a value whose epoch millis are
-off a whole second is refused at write time as invalid input rather than
-truncated, #582, and a value outside 0000-01-01T00:00:00Z to
+(`unix_ms` or default, the full int64 epoch-ms range) or text (`iso8601`, an
+RFC3339 string at whole seconds within the layout's four-digit year: a value
+whose epoch millis are off a whole second is refused at write time as invalid
+input rather than truncated, and a value outside 0000-01-01T00:00:00Z to
 9999-12-31T23:59:59Z is refused rather than stored as an image the RFC3339
-reader cannot parse). Epoch millis are the logical representation every
-date/datetime is normalised to before any fit decision (a finer fraction in
-the input is dropped there, #589), and each destination keeps its own exact
-range of them, enforced at write time (#582): a bigint column keeps the
-full int64 range; an unbound attribute's `eav_data.value_numeric` and a
-double column keep |millis| ≤ 2^53, the float64 image's exact range, and
-refuse anything past it as invalid input rather than rounding it; an
-iso8601 text column keeps whole seconds from year 0000 to 9999. `bool`→
-smallint (`bool_smallint`) or text (`bool_text`); `list` never binds. The
-read side of each float64 destination accepts exactly the images the write
-side admits, so a row that reads can always be rewritten; a `value_numeric`
-image past 2^53 written before `#582` is a read-time consistency error, see
-[Date images the read path refuses](#date-images-the-read-path-refuses-582).
+reader cannot parse, #582); `bool`→smallint (`bool_smallint`) or text
+(`bool_text`); `list` never binds.
 
 Some refused pairs do store and read back losslessly on the Postgres path:
 `uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,
@@ -624,78 +609,6 @@ value until its next write re-flushes it. That is harmless for exports made
 after `#372`, which already carry the one-element list the rewritten row
 produces; parquet written before `#372` holds `[]` for the row and serves that
 from the warm/cold tiers until the entity is written again.
-
-### Date images the read path refuses (`#582`)
-
-Example validator output:
-
-```text
-- date/datetime images the read path refuses in eav_data_dev: schema=visit schema_id=100 attr_id=1 attribute=seenAt rows=2 (value_numeric must be a whole number with |value| <= 9007199254740992)
-```
-
-An unbound `date`/`datetime` is stored in `eav_data.value_numeric` as the
-float64 image of its epoch milliseconds. Since `#582` the write path admits a
-value only when that image reads back as the same instant on every route
-(Postgres decimal, `JSON_AGG`, the DuckDB `BIGINT` cast): a whole number with
-|millis| ≤ 2^53 (`9007199254740992`, year 287396). The read path accepts
-exactly the same set, so a row that reads can always be rewritten. That
-matters because an update reconstructs the whole document and re-enters the
-write funnel: an image the read accepted and the write refused would fail an
-update that never mentioned the attribute, as the caller's invalid input.
-
-Before `#582` no rule judged the unbound destination, so a numeric epoch-ms
-input past 2^53 was written as whatever float64 image it rounded to, and a
-hand-edited row can hold a fraction. After the upgrade every read of such a
-row, and so every update of it, fails with an operator-visible error (never a
-4xx): `date value of attribute 1 in value_numeric: stored value
-9007199254740994 (287396-10-12T08:59:00.994Z) is outside the epoch
-milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)`,
-or `… names no epoch millisecond instant` for a fraction. The stored row is
-never modified by the server. Run the validator before upgrading; it lists
-every affected attribute.
-
-Inspect the rows:
-
-```sql
-SELECT schema_id, row_id, attr_id, array_indices, value_numeric
-FROM eav_data_dev
-WHERE schema_id = 100 AND attr_id = 1 AND value_numeric IS NOT NULL
-  AND (value_numeric <> trunc(value_numeric) OR abs(value_numeric) > 9007199254740992)
-LIMIT 50;
-```
-
-Then decide per attribute:
-
-- The value is not a real instant (every date past 2^53 is in year 287396 or
-  later; a fraction was never a millisecond): correct it, or clear it. A
-  cleared attribute is the same key with `value_numeric` set to NULL
-  (`array_indices = ''` for a scalar), or the row deleted. Rows whose image
-  is inside the range (for example `9007199254740992` itself) are readable
-  and need no change.
-- The magnitude is intended (a scalar attribute only; `list` never binds):
-  bind the attribute to a `bigint_*` column with the `unix_ms` encoding, which
-  keeps the full int64 range exactly, and move every row of the attribute,
-  not only the reported ones, into `entity_main` before the new binding goes
-  live. The image is a whole number, so the cast is exact:
-
-  ```sql
-  UPDATE entity_main AS m
-     SET bigint_01 = e.value_numeric::bigint
-    FROM eav_data_dev AS e
-   WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id
-     AND e.schema_id = 100 AND e.attr_id = 1 AND e.array_indices = ''
-     AND e.value_numeric IS NOT NULL;
-  DELETE FROM eav_data_dev WHERE schema_id = 100 AND attr_id = 1;
-  ```
-
-  A bound attribute has no `eav_data` rows, so the census no longer reports
-  it. The bigint destination keeps instants past year 9999, but the HTTP
-  layer cannot encode a `time.Time` outside years 0000–9999 (`#591`), so a
-  value that large still needs the first option.
-
-After the rewrite, re-run the validator. As with the other SQL repairs, a
-direct rewrite does not stamp `change_log`; a flushed row keeps its last
-exported image on the warm/cold tiers until its next write re-flushes it.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
@@ -788,9 +701,6 @@ LIMIT 50;
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - no active attribute reuses a `retired` attributeID, main-column binding, or folded parquet column (`#342` startup check)
 - every active `column_binding.col_name` is a column `entity_main` has (`#557` startup check)
-- no unbound `date`/`datetime` row carries a `value_numeric` image past 2^53 or
-  off a whole number (`#582`); the validator reports each attribute, and the
-  upgraded server refuses to read such rows
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

@@ -76,17 +76,16 @@ func (f *eavDateFixture) writeAndRead(t *testing.T, attrs map[string]any) (uuid.
 	return rowID, got
 }
 
-// Physical fidelity of the unbound destination (#582): every epoch-ms value
-// the funnel admits into eav_data comes back from the real table as the
-// same instant, on both value_numeric column types, and its stored decimal
-// image is the value itself. The first values past 2^53 and the int64 ends
-// never reach the table: ToPersistentRecord refuses them as invalid input.
+// Physical fidelity of the unbound destination: every epoch-ms value within
+// the float64 image's exact range (|ms| <= 2^53, #205) comes back from the
+// real eav_data table as the same instant, on both value_numeric column
+// types, and its stored decimal image is the value itself. The rule for an
+// image past that range, on the write and on every read route, is #592.
 func TestEAVDateRoundTripIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pool := testdb.Connect(t, ctx)
 	exact := []int64{1704067200123, 0, -1, -62135596800000, 9007199254740991, -9007199254740991, 9007199254740992, -9007199254740992}
-	refused := []int64{9007199254740993, 9007199254740994, -9007199254740993, math.MaxInt64, math.MinInt64}
 	plus14 := time.FixedZone("plus14", 14*3600)
 
 	for _, numeric := range []bool{false, true} {
@@ -107,46 +106,6 @@ func TestEAVDateRoundTripIntegration(t *testing.T) {
 				}
 			})
 		}
-		for _, ms := range refused {
-			t.Run(fmt.Sprintf("%s refused %d", name, ms), func(t *testing.T) {
-				rowID := uuid.New()
-				for _, in := range []any{time.UnixMilli(ms).UTC(), time.UnixMilli(ms).In(plus14), strconv.FormatInt(ms, 10)} {
-					_, err := f.tr.ToPersistentRecord(ctx, 301, rowID, map[string]any{"seenAt": in})
-					require.ErrorIs(t, err, forma.ErrInvalidInput, "%v", in)
-					msg, ok := forma.ResolvePublicMessage(err)
-					require.True(t, ok)
-					require.Contains(t, msg, "eav_data value_numeric")
-				}
-				var n int
-				require.NoError(t, pool.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %s WHERE row_id = $1", sanitizeIdentifier(f.tables.EAVData)), rowID).Scan(&n))
-				require.Zero(t, n)
-			})
-		}
-		// A row written past the guard (before #582, or by hand) is a read
-		// error, never an instant the writer did not name: 2^63 used to
-		// wrap to MinInt64 through int64(), and 2^53+2 is a whole float64
-		// the write side refuses, so reading it would leave a row an
-		// unrelated update cannot rewrite (#587 review).
-		t.Run(name+" legacy image is refused on read", func(t *testing.T) {
-			for image, rule := range map[string]string{
-				"9223372036854775807": "names no epoch millisecond instant",
-				"1e300":               "names no epoch millisecond instant",
-				"1000.5":              "names no epoch millisecond instant",
-				"9007199254740994":    "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
-				"-9007199254740994":   "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
-			} {
-				rowID := uuid.New()
-				_, err := pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at) VALUES (301, $1, 1, 1)", sanitizeIdentifier(f.tables.EntityMain)), rowID)
-				require.NoError(t, err)
-				_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (schema_id, row_id, attr_id, value_numeric) VALUES (301, $1, 20, %s)", sanitizeIdentifier(f.tables.EAVData), image), rowID)
-				require.NoError(t, err)
-				stored, err := f.repo.GetPersistentRecord(ctx, f.tables, 301, rowID)
-				require.NoError(t, err)
-				_, err = f.tr.FromPersistentRecord(ctx, stored)
-				require.ErrorContains(t, err, rule, "image %s", image)
-				require.NotErrorIs(t, err, forma.ErrInvalidInput, "image %s is the operator's, not the caller's", image)
-			}
-		})
 	}
 }
 

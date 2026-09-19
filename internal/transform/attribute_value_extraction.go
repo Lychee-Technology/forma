@@ -71,11 +71,7 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		timeVal, err := unixMillisFloat64ToTimeUTC(*record.ValueNumeric)
-		if err != nil {
-			return nil, fmt.Errorf("%s value of attribute %d in value_numeric: %w", valueType, record.AttrID, err)
-		}
-		return timeVal, nil
+		return unixMillisFloat64ToTimeUTC(*record.ValueNumeric), nil
 
 	case forma.ValueTypeUUID:
 		if record.ValueNumeric != nil {

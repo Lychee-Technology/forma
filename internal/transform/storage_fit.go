@@ -30,32 +30,10 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 		}
 	}
 	binding := meta.ColumnBinding
-	if binding == nil {
-		return checkEAVFit(attr, meta.ValueType)
-	}
-	if isSystemManagedColumn(binding.ColumnName) {
+	if binding == nil || isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
-}
-
-// checkEAVFit is the unbound destination's rule (#582): eav_data persists
-// the float64 value_numeric image only, so a date/datetime must sit within
-// the range that image keeps exactly on every read route. It asks
-// float64ImageOf for the image storeInEAV will write and refuses when there
-// is none; every other type keeps its declared-type rule above (#205 owns
-// the numeric family's float64 ceiling).
-func checkEAVFit(attr *model.EAVRecord, vt forma.ValueType) error {
-	if !isDateType(vt) || !hasEpochMillis(attr) {
-		return nil
-	}
-	_, err := float64ImageOf(attr, vt, eavValueNumericDest)
-	return err
-}
-
-// isDateType reports the valueTypes whose numeric slot holds epoch millis.
-func isDateType(vt forma.ValueType) bool {
-	return vt == forma.ValueTypeDate || vt == forma.ValueTypeDateTime
 }
 
 // checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
@@ -112,19 +90,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	if fitType, ok := columnFitType(colType); ok {
 		return checkIntegerFit(attr, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
 	}
-	if colType == forma.MainColumnTypeDouble && isDateType(vt) {
-		return checkDoubleColumnDateFit(attr, vt, col)
-	}
 	return nil
-}
-
-// checkDoubleColumnDateFit applies the float64-image rule to a date/datetime
-// bound to a double column: the registration matrix refuses the pair, but the
-// funnel must not depend on registration (#582). It asks float64ImageOf for
-// the image storeNumericSlot will write, so the two cannot disagree.
-func checkDoubleColumnDateFit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
-	_, err := float64ImageOf(attr, vt, doubleColumnDest(col))
-	return err
 }
 
 // checkDefaultEncodingSlot verifies that the slot storeWithDefaultEncoding

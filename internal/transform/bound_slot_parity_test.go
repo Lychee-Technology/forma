@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -104,7 +105,7 @@ func TestBoundColumnSlotParity(t *testing.T) {
 
 					checkErr := checkBoundColumnFit(&rec, sample.vt, binding)
 					record := newEmptyPersistentRecord()
-					stored, storeErr := tr.storeWithEncoding(record, rec, sample.vt, binding)
+					stored, storeErr := tr.storeWithEncoding(record, rec, binding)
 					if checkErr != nil {
 						require.False(t, stored, "check refused (%v) but the store wrote", checkErr)
 						require.Empty(t, slotsHolding(record, string(col)))
@@ -158,7 +159,7 @@ func TestStoreWithEncoding_ColumnMismatchIsAnError(t *testing.T) {
 			require.NoError(t, err)
 			record := newEmptyPersistentRecord()
 			b := tc.binding
-			err = tr.storeInMainColumn(record, rec, tc.vt, &b)
+			err = tr.storeInMainColumn(record, rec, &b)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.want)
 			require.Contains(t, err.Error(), string(b.ColumnName))
@@ -168,30 +169,29 @@ func TestStoreWithEncoding_ColumnMismatchIsAnError(t *testing.T) {
 }
 
 // boundDateDestinations are the bound destinations a date/datetime can be
-// routed to: the two bigint renderings, the RFC3339 text rendering, and the
-// double column the registration matrix refuses but the funnel must still
-// judge (#459). Each has its own exact range (#582).
+// routed to under a rule of their own (#582): the two bigint renderings,
+// which keep the full int64 range, and the RFC3339 text rendering, which
+// keeps whole seconds within the layout's four-digit year.
 var boundDateDestinations = []forma.MainColumnBinding{
 	{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601},
 	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs},
 	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingDefault},
-	{ColumnName: forma.MainColumnDouble01, Encoding: forma.MainColumnEncodingDefault},
-	{ColumnName: forma.MainColumnDouble01, Encoding: forma.MainColumnEncodingUnixMs},
 }
 
 // #559 parity for every bound date destination over every record shape
 // (#587 review): checkBoundColumnFit admits a record iff storeWithEncoding
-// writes it, and what it writes is the exact millis. The shapes are the
-// funnel's both-slot record — which, past 2^53, carries a sidecar the float
-// image has rounded away from — and the bypass shapes with one slot only.
-// Two cases the check and the store used to answer differently: a
-// sidecar-only iso8601 record (the check refused it, the store rendered it)
-// and a both-slot date on a double column past 2^53 (the check refused the
-// sidecar, the store wrote the rounded image).
+// writes it, and what it writes reads back as the exact millis. The shapes
+// are the funnel's both-slot record — which, past 2^53, carries a sidecar
+// the float image has rounded away from — and the bypass shapes with one
+// slot only. One case the check and the store used to answer differently:
+// a sidecar-only iso8601 record (the check refused it, the store rendered
+// it).
 func TestBoundDateCheckStoreParity(t *testing.T) {
 	tr := &persistentRecordTransformer{}
-	millis := []int64{0, 1000, 1704067200000, 1704067200123, -62167219200000, 253402300799000, 253402300800000}
-	millis = append(append(millis, eavExactMillis...), eavRoundedMillis...)
+	millis := []int64{
+		0, 1000, 1704067200000, 1704067200123, -62167219200000, 253402300799000, 253402300800000,
+		1 << 53, 1<<53 + 1, -(1 << 53), -(1<<53 + 1), math.MaxInt64, math.MinInt64,
+	}
 	for _, ms := range millis {
 		image := float64(ms)
 		exact := ms
@@ -208,7 +208,7 @@ func TestBoundDateCheckStoreParity(t *testing.T) {
 				t.Run(fmt.Sprintf("%d/%s/%s/%s", ms, binding.Encoding, binding.ColumnName, name), func(t *testing.T) {
 					checkErr := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, &binding)
 					record := newEmptyPersistentRecord()
-					stored, storeErr := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, &binding)
+					stored, storeErr := tr.storeWithEncoding(record, rec, &binding)
 					if checkErr != nil {
 						require.False(t, stored, "check refused (%v) but the store wrote", checkErr)
 						require.Empty(t, slotsHolding(record, string(binding.ColumnName)))
@@ -229,29 +229,14 @@ func TestBoundDateCheckStoreParity(t *testing.T) {
 		}
 	}
 
-	// The two reviewer cases, pinned by outcome rather than by parity alone.
+	// The reviewer's case, pinned by outcome rather than by parity alone.
 	iso := &boundDateDestinations[0]
 	zero := int64(0)
 	rec := model.EAVRecord{AttrID: 9, ValueInt64: &zero}
 	require.NoError(t, checkBoundColumnFit(&rec, forma.ValueTypeDateTime, iso))
 	record := newEmptyPersistentRecord()
-	stored, err := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, iso)
+	stored, err := tr.storeWithEncoding(record, rec, iso)
 	require.NoError(t, err)
 	require.True(t, stored)
 	require.Equal(t, "1970-01-01T00:00:00Z", record.TextItems["text_02"])
-
-	for _, double := range boundDateDestinations[3:] {
-		binding := double
-		past := int64(9007199254740993)
-		rounded := float64(past) // 9007199254740992: the image no longer names the sidecar's instant
-		require.NotEqual(t, past, int64(rounded))
-		rec := model.EAVRecord{AttrID: 9, ValueNumeric: &rounded, ValueInt64: &past}
-		err := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, &binding)
-		require.ErrorContains(t, err, "cannot be stored in main column double_01 (double), which keeps epoch milliseconds exactly up to 9007199254740992 (2^53)")
-		record := newEmptyPersistentRecord()
-		stored, err := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, &binding)
-		require.False(t, stored)
-		require.ErrorContains(t, err, "cannot be stored in main column double_01 (double), which keeps epoch milliseconds exactly up to 9007199254740992 (2^53)")
-		require.Empty(t, record.Float64Items, "the rounded image must not be written")
-	}
 }
