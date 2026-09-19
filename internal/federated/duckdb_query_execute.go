@@ -58,7 +58,9 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		return 0, e.failDuckDBScan(ctx, q, sc, err, "execute duckdb query")
 	}
 	defer rows.Close()
+	executeMs := planCtx.millisSince(planCtx.startQuery)
 
+	streamStart := planCtx.now()
 	totalRecords, rowCount, err := e.streamDuckDBRows(ctx, rows, rowHandler)
 	if err != nil {
 		// #306: lazy object opens mean the attach failure can surface here
@@ -87,9 +89,104 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	if e.breaker != nil {
 		e.breaker.RecordSuccess()
 	}
-	e.finalizeDuckDBExecutionPlan(ctx, planCtx, sc.dirtyIDs, totalRecords, rowCount)
+	outcome := duckDBScanOutcome{
+		executeMs:    executeMs,
+		streamMs:     planCtx.millisSince(streamStart),
+		rowCount:     rowCount,
+		totalRecords: totalRecords,
+		dirtyRows:    int64(len(sc.dirtyIDs)),
+	}
+	// Metrics first and unconditionally: the execution plan is an optional
+	// diagnostic payload (IncludeExecutionPlan defaults to false on the API),
+	// and the fed_query_* series must describe every successful pass, not
+	// only the ones a caller asked to see a plan for (PR #595 review).
+	e.emitDuckDBScanMetrics(ctx, q.SchemaID, outcome)
+	planCtx.recordScanOutcome(outcome)
 
 	return totalRecords, nil
+}
+
+// duckDBScanOutcome is what one successful DuckDB pass measured. Both
+// consumers below read from it so the metric stream and the execution plan
+// can never disagree about the same pass.
+type duckDBScanOutcome struct {
+	// executeMs is the wall time of duck.Query alone; streamMs is the wall
+	// time of the rows.Next/Scan/handler loop. They are separate stages: an
+	// operator uses the split to tell a slow scan from slow result
+	// consumption, which the previous "elapsed since query start" measure
+	// (streaming folded into execution, streaming itself ~0) could not.
+	executeMs, streamMs int64
+	// rowCount is the number of rows the pass streamed (the page); totalRecords
+	// is the query's total match count as reported by the template's window
+	// count, 0 when no row carried one.
+	rowCount, totalRecords int64
+	// dirtyRows is the size of the anti-join dirty set fetched for the pass;
+	// see pushdownEfficiency for what it stands in for.
+	dirtyRows int64
+}
+
+// emitDuckDBScanMetrics reports the pass to the engine's telemetry sink: the
+// execution and streaming latency stages, the duckdb row count and the
+// per-schema pushdown-efficiency proxy. Nil-sink safe (Sink methods no-op).
+func (e *DBFederatedQueryEngine) emitDuckDBScanMetrics(ctx context.Context, schemaID int16, o duckDBScanOutcome) {
+	e.metrics.EmitLatency(ctx, "execution", o.executeMs)
+	e.metrics.EmitLatency(ctx, "streaming", o.streamMs)
+	e.metrics.EmitRowCount(ctx, "duckdb", o.rowCount)
+	ratio, _ := pushdownEfficiency(o)
+	e.metrics.EmitPushdownEfficiency(ctx, schemaID, ratio)
+}
+
+// pushdownEfficiency is the value behind fed_query_pushdown_efficiency: the
+// dirty-set size over the final matching row count, with the row count of
+// the streamed page as the denominator when the template reported no total
+// and 1 when the pass matched nothing at all (so an empty result reads as
+// "dirtyRows hot rows considered per zero results", never as a division by
+// zero). It also returns the denominator it used, for the plan note.
+//
+// The numerator is a proxy, and the descriptor says so: Forma never sees how
+// many rows the postgres_scan inside the pg_source CTE touched, so the
+// anti-join dirty set — the upper bound of hot rows pg_source can return when
+// nothing is pushed down — stands in for "Postgres rows scanned". Measuring
+// the real scan count, or retiring the gauge, is #596.
+func pushdownEfficiency(o duckDBScanOutcome) (ratio float64, finalRows int64) {
+	finalRows = o.totalRecords
+	if finalRows <= 0 {
+		finalRows = o.rowCount
+	}
+	if finalRows <= 0 {
+		finalRows = 1
+	}
+	return float64(o.dirtyRows) / float64(finalRows), finalRows
+}
+
+// recordScanOutcome completes the requested execution plan with the pass's
+// timings and row counts. Unlike emitDuckDBScanMetrics it IS gated on
+// IncludeExecutionPlan: the plan is the caller's opt-in diagnostic payload.
+// duckdb_fetch and the DuckDB source's DurationMs keep their meaning as the
+// whole fetch (execute plus stream), so existing plan readers are unaffected
+// by the stage split the metrics now report.
+func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
+	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
+		return
+	}
+	plan := c.opts.ExecutionPlan
+	fetchMs := o.executeMs + o.streamMs
+
+	// Update the last source with actual rows and duration
+	if len(plan.Sources) > 0 {
+		idx := len(plan.Sources) - 1
+		dp := plan.Sources[idx]
+		dp.ActualRows = o.rowCount
+		dp.DurationMs = fetchMs
+		plan.Sources[idx] = dp
+	}
+
+	plan.Timings["duckdb_fetch"] = fetchMs
+	plan.Timings["total"] = c.millisSince(c.startTotal)
+
+	ratio, finalRows := pushdownEfficiency(o)
+	plan.Notes = append(plan.Notes,
+		fmt.Sprintf("pushdown_efficiency=%.3f (dirty_rows=%d final_rows=%d)", ratio, o.dirtyRows, finalRows))
 }
 
 // failDuckDBScan classifies a failed scan and reports it to the breaker.

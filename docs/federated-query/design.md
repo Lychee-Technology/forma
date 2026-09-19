@@ -1019,9 +1019,9 @@ The following metrics MUST be emitted through the engine's metric sink, which
 delivers them to the `forma.MetricEmitter` the embedder set on
 `Config.Metrics.Emitter` (backend-neutral; see `docs/telemetry.md`):
 
-* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.
+* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`. The stages are disjoint wall-time intervals: `translation` is SQL rendering, `execution` is the DuckDB `Query` call, `streaming` is the row iteration and handler loop. The execution plan's `duckdb_fetch` timing is `execution + streaming`. Emitted for every successful DuckDB pass, whether or not the caller requested an execution plan.
 * `fed_query_row_count`: Labeled by `{source: "pg", "duckdb"}`. `pg` is the size of the dirty set fetched from Postgres for the anti-join (§3.2); `duckdb` is the row count returned by the merged DuckDB scan. A `pg` series that stays large relative to `duckdb` means the hot tier is carrying rows that a CDC flush or compaction should have moved out (helps tune flush and compaction frequency). There is no `s3` series.
-* `fed_query_pushdown_efficiency`: Ratio of PG_Scan_Rows / Final_Result_Rows. High ratio indicates poor pushdown logic.
+* `fed_query_pushdown_efficiency`: Labeled by the queried `schema_id`. Dirty-set size (the `pg` row count above) over the final matching row count. This is a proxy for `PG_Scan_Rows / Final_Result_Rows`: Forma never observes how many rows the `postgres_scan` inside the `pg_source` CTE touched, and the dirty set is the upper bound of hot rows that scan can return when nothing is pushed down. A high value means the hot tier is large relative to what the query returns; it does not by itself prove the predicate was not pushed down. Measuring the real scan count, or retiring the gauge, is #596.
 
 The execution plan and response metadata MUST include:
 

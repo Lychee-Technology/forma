@@ -89,7 +89,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindHistogram,
 		Unit:   MetricUnitMilliseconds,
 		Labels: []string{"stage"},
-		Help:   "Federated query latency per stage (translation, execution, streaming), in milliseconds.",
+		Help:   "Federated query latency per stage, in milliseconds: translation is SQL rendering, execution is the DuckDB query call, streaming is the row iteration and handler loop.",
 	},
 	{
 		Name:   "fed_query_row_count",
@@ -103,7 +103,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindGauge,
 		Unit:   MetricUnitRatio,
 		Labels: []string{"schema_id"},
-		Help:   "Ratio of Postgres-scanned rows to final result rows for the last federated query; high means poor pushdown.",
+		Help:   "Hot-tier dirty-set size over final matching rows for the last federated query, per schema. A proxy for Postgres pushdown cost: Forma does not observe the postgres_scan row count, so the anti-join dirty set (the upper bound of hot rows the scan can return) stands in for it. High means the hot tier is large relative to what the query returns.",
 	},
 	{
 		Name:   "compaction_manifest_contract_violation_total",

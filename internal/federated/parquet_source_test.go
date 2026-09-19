@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -474,7 +475,7 @@ func TestResolveParquetPathsHintSetNeverFiltered(t *testing.T) {
 // e2e harness and Go embedders assert on.
 func TestRecordCorruptExclusionNotesExcludedObjects(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 
 	planCtx.recordCorruptExclusion([]string{"s3://b/bad.parquet"})
 
@@ -486,7 +487,7 @@ func TestRecordCorruptExclusionNotesExcludedObjects(t *testing.T) {
 // read note behind.
 func TestRecordCorruptExclusionEmptyIsNoop(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 	before := len(opts.ExecutionPlan.Notes)
 
 	planCtx.recordCorruptExclusion(nil)

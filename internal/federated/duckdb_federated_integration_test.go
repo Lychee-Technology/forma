@@ -100,10 +100,19 @@ func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestFinalizeDuckDBExecutionPlan_CaptureDisabled(t *testing.T) {
+// TestRecordScanOutcome_CaptureDisabled: with no plan requested the plan
+// recorder is a no-op and the metric emission on a bare engine (nil sink)
+// is safe — the two halves of the retired finalizeDuckDBExecutionPlan.
+func TestRecordScanOutcome_CaptureDisabled(t *testing.T) {
 	engine := &DBFederatedQueryEngine{}
-	planCtx := &duckDBExecutionPlanContext{opts: &model.FederatedQueryOptions{}, startTotal: time.Now()}
-	engine.finalizeDuckDBExecutionPlan(context.Background(), planCtx, nil, 0, 0)
+	opts := &model.FederatedQueryOptions{}
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
+	outcome := duckDBScanOutcome{executeMs: 1, streamMs: 2, rowCount: 3, totalRecords: 4, dirtyRows: 5}
+	require.NotPanics(t, func() {
+		engine.emitDuckDBScanMetrics(context.Background(), 1, outcome)
+		planCtx.recordScanOutcome(outcome)
+	})
+	require.Nil(t, opts.ExecutionPlan)
 }
 
 func TestBuildDuckDBQuery_AdvancedTemplate(t *testing.T) {

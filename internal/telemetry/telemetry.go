@@ -80,7 +80,10 @@ func labelKeys(labels map[string]string) []string {
 	return keys
 }
 
-// EmitLatency records a latency measure (milliseconds) for a named stage.
+// EmitLatency records a latency measure (milliseconds) for a named stage:
+// translation (SQL rendering), execution (the DuckDB query call) and
+// streaming (the row iteration and handler loop) are disjoint wall-time
+// intervals of one federated query.
 // name: "fed_query_latency_histogram" with label {"stage": "<translation|execution|streaming>"}
 func (s *Sink) EmitLatency(ctx context.Context, stage string, ms int64) {
 	s.emit(ctx, "fed_query_latency_histogram", map[string]string{"stage": stage}, float64(ms))
@@ -92,7 +95,11 @@ func (s *Sink) EmitRowCount(ctx context.Context, source string, rows int64) {
 	s.emit(ctx, "fed_query_row_count", map[string]string{"source": source}, float64(rows))
 }
 
-// EmitPushdownEfficiency records pushdown efficiency as a ratio.
+// EmitPushdownEfficiency records the pushdown-efficiency proxy for one
+// federated query: the anti-join dirty-set size over the final matching row
+// count. It is a proxy because Forma never observes how many rows the
+// postgres_scan inside DuckDB touched; the dirty set is the upper bound of
+// hot rows that scan can return. schemaID is the queried schema.
 // name: "fed_query_pushdown_efficiency" with label {"schema_id": "<id>"}
 func (s *Sink) EmitPushdownEfficiency(ctx context.Context, schemaID int16, ratio float64) {
 	s.emit(ctx, "fed_query_pushdown_efficiency", schemaLabels(schemaID), ratio)

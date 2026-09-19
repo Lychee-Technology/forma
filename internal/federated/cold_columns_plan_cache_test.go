@@ -62,8 +62,26 @@ func runColdPlanCacheQueryWithHint(
 	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, pathHint string,
 ) (string, []string) {
 	t.Helper()
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
+		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
+	runColdPlanCacheQueryWith(t, e, duck, pathHint, opts)
+	return duck.lastSQL, opts.ExecutionPlan.Notes
+}
+
+// coldPlanCacheSchemaID is the schema every runColdPlanCacheQuery* request
+// names; metric tests assert the schema_id label against it.
+const coldPlanCacheSchemaID int16 = 7
+
+// runColdPlanCacheQueryWith drives the shared query shape with the caller's
+// options (nil allowed: that is the public API's default when no plan is
+// requested), so metric tests can run the same request with and without an
+// execution plan.
+func runColdPlanCacheQueryWith(
+	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, pathHint string, opts *model.FederatedQueryOptions,
+) {
+	t.Helper()
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
-		SchemaID:  7,
+		SchemaID:  coldPlanCacheSchemaID,
 		Condition: &forma.KvCondition{Attr: "score", Value: "gt:50"},
 		Limit:     2000,
 	}}
@@ -71,14 +89,11 @@ func runColdPlanCacheQueryWithHint(
 	if pathHint != "" {
 		q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: pathHint}
 	}
-	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
-		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
 
 	duck.rows = &singleDuckDBRow{rowID: uuid.New()}
 	_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tables, q, q.Limit, 0, nil, opts)
 	require.NoError(t, err)
-	return duck.lastSQL, opts.ExecutionPlan.Notes
 }
 
 // TestEngineColdMissingSetRekeysPlanCache is the engine-seam proof for the

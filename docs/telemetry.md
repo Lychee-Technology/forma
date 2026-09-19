@@ -70,6 +70,24 @@ a fixed enumeration.
 | `compaction_rewrite_applied_total` | counter | count | `schema_id` | compactor (#188) |
 | `entity_report_only_validation_violation_total` | counter | count | `schema_id`, `schema_name`, `kind` (`required`, `constraint`) | entity writes (#317) |
 
+What the federated series measure, per successful DuckDB pass (they are not
+gated on the caller asking for an execution plan):
+
+- `fed_query_latency_histogram`: `translation` is SQL rendering, `execution`
+  is the `duck.Query` call, `streaming` is the row iteration and handler loop.
+  The three are disjoint intervals; the execution plan's `duckdb_fetch` is
+  `execution + streaming`.
+- `fed_query_row_count`: `pg` is the size of the dirty set fetched from
+  Postgres for the anti-join; `duckdb` is the row count of the merged DuckDB
+  scan. There is no `s3` series.
+- `fed_query_pushdown_efficiency`: dirty-set size over the final matching row
+  count, labelled with the queried `schema_id`. This is a **proxy**: Forma
+  never observes how many rows the `postgres_scan` inside the `pg_source` CTE
+  touched, and the dirty set is the upper bound of hot rows that scan can
+  return when nothing is pushed down. Read a high value as "the hot tier is
+  large relative to what this query returns", not as a measured scan count.
+  Measuring the real scan count, or retiring the gauge, is #596.
+
 Names are wire names: dashboards key on them verbatim, so they are never
 renamed or prefixed. **Adding a metric** means adding its descriptor to
 `metrics.go`, the `Emit*` helper on `internal/telemetry.Sink` that emits it,

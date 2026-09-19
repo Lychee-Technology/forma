@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"text/template"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -93,6 +94,21 @@ type DBFederatedQueryEngine struct {
 	// from the embedder's Config.Metrics.Emitter. Nil emits nothing; per
 	// engine instance, never process-global.
 	metrics *telemetry.Sink
+	// now is the clock behind every stage timing the DuckDB path reports
+	// (execution-plan Timings and the fed_query_latency_histogram stages).
+	// time.Now in production; tests substitute a fake to assert exact stage
+	// values instead of sleeping.
+	now func() time.Time
+}
+
+// clock returns the engine's timing source, time.Now when unset or when the
+// receiver is nil (the DuckDB path builds its plan context before its own
+// nil-engine guard).
+func (e *DBFederatedQueryEngine) clock() func() time.Time {
+	if e == nil || e.now == nil {
+		return time.Now
+	}
+	return e.now
 }
 
 // flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the

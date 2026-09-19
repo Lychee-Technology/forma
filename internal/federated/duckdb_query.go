@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -194,7 +193,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Initialize execution plan tracking
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, e.clock())
 
 	if e == nil || e.duck == nil {
 		planCtx.recordClientUnavailable()
@@ -395,54 +394,6 @@ func duckDBPostgresScanLocation(name string) (string, string) {
 	return "public", ""
 }
 
-// finalizeDuckDBExecutionPlan completes the execution plan with timing and metrics.
-func (e *DBFederatedQueryEngine) finalizeDuckDBExecutionPlan(
-	ctx context.Context,
-	planCtx *duckDBExecutionPlanContext,
-	dirtyIDs []uuid.UUID,
-	totalRecords int64,
-	rowCount int64,
-) {
-	if planCtx.opts == nil || !planCtx.opts.IncludeExecutionPlan || planCtx.opts.ExecutionPlan == nil {
-		return
-	}
-
-	qMs := time.Since(planCtx.startQuery).Milliseconds()
-
-	// Update the last source with actual rows and duration
-	if len(planCtx.opts.ExecutionPlan.Sources) > 0 {
-		idx := len(planCtx.opts.ExecutionPlan.Sources) - 1
-		dp := planCtx.opts.ExecutionPlan.Sources[idx]
-		dp.ActualRows = rowCount
-		dp.DurationMs = qMs
-		planCtx.opts.ExecutionPlan.Sources[idx] = dp
-	}
-
-	planCtx.opts.ExecutionPlan.Timings["duckdb_fetch"] = qMs
-	planCtx.opts.ExecutionPlan.Timings["total"] = time.Since(planCtx.startTotal).Milliseconds()
-
-	// Emit telemetry
-	e.metrics.EmitLatency(ctx, "execution", qMs)
-	streamMs := max(time.Since(planCtx.startQuery).Milliseconds()-qMs, 0)
-	e.metrics.EmitLatency(ctx, "streaming", streamMs)
-	e.metrics.EmitRowCount(ctx, "duckdb", rowCount)
-
-	// Compute pushdown efficiency
-	pgRows := computePgRowCount(planCtx.opts.ExecutionPlan, dirtyIDs)
-	finalRows := totalRecords
-	if finalRows <= 0 {
-		finalRows = rowCount
-	}
-	if finalRows <= 0 {
-		finalRows = 1
-	}
-	ratio := float64(pgRows) / float64(finalRows)
-	e.metrics.EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
-
-	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
-		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))
-}
-
 // needsEAVJoin checks whether the federated query requires an EAV data JOIN.
 // It returns false when all filter conditions and sort keys reference only
 // column-bound attributes, meaning the eav_data scan can be safely skipped.
@@ -482,18 +433,4 @@ func needsEAVForCondition(cond forma.Condition, cache forma.SchemaAttributeCache
 		}
 	}
 	return false
-}
-
-func computePgRowCount(plan *model.ExecutionPlan, dirtyIDs []uuid.UUID) int64 {
-	var pgRows int64
-	for _, src := range plan.Sources {
-		if src.Engine == "postgres" {
-			if src.ActualRows > 0 {
-				pgRows += src.ActualRows
-			} else if src.RowEstimate > 0 {
-				pgRows += src.RowEstimate
-			}
-		}
-	}
-	return pgRows
 }
