@@ -13,6 +13,10 @@ import (
 
 type Options struct {
 	EnableHealth bool
+	// MaxBodyBytes caps every request body the server decodes (#465). Zero
+	// means forma's default entity size limit (Entity.MaxEntitySize, 1 MiB);
+	// cmd/server and cmd/lambda pass the configured value so the two agree.
+	MaxBodyBytes int64
 }
 
 type Manager interface {
@@ -190,9 +194,13 @@ func parseUUID(s string) (uuid.UUID, error) {
 // carrying no operator data — so call sites publish it deliberately via
 // forma.InvalidInputf("%v", err) and route it through respondError (#360); the
 // gate's scrub still applies to it.
-func readJSONBody(r *http.Request, v any) error {
+//
+// The body is read through http.MaxBytesReader under the server's body limit
+// (#465), so a body past the cap fails the decode with *http.MaxBytesError
+// before the decoder materializes it; respondBodyError turns that into a 413.
+func (s *Server) readJSONBody(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyLimit()))
 	dec.UseNumber()
 	return dec.Decode(v)
 }

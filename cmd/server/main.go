@@ -55,10 +55,12 @@ func main() {
 
 	port := bootstrap.Env("PORT", "8080")
 	zap.S().Infow("starting server", "port", port)
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: runtime.server.Handler(),
-	}
+	// Every connection phase is bounded (#465); the defaults and the HTTP_*
+	// overrides are documented in the README. The manager's own per-request
+	// budgets run underneath these, since a server timeout never cancels a
+	// handler's context.
+	srv := bootstrap.NewHTTPServer(":"+port, runtime.server.Handler(),
+		bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig()))
 	if err := runServer(rootCtx, srv); err != nil {
 		sugar.Fatalf("server error: %v", err)
 	}
@@ -209,6 +211,11 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	// on stdout (#423); unset, Forma's no-op default emits nothing.
 	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
 
+	// Request limits and budgets (#465): body cap, batch cap, query,
+	// transaction and DuckDB timeouts. Applied last so it sees the resolved
+	// DuckDB config; the factory validates the result.
+	bootstrap.ApplyLimitsFromEnv(config)
+
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)
 	if err != nil {
@@ -219,7 +226,10 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	return &serverRuntime{
 		pool:    pool,
 		manager: manager,
-		server:  httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
+		server: httpapi.NewServer(manager, httpapi.Options{
+			EnableHealth: true,
+			MaxBodyBytes: int64(config.Entity.MaxEntitySize),
+		}),
 	}, nil
 }
 

@@ -118,6 +118,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	// Create server and register routes
 	server := httpapi.NewServer(manager, httpapi.Options{
 		EnableHealth: true,
+		MaxBodyBytes: int64(formaConfig.Entity.MaxEntitySize),
 	})
 
 	// Create HTTP adapter for API Gateway v2
@@ -149,6 +150,11 @@ func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNam
 	// on stdout, which Lambda forwards to the function's log group (#423);
 	// unset, Forma's no-op default emits nothing.
 	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+
+	// Request limits and budgets (#465), the same overlay cmd/server applies;
+	// API Gateway bounds the connection itself, so there is no http.Server
+	// to configure here.
+	bootstrap.ApplyLimitsFromEnv(config)
 	return config
 }
 
