@@ -120,6 +120,25 @@ func prefixFromEnv(duckDBName, sharedName, baseValue string, manifestOn bool) st
 	return baseValue
 }
 
+// duckDBConfigForStartup resolves the DuckDB config from the environment and
+// validates it. The factory validates it too, but only after it has already
+// queried the database — so doing it here is what makes the documented
+// "invalid configuration fails at startup, before any I/O" contract
+// (docs/federated-query/design.md §4.3.1) literally true for the server.
+func duckDBConfigForStartup() (forma.DuckDBConfig, error) {
+	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
+	if err := duckCfg.ValidateManifestRead(); err != nil {
+		return forma.DuckDBConfig{}, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
+	// #456: the caller-path opt-in needs a bucket to scope hints against; reject
+	// the enabled-without-bucket combination here, before any I/O, rather than
+	// 4xx-ing every hint-bearing request at run time.
+	if err := duckCfg.ValidateCallerParquetPaths(); err != nil {
+		return forma.DuckDBConfig{}, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	}
+	return duckCfg, nil
+}
+
 func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRuntime, error) {
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
@@ -149,21 +168,19 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 		ChangeLog:      "change_log_dev",
 	})
 
-	// Invariant: the DuckDB manifest read surface is resolved and validated
-	// before the server opens any connection. The factory validates it too, but
-	// only after it has already queried the database — so doing it here is what
-	// makes the documented "invalid configuration fails at startup, before any
-	// I/O" contract (docs/federated-query/design.md §4.3.1) literally true for
-	// the server. Keep this block above NewPostgresPoolFromConfigContext.
-	duckCfg := duckDBConfigFromEnv(forma.DefaultConfig(nil).DuckDB)
-	if err := duckCfg.ValidateManifestRead(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	// Invariant: the DuckDB read surface and the metrics provider are resolved
+	// and validated before the server opens any connection. Keep both calls
+	// above NewPostgresPoolFromConfigContext.
+	duckCfg, err := duckDBConfigForStartup()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve duckdb configuration: %w", err)
 	}
-	// #456: the caller-path opt-in needs a bucket to scope hints against; reject
-	// the enabled-without-bucket combination here, before any I/O, rather than
-	// 4xx-ing every hint-bearing request at run time.
-	if err := duckCfg.ValidateCallerParquetPaths(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	// #423: the telemetry emitter is registered here, before any I/O, so a
+	// misconfigured provider fails startup and every counter the manager emits
+	// from its first request on reaches the backend.
+	metricsHandler, metricsPath, err := installServerMetrics(sugar.Desugar())
+	if err != nil {
+		return nil, fmt.Errorf("failed to register telemetry emitter: %w", err)
 	}
 
 	startupTimeout := dbConfig.Timeout
@@ -215,7 +232,11 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	return &serverRuntime{
 		pool:    pool,
 		manager: manager,
-		server:  httpapi.NewServer(manager, httpapi.Options{EnableHealth: true}),
+		server: httpapi.NewServer(manager, httpapi.Options{
+			EnableHealth:   true,
+			MetricsHandler: metricsHandler,
+			MetricsPath:    metricsPath,
+		}),
 	}, nil
 }
 

@@ -160,10 +160,28 @@ type LoggingConfig struct {
 	EnableDetailedLogging  bool          `json:"enableDetailedLogging"`
 }
 
-// MetricsConfig contains metrics collection settings
+// Metrics providers the shipped entrypoints can register as the telemetry
+// emitter (#423). See docs/telemetry.md for what each one does with a metric.
+const (
+	// MetricsProviderPrometheus serves a pull-based scrape endpoint. Only
+	// cmd/server can host one; cmd/lambda refuses it at startup.
+	MetricsProviderPrometheus = "prometheus"
+	// MetricsProviderEMF writes CloudWatch Embedded Metric Format lines to
+	// stdout, which CloudWatch Logs turns into metrics with no collector.
+	MetricsProviderEMF = "emf"
+)
+
+// MetricsConfig contains metrics collection settings.
+//
+// Enabled, Provider, Endpoint and Namespace drive the telemetry emitter the
+// entrypoints register (#423): Enabled is the opt-in (off by default), Provider
+// picks the backend, Endpoint is the Prometheus scrape path (default
+// /metrics) and Namespace is the CloudWatch namespace for EMF. Prometheus
+// metric names are the catalogue names verbatim; Namespace is not prefixed
+// onto them. The remaining fields are reserved and not read by anything yet.
 type MetricsConfig struct {
 	Enabled                  bool              `json:"enabled"`
-	Provider                 string            `json:"provider"` // prometheus, statsd, etc.
+	Provider                 string            `json:"provider"` // MetricsProviderPrometheus or MetricsProviderEMF
 	Endpoint                 string            `json:"endpoint"`
 	CollectionInterval       time.Duration     `json:"collectionInterval"`
 	EnableHistograms         bool              `json:"enableHistograms"`
@@ -433,11 +451,13 @@ func defaultLoggingConfig() LoggingConfig {
 	}
 }
 
-// defaultMetricsConfig returns default metrics configuration.
+// defaultMetricsConfig returns default metrics configuration. Enabled is false:
+// registering an emitter is an operator opt-in (#423), and before #423 the
+// field was never read, so the flip changes nothing for existing deployments.
 func defaultMetricsConfig() MetricsConfig {
 	return MetricsConfig{
-		Enabled:                  true,
-		Provider:                 "prometheus",
+		Enabled:                  false,
+		Provider:                 MetricsProviderPrometheus,
 		CollectionInterval:       30 * time.Second,
 		EnableHistograms:         true,
 		EnableCounters:           true,

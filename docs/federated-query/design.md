@@ -1015,7 +1015,7 @@ One unreadable parquet object no longer fails a whole manifest-authored scan. Th
 
 ## **8. Observability**
 
-The following metrics MUST be emitted to opentelemetry:
+The following metrics MUST be emitted through the telemetry hook (`internal/telemetry`; the catalogue, value contract and the backends a deployment can register — Prometheus on `cmd/server`, CloudWatch EMF on `cmd/lambda` — are in `docs/telemetry.md`, #423):
 
 * `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.
 * `fed_query_row_count`: Count of rows returned by S3 vs. PG (helps tune compaction frequency).

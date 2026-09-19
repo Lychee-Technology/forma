@@ -54,6 +54,10 @@ The server listens on port `8080` by default. Configure via environment variable
 | `DB_SSL_MODE` | `disable` | SSL mode |
 | `SCHEMA_DIR` | `` | Directory containing schema JSON files |
 | `PORT` | `8080` | HTTP listen port |
+| `METRICS_ENABLED` | `false` | Register a telemetry emitter (see `docs/telemetry.md`) |
+| `METRICS_PROVIDER` | `prometheus` | `prometheus` (scrape endpoint) or `emf` (CloudWatch EMF lines on stdout) |
+| `METRICS_PATH` | `/metrics` | Prometheus scrape path |
+| `METRICS_NAMESPACE` | `dataplane` | CloudWatch namespace for the `emf` provider |
 
 ## API Reference
 

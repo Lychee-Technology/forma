@@ -13,6 +13,11 @@ import (
 
 type Options struct {
 	EnableHealth bool
+	// MetricsHandler, when non-nil, is served at MetricsPath (default
+	// /metrics). It is the Prometheus scrape endpoint the entrypoint built
+	// from its metrics config (#423); nil — the default — mounts nothing.
+	MetricsHandler http.Handler
+	MetricsPath    string
 }
 
 type Manager interface {
@@ -44,6 +49,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRoutes() {
 	if s.opts.EnableHealth {
 		s.mux.HandleFunc("/health", s.handleHealth)
+	}
+	if s.opts.MetricsHandler != nil {
+		path := s.opts.MetricsPath
+		if path == "" {
+			path = "/metrics"
+		}
+		s.mux.Handle(path, s.opts.MetricsHandler)
 	}
 	s.mux.HandleFunc("/api/v1/advanced_query", s.handleAdvancedQuery)
 	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
