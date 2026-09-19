@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -52,13 +53,25 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	col := binding.ColumnName
 	colType := binding.ColumnType()
 	switch binding.Encoding {
-	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
-		// Text renderings of the numeric slot: nothing to width-check.
+	case forma.MainColumnEncodingISO8601:
+		// A text rendering of the exact millis: nothing to width-check, but
+		// the RFC3339 image keeps whole seconds within a four-digit year
+		// and must neither narrow nor outrun the read path's parser (#582).
+		// The store renders from either slot, so either slot is a value.
+		if colType != forma.MainColumnTypeText {
+			return errEncodingMismatch(vt, binding, "a text value")
+		}
+		if !hasEpochMillis(attr) {
+			return errSlotMismatch(vt, col, "a date or datetime value")
+		}
+		return checkISO8601Fit(attr, vt, col)
+	case forma.MainColumnEncodingBoolText:
+		// A text rendering of the numeric slot: nothing to width-check.
 		if colType != forma.MainColumnTypeText {
 			return errEncodingMismatch(vt, binding, "a text value")
 		}
 		if attr.ValueNumeric == nil {
-			return errSlotMismatch(vt, col, "a date, datetime or bool value")
+			return errSlotMismatch(vt, col, "a bool value")
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
@@ -104,6 +117,26 @@ func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col for
 		return fmt.Errorf("attribute bound to column %s of unsupported type %s", col, colType)
 	}
 	return nil
+}
+
+// checkISO8601Fit refuses a date/datetime the iso8601 rendering cannot hold,
+// naming the rule it breaks (whole seconds, or the RFC3339 four-digit year).
+// It judges the exact millis storeWithEncoding renders; a slot that names no
+// instant (a funnel bypass) is refused with that reason. The message carries
+// the millis (the wire form a read returns) and the instant they name, so a
+// caller who sent an RFC3339 string recognises the value.
+func checkISO8601Fit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
+	ms, err := exactEpochMillis(attr)
+	if err != nil {
+		return fmt.Errorf("%s %w and cannot be stored in main column %s with encoding %s",
+			vt, err, col, forma.MainColumnEncodingISO8601)
+	}
+	_, rule := iso8601Rendering(ms)
+	if rule == "" {
+		return nil
+	}
+	return fmt.Errorf("%s value %d (%s) cannot be stored in main column %s with encoding %s, which %s",
+		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), col, forma.MainColumnEncodingISO8601, rule)
 }
 
 func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) error {

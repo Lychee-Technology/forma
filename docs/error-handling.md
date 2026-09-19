@@ -615,6 +615,13 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never
   dropped.
+- `date`/`datetime` bound with `iso8601` (#582): the RFC3339 image keeps
+  whole seconds within the layout's four-digit year, so
+  `2024-01-01T00:00:00.123Z` and `10000-01-01T00:00:00Z` are refused. Before
+  #582 the first was silently truncated to `2024-01-01T00:00:00Z` and the
+  second stored as an image the reader cannot parse. The unbound
+  `eav_data.value_numeric` image keeps its pre-existing float64 behaviour
+  (#205; the contract past 2^53 is #592).
 
 The published message names the attribute, the value, the destination and
 the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value

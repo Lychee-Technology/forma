@@ -130,8 +130,9 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
 			}
-			unixMillis := timeToUnixMillisFloat64(parsedTime)
-			attr.ValueNumeric = &unixMillis
+			// The image has a four-digit year, so its millis are inside
+			// the int64 range by construction; both slots carry them.
+			setEpochMillis(attr, parsedTime.UnixMilli())
 			return attr, true, nil
 		}
 	}

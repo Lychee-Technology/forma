@@ -61,12 +61,21 @@ const (
 	iso8601Late  = "2025-06-07T08:09:10Z"
 	iso8601Day   = "2024-01-02"
 	iso8601DayTS = "2024-01-02T00:00:00Z"
+	// The ends of the encoding's contract (#582): the first and last whole
+	// second the RFC3339 four-digit year can name. Both must survive every
+	// tier byte-identical and decode to the same instant.
+	iso8601Floor     = "0000-01-01T00:00:00Z"
+	iso8601FloorDay  = "0000-01-01"
+	iso8601Ceiling   = "9999-12-31T23:59:59Z"
+	iso8601CeilDay   = "9999-12-31"
+	iso8601CeilDayTS = "9999-12-31T00:00:00Z"
 )
 
-// iso8601Rows is the seeded row set: two distinct instants and one row that
-// leaves both date attributes unset.
+// iso8601Rows is the seeded row set: two distinct instants, the floor and
+// ceiling of the encoding's range, and one row that leaves both date
+// attributes unset.
 type iso8601Rows struct {
-	early, late, unset *Event
+	early, late, floor, ceiling, unset *Event
 }
 
 func seedISO8601Rows(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, withNote bool) iso8601Rows {
@@ -82,11 +91,13 @@ func seedISO8601Rows(ctx context.Context, t *testing.T, env *Env, schema SchemaR
 		return m
 	}
 	rows := iso8601Rows{
-		early: CreateEvent(schema, attrs("d-early", map[string]any{"seenAt": iso8601Early, "bornOn": iso8601Day})),
-		late:  CreateEvent(schema, attrs("d-late", map[string]any{"seenAt": iso8601Late, "bornOn": "2025-06-07"})),
-		unset: CreateEvent(schema, attrs("d-unset", nil)),
+		early:   CreateEvent(schema, attrs("d-early", map[string]any{"seenAt": iso8601Early, "bornOn": iso8601Day})),
+		late:    CreateEvent(schema, attrs("d-late", map[string]any{"seenAt": iso8601Late, "bornOn": "2025-06-07"})),
+		floor:   CreateEvent(schema, attrs("d-floor", map[string]any{"seenAt": iso8601Floor, "bornOn": iso8601FloorDay})),
+		ceiling: CreateEvent(schema, attrs("d-ceiling", map[string]any{"seenAt": iso8601Ceiling, "bornOn": iso8601CeilDay})),
+		unset:   CreateEvent(schema, attrs("d-unset", nil)),
 	}
-	mustApplyEvents(ctx, t, env, "iso8601 creates", rows.early, rows.late, rows.unset)
+	mustApplyEvents(ctx, t, env, "iso8601 creates", rows.early, rows.late, rows.floor, rows.ceiling, rows.unset)
 	return rows
 }
 
@@ -97,11 +108,17 @@ func seedISO8601Rows(ctx context.Context, t *testing.T, env *Env, schema SchemaR
 func iso8601Probes(rows iso8601Rows) []widthProbe {
 	return []widthProbe{
 		{"seenAt_eq", Filter{Attr: "seenAt", Op: "equals", Value: iso8601Early}, []*Event{rows.early}},
-		{"seenAt_gt", Filter{Attr: "seenAt", Op: "gt", Value: iso8601Early}, []*Event{rows.late}},
-		{"seenAt_lt", Filter{Attr: "seenAt", Op: "lt", Value: iso8601Late}, []*Event{rows.early}},
-		{"seenAt_gte", Filter{Attr: "seenAt", Op: "gte", Value: iso8601Early}, []*Event{rows.early, rows.late}},
+		{"seenAt_gt", Filter{Attr: "seenAt", Op: "gt", Value: iso8601Early}, []*Event{rows.late, rows.ceiling}},
+		{"seenAt_lt", Filter{Attr: "seenAt", Op: "lt", Value: iso8601Late}, []*Event{rows.early, rows.floor}},
+		{"seenAt_gte", Filter{Attr: "seenAt", Op: "gte", Value: iso8601Early}, []*Event{rows.early, rows.late, rows.ceiling}},
+		{"seenAt_floor_eq", Filter{Attr: "seenAt", Op: "equals", Value: iso8601Floor}, []*Event{rows.floor}},
+		{"seenAt_floor_lte", Filter{Attr: "seenAt", Op: "lte", Value: iso8601Floor}, []*Event{rows.floor}},
+		{"seenAt_ceiling_eq", Filter{Attr: "seenAt", Op: "equals", Value: iso8601Ceiling}, []*Event{rows.ceiling}},
+		{"seenAt_ceiling_gte", Filter{Attr: "seenAt", Op: "gte", Value: iso8601Ceiling}, []*Event{rows.ceiling}},
 		{"bornOn_eq", Filter{Attr: "bornOn", Op: "equals", Value: iso8601DayTS}, []*Event{rows.early}},
-		{"bornOn_gt", Filter{Attr: "bornOn", Op: "gt", Value: iso8601DayTS}, []*Event{rows.late}},
+		{"bornOn_gt", Filter{Attr: "bornOn", Op: "gt", Value: iso8601DayTS}, []*Event{rows.late, rows.ceiling}},
+		{"bornOn_floor_eq", Filter{Attr: "bornOn", Op: "equals", Value: iso8601Floor}, []*Event{rows.floor}},
+		{"bornOn_ceiling_eq", Filter{Attr: "bornOn", Op: "equals", Value: iso8601CeilDayTS}, []*Event{rows.ceiling}},
 	}
 }
 
@@ -120,13 +137,16 @@ func assertISO8601Sort(ctx context.Context, t *testing.T, env *Env, label string
 	for i, rec := range res.Records {
 		pos[rec.RowID] = i
 	}
-	latePos, lateOK := pos[rows.late.RowID]
-	earlyPos, earlyOK := pos[rows.early.RowID]
-	if !lateOK || !earlyOK {
-		t.Fatalf("%s/sort: set rows missing from the sorted read (late %t, early %t)", label, lateOK, earlyOK)
-	}
-	if latePos > earlyPos {
-		t.Errorf("%s/sort: seenAt DESC placed late at %d after early at %d", label, latePos, earlyPos)
+	order := []*Event{rows.ceiling, rows.late, rows.early, rows.floor}
+	for i := 1; i < len(order); i++ {
+		prevPos, prevOK := pos[order[i-1].RowID]
+		curPos, curOK := pos[order[i].RowID]
+		if !prevOK || !curOK {
+			t.Fatalf("%s/sort: set rows missing from the sorted read (%v %t, %v %t)", label, order[i-1].Attrs["name"], prevOK, order[i].Attrs["name"], curOK)
+		}
+		if prevPos > curPos {
+			t.Errorf("%s/sort: seenAt DESC placed %v at %d after %v at %d", label, order[i-1].Attrs["name"], prevPos, order[i].Attrs["name"], curPos)
+		}
 	}
 }
 
@@ -170,6 +190,8 @@ func assertISO8601Images(ctx context.Context, t *testing.T, env *Env, label stri
 	}{
 		{rows.early, iso8601ImageOf(t, iso8601Early, iso8601DayTS)},
 		{rows.late, iso8601ImageOf(t, iso8601Late, "2025-06-07T00:00:00Z")},
+		{rows.floor, iso8601ImageOf(t, iso8601Floor, iso8601Floor)},
+		{rows.ceiling, iso8601ImageOf(t, iso8601Ceiling, iso8601CeilDayTS)},
 		{rows.unset, iso8601Image{}},
 	} {
 		got, ok := images[tc.ev.RowID]

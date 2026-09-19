@@ -104,13 +104,9 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 			if err := t.storeInMainColumn(record, eavRecord, meta.ColumnBinding); err != nil {
 				return nil, fmt.Errorf("failed to store attribute %s in main column: %w", attrName, err)
 			}
-		} else {
-			// EAV storage keeps the float64 ValueNumeric contract (2^53
-			// ceiling); clear the exact sidecar so the create-response echo
-			// matches what eav_data actually persists (#205).
-			eavRecord.ValueInt64 = nil
-			record.OtherAttributes = append(record.OtherAttributes, eavRecord)
+			continue
 		}
+		storeInEAV(record, eavRecord)
 	}
 
 	return record, nil
@@ -162,6 +158,17 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 	}
 
 	return result, nil
+}
+
+// storeInEAV appends the record to the row's eav_data attributes. eav_data
+// persists the float64 ValueNumeric image only (#205, 2^53 ceiling): the
+// exact sidecar is memory-only and is cleared here so the create-response
+// echo matches what is written. The funnels derive the image from the exact
+// millis (setEpochMillis), so within 2^53 it is the logical value; the
+// contract past that is #592.
+func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord) {
+	attr.ValueInt64 = nil
+	record.OtherAttributes = append(record.OtherAttributes, attr)
 }
 
 func (t *persistentRecordTransformer) storeInMainColumn(record *model.PersistentRecord, attr model.EAVRecord, binding *forma.MainColumnBinding) error {
@@ -218,11 +225,24 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		}
 		return storeTextRendering(record, binding, text)
 	case forma.MainColumnEncodingISO8601:
-		// Date as an ISO 8601 string
-		if attr.ValueNumeric == nil {
+		// Date as an RFC3339 string at whole seconds within a four-digit
+		// year. checkBoundColumnFit refuses a value the image cannot hold,
+		// so reaching one here is a funnel bypass: refuse it rather than
+		// truncate the caller's value or write an image the read path
+		// cannot parse (#582).
+		if !hasEpochMillis(&attr) {
 			return false, nil
 		}
-		return storeTextRendering(record, binding, unixMillisFloat64ToTimeUTC(*attr.ValueNumeric).Format(time.RFC3339))
+		ms, err := exactEpochMillis(&attr)
+		if err != nil {
+			return false, fmt.Errorf("encoding %s cannot hold a slot in main column %s: %w", binding.Encoding, binding.ColumnName, err)
+		}
+		text, rule := iso8601Rendering(ms)
+		if rule != "" {
+			return false, fmt.Errorf("encoding %s %s and cannot hold value %d in main column %s",
+				binding.Encoding, rule, ms, binding.ColumnName)
+		}
+		return storeTextRendering(record, binding, text)
 	default:
 		return t.storeWithDefaultEncoding(record, attr, binding)
 	}

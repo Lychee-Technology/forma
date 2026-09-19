@@ -1,9 +1,6 @@
 package transform
 
-import (
-	"fmt"
-	"time"
-)
+import "fmt"
 
 // numericBoolTrueThreshold is the read-side bool rule (#404): a persisted
 // numeric image is read as the nearest of 0/1, so float noise around either
@@ -37,12 +34,4 @@ func boolFromBoolText(value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("bool_text value %q is not the \"1\"/\"0\" the encoding stores", value)
 	}
-}
-
-func timeToUnixMillisFloat64(value time.Time) float64 {
-	return float64(value.UnixMilli())
-}
-
-func unixMillisFloat64ToTimeUTC(value float64) time.Time {
-	return time.UnixMilli(int64(value)).UTC()
 }

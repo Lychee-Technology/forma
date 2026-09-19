@@ -26,7 +26,10 @@ var parityEncodings = []forma.MainColumnEncoding{
 
 // paritySamples is one typed value per EAVRecord slot family. Every numeric
 // image fits a smallint so the width rule (covered by the other tests in
-// this package) never decides a pair here; only slot placement does.
+// this package) never decides a pair here; only slot placement does. The
+// sub-second datetime is the one rendering rule beyond placement (#582): the
+// check refuses it on iso8601 and the store must refuse it too, never
+// truncate.
 var paritySamples = []struct {
 	vt    forma.ValueType
 	value any
@@ -35,6 +38,7 @@ var paritySamples = []struct {
 	{forma.ValueTypeUUID, "0190f3a4-2f1e-7c3b-9a2d-1b2c3d4e5f60"},
 	{forma.ValueTypeNumeric, 1},
 	{forma.ValueTypeDate, "1970-01-01T00:00:01Z"},
+	{forma.ValueTypeDateTime, "1970-01-01T00:00:01.5Z"},
 	{forma.ValueTypeBool, true},
 }
 
@@ -71,14 +75,13 @@ func slotsHolding(record *model.PersistentRecord, col string) []forma.MainColumn
 }
 
 // renderedNumeric is what an encoding's rendering keeps of the numeric slot
-// when it is read back: the bool renderings collapse it to 0/1 and the
-// RFC3339 rendering keeps whole seconds; the rest are exact.
+// when it is read back: the bool renderings collapse it to 0/1; the rest are
+// exact. The RFC3339 rendering keeps whole seconds, and the check admits
+// only those (#582), so it is exact for every admitted value.
 func renderedNumeric(enc forma.MainColumnEncoding, v float64) float64 {
 	switch enc {
 	case forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText:
 		return boolToFloat64(float64ToBool(v))
-	case forma.MainColumnEncodingISO8601:
-		return math.Trunc(v/1000) * 1000
 	}
 	return v
 }
@@ -163,4 +166,77 @@ func TestStoreWithEncoding_ColumnMismatchIsAnError(t *testing.T) {
 			require.Empty(t, slotsHolding(record, string(b.ColumnName)))
 		})
 	}
+}
+
+// boundDateDestinations are the bound destinations a date/datetime can be
+// routed to under a rule of their own (#582): the two bigint renderings,
+// which keep the full int64 range, and the RFC3339 text rendering, which
+// keeps whole seconds within the layout's four-digit year.
+var boundDateDestinations = []forma.MainColumnBinding{
+	{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601},
+	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs},
+	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingDefault},
+}
+
+// #559 parity for every bound date destination over every record shape
+// (#587 review): checkBoundColumnFit admits a record iff storeWithEncoding
+// writes it, and what it writes reads back as the exact millis. The shapes
+// are the funnel's both-slot record — which, past 2^53, carries a sidecar
+// the float image has rounded away from — and the bypass shapes with one
+// slot only. One case the check and the store used to answer differently:
+// a sidecar-only iso8601 record (the check refused it, the store rendered
+// it).
+func TestBoundDateCheckStoreParity(t *testing.T) {
+	tr := &persistentRecordTransformer{}
+	millis := []int64{
+		0, 1000, 1704067200000, 1704067200123, -62167219200000, 253402300799000, 253402300800000,
+		1 << 53, 1<<53 + 1, -(1 << 53), -(1<<53 + 1), math.MaxInt64, math.MinInt64,
+	}
+	for _, ms := range millis {
+		image := float64(ms)
+		exact := ms
+		shapes := map[string]model.EAVRecord{
+			"both slots":   {AttrID: 9, ValueNumeric: &image, ValueInt64: &exact},
+			"sidecar only": {AttrID: 9, ValueInt64: &exact},
+		}
+		if inInt64Range(image) && int64(image) == ms {
+			shapes["float only"] = model.EAVRecord{AttrID: 9, ValueNumeric: &image}
+		}
+		for _, dest := range boundDateDestinations {
+			for name, rec := range shapes {
+				binding := dest
+				t.Run(fmt.Sprintf("%d/%s/%s/%s", ms, binding.Encoding, binding.ColumnName, name), func(t *testing.T) {
+					checkErr := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, &binding)
+					record := newEmptyPersistentRecord()
+					stored, storeErr := tr.storeWithEncoding(record, rec, &binding)
+					if checkErr != nil {
+						require.False(t, stored, "check refused (%v) but the store wrote", checkErr)
+						require.Empty(t, slotsHolding(record, string(binding.ColumnName)))
+						return
+					}
+					require.NoError(t, storeErr, "check admitted but the store refused")
+					require.True(t, stored, "check admitted but the store found no value")
+					require.Equal(t, []forma.MainColumnType{binding.ColumnType()}, slotsHolding(record, string(binding.ColumnName)))
+					meta := forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime, ColumnBinding: &binding}
+					got, err := tr.readFromMainColumn(record, meta, &binding)
+					require.NoError(t, err)
+					require.NotNil(t, got)
+					read, err := exactEpochMillis(got)
+					require.NoError(t, err)
+					require.Equal(t, ms, read, "an admitted value must read back as the exact millis")
+				})
+			}
+		}
+	}
+
+	// The reviewer's case, pinned by outcome rather than by parity alone.
+	iso := &boundDateDestinations[0]
+	zero := int64(0)
+	rec := model.EAVRecord{AttrID: 9, ValueInt64: &zero}
+	require.NoError(t, checkBoundColumnFit(&rec, forma.ValueTypeDateTime, iso))
+	record := newEmptyPersistentRecord()
+	stored, err := tr.storeWithEncoding(record, rec, iso)
+	require.NoError(t, err)
+	require.True(t, stored)
+	require.Equal(t, "1970-01-01T00:00:00Z", record.TextItems["text_02"])
 }
