@@ -59,7 +59,7 @@ The server listens on port `8080` by default. Configure via environment variable
 | `MAX_BATCH_SIZE` | `1000` | Cap on operations per batch create/update/delete; a larger batch answers `400` |
 | `QUERY_TIMEOUT_SECONDS` | `30` | Budget for a get, query or search; an exceeded budget answers `504` (`0` disables) |
 | `TRANSACTION_TIMEOUT_SECONDS` | `30` | Budget for one write transaction (create, update, delete, atomic batch); `0` disables |
-| `DUCKDB_QUERY_TIMEOUT_SECONDS` | `30` | Budget for one DuckDB federated pass, inside the query budget; `0` disables |
+| `DUCKDB_QUERY_TIMEOUT_SECONDS` | `30` | Budget for all the DuckDB work of one federated request, inside the query budget; `0` disables |
 | `HTTP_READ_HEADER_TIMEOUT_SECONDS` | `10` | `http.Server` ReadHeaderTimeout |
 | `HTTP_READ_TIMEOUT_SECONDS` | `30` | `http.Server` ReadTimeout (whole request, body included); a body still arriving when it expires answers `408` |
 | `HTTP_WRITE_TIMEOUT_SECONDS` | `90` | `http.Server` WriteTimeout, armed before the body is read; must exceed `HTTP_READ_TIMEOUT_SECONDS` plus the largest budget (checked at boot) |

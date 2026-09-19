@@ -219,9 +219,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// the row streaming below all run under this deadline. duckdb-go v2
 	// interrupts a running query when its context expires, so a slow scan is
 	// genuinely cancelled rather than left running on the single connection.
-	// A zero timeout leaves the caller's context as it is. The retry pass in
-	// ExecuteDuckDBFederatedQuery gets its own budget; the caller's own
-	// deadline (QueryConfig.DefaultTimeout) is the ceiling over both.
+	// A zero timeout leaves the caller's context as it is. Query arms the
+	// same budget once for the whole DuckDB-routed request
+	// (queryDuckDBRouted), so under it this deadline is never later than the
+	// request's and a corrupt-parquet retry or a deep-page recount shares
+	// the remainder; the arming here is what bounds callers that reach a
+	// pass directly (ExecuteFederatedPaginatedQuery, the benchmark harness).
+	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
+	// over all of it.
 	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
 	defer cancel()
 

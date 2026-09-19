@@ -170,7 +170,10 @@ func TestWriteTimeoutMustCoverBodyReadAndBudget(t *testing.T) {
 // DuckDB budget runs inside the query budget, so it is the read bound only
 // when the query budget is unbounded, and then it must be covered like any
 // other. QUERY_TIMEOUT_SECONDS=0 with a 120s DuckDB budget under a 60s write
-// timeout used to pass validation and cut the federated 504 off.
+// timeout used to pass validation and cut the federated 504 off. One DuckDB
+// budget is the whole read side because the engine arms it once per
+// request; internal/federated's TestQueryTimeoutIsOneBudgetForTheWholeRequest
+// pins that half.
 func TestLargestRequestBudgetIncludesDuckDB(t *testing.T) {
 	cfg := forma.DefaultConfig(nil)
 	cfg.Query.DefaultTimeout = 0

@@ -124,8 +124,12 @@ func (c HTTPServerConfig) Validate(budgets *forma.Config) error {
 // bounded: DuckDBConfig.QueryTimeout runs inside it (a nested
 // context.WithTimeout keeps the earlier deadline) and can only lengthen a
 // request when the query budget is unbounded, which is when it is the read
-// side instead (#465 review). The write side is
-// TransactionConfig.DefaultTimeout.
+// side instead (#465 review). Counting the DuckDB budget once is exact
+// because the federated engine arms it once per request
+// (DBFederatedQueryEngine.queryDuckDBRouted): the page pass, a
+// corrupt-parquet retry, the deep-page recount and a degraded fallback share
+// one deadline rather than each taking a budget of their own. The write side
+// is TransactionConfig.DefaultTimeout.
 func LargestRequestBudget(cfg *forma.Config) (time.Duration, string) {
 	budget, name := cfg.Query.DefaultTimeout, "query"
 	if budget == 0 {

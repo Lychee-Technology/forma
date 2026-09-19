@@ -93,3 +93,57 @@ func TestZeroQueryTimeoutLeavesTheCallerContextAlone(t *testing.T) {
 	require.True(t, errors.Is(err, context.Canceled), "want Canceled, got %v", err)
 	require.False(t, duck.sawDeadline, "a zero QueryTimeout must not add a deadline")
 }
+
+// deepPageDuckDBExecutor answers the first main scan with no rows — which
+// on a deep page makes Query recount (#181) — and holds the recount until
+// its context is done, recording the deadline every main scan ran under.
+type deepPageDuckDBExecutor struct {
+	fakeDuckDBExecutor
+	deadlines []time.Time
+}
+
+func (d *deepPageDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	if strings.HasPrefix(sql, "DESCRIBE ") {
+		return d.fakeDuckDBExecutor.Query(ctx, sql, args...)
+	}
+	if rows, ok := answerParquetDrainSQL(sql); ok {
+		return rows, nil
+	}
+	d.calls++
+	deadline, _ := ctx.Deadline()
+	d.deadlines = append(d.deadlines, deadline)
+	if d.calls == 1 {
+		return &verifyFakeRows{}, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestQueryTimeoutIsOneBudgetForTheWholeRequest pins the #465 review
+// finding: a request that takes several DuckDB passes — here a deep page
+// whose empty scan triggers the recount — spends one QueryTimeout in total,
+// not one per pass. The recount runs under the very deadline the page pass
+// ran under, so a configuration validated against a single DuckDB budget
+// (bootstrap.LargestRequestBudget) really does cover the request.
+func TestQueryTimeoutIsOneBudgetForTheWholeRequest(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &deepPageDuckDBExecutor{}
+	engine := newTimeoutTestEngine(t, duck, 50*time.Millisecond)
+	fq, tables := breakerTestQuery()
+	fq.Offset = 10
+
+	start := time.Now()
+	_, err := engine.Query(context.Background(), tables, fq, nil)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded), "want DeadlineExceeded, got %v", err)
+	require.Equal(t, 2, duck.calls, "the empty deep page must be recounted")
+	require.False(t, duck.deadlines[0].IsZero(), "the page pass carried no deadline")
+	require.True(t, duck.deadlines[1].Equal(duck.deadlines[0]),
+		"the recount ran under a later deadline (%v) than the page pass (%v): each pass was given its own budget",
+		duck.deadlines[1], duck.deadlines[0])
+	require.Less(t, elapsed, 5*time.Second, "the recount was not cancelled by the budget")
+}

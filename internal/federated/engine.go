@@ -235,6 +235,27 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		markHotTierOnly(page, opts, fq)
 		return page, nil
 	}
+	return e.queryDuckDBRouted(ctx, tables, fq, opts)
+}
+
+// queryDuckDBRouted serves a request the routing policy sent to DuckDB: the
+// page pass, the deep-page recount (#181) and, when a failure is degradable,
+// the Postgres-only fallback.
+//
+// DuckDBConfig.QueryTimeout is armed here, once, for the whole of it (#465
+// review). A request can take several DuckDB passes — the page pass, its
+// corrupt-parquet retry (#251), the recount and its retry — and a budget
+// armed per pass would have let a request spend several budgets in a row,
+// outliving the http.Server write deadline that
+// bootstrap.HTTPServerConfig.Validate sizes on exactly one. Under one shared
+// deadline the later passes and the fallback get the remainder, which is
+// what QueryConfig.DefaultTimeout already imposes on them whenever it is
+// bounded; this makes the opted-out case (a zero query budget) behave the
+// same way. The per-pass arming in StreamDuckDBFederatedQuery nests under
+// this one and can only be earlier or equal.
+func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
+	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
+	defer cancel()
 
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
