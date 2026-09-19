@@ -78,11 +78,16 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 // manifest stamped for a different schema means the read surface is
 // misaddressed, and a partial answer is the wrong response to a state that can
 // serve another schema's rows under this identity; and invalid caller input (e.g. an unrenderable path template) is the
-// caller's error to see, not infrastructure to degrade around.
+// caller's error to see, not infrastructure to degrade around. A sixth,
+// an expired deadline (#465), is the budget doing its job: the pass was
+// cancelled because it ran too long, and answering from Postgres afterwards
+// would spend more time past a limit that exists to bound latency; a DuckDB
+// that keeps timing out opens the breaker, and *that* rejection degrades.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
 		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, ErrManifestSchemaMismatch) &&
-		!errors.Is(err, forma.ErrInvalidInput)
+		!errors.Is(err, forma.ErrInvalidInput) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }

@@ -76,6 +76,15 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 		}
 	}
 
+	// The forma configuration is resolved and validated before the pool is
+	// opened, so an out-of-range limit fails the cold start here instead of
+	// silently widening a protection (#465).
+	formaConfig, err := lambdaFormaConfig(schemaDir)
+	if err != nil {
+		return nil, err
+	}
+	tableNames := formaConfig.Database.TableNames
+
 	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
 
@@ -88,21 +97,12 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 		return nil, fmt.Errorf("failed to create database pool: %w", err)
 	}
 
-	// Table names configuration
-	tableNames := bootstrap.TableNamesFromEnv(forma.TableNames{
-		SchemaRegistry: "schema_registry",
-		EAVData:        "eav_data",
-		EntityMain:     "entity_main",
-		ChangeLog:      "change_log",
-	})
-
 	// Create file-based schema registry from database
 	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, dbPool, tableNames.SchemaRegistry, schemaDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema registry: %w", err)
 	}
-
-	formaConfig := lambdaFormaConfig(registry, schemaDir, tableNames)
+	formaConfig.SchemaRegistry = registry
 
 	// Initialize EntityManager using factory. Deliberately never Closed (#302):
 	// the manager is process-lifetime — bootstrapLambda runs once per execution
@@ -118,6 +118,7 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	// Create server and register routes
 	server := httpapi.NewServer(manager, httpapi.Options{
 		EnableHealth: true,
+		MaxBodyBytes: int64(formaConfig.Entity.MaxEntitySize),
 	})
 
 	// Create HTTP adapter for API Gateway v2
@@ -129,10 +130,21 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	}, nil
 }
 
-// lambdaFormaConfig assembles the forma.Config this entry point starts with.
-// Extracted from bootstrapLambda to keep that function inside the 100-line cap.
-func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNames forma.TableNames) *forma.Config {
-	config := forma.DefaultConfig(registry)
+// lambdaFormaConfig assembles and validates the forma.Config this entry point
+// starts with. It performs no I/O, so bootstrapLambda calls it before opening
+// the pool; the schema registry is the one field it cannot fill, and
+// bootstrapLambda sets it once the pool exists. Extracted from bootstrapLambda
+// to keep that function inside the 100-line cap.
+func lambdaFormaConfig(schemaDir string) (*forma.Config, error) {
+	config := forma.DefaultConfig(nil)
+
+	// Table names configuration
+	tableNames := bootstrap.TableNamesFromEnv(forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+		ChangeLog:      "change_log",
+	})
 
 	// Set entity options from the environment, then the schema directory. This
 	// entry point serves the same write routes as cmd/server, so it must honour
@@ -149,7 +161,18 @@ func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNam
 	// on stdout, which Lambda forwards to the function's log group (#423);
 	// unset, Forma's no-op default emits nothing.
 	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
-	return config
+
+	// Request limits and budgets (#465), the same overlay cmd/server applies;
+	// API Gateway bounds the connection itself, so there is no http.Server
+	// to configure here.
+	bootstrap.ApplyLimitsFromEnv(config)
+
+	// Validate covers every rule the manager relies on, so a rejection names
+	// the field at cold start rather than surfacing on the first request.
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return config, nil
 }
 
 // handler is the Lambda handler function

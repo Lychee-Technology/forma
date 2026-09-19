@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -213,6 +214,17 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
+	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):
+	// path resolution and schema probes, the dirty-ID fetch, the scan, and
+	// the row streaming below all run under this deadline. duckdb-go v2
+	// interrupts a running query when its context expires, so a slow scan is
+	// genuinely cancelled rather than left running on the single connection.
+	// A zero timeout leaves the caller's context as it is. The retry pass in
+	// ExecuteDuckDBFederatedQuery gets its own budget; the caller's own
+	// deadline (QueryConfig.DefaultTimeout) is the ceiling over both.
+	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
+	defer cancel()
+
 	// Everything between admission and duck.Query can fail without consulting
 	// DuckDB or S3 at all — a misconfigured path set, invalid caller input,
 	// missing schema metadata. Such a caller learned nothing about the
@@ -275,6 +287,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		translateMs:     translateMs,
 		probe:           probe,
 	}, rowHandler, planCtx)
+}
+
+// withQueryTimeout bounds ctx by timeout; a non-positive timeout means no
+// bound and hands back ctx with a no-op cancel.
+func withQueryTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.

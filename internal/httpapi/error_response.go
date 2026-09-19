@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,7 +35,13 @@ const (
 	errorClassParquetSetInconsistent = "parquet_set_inconsistent"
 	errorClassNoParquetPaths         = "no_parquet_paths"
 	errorClassManifestSchemaMismatch = "manifest_schema_mismatch"
-	errorClassInternal               = "internal"
+	// errorClassTimeout marks a request the server gave up on because a
+	// configured budget (QueryConfig.DefaultTimeout,
+	// TransactionConfig.DefaultTimeout, DuckDBConfig.QueryTimeout) expired
+	// (#465). It answers 504 and, like every redacted class, discloses no
+	// error text: the budget's value is configuration, not caller feedback.
+	errorClassTimeout  = "timeout"
+	errorClassInternal = "internal"
 )
 
 // errorClass maps an error to its public token using errors.Is, so wrapped
@@ -48,6 +55,8 @@ func errorClass(err error) string {
 		return errorClassNoParquetPaths
 	case errors.Is(err, forma.ErrManifestSchemaMismatch):
 		return errorClassManifestSchemaMismatch
+	case errors.Is(err, context.DeadlineExceeded):
+		return errorClassTimeout
 	default:
 		return errorClassInternal
 	}
@@ -111,10 +120,14 @@ func errorSchemaID(err error) int16 {
 // specific belongs on the operator log line instead. The schema id travels as its
 // own structured field (APIResponse.SchemaID), never inside this prose.
 func publicErrorMessage(class string) string {
-	if class == errorClassInternal {
+	switch class {
+	case errorClassInternal:
 		return "internal error"
+	case errorClassTimeout:
+		return "request timed out"
+	default:
+		return "internal read error"
 	}
-	return "internal read error"
 }
 
 // redactCredentials removes credential values from a string before it is written
@@ -207,6 +220,14 @@ func classifyManagerError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, forma.ErrInvalidInput):
 		return http.StatusBadRequest
+	case errors.Is(err, context.DeadlineExceeded):
+		// A configured budget expired (#465). Handler contexts carry no
+		// deadline of their own, so a deadline in the chain is always one the
+		// server set; 504 tells the caller to retry or narrow the request
+		// rather than treating the answer as a server fault. context.Canceled
+		// is not mapped: it is the client going away, and no one reads the
+		// status.
+		return http.StatusGatewayTimeout
 	default:
 		return http.StatusInternalServerError
 	}

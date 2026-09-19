@@ -35,8 +35,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	zap.S().Infow("create request received", "schema", schemaName)
 
 	var rawBody any
-	if err := readJSONBody(r, &rawBody); err != nil {
-		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
+	if err := s.readJSONBody(w, r, &rawBody); err != nil {
+		respondBodyError(w, err)
 		return
 	}
 
@@ -194,8 +194,8 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	if err := readJSONBody(r, &body); err != nil {
-		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
+	if err := s.readJSONBody(w, r, &body); err != nil {
+		respondBodyError(w, err)
 		return
 	}
 
@@ -258,8 +258,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rowIDStrs []string
-	if err := readJSONBody(r, &rowIDStrs); err != nil {
-		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
+	if err := s.readJSONBody(w, r, &rowIDStrs); err != nil {
+		respondBodyError(w, err)
 		return
 	}
 
@@ -352,8 +352,8 @@ func (s *Server) handleAdvancedQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload forma.QueryRequest
-	if err := readJSONBody(r, &payload); err != nil {
-		respondError(w, "invalid json body", forma.InvalidInputf("%v", err))
+	if err := s.readJSONBody(w, r, &payload); err != nil {
+		respondBodyError(w, err)
 		return
 	}
 
