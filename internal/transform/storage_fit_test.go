@@ -168,7 +168,7 @@ func TestCheckStorageFit_BigintColumnStoreParity(t *testing.T) {
 					return
 				}
 				record := &model.PersistentRecord{Int64Items: map[string]int64{}}
-				require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+				require.NoError(t, tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding))
 				stored, ok := record.Int64Items[string(forma.MainColumnBigint01)]
 				require.True(t, ok)
 				if rec.ValueInt64 != nil {
@@ -240,7 +240,7 @@ func TestStoreInMainColumn_EmptySlotIsAnError(t *testing.T) {
 		{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText},
 	} {
 		b := binding
-		err := tr.storeInMainColumn(record, attr, &b)
+		err := tr.storeInMainColumn(record, attr, forma.ValueTypeText, &b)
 		require.Error(t, err, "binding %+v", b)
 		require.Contains(t, err.Error(), string(b.ColumnName))
 		require.Contains(t, err.Error(), "attr id 4")
@@ -411,7 +411,7 @@ func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
 			_, err := populateTypedValue(&rec, "seenAt", value, meta)
 			require.NoError(t, err)
 			record := &model.PersistentRecord{TextItems: map[string]string{}}
-			require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+			require.NoError(t, tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding))
 			got, err := tr.readFromMainColumn(record, meta, meta.ColumnBinding)
 			require.NoError(t, err)
 			require.NotNil(t, got)
@@ -425,7 +425,7 @@ func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
 	_, err := populateTypedValue(&rec, "seenAt", "2024-01-01T00:00:00.123Z", forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime})
 	require.NoError(t, err)
 	record := &model.PersistentRecord{TextItems: map[string]string{}}
-	err = tr.storeInMainColumn(record, rec, meta.ColumnBinding)
+	err = tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "keeps whole seconds")
 	require.Contains(t, err.Error(), "1704067200123")
@@ -481,7 +481,7 @@ func TestISO8601_BypassSlotIsRefused(t *testing.T) {
 			require.Equal(t, fmt.Sprintf(check, formatFitValue(tc.numVal)), err.Error())
 
 			record := newEmptyPersistentRecord()
-			stored, err := tr.storeWithEncoding(record, rec, binding)
+			stored, err := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, binding)
 			require.Error(t, err)
 			require.False(t, stored)
 			require.Equal(t, fmt.Sprintf(store, formatFitValue(tc.numVal)), err.Error())

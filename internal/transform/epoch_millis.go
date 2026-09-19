@@ -82,6 +82,15 @@ func exactEpochMillis(attr *model.EAVRecord) (int64, error) {
 	return int64(image), nil
 }
 
+// hasEpochMillis reports whether a date/datetime record carries a value in
+// either epoch-millis slot. It is the one notion of "populated" every
+// destination's check and store share, so a sidecar-only record (a bypass
+// shape; the funnels fill both slots) is judged and written by the same
+// rule on both sides rather than refused by one and rendered by the other.
+func hasEpochMillis(attr *model.EAVRecord) bool {
+	return attr.ValueInt64 != nil || attr.ValueNumeric != nil
+}
+
 // inInt64Range reports whether a float64 converts to int64 without wrapping.
 // math.MinInt64 converts to exactly -2^63 (a valid value); math.MaxInt64
 // rounds up to exactly 2^63, so >= excludes the first float64 that no longer
@@ -127,8 +136,31 @@ func checkFloat64ImageFit(ms int64, vt forma.ValueType, dest string) error {
 		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), dest, maxFloat64ImageMillis)
 }
 
+// float64ImageOf is the image a float64 destination (eav_data.value_numeric,
+// a double_* column) stores for a date/datetime record: float64 of the exact
+// millis, which checkFloat64ImageFit guarantees reads back as the same
+// instant. The fit check and the store both call it, so a record is admitted
+// by the one iff the other writes it, and what is written is derived from
+// the logical value, never copied from a float slot that may have been
+// rounded on its way in (#559 parity, #582).
+func float64ImageOf(attr *model.EAVRecord, vt forma.ValueType, dest string) (float64, error) {
+	ms, err := exactEpochMillis(attr)
+	if err != nil {
+		return 0, fmt.Errorf("%s value cannot be stored in %s: %w", vt, dest, err)
+	}
+	if err := checkFloat64ImageFit(ms, vt, dest); err != nil {
+		return 0, err
+	}
+	return float64(ms), nil
+}
+
 // eavValueNumericDest names the unbound destination in fit messages.
 const eavValueNumericDest = "eav_data value_numeric"
+
+// doubleColumnDest names a bound double column in fit messages.
+func doubleColumnDest(col forma.MainColumn) string {
+	return fmt.Sprintf("main column %s (double)", col)
+}
 
 // The RFC3339 layout has a four-digit year, so the image the iso8601
 // encoding stores names an instant from 0000-01-01T00:00:00Z to

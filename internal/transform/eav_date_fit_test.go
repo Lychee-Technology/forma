@@ -189,7 +189,7 @@ func TestDateTime_DoubleColumnFitIsTheFloat64ExactRange(t *testing.T) {
 		require.NoError(t, err, "%d", ms)
 		require.True(t, set)
 		record := newEmptyPersistentRecord()
-		require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+		require.NoError(t, tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding))
 		require.Equal(t, float64(ms), record.Float64Items["double_01"])
 	}
 	for _, ms := range eavRoundedMillis {

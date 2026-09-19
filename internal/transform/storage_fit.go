@@ -41,18 +41,16 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 
 // checkEAVFit is the unbound destination's rule (#582): eav_data persists
 // the float64 value_numeric image only, so a date/datetime must sit within
-// the range that image keeps exactly on every read route. Judged on the
-// exact millis, the same value storeInEAV writes; every other type keeps its
-// declared-type rule above (#205 owns the numeric family's float64 ceiling).
+// the range that image keeps exactly on every read route. It asks
+// float64ImageOf for the image storeInEAV will write and refuses when there
+// is none; every other type keeps its declared-type rule above (#205 owns
+// the numeric family's float64 ceiling).
 func checkEAVFit(attr *model.EAVRecord, vt forma.ValueType) error {
-	if !isDateType(vt) || (attr.ValueInt64 == nil && attr.ValueNumeric == nil) {
+	if !isDateType(vt) || !hasEpochMillis(attr) {
 		return nil
 	}
-	ms, err := exactEpochMillis(attr)
-	if err != nil {
-		return fmt.Errorf("%s value cannot be stored in %s: %w", vt, eavValueNumericDest, err)
-	}
-	return checkFloat64ImageFit(ms, vt, eavValueNumericDest)
+	_, err := float64ImageOf(attr, vt, eavValueNumericDest)
+	return err
 }
 
 // isDateType reports the valueTypes whose numeric slot holds epoch millis.
@@ -77,18 +75,25 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	col := binding.ColumnName
 	colType := binding.ColumnType()
 	switch binding.Encoding {
-	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingISO8601:
-		// Text renderings of the numeric slot: nothing to width-check, but
+	case forma.MainColumnEncodingISO8601:
+		// A text rendering of the exact millis: nothing to width-check, but
 		// the RFC3339 image keeps whole seconds within a four-digit year
 		// and must neither narrow nor outrun the read path's parser (#582).
+		// The store renders from either slot, so either slot is a value.
+		if colType != forma.MainColumnTypeText {
+			return errEncodingMismatch(vt, binding, "a text value")
+		}
+		if !hasEpochMillis(attr) {
+			return errSlotMismatch(vt, col, "a date or datetime value")
+		}
+		return checkISO8601Fit(attr, vt, col)
+	case forma.MainColumnEncodingBoolText:
+		// A text rendering of the numeric slot: nothing to width-check.
 		if colType != forma.MainColumnTypeText {
 			return errEncodingMismatch(vt, binding, "a text value")
 		}
 		if attr.ValueNumeric == nil {
-			return errSlotMismatch(vt, col, "a date, datetime or bool value")
-		}
-		if binding.Encoding == forma.MainColumnEncodingISO8601 {
-			return checkISO8601Fit(attr, vt, col)
+			return errSlotMismatch(vt, col, "a bool value")
 		}
 		return nil
 	case forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingBoolInt:
@@ -115,15 +120,11 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 
 // checkDoubleColumnDateFit applies the float64-image rule to a date/datetime
 // bound to a double column: the registration matrix refuses the pair, but the
-// funnel must not depend on registration, and storeNumericRendering writes
-// the float64 image there (#582).
+// funnel must not depend on registration (#582). It asks float64ImageOf for
+// the image storeNumericSlot will write, so the two cannot disagree.
 func checkDoubleColumnDateFit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
-	dest := fmt.Sprintf("main column %s (double)", col)
-	ms, err := exactEpochMillis(attr)
-	if err != nil {
-		return fmt.Errorf("%s value cannot be stored in %s: %w", vt, dest, err)
-	}
-	return checkFloat64ImageFit(ms, vt, dest)
+	_, err := float64ImageOf(attr, vt, doubleColumnDest(col))
+	return err
 }
 
 // checkDefaultEncodingSlot verifies that the slot storeWithDefaultEncoding

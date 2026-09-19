@@ -60,7 +60,7 @@ func TestDateTime_ExtremeTimeIsRefusedBeforeNormalisation(t *testing.T) {
 	_, err := populateTypedValue(&rec, "seenAt", extreme, metas["iso8601"])
 	require.Error(t, err)
 	record := &model.PersistentRecord{TextItems: map[string]string{}}
-	require.Error(t, tr.storeInMainColumn(record, rec, metas["iso8601"].ColumnBinding))
+	require.Error(t, tr.storeInMainColumn(record, rec, metas["iso8601"].ValueType, metas["iso8601"].ColumnBinding))
 	require.Empty(t, record.TextItems)
 }
 
@@ -92,7 +92,7 @@ func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 					require.Equal(t, float64(ms), *rec.ValueNumeric)
 
 					record := newEmptyPersistentRecord()
-					require.NoError(t, tr.storeInMainColumn(record, rec, bm.ColumnBinding))
+					require.NoError(t, tr.storeInMainColumn(record, rec, bm.ValueType, bm.ColumnBinding))
 					require.Equal(t, ms, record.Int64Items["bigint_01"])
 					got, err := tr.readFromMainColumn(record, bm, bm.ColumnBinding)
 					require.NoError(t, err)
