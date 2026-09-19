@@ -179,9 +179,10 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 // this entry point starts with, entirely from the environment and defaults,
 // and validates both. It performs no I/O, so bootstrapServer can call it
 // before opening the database and an out-of-range value (a negative budget,
-// a zero body cap, a write timeout shorter than a budget) fails at boot
-// instead of silently widening a limit (#465). The schema registry is the
-// one field it cannot fill; bootstrapServer sets it once the pool exists.
+// a zero body cap, a write timeout that does not outlast the body read plus
+// a budget) fails at boot instead of silently widening a limit (#465). The
+// schema registry is the one field it cannot fill; bootstrapServer sets it
+// once the pool exists.
 func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerConfig, error) {
 	config := forma.DefaultConfig(nil)
 
@@ -236,7 +237,8 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 	// Every connection phase is bounded (#465); the defaults and the HTTP_*
 	// overrides are documented in the README. The manager's own per-request
 	// budgets run underneath these, since a server timeout never cancels a
-	// handler's context, which is why WriteTimeout has to cover them.
+	// handler's context, which is why WriteTimeout has to cover them, and
+	// the body read that precedes them (HTTPServerConfig.Validate).
 	httpCfg := bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig())
 	if err := httpCfg.Validate(config); err != nil {
 		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid http server configuration: %w", err)

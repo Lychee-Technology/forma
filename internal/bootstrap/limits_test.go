@@ -14,11 +14,16 @@ func TestHTTPServerConfigDefaultsBoundEveryPhase(t *testing.T) {
 	if cfg.ReadHeaderTimeout <= 0 || cfg.ReadTimeout <= 0 || cfg.WriteTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
 		t.Fatalf("a default phase is unbounded: %+v", cfg)
 	}
-	// The write timeout must outlast the manager's default budgets, or a
-	// request that legitimately spends its 30s budget loses its response.
+	// The write timeout must outlast the body read plus the manager's
+	// default budget, or a request that legitimately spends both loses its
+	// response (#465 review); Validate is the authority on the arithmetic.
 	def := forma.DefaultConfig(nil)
-	if cfg.WriteTimeout <= def.Query.DefaultTimeout || cfg.WriteTimeout <= def.Transaction.DefaultTimeout {
-		t.Fatalf("WriteTimeout %s must exceed the 30s query/transaction budgets", cfg.WriteTimeout)
+	if err := cfg.Validate(def); err != nil {
+		t.Fatalf("defaults must validate against the default budgets: %v", err)
+	}
+	budget, _ := LargestRequestBudget(def)
+	if cfg.WriteTimeout <= cfg.ReadTimeout+budget {
+		t.Fatalf("WriteTimeout %s must exceed ReadTimeout %s plus the %s default budget", cfg.WriteTimeout, cfg.ReadTimeout, budget)
 	}
 
 	srv := NewHTTPServer(":0", http.NotFoundHandler(), cfg)
@@ -84,8 +89,9 @@ func TestApplyLimitsFromEnv(t *testing.T) {
 
 // TestHTTPServerConfigValidate pins the boot-time rules on the HTTP_* overlay
 // (#465 review): a negative phase would disable that timeout in net/http, and
-// a bounded WriteTimeout shorter than a budget would cut a legitimately slow
-// request's connection instead of letting the 504 out.
+// a bounded WriteTimeout that does not outlast the body read plus the largest
+// budget would cut a legitimately slow request's connection instead of
+// letting the 504 out.
 func TestHTTPServerConfigValidate(t *testing.T) {
 	budgets := forma.DefaultConfig(nil)
 	if err := DefaultHTTPServerConfig().Validate(budgets); err != nil {
@@ -109,21 +115,46 @@ func TestHTTPServerConfigValidate(t *testing.T) {
 	if err := (HTTPServerConfig{}).Validate(budgets); err != nil {
 		t.Fatalf("an all-zero config must validate: %v", err)
 	}
+}
 
-	// A bounded write timeout must cover both budgets; an unbounded write
-	// timeout or an unbounded budget needs no check.
+// TestWriteTimeoutMustCoverBodyReadAndBudget pins the composition rule: the
+// write deadline is armed before the handler reads the body, so a bounded
+// WriteTimeout has to exceed ReadTimeout plus the largest bounded budget,
+// strictly; equality leaves no time to write the response.
+func TestWriteTimeoutMustCoverBodyReadAndBudget(t *testing.T) {
+	budgets := forma.DefaultConfig(nil)
+	budget, _ := LargestRequestBudget(budgets)
+	cfg := DefaultHTTPServerConfig()
+
+	cfg.WriteTimeout = cfg.ReadTimeout + budget
+	assertConfigError(t, cfg.Validate(budgets), "http.writeTimeout")
+	cfg.WriteTimeout = cfg.ReadTimeout + budget + time.Second
+	if err := cfg.Validate(budgets); err != nil {
+		t.Fatalf("a write timeout with room for the response must pass: %v", err)
+	}
+
+	// The body read is bounded by ReadTimeout alone, so an unbounded
+	// ReadTimeout can spend any bounded write deadline before the handler
+	// starts; the configuration cannot honour the 504 and is refused.
+	cfg = DefaultHTTPServerConfig()
+	cfg.ReadTimeout = 0
+	assertConfigError(t, cfg.Validate(budgets), "http.readTimeout")
+
+	// The check applies to the transaction budget alone as well.
 	short := DefaultHTTPServerConfig()
-	short.WriteTimeout = budgets.Query.DefaultTimeout - time.Second
-	assertConfigError(t, short.Validate(budgets), "http.writeTimeout")
-
+	short.WriteTimeout = short.ReadTimeout + budget
 	txOnly := forma.DefaultConfig(nil)
 	txOnly.Query.DefaultTimeout = 0
+	txOnly.DuckDB.QueryTimeout = 0
 	assertConfigError(t, short.Validate(txOnly), "http.writeTimeout")
 
-	unboundedBudgets := forma.DefaultConfig(nil)
-	unboundedBudgets.Query.DefaultTimeout = 0
-	unboundedBudgets.Transaction.DefaultTimeout = 0
-	if err := short.Validate(unboundedBudgets); err != nil {
+	// An unbounded budget, an unbounded write timeout, or nil budgets are the
+	// operator opting out, and need no cover.
+	unbounded := forma.DefaultConfig(nil)
+	unbounded.Query.DefaultTimeout = 0
+	unbounded.Transaction.DefaultTimeout = 0
+	unbounded.DuckDB.QueryTimeout = 0
+	if err := short.Validate(unbounded); err != nil {
 		t.Fatalf("unbounded budgets need no write-timeout cover: %v", err)
 	}
 	short.WriteTimeout = 0
@@ -132,6 +163,39 @@ func TestHTTPServerConfigValidate(t *testing.T) {
 	}
 	if err := short.Validate(nil); err != nil {
 		t.Fatalf("nil budgets skip the cross-check: %v", err)
+	}
+}
+
+// TestLargestRequestBudgetIncludesDuckDB pins the #465 review finding: the
+// DuckDB budget runs inside the query budget, so it is the read bound only
+// when the query budget is unbounded, and then it must be covered like any
+// other. QUERY_TIMEOUT_SECONDS=0 with a 120s DuckDB budget under a 60s write
+// timeout used to pass validation and cut the federated 504 off.
+func TestLargestRequestBudgetIncludesDuckDB(t *testing.T) {
+	cfg := forma.DefaultConfig(nil)
+	cfg.Query.DefaultTimeout = 0
+	cfg.Transaction.DefaultTimeout = 0
+	cfg.DuckDB.QueryTimeout = 120 * time.Second
+	if budget, name := LargestRequestBudget(cfg); budget != 120*time.Second || name != "duckdb query" {
+		t.Fatalf("with an unbounded query budget the DuckDB budget is the read bound, got %s (%s)", budget, name)
+	}
+	httpCfg := DefaultHTTPServerConfig()
+	httpCfg.WriteTimeout = 60 * time.Second
+	assertConfigError(t, httpCfg.Validate(cfg), "http.writeTimeout")
+
+	// Under a bounded query budget the DuckDB budget cannot lengthen a
+	// request, however large it is set.
+	cfg.Query.DefaultTimeout = 10 * time.Second
+	if budget, name := LargestRequestBudget(cfg); budget != 10*time.Second || name != "query" {
+		t.Fatalf("a bounded query budget caps the DuckDB pass, got %s (%s)", budget, name)
+	}
+	if err := httpCfg.Validate(cfg); err != nil {
+		t.Fatalf("a 60s write timeout covers a 30s read plus a 10s query budget: %v", err)
+	}
+
+	cfg.Transaction.DefaultTimeout = 25 * time.Second
+	if budget, name := LargestRequestBudget(cfg); budget != 25*time.Second || name != "transaction" {
+		t.Fatalf("the larger of the read and write budgets wins, got %s (%s)", budget, name)
 	}
 }
 

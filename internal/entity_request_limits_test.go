@@ -174,6 +174,49 @@ func TestQueryTimeoutCancelsABlockingRepository(t *testing.T) {
 	}
 }
 
+// TestTransactionTimeoutCancelsABlockingWrite pins the write side of #465:
+// TransactionConfig.DefaultTimeout bounds the context every write hands the
+// repository, on the single and the atomic batch path alike, and the failure
+// surfaces as context.DeadlineExceeded (the 504 class at the HTTP boundary).
+func TestTransactionTimeoutCancelsABlockingWrite(t *testing.T) {
+	config := createTestConfig()
+	config.Transaction.DefaultTimeout = 50 * time.Millisecond
+	repo := newMockPersistentRecordRepository()
+	var sawDeadline bool
+	repo.insertFunc = func(ctx context.Context, _ *model.PersistentRecord) error {
+		_, sawDeadline = ctx.Deadline()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	em := newLimitsTestManager(t, config, repo)
+
+	writes := map[string]func() error{
+		"create": func() error {
+			_, err := em.Create(context.Background(), &visitCreateOps(1)[0])
+			return err
+		},
+		"atomic batch create": func() error {
+			_, err := em.BatchCreate(context.Background(), &forma.BatchOperation{Operations: visitCreateOps(2), Atomic: true})
+			return err
+		},
+	}
+	for name, write := range writes {
+		sawDeadline = false
+		start := time.Now()
+		err := write()
+		elapsed := time.Since(start)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s: expected context.DeadlineExceeded, got %v", name, err)
+		}
+		if !sawDeadline {
+			t.Fatalf("%s: the repository context carried no deadline", name)
+		}
+		if elapsed > 5*time.Second {
+			t.Fatalf("%s: write was not cancelled by the budget: took %s", name, elapsed)
+		}
+	}
+}
+
 // TestWithBudgetZeroLeavesTheContextUnbounded pins the "unset means no bound"
 // half of the contract: a zero budget must not become an instant timeout.
 func TestWithBudgetZeroLeavesTheContextUnbounded(t *testing.T) {

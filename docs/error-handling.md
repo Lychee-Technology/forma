@@ -933,7 +933,7 @@ only it.
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
-| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465) |
+| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465) |
 | `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
@@ -949,9 +949,18 @@ shape:
   too large: request body exceeds N bytes`; the body is never materialized.
   The cap covers the whole body, not only the first JSON value: after the
   decode the reader is drained to EOF, so trailing bytes past the cap are
-  still `413`, and a second JSON value under the cap is `400` (`invalid json
-  body: unexpected data after the JSON body`). Trailing whitespace stays
-  legal. Every other decode failure keeps its `400`.
+  still `413` even when a second value began under it (the drain reads to
+  the end before deciding), and trailing non-whitespace under the cap is
+  `400` (`invalid json body: unexpected data after the JSON body`). Trailing
+  JSON whitespace stays legal. Every other decode failure keeps its `400`.
+- **Body read failures.** A failure the transport returns while the body is
+  being read is tagged at the reader (`bodyReadError`) and never published as
+  malformed JSON, since it is network prose. `http.Server.ReadTimeout`
+  expiring mid-upload is `408` on the redacted branch with `error_class:
+  "timeout"`, the fixed message `request timed out`, and `Connection: close`
+  (the request stream is unrecoverable; RFC 9110 lets the client repeat the
+  request). Any other read failure is the client going away and stays a
+  redacted `500`, like `context.Canceled` below.
 - **Batch cap.** `PerformanceConfig.MaxBatchSize` (1000) is enforced at the
   manager, before any repository work, so library embedders get the same
   bound: `400` with `batch of N operations exceeds the maximum batch size of
@@ -977,7 +986,12 @@ shape:
   `WriteTimeout`, `IdleTimeout` and `MaxHeaderBytes`
   (`bootstrap.DefaultHTTPServerConfig`, `HTTP_*` overrides in the README).
   These bound the connection, not the handler's context, which is why the
-  manager budgets exist alongside them.
+  manager budgets exist alongside them. The phases compose: net/http arms
+  the write deadline when the headers have been read, before the handler
+  consumes the body, so `WriteTimeout` is spent on the body upload (bounded
+  by `ReadTimeout`), then the handler's work (bounded by the largest
+  budget), then the response. The defaults are 30s read, 90s write: 30s of
+  upload plus a 30s budget still leaves 30s for the `504` to leave.
 - **Boot-time validation.** The limits are configuration, so an out-of-range
   value is a startup failure, never a silently widened limit. cmd/server and
   cmd/lambda assemble the whole `forma.Config` from the environment and run
@@ -985,11 +999,17 @@ shape:
   must be positive, `Performance.MaxBatchSize` must be at least `BatchSize`,
   and the three budgets may be zero (unbounded) but not negative. cmd/server
   also runs `HTTPServerConfig.Validate`, which refuses a negative phase
-  timeout or header cap (net/http would read either as "no bound") and a
-  bounded `WriteTimeout` shorter than the query or transaction budget, since
-  that would cut a legitimately slow request's connection before its `504`
-  could leave. Library embedders that build a config by hand are not
-  validated; for them the zero-value semantics above apply.
+  timeout or header cap (net/http would read either as "no bound"), a
+  bounded `WriteTimeout` that does not strictly exceed `ReadTimeout` plus
+  the largest bounded budget (`bootstrap.LargestRequestBudget`: the query
+  budget, or the DuckDB budget when the query budget is unbounded since the
+  DuckDB pass runs inside the query budget, or the transaction budget,
+  whichever is longest), and a bounded `WriteTimeout` paired with an
+  unbounded `ReadTimeout`, since an unbounded upload can spend any write
+  deadline before the handler starts. Either would cut a legitimately slow
+  request's connection before its `504` could leave. Library embedders that
+  build a config by hand are not validated; for them the zero-value
+  semantics above apply.
 
 `QueryConfig.MaxRows` remains declared but unenforced; it is tracked
 separately from #465.
@@ -1166,7 +1186,8 @@ operator detail (see "Log levels are contract" below).
 an `error_id`, and — when the chain holds a typed read-path carrier — a
 `schema_id`. No error text crosses. There are exactly three fixed messages
 (`publicErrorMessage`): `internal read error` for the three typed read-path
-classes, `request timed out` for `errorClassTimeout` (a `504`, #465), and
+classes, `request timed out` for `errorClassTimeout` (a `504` for an expired
+budget, a `408` for a body still arriving when `ReadTimeout` expired, #465), and
 `internal error` for `errorClassInternal`. **`internal` is the
 common case in production** — it absorbs `ErrFederatedReadFailed`,
 `ErrPostgresReadFailed`, metadata drift, and transform failures — so a client

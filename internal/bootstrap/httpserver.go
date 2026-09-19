@@ -12,15 +12,25 @@ import (
 // Every field is a hard ceiling on one phase of a connection's life; none of
 // them cancels a handler's context, which is why the manager applies its own
 // per-request budgets (QueryConfig.DefaultTimeout and friends) on top.
+//
+// The phases overlap, and Validate encodes how. net/http arms the write
+// deadline when the request headers have been read, before the handler
+// consumes the body, so WriteTimeout is spent on three things in sequence:
+// reading the body (bounded by ReadTimeout, which is measured from the
+// start of the request), the handler's work (bounded by the largest manager
+// budget), and writing the response. A WriteTimeout that does not exceed the
+// first two leaves nothing for the third, and a slow-but-legal upload
+// followed by a request that spends its budget loses its 504 to a closed
+// connection.
 type HTTPServerConfig struct {
 	// ReadHeaderTimeout bounds reading the request line and headers; it is
 	// the Slowloris defence.
 	ReadHeaderTimeout time.Duration
-	// ReadTimeout bounds reading the whole request, body included.
+	// ReadTimeout bounds reading the whole request, headers and body,
+	// measured from the first byte of the request.
 	ReadTimeout time.Duration
 	// WriteTimeout bounds the response, measured from the end of the header
-	// read; it must exceed the largest manager budget or a slow-but-legal
-	// query is cut off mid-response.
+	// read; see the type comment for what it has to cover.
 	WriteTimeout time.Duration
 	// IdleTimeout bounds a keep-alive connection waiting for its next request.
 	IdleTimeout time.Duration
@@ -29,13 +39,14 @@ type HTTPServerConfig struct {
 }
 
 // DefaultHTTPServerConfig returns the bounds a fresh server starts from.
-// WriteTimeout is twice the 30s default query and transaction budgets so a
-// request that spends its full budget still gets its response out.
+// WriteTimeout is the 30s ReadTimeout plus the 30s default query and
+// transaction budgets plus a 30s margin, so a request that spends the whole
+// of both still gets its response out.
 func DefaultHTTPServerConfig() HTTPServerConfig {
 	return HTTPServerConfig{
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      90 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -60,10 +71,15 @@ func HTTPServerConfigFromEnv(defaults HTTPServerConfig) HTTPServerConfig {
 // net/http's default. Zero stays legal and means "unbounded" or "default",
 // as NewHTTPServer documents.
 //
-// When budgets is non-nil, a bounded WriteTimeout must also cover the query
-// and transaction budgets, or a request that legitimately spends its budget
-// has its connection cut instead of receiving the 504. An unbounded budget
-// (zero) is left to the write timeout, so it needs no check.
+// When budgets is non-nil and names a bounded request budget, a bounded
+// WriteTimeout must also leave room for the response after the body read
+// and the budget (see the type comment): WriteTimeout > ReadTimeout +
+// LargestRequestBudget, strictly, so that the difference is the margin the
+// response is written in. A bounded WriteTimeout then also needs a bounded
+// ReadTimeout, since an unbounded body phase can consume any write deadline
+// before the handler starts. An unbounded budget or an unbounded
+// WriteTimeout is the operator opting out of the guarantee and needs no
+// check.
 func (c HTTPServerConfig) Validate(budgets *forma.Config) error {
 	phases := []struct {
 		name string
@@ -85,15 +101,40 @@ func (c HTTPServerConfig) Validate(budgets *forma.Config) error {
 	if budgets == nil || c.WriteTimeout == 0 {
 		return nil
 	}
-	if budgets.Query.DefaultTimeout > c.WriteTimeout {
-		return &forma.ConfigError{Field: "http.writeTimeout",
-			Message: fmt.Sprintf("%s is shorter than the query budget %s", c.WriteTimeout, budgets.Query.DefaultTimeout)}
+	budget, name := LargestRequestBudget(budgets)
+	if budget == 0 {
+		return nil
 	}
-	if budgets.Transaction.DefaultTimeout > c.WriteTimeout {
+	if c.ReadTimeout == 0 {
+		return &forma.ConfigError{Field: "http.readTimeout",
+			Message: fmt.Sprintf("must be bounded when writeTimeout (%s) and the %s budget (%s) are: the write deadline starts before the body is read",
+				c.WriteTimeout, name, budget)}
+	}
+	if c.WriteTimeout <= c.ReadTimeout+budget {
 		return &forma.ConfigError{Field: "http.writeTimeout",
-			Message: fmt.Sprintf("%s is shorter than the transaction budget %s", c.WriteTimeout, budgets.Transaction.DefaultTimeout)}
+			Message: fmt.Sprintf("%s must exceed readTimeout %s plus the %s budget %s to leave room for writing the response",
+				c.WriteTimeout, c.ReadTimeout, name, budget)}
 	}
 	return nil
+}
+
+// LargestRequestBudget returns the longest a handler may legitimately spend
+// inside the manager under cfg, and which budget sets it, or zero when no
+// budget bounds it. The read side is QueryConfig.DefaultTimeout when that is
+// bounded: DuckDBConfig.QueryTimeout runs inside it (a nested
+// context.WithTimeout keeps the earlier deadline) and can only lengthen a
+// request when the query budget is unbounded, which is when it is the read
+// side instead (#465 review). The write side is
+// TransactionConfig.DefaultTimeout.
+func LargestRequestBudget(cfg *forma.Config) (time.Duration, string) {
+	budget, name := cfg.Query.DefaultTimeout, "query"
+	if budget == 0 {
+		budget, name = cfg.DuckDB.QueryTimeout, "duckdb query"
+	}
+	if cfg.Transaction.DefaultTimeout > budget {
+		budget, name = cfg.Transaction.DefaultTimeout, "transaction"
+	}
+	return budget, name
 }
 
 // NewHTTPServer builds the http.Server cmd/server listens on, with every

@@ -36,10 +36,12 @@ const (
 	errorClassNoParquetPaths         = "no_parquet_paths"
 	errorClassManifestSchemaMismatch = "manifest_schema_mismatch"
 	// errorClassTimeout marks a request the server gave up on because a
-	// configured budget (QueryConfig.DefaultTimeout,
-	// TransactionConfig.DefaultTimeout, DuckDBConfig.QueryTimeout) expired
-	// (#465). It answers 504 and, like every redacted class, discloses no
-	// error text: the budget's value is configuration, not caller feedback.
+	// configured bound expired (#465): a manager budget
+	// (QueryConfig.DefaultTimeout, TransactionConfig.DefaultTimeout,
+	// DuckDBConfig.QueryTimeout), answered 504, or http.Server.ReadTimeout
+	// while the request body was still arriving (bodyReadError), answered
+	// 408. Like every redacted class it discloses no error text: the bound's
+	// value is configuration, not caller feedback.
 	errorClassTimeout  = "timeout"
 	errorClassInternal = "internal"
 )
@@ -55,11 +57,22 @@ func errorClass(err error) string {
 		return errorClassNoParquetPaths
 	case errors.Is(err, forma.ErrManifestSchemaMismatch):
 		return errorClassManifestSchemaMismatch
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded), isBodyReadTimeout(err):
 		return errorClassTimeout
 	default:
 		return errorClassInternal
 	}
+}
+
+// isBodyReadTimeout reports whether err is the transport timing out while
+// the request body was being read (respondBodyError's 408). It is kept apart
+// from classifyManagerError on purpose: a net.Error timeout that surfaces
+// from inside the manager (a Postgres socket, say) is an infrastructure
+// failure and stays a 500 of the internal class, not a budget the server
+// chose to spend.
+func isBodyReadTimeout(err error) bool {
+	var readErr *bodyReadError
+	return errors.As(err, &readErr) && readErr.timeout()
 }
 
 // errorSchemaID returns the schema the failed read was addressed to, or 0 when
