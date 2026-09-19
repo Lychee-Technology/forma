@@ -7,7 +7,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
@@ -133,6 +132,15 @@ func newValidationHarness(
 	t *testing.T, strict bool,
 ) (forma.EntityManager, *mockPersistentRecordRepository, *writeSpy) {
 	t.Helper()
+	return newValidationHarnessWithEmitter(t, strict, nil)
+}
+
+// newValidationHarnessWithEmitter builds the harness with a caller-provided
+// metric emitter on Config, the seam an embedder uses (#423).
+func newValidationHarnessWithEmitter(
+	t *testing.T, strict bool, emitter forma.MetricEmitter,
+) (forma.EntityManager, *mockPersistentRecordRepository, *writeSpy) {
+	t.Helper()
 	registry := validationRegistry{}
 
 	validator, err := schemavalidate.New(registry, t.TempDir())
@@ -140,6 +148,7 @@ func newValidationHarness(
 
 	config := createTestConfig()
 	config.Entity.ValidateUpdatesStrict = strict
+	config.Metrics.Emitter = emitter
 
 	spy := &writeSpy{inner: transform.NewPersistentRecordTransformer(registry)}
 	repo := newMockPersistentRecordRepository()
@@ -370,40 +379,6 @@ func TestUpdateOfUnrelatedFieldKeepsRequiredSatisfied(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestReportOnlyUpdateEmitsAggregateCounter pins #317's telemetry half: every
-// accepted violation increments entity_report_only_validation_violation_total
-// with the schema and kind the flip decision is made over. The default
-// deployment registers no emitter, so this is behavior-neutral there; the
-// milestone log line below is its default-visible counterpart.
-func TestReportOnlyUpdateEmitsAggregateCounter(t *testing.T) {
-	manager, _ := newValidatingManager(t, false)
-	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
-	require.NoError(t, err)
-
-	type emitted struct {
-		name   string
-		labels map[string]string
-		value  any
-	}
-	var got []emitted
-	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, labels map[string]string, value any) {
-		got = append(got, emitted{name: name, labels: labels, value: value})
-	})
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-
-	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
-	require.NoError(t, err)
-
-	require.Len(t, got, 1, "one accepted violation must emit exactly one increment")
-	require.Equal(t, "entity_report_only_validation_violation_total", got[0].name)
-	require.Equal(t, map[string]string{
-		"schema_id":   "100",
-		"schema_name": "test",
-		"kind":        "constraint",
-	}, got[0].labels)
-	require.Equal(t, int64(1), got[0].value)
-}
-
 // TestReportOnlyUpdateLogsMilestoneOnFirstViolation is the wiring test (#318's
 // lesson: fail-closed wiring needs a test that goes red when the wiring is
 // deleted). It exercises the full production path — NewEntityManager builds
@@ -440,13 +415,10 @@ func TestReportOnlyUpdateLogsMilestoneOnFirstViolation(t *testing.T) {
 // is whether report-only can end. A strict rejection already surfaces as a 4xx
 // and must not inflate the aggregate.
 func TestStrictRejectionEmitsNoAggregate(t *testing.T) {
-	manager, _ := newValidatingManager(t, true)
+	rec := &metricRecorder{}
+	manager, _, _ := newValidationHarnessWithEmitter(t, true, rec)
 	created, err := manager.Create(context.Background(), createOp(map[string]any{"name": "open"}))
 	require.NoError(t, err)
-
-	var emits int
-	telemetry.RegisterTelemetryEmitter(func(context.Context, string, map[string]string, any) { emits++ })
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
 
 	_, err = manager.Update(context.Background(), updateOp(created.RowID, map[string]any{"name": "banana"}))
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
@@ -454,7 +426,7 @@ func TestStrictRejectionEmitsNoAggregate(t *testing.T) {
 	_, err = manager.Create(context.Background(), createOp(map[string]any{"name": "banana"}))
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 
-	require.Zero(t, emits, "rejected writes must not increment the report-only aggregate")
+	require.Empty(t, rec.events, "rejected writes must not increment the report-only aggregate")
 }
 
 // TestReportOnlyUpdateRejectsCyclicPayload pins the other boundary of

@@ -160,10 +160,22 @@ type LoggingConfig struct {
 	EnableDetailedLogging  bool          `json:"enableDetailedLogging"`
 }
 
-// MetricsConfig contains metrics collection settings
+// MetricsConfig contains metrics collection settings.
+//
+// Emitter is the only field Forma reads (#423): it is the per-instance
+// telemetry sink every Metric this Config's EntityManager and federated engine
+// emit goes to, and nil, the default, emits nothing. It is not gated on
+// Enabled: replacing the section with WithMetrics(MetricsConfig{Emitter: e})
+// would zero Enabled and leave a configured emitter silently inert, which is
+// the condition #423 exists to end. Every other field predates the emitter
+// and is not read by anything; they are kept for compatibility only.
 type MetricsConfig struct {
+	// Emitter receives every metric this Forma instance emits. See
+	// MetricEmitter and MetricCatalogue for the contract; the shipped
+	// entrypoints set a JSON-line stdout emitter when METRICS_STDOUT=true.
+	Emitter                  MetricEmitter     `json:"-"`
 	Enabled                  bool              `json:"enabled"`
-	Provider                 string            `json:"provider"` // prometheus, statsd, etc.
+	Provider                 string            `json:"provider"` // legacy, not read; the backend is whatever Emitter adapts to
 	Endpoint                 string            `json:"endpoint"`
 	CollectionInterval       time.Duration     `json:"collectionInterval"`
 	EnableHistograms         bool              `json:"enableHistograms"`
@@ -292,6 +304,12 @@ func WithLogging(l LoggingConfig) Option {
 // WithMetrics replaces the MetricsConfig section.
 func WithMetrics(m MetricsConfig) Option {
 	return func(c *Config) { c.Metrics = m }
+}
+
+// WithMetricEmitter sets the telemetry emitter this Config's Forma instance
+// emits through, leaving the rest of the MetricsConfig section untouched.
+func WithMetricEmitter(e MetricEmitter) Option {
+	return func(c *Config) { c.Metrics.Emitter = e }
 }
 
 // WithReference replaces the ReferenceConfig section.

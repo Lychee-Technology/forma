@@ -2,6 +2,7 @@ package federated
 
 import (
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 )
@@ -11,7 +12,7 @@ import (
 // string form so diagnostic artifacts can replay the exact query.
 func TestRecordTranslation_CapturesParams(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 
 	planCtx.recordTranslation("SELECT 1 WHERE a = ? AND b = ?", []any{"x", int64(42)}, 3,
 		&model.FederatedAttributeQuery{UseMainAsAnchor: true})
@@ -36,7 +37,7 @@ func TestRecordTranslation_CapturesParams(t *testing.T) {
 // source entry itself) are only recorded under IncludeExecutionPlan.
 func TestRecordTranslation_NoCaptureWhenDisabled(t *testing.T) {
 	opts := &model.FederatedQueryOptions{}
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 
 	planCtx.recordTranslation("SELECT 1", []any{"x"}, 1, nil)
 

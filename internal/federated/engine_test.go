@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -288,7 +289,7 @@ func TestSchemaProjectionCache(t *testing.T) {
 
 	// Plan note observability via injectSchemaProjections.
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
-	planCtx := newDuckDBExecutionPlanContext(opts)
+	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 	params := map[string]any{}
 	hitFlag, err := engine.injectSchemaProjections(params, 7, cache)
 	require.NoError(t, err)

@@ -205,6 +205,10 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 	// here would risk the two copies drifting apart.
 	config.DuckDB = duckCfg
 
+	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
+	// on stdout (#423); unset, Forma's no-op default emits nothing.
+	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)
 	if err != nil {

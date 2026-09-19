@@ -144,6 +144,11 @@ func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNam
 	// Database schema used by factory table discovery.
 	config.Database.Schema = bootstrap.Env("DB_SCHEMA", config.Database.Schema)
 	config.Database.TableNames = tableNames
+
+	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
+	// on stdout, which Lambda forwards to the function's log group (#423);
+	// unset, Forma's no-op default emits nothing.
+	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
 	return config
 }
 

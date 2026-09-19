@@ -8,7 +8,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -98,7 +97,7 @@ func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, s
 			return fmt.Errorf("verify rewrite source %q for schema %d: %w", f.Path, schemaID, err)
 		}
 		if actual != f.Checksum {
-			telemetry.EmitParquetChecksumMismatch(ctx, schemaID)
+			c.Metrics.EmitParquetChecksumMismatch(ctx, schemaID)
 			c.Logger.Error("rewrite source failed checksum verification; refusing to merge",
 				zap.Int16("schema_id", schemaID), zap.String("key", f.Path),
 				zap.String("stamped", f.Checksum), zap.String("actual", actual))

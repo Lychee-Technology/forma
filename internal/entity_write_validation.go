@@ -58,6 +58,9 @@ type writeValidation struct {
 	// wiring from NewEntityManager down is pinned by
 	// TestReportOnlyUpdateLogsMilestoneOnFirstViolation, so deleting it goes red.
 	stats *reportOnlyStats
+	// metrics is the manager's telemetry sink for the #317 counter. Nil-safe
+	// like stats: a service built without one emits nothing.
+	metrics *telemetry.Sink
 }
 
 // validateWritePayload validates a write payload against the JSON Schema
@@ -161,7 +164,7 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 	//
 	// kind was classified above, off the validator's own error, before the
 	// relation-root decoration could join the string.
-	telemetry.EmitReportOnlyValidationViolation(ctx, v.schemaID, v.schemaName, kind)
+	v.metrics.EmitReportOnlyValidationViolation(ctx, v.schemaID, v.schemaName, kind)
 	zap.S().Warnw("write payload violates the entity JSON schema; accepted because strict update validation is off",
 		"schemaName", v.schemaName, "schemaID", v.schemaID, "rowID", v.rowID, "kind", kind, "error", err.Error())
 	if milestone, total, required, constraint := v.stats.record(v.schemaID, kind); milestone {

@@ -318,9 +318,13 @@ func newRepositoryAndEngine(
 	// AllowPartialDegradedMode the error naming the offending objects is
 	// absorbed into a Postgres-only answer and toExecutionPlan drops plan
 	// Notes, so the log line is the only surface that survives.
+	// The embedder's telemetry emitter reaches the engine here and the
+	// manager through its config (#423); it is per instance, so nothing is
+	// registered globally.
 	engineOpts := []federated.EngineOption{
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),
+		federated.WithMetricEmitter(cfg.Metrics.Emitter),
 	}
 	// Append only a real source, so the manifest-off path stays byte-identical
 	// to the pre-#250 engine construction.

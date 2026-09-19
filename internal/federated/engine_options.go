@@ -3,7 +3,9 @@ package federated
 import (
 	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/queryplan"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -17,6 +19,13 @@ type EngineOption func(*DBFederatedQueryEngine)
 // WithPlanCache injects a shared compiled-plan cache (#142).
 func WithPlanCache(c *queryplan.Cache) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.planCache = c }
+}
+
+// WithMetricEmitter gives the engine the embedder's telemetry emitter (#423):
+// the fed_query_* metrics of every query this engine runs go to it. Nil, the
+// default, emits nothing.
+func WithMetricEmitter(e forma.MetricEmitter) EngineOption {
+	return func(eng *DBFederatedQueryEngine) { eng.metrics = telemetry.NewSink(e) }
 }
 
 // WithLogger gives the engine a logger; the default is zap.NewNop(). The

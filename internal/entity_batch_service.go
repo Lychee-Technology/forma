@@ -7,6 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/telemetry"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -29,6 +30,7 @@ type entityBatchService struct {
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
 	reportOnlyStats       *reportOnlyStats
+	metrics               *telemetry.Sink
 }
 
 // newEntityBatchService takes the CRUD service as an explicit parameter so the
@@ -59,6 +61,7 @@ func newEntityBatchService(em *entityManager, crud *entityCRUDService) *entityBa
 		validator:             em.validator,
 		validateUpdatesStrict: em.validateUpdatesStrict,
 		reportOnlyStats:       em.reportOnlyStats,
+		metrics:               em.metrics,
 	}
 }
 
@@ -231,6 +234,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			enforce:       true,
 			relationRoots: relationRoots.resolve(op.SchemaName),
 			stats:         s.reportOnlyStats,
+			metrics:       s.metrics,
 		}); err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -361,6 +365,7 @@ func (s *entityBatchService) mergeBatchUpdateRecord(
 		enforce:       s.validateUpdatesStrict,
 		relationRoots: relationRoots.resolve(op.SchemaName),
 		stats:         s.reportOnlyStats,
+		metrics:       s.metrics,
 	}); err != nil {
 		return nil, forma.WrapPublicf(err, "operation[%d]", i)
 	}

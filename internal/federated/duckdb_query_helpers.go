@@ -246,18 +246,23 @@ func parseDuckDBAttributesJSON(attrsJSON string, record *model.PersistentRecord)
 	return model.ParseAttributesJSON([]byte(attrsJSON), record)
 }
 
-// duckDBExecutionPlanContext holds execution plan tracking state.
+// duckDBExecutionPlanContext holds execution plan tracking state. It is
+// built for every DuckDB pass, plan requested or not: the stage clocks it
+// carries also time the fed_query_latency_histogram emissions, which are not
+// gated on IncludeExecutionPlan (only the record* methods are).
 type duckDBExecutionPlanContext struct {
 	opts       *model.FederatedQueryOptions
+	now        func() time.Time
 	startTotal time.Time
 	startQuery time.Time
 }
 
 // newDuckDBExecutionPlanContext initializes execution plan tracking if requested.
-func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions) *duckDBExecutionPlanContext {
+func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions, now func() time.Time) *duckDBExecutionPlanContext {
 	ctx := &duckDBExecutionPlanContext{
 		opts:       opts,
-		startTotal: time.Now(),
+		now:        now,
+		startTotal: now(),
 	}
 
 	if opts != nil && opts.IncludeExecutionPlan {
@@ -402,7 +407,12 @@ func formatPlanParams(args []any) []string {
 
 // recordQueryStart marks the start of query execution.
 func (c *duckDBExecutionPlanContext) recordQueryStart() {
-	c.startQuery = time.Now()
+	c.startQuery = c.now()
+}
+
+// millisSince measures elapsed wall time from t on the context's clock.
+func (c *duckDBExecutionPlanContext) millisSince(t time.Time) int64 {
+	return c.now().Sub(t).Milliseconds()
 }
 
 // recordQueryFailure records a query failure in the execution plan.
@@ -411,8 +421,8 @@ func (c *duckDBExecutionPlanContext) recordQueryFailure(err error) {
 		return
 	}
 
-	c.opts.ExecutionPlan.Timings["duckdb_fetch"] = time.Since(c.startQuery).Milliseconds()
-	c.opts.ExecutionPlan.Timings["total"] = time.Since(c.startTotal).Milliseconds()
+	c.opts.ExecutionPlan.Timings["duckdb_fetch"] = c.millisSince(c.startQuery)
+	c.opts.ExecutionPlan.Timings["total"] = c.millisSince(c.startTotal)
 	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, fmt.Sprintf("duckdb query failed: %v", err))
 }
 
@@ -469,5 +479,5 @@ func (c *duckDBExecutionPlanContext) recordClientUnavailable() {
 
 	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "duckdb client unavailable")
 	c.opts.ExecutionPlan.Timings["duckdb_fetch"] = 0
-	c.opts.ExecutionPlan.Timings["total"] = time.Since(c.startTotal).Milliseconds()
+	c.opts.ExecutionPlan.Timings["total"] = c.millisSince(c.startTotal)
 }

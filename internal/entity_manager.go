@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/lychee-technology/forma"
@@ -32,6 +33,11 @@ type entityManager struct {
 	// reportOnlyStats feeds the #317 milestone log line. Owned here so the CRUD
 	// and batch services aggregate into one set of per-schema counts.
 	reportOnlyStats *reportOnlyStats
+	// metrics is this manager's telemetry sink, built from
+	// config.Metrics.Emitter (#423). Nil when no emitter is configured, which
+	// every Emit* helper treats as a no-op; it is per instance, so two managers
+	// in one process report to their own emitters.
+	metrics *telemetry.Sink
 
 	crud     *entityCRUDService
 	query    *entityQueryService
@@ -168,6 +174,7 @@ func NewEntityManager(
 		validator:             validator,
 		validateUpdatesStrict: config.Entity.ValidateUpdatesStrict,
 		reportOnlyStats:       newReportOnlyStats(),
+		metrics:               telemetry.NewSink(config.Metrics.Emitter),
 	}
 	// Options run before the relation index is resolved, because one of them
 	// supplies it: WithRelationIndex is how the composition root hands over the

@@ -54,6 +54,7 @@ The server listens on port `8080` by default. Configure via environment variable
 | `DB_SSL_MODE` | `disable` | SSL mode |
 | `SCHEMA_DIR` | `` | Directory containing schema JSON files |
 | `PORT` | `8080` | HTTP listen port |
+| `METRICS_STDOUT` | unset (off) | `true` writes every emitted metric as a JSON line on stdout (`docs/telemetry.md`) |
 
 ## API Reference
 
