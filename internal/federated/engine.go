@@ -14,6 +14,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -88,6 +89,10 @@ type DBFederatedQueryEngine struct {
 	// because in degraded mode its error is absorbed by the postgres-only
 	// fallback and plan Notes never reach API callers.
 	logger *zap.Logger
+	// metrics is the engine's telemetry sink (#423), set by WithMetricEmitter
+	// from the embedder's Config.Metrics.Emitter. Nil emits nothing; per
+	// engine instance, never process-global.
+	metrics *telemetry.Sink
 }
 
 // flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the

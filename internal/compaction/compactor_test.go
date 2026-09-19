@@ -9,6 +9,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -16,10 +17,19 @@ import (
 	"go.uber.org/zap"
 )
 
-type telemetryEvent struct {
-	name   string
-	labels map[string]string
-	value  any
+// metricRecorder is the per-test forma.MetricEmitter: it keeps every metric
+// the compactor under test emits through its Metrics sink (#423).
+type metricRecorder struct{ events []forma.Metric }
+
+func (r *metricRecorder) EmitMetric(_ context.Context, m forma.Metric) {
+	r.events = append(r.events, m)
+}
+
+// recordingSink returns a sink for a Compactor literal and the recorder
+// behind it.
+func recordingSink() (*telemetry.Sink, *metricRecorder) {
+	rec := &metricRecorder{}
+	return telemetry.NewSink(rec), rec
 }
 
 // mockProvider implements FileProvider for testing
@@ -330,16 +340,7 @@ func TestCompactor_RunOnce_SaveManifestMissingUpdatedAtAdvance(t *testing.T) {
 }
 
 func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testing.T) {
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-
-	var gotName string
-	var gotLabels map[string]string
-	var gotValue any
-	telemetry.RegisterTelemetryEmitter(func(ctx context.Context, name string, labels map[string]string, value any) {
-		gotName = name
-		gotLabels = labels
-		gotValue = value
-	})
+	sink, rec := recordingSink()
 
 	logger := zap.NewNop()
 	m := &manifest.Manifest{
@@ -362,26 +363,26 @@ func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testin
 			TargetBaseSizeMB: 256,
 		},
 		Provider: provider,
+		Metrics:  sink,
 	}
 
 	_, err := c.RunOnce(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
-	require.Equal(t, "compaction_manifest_contract_violation_total", gotName)
-	require.Equal(t, "1", gotLabels["schema_id"])
-	require.Equal(t, int64(1), gotValue)
+	// The pass emits its dirty ratio first; the violation counter is the last
+	// emission before the error returns.
+	require.NotEmpty(t, rec.events)
+	last := rec.events[len(rec.events)-1]
+	require.Equal(t, "compaction_manifest_contract_violation_total", last.Name)
+	require.Equal(t, "1", last.Labels["schema_id"])
+	require.Equal(t, float64(1), last.Value)
 }
 
 // A rewrite-eligible pass on a compactor WITHOUT merge wiring (nil Merger —
 // e.g. a manifest-only invocation) must keep the pre-#188 stub contract:
 // RewritePending, manifest untouched, pending telemetry.
 func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T) {
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-
-	events := make([]telemetryEvent, 0, 2)
-	telemetry.RegisterTelemetryEmitter(func(ctx context.Context, name string, labels map[string]string, value any) {
-		events = append(events, telemetryEvent{name: name, labels: labels, value: value})
-	})
+	sink, rec := recordingSink()
 
 	logger := zap.NewNop()
 	// Force needsRewrite=true (delta/base rows = 100/1000 = 10% > 5%)
@@ -405,6 +406,7 @@ func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T
 			DirtyRatioPct:    5,
 		},
 		Provider: provider,
+		Metrics:  sink,
 	}
 
 	result, err := c.RunOnce(context.Background())
@@ -417,13 +419,15 @@ func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T
 	require.Equal(t, "base", provider.manifest.Files[0].Tier)
 	require.Equal(t, "delta", provider.manifest.Files[1].Tier)
 
-	require.Len(t, events, 2)
-	require.Equal(t, "compaction_dirty_ratio", events[0].name)
-	require.Equal(t, "1", events[0].labels["schema_id"])
-	require.Equal(t, 0.1, events[0].value)
-	require.Equal(t, "compaction_rewrite_pending_total", events[1].name)
-	require.Equal(t, "1", events[1].labels["schema_id"])
-	require.Equal(t, int64(1), events[1].value)
+	require.Len(t, rec.events, 2)
+	require.Equal(t, "compaction_dirty_ratio", rec.events[0].Name)
+	require.Equal(t, forma.MetricKindGauge, rec.events[0].Kind)
+	require.Equal(t, "1", rec.events[0].Labels["schema_id"])
+	require.Equal(t, 0.1, rec.events[0].Value)
+	require.Equal(t, "compaction_rewrite_pending_total", rec.events[1].Name)
+	require.Equal(t, forma.MetricKindCounter, rec.events[1].Kind)
+	require.Equal(t, "1", rec.events[1].Labels["schema_id"])
+	require.Equal(t, float64(1), rec.events[1].Value)
 }
 
 func TestCompactor_RunOnce_LoadManifestError(t *testing.T) {

@@ -160,28 +160,22 @@ type LoggingConfig struct {
 	EnableDetailedLogging  bool          `json:"enableDetailedLogging"`
 }
 
-// Metrics providers the shipped entrypoints can register as the telemetry
-// emitter (#423). See docs/telemetry.md for what each one does with a metric.
-const (
-	// MetricsProviderPrometheus serves a pull-based scrape endpoint. Only
-	// cmd/server can host one; cmd/lambda refuses it at startup.
-	MetricsProviderPrometheus = "prometheus"
-	// MetricsProviderEMF writes CloudWatch Embedded Metric Format lines to
-	// stdout, which CloudWatch Logs turns into metrics with no collector.
-	MetricsProviderEMF = "emf"
-)
-
 // MetricsConfig contains metrics collection settings.
 //
-// Enabled, Provider, Endpoint and Namespace drive the telemetry emitter the
-// entrypoints register (#423): Enabled is the opt-in (off by default), Provider
-// picks the backend, Endpoint is the Prometheus scrape path (default
-// /metrics) and Namespace is the CloudWatch namespace for EMF. Prometheus
-// metric names are the catalogue names verbatim; Namespace is not prefixed
-// onto them. The remaining fields are reserved and not read by anything yet.
+// Emitter is the only field Forma reads (#423): it is the per-instance
+// telemetry sink every Metric this Config's EntityManager and federated engine
+// emit goes to, and nil, the default, emits nothing. It is not gated on
+// Enabled: replacing the section with WithMetrics(MetricsConfig{Emitter: e})
+// would zero Enabled and leave a configured emitter silently inert, which is
+// the condition #423 exists to end. Every other field predates the emitter
+// and is not read by anything; they are kept for compatibility only.
 type MetricsConfig struct {
+	// Emitter receives every metric this Forma instance emits. See
+	// MetricEmitter and MetricCatalogue for the contract; the shipped
+	// entrypoints set a JSON-line stdout emitter when METRICS_STDOUT=true.
+	Emitter                  MetricEmitter     `json:"-"`
 	Enabled                  bool              `json:"enabled"`
-	Provider                 string            `json:"provider"` // MetricsProviderPrometheus or MetricsProviderEMF
+	Provider                 string            `json:"provider"` // legacy, not read; the backend is whatever Emitter adapts to
 	Endpoint                 string            `json:"endpoint"`
 	CollectionInterval       time.Duration     `json:"collectionInterval"`
 	EnableHistograms         bool              `json:"enableHistograms"`
@@ -310,6 +304,12 @@ func WithLogging(l LoggingConfig) Option {
 // WithMetrics replaces the MetricsConfig section.
 func WithMetrics(m MetricsConfig) Option {
 	return func(c *Config) { c.Metrics = m }
+}
+
+// WithMetricEmitter sets the telemetry emitter this Config's Forma instance
+// emits through, leaving the rest of the MetricsConfig section untouched.
+func WithMetricEmitter(e MetricEmitter) Option {
+	return func(c *Config) { c.Metrics.Emitter = e }
 }
 
 // WithReference replaces the ReferenceConfig section.
@@ -451,13 +451,11 @@ func defaultLoggingConfig() LoggingConfig {
 	}
 }
 
-// defaultMetricsConfig returns default metrics configuration. Enabled is false:
-// registering an emitter is an operator opt-in (#423), and before #423 the
-// field was never read, so the flip changes nothing for existing deployments.
+// defaultMetricsConfig returns default metrics configuration.
 func defaultMetricsConfig() MetricsConfig {
 	return MetricsConfig{
-		Enabled:                  false,
-		Provider:                 MetricsProviderPrometheus,
+		Enabled:                  true,
+		Provider:                 "prometheus",
 		CollectionInterval:       30 * time.Second,
 		EnableHistograms:         true,
 		EnableCounters:           true,

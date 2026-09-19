@@ -85,6 +85,11 @@ type Compactor struct {
 	// ObjectReader hashes published objects for manifest checksum stamping
 	// and pre-merge input verification (#347). Nil disables both.
 	ObjectReader cdc.S3GetClient
+
+	// Metrics receives the compaction_* and parquet_checksum_mismatch_total
+	// metrics (#423); build it with telemetry.NewSink from the operator's
+	// forma.MetricEmitter. Nil emits nothing.
+	Metrics *telemetry.Sink
 }
 
 // RunOnce executes compaction for a schema and returns a typed result.
@@ -204,7 +209,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	baseTotalMB := baseTotalBytes / (1024 * 1024)
 	deltaTotalMB := deltaTotalBytes / (1024 * 1024)
 	dirtyRatio := c.computeDirtyRatio(baseFiles, deltaFiles)
-	telemetry.EmitCompactionDirtyRatio(ctx, schemaID, dirtyRatio)
+	c.Metrics.EmitCompactionDirtyRatio(ctx, schemaID, dirtyRatio)
 
 	// Compare bytes, not truncated MB: sub-MB delta tiers must still be able
 	// to promote once the byte-precise threshold is lowered (WithDefaults
@@ -229,7 +234,7 @@ func (c *Compactor) compactSchema(ctx context.Context, schemaID int16, cfg cdc.C
 	}
 
 	if !c.canRewrite() {
-		telemetry.EmitCompactionRewritePending(ctx, schemaID)
+		c.Metrics.EmitCompactionRewritePending(ctx, schemaID)
 		c.Logger.Warn("rewrite needed but the compactor has no merge wiring; skipping manifest update",
 			zap.Int16("schema_id", schemaID),
 			zap.Float64("dirty_ratio", dirtyRatio),
@@ -301,7 +306,7 @@ func (c *Compactor) saveManifestChecked(ctx context.Context, schemaID int16, m *
 	}
 
 	if m.Version <= prevVersion || m.UpdatedAtMs <= prevUpdatedAtMs {
-		telemetry.EmitCompactionManifestContractViolation(ctx, schemaID)
+		c.Metrics.EmitCompactionManifestContractViolation(ctx, schemaID)
 		c.Logger.Error("save manifest contract violated: metadata not advanced",
 			zap.Int16("schema_id", schemaID),
 			zap.Int64("prev_version", prevVersion),

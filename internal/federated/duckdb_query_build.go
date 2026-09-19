@@ -14,7 +14,6 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
-	"github.com/lychee-technology/forma/internal/telemetry"
 )
 
 // SQL construction for the DuckDB federated path: template-parameter
@@ -90,13 +89,13 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// request. Test hooks and non-advanced templates bypass the cache.
 	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, cache, planCtx); ok {
 		translateMs := time.Since(startTranslate).Milliseconds()
-		telemetry.EmitLatency(ctx, "translation", translateMs)
+		e.metrics.EmitLatency(ctx, "translation", translateMs)
 		return sqlStr, args, translateMs, nil
 	}
 
 	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
-	telemetry.EmitLatency(ctx, "translation", translateMs)
+	e.metrics.EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
 		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
 	}

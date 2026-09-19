@@ -9,7 +9,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -58,14 +57,11 @@ func TestVerifySourceChecksums_MatchingStampPasses(t *testing.T) {
 // merge with an attributable, matchable error, one telemetry count and one
 // operator-visible ERROR naming both hashes.
 func TestVerifySourceChecksums_MutatedBytesRefuseMerge(t *testing.T) {
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-	var events []telemetryEvent
-	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, labels map[string]string, value any) {
-		events = append(events, telemetryEvent{name: name, labels: labels, value: value})
-	})
+	sink, rec := recordingSink()
 
 	core, logs := observer.New(zap.ErrorLevel)
 	c, s3c := newVerifyFixture(zap.New(core))
+	c.Metrics = sink
 	s3c.putObject("p/1/aaa.parquet", corruptPayload)
 
 	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
@@ -76,9 +72,9 @@ func TestVerifySourceChecksums_MutatedBytesRefuseMerge(t *testing.T) {
 	require.ErrorContains(t, err, expectedChecksum(sourcePayload), "the error must carry the stamped hash")
 	require.ErrorContains(t, err, expectedChecksum(corruptPayload), "the error must carry the recomputed hash")
 
-	require.Len(t, events, 1)
-	require.Equal(t, "parquet_checksum_mismatch_total", events[0].name)
-	require.Equal(t, map[string]string{"schema_id": "1"}, events[0].labels)
+	require.Len(t, rec.events, 1)
+	require.Equal(t, "parquet_checksum_mismatch_total", rec.events[0].Name)
+	require.Equal(t, map[string]string{"schema_id": "1"}, rec.events[0].Labels)
 
 	entries := logs.All()
 	require.Len(t, entries, 1, "a corrupt source must be reported exactly once")
@@ -105,13 +101,10 @@ func TestVerifySourceChecksums_UnstampedEntrySkipped(t *testing.T) {
 // Probe failure is not a verdict: a failed GET is transient infrastructure, so
 // it must never be reported as corruption.
 func TestVerifySourceChecksums_ProbeFailureIsNotAVerdict(t *testing.T) {
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-	var events []telemetryEvent
-	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, labels map[string]string, value any) {
-		events = append(events, telemetryEvent{name: name, labels: labels, value: value})
-	})
+	sink, rec := recordingSink()
 
 	c, s3c := newVerifyFixture(zap.NewNop())
+	c.Metrics = sink
 	s3c.getErr = errors.New("connection reset by peer")
 
 	err := c.verifySourceChecksums(context.Background(), 1, []manifest.FileEntry{
@@ -121,7 +114,7 @@ func TestVerifySourceChecksums_ProbeFailureIsNotAVerdict(t *testing.T) {
 	require.NotErrorIs(t, err, ErrSourceChecksumMismatch, "an unreadable object is not a corrupt one")
 	require.ErrorContains(t, err, "p/1/aaa.parquet")
 	require.ErrorContains(t, err, "connection reset by peer", "the cause must survive the wrap")
-	require.Empty(t, events, "a probe failure must not count as a mismatch")
+	require.Empty(t, rec.events, "a probe failure must not count as a mismatch")
 }
 
 // The opt-out (D2) and an unwired reader both disable the gate outright: no

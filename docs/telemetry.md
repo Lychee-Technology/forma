@@ -1,115 +1,118 @@
-# Telemetry: metric catalogue and emitter registration
+# Telemetry: the metric contract and how to receive it
 
-`internal/telemetry` is the metrics hook the module emits through. Every
-`Emit*` helper routes one catalogued metric to a process-wide emitter, which
-is a no-op until an entrypoint registers a backend. Before #423 no shipped
-binary registered one, so every counter was inert on every deployment; this
-page records the contract that ended that and how an operator turns a backend
-on.
+Forma is a library first. It emits nine metrics and chooses no backend for
+them: nothing in the module links Prometheus, OpenTelemetry, CloudWatch or
+any other telemetry SDK. An application that embeds Forma hands it a
+`forma.MetricEmitter` and adapts each `forma.Metric` onto whatever it already
+uses. Without one, Forma emits nothing (#423).
 
-## Metric catalogue (the label contract)
+## Receiving metrics from a library instance
 
-`internal/telemetry/catalogue.go` declares one `Descriptor` per metric:
+```go
+type MetricEmitter interface {
+    EmitMetric(ctx context.Context, m Metric)
+}
 
-| Field    | Meaning |
-|----------|---------|
-| `Name`   | The wire name, verbatim on every backend. Dashboards key on it, so it never carries a namespace prefix. |
-| `Kind`   | `counter`, `gauge` or `histogram`. Fixes the Go type of the emitted value (below). |
-| `Unit`   | `count`, `ratio` or `milliseconds`. Backends map it onto their own unit vocabulary. |
-| `Labels` | The exact, ordered set of label keys every emission carries. |
-| `Help`   | Human text a backend may publish. |
+type Metric struct {
+    Name   string            // wire name, e.g. "fed_query_latency_histogram"
+    Kind   MetricKind        // counter | gauge | histogram
+    Unit   MetricUnit        // count | ratio | milliseconds
+    Labels map[string]string // exactly the catalogued keys; a fresh map per emission
+    Value  float64           // counter: increment; gauge: last value; histogram: one observation
+}
+```
 
-The value contract per kind:
+Set one per Forma instance on `Config.Metrics.Emitter` (or with
+`forma.WithMetricEmitter`):
 
-| Kind        | Go value  | Semantics |
-|-------------|-----------|-----------|
-| `counter`   | `int64`   | A monotonic increment (usually `1`). |
-| `gauge`     | `float64` | The last observed value. |
-| `histogram` | `int64`   | One observation, in the descriptor's unit. |
+```go
+cfg := forma.DefaultConfig(registry)
+cfg.Metrics.Emitter = myEmitter // adapts forma.Metric onto your backend
+manager, err := factory.NewEntityManagerWithConfigContext(ctx, cfg, pool)
+```
 
-An emission whose name is not catalogued, whose label keys differ from the
-descriptor, or whose value has the wrong Go type is **dropped** by every
-backend: logged at Warn, counted under `forma_telemetry_dropped_total{reason}`
-by the Prometheus exporter, never served under a shape no dashboard expects,
-never a panic. `TestEveryEmitHelperIsInTheCatalogue` scans `telemetry.go` for
-every exported `Emit*` helper and fails unless each one emits a catalogued
-name with exactly its labels and value type, so the drop path is a safety net,
-not a workflow.
+Every metric that manager and its federated engine emit reaches
+`myEmitter`; a second manager built with another emitter reports only to
+that one; a manager built without one is silent. There is no process-global
+registration. `forma.MetricEmitterFunc` adapts a plain function, and
+`example_metrics_test.go` shows a complete adapter.
 
-**Adding a metric** therefore means: add a `Descriptor`, add the `Emit*`
-helper that references it, and add the helper to `helperCalls` in
-`catalogue_test.go`. No backend code changes; the mapping follows from the
-kind.
+`EmitMetric` runs synchronously on the goroutine doing the write, query or
+compaction pass, so an emitter must be cheap, non-blocking and safe for
+concurrent use. It is also the safety boundary: a panic inside `EmitMetric`
+is recovered and logged, and an emission that does not match its catalogue
+descriptor (a Forma bug) is dropped and logged. Telemetry never fails the
+operation that emitted.
 
-Catalogued today:
+A `compaction.Compactor` is built by hand rather than by the factory; it
+takes its sink through the exported `Metrics` field
+(`telemetry.NewSink(emitter)`). The shipped `cmd/tools compactor` does not
+set it yet; see #594.
 
-| Name | Kind | Labels | Emitted by |
-|------|------|--------|------------|
-| `fed_query_latency_histogram` | histogram (ms) | `stage` | federated query engine |
-| `fed_query_row_count` | counter | `source` | federated query engine |
-| `fed_query_pushdown_efficiency` | gauge (ratio) | `schema_id` | federated query engine |
-| `compaction_manifest_contract_violation_total` | counter | `schema_id` | compactor |
-| `compaction_dirty_ratio` | gauge (ratio) | `schema_id` | compactor |
-| `compaction_rewrite_pending_total` | counter | `schema_id` | compactor |
-| `compaction_rewrite_applied_total` | counter | `schema_id` | compactor |
-| `parquet_checksum_mismatch_total` | counter | `schema_id` | compactor (#347) |
-| `entity_report_only_validation_violation_total` | counter | `schema_id`, `schema_name`, `kind` | entity writes (#317) |
+## The catalogue (the label contract)
 
-## Backends
+`forma.MetricCatalogue()` returns one `MetricDescriptor` per metric — name,
+kind, unit, the exact ordered label keys, help text. An emitter that
+pre-registers instruments (a Prometheus vector needs its label names up
+front; an OTel instrument needs its kind and unit) builds them from it.
+Every label is bounded-cardinality by construction: a schema id or name, or
+a fixed enumeration.
 
-Two providers exist. Each is an adapter from the emitter signature onto one
-backend, built from the catalogue at construction.
+| Name | Kind | Unit | Labels | Emitted by |
+|------|------|------|--------|------------|
+| `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`) | federated query engine |
+| `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`) | federated query engine |
+| `fed_query_pushdown_efficiency` | gauge | ratio | `schema_id` | federated query engine |
+| `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
+| `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
+| `compaction_rewrite_pending_total` | counter | count | `schema_id` | compactor |
+| `parquet_checksum_mismatch_total` | counter | count | `schema_id` | compactor (#347) |
+| `compaction_rewrite_applied_total` | counter | count | `schema_id` | compactor (#188) |
+| `entity_report_only_validation_violation_total` | counter | count | `schema_id`, `schema_name`, `kind` (`required`, `constraint`) | entity writes (#317) |
 
-**`prometheus`** (`internal/telemetry/promexport`) builds one
-`CounterVec` / `GaugeVec` / `HistogramVec` per descriptor on a private
-registry, alongside the standard Go runtime and process collectors, and serves
-it as a pull-based scrape endpoint. Histogram buckets are millisecond-scaled
-(1 ms to 30 s). Only `cmd/server` can host the endpoint.
+Names are wire names: dashboards key on them verbatim, so they are never
+renamed or prefixed. **Adding a metric** means adding its descriptor to
+`metrics.go`, the `Emit*` helper on `internal/telemetry.Sink` that emits it,
+and a row in `helperCalls` in `internal/telemetry/telemetry_test.go`; the
+contract test there refuses a helper whose emission does not match its
+descriptor, and a helper with no row.
 
-**`emf`** (`internal/telemetry/emfexport`) writes one CloudWatch Embedded
-Metric Format line per emission to stdout. CloudWatch Logs extracts EMF from
-any log group it ingests — a Lambda function's, an ECS task's under the
-`awslogs` driver — into real CloudWatch metrics with no collector, sidecar,
-extension or extra dependency. Labels become the metric's single dimension
-set, in catalogue order; the kind maps onto `Count`, `None` (ratios) or
-`Milliseconds`. A namespace is mandatory.
+## The demo binaries
 
-OpenTelemetry is not a provider. Nothing in-tree needs it, and the OTel
-Prometheus exporter is itself built on the Prometheus client this module now
-carries. The catalogue makes an `otelexport` a mechanical addition if a
-deployment ever needs OTLP.
-
-## Turning it on
-
-Off by default: with no `METRICS_*` variable set, the emitter stays the no-op
-it has always been and nothing changes for an existing deployment.
-`bootstrap.MetricsConfigFromEnv` overlays these onto `forma.MetricsConfig`:
+`cmd/server` and `cmd/lambda` are reference entrypoints, so they get the
+simplest thing that makes every metric visible without a dependency: an
+opt-in stdout emitter.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `METRICS_ENABLED` | `false` | Register an emitter at startup. |
-| `METRICS_PROVIDER` | `prometheus` on `cmd/server`, `emf` on `cmd/lambda` | Which backend. |
-| `METRICS_PATH` | `/metrics` | Scrape path (Prometheus only). |
-| `METRICS_NAMESPACE` | `dataplane` | CloudWatch namespace (EMF only). Not applied to Prometheus names. |
+| `METRICS_STDOUT` | unset (off) | `true`/`1` writes every emitted metric as one JSON line on stdout. |
 
-`cmd/server` mounts the scrape handler on `METRICS_PATH` when the provider is
-`prometheus`, and writes EMF to stdout when it is `emf`. `cmd/lambda`
-supports `emf` only — a function has nothing a Prometheus server could scrape
-— so `METRICS_ENABLED=true` alone is enough there, and naming `prometheus` is
-a cold-start error. A misspelt provider is a startup error on both: a typo
-must not run silently inert, which is the condition #423 exists to end.
+Each line has a stable shape:
 
-The library layer follows the same rule: `forma.DefaultConfig` ships
-`Metrics.Enabled = false`. The field was never read before #423, so the flip
-changed nothing for anyone.
+```json
+{"type":"forma_metric","ts":"2026-09-19T06:00:00Z","name":"entity_report_only_validation_violation_total","kind":"counter","unit":"count","value":1,"labels":{"kind":"constraint","schema_id":"12","schema_name":"lead"}}
+```
+
+On Lambda the lines land in the function's log group like any other stdout.
+There is no `/metrics` endpoint, no registry, no provider selection and no
+startup failure path: a boolean cannot be misconfigured, and unset means
+nothing new is written. An operator who wants a real backend behind one of
+these binaries writes an adapter against `forma.MetricEmitter` in a fork or
+wrapper; Forma does not carry one.
+
+## `MetricsConfig` legacy fields
+
+`forma.MetricsConfig.Emitter` is the only field Forma reads. Every other
+field (`Enabled`, `Provider`, `Endpoint`, `CollectionInterval`, the
+`Enable*` switches, `Namespace`, `Labels`, `MaxSamples`) predates #423, was
+never read, still is not, and keeps its default (`Enabled: true`,
+`Provider: "prometheus"`, …) so existing configs round-trip unchanged. In particular an emitter is not gated on `Enabled`:
+`WithMetrics(MetricsConfig{Emitter: e})` would zero `Enabled` and silently
+reproduce the "configured but inert" condition #423 ended.
 
 ## What stays log-only
 
-- The #317 milestone log line ("report-only schema validation violations
-  reached a milestone") is unchanged. It is the default-visible signal for a
-  deployment that does not scrape, and `docs/error-handling.md` already
-  describes the counter as emitter-dependent.
-- `cmd/tools` (the `compactor` subcommand emits the `compaction_*` and
-  `parquet_checksum_mismatch_total` counters) registers no emitter yet. A
-  short-lived CLI cannot be scraped; the EMF provider is the natural fit for a
-  cron-driven run whose stdout lands in CloudWatch, and wiring it is #594.
+The #317 milestone log line ("report-only schema validation violations
+reached a milestone") is unchanged: it is the default-visible signal for a
+deployment with no emitter, and `docs/error-handling.md` describes the
+counter as emitter-dependent.

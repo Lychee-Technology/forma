@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
-	"github.com/lychee-technology/forma/internal/telemetry"
 )
 
 // ErrSchemaMetadataCacheRequired marks a federated query that cannot build a
@@ -297,7 +296,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	}
 
 	// Emit metric for dirty set size
-	telemetry.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
+	e.metrics.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
 
 	// Record in execution plan
 	planCtx.recordDirtyIDSource(tables.ChangeLog, q.SchemaID, len(dirtyIDs), sqlgen.FederatedQueryHasHot(q))
@@ -423,10 +422,10 @@ func (e *DBFederatedQueryEngine) finalizeDuckDBExecutionPlan(
 	planCtx.opts.ExecutionPlan.Timings["total"] = time.Since(planCtx.startTotal).Milliseconds()
 
 	// Emit telemetry
-	telemetry.EmitLatency(ctx, "execution", qMs)
+	e.metrics.EmitLatency(ctx, "execution", qMs)
 	streamMs := max(time.Since(planCtx.startQuery).Milliseconds()-qMs, 0)
-	telemetry.EmitLatency(ctx, "streaming", streamMs)
-	telemetry.EmitRowCount(ctx, "duckdb", rowCount)
+	e.metrics.EmitLatency(ctx, "streaming", streamMs)
+	e.metrics.EmitRowCount(ctx, "duckdb", rowCount)
 
 	// Compute pushdown efficiency
 	pgRows := computePgRowCount(planCtx.opts.ExecutionPlan, dirtyIDs)
@@ -438,7 +437,7 @@ func (e *DBFederatedQueryEngine) finalizeDuckDBExecutionPlan(
 		finalRows = 1
 	}
 	ratio := float64(pgRows) / float64(finalRows)
-	telemetry.EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
+	e.metrics.EmitPushdownEfficiency(ctx, 0, ratio) // schemaID not available here, use 0
 
 	planCtx.opts.ExecutionPlan.Notes = append(planCtx.opts.ExecutionPlan.Notes,
 		fmt.Sprintf("pushdown_efficiency=%.3f (pg_rows=%d final_rows=%d)", ratio, pgRows, finalRows))

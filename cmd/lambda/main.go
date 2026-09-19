@@ -35,8 +35,9 @@ type lambdaRuntime struct {
 
 func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRuntime, error) {
 	var (
-		dbPool *pgxpool.Pool
-		err    error
+		dbPool         *pgxpool.Pool
+		err            error
+		startupTimeout time.Duration
 	)
 
 	// Get configuration from environment variables
@@ -46,18 +47,34 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	}
 	sugar.Infof("schemaDir: %s", schemaDir)
 
-	// #423: register the telemetry emitter before any I/O so a misconfigured
-	// provider fails the cold start and the first request already reports.
-	if err := installLambdaMetrics(sugar.Desugar()); err != nil {
-		return nil, fmt.Errorf("failed to register telemetry emitter: %w", err)
-	}
-
 	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
 	dsqlEndpoint := bootstrap.Env("DSQL_ENDPOINT", "")
+	var dbConfig forma.DatabaseConfig
 	if dsqlEndpoint != "" {
+		// Aurora DSQL mode - use IAM authentication
 		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
+		startupTimeout = time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
+	} else {
+		// Traditional PostgreSQL mode - use password authentication
+		dbConfig = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+			Host:                   "localhost",
+			Port:                   5432,
+			Database:               "forma",
+			Username:               "postgres",
+			Password:               "",
+			SSLMode:                "require",
+			Schema:                 "public",
+			MaxConnections:         10,
+			MaxIdleConns:           2,
+			ConnMaxLifetimeSeconds: 300,
+			ConnMaxIdleTimeSeconds: 60,
+			TimeoutSeconds:         30,
+		})
+		startupTimeout = dbConfig.Timeout
+		if startupTimeout <= 0 {
+			startupTimeout = 30 * time.Second
+		}
 	}
-	dbConfig, startupTimeout := lambdaDatabaseConfig(dsqlEndpoint)
 
 	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
@@ -112,36 +129,6 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	}, nil
 }
 
-// lambdaDatabaseConfig resolves the Postgres connection settings and the
-// startup timeout. In Aurora DSQL mode (endpoint set) the pool is built by
-// createDSQLPool from IAM credentials, so only the timeout is read here; in
-// traditional mode both come from the DB_* environment. Extracted from
-// bootstrapLambda to keep that function inside the 100-line cap.
-func lambdaDatabaseConfig(dsqlEndpoint string) (forma.DatabaseConfig, time.Duration) {
-	if dsqlEndpoint != "" {
-		return forma.DatabaseConfig{}, time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
-	}
-	dbConfig := bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
-		Host:                   "localhost",
-		Port:                   5432,
-		Database:               "forma",
-		Username:               "postgres",
-		Password:               "",
-		SSLMode:                "require",
-		Schema:                 "public",
-		MaxConnections:         10,
-		MaxIdleConns:           2,
-		ConnMaxLifetimeSeconds: 300,
-		ConnMaxIdleTimeSeconds: 60,
-		TimeoutSeconds:         30,
-	})
-	startupTimeout := dbConfig.Timeout
-	if startupTimeout <= 0 {
-		startupTimeout = 30 * time.Second
-	}
-	return dbConfig, startupTimeout
-}
-
 // lambdaFormaConfig assembles the forma.Config this entry point starts with.
 // Extracted from bootstrapLambda to keep that function inside the 100-line cap.
 func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNames forma.TableNames) *forma.Config {
@@ -157,6 +144,11 @@ func lambdaFormaConfig(registry forma.SchemaRegistry, schemaDir string, tableNam
 	// Database schema used by factory table discovery.
 	config.Database.Schema = bootstrap.Env("DB_SCHEMA", config.Database.Schema)
 	config.Database.TableNames = tableNames
+
+	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
+	// on stdout, which Lambda forwards to the function's log group (#423);
+	// unset, Forma's no-op default emits nothing.
+	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
 	return config
 }
 

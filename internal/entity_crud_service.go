@@ -6,6 +6,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/telemetry"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -27,6 +28,7 @@ type entityCRUDService struct {
 	validator             *schemavalidate.Validator
 	validateUpdatesStrict bool
 	reportOnlyStats       *reportOnlyStats
+	metrics               *telemetry.Sink
 }
 
 func newEntityCRUDService(em *entityManager) *entityCRUDService {
@@ -45,6 +47,7 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 		validator:             em.validator,
 		validateUpdatesStrict: em.validateUpdatesStrict,
 		reportOnlyStats:       em.reportOnlyStats,
+		metrics:               em.metrics,
 	}
 }
 
@@ -113,6 +116,7 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		enforce:       true,
 		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 		stats:         s.reportOnlyStats,
+		metrics:       s.metrics,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
@@ -273,6 +277,7 @@ func (s *entityCRUDService) mergeUpdateRecord(
 		enforce:       s.validateUpdatesStrict,
 		relationRoots: s.relations.RelationRootNames(req.SchemaName),
 		stats:         s.reportOnlyStats,
+		metrics:       s.metrics,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to validate update payload: %w", err)
 	}

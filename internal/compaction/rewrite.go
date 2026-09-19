@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -126,7 +125,7 @@ func (c *Compactor) runRewrite(
 	// unlisted orphans for manifest-reconcile, whose gcSchema sighting-state
 	// grace exists exactly for this window (base/tmp shapes via --gc, delta
 	// shapes via --repair --gc). files_merged below counts them.
-	telemetry.EmitCompactionRewriteApplied(ctx, schemaID)
+	c.Metrics.EmitCompactionRewriteApplied(ctx, schemaID)
 	c.Logger.Info("compaction rewrite completed",
 		zap.Int16("schema_id", schemaID),
 		zap.Int64("version", m.Version),

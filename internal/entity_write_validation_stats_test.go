@@ -97,11 +97,7 @@ func TestReportOnlyKindIsClassifiedBeforeDecoration(t *testing.T) {
 		classifyViolation(explainStrippedRelationRoots(verr, "test", []string{"missing properties"})),
 		"the decorated error genuinely misclassifies, which is what the ordering protects against")
 
-	var kinds []string
-	telemetry.RegisterTelemetryEmitter(func(_ context.Context, _ string, labels map[string]string, _ any) {
-		kinds = append(kinds, labels["kind"])
-	})
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
+	rec := &metricRecorder{}
 	core, logs := observer.New(zap.WarnLevel)
 	t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
 
@@ -112,8 +108,13 @@ func TestReportOnlyKindIsClassifiedBeforeDecoration(t *testing.T) {
 		data:          payload,
 		relationRoots: []string{"missing properties"},
 		enforce:       false,
+		metrics:       telemetry.NewSink(rec),
 	}))
 
+	var kinds []string
+	for _, m := range rec.events {
+		kinds = append(kinds, m.Labels["kind"])
+	}
 	require.Equal(t, []string{violationKindConstraint}, kinds,
 		"an enum violation is a constraint however the diagnosis is worded")
 	perWrite := logs.FilterMessageSnippet("violates the entity JSON schema").All()

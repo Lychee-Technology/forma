@@ -16,7 +16,6 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -193,14 +192,6 @@ func newRewireableCompactor(provider FileProvider, merger Merger, s3c cdc.S3Obje
 }
 
 func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
-	t.Cleanup(func() { telemetry.RegisterTelemetryEmitter(nil) })
-	var applied int
-	telemetry.RegisterTelemetryEmitter(func(_ context.Context, name string, _ map[string]string, _ any) {
-		if name == "compaction_rewrite_applied_total" {
-			applied++
-		}
-	})
-
 	provider := &mockProvider{manifest: rewriteEligibleManifest(), etag: "etag-1"}
 	merger := &fakeMerger{stats: MergeStats{
 		RowsIn: 1100, RowsOut: 950,
@@ -210,6 +201,8 @@ func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
 	s3c := &fakeObjectS3{size: 4096}
 
 	c := newRewireableCompactor(provider, merger, s3c)
+	sink, rec := recordingSink()
+	c.Metrics = sink
 	result, err := c.RunOnce(context.Background())
 	require.NoError(t, err)
 
@@ -246,6 +239,12 @@ func TestCompactor_Rewrite_MergesAndSplicesManifest(t *testing.T) {
 	// the in-flight-reader window as unlisted orphans until manifest-reconcile
 	// --gc reclaims them past the grace period.
 	require.Empty(t, nonTmpDeletes(s3c.deletes))
+	var applied int
+	for _, m := range rec.events {
+		if m.Name == "compaction_rewrite_applied_total" {
+			applied++
+		}
+	}
 	require.Equal(t, 1, applied)
 }
 
