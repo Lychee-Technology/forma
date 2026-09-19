@@ -201,25 +201,52 @@ func TestDateTime_DoubleColumnFitIsTheFloat64ExactRange(t *testing.T) {
 	}
 }
 
-// The read side never invents an instant: a float64 image that is not a
-// whole number inside the int64 range (a legacy row written before #582, or
-// a corrupted one) is a plain consistency error, not the wrapped MinInt64
-// int64() used to return for 2^63.
-func TestDateTime_ReadRefusesAnImageNamingNoInstant(t *testing.T) {
-	for _, v := range []float64{math.MaxInt64, -1e300, 1e300, 1000.5, math.NaN(), math.Inf(1)} {
-		t.Run(formatFitValue(v), func(t *testing.T) {
+// The read side admits exactly the images the write side admits (#587
+// review): a float64 image that is not a whole number inside the int64
+// range names no instant, and one past 2^53 (a legacy row written before
+// #582, or a hand-edited one) is a plain consistency error naming the rule,
+// not the wrapped MinInt64 int64() used to return for 2^63 or a
+// tier-dependent instant. Every image that reads is then rewritable: an
+// update reconstructs the whole document through ToPersistentRecord, so an
+// image the read accepted and checkEAVFit refused would fail an update that
+// never mentioned the attribute.
+func TestDateTime_ReadAdmitsExactlyTheImagesTheWriteAdmits(t *testing.T) {
+	unbound := forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}
+	refused := map[float64]string{
+		math.MaxInt64: "names no epoch millisecond instant", -1e300: "names no epoch millisecond instant", 1e300: "names no epoch millisecond instant",
+		1000.5: "names no epoch millisecond instant", math.NaN(): "names no epoch millisecond instant", math.Inf(1): "names no epoch millisecond instant",
+		9007199254740994:  "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+		-9007199254740994: "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+		1 << 60:           "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+		math.MinInt64:     "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+	}
+	for v, rule := range refused {
+		t.Run("refused "+formatFitValue(v), func(t *testing.T) {
 			image := v
 			got, err := extractValueFromEAVRecord(model.EAVRecord{AttrID: 9, ValueNumeric: &image}, forma.ValueTypeDateTime)
 			require.Error(t, err)
 			require.Nil(t, got)
-			require.Contains(t, err.Error(), "names no epoch millisecond instant")
+			require.Contains(t, err.Error(), rule)
+			require.NotErrorIs(t, err, forma.ErrInvalidInput, "a stored image is the operator's, not the caller's")
+			// The write side refuses the same image, so the two sets agree.
+			require.Error(t, checkStorageFit(&model.EAVRecord{AttrID: 9, ValueNumeric: &image}, unbound))
 		})
 	}
-	// A whole image inside the range reads as its instant, sidecar or not.
-	for _, ms := range []int64{9007199254740992, -9007199254740992, math.MinInt64, 0} {
-		image := float64(ms)
-		got, err := extractValueFromEAVRecord(model.EAVRecord{AttrID: 9, ValueNumeric: &image}, forma.ValueTypeDate)
-		require.NoError(t, err)
-		require.Equal(t, time.UnixMilli(ms).UTC(), got)
+	for _, ms := range eavExactMillis {
+		t.Run("rewritable "+strconv.FormatInt(ms, 10), func(t *testing.T) {
+			image := float64(ms)
+			got, err := extractValueFromEAVRecord(model.EAVRecord{AttrID: 9, ValueNumeric: &image}, forma.ValueTypeDate)
+			require.NoError(t, err)
+			require.Equal(t, time.UnixMilli(ms).UTC(), got)
+			// Feeding the instant back through the write funnel, as an update
+			// does, is admitted and lands as the identical image.
+			var rec model.EAVRecord
+			set, err := populateTypedValue(&rec, "seenAt", got, unbound)
+			require.NoError(t, err)
+			require.True(t, set)
+			record := newEmptyPersistentRecord()
+			require.NoError(t, storeInEAV(record, rec, forma.ValueTypeDateTime))
+			require.Equal(t, image, *record.OtherAttributes[0].ValueNumeric)
+		})
 	}
 }

@@ -124,9 +124,17 @@ func TestEAVDateRoundTripIntegration(t *testing.T) {
 		}
 		// A row written past the guard (before #582, or by hand) is a read
 		// error, never an instant the writer did not name: 2^63 used to
-		// wrap to MinInt64 through int64().
+		// wrap to MinInt64 through int64(), and 2^53+2 is a whole float64
+		// the write side refuses, so reading it would leave a row an
+		// unrelated update cannot rewrite (#587 review).
 		t.Run(name+" legacy image is refused on read", func(t *testing.T) {
-			for _, image := range []string{"9223372036854775807", "1e300", "1000.5"} {
+			for image, rule := range map[string]string{
+				"9223372036854775807": "names no epoch millisecond instant",
+				"1e300":               "names no epoch millisecond instant",
+				"1000.5":              "names no epoch millisecond instant",
+				"9007199254740994":    "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+				"-9007199254740994":   "outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)",
+			} {
 				rowID := uuid.New()
 				_, err := pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at) VALUES (301, $1, 1, 1)", sanitizeIdentifier(f.tables.EntityMain)), rowID)
 				require.NoError(t, err)
@@ -135,7 +143,8 @@ func TestEAVDateRoundTripIntegration(t *testing.T) {
 				stored, err := f.repo.GetPersistentRecord(ctx, f.tables, 301, rowID)
 				require.NoError(t, err)
 				_, err = f.tr.FromPersistentRecord(ctx, stored)
-				require.ErrorContains(t, err, "names no epoch millisecond instant", "image %s", image)
+				require.ErrorContains(t, err, rule, "image %s", image)
+				require.NotErrorIs(t, err, forma.ErrInvalidInput, "image %s is the operator's, not the caller's", image)
 			}
 		})
 	}

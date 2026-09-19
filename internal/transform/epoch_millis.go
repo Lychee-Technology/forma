@@ -17,7 +17,8 @@ import (
 // carries it in ValueInt64 and derives the float64 ValueNumeric image from
 // it. Each physical destination then admits the subset of int64 values it
 // persists and reads back unchanged (invariant C), through one function the
-// fit check and the store share:
+// fit check and the store share, and the read side of each accepts exactly
+// that subset, so a row that reads can always be rewritten:
 //
 //   - eav_data.value_numeric and double_* columns keep a float64 image, exact
 //     for |ms| <= 2^53 (checkFloat64ImageFit);
@@ -104,16 +105,28 @@ func unixMillisToTimeUTC(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()
 }
 
-// unixMillisFloat64ToTimeUTC is the read side's conversion of a persisted
-// float64 image (eav_data.value_numeric, a double_* column). The image of an
-// admitted value is a whole number within 2^53 (checkFloat64ImageFit), so it
-// converts exactly; a legacy row outside that shape is a storage consistency
-// error rather than the wrapped or rounded instant int64() would invent.
+// unixMillisFloat64ToTimeUTC is the read side's inverse of float64ImageOf:
+// the instant a persisted float64 image (eav_data.value_numeric, a double_*
+// column) names. It admits exactly the images float64ImageOf writes, a whole
+// number with |ms| <= 2^53, so what a float64 destination reads back is what
+// it admits, and a row that reads can always be rewritten: an update
+// reconstructs the whole document and re-enters the write funnel, so an image
+// the read accepted and the write refused would fail an update that never
+// mentioned the attribute, as the caller's fault (#587 review). An image
+// outside that set (a row written before #582, or by hand) is a storage
+// consistency error naming the rule it breaks, never the wrapped, rounded or
+// tier-dependent instant int64() would invent; the migration guide's census
+// finds such rows before the upgrade.
 func unixMillisFloat64ToTimeUTC(value float64) (time.Time, error) {
 	if !isWholeMillis(value) || !inInt64Range(value) {
 		return time.Time{}, fmt.Errorf("stored value %s names no epoch millisecond instant", describeEpochMillis(value))
 	}
-	return unixMillisToTimeUTC(int64(value)), nil
+	ms := int64(value)
+	if !fitsFloat64Image(ms) {
+		return time.Time{}, fmt.Errorf("stored value %s is outside the epoch milliseconds a float64 image keeps exactly (up to %d, 2^53); rewrite the row or bind the attribute to a bigint column (docs/schema-consistency-migration.md)",
+			describeEpochMillis(value), maxFloat64ImageMillis)
+	}
+	return unixMillisToTimeUTC(ms), nil
 }
 
 // maxFloat64ImageMillis is the largest magnitude a float64 image of epoch
@@ -124,12 +137,20 @@ func unixMillisFloat64ToTimeUTC(value float64) (time.Time, error) {
 // can differ from the value, so the contiguous exact set ends here (#582).
 const maxFloat64ImageMillis = int64(1) << 53
 
+// fitsFloat64Image is the one statement of that range: the write side
+// (checkFloat64ImageFit) admits a value by it and the read side
+// (unixMillisFloat64ToTimeUTC) accepts a persisted image by it, so the two
+// cannot drift apart.
+func fitsFloat64Image(ms int64) bool {
+	return ms >= -maxFloat64ImageMillis && ms <= maxFloat64ImageMillis
+}
+
 // checkFloat64ImageFit refuses a value whose float64 image would not read
 // back as the same instant from dest ("eav_data value_numeric" or a bound
 // double column). The message names the millis, the instant and the way
 // out, and is published by the funnel.
 func checkFloat64ImageFit(ms int64, vt forma.ValueType, dest string) error {
-	if ms >= -maxFloat64ImageMillis && ms <= maxFloat64ImageMillis {
+	if fitsFloat64Image(ms) {
 		return nil
 	}
 	return fmt.Errorf("%s value %d (%s) cannot be stored in %s, which keeps epoch milliseconds exactly up to %d (2^53); bind the attribute to a bigint column for the full int64 range",

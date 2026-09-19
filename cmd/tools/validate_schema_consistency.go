@@ -194,6 +194,12 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *sc
 	}
 	issues = append(issues, listIssues...)
 
+	dateIssues, err := v.checkEAVDateImages(ctx, cache)
+	if err != nil {
+		return nil, err
+	}
+	issues = append(issues, dateIssues...)
+
 	sort.Slice(issues, func(i, j int) bool {
 		if issues[i].category == issues[j].category {
 			return issues[i].details < issues[j].details

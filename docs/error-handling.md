@@ -644,6 +644,16 @@ Examples:
 
 - duplicate schema IDs or duplicate attribute IDs during metadata loading
 - storage column mismatches such as a text attribute stored in `value_numeric`
+- a `date`/`datetime` float64 image (`eav_data.value_numeric`, a `double_*`
+  column) the write path would not admit: not a whole number, or past |2^53|
+  epoch millis (#582). The read side accepts exactly the set the write side
+  admits, so a row that reads can always be rewritten by an update that never
+  mentions the attribute; a row written before #582 outside that set fails
+  every read with `stored value 9007199254740994 (…) is outside the epoch
+  milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53)`
+  rather than an invented instant, and is never modified by the server.
+  `validate-schema-consistency` lists such rows before the upgrade
+  ([migration](./schema-consistency-migration.md#date-images-the-read-path-refuses-582)).
 
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.
