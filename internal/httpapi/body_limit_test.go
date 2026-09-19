@@ -206,6 +206,9 @@ func TestBodyReadFailureIsNotMalformedJSON(t *testing.T) {
 
 	timeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
 	reset := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
+	// net/http's framing errors are untyped prose; this is its spelling for
+	// a chunk-size line that is not hexadecimal.
+	framing := errors.New("http: invalid byte in chunk length")
 	cases := []struct {
 		name       string
 		err        error
@@ -216,6 +219,11 @@ func TestBodyReadFailureIsNotMalformedJSON(t *testing.T) {
 	}{
 		{"read timeout", timeout, http.StatusRequestTimeout, errorClassTimeout, "request timed out", true},
 		{"connection reset", reset, http.StatusInternalServerError, errorClassInternal, "internal error", false},
+		{"truncated body", io.ErrUnexpectedEOF, http.StatusInternalServerError, errorClassInternal, "internal error", false},
+		// Malformed framing is the caller's request, not the transport's
+		// failure: a disclosed 400 authored here, with net/http's prose kept
+		// as operator detail (#465 review).
+		{"malformed framing", framing, http.StatusBadRequest, "", "read request body: malformed request body", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,11 +241,14 @@ func TestBodyReadFailureIsNotMalformedJSON(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("body is not valid JSON: %v", err)
 			}
+			// Every case carries an error_id: the redacted branch always
+			// mints one, and the framing 400 withholds net/http's prose as
+			// operator detail, which mints one too (#361).
 			if resp.Error != tc.wantMsg || resp.ErrorClass != tc.wantClass || resp.ErrorID == "" {
-				t.Fatalf("a transport failure must take the redacted branch: %+v", resp)
+				t.Fatalf("unexpected body for a %s: %+v", tc.name, resp)
 			}
-			if strings.Contains(rec.Body.String(), "tcp") {
-				t.Fatalf("network prose reached the body: %s", rec.Body.String())
+			if strings.Contains(rec.Body.String(), "tcp") || strings.Contains(rec.Body.String(), "chunk") {
+				t.Fatalf("net/http prose reached the body: %s", rec.Body.String())
 			}
 			if closed := rec.Header().Get("Connection") == "close"; closed != tc.wantClosed {
 				t.Fatalf("Connection: close = %v, want %v", closed, tc.wantClosed)
@@ -366,5 +377,98 @@ func TestDeadlineExceededAnswers504(t *testing.T) {
 	}
 	if resp.Error != "request timed out" || resp.ErrorClass != errorClassTimeout || resp.ErrorID == "" {
 		t.Fatalf("unexpected timeout body: %+v", resp)
+	}
+}
+
+// TestMalformedPrefixOverTheCapIsStill413 pins the #465 review finding: the
+// cap is a verdict on the whole body, so it must not depend on JSON
+// validity. A syntax error under the cap used to answer 400 at once, leaving
+// the bytes past the cap unread; now the capped stream is read to its end
+// first and the cap outranks the parse error. When the whole malformed body
+// fits under the cap, the parse error stands with encoding/json's prose.
+func TestMalformedPrefixOverTheCapIsStill413(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	const limit = 64
+	malformed := `{"schema_name" x`
+	cases := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantErr  string
+	}{
+		{"malformed prefix then over the cap", malformed + strings.Repeat(" ", 1000), http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("request body too large: request body exceeds %d bytes", limit)},
+		{"malformed body under the cap", malformed, http.StatusBadRequest,
+			"invalid json body: invalid character 'x' after object key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newParseProbeManager()
+			srv := NewServer(manager, Options{MaxBodyBytes: limit})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("expected %d, got %d; body: %s", tc.wantCode, rec.Code, rec.Body.String())
+			}
+			var resp APIResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("body is not valid JSON: %v", err)
+			}
+			if resp.Error != tc.wantErr {
+				t.Fatalf("body %q, want %q", resp.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestMalformedChunkFramingAnswers400 is the real-connection form of the
+// framing case: a chunked POST whose chunk-size line is not hexadecimal.
+// net/http raises the framing error from r.Body.Read inside readJSONBody, and
+// the answer is the caller's 400, not a redacted 500 (#465 review).
+func TestMalformedChunkFramingAnswers400(t *testing.T) {
+	restore := zap.ReplaceGlobals(zap.NewNop())
+	defer restore()
+
+	manager := newParseProbeManager()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: NewServer(manager, Options{}).Handler()}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	raw := "POST /api/v1/advanced_query HTTP/1.1\r\nHost: forma\r\nContent-Type: application/json\r\n" +
+		"Transfer-Encoding: chunked\r\n\r\nZ\r\n{}\r\n0\r\n\r\n"
+	if _, err := io.WriteString(conn, raw); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no response to the malformed chunk: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if apiResp.Error != "read request body: malformed request body" || apiResp.ErrorClass != "" {
+		t.Fatalf("unexpected 400 body: %+v", apiResp)
+	}
+	if manager.advancedReq != nil {
+		t.Fatalf("a malformed body reached the manager")
 	}
 }

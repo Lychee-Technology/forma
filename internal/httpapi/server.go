@@ -198,20 +198,24 @@ func parseUUID(s string) (uuid.UUID, error) {
 //
 // The body is read through http.MaxBytesReader under the server's body limit
 // (#465), so a body past the cap fails with *http.MaxBytesError before the
-// decoder materializes it; respondBodyError turns that into a 413. Decode
-// stops at the end of the first JSON value, so the helper then drains the
-// capped stream to EOF (drainBody): bytes after the value still count
-// against the cap, and trailing data under the cap is refused as invalid
-// input rather than silently ignored. Underneath the cap sits bodyReader,
-// which tags the transport's own failures so a read timeout is answered as
-// one instead of as malformed JSON.
+// decoder materializes it; respondBodyError turns that into a 413. The cap
+// is a verdict on the whole body, so the capped stream is always read to its
+// terminal result before an answer is chosen: after a successful decode,
+// which stops at the end of the first JSON value, drainBody reads the rest
+// (bytes after the value still count against the cap, and trailing data
+// under the cap is refused as invalid input rather than silently ignored);
+// after a failed decode, settleDecodeError reads the rest and lets the cap
+// outrank the parse error, so a malformed prefix cannot turn a documented
+// 413 into a 400. Underneath the cap sits bodyReader, which tags the body's
+// own read failures so a read timeout or malformed framing is answered as
+// such instead of as malformed JSON.
 func (s *Server) readJSONBody(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
 	body := http.MaxBytesReader(w, bodyReader{ReadCloser: r.Body}, s.bodyLimit())
 	dec := json.NewDecoder(body)
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
-		return err
+		return settleDecodeError(err, body)
 	}
 	return drainBody(io.MultiReader(dec.Buffered(), body))
 }
