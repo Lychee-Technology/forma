@@ -46,8 +46,9 @@ type duckDBRowsIterator interface {
 // A read failure attributed to specific corrupt parquet objects is retried
 // exactly once against the readable remainder (#251), so one call can issue two
 // scans plus a per-object verification drain — worth knowing when sizing the
-// caller's deadline. The execution plan describes only the pass that produced
-// the returned page.
+// caller's deadline. The execution plan and the fed_query_* metrics describe
+// only the pass that produced the returned page: the failed pass is rewound
+// from the plan and emits no metric sample at all.
 func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -256,7 +257,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, src.paths, src.graceCutoffMs, src.cold, planCtx)
+	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(tables, q, dirtyIDs, attributeOrders, limit, offset, src.paths, src.graceCutoffMs, src.cold, planCtx)
 	if err != nil {
 		return 0, fmt.Errorf("build duckdb federated query: %w", err)
 	}
@@ -271,6 +272,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		parquetPaths:    src.paths,
 		pathsFromSource: src.fromSource,
 		dirtyIDs:        dirtyIDs,
+		translateMs:     translateMs,
 		probe:           probe,
 	}, rowHandler, planCtx)
 }
@@ -294,9 +296,10 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 		return nil, fmt.Errorf("fetch dirty ids: %w: %w", ErrPostgresReadFailed, err)
 	}
 
-	// Emit metric for dirty set size
-	e.metrics.EmitRowCount(ctx, "pg", int64(len(dirtyIDs)))
-
+	// The dirty-set size feeds fed_query_row_count{source="pg"}, but it is
+	// emitted with the rest of the pass's series once DuckDB has succeeded
+	// (emitDuckDBScanMetrics), not here: a pass that fails after this point
+	// must leave no sample, and the #251 retry must not count twice.
 	// Record in execution plan
 	planCtx.recordDirtyIDSource(tables.ChangeLog, q.SchemaID, len(dirtyIDs), sqlgen.FederatedQueryHasHot(q))
 

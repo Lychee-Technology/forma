@@ -96,7 +96,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
 		Labels: []string{"source"},
-		Help:   "Rows contributed to federated query results per source (pg, duckdb).",
+		Help:   "Rows handled by one successful federated query pass, per source: pg is the size of the dirty set fetched from the Postgres change_log for the anti-join (the hot rows that override their S3 copies), duckdb is the row count returned by the merged DuckDB scan.",
 	},
 	{
 		Name:   "fed_query_pushdown_efficiency",

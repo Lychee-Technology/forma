@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -286,6 +287,94 @@ func TestPushdownEfficiencyDenominatorFallbacks(t *testing.T) {
 			ratio, finalRows := pushdownEfficiency(tc.outcome)
 			require.InDelta(t, tc.ratio, ratio, 1e-9)
 			require.Equal(t, tc.finalRows, finalRows)
+		})
+	}
+}
+
+// newRetryMetricsEngine is the corrupt-parquet retry seam's engine (see
+// corrupt_retry_seam_test.go) with a metric emitter attached, so the metric
+// stream of a failed-then-retried query can be observed end to end.
+func newRetryMetricsEngine(t *testing.T, duck DuckDBQueryExecutor, paths []string, rec *metricRecorder) *DBFederatedQueryEngine {
+	t.Helper()
+	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{},
+		&fakeDirtyIDFetcher{ids: []uuid.UUID{uuid.New(), uuid.New()}}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
+		WithParquetSource(&fakeParquetSource{paths: paths}), WithMetricEmitter(rec))
+}
+
+func retryTables() model.StorageTables {
+	return model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+}
+
+// TestEngineRetriedQueryEmitsOneCompleteMetricSet pins the PR #595 review's
+// medium finding: the fed_query_* series describe successful passes, so a
+// query whose first pass fails on a corrupt object and is answered by the
+// #251 retry produces exactly one sample per series, all from the retry.
+// Before the fix the dirty-set count and the translation latency were
+// emitted where they were measured, ahead of DuckDB, so the failed pass
+// contributed a second pg and translation sample while the four post-scan
+// series were emitted once.
+func TestEngineRetriedQueryEmitsOneCompleteMetricSet(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	rec := &metricRecorder{}
+	duck := &retryFakeDuck{passes: []retryPass{
+		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+	}}
+	e := newRetryMetricsEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1}, rec)
+
+	_, err := e.Query(context.Background(), retryTables(), coldTierQuery(), nil)
+	require.NoError(t, err)
+	require.Len(t, duck.mainSQL, 2, "the seam must have run the failed pass and the retry")
+
+	require.Equal(t, everyFedQuerySeries, rec.names(),
+		"one logical query answered by the retry is one sample per series")
+	requireCataloguedEmissions(t, rec)
+}
+
+// TestEngineFailedPassEmitsNoMetrics: a pass that never succeeds leaves no
+// partial telemetry, whichever stage it failed at. The dirty set is fetched
+// and the SQL rendered before DuckDB runs, so without the deferred emission a
+// render or execute failure still published pg and translation samples that
+// no execution, streaming or duckdb sample ever followed.
+func TestEngineFailedPassEmitsNoMetrics(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	for name, tc := range map[string]struct {
+		duck     DuckDBQueryExecutor
+		paths    []string
+		schemaID int16
+	}{
+		"duckdb execute fails": {
+			duck:     &fakeDuckDBExecutor{err: errors.New("duckdb down")},
+			paths:    []string{retryKeptPathA},
+			schemaID: coldPlanCacheSchemaID,
+		},
+		"retry fails too": {
+			duck: &retryFakeDuck{passes: []retryPass{
+				{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
+				{midStreamFail: true, drainFails: []string{retryCorruptPath2}},
+			}},
+			paths:    []string{retryKeptPathA, retryCorruptPath1, retryCorruptPath2},
+			schemaID: coldPlanCacheSchemaID,
+		},
+		"render fails before duckdb": {
+			duck:     &retryFakeDuck{passes: []retryPass{{}}},
+			paths:    []string{retryKeptPathA},
+			schemaID: 9, // no metadata cache registered: ErrSchemaMetadataCacheRequired at render
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := &metricRecorder{}
+			e := newRetryMetricsEngine(t, tc.duck, tc.paths, rec)
+			q := coldTierQuery()
+			q.SchemaID = tc.schemaID
+
+			_, err := e.Query(context.Background(), retryTables(), q, nil)
+			require.Error(t, err)
+			require.Empty(t, rec.events, "a failed query must not publish partial federated telemetry")
 		})
 	}
 }

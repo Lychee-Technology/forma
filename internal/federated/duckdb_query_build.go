@@ -1,7 +1,6 @@
 package federated
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,8 +20,11 @@ import (
 // Pure move from duckdb_query.go (#184 review round; split seam per #220).
 
 // buildDuckDBQueryWithPlan builds the DuckDB query with execution plan recording.
+//
+// The returned translation time is not emitted here: the fed_query_* series
+// are reported as one set per successful pass by emitDuckDBScanMetrics, so
+// a render that precedes a failed or retried DuckDB pass leaves no sample.
 func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
-	ctx context.Context,
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
 	dirtyIDs []uuid.UUID,
@@ -88,14 +90,11 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
 	// request. Test hooks and non-advanced templates bypass the cache.
 	if sqlStr, args, ok := e.serveFromPlanCache(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, cache, planCtx); ok {
-		translateMs := time.Since(startTranslate).Milliseconds()
-		e.metrics.EmitLatency(ctx, "translation", translateMs)
-		return sqlStr, args, translateMs, nil
+		return sqlStr, args, time.Since(startTranslate).Milliseconds(), nil
 	}
 
 	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
-	e.metrics.EmitLatency(ctx, "translation", translateMs)
 	if err != nil {
 		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
 	}

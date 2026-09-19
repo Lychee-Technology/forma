@@ -25,6 +25,11 @@ type scan struct {
 	parquetPaths    []string
 	pathsFromSource bool
 	dirtyIDs        []uuid.UUID
+	// translateMs is the wall time SQL rendering took for this pass. It
+	// rides along rather than being emitted at the render site so the pass's
+	// telemetry is reported as one set once the pass has succeeded (see
+	// emitDuckDBScanMetrics).
+	translateMs int64
 	// probe is this call's half-open reservation (zero when the breaker was
 	// closed at admission), so the corrupt-confirmed release below can only
 	// free a slot this caller actually holds (#349 review R2-2).
@@ -90,6 +95,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		e.breaker.RecordSuccess()
 	}
 	outcome := duckDBScanOutcome{
+		translateMs:  sc.translateMs,
 		executeMs:    executeMs,
 		streamMs:     planCtx.millisSince(streamStart),
 		rowCount:     rowCount,
@@ -100,6 +106,11 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	// diagnostic payload (IncludeExecutionPlan defaults to false on the API),
 	// and the fed_query_* series must describe every successful pass, not
 	// only the ones a caller asked to see a plan for (PR #595 review).
+	// This is also the ONLY place the fed_query_* series are emitted, and it
+	// is reached only after the pass succeeded: a failed pass leaves no
+	// partial sample behind, and the #251 corrupt-parquet retry counts a
+	// logical query once (the failed first pass is silent), which is what
+	// docs/telemetry.md means by "per successful DuckDB pass".
 	e.emitDuckDBScanMetrics(ctx, q.SchemaID, outcome)
 	planCtx.recordScanOutcome(outcome)
 
@@ -110,12 +121,13 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 // consumers below read from it so the metric stream and the execution plan
 // can never disagree about the same pass.
 type duckDBScanOutcome struct {
+	// translateMs is the wall time of SQL rendering (buildDuckDBQueryWithPlan);
 	// executeMs is the wall time of duck.Query alone; streamMs is the wall
-	// time of the rows.Next/Scan/handler loop. They are separate stages: an
+	// time of the rows.Next/Scan/handler loop. They are disjoint stages: an
 	// operator uses the split to tell a slow scan from slow result
 	// consumption, which the previous "elapsed since query start" measure
 	// (streaming folded into execution, streaming itself ~0) could not.
-	executeMs, streamMs int64
+	translateMs, executeMs, streamMs int64
 	// rowCount is the number of rows the pass streamed (the page); totalRecords
 	// is the query's total match count as reported by the template's window
 	// count, 0 when no row carried one.
@@ -125,10 +137,17 @@ type duckDBScanOutcome struct {
 	dirtyRows int64
 }
 
-// emitDuckDBScanMetrics reports the pass to the engine's telemetry sink: the
-// execution and streaming latency stages, the duckdb row count and the
-// per-schema pushdown-efficiency proxy. Nil-sink safe (Sink methods no-op).
+// emitDuckDBScanMetrics reports one successful pass to the engine's telemetry
+// sink as a complete set: the three latency stages, both row-count sources
+// and the per-schema pushdown-efficiency proxy. Everything the pass measured
+// before DuckDB ran (the dirty-set size, the render time) is carried here in
+// the outcome instead of being emitted where it was measured, so a consumer
+// never sees a translation or pg sample without the execution that followed
+// it, and a failed-then-retried query is not counted twice (PR #595 review).
+// Nil-sink safe (Sink methods no-op).
 func (e *DBFederatedQueryEngine) emitDuckDBScanMetrics(ctx context.Context, schemaID int16, o duckDBScanOutcome) {
+	e.metrics.EmitLatency(ctx, "translation", o.translateMs)
+	e.metrics.EmitRowCount(ctx, "pg", o.dirtyRows)
 	e.metrics.EmitLatency(ctx, "execution", o.executeMs)
 	e.metrics.EmitLatency(ctx, "streaming", o.streamMs)
 	e.metrics.EmitRowCount(ctx, "duckdb", o.rowCount)

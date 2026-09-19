@@ -133,3 +133,19 @@ func TestLibraryAPIDependsOnNoTelemetryBackend(t *testing.T) {
 		}
 	}
 }
+
+// TestFedQueryRowCountHelpDescribesTheDirtySet pins the meaning an adapter
+// publishes from Help (PR #595 review, low finding): the pg series is the
+// anti-join dirty-set size fetched from Postgres, not rows that reached the
+// result, and the help text must name both sources and say so.
+func TestFedQueryRowCountHelpDescribesTheDirtySet(t *testing.T) {
+	d, ok := LookupMetric("fed_query_row_count")
+	if !ok {
+		t.Fatal("fed_query_row_count is not catalogued")
+	}
+	for _, want := range []string{"pg is the size of the dirty set", "duckdb is the row count"} {
+		if !strings.Contains(d.Help, want) {
+			t.Errorf("fed_query_row_count Help %q does not say %q", d.Help, want)
+		}
+	}
+}

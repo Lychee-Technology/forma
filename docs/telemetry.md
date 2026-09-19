@@ -88,6 +88,13 @@ gated on the caller asking for an execution plan):
   large relative to what this query returns", not as a measured scan count.
   Measuring the real scan count, or retiring the gauge, is #596.
 
+All six samples are emitted together, after the pass has succeeded. A pass
+that fails, whether at SQL rendering, at the DuckDB `Query` call or while
+streaming rows, emits nothing, so no counter or histogram ever carries a
+failed attempt. A query answered by the corrupt-parquet retry (#251) is
+therefore counted once, from the pass that produced the returned page, the
+same pass the execution plan describes.
+
 Names are wire names: dashboards key on them verbatim, so they are never
 renamed or prefixed. **Adding a metric** means adding its descriptor to
 `metrics.go`, the `Emit*` helper on `internal/telemetry.Sink` that emits it,
