@@ -1020,7 +1020,7 @@ delivers them to the `forma.MetricEmitter` the embedder set on
 `Config.Metrics.Emitter` (backend-neutral; see `docs/telemetry.md`):
 
 * `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming"}`.
-* `fed_query_row_count`: Count of rows returned by S3 vs. PG (helps tune compaction frequency).
+* `fed_query_row_count`: Labeled by `{source: "pg", "duckdb"}`. `pg` is the size of the dirty set fetched from Postgres for the anti-join (§3.2); `duckdb` is the row count returned by the merged DuckDB scan. A `pg` series that stays large relative to `duckdb` means the hot tier is carrying rows that a CDC flush or compaction should have moved out (helps tune flush and compaction frequency). There is no `s3` series.
 * `fed_query_pushdown_efficiency`: Ratio of PG_Scan_Rows / Final_Result_Rows. High ratio indicates poor pushdown logic.
 
 The execution plan and response metadata MUST include:
