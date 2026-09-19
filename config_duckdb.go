@@ -20,7 +20,7 @@ type DuckDBConfig struct {
 	EnableParquet  bool          `json:"enableParquet"` // enable parquet extension
 	Extensions     []string      `json:"extensions"`    // additional extensions to load
 	MaxConnections int           `json:"maxConnections"`
-	QueryTimeout   time.Duration `json:"queryTimeout"`   // per-query timeout for DuckDB access
+	QueryTimeout   time.Duration `json:"queryTimeout"`   // budget for all DuckDB work of one federated query (#465)
 	MaxParallelism int           `json:"maxParallelism"` // max threads/pragmas for DuckDB
 	// Deprecated: ignored failure-rate threshold; use
 	// CircuitBreakerFailureThreshold instead.

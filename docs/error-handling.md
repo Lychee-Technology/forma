@@ -872,7 +872,8 @@ call or the signature cannot silently drop sites out of the scan.
 
 **The status is decided by sentinel evidence and by nothing else.**
 `classifyManagerError` matches `errors.Is` against `forma.ErrNotFound` (404),
-`forma.ErrConflict` (409), and `forma.ErrInvalidInput` (400); everything else —
+`forma.ErrConflict` (409), `forma.ErrInvalidInput` (400) and
+`context.DeadlineExceeded` (504, see "Request limits" below); everything else —
 including a `nil` error — is `500`.
 
 **Disclosure needs the same evidence plus a deliberately published message
@@ -932,8 +933,100 @@ only it.
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
-| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360) |
+| `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
+| `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465) |
 | `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
+
+### Request limits (#465)
+
+Every limit `forma.Config` declares is enforced, and each has one public
+shape:
+
+- **Body cap.** `httpapi.Options.MaxBodyBytes` (cmd/server and cmd/lambda pass
+  `Entity.MaxEntitySize`, 1 MiB by default) wraps every request body in
+  `http.MaxBytesReader` before the decoder reads it. A body past the cap
+  answers `413` through the gate with the published message `request body
+  too large: request body exceeds N bytes`; the body is never materialized.
+  The cap covers the whole body, not only the first JSON value: after the
+  decode the reader is drained to EOF, so trailing bytes past the cap are
+  still `413` even when a second value began under it (the drain reads to
+  the end before deciding), and trailing non-whitespace under the cap is
+  `400` (`invalid json body: unexpected data after the JSON body`). Trailing
+  JSON whitespace stays legal. Every other decode failure keeps its `400`,
+  but only once the whole body has been read: a malformed prefix under the
+  cap followed by bytes past it is still `413`, because the cap is decided on
+  the whole body and never on JSON validity.
+- **Body read failures.** A failure the transport returns while the body is
+  being read is tagged at the reader (`bodyReadError`) and never published as
+  malformed JSON, since it is network prose. `http.Server.ReadTimeout`
+  expiring mid-upload is `408` on the redacted branch with `error_class:
+  "timeout"`, the fixed message `request timed out`, and `Connection: close`
+  (the request stream is unrecoverable; RFC 9110 lets the client repeat the
+  request). Any other transport failure (a reset, a body that ended before
+  its declared length) is the client going away and stays a redacted `500`,
+  like `context.Canceled` below. A body net/http could not frame — malformed
+  chunked encoding, say — is the caller's request rather than the
+  transport's failure and answers `400` with the published message `read
+  request body: malformed request body`; net/http's own framing prose is
+  operator detail and stays on the log line. Transport failures are
+  recognised positively (a `net.Error` or `io.ErrUnexpectedEOF`), since
+  net/http's framing errors are untyped.
+- **Batch cap.** `PerformanceConfig.MaxBatchSize` (1000) is enforced at the
+  manager, before any repository work, so library embedders get the same
+  bound: `400` with `batch of N operations exceeds the maximum batch size of
+  M`. A zero or negative cap leaves batches unbounded.
+- **Page overflow.** A `page` × `items_per_page` product that does not fit in
+  an `int` is `400` (`... addresses an offset beyond the supported range`)
+  rather than a negative `OFFSET`.
+- **Budgets.** `QueryConfig.DefaultTimeout` bounds `Get`, `Query` and
+  `CrossSchemaSearch`; `TransactionConfig.DefaultTimeout` bounds each write
+  transaction (`Create`, `Update`, `Delete`, and each atomic batch; a
+  best-effort batch is bounded per operation); `DuckDBConfig.QueryTimeout`
+  bounds all the DuckDB-routed work of one federated request inside the
+  query budget: it is armed once, so the page pass, a corrupt-parquet retry,
+  the deep-page recount and a degraded Postgres fallback share one deadline
+  and a multi-pass request never spends more than one budget. All three are real context
+  deadlines, so pgx cancels the running statement and duckdb-go interrupts the
+  running scan. An exceeded budget surfaces as `context.DeadlineExceeded` and
+  answers `504` on the redacted branch with `error_class: "timeout"` and the
+  fixed message `request timed out`: the budget's value is configuration, not
+  caller feedback, so nothing from the chain is disclosed. A DuckDB timeout
+  is **not** degradable to Postgres-only under `AllowPartialDegradedMode`; a
+  DuckDB that keeps timing out opens the circuit breaker, and that rejection
+  degrades as before. `context.Canceled` (the client went away) stays `500`;
+  nobody reads that status.
+- **`http.Server`.** cmd/server sets `ReadHeaderTimeout`, `ReadTimeout`,
+  `WriteTimeout`, `IdleTimeout` and `MaxHeaderBytes`
+  (`bootstrap.DefaultHTTPServerConfig`, `HTTP_*` overrides in the README).
+  These bound the connection, not the handler's context, which is why the
+  manager budgets exist alongside them. The phases compose: net/http arms
+  the write deadline when the headers have been read, before the handler
+  consumes the body, so `WriteTimeout` is spent on the body upload (bounded
+  by `ReadTimeout`), then the handler's work (bounded by the largest
+  budget), then the response. The defaults are 30s read, 90s write: 30s of
+  upload plus a 30s budget still leaves 30s for the `504` to leave.
+- **Boot-time validation.** The limits are configuration, so an out-of-range
+  value is a startup failure, never a silently widened limit. cmd/server and
+  cmd/lambda assemble the whole `forma.Config` from the environment and run
+  `Config.Validate` on it before opening the database: `Entity.MaxEntitySize`
+  must be positive, `Performance.MaxBatchSize` must be at least `BatchSize`,
+  and the three budgets may be zero (unbounded) but not negative. cmd/server
+  also runs `HTTPServerConfig.Validate`, which refuses a negative phase
+  timeout or header cap (net/http would read either as "no bound"), a
+  bounded `WriteTimeout` that does not strictly exceed `ReadTimeout` plus
+  the largest bounded budget (`bootstrap.LargestRequestBudget`: the query
+  budget, or the DuckDB budget when the query budget is unbounded since the
+  DuckDB budget is armed once per request inside the query budget, or the
+  transaction budget, whichever is longest), and a bounded `WriteTimeout`
+  paired with an
+  unbounded `ReadTimeout`, since an unbounded upload can spend any write
+  deadline before the handler starts. Either would cut a legitimately slow
+  request's connection before its `504` could leave. Library embedders that
+  build a config by hand are not validated; for them the zero-value
+  semantics above apply.
+
+`QueryConfig.MaxRows` remains declared but unenforced; it is tracked
+separately from #465.
 
 The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
@@ -1105,9 +1198,11 @@ operator detail (see "Log levels are contract" below).
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 an `error_id`, and — when the chain holds a typed read-path carrier — a
-`schema_id`. No error text crosses. There are exactly two fixed messages
+`schema_id`. No error text crosses. There are exactly three fixed messages
 (`publicErrorMessage`): `internal read error` for the three typed read-path
-classes, and `internal error` for `errorClassInternal`. **`internal` is the
+classes, `request timed out` for `errorClassTimeout` (a `504` for an expired
+budget, a `408` for a body still arriving when `ReadTimeout` expired, #465), and
+`internal error` for `errorClassInternal`. **`internal` is the
 common case in production** — it absorbs `ErrFederatedReadFailed`,
 `ErrPostgresReadFailed`, metadata drift, and transform failures — so a client
 asserting on the literal `internal read error` would break on the majority of

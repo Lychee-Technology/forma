@@ -55,6 +55,27 @@ The server listens on port `8080` by default. Configure via environment variable
 | `SCHEMA_DIR` | `` | Directory containing schema JSON files |
 | `PORT` | `8080` | HTTP listen port |
 | `METRICS_STDOUT` | unset (off) | `true` writes every emitted metric as a JSON line on stdout (`docs/telemetry.md`) |
+| `MAX_ENTITY_SIZE_BYTES` | `1048576` | Cap on every HTTP request body, trailing bytes included; a larger body answers `413` before it is decoded |
+| `MAX_BATCH_SIZE` | `1000` | Cap on operations per batch create/update/delete; a larger batch answers `400` |
+| `QUERY_TIMEOUT_SECONDS` | `30` | Budget for a get, query or search; an exceeded budget answers `504` (`0` disables) |
+| `TRANSACTION_TIMEOUT_SECONDS` | `30` | Budget for one write transaction (create, update, delete, atomic batch); `0` disables |
+| `DUCKDB_QUERY_TIMEOUT_SECONDS` | `30` | Budget for all the DuckDB work of one federated request, inside the query budget; `0` disables |
+| `HTTP_READ_HEADER_TIMEOUT_SECONDS` | `10` | `http.Server` ReadHeaderTimeout |
+| `HTTP_READ_TIMEOUT_SECONDS` | `30` | `http.Server` ReadTimeout (whole request, body included); a body still arriving when it expires answers `408` |
+| `HTTP_WRITE_TIMEOUT_SECONDS` | `90` | `http.Server` WriteTimeout, armed before the body is read; must exceed `HTTP_READ_TIMEOUT_SECONDS` plus the largest budget (checked at boot) |
+| `HTTP_IDLE_TIMEOUT_SECONDS` | `120` | `http.Server` IdleTimeout for keep-alive connections |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | `http.Server` MaxHeaderBytes |
+
+The limits and timeouts are validated before the server opens its database
+connection: a negative value, a zero size or batch cap, or a bounded
+`HTTP_WRITE_TIMEOUT_SECONDS` that does not exceed `HTTP_READ_TIMEOUT_SECONDS`
+plus the largest bounded budget (the query budget, or the DuckDB budget when
+the query budget is `0`, or the transaction budget, whichever is longest)
+fails startup with a message naming the field. The write deadline starts
+when the headers have been read, so it has to cover the body upload, the
+budget, and the response; a bounded write timeout therefore also needs a
+bounded read timeout. An unparsable value keeps the default, as for every
+other integer variable above.
 
 ## API Reference
 

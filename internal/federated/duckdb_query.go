@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -213,6 +214,22 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
 	}
 
+	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):
+	// path resolution and schema probes, the dirty-ID fetch, the scan, and
+	// the row streaming below all run under this deadline. duckdb-go v2
+	// interrupts a running query when its context expires, so a slow scan is
+	// genuinely cancelled rather than left running on the single connection.
+	// A zero timeout leaves the caller's context as it is. Query arms the
+	// same budget once for the whole DuckDB-routed request
+	// (queryDuckDBRouted), so under it this deadline is never later than the
+	// request's and a corrupt-parquet retry or a deep-page recount shares
+	// the remainder; the arming here is what bounds callers that reach a
+	// pass directly (ExecuteFederatedPaginatedQuery, the benchmark harness).
+	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
+	// over all of it.
+	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
+	defer cancel()
+
 	// Everything between admission and duck.Query can fail without consulting
 	// DuckDB or S3 at all — a misconfigured path set, invalid caller input,
 	// missing schema metadata. Such a caller learned nothing about the
@@ -275,6 +292,15 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		translateMs:     translateMs,
 		probe:           probe,
 	}, rowHandler, planCtx)
+}
+
+// withQueryTimeout bounds ctx by timeout; a non-positive timeout means no
+// bound and hands back ctx with a no-op cancel.
+func withQueryTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.

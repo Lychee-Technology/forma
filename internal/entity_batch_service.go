@@ -31,6 +31,11 @@ type entityBatchService struct {
 	validateUpdatesStrict bool
 	reportOnlyStats       *reportOnlyStats
 	metrics               *telemetry.Sink
+	// budgets carries the batch cap and the per-transaction write budget
+	// (#465). Only the atomic paths apply the write budget here: a
+	// best-effort batch runs one transaction per operation through createOp/
+	// updateOp/deleteOp, each of which is bounded by the CRUD service.
+	budgets requestBudgets
 }
 
 // newEntityBatchService takes the CRUD service as an explicit parameter so the
@@ -62,21 +67,7 @@ func newEntityBatchService(em *entityManager, crud *entityCRUDService) *entityBa
 		validateUpdatesStrict: em.validateUpdatesStrict,
 		reportOnlyStats:       em.reportOnlyStats,
 		metrics:               em.metrics,
-	}
-}
-
-func validateBatchOperation(req *forma.BatchOperation) error {
-	if req == nil {
-		return forma.InvalidInputf("batch operation cannot be nil")
-	}
-	return nil
-}
-
-func emptyBatchResult() *forma.BatchResult {
-	return &forma.BatchResult{
-		Successful: make([]*forma.DataRecord, 0),
-		Failed:     make([]forma.OperationError, 0),
-		TotalCount: 0,
+		budgets:               budgetsFromConfig(em.config),
 	}
 }
 
@@ -86,7 +77,7 @@ func (s *entityBatchService) BatchCreate(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
 		return nil, err
 	}
 	zap.S().Debugw("BatchCreate called", "operationCount", len(req.Operations))
@@ -104,7 +95,7 @@ func (s *entityBatchService) BatchUpdate(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
 		return nil, err
 	}
 
@@ -123,7 +114,7 @@ func (s *entityBatchService) BatchDelete(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
 		return nil, err
 	}
 	zap.S().Debugw("BatchDelete called", "operationCount", len(req.Operations))
@@ -196,6 +187,8 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	startTime := time.Now()
 	tables := s.resolveTables()
@@ -274,6 +267,8 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 	if err := validateAtomicUpdateOperations(req.Operations); err != nil {
 		return nil, err
 	}
@@ -384,6 +379,8 @@ func (s *entityBatchService) batchDeleteAtomic(ctx context.Context, req *forma.B
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	startTime := time.Now()
 	tables := s.resolveTables()

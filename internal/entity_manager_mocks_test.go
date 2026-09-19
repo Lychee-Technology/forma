@@ -29,14 +29,17 @@ type mockPersistentRecordRepository struct {
 	records map[int16]map[uuid.UUID]*model.PersistentRecord
 	// beforeMerge runs inside MergePersistentRecord just before the merge
 	// base is read, standing in for a concurrent committer.
-	beforeMerge        func()
-	insertedRecords    []*model.PersistentRecord
-	getCalls           int
-	deleteCalls        int
-	batchUpdateCalls   int
-	lastQuery          *model.PersistentRecordQuery
-	queries            []*model.PersistentRecordQuery
-	queryFunc          func(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
+	beforeMerge      func()
+	insertedRecords  []*model.PersistentRecord
+	getCalls         int
+	deleteCalls      int
+	batchUpdateCalls int
+	lastQuery        *model.PersistentRecordQuery
+	queries          []*model.PersistentRecordQuery
+	queryFunc        func(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
+	// insertFunc, when set, replaces the default insert (and so every insert
+	// BatchInsertPersistentRecords makes); the test stands in for the store.
+	insertFunc         func(ctx context.Context, record *model.PersistentRecord) error
 	byAttrValuesCalls  []mockByAttrValuesCall
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
@@ -67,6 +70,9 @@ func (m *mockPersistentRecordRepository) storeRecord(record *model.PersistentRec
 }
 
 func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
+	if m.insertFunc != nil {
+		return m.insertFunc(ctx, record)
+	}
 	m.insertedRecords = append(m.insertedRecords, record)
 	m.storeRecord(record)
 	return nil

@@ -80,14 +80,22 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		return nil, err
 	}
 
+	offset, err := pageOffset(req.Page, req.ItemsPerPage)
+	if err != nil {
+		return nil, err
+	}
+
 	query := &model.PersistentRecordQuery{
 		Tables:          s.resolveTables(),
 		SchemaID:        schemaID,
 		Condition:       req.Condition,
 		AttributeOrders: attributeOrders,
 		Limit:           req.ItemsPerPage,
-		Offset:          (req.Page - 1) * req.ItemsPerPage,
+		Offset:          offset,
 	}
+
+	ctx, cancel := withBudget(ctx, s.config.Query.DefaultTimeout)
+	defer cancel()
 
 	startTime := time.Now()
 	page, err := s.queryRecords(ctx, query, req)
@@ -196,6 +204,9 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 		return nil, err
 	}
 
+	ctx, cancel := withBudget(ctx, s.config.Query.DefaultTimeout)
+	defer cancel()
+
 	startTime := time.Now()
 	tables := s.resolveTables()
 
@@ -260,6 +271,9 @@ func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRe
 	}
 	if req.ItemsPerPage > s.config.Query.MaxPageSize {
 		req.ItemsPerPage = s.config.Query.MaxPageSize
+	}
+	if _, err := pageOffset(req.Page, req.ItemsPerPage); err != nil {
+		return err
 	}
 	return nil
 }
@@ -337,7 +351,12 @@ func (s *entityQueryService) fetchCrossSchemaResults(
 	schemaTotals []int64,
 	req *forma.CrossSchemaRequest,
 ) ([]*forma.DataRecord, error) {
-	offset := (req.Page - 1) * req.ItemsPerPage
+	// validateCrossSchemaRequest already refused an overflowing page; the
+	// error branch here is unreachable but keeps the arithmetic in one place.
+	offset, err := pageOffset(req.Page, req.ItemsPerPage)
+	if err != nil {
+		return nil, err
+	}
 	remaining := req.ItemsPerPage
 	results := make([]*forma.DataRecord, 0, req.ItemsPerPage)
 	skip := offset

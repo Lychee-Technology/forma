@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +14,10 @@ import (
 
 type Options struct {
 	EnableHealth bool
+	// MaxBodyBytes caps every request body the server decodes (#465). Zero
+	// means forma's default entity size limit (Entity.MaxEntitySize, 1 MiB);
+	// cmd/server and cmd/lambda pass the configured value so the two agree.
+	MaxBodyBytes int64
 }
 
 type Manager interface {
@@ -190,11 +195,29 @@ func parseUUID(s string) (uuid.UUID, error) {
 // carrying no operator data — so call sites publish it deliberately via
 // forma.InvalidInputf("%v", err) and route it through respondError (#360); the
 // gate's scrub still applies to it.
-func readJSONBody(r *http.Request, v any) error {
+//
+// The body is read through http.MaxBytesReader under the server's body limit
+// (#465), so a body past the cap fails with *http.MaxBytesError before the
+// decoder materializes it; respondBodyError turns that into a 413. The cap
+// is a verdict on the whole body, so the capped stream is always read to its
+// terminal result before an answer is chosen: after a successful decode,
+// which stops at the end of the first JSON value, drainBody reads the rest
+// (bytes after the value still count against the cap, and trailing data
+// under the cap is refused as invalid input rather than silently ignored);
+// after a failed decode, settleDecodeError reads the rest and lets the cap
+// outrank the parse error, so a malformed prefix cannot turn a documented
+// 413 into a 400. Underneath the cap sits bodyReader, which tags the body's
+// own read failures so a read timeout or malformed framing is answered as
+// such instead of as malformed JSON.
+func (s *Server) readJSONBody(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
-	dec := json.NewDecoder(r.Body)
+	body := http.MaxBytesReader(w, bodyReader{ReadCloser: r.Body}, s.bodyLimit())
+	dec := json.NewDecoder(body)
 	dec.UseNumber()
-	return dec.Decode(v)
+	if err := dec.Decode(v); err != nil {
+		return settleDecodeError(err, body)
+	}
+	return drainBody(io.MultiReader(dec.Buffered(), body))
 }
 
 // parseCreateObjects parses create payloads that can be either a single object or an object array.

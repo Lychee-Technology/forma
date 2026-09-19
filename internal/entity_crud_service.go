@@ -29,6 +29,9 @@ type entityCRUDService struct {
 	validateUpdatesStrict bool
 	reportOnlyStats       *reportOnlyStats
 	metrics               *telemetry.Sink
+	// budgets bounds each call's context: Get by the read budget, the three
+	// writes by the write budget (#465).
+	budgets requestBudgets
 }
 
 func newEntityCRUDService(em *entityManager) *entityCRUDService {
@@ -48,6 +51,7 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 		validateUpdatesStrict: em.validateUpdatesStrict,
 		reportOnlyStats:       em.reportOnlyStats,
 		metrics:               em.metrics,
+		budgets:               budgetsFromConfig(em.config),
 	}
 }
 
@@ -67,6 +71,9 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	if req.Data == nil {
 		return nil, forma.InvalidInputf("data is required for create operation")
 	}
+
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	// Get schema by name to obtain schema ID and the attribute cache the
 	// validator needs to recognise literal dotted keys.
@@ -160,6 +167,9 @@ func (s *entityCRUDService) Get(ctx context.Context, req *forma.QueryRequest) (*
 		return nil, forma.InvalidInputf("row ID is required for get operation")
 	}
 
+	ctx, cancel := withBudget(ctx, s.budgets.read)
+	defer cancel()
+
 	// Verify schema exists and fetch schema ID.
 	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
@@ -208,6 +218,9 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	if req.Updates == nil {
 		return nil, forma.InvalidInputf("updates are required for update operation")
 	}
+
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	// Get schema by name.
 	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
@@ -309,6 +322,9 @@ func (s *entityCRUDService) Delete(ctx context.Context, req *forma.EntityOperati
 	if req.RowID == (uuid.UUID{}) {
 		return forma.InvalidInputf("row ID is required for delete operation")
 	}
+
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {

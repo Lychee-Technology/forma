@@ -176,7 +176,7 @@ func TestReadJSONBodyDecodesNumbersExactly(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"n": 9007199254740993}`))
 
 	var decoded map[string]any
-	if err := readJSONBody(req, &decoded); err != nil {
+	if err := NewServer(nil, Options{}).readJSONBody(httptest.NewRecorder(), req, &decoded); err != nil {
 		t.Fatalf("readJSONBody: %v", err)
 	}
 
