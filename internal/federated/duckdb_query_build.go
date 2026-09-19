@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -91,11 +92,15 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	// Compiled-plan cache (#142): skeleton + template args are reused per
 	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
 	// request. Test hooks and non-advanced templates bypass the cache.
-	if sqlStr, args, ok := e.serveFromPlanCache(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, cache, planCtx); ok {
+	sqlStr, args, ok, err := e.serveFromPlanCache(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, planCtx)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
+	}
+	if ok {
 		return sqlStr, args, time.Since(startTranslate).Milliseconds(), nil
 	}
 
-	sqlStr, args, err := e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
+	sqlStr, args, err = e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
 	translateMs := time.Since(startTranslate).Milliseconds()
 	if err != nil {
 		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
@@ -252,6 +257,11 @@ type duckCompiledEntry struct {
 // skeleton failed) — the caller then uses the direct builder. On a miss the
 // compile result serves the request too, so rendering happens at most once
 // per shape.
+//
+// The error return is reserved for the request being over: a caller whose
+// own context ended while it waited on another request's compile (#467) gets
+// that context error back and must not fall through to the direct builder,
+// which takes no context and would render for nobody.
 func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -264,30 +274,15 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 	cold coldScanSet,
 	sqlParams map[string]any,
 	dc *sqlgen.DualClauses,
-	cache forma.SchemaAttributeCache,
 	planCtx *duckDBExecutionPlanContext,
-) (string, []any, bool) {
+) (string, []any, bool, error) {
 	if e.planCache == nil || e.buildDuckSQL != nil || e.getDuckDBTemplate() != sqlgen.AdvancedQueryTemplateDuckDB {
-		return "", nil, false
+		return "", nil, false, nil
 	}
 
-	shapeHash, err := queryplan.HashFederatedQueryShape(q)
+	key, err := e.duckPlanCacheKey(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, cold)
 	if err != nil {
-		return "", nil, false
-	}
-	fingerprint := "no-fingerprint"
-	if e.metadataCache != nil {
-		if fp, ok := e.metadataCache.SchemaFingerprint(q.SchemaID); ok {
-			fingerprint = fp
-		}
-	}
-	scopeParts := duckPlanScopeParts(tables, e.pgConnString, limit, offset, len(dirtyIDs) > 0, parquetPaths, attributeOrders, cold)
-	key := queryplan.Key{
-		Kind:          "duckdb_federated",
-		SchemaVersion: fingerprint,
-		SchemaID:      q.SchemaID,
-		ShapeHash:     shapeHash,
-		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
+		return "", nil, false, nil
 	}
 
 	entryAny, hit, err := e.planCache.GetOrBuild(ctx, key, func() (any, error) {
@@ -302,14 +297,23 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		}
 		return &duckCompiledEntry{compiled: compiled, dualPlan: dualPlan}, nil
 	})
-	if err != nil || entryAny == nil {
-		return "", nil, false
+	if err != nil {
+		// A waiter that stopped on its own context is done with this request;
+		// every other failure (compile error, leader panic) falls through to
+		// the direct builder, which reports its own error to the caller.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return "", nil, false, err
+		}
+		return "", nil, false, nil
+	}
+	if entryAny == nil {
+		return "", nil, false, nil
 	}
 	entry, ok := entryAny.(*duckCompiledEntry)
 	if !ok {
 		// A foreign artifact under this key is a keying bug, not a request
 		// error: fall through to the direct builder like every other miss.
-		return "", nil, false
+		return "", nil, false, nil
 	}
 	planCtx.recordPlanCache(hit)
 
@@ -325,9 +329,42 @@ func (e *DBFederatedQueryEngine) serveFromPlanCache(
 		// Same contract as every other failure here: ok=false hands the
 		// request to the direct builder, which carries the identical keyset
 		// validation (#381 item 7) and reports the error to the caller.
-		return "", nil, false
+		return "", nil, false, nil
 	}
-	return sqlStr, args, true
+	return sqlStr, args, true, nil
+}
+
+// duckPlanCacheKey derives the compiled-plan cache key for one dispatched
+// request: the schema fingerprint, the query shape and the render scope
+// (duckPlanScopeParts). q must already be the dispatched query so the shape
+// hash sees the pagination that renders.
+func (e *DBFederatedQueryEngine) duckPlanCacheKey(
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
+	dirtyIDs []uuid.UUID,
+	attributeOrders []model.AttributeOrder,
+	limit, offset int,
+	parquetPaths []string,
+	cold coldScanSet,
+) (queryplan.Key, error) {
+	shapeHash, err := queryplan.HashFederatedQueryShape(q)
+	if err != nil {
+		return queryplan.Key{}, fmt.Errorf("hash federated query shape for schema %d: %w", q.SchemaID, err)
+	}
+	fingerprint := "no-fingerprint"
+	if e.metadataCache != nil {
+		if fp, ok := e.metadataCache.SchemaFingerprint(q.SchemaID); ok {
+			fingerprint = fp
+		}
+	}
+	scopeParts := duckPlanScopeParts(tables, e.pgConnString, limit, offset, len(dirtyIDs) > 0, parquetPaths, attributeOrders, cold)
+	return queryplan.Key{
+		Kind:          "duckdb_federated",
+		SchemaVersion: fingerprint,
+		SchemaID:      q.SchemaID,
+		ShapeHash:     shapeHash,
+		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
+	}, nil
 }
 
 func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.DuckDBConfig) ([]string, error) {
