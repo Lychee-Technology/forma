@@ -130,3 +130,43 @@ func TestFromPersistentRecordConsistencyErrorsNameRow(t *testing.T) {
 		require.Contains(t, msg, "column "+string(forma.MainColumnText02))
 	})
 }
+
+// TestFromPersistentRecordReconstructionErrorsNameRow pins the last hop of
+// the rebuild, jsonTransformer.FromAttributes, and the metadata lookup ahead
+// of both funnels. Neither holds the row on its own: a persisted list element
+// with malformed array_indices passes FromEAVRecord (which does not parse
+// indices) and fails only when the JSON tree is assembled, so the row has to
+// be named by the FromPersistentRecord wrap.
+func TestFromPersistentRecordReconstructionErrorsNameRow(t *testing.T) {
+	ctx := context.Background()
+	rowID := uuid.Must(uuid.NewV7())
+
+	t.Run("malformed persisted array indices", func(t *testing.T) {
+		registry := newPersistentTransformerRegistry()
+		transformer := NewPersistentRecordTransformer(registry)
+		schemaID, cache, err := registry.GetSchemaAttributeCacheByName("persistent_test")
+		require.NoError(t, err)
+		active := 1.0
+
+		_, err = transformer.FromPersistentRecord(ctx, &model.PersistentRecord{
+			RowID:    rowID,
+			SchemaID: schemaID,
+			OtherAttributes: []model.EAVRecord{{
+				SchemaID: schemaID, RowID: rowID, AttrID: cache["jobs.active"].AttributeID, ArrayIndices: "x", ValueNumeric: &active,
+			}},
+		})
+		require.Error(t, err)
+		msg := err.Error()
+		require.Contains(t, msg, "failed to convert attributes of row "+rowID.String()+" to JSON: parse array indices for attribute 'jobs.active': invalid index 'x'")
+		require.Equal(t, 1, strings.Count(msg, rowID.String()), "the row is rendered once")
+	})
+
+	t.Run("schema metadata lookup", func(t *testing.T) {
+		transformer := NewPersistentRecordTransformer(nil)
+
+		_, err := transformer.FromPersistentRecord(ctx, &model.PersistentRecord{RowID: rowID, SchemaID: 201})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to load schema 201 metadata for row "+rowID.String()+": ")
+		require.Contains(t, err.Error(), "schema registry is not configured")
+	})
+}
