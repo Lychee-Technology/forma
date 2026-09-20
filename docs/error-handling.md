@@ -648,6 +648,19 @@ Examples:
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.
 
+Every consistency error raised while rebuilding a row (`FromPersistentRecord`)
+names the row as well as the attribute, so a failure surfaced by a list or
+query read — where the row is not implied by the request — is attributable
+without a second lookup (#405). The EAV funnel renders the record's key once,
+at `FromEAVRecord`, the hop that holds it (`record schema=<id> row=<uuid>
+attrID=<n>`, plus `arrayIndices=<idx>` for a list element), and
+`FromEAVRecords` adds the attribute name it resolved; the required-policy and
+main-column wraps name the row directly:
+
+- `convert attribute 'isActive': record schema=7 row=0198… attrID=3: non-finite value NaN has no truth value; a finite value is required`
+- `required-policy check for schema 7 row 0198…: missing required attribute 'email' (attrID=2) in EAV records`
+- `failed to read attribute isActiveText of row 0198… from main column: column text_02: …`
+
 EAV records whose attribute id is no longer present in the schema metadata are
 not an error: they are skipped on read and preserved on update (#294
 tolerate-and-preserve), so removing an attribute from a schema is

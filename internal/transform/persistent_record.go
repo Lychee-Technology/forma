@@ -134,7 +134,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 
 		attr, err := t.readFromMainColumn(record, meta, meta.ColumnBinding)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read attribute %s from main column: %w", attrName, err)
+			return nil, fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, record.RowID, err)
 		}
 		if attr != nil {
 			attributes = append(attributes, *attr)
