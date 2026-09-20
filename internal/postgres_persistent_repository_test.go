@@ -329,7 +329,7 @@ func TestStreamOptimizedQueryArgCountKeyPin(t *testing.T) {
 
 	// Pre-seed the cache with a sentinel query under the expected key
 	sentinelQuery := "SELECT 'sentinel' AS sentinel"
-	_, _, err = repo.planCache.GetOrBuild(expectedKey, func() (any, error) {
+	_, _, err = repo.planCache.GetOrBuild(ctx, expectedKey, func() (any, error) {
 		return sentinelQuery, nil
 	})
 	require.NoError(t, err)
@@ -344,6 +344,32 @@ func TestStreamOptimizedQueryArgCountKeyPin(t *testing.T) {
 
 	hits, _ := repo.planCache.Stats()
 	require.Equal(t, int64(1), hits, "StreamOptimizedQuery must hit pre-seeded key with correct argCount")
+}
+
+// TestStreamOptimizedQueryRenderCacheRejectsForeignArtifact pins #467: a
+// non-string artifact under the render key is reported as an error naming
+// the expected type rather than panicking on the type assertion.
+func TestStreamOptimizedQueryRenderCacheRejectsForeignArtifact(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	repo := NewDBPersistentRecordRepository(mock, nil)
+	tables := model.StorageTables{EntityMain: "main_t", EAVData: "eav_t", ChangeLog: "cl_t"}
+	clause := "m.\"integer_01\" > $2"
+	foreignKey := queryplan.Key{
+		Kind:      "postgres_optimized_template",
+		SchemaID:  1,
+		ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, true, clause, 1, nil), 16),
+	}
+	_, _, err = repo.planCache.GetOrBuild(ctx, foreignKey, func() (any, error) { return 42, nil })
+	require.NoError(t, err)
+
+	_, err = repo.StreamOptimizedQuery(ctx, tables, 1, clause, []any{int64(5)}, 10, 0, nil, true, nil)
+	require.ErrorContains(t, err, "expected the rendered SQL string")
+	require.ErrorContains(t, err, "int")
+	require.NoError(t, mock.ExpectationsWereMet(), "no query may reach the database")
 }
 
 // TestOptimizedQueryShapeKey pins that every render-affecting input changes
@@ -395,7 +421,7 @@ func BenchmarkOptimizedQueryRender(b *testing.B) {
 			ShapeHash: strconv.FormatUint(optimizedQueryShapeKey(tables, true, `m."integer_01" > $2`, 1, nil), 16),
 		}
 		for i := 0; i < b.N; i++ {
-			if _, _, err := cache.GetOrBuild(key, func() (any, error) {
+			if _, _, err := cache.GetOrBuild(context.Background(), key, func() (any, error) {
 				return renderTemplate(optimizedQuerySQLTemplate, sqlParams)
 			}); err != nil {
 				b.Fatal(err)

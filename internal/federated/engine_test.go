@@ -268,12 +268,12 @@ func TestSchemaProjectionCache(t *testing.T) {
 		"name": {AttributeID: 5, ValueType: forma.ValueTypeText},
 	}
 
-	sp1, hit, err := engine.schemaProjection(7, cache)
+	sp1, hit, err := engine.schemaProjection(context.Background(), 7, cache)
 	require.NoError(t, err)
 	require.False(t, hit)
 	require.NotNil(t, sp1)
 
-	sp2, hit, err := engine.schemaProjection(7, cache)
+	sp2, hit, err := engine.schemaProjection(context.Background(), 7, cache)
 	require.NoError(t, err)
 	require.True(t, hit)
 	require.Same(t, sp1, sp2, "cached projection must be shared (read-only contract)")
@@ -283,7 +283,7 @@ func TestSchemaProjectionCache(t *testing.T) {
 	require.Equal(t, int64(1), misses)
 
 	engine.projections.Reset()
-	_, hit, err = engine.schemaProjection(7, cache)
+	_, hit, err = engine.schemaProjection(context.Background(), 7, cache)
 	require.NoError(t, err)
 	require.False(t, hit, "Reset must invalidate cached projections")
 
@@ -291,7 +291,7 @@ func TestSchemaProjectionCache(t *testing.T) {
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 	params := map[string]any{}
-	hitFlag, err := engine.injectSchemaProjections(params, 7, cache)
+	hitFlag, err := engine.injectSchemaProjections(context.Background(), params, 7, cache)
 	require.NoError(t, err)
 	planCtx.recordProjectionCache(hitFlag)
 	require.Contains(t, opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
@@ -310,7 +310,7 @@ func TestInjectSchemaProjectionsNoCacheFailsFast(t *testing.T) {
 		schemameta.NewMetadataCache(), "host=x", withTestParquetPath())
 
 	params := map[string]any{}
-	hit, err := engine.injectSchemaProjections(params, 7, nil)
+	hit, err := engine.injectSchemaProjections(context.Background(), params, 7, nil)
 	require.Error(t, err)
 	require.False(t, hit)
 	require.Contains(t, err.Error(), "requires a schema metadata cache")
@@ -320,7 +320,7 @@ func TestInjectSchemaProjectionsNoCacheFailsFast(t *testing.T) {
 
 	// Benchmark schemas remain unaffected (they never consult the cache).
 	benchParams := map[string]any{}
-	_, benchErr := engine.injectSchemaProjections(benchParams, int16(100), nil)
+	_, benchErr := engine.injectSchemaProjections(context.Background(), benchParams, int16(100), nil)
 	require.NoError(t, benchErr)
 	require.Contains(t, benchParams, "OuterSelect")
 }

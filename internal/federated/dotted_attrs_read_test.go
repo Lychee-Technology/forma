@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -137,7 +138,7 @@ func TestInjectSchemaProjectionsPropagatesCollision(t *testing.T) {
 	}
 
 	sqlParams := map[string]any{}
-	hit, err := e.injectSchemaProjections(sqlParams, 30, cache)
+	hit, err := e.injectSchemaProjections(context.Background(), sqlParams, 30, cache)
 	require.Error(t, err, "colliding schema must fail fast, not fall through to toy defaults")
 	require.False(t, hit)
 	require.ErrorContains(t, err, "contact.name")

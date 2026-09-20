@@ -1,6 +1,8 @@
 package queryplan
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -38,11 +40,13 @@ type Cache struct {
 	inflight map[Key]*flightCall
 }
 
-// flightCall is one in-progress build; waiters block on wg then read v/err.
+// flightCall is one in-progress build; waiters block on done then read v/err.
+// done is closed by the leader's deferred release, so a panicking build still
+// frees its waiters (#467).
 type flightCall struct {
-	wg  sync.WaitGroup
-	v   any
-	err error
+	done chan struct{}
+	v    any
+	err  error
 }
 
 // NewCache creates a cache bounded to capacity entries; at the bound the
@@ -57,9 +61,12 @@ func NewCache(capacity int) *Cache {
 // GetOrBuild returns the cached artifact for key or builds, stores, and
 // returns it. Build errors are returned without caching. Concurrent callers
 // on the same missing key build exactly once (waiters share the result and
-// count as hits). A nil *Cache degrades to always building (zero-value
-// construction in tests).
-func (c *Cache) GetOrBuild(key Key, build func() (any, error)) (any, bool, error) {
+// count as hits). A waiter stops waiting when ctx is done and returns the
+// context error; the leader's build is never cancelled and its result is
+// still stored. A panic in the leader's build surfaces to waiters as an error
+// and is re-raised in the leader. A nil *Cache degrades to always building
+// (zero-value construction in tests).
+func (c *Cache) GetOrBuild(ctx context.Context, key Key, build func() (any, error)) (any, bool, error) {
 	if c == nil {
 		v, err := build()
 		return v, false, err
@@ -85,17 +92,12 @@ func (c *Cache) GetOrBuild(key Key, build func() (any, error)) (any, bool, error
 	}
 	if fc, running := c.inflight[key]; running {
 		c.flightMu.Unlock()
-		fc.wg.Wait()
-		if fc.err != nil || fc.v == nil {
-			return fc.v, false, fc.err
-		}
-		c.hits.Add(1)
-		return fc.v, true, nil
+		return c.awaitFlight(ctx, key, fc)
 	}
-	fc := &flightCall{}
-	fc.wg.Add(1)
+	fc := &flightCall{done: make(chan struct{})}
 	c.inflight[key] = fc
 	c.flightMu.Unlock()
+	defer c.releaseFlight(key, fc)
 
 	v, err := build()
 	fc.v, fc.err = v, err
@@ -108,12 +110,37 @@ func (c *Cache) GetOrBuild(key Key, build func() (any, error)) (any, bool, error
 		c.entries[key] = v
 		c.mu.Unlock()
 	}
+	return v, false, err
+}
 
+// awaitFlight waits for another caller's build of key, or for ctx. A shared
+// success counts as a hit; a cancelled wait touches no counter.
+func (c *Cache) awaitFlight(ctx context.Context, key Key, fc *flightCall) (any, bool, error) {
+	select {
+	case <-fc.done:
+	case <-ctx.Done():
+		return nil, false, fmt.Errorf("wait for in-flight %s plan build for schema %d: %w", key.Kind, key.SchemaID, ctx.Err())
+	}
+	if fc.err != nil || fc.v == nil {
+		return fc.v, false, fc.err
+	}
+	c.hits.Add(1)
+	return fc.v, true, nil
+}
+
+// releaseFlight is deferred by the leader: it drops the in-flight slot and
+// wakes waiters whether build returned or panicked. A panic is recorded as
+// the flight's error so waiters fail instead of hanging, then re-raised so
+// the leader's own failure mode is unchanged (#467).
+func (c *Cache) releaseFlight(key Key, fc *flightCall) {
+	if r := recover(); r != nil {
+		fc.v, fc.err = nil, fmt.Errorf("%s plan build for schema %d panicked: %v", key.Kind, key.SchemaID, r)
+		defer panic(r)
+	}
 	c.flightMu.Lock()
 	delete(c.inflight, key)
 	c.flightMu.Unlock()
-	fc.wg.Done()
-	return v, false, err
+	close(fc.done)
 }
 
 // Stats returns cumulative hit and miss counts (benchmark evidence hook).
