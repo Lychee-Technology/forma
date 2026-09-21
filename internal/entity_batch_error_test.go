@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/transform"
@@ -193,4 +194,48 @@ func TestBatchResultFailuresCarryDistinctIDs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 2)
 	require.NotEqual(t, result.Failed[0].ErrorID, result.Failed[1].ErrorID)
+}
+
+// TestBatchResultEveryFailureSurvivesProductionSampling is the regression for
+// the review finding on #398: the production logger samples by level and
+// message, the failure line's message is constant, so without an exemption
+// the 101st identical failure inside one second would return an id whose line
+// was never written — reachable within one best-effort batch, whose default
+// MaxBatchSize is 1000. The logger here is an observer under the production
+// sampler as bootstrap installs it; 150 failures must yield 150 ids, each
+// joining exactly one line that holds the withheld driver text.
+func TestBatchResultEveryFailureSurvivesProductionSampling(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core).WithOptions(bootstrap.SamplerOption(zap.NewProductionConfig().Sampling)))
+	t.Cleanup(restore)
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("storage unavailable: disk quota exceeded on node-7"),
+	}
+	const failures = 150
+	operations := make([]forma.EntityOperation, failures)
+	for i := range operations {
+		operations[i] = forma.EntityOperation{
+			EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
+			Type:             forma.OperationCreate,
+			Data:             visitPayload(fmt.Sprintf("visit-batch-error-%d", i)),
+		}
+	}
+
+	result, err := newBatchErrorManager(t, repository).BatchCreate(context.Background(),
+		&forma.BatchOperation{Operations: operations})
+
+	require.NoError(t, err)
+	require.Len(t, result.Failed, failures)
+	linesByID := map[string]int{}
+	for _, entry := range logs.FilterMessage("BatchCreate operation failed").All() {
+		fields := entry.ContextMap()
+		require.Contains(t, fmt.Sprint(fields["error"]), "disk quota exceeded on node-7")
+		linesByID[fmt.Sprint(fields["error_id"])]++
+	}
+	for _, failure := range result.Failed {
+		require.Equal(t, undisclosedBatchError, failure.Error)
+		require.Equal(t, 1, linesByID[failure.ErrorID],
+			"id %s must join exactly one full-error line; the sampler must not have dropped it", failure.ErrorID)
+	}
 }

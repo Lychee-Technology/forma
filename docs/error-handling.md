@@ -1752,6 +1752,30 @@ detail, without a second `HasOperatorDetail` branch to mirror. The published
 message itself is unchanged; the id sits beside it. `error_id` is `omitempty`,
 so an `OperationError` an embedder builds by hand serialises as before.
 
+**The line is never sampled.** "Every id leads to a line" would be false under
+the production logger as zap ships it: `zap.NewProductionConfig` samples by
+level and message — the first 100 identical entries per second, then every
+100th — and every line that carries an `error_id` has a constant message
+(`BatchCreate operation failed`, or the HTTP handler's `op`). A best-effort
+batch of 101 failing operations, well inside the default `MaxBatchSize` of
+1000, would return 101 ids and write 100 lines, and a database outage does the
+same to the HTTP `Errorw` line. So both surfaces write their id-carrying lines
+through `errorid.Logger`, the global logger under the name `errorid`, and
+every production binary builds its logger with `bootstrap.NewProductionLogger`
+(or `bootstrap.BuildLogger` for `cmd/sample`'s console variant), which installs
+the sampler through `errorid.ExemptFromSampler`: an entry named `errorid`
+goes to the core underneath the sampler, everything else through it. The
+exemption is by logger name because that is all a core can see when the
+sampler decides; fields arrive afterwards, which is why adding one cannot
+help. Nothing else changes for those lines — level, fields, encoding are the
+global logger's — and every other line, including the report-only validation
+line that relies on the sampler for its volume bound (#317), is sampled as
+before. The id-carrying line does gain a `logger: errorid` field, which an
+operator can filter on. Pinned by
+`TestBatchResultEveryFailureSurvivesProductionSampling`,
+`TestRespondErrorIDsSurviveProductionSampling` and, through the real
+production config, `TestProductionLoggerNeverSamplesACorrelationLine`.
+
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
 reproduced in the batch path. It is reserved for the three federated read-path
 carriers `errorClass` recognises, all constructed in `internal/federated` and

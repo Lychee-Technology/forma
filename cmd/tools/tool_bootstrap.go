@@ -16,7 +16,7 @@ import (
 
 var (
 	toolLoggerFactoryDev    = zap.NewDevelopment
-	toolLoggerFactoryProd   = zap.NewProduction
+	toolLoggerFactoryProd   = bootstrap.NewProductionLogger
 	toolPostgresPoolFn      = bootstrap.NewPostgresPoolFromConfigContext
 	toolSchemaRegistryFn    = schemameta.NewFileSchemaRegistryContext
 	toolLoadAWSConfigFn     = awsconfig.LoadDefaultConfig

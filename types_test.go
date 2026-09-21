@@ -588,6 +588,16 @@ func TestOperationError_JSON(t *testing.T) {
 
 	assert.Equal(t, opErr.Error, decoded.Error)
 	assert.Equal(t, opErr.Code, decoded.Code)
+	assert.NotContains(t, string(data), `"error_id"`, "an OperationError without an id serialises without the key")
+
+	// The correlation id (#398) rides under the same wire name as the HTTP
+	// error_id, and round-trips verbatim.
+	opErr.ErrorID = "550e8400-e29b-41d4-a716-446655440001"
+	data, err = json.Marshal(opErr)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"error_id":"550e8400-e29b-41d4-a716-446655440001"`)
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, opErr.ErrorID, decoded.ErrorID)
 }
 
 func TestEntityUpdate_JSON(t *testing.T) {

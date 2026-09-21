@@ -326,13 +326,20 @@ func resolvePublicMessage(err error) (string, bool) {
 //
 // Log levels are contract. Every redacted response logs at Errorw whatever its
 // status, because a redacted body is the operator's only remaining copy of the
-// detail and the production logger runs at Info (cmd/server/main.go). A
+// detail and the production logger runs at Info (bootstrap.NewProductionLogger,
+// installed by cmd/server/main.go). A
 // disclosed 4xx logs at Debugw when the chain holds nothing beyond its
 // publication — the caller already has everything — but at Warnw when
 // operator detail was withheld (forma.HasOperatorDetail): that line is the
 // only copy of the detail, so it must clear the Info threshold, without
 // inheriting Errorw's alerting weight for something a caller can trigger at
 // will. The Warnw branch also mints an error_id shared by line and body (#361).
+//
+// The two lines that carry an error_id go through errorid.Logger rather than
+// zap.S(): op is a constant message, and the production sampler keys on level
+// and message, so a burst of identical failures would otherwise leave callers
+// holding ids whose lines were never written. The Debugw line carries no id
+// and stays on the sampled global logger.
 func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
 	fields := make([]any, 0, len(logFields)+8)
 	fields = append(fields, logFields...)
@@ -360,7 +367,7 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 			// correlates to nothing is worse than none.
 			resp.ErrorID = errorid.New()
 			fields = append(fields, "error_id", resp.ErrorID, "error", safe)
-			zap.S().Warnw(op, fields...)
+			errorid.Logger().Warnw(op, fields...)
 		} else {
 			fields = append(fields, "error", safe)
 			zap.S().Debugw(op, fields...)
@@ -381,7 +388,7 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 		fields = append(fields, "schema_id", schemaID)
 	}
 	fields = append(fields, "error", safe)
-	zap.S().Errorw(op, fields...)
+	errorid.Logger().Errorw(op, fields...)
 
 	_ = writeJSON(w, status, APIResponse{
 		Success:    false,

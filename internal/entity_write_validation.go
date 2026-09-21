@@ -154,13 +154,16 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 	// counts only — no violation text, no payload — so they widen nothing.
 	//
 	// Volume is bounded by zap's production sampling, not by this code:
-	// cmd/server and cmd/lambda install zap.NewProduction(), whose sampler
-	// passes the first 100 entries per second for an identical message and every
-	// 100th after. This message is constant, so a violation-heavy corpus is
-	// capped at that rate, and the milestone line carries cumulative counts so
-	// sampled-away per-write lines lose no aggregate information, short of rates
-	// where the milestone line itself is sampled (~10k violations/sec for one
-	// schema, since it fires once per 100) (#317).
+	// cmd/server and cmd/lambda install bootstrap.NewProductionLogger, whose
+	// sampler passes the first 100 entries per second for an identical message
+	// and every 100th after. This message is constant, so a violation-heavy
+	// corpus is capped at that rate, and the milestone line carries cumulative
+	// counts so sampled-away per-write lines lose no aggregate information,
+	// short of rates where the milestone line itself is sampled (~10k
+	// violations/sec for one schema, since it fires once per 100) (#317). This
+	// line is deliberately not written through errorid.Logger, which is exempt
+	// from that sampler: it carries no id a caller holds, so a dropped copy
+	// leaves nobody with a dangling handle.
 	//
 	// kind was classified above, off the validator's own error, before the
 	// relation-root decoration could join the string.

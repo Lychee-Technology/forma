@@ -30,7 +30,7 @@ type serverRuntime struct {
 }
 
 func main() {
-	logger, err := zap.NewProduction()
+	logger, err := bootstrap.NewProductionLogger()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
 		os.Exit(1)
