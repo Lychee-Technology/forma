@@ -648,6 +648,35 @@ Examples:
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.
 
+Every consistency error raised while rebuilding a row (`FromPersistentRecord`)
+names the row, so a failure surfaced by a list or query read — where the row
+is not implied by the request — is attributable without a second lookup
+(#405). The attribute is named too once a hop has resolved one; the lookups
+that run before any attribute is resolved (the schema metadata reads and the
+relation-root resolution) identify schema and row only, as the examples below
+show. The EAV funnel renders the record's key once, at `FromEAVRecord`, the
+hop that holds it (`record schema=<id> row=<uuid> attrID=<n>`, plus
+`arrayIndices=<idx>` for a list element), and `FromEAVRecords` adds the
+attribute name it resolved. The converter's steps
+outside that per-record loop — the relation-root resolution and schema
+metadata read ahead of it, the required-policy check after it — take the row
+from the first record, since every record of one call belongs to one row;
+this matters because the converter reads the registry on its own, after
+`FromPersistentRecord` already has (#569), and `forma.SchemaRegistry`
+promises nothing about a second read. The other hops do not hold the record
+on their own — the main-column read, the transformer's schema metadata
+lookup, and the final attribute-to-JSON assembly, where a malformed persisted
+`array_indices` first fails — so `FromPersistentRecord` names the row in the
+wrap it puts around each of them:
+
+- `convert attribute 'isActive': record schema=7 row=0198… attrID=3: non-finite value NaN has no truth value; a finite value is required`
+- `required-policy check for schema 7 row 0198…: missing required attribute 'email' (attrID=2) in EAV records`
+- `load schema metadata for schema 7 row 0198…: …`
+- `resolve relation roots for required-policy check of schema 7 row 0198…: …`
+- `failed to read attribute isActiveText of row 0198… from main column: column text_02: …`
+- `failed to convert attributes of row 0198… to JSON: parse array indices for attribute 'jobs.active': invalid index 'x'`
+- `failed to load schema 7 metadata for row 0198…: …`
+
 EAV records whose attribute id is no longer present in the schema metadata are
 not an error: they are skipped on read and preserved on update (#294
 tolerate-and-preserve), so removing an attribute from a schema is

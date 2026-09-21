@@ -108,7 +108,13 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 	return record, nil
 }
 
-// FromEAVRecord converts an model.EAVRecord to an model.EntityAttribute
+// FromEAVRecord converts an model.EAVRecord to an model.EntityAttribute.
+//
+// An extraction failure is a read-path consistency error (docs/error-handling.md):
+// plain, operator-visible, and wrapped here with the record's full identity.
+// This is the one hop that holds the row, so it is where the row gets named;
+// without it a list or query enrichment read cannot say which row is corrupt
+// (#405). The attribute name is added by fromEAVRecords, the hop that has it.
 func (c *AttributeConverter) FromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (model.EntityAttribute, error) {
 	attr := model.EntityAttribute{
 		SchemaID:     record.SchemaID,
@@ -121,10 +127,21 @@ func (c *AttributeConverter) FromEAVRecord(record model.EAVRecord, valueType for
 	var err error
 	attr.Value, err = extractValueFromEAVRecord(record, valueType)
 	if err != nil {
-		return attr, err
+		return attr, fmt.Errorf("record %s: %w", eavRecordIdentity(record), err)
 	}
 
 	return attr, nil
+}
+
+// eavRecordIdentity renders the EAV key of a record for error messages:
+// schema, row, attrID, and the array indices when the record is a list
+// element (a scalar's indices are empty and are left out).
+func eavRecordIdentity(record model.EAVRecord) string {
+	identity := fmt.Sprintf("schema=%d row=%s attrID=%d", record.SchemaID, record.RowID, record.AttrID)
+	if record.ArrayIndices != "" {
+		identity += " arrayIndices=" + record.ArrayIndices
+	}
+	return identity
 }
 
 // ToEAVRecords converts a slice of EntityAttributes to EAVRecords
@@ -151,9 +168,12 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
+	// The lookups ahead of the per-record loop hold the records, so they
+	// name the row from the first one (#405), like fromEAVRecords' own.
 	relationRoots, err := c.relationRootsFor(records[0].SchemaID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve relation roots for required-policy check: %w", err)
+		return nil, fmt.Errorf("resolve relation roots for required-policy check of schema %d row %s: %w",
+			records[0].SchemaID, records[0].RowID, err)
 	}
 	return c.fromEAVRecords(records, relationRoots)
 }
@@ -164,11 +184,15 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 		return []model.EntityAttribute{}, nil
 	}
 
-	// Get schema metadata to determine value types
-	schemaID := records[0].SchemaID
+	// Get schema metadata to determine value types. The records of one call
+	// all belong to one row, so the steps outside the per-record loop — this
+	// lookup and the required-policy check — name the row from the first
+	// record (#405); inside the loop FromEAVRecord holds the whole record and
+	// names it there.
+	schemaID, rowID := records[0].SchemaID, records[0].RowID
 	cache, idToName, err := schemameta.GetSchemaMetadata(c.registry, schemaID)
 	if err != nil {
-		return nil, fmt.Errorf("load schema metadata for schema %d: %w", schemaID, err)
+		return nil, fmt.Errorf("load schema metadata for schema %d row %s: %w", schemaID, rowID, err)
 	}
 
 	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
@@ -204,7 +228,9 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 		}
 		attr, err := c.FromEAVRecord(record, vt)
 		if err != nil {
-			return nil, fmt.Errorf("convert record attrID=%d: %w", record.AttrID, err)
+			// FromEAVRecord already names schema, row, and attrID; this hop
+			// adds the attribute name, which only it has resolved.
+			return nil, fmt.Errorf("convert attribute '%s': %w", attrName, err)
 		}
 		attributes = append(attributes, attr)
 	}
@@ -214,11 +240,11 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 			ids = append(ids, id)
 		}
 		slices.Sort(ids)
-		logSkippedAttrIDs(schemaID, records[0].RowID, ids)
+		logSkippedAttrIDs(schemaID, rowID, ids)
 	}
 
 	if err := c.checkRequiredAttributes(cache, presentAttrIndices, relationRoots); err != nil {
-		return nil, fmt.Errorf("required-policy check for schema %d: %w", schemaID, err)
+		return nil, fmt.Errorf("required-policy check for schema %d row %s: %w", schemaID, rowID, err)
 	}
 
 	return attributes, nil

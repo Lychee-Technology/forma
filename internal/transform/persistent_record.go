@@ -117,10 +117,12 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 		return nil, fmt.Errorf("record cannot be nil")
 	}
 
-	// Get schema metadata
+	// Every error raised while rebuilding a row names the row (#405): the
+	// EAV funnel renders it at FromEAVRecord, the hop that holds the record,
+	// and the wraps here cover the hops that do not hold it on their own.
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, record.SchemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
 	}
 
 	// Reconstruct attributes from main table columns
@@ -134,7 +136,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 
 		attr, err := t.readFromMainColumn(record, meta, meta.ColumnBinding)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read attribute %s from main column: %w", attrName, err)
+			return nil, fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, record.RowID, err)
 		}
 		if attr != nil {
 			attributes = append(attributes, *attr)
@@ -151,10 +153,13 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
 	}
 
-	// Convert EntityAttributes back to JSON using existing transformer
+	// Convert EntityAttributes back to JSON. FromAttributes names the
+	// attribute but not the row (a malformed persisted array_indices fails
+	// here, not in FromEAVRecord, which does not parse it), so the row is
+	// added at this hop.
 	result, err := t.jsonTransformer.FromAttributes(ctx, entityAttributes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert from attributes: %w", err)
+		return nil, fmt.Errorf("failed to convert attributes of row %s to JSON: %w", record.RowID, err)
 	}
 
 	return result, nil
