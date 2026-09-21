@@ -67,7 +67,9 @@ func validateSchemaAttributeCacheOpts(schemaName string, cache forma.SchemaAttri
 	// system column or collide with each other — such a schema would accept
 	// hot-tier writes it can never flush or read back federated (#260,
 	// PR #273 review). Retired entries stay in scope: their folded columns
-	// still exist in flushed parquet files (#342).
+	// still exist in flushed parquet files (#342), and the guard reads the
+	// Retired flag so a rejection naming one gives the ledger remedy rather
+	// than "rename the attribute" (#549).
 	if err := sqlgen.ValidateParquetAttrColumns(cache); err != nil {
 		return fmt.Errorf("schema %s: %w", schemaName, err)
 	}

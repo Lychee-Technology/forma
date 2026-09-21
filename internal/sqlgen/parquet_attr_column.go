@@ -240,40 +240,64 @@ func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 	}
 	sort.Strings(names)
 
-	type foldedAttr struct {
-		name string
-		col  string
-	}
 	colToAttr := make(map[string]foldedAttr, len(names))
 	for _, name := range names {
-		col := ParquetAttrColumn(name)
-		key := DuckDBFoldIdentifier(col)
+		cur := foldedAttr{name: name, col: ParquetAttrColumn(name), meta: cache[name]}
+		key := DuckDBFoldIdentifier(cur.col)
 		if _, ok := reservedParquetColumns[key]; ok {
-			return reservedParquetColumnError(name, col, key)
+			return reservedParquetColumnError(cur, key)
 		}
 		if prev, ok := colToAttr[key]; ok {
-			return foldedColumnCollisionError(prev.name, prev.col, name, col, key)
+			return foldedColumnCollisionError(prev, cur, key)
 		}
-		colToAttr[key] = foldedAttr{name: name, col: col}
+		colToAttr[key] = cur
 	}
 	return nil
 }
+
+// foldedAttr is one attribute as the guard sees it: the caller's spelling,
+// the parquet column it folds to, and the metadata that says whether it is a
+// retired ledger entry.
+type foldedAttr struct {
+	name string
+	col  string
+	meta forma.AttributeMetadata
+}
+
+// ledger describes a retired entry the way the remedy needs it: the id and
+// valueType are what a migration must carry over (#342).
+func (a foldedAttr) ledger() string {
+	return fmt.Sprintf("%q (id %d, valueType %s)", a.name, a.meta.AttributeID, a.meta.ValueType)
+}
+
+// retiredLedgerMigration is the remedy every retired-entry rejection ends
+// with. A retired entry is the attributeID ledger for values already flushed
+// under its folded column, so "rename the attribute" is not available to it:
+// a rename in place desynchronizes the ledger from the flushed data and from
+// the #294-preserved EAV rows the id still owns. The only sound fix moves the
+// flushed column and the ledger entry together (#549).
+const retiredLedgerMigration = "migrate the flushed parquet column and the ledger entry to a new name together, keeping the attributeID"
 
 // reservedParquetColumnError explains a reserved-column rejection. When the
 // folded name is already lower case it is itself the reserved entry and the
 // message says so plainly; when the caller's case differs, the message must
 // also name the reserved column the identifier resolves onto, because that
 // lower-cased name — not the caller's spelling — is what an operator finds in
-// reservedParquetColumns (#532).
-func reservedParquetColumnError(name, col, key string) error {
-	if col == key {
-		return fmt.Errorf(
-			"attribute %q folds to parquet column %q, which is reserved for system columns; rename the attribute",
-			name, col)
+// reservedParquetColumns (#532). A retired entry gets the ledger remedy
+// instead of the rename one (#549).
+func reservedParquetColumnError(a foldedAttr, key string) error {
+	resolves := fmt.Sprintf("folds to parquet column %q, which is reserved for system columns", a.col)
+	if a.col != key {
+		resolves = fmt.Sprintf(
+			"folds to parquet column %q, which DuckDB resolves case-insensitively onto the reserved system column %q",
+			a.col, key)
 	}
-	return fmt.Errorf(
-		"attribute %q folds to parquet column %q, which DuckDB resolves case-insensitively onto the reserved system column %q; rename the attribute",
-		name, col, key)
+	if a.meta.Retired {
+		return fmt.Errorf(
+			"retired attribute %s %s; the entry is the attributeID ledger for values already flushed under that column, so renaming it alone desynchronizes the ledger from the flushed data: %s",
+			a.ledger(), resolves, retiredLedgerMigration)
+	}
+	return fmt.Errorf("attribute %q %s; rename the attribute", a.name, resolves)
 }
 
 // foldedColumnCollisionError explains an intra-schema collision. Two
@@ -282,13 +306,33 @@ func reservedParquetColumnError(name, col, key string) error {
 // parquet columns — ParquetAttrColumn is byte-stable — and are merged only by
 // DuckDB's case-insensitive identifier matching, so the message names both
 // columns rather than claiming a single one that no parquet footer holds.
-func foldedColumnCollisionError(prevName, prevCol, name, col, key string) error {
-	if prevCol == col {
+// When a retired entry is involved the remedy changes with it (#549): the
+// retired side is the ledger and is never the one to rename, so a
+// retired/active pair directs the rename at the active attribute and a
+// retired/retired pair gets the migration remedy for both.
+func foldedColumnCollisionError(prev, cur foldedAttr, key string) error {
+	// Put the retired side first so the message reads "retired ... and
+	// active ..." whichever way the sorted walk met them.
+	if cur.meta.Retired && !prev.meta.Retired {
+		prev, cur = cur, prev
+	}
+	shared := fmt.Sprintf("both map to parquet column %q", cur.col)
+	if prev.col != cur.col {
+		shared = fmt.Sprintf(
+			"map to parquet columns %q and %q, which DuckDB resolves case-insensitively onto the same column %q",
+			prev.col, cur.col, key)
+	}
+	switch {
+	case prev.meta.Retired && cur.meta.Retired:
 		return fmt.Errorf(
-			"attributes %q and %q both map to parquet column %q; attribute names must remain distinct after identifier folding",
-			prevName, name, col)
+			"retired attributes %s and %s %s; both entries are the attributeID ledger for values already flushed under their columns, so neither can be renamed alone: %s",
+			prev.ledger(), cur.ledger(), shared, retiredLedgerMigration)
+	case prev.meta.Retired:
+		return fmt.Errorf(
+			"retired attribute %s and active attribute %q %s; the retired entry is the attributeID ledger for values already flushed under its column and cannot be renamed alone: rename the active attribute %q, or %s",
+			prev.ledger(), cur.name, shared, cur.name, retiredLedgerMigration)
 	}
 	return fmt.Errorf(
-		"attributes %q and %q map to parquet columns %q and %q, which DuckDB resolves case-insensitively onto the same column %q; attribute names must remain distinct after identifier folding",
-		prevName, name, prevCol, col, key)
+		"attributes %q and %q %s; attribute names must remain distinct after identifier folding",
+		prev.name, cur.name, shared)
 }

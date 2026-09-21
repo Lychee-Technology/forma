@@ -122,6 +122,52 @@ func TestDirectoryRegistry_RetiredReservedFoldedColumnStillRejected(t *testing.T
 	assert.Contains(t, err.Error(), "reserved")
 }
 
+// TestDirectoryRegistry_RetiredReservedFoldedColumnNamesLedgerRemedy pins
+// #549 on the registry load path: a retired entry is the attributeID ledger
+// for a column already sitting in flushed parquet, so the rejection must say
+// the entry is retired, carry the id and valueType a migration has to keep,
+// and never offer the active-attribute remedy "rename the attribute", which
+// would desynchronize the ledger from the flushed data. Created_At is the
+// #548 widening case: it passed the guard before #532 and blocks boot after.
+func TestDirectoryRegistry_RetiredReservedFoldedColumnNamesLedgerRemedy(t *testing.T) {
+	dir := t.TempDir()
+	writeJSONFile(t, filepath.Join(dir, "user.json"), map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+	})
+	writeJSONFile(t, filepath.Join(dir, "user_attributes.json"), map[string]any{
+		"name":       map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"Created_At": map[string]any{"attributeID": float64(7), "valueType": "date", "retired": true},
+	})
+
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err, "retired Created_At must still fail registry construction")
+	msg := err.Error()
+	assert.Contains(t, msg, "schema user", "error must name the schema")
+	assert.Contains(t, msg, `retired attribute "Created_At" (id 7, valueType date)`)
+	assert.Contains(t, msg, `reserved system column "created_at"`)
+	assert.Contains(t, msg, "attributeID ledger")
+	assert.Contains(t, msg, "migrate the flushed parquet column and the ledger entry")
+	assert.NotContains(t, msg, "rename the attribute")
+}
+
+// TestValidateSchemaAttributeCache_RetiredFoldedColumnCollisionNamesLedger
+// is the collision half of #549: a retired/active pair that fold onto the
+// same parquet column must name the retired side as the ledger and direct
+// the rename at the active side, like the id and main-column collisions above.
+func TestValidateSchemaAttributeCache_RetiredFoldedColumnCollisionNamesLedger(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"contact.name": {AttributeName: "contact.name", AttributeID: 3, ValueType: forma.ValueTypeText, Retired: true},
+		"contact_name": {AttributeName: "contact_name", AttributeID: 4, ValueType: forma.ValueTypeText},
+	}
+	err := validateSchemaAttributeCache("user", cache)
+	require.Error(t, err, "expected fold collision between retired contact.name and active contact_name")
+	msg := err.Error()
+	assert.Contains(t, msg, `retired attribute "contact.name" (id 3, valueType text)`)
+	assert.Contains(t, msg, `rename the active attribute "contact_name"`)
+	assert.NotContains(t, msg, "attribute names must remain distinct")
+}
+
 func TestMetadataCacheRegisterSchema_StripsRetired(t *testing.T) {
 	mc := NewMetadataCache()
 	err := mc.RegisterSchema("user", 100, forma.SchemaAttributeCache{
