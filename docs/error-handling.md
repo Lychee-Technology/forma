@@ -1729,6 +1729,29 @@ By design, #318 left the single-operation path untouched: bodies written by
 `respondErrorWithStatus` were byte-identical before and after that change (#361
 later added `error_id` to withheld-detail disclosed bodies).
 
+**Correlation (#398).** Withholding the text made an older asymmetry matter: a
+caller reading `internal error` had nothing to quote to an operator, and the
+operator had nothing to grep for beyond a timestamp and a schema name. Every
+failed best-effort operation now carries `OperationError.ErrorID` (JSON
+`error_id`), and the failure line `executeBestEffortBatch` logs at `Warnw` for
+that operation carries the same id as its `error_id` field, next to the full
+error under `error`. The id is a canonical UUID string minted by
+`internal/errorid.New`, the same generator `respondErrorWithStatus` now uses for
+the HTTP `error_id`, so the two surfaces cannot disagree about the shape of an
+id; it is a correlation handle only — `Code` still classifies. Pinned by
+`TestBatchResultWithheldFailureCarriesACorrelationID`.
+
+The id is **unconditional**: a published failure carries it too, pinned by
+`TestBatchResultPublishedFailureCarriesACorrelationID`. This is a deliberate
+divergence from the HTTP boundary, which leaves a detail-less disclosed `4xx`
+id-free because its `Debugw` line does not survive the production `Info`
+threshold, so an id there would correlate to nothing. The batch path has no such
+branch — every failure logs the full error at `Warnw` — so every id leads to a
+line, including the #318 case where a published message withholds operator
+detail, without a second `HasOperatorDetail` branch to mirror. The published
+message itself is unchanged; the id sits beside it. `error_id` is `omitempty`,
+so an `OperationError` an embedder builds by hand serialises as before.
+
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
 reproduced in the batch path. It is reserved for the three federated read-path
 carriers `errorClass` recognises, all constructed in `internal/federated` and

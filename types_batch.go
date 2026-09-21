@@ -63,5 +63,15 @@ type OperationError struct {
 	Operation EntityOperation `json:"operation"`
 	Error     string          `json:"error"`
 	Code      string          `json:"code"`
-	Details   map[string]any  `json:"details,omitempty"`
+	// ErrorID is the correlation handle for a failed best-effort operation
+	// (#398). Error carries only what the failing error published — "internal
+	// error" when it published nothing — while the full error goes to the
+	// failure log line alone; ErrorID appears verbatim on that line as
+	// error_id, so a caller quotes it and an operator finds the detail. It is
+	// set on every failed operation, published message or not, because every
+	// failure logs that line. Same shape and wire name as the error_id on an
+	// internal/httpapi response body. Code classifies, it does not correlate.
+	// omitempty so a hand-built OperationError serialises without one.
+	ErrorID string         `json:"error_id,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }

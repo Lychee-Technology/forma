@@ -3,14 +3,18 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/transform"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // insertFailingRepository fails every insert with one storage error.
@@ -59,7 +63,7 @@ func batchCreateOneVisit(t *testing.T, manager forma.EntityManager, schemaName s
 // TestBatchResultWithholdsAnUnpublishedFailure is the leak guard for the
 // fallback branch.
 //
-// forma.OperationError.Error is exported and JSON-serialised (types.go), and a
+// forma.OperationError.Error is exported and JSON-serialised (types_batch.go), and a
 // storage failure publishes nothing: the repository returns a driver error and
 // the CRUD path wraps it with fmt.Errorf, so no forma.PublicError carrier is in
 // the chain. Rendering err.Error() there would put the driver's own prose —
@@ -103,4 +107,90 @@ func TestBatchResultScrubsCredentialsFromAPublishedMessage(t *testing.T) {
 	require.Contains(t, failure.Error, "schema not found", "the caller keeps the message authored for them")
 	require.NotContains(t, failure.Error, "s3cr3t")
 	require.Contains(t, failure.Error, redact.Placeholder)
+}
+
+// observeBatchFailureLog captures the Warn-level failure line
+// executeBestEffortBatch writes, so a test can join a result entry to it the
+// way an operator would.
+func observeBatchFailureLog(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+	core, logs := observer.New(zap.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+	return logs
+}
+
+// requireFailureJoinsItsLogLine is the correlation contract (#398): the entry's
+// ErrorID is a UUID, and exactly one failure line carries it verbatim as
+// error_id next to the full error — the text the result deliberately does not
+// carry.
+func requireFailureJoinsItsLogLine(
+	t *testing.T, failure forma.OperationError, logs *observer.ObservedLogs, wantInFullError string,
+) {
+	t.Helper()
+	_, err := uuid.Parse(failure.ErrorID)
+	require.NoError(t, err, "a failed best-effort operation must carry a UUID correlation id")
+
+	entries := logs.FilterMessage("BatchCreate operation failed").All()
+	require.Len(t, entries, 1, "one failed operation, one failure line")
+	fields := entries[0].ContextMap()
+	require.Equal(t, failure.ErrorID, fields["error_id"],
+		"the id in the result must appear verbatim on the line carrying the full error")
+	require.Contains(t, fmt.Sprint(fields["error"]), wantInFullError,
+		"the line the id joins to must be the one holding the full error")
+}
+
+// TestBatchResultWithheldFailureCarriesACorrelationID is the case #398 was
+// filed for: the result says only "internal error", so the id is all a caller
+// has to quote to an operator, and the operator needs it to land on the line
+// that holds the driver text.
+func TestBatchResultWithheldFailureCarriesACorrelationID(t *testing.T) {
+	logs := observeBatchFailureLog(t)
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("storage unavailable: disk quota exceeded on node-7"),
+	}
+
+	failure := batchCreateOneVisit(t, newBatchErrorManager(t, repository), "visit")
+
+	require.Equal(t, undisclosedBatchError, failure.Error)
+	requireFailureJoinsItsLogLine(t, failure, logs, "disk quota exceeded on node-7")
+}
+
+// TestBatchResultPublishedFailureCarriesACorrelationID pins the decision that
+// the id is unconditional rather than reserved for withheld messages. Every
+// best-effort failure logs at Warn with the full error — there is no
+// Debug-level branch here for an id to correlate to nothing, which is the
+// reason internal/httpapi leaves a detail-less disclosed 4xx id-free — so a
+// published failure joins its line the same way. The published text is still
+// the caller's own: the id sits beside it, it does not replace it.
+func TestBatchResultPublishedFailureCarriesACorrelationID(t *testing.T) {
+	logs := observeBatchFailureLog(t)
+
+	failure := batchCreateOneVisit(t, newBatchErrorManager(t, newMockPersistentRecordRepository()), "nosuchschema")
+
+	require.Contains(t, failure.Error, "schema not found")
+	requireFailureJoinsItsLogLine(t, failure, logs, "nosuchschema")
+}
+
+// TestBatchResultFailuresCarryDistinctIDs: two failures in one batch must not
+// share a handle, or the operator's grep lands on both lines.
+func TestBatchResultFailuresCarryDistinctIDs(t *testing.T) {
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("storage unavailable"),
+	}
+	op := forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
+		Type:             forma.OperationCreate,
+		Data:             visitPayload("visit-batch-error-2"),
+	}
+
+	result, err := newBatchErrorManager(t, repository).BatchCreate(context.Background(), &forma.BatchOperation{
+		Operations: []forma.EntityOperation{op, op},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 2)
+	require.NotEqual(t, result.Failed[0].ErrorID, result.Failed[1].ErrorID)
 }

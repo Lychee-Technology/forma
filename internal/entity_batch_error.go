@@ -24,13 +24,15 @@ import (
 // The caller is not left with only this string: forma.OperationError.Code
 // carries the machine-readable classification of the failure alongside it
 // (CREATE_FAILED, UPDATE_FAILED, DELETE_FAILED), and the call site logs the
-// whole error, so nothing an operator needs is lost by publishing less.
+// whole error under an error_id the entry carries as ErrorID (#398), so
+// nothing an operator needs is lost by publishing less, and the caller has a
+// handle to quote for it.
 const undisclosedBatchError = "internal error"
 
 // resolveBatchErrorMessage renders one failed operation for
 // forma.OperationError.Error.
 //
-// That field is exported and serialised into the response body (types.go), and
+// That field is exported and serialised into the response body (types_batch.go), and
 // executeBestEffortBatch is the only place in the tree that fills it: the atomic
 // batch paths return the error itself, and every single-operation response goes
 // through internal/httpapi, which puts the resolved published message in the

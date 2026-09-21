@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -153,11 +154,17 @@ func (s *entityBatchService) executeBestEffortBatch(
 		op := operation
 		record, err := executor(ctx, &op)
 		if err != nil {
-			zap.S().Warnw(operationName+" operation failed", "operation", op, "error", err)
+			// The result entry withholds everything the error did not publish,
+			// so this line is the only copy of the full error, and the id is
+			// what joins the two (#398). Warnw, unconditionally: it has to
+			// clear the production Info threshold for the id to lead anywhere.
+			errorID := errorid.New()
+			zap.S().Warnw(operationName+" operation failed", "operation", op, "error_id", errorID, "error", err)
 			failed = append(failed, forma.OperationError{
 				Operation: op,
 				Error:     resolveBatchErrorMessage(err),
 				Code:      errorCode,
+				ErrorID:   errorID,
 			})
 			continue
 		}

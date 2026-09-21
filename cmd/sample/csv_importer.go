@@ -227,9 +227,12 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 			}
 		}
 
+		// The error text is only what the failure published — "internal
+		// error" for a storage failure — so the id is what an operator needs
+		// to find the full error in the server log (#398).
 		importErr := &ImportError{
 			RowNumber: startRowNum + rowOffset,
-			Reason:    fmt.Sprintf("%s: %s", opErr.Code, opErr.Error),
+			Reason:    fmt.Sprintf("%s: %s (error_id %s)", opErr.Code, opErr.Error, opErr.ErrorID),
 		}
 		i.logger.Error(importErr.Error())
 		errors = append(errors, importErr)
