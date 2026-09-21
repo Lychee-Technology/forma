@@ -227,18 +227,28 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 			}
 		}
 
-		// The error text is only what the failure published — "internal
-		// error" for a storage failure — so the id is what an operator needs
-		// to find the full error in the server log (#398).
 		importErr := &ImportError{
 			RowNumber: startRowNum + rowOffset,
-			Reason:    fmt.Sprintf("%s: %s (error_id %s)", opErr.Code, opErr.Error, opErr.ErrorID),
+			Reason:    failureReason(opErr),
 		}
 		i.logger.Error(importErr.Error())
 		errors = append(errors, importErr)
 	}
 
 	return len(batchResult.Successful), errors
+}
+
+// failureReason renders a failed best-effort operation for the import log.
+// The error text is only what the failure published — "internal error" for a
+// storage failure — so the id is what an operator needs to find the full
+// error in the server log (#398). The id is optional on the wire
+// (error_id,omitempty), so an entry without one shows no empty handle.
+func failureReason(opErr forma.OperationError) string {
+	reason := fmt.Sprintf("%s: %s", opErr.Code, opErr.Error)
+	if opErr.ErrorID == "" {
+		return reason
+	}
+	return reason + " (error_id " + opErr.ErrorID + ")"
 }
 
 // ImportOptions provides additional configuration for import operations.
