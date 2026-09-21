@@ -168,9 +168,12 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
+	// The lookups ahead of the per-record loop hold the records, so they
+	// name the row from the first one (#405), like fromEAVRecords' own.
 	relationRoots, err := c.relationRootsFor(records[0].SchemaID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve relation roots for required-policy check: %w", err)
+		return nil, fmt.Errorf("resolve relation roots for required-policy check of schema %d row %s: %w",
+			records[0].SchemaID, records[0].RowID, err)
 	}
 	return c.fromEAVRecords(records, relationRoots)
 }
@@ -181,11 +184,15 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 		return []model.EntityAttribute{}, nil
 	}
 
-	// Get schema metadata to determine value types
-	schemaID := records[0].SchemaID
+	// Get schema metadata to determine value types. The records of one call
+	// all belong to one row, so the steps outside the per-record loop — this
+	// lookup and the required-policy check — name the row from the first
+	// record (#405); inside the loop FromEAVRecord holds the whole record and
+	// names it there.
+	schemaID, rowID := records[0].SchemaID, records[0].RowID
 	cache, idToName, err := schemameta.GetSchemaMetadata(c.registry, schemaID)
 	if err != nil {
-		return nil, fmt.Errorf("load schema metadata for schema %d: %w", schemaID, err)
+		return nil, fmt.Errorf("load schema metadata for schema %d row %s: %w", schemaID, rowID, err)
 	}
 
 	presentAttrIndices := make(map[string]map[string]struct{}, len(records))
@@ -233,11 +240,11 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 			ids = append(ids, id)
 		}
 		slices.Sort(ids)
-		logSkippedAttrIDs(schemaID, records[0].RowID, ids)
+		logSkippedAttrIDs(schemaID, rowID, ids)
 	}
 
 	if err := c.checkRequiredAttributes(cache, presentAttrIndices, relationRoots); err != nil {
-		return nil, fmt.Errorf("required-policy check for schema %d row %s: %w", schemaID, records[0].RowID, err)
+		return nil, fmt.Errorf("required-policy check for schema %d row %s: %w", schemaID, rowID, err)
 	}
 
 	return attributes, nil

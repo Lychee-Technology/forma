@@ -2,6 +2,7 @@ package transform
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -168,5 +169,79 @@ func TestFromPersistentRecordReconstructionErrorsNameRow(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to load schema 201 metadata for row "+rowID.String()+": ")
 		require.Contains(t, err.Error(), "schema registry is not configured")
+	})
+}
+
+// secondCacheReadFailsRegistry answers GetSchemaAttributeCacheByID normally
+// once and fails every later call. FromPersistentRecord reads the metadata
+// itself and then FromEAVRecords reads it again (#569); forma.SchemaRegistry
+// promises nothing about repeated reads, so the converter's own lookups can
+// fail after the transformer's succeeded, and must still name the row.
+type secondCacheReadFailsRegistry struct {
+	*stubSchemaRegistry
+	cacheCalls int
+}
+
+func (r *secondCacheReadFailsRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
+	r.cacheCalls++
+	if r.cacheCalls > 1 {
+		return "", nil, errors.New("registry read a second time within one rebuild")
+	}
+	return r.stubSchemaRegistry.GetSchemaAttributeCacheByID(id)
+}
+
+// failingSchemaByIDRegistry fails GetSchemaByID, the read relationRootsFor
+// makes when a relation-root lookup is installed, while answering the
+// attribute-cache reads normally.
+type failingSchemaByIDRegistry struct {
+	*stubSchemaRegistry
+}
+
+func (r *failingSchemaByIDRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error) {
+	return "", forma.JSONSchema{}, errors.New("schema name lookup failed")
+}
+
+// TestFromEAVRecordsLookupErrorsNameRow pins the converter's two lookups
+// ahead of the per-record loop: the relation-root resolution and the schema
+// metadata read. Both hold the records, so both name the row from them, and
+// a list read that fails there is attributable like every other rebuild
+// failure. Driven through FromPersistentRecord so the transformer's own
+// metadata read succeeds first and only the converter's fails.
+func TestFromEAVRecordsLookupErrorsNameRow(t *testing.T) {
+	ctx := context.Background()
+	rowID := uuid.Must(uuid.NewV7())
+	base := newPersistentTransformerRegistry()
+	schemaID, cache, err := base.GetSchemaAttributeCacheByName("persistent_test")
+	require.NoError(t, err)
+	active := 1.0
+	record := &model.PersistentRecord{
+		RowID:    rowID,
+		SchemaID: schemaID,
+		OtherAttributes: []model.EAVRecord{{
+			SchemaID: schemaID, RowID: rowID, AttrID: cache["jobs.active"].AttributeID, ArrayIndices: "0", ValueNumeric: &active,
+		}},
+	}
+
+	t.Run("schema metadata read", func(t *testing.T) {
+		transformer := NewPersistentRecordTransformer(&secondCacheReadFailsRegistry{stubSchemaRegistry: base})
+
+		_, err := transformer.FromPersistentRecord(ctx, record)
+		require.Error(t, err)
+		msg := err.Error()
+		require.Contains(t, msg, "load schema metadata for schema 201 row "+rowID.String()+": ")
+		require.Contains(t, msg, "registry read a second time within one rebuild")
+		require.Equal(t, 1, strings.Count(msg, rowID.String()), "the row is rendered once")
+	})
+
+	t.Run("relation-root resolution", func(t *testing.T) {
+		transformer := NewPersistentRecordTransformer(&failingSchemaByIDRegistry{stubSchemaRegistry: base})
+		transformer.(RelationRootsAware).SetRelationRoots(visitLikeRelationRoots)
+
+		_, err := transformer.FromPersistentRecord(ctx, record)
+		require.Error(t, err)
+		msg := err.Error()
+		require.Contains(t, msg, "resolve relation roots for required-policy check of schema 201 row "+rowID.String()+": ")
+		require.Contains(t, msg, "schema name lookup failed")
+		require.Equal(t, 1, strings.Count(msg, rowID.String()), "the row is rendered once")
 	})
 }
