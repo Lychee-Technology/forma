@@ -66,10 +66,12 @@ func validateSchemaAttributeCacheOpts(schemaName string, cache forma.SchemaAttri
 	// Reject attribute names whose folded parquet columns land on a CDC/read
 	// system column or collide with each other — such a schema would accept
 	// hot-tier writes it can never flush or read back federated (#260,
-	// PR #273 review). Retired entries stay in scope: their folded columns
-	// still exist in flushed parquet files (#342), and the guard reads the
-	// Retired flag so a rejection naming one gives the ledger remedy rather
-	// than "rename the attribute" (#549).
+	// PR #273 review). Retired entries stay in scope for the collision half:
+	// their folded columns still exist in flushed parquet files (#342), and
+	// the guard reads the Retired flag so a rejection naming one gives the
+	// ledger remedy rather than "rename the attribute". The reserved-column
+	// half exempts them, because a retired column is never projected beside
+	// a system column (#549).
 	if err := sqlgen.ValidateParquetAttrColumns(cache); err != nil {
 		return fmt.Errorf("schema %s: %w", schemaName, err)
 	}

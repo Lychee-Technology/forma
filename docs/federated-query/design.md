@@ -210,28 +210,39 @@ trailing tiebreak with `strings.EqualFold` against the literal `row_id` — is
 exactly the ASCII fold for that literal, because no non-ASCII rune sits in
 Go's simple case-fold orbit of `r`, `o`, `w`, `i` or `d`.
 
-**Retired entries are in scope, and stay so.** The registration guard runs
-over the full attribute cache before `activeAttributeCache` strips retired
-entries, because a retired attribute's folded column still exists in every
-parquet file flushed while it was active (#342). Exempting retired entries
-from the reserved-column half of the guard was considered and declined
-(#549): a retired `Created_At` genuinely sits beside the `created_at` system
-column in those files, and both the compaction merge and the federated
-`s3_source` CTE scan them with `SELECT *` over `read_parquet(...,
-union_by_name=true)`, so the collision is a real identifier ambiguity on the
-read side, not only a registration-time one. The boot failure is therefore
-fail-closed by design, and the deployment that hits it is one that registered
-`Created_At` before the guard went case-insensitive. What the guard does
-differently for a retired entry is the remedy: it is the attributeID ledger
-for values already flushed under that column, and renaming it in place would
-desynchronize the ledger from the flushed data and from the #294-preserved
-EAV rows its id still owns. The diagnostic — for a reserved hit and for a
-retired/active or retired/retired fold collision alike — names the entry as
-retired with its id and valueType, and directs the operator to migrate the
-flushed parquet column and the ledger entry together, keeping the id; a
-retired/active collision additionally offers renaming the active side.
-Aggregating every failing schema into one startup report, so an operator sees
-the blast radius in one pass, is tracked separately (#604).
+**Retired entries are in scope for the collision half only.** The
+registration guard runs over the full attribute cache before
+`activeAttributeCache` strips retired entries (#342), and its two halves
+treat a retired entry differently because the two hazards live in different
+places (#549). A fold collision is physical: `read_parquet(...,
+union_by_name=true)` resolves case-variant column names from different files
+onto one column, and the compaction merge's `SELECT *`
+(`internal/compaction/merge_sql.go`) rewrites them as one, so a retired
+attribute's flushed column interferes with an active or another retired
+attribute's column whether or not anything projects it
+(`sqlgen.TestParquetScan_FoldCollisionMergesAcrossFiles`). Such a pair is
+refused, and the diagnostic names the retired side as the attributeID ledger
+with its id and valueType: renaming it in place would desynchronize the
+ledger from the flushed data and from the #294-preserved EAV rows its id
+still owns, so a retired/active pair is told to rename the active attribute
+and a retired/retired pair to migrate the flushed column and the ledger entry
+together, keeping the id. A reserved-column hit is a projection hazard
+instead. No flushed file holds two spellings of a system column: the CDC
+writer emits `ltbase_created_at`, never `created_at`, and DuckDB
+deduplicates a case-variant of a physical export column (`Row_Id` beside
+`row_id`) to `Row_Id_1` at COPY time. The ambiguity arises only when the
+attribute column is projected beside the system column — in the exporter's
+SELECT list and in `s3_source`, `pg_source` and the outer select — and every
+one of those projections is built from the active cache, so an active
+`Created_At` is refused and a retired one is exempt: it sits unreferenced in
+the raw `SELECT *` scans of the cold-scan source and the compaction merge,
+and binds nothing
+(`sqlgen.TestParquetScan_RetiredReservedColumnIsInert`,
+`compaction.TestDuckMerger_CarriesRetiredReservedNameColumnsThrough`).
+Failing boot for it, as the guard did between #548 and #549, imposed a
+migration that fixed nothing. Aggregating every failing schema into one
+startup report, so an operator sees the blast radius in one pass, is tracked
+separately (#604).
 
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,

@@ -104,32 +104,39 @@ func TestDirectoryRegistry_RetiredIDReuseFailsLoad(t *testing.T) {
 	assert.Contains(t, err.Error(), "retired attribute old_col", "error does not carry the reuse diagnosis")
 }
 
-// TestDirectoryRegistry_RetiredReservedFoldedColumnStillRejected pins the
+// TestDirectoryRegistry_RetiredFoldedColumnCollisionStillRejected pins the
 // ordering invariant: the strip must run strictly AFTER
 // validateSchemaAttributeCache, so retired entries still reach
 // sqlgen.ValidateParquetAttrColumns. A retired attribute's folded column is
-// still present in already-flushed parquet files (#342, #260).
-func TestDirectoryRegistry_RetiredReservedFoldedColumnStillRejected(t *testing.T) {
+// still present in already-flushed parquet files, and union_by_name merges
+// it with a same-folding active column (#342, #260, #549).
+func TestDirectoryRegistry_RetiredFoldedColumnCollisionStillRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeJSONFile(t, filepath.Join(dir, "rowid.json"), map[string]any{"type": "object"})
-	writeJSONFile(t, filepath.Join(dir, "rowid_attributes.json"), map[string]any{
-		"row.id": map[string]any{"attributeID": float64(1), "valueType": "text", "retired": true},
+	writeJSONFile(t, filepath.Join(dir, "contact.json"), map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"contact_name": map[string]any{"type": "string"}},
+	})
+	writeJSONFile(t, filepath.Join(dir, "contact_attributes.json"), map[string]any{
+		"contact_name": map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"contact.name": map[string]any{"attributeID": float64(3), "valueType": "text", "retired": true},
 	})
 
 	_, err := NewFileSchemaRegistryFromDirectory(dir)
-	require.Error(t, err, "retired attribute folding onto a reserved column must still be rejected")
-	assert.Contains(t, err.Error(), "row.id")
-	assert.Contains(t, err.Error(), "reserved")
+	require.Error(t, err, "a retired attribute colliding with an active one must still be rejected")
+	assert.Contains(t, err.Error(), `retired attribute "contact.name" (id 3, valueType text)`)
+	assert.Contains(t, err.Error(), `rename the active attribute "contact_name"`)
 }
 
-// TestDirectoryRegistry_RetiredReservedFoldedColumnNamesLedgerRemedy pins
-// #549 on the registry load path: a retired entry is the attributeID ledger
-// for a column already sitting in flushed parquet, so the rejection must say
-// the entry is retired, carry the id and valueType a migration has to keep,
-// and never offer the active-attribute remedy "rename the attribute", which
-// would desynchronize the ledger from the flushed data. Created_At is the
-// #548 widening case: it passed the guard before #532 and blocks boot after.
-func TestDirectoryRegistry_RetiredReservedFoldedColumnNamesLedgerRemedy(t *testing.T) {
+// TestDirectoryRegistry_RetiredReservedFoldedColumnLoads pins the #549
+// ruling on the registry load path: a retired entry whose folded column is
+// reserved is the attributeID ledger for a column that sits unreferenced in
+// flushed parquet — the exporter, compaction and the federated projection
+// never bind it (sqlgen.TestParquetScan_RetiredReservedColumnIsInert) — so it
+// must not fail registry construction. Created_At is the #548 widening case:
+// it passed the guard before #532 and blocked boot between #548 and #549.
+// The same attribute active is still refused, which is what shows the
+// exemption keys on Retired rather than on the name.
+func TestDirectoryRegistry_RetiredReservedFoldedColumnLoads(t *testing.T) {
 	dir := t.TempDir()
 	writeJSONFile(t, filepath.Join(dir, "user.json"), map[string]any{
 		"type":       "object",
@@ -140,15 +147,22 @@ func TestDirectoryRegistry_RetiredReservedFoldedColumnNamesLedgerRemedy(t *testi
 		"Created_At": map[string]any{"attributeID": float64(7), "valueType": "date", "retired": true},
 	})
 
-	_, err := NewFileSchemaRegistryFromDirectory(dir)
-	require.Error(t, err, "retired Created_At must still fail registry construction")
-	msg := err.Error()
-	assert.Contains(t, msg, "schema user", "error must name the schema")
-	assert.Contains(t, msg, `retired attribute "Created_At" (id 7, valueType date)`)
-	assert.Contains(t, msg, `reserved system column "created_at"`)
-	assert.Contains(t, msg, "attributeID ledger")
-	assert.Contains(t, msg, "migrate the flushed parquet column and the ledger entry")
-	assert.NotContains(t, msg, "rename the attribute")
+	registry, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err, "a retired Created_At must not fail registry construction")
+	_, cache, err := registry.GetSchemaAttributeCacheByName("user")
+	require.NoError(t, err)
+	assert.NotContains(t, cache, "Created_At", "the retired entry must still be stripped from the active cache")
+	assert.Contains(t, cache, "name")
+
+	writeJSONFile(t, filepath.Join(dir, "user_attributes.json"), map[string]any{
+		"name":       map[string]any{"attributeID": float64(1), "valueType": "text"},
+		"Created_At": map[string]any{"attributeID": float64(7), "valueType": "date"},
+	})
+	_, err = NewFileSchemaRegistryFromDirectory(dir)
+	require.Error(t, err, "the same attribute active is projected beside created_at and stays refused")
+	assert.Contains(t, err.Error(), "schema user")
+	assert.Contains(t, err.Error(), `reserved system column "created_at"`)
+	assert.Contains(t, err.Error(), "rename the attribute")
 }
 
 // TestValidateSchemaAttributeCache_RetiredFoldedColumnCollisionNamesLedger

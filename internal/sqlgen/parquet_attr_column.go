@@ -233,6 +233,22 @@ func DuckDBEqualFold(a, b string) bool {
 // federated reader call it again as defense in depth. Plain operator
 // error, never forma.ErrInvalidInput. Attributes are checked in sorted
 // order so the error message is deterministic.
+//
+// Retired entries (#342) are in scope for the collision half only (#549).
+// A fold collision is physical: read_parquet(..., union_by_name=true) merges
+// case-variant column names from different files into one column and the
+// compaction merge's SELECT * rewrites them as one, so a retired attribute's
+// flushed column interferes with a same-folding column whether or not
+// anything projects it. A reserved-column hit is a projection hazard
+// instead: no flushed file holds two spellings of a system column — the
+// exporter emits ltbase_created_at, never created_at, and DuckDB dedups a
+// case-variant of a physical export column ("Row_Id" beside row_id) to
+// Row_Id_1 at COPY time — so the ambiguity arises only when the attribute is
+// projected beside the system column, and every projection is built from the
+// active cache. A retired entry is never projected, sits unreferenced in the
+// raw SELECT * scans, and is therefore exempt (pinned against the engine by
+// TestParquetScan_RetiredReservedColumnIsInert); failing boot for it would
+// impose a migration that fixes nothing.
 func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 	names := make([]string, 0, len(cache))
 	for name := range cache {
@@ -244,8 +260,8 @@ func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 	for _, name := range names {
 		cur := foldedAttr{name: name, col: ParquetAttrColumn(name), meta: cache[name]}
 		key := DuckDBFoldIdentifier(cur.col)
-		if _, ok := reservedParquetColumns[key]; ok {
-			return reservedParquetColumnError(cur, key)
+		if _, ok := reservedParquetColumns[key]; ok && !cur.meta.Retired {
+			return reservedParquetColumnError(cur.name, cur.col, key)
 		}
 		if prev, ok := colToAttr[key]; ok {
 			return foldedColumnCollisionError(prev, cur, key)
@@ -283,21 +299,16 @@ const retiredLedgerMigration = "migrate the flushed parquet column and the ledge
 // message says so plainly; when the caller's case differs, the message must
 // also name the reserved column the identifier resolves onto, because that
 // lower-cased name — not the caller's spelling — is what an operator finds in
-// reservedParquetColumns (#532). A retired entry gets the ledger remedy
-// instead of the rename one (#549).
-func reservedParquetColumnError(a foldedAttr, key string) error {
-	resolves := fmt.Sprintf("folds to parquet column %q, which is reserved for system columns", a.col)
-	if a.col != key {
-		resolves = fmt.Sprintf(
-			"folds to parquet column %q, which DuckDB resolves case-insensitively onto the reserved system column %q",
-			a.col, key)
-	}
-	if a.meta.Retired {
+// reservedParquetColumns (#532). Only active entries reach it (#549).
+func reservedParquetColumnError(name, col, key string) error {
+	if col == key {
 		return fmt.Errorf(
-			"retired attribute %s %s; the entry is the attributeID ledger for values already flushed under that column, so renaming it alone desynchronizes the ledger from the flushed data: %s",
-			a.ledger(), resolves, retiredLedgerMigration)
+			"attribute %q folds to parquet column %q, which is reserved for system columns; rename the attribute",
+			name, col)
 	}
-	return fmt.Errorf("attribute %q %s; rename the attribute", a.name, resolves)
+	return fmt.Errorf(
+		"attribute %q folds to parquet column %q, which DuckDB resolves case-insensitively onto the reserved system column %q; rename the attribute",
+		name, col, key)
 }
 
 // foldedColumnCollisionError explains an intra-schema collision. Two

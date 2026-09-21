@@ -7,44 +7,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests in this file pin #549: a retired attribute is the attributeID
-// ledger (#342) for values already flushed under its folded column, so a
-// rejection that names one must say so and must not offer "rename the
-// attribute" — a rename in place desynchronizes the ledger from the flushed
-// data. Only schemameta passes retired entries through the guard; the CDC
-// exporter and the projection pass active caches and keep the active messages.
+// The tests in this file pin #549. A retired attribute is the attributeID
+// ledger (#342) for values already flushed under its folded column, and the
+// two halves of the guard treat it differently: the reserved-column half
+// exempts it, because a retired column is never projected beside a system
+// column and no flushed file holds two spellings of one (pinned against the
+// engine in parquet_attr_column_retired_scan_test.go); the collision half
+// keeps it in scope, because union_by_name physically merges same-folding
+// columns, and a rejection that names it must say so and must not offer
+// "rename the attribute" — a rename in place desynchronizes the ledger from
+// the flushed data. Only schemameta passes retired entries through the
+// guard; the CDC exporter and the projection pass active caches.
 
-// requireRetiredLedgerRemedy asserts the shape every retired-entry rejection
-// shares: the retired name, its id and valueType, the word "retired", the
-// migration remedy, and no rename remedy.
-func requireRetiredLedgerRemedy(t *testing.T, err error, retiredName string) {
-	t.Helper()
-	require.Error(t, err)
-	msg := err.Error()
-	require.Contains(t, msg, `retired attribute "`+retiredName+`"`)
-	require.Contains(t, msg, "attributeID ledger")
-	require.Contains(t, msg, "id 7")
-	require.Contains(t, msg, "valueType date")
-	require.Contains(t, msg, "migrate the flushed parquet column and the ledger entry")
-	require.NotContains(t, msg, "rename the attribute", "a retired entry must not be told to rename itself")
+// A retired entry folding onto a reserved column — exact, case-variant, or a
+// physical export column — registers. The same names active are refused,
+// which is what shows the exemption keys on Retired, not on the name.
+func TestValidateParquetAttrColumns_RetiredReservedSystemColumnExempt(t *testing.T) {
+	for _, name := range []string{"created.at", "Created_At", "row.id", "Row_Id", "rn"} {
+		t.Run(name, func(t *testing.T) {
+			retired := forma.SchemaAttributeCache{
+				name:    {AttributeID: 7, ValueType: forma.ValueTypeDate, Retired: true},
+				"title": {AttributeID: 1, ValueType: forma.ValueTypeText},
+			}
+			require.NoError(t, ValidateParquetAttrColumns(retired),
+				"a retired entry is never projected beside the system column it folds onto")
+
+			active := forma.SchemaAttributeCache{
+				name: {AttributeID: 7, ValueType: forma.ValueTypeDate},
+			}
+			err := ValidateParquetAttrColumns(active)
+			require.Error(t, err, "the same name active is still a reserved-column hit")
+			require.Contains(t, err.Error(), "rename the attribute")
+		})
+	}
 }
 
-func TestValidateParquetAttrColumns_RetiredReservedSystemColumn(t *testing.T) {
-	err := ValidateParquetAttrColumns(forma.SchemaAttributeCache{
-		"created.at": {AttributeID: 7, ValueType: forma.ValueTypeDate, Retired: true},
-	})
-	requireRetiredLedgerRemedy(t, err, "created.at")
-	require.Contains(t, err.Error(), `"created_at", which is reserved`)
-}
-
-// The #548 widening is the case that motivated #549: a retired Created_At
-// passed the guard before #532 and hard-blocks boot after it.
-func TestValidateParquetAttrColumns_RetiredCaseVariantReservedSystemColumn(t *testing.T) {
+// The exemption is from the reserved half only: a retired entry whose folded
+// column is reserved still collides with a same-folding sibling.
+func TestValidateParquetAttrColumns_RetiredReservedStillCollides(t *testing.T) {
 	err := ValidateParquetAttrColumns(forma.SchemaAttributeCache{
 		"Created_At": {AttributeID: 7, ValueType: forma.ValueTypeDate, Retired: true},
+		"created.at": {AttributeID: 8, ValueType: forma.ValueTypeDate, Retired: true},
 	})
-	requireRetiredLedgerRemedy(t, err, "Created_At")
-	require.Contains(t, err.Error(), `case-insensitively onto the reserved system column "created_at"`)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `retired attributes "Created_At" (id 7, valueType date) and "created.at" (id 8, valueType date)`)
+	require.Contains(t, err.Error(), "migrate the flushed parquet column and the ledger entry")
 }
 
 // A retired/active fold collision directs the rename at the active side and
