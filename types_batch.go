@@ -60,6 +60,12 @@ type BatchResult struct {
 
 // OperationError represents an error for a specific operation
 type OperationError struct {
+	// Index is the failed operation's position in BatchOperation.Operations.
+	// Operation is a copy of it, but a copy does not say which one it was
+	// when a batch repeats the same operation (the CSV importer sends every
+	// row under one schema), so a caller that maps failures back to its own
+	// input — a source row, a request item — keys on Index, not on Operation.
+	Index     int             `json:"index"`
 	Operation EntityOperation `json:"operation"`
 	Error     string          `json:"error"`
 	Code      string          `json:"code"`

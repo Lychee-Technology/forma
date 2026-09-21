@@ -103,6 +103,9 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 
 	schemaName := i.mapper.SchemaName()
 	batch := make([]forma.EntityOperation, 0, i.batchSize)
+	// batchRows[k] is the CSV row batch[k] came from. Rows that fail mapping
+	// never enter the batch, so the two are not offset by a constant.
+	batchRows := make([]int, 0, i.batchSize)
 	rowNum := 1 // Header is row 1
 
 	for {
@@ -166,20 +169,21 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 			Type: forma.OperationCreate,
 			Data: attributes,
 		})
+		batchRows = append(batchRows, rowNum)
 
 		// Process batch if full
 		if len(batch) >= i.batchSize {
-			successCount, batchErrors := i.processBatch(ctx, batch, rowNum-len(batch)+1)
+			successCount, batchErrors := i.processBatch(ctx, batch, batchRows)
 			result.SuccessCount += successCount
 			result.FailedCount += len(batch) - successCount
 			result.Errors = append(result.Errors, batchErrors...)
-			batch = batch[:0] // Reset batch
+			batch, batchRows = batch[:0], batchRows[:0] // Reset batch
 		}
 	}
 
 	// Process remaining batch
 	if len(batch) > 0 {
-		successCount, batchErrors := i.processBatch(ctx, batch, rowNum-len(batch))
+		successCount, batchErrors := i.processBatch(ctx, batch, batchRows)
 		result.SuccessCount += successCount
 		result.FailedCount += len(batch) - successCount
 		result.Errors = append(result.Errors, batchErrors...)
@@ -192,8 +196,12 @@ func (i *CSVImporter) ImportFromReader(ctx context.Context, reader io.Reader) (*
 	return result, nil
 }
 
-// processBatch processes a batch of entity operations and returns the number of successful operations.
-func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOperation, startRowNum int) (int, []*ImportError) {
+// processBatch creates batch as one best-effort batch and returns the number
+// of successful operations plus one ImportError per failed row. batchRows[k]
+// is the CSV row batch[k] came from; a failure names its operation by
+// forma.OperationError.Index, which is the only thing that tells rows apart
+// when every operation in the batch carries the same schema.
+func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOperation, batchRows []int) (int, []*ImportError) {
 	batchOp := &forma.BatchOperation{
 		Operations: batch,
 		Atomic:     false, // Non-atomic to allow partial success
@@ -206,7 +214,7 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 		errors := make([]*ImportError, len(batch))
 		for idx := range batch {
 			errors[idx] = &ImportError{
-				RowNumber: startRowNum + idx,
+				RowNumber: batchRows[idx],
 				Reason:    fmt.Sprintf("batch creation failed: %v", err),
 			}
 		}
@@ -216,19 +224,8 @@ func (i *CSVImporter) processBatch(ctx context.Context, batch []forma.EntityOper
 	// Log individual failures from batch result
 	errors := make([]*ImportError, 0, len(batchResult.Failed))
 	for _, opErr := range batchResult.Failed {
-		// Find the row number for this failed operation
-		// Since operations are in order, we can calculate the row number
-		rowOffset := -1
-		for idx, op := range batch {
-			if op.SchemaName == opErr.Operation.SchemaName {
-				// Simple match - in practice you might want a more sophisticated matching
-				rowOffset = idx
-				break
-			}
-		}
-
 		importErr := &ImportError{
-			RowNumber: startRowNum + rowOffset,
+			RowNumber: batchRows[opErr.Index],
 			Reason:    failureReason(opErr),
 		}
 		i.logger.Error(importErr.Error())
@@ -295,6 +292,9 @@ func (i *CSVImporter) ImportFromReaderWithOptions(ctx context.Context, reader io
 
 	schemaName := i.mapper.SchemaName()
 	batch := make([]forma.EntityOperation, 0, i.batchSize)
+	// batchRows[k] is the CSV row batch[k] came from. Rows that fail mapping
+	// never enter the batch, so the two are not offset by a constant.
+	batchRows := make([]int, 0, i.batchSize)
 	rowNum := 1 // Header is row 1
 
 	for {
@@ -353,18 +353,19 @@ func (i *CSVImporter) ImportFromReaderWithOptions(ctx context.Context, reader io
 			Type: forma.OperationCreate,
 			Data: attributes,
 		})
+		batchRows = append(batchRows, rowNum)
 
 		if len(batch) >= i.batchSize {
-			successCount, batchErrors := i.processBatch(ctx, batch, rowNum-len(batch)+1)
+			successCount, batchErrors := i.processBatch(ctx, batch, batchRows)
 			result.SuccessCount += successCount
 			result.FailedCount += len(batch) - successCount
 			result.Errors = append(result.Errors, batchErrors...)
-			batch = batch[:0]
+			batch, batchRows = batch[:0], batchRows[:0]
 		}
 	}
 
 	if len(batch) > 0 {
-		successCount, batchErrors := i.processBatch(ctx, batch, rowNum-len(batch))
+		successCount, batchErrors := i.processBatch(ctx, batch, batchRows)
 		result.SuccessCount += successCount
 		result.FailedCount += len(batch) - successCount
 		result.Errors = append(result.Errors, batchErrors...)

@@ -1750,7 +1750,14 @@ branch — every failure logs the full error at `Warnw` — so every id leads to
 line, including the #318 case where a published message withholds operator
 detail, without a second `HasOperatorDetail` branch to mirror. The published
 message itself is unchanged; the id sits beside it. `error_id` is `omitempty`,
-so an `OperationError` an embedder builds by hand serialises as before.
+so an `OperationError` an embedder builds by hand serialises as before. The
+entry also carries `Index` (JSON `index`), the operation's position in
+`BatchOperation.Operations`: `Operation` is a copy, and a copy does not say
+which one failed when a batch repeats it, so a caller that maps a failure —
+and its id — back to its own input keys on `Index`
+(`TestBatchResultFailureCarriesItsOperationIndex`; `cmd/sample`'s CSV importer
+reports a failed row that way, pinned by
+`TestImportReportsAFailureAgainstItsOwnRow`).
 
 **The line is never sampled.** "Every id leads to a line" would be false under
 the production logger as zap ships it: `zap.NewProductionConfig` samples by
@@ -1761,15 +1768,20 @@ batch of 101 failing operations, well inside the default `MaxBatchSize` of
 1000, would return 101 ids and write 100 lines, and a database outage does the
 same to the HTTP `Errorw` line. So both surfaces write their id-carrying lines
 through `errorid.Logger`, the global logger under the name `errorid`, and the
-production logger installs its sampler through `errorid.SamplerOption`, which
-wraps it in `errorid.ExemptFromSampler`: an entry named `errorid` goes to the
-core underneath the sampler, everything else through it. The exemption is by
-logger name because that is all a core can see when the sampler decides;
-fields arrive afterwards, which is why adding one cannot help. Nothing else
-changes for those lines — level, fields, encoding are the global logger's —
-and every other line, including the report-only validation line that relies
-on the sampler for its volume bound (#317), is sampled as before. The
-id-carrying line does gain a `logger: errorid` field, which an operator can
+production logger installs its sampler through `errorid.SamplerOption`, whose
+core sends a correlation line to the core underneath the sampler and
+everything else through it. A correlation line is one whose logger name ends
+in the segment `errorid` (`errorid.IsCorrelationLogger`): `Logger` builds on
+the global with `Named`, and zap joins names with a period, so under a global
+the embedder has already named — `zap.ReplaceGlobals(logger.Named("svc"))` —
+the line arrives as `svc.errorid`, and an exact match would send it back
+through the sampler. The exemption is by logger name because that is all a
+core can see when the sampler decides; fields arrive afterwards, which is why
+adding one cannot help. Nothing else changes for those lines — level, fields,
+encoding are the global logger's — and every other line, including the
+report-only validation line that relies on the sampler for its volume bound
+(#317), is sampled as before. The id-carrying line does gain a `logger` field
+— `errorid`, or `svc.errorid` under a named global — which an operator can
 filter on.
 
 The global logger belongs to the process that embeds Forma, so the exemption
@@ -1790,8 +1802,11 @@ production config by `TestProductionLoggerNeverSamplesACorrelationLine`
 (`factory`: a manager built the way an external project builds one, the
 logger installed through the public constructor, 150 failures inside one
 sampler tick, every id on exactly one written line while ordinary lines are
-still cut to 100). The sampler tests run on a frozen clock so the lines
-cannot straddle a tick boundary and pass with the exemption gone.
+still cut to 100); its `...UnderANamedGlobal` twin runs the same storm under
+`logger.Named("svc")`, and `TestSamplerOptionRoutesByTheLastNameSegment`
+(`internal/errorid`) pins what does and does not count as a correlation
+line. The sampler tests run on a frozen clock so the lines cannot straddle a
+tick boundary and pass with the exemption gone.
 
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
 reproduced in the batch path. It is reserved for the three federated read-path

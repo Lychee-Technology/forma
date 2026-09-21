@@ -150,7 +150,7 @@ func (s *entityBatchService) executeBestEffortBatch(
 	successful := make([]*forma.DataRecord, 0, len(req.Operations))
 	failed := make([]forma.OperationError, 0)
 
-	for _, operation := range req.Operations {
+	for index, operation := range req.Operations {
 		op := operation
 		record, err := executor(ctx, &op)
 		if err != nil {
@@ -164,6 +164,7 @@ func (s *entityBatchService) executeBestEffortBatch(
 			errorID := errorid.New()
 			errorid.Logger().Warnw(operationName+" operation failed", "operation", op, "error_id", errorID, "error", err)
 			failed = append(failed, forma.OperationError{
+				Index:     index,
 				Operation: op,
 				Error:     resolveBatchErrorMessage(err),
 				Code:      errorCode,

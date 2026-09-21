@@ -567,6 +567,7 @@ func TestBatchResult_JSON(t *testing.T) {
 func TestOperationError_JSON(t *testing.T) {
 	rowID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 	opErr := OperationError{
+		Index: 3,
 		Operation: EntityOperation{
 			EntityIdentifier: EntityIdentifier{
 				SchemaName: "users",
@@ -588,6 +589,8 @@ func TestOperationError_JSON(t *testing.T) {
 
 	assert.Equal(t, opErr.Error, decoded.Error)
 	assert.Equal(t, opErr.Code, decoded.Code)
+	assert.Contains(t, string(data), `"index":3`, "the operation's position is on the wire, zero included")
+	assert.Equal(t, opErr.Index, decoded.Index)
 	assert.NotContains(t, string(data), `"error_id"`, "an OperationError without an id serialises without the key")
 
 	// The correlation id (#398) rides under the same wire name as the HTTP

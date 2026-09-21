@@ -238,3 +238,47 @@ func TestBatchResultEveryFailureSurvivesProductionSampling(t *testing.T) {
 			"id %s must join exactly one full-error line; the sampler must not have dropped it", failure.ErrorID)
 	}
 }
+
+// nthInsertFailingRepository fails exactly one insert, the failAt-th
+// (zero-based), and stores the rest.
+type nthInsertFailingRepository struct {
+	*mockPersistentRecordRepository
+	failAt  int
+	inserts int
+}
+
+func (r *nthInsertFailingRepository) InsertPersistentRecord(
+	ctx context.Context, tables model.StorageTables, record *model.PersistentRecord,
+) error {
+	defer func() { r.inserts++ }()
+	if r.inserts == r.failAt {
+		return errors.New("storage unavailable")
+	}
+	return r.mockPersistentRecordRepository.InsertPersistentRecord(ctx, tables, record)
+}
+
+// TestBatchResultFailureCarriesItsOperationIndex: a caller mapping failures
+// back to its own input needs the operation's position, not a copy of it —
+// three identical operations, the middle one fails, and the entry must say
+// so by Index, since Operation alone reads the same for all three.
+func TestBatchResultFailureCarriesItsOperationIndex(t *testing.T) {
+	repository := &nthInsertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		failAt:                         1,
+	}
+	op := forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
+		Type:             forma.OperationCreate,
+		Data:             visitPayload("visit-batch-error-3"),
+	}
+
+	result, err := newBatchErrorManager(t, repository).BatchCreate(context.Background(), &forma.BatchOperation{
+		Operations: []forma.EntityOperation{op, op, op},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, result.Successful, 2)
+	require.Len(t, result.Failed, 1)
+	require.Equal(t, 1, result.Failed[0].Index)
+	require.Equal(t, op.SchemaName, result.Failed[0].Operation.SchemaName)
+}
