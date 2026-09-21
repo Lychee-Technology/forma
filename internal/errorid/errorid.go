@@ -17,9 +17,13 @@
 // constant message, so under a failure storm — the moment an operator needs
 // the join most — the sampler would drop lines whose ids callers already hold.
 // Logger routes such lines around the sampler: it names them LoggerName, and
-// ExemptFromSampler, installed by internal/bootstrap in every production
-// logger, sends entries with that name to the unsampled core. Nothing else
-// changes for them: level, fields and encoding are the global logger's.
+// ExemptFromSampler sends entries with that name to the unsampled core.
+// Nothing else changes for them: level, fields and encoding are the global
+// logger's. SamplerOption installs the pair; internal/bootstrap applies it to
+// every cmd/ binary's logger, and factory.NewProductionLogger, BuildLogger and
+// SamplerOption hand the same installation to an embedder, since the global
+// logger is the embedder's and the join holds only if their sampler carries
+// the exemption too.
 package errorid
 
 import (

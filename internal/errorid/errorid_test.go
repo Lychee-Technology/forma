@@ -1,9 +1,10 @@
-package errorid
+package errorid_test
 
 import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,7 +13,7 @@ import (
 // operator greps the log for the string verbatim, so the id must be a
 // canonical UUID string and nothing looser.
 func TestNewIsAParseableUUID(t *testing.T) {
-	id := New()
+	id := errorid.New()
 	parsed, err := uuid.Parse(id)
 	require.NoError(t, err)
 	require.Equal(t, parsed.String(), id, "the id must already be in canonical form")
@@ -21,5 +22,5 @@ func TestNewIsAParseableUUID(t *testing.T) {
 // TestNewDoesNotRepeat is the correlation property: two failures must never
 // share a handle, or the join from body to log line becomes ambiguous.
 func TestNewDoesNotRepeat(t *testing.T) {
-	require.NotEqual(t, New(), New())
+	require.NotEqual(t, errorid.New(), errorid.New())
 }

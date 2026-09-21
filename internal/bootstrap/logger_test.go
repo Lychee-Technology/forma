@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/errorid"
+	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -40,13 +40,6 @@ var (
 	registerSink sync.Once
 )
 
-// frozenClock pins every entry to one instant so all of a test's lines fall
-// inside one sampler tick, whatever the wall clock does meanwhile.
-type frozenClock struct{ at time.Time }
-
-func (c frozenClock) Now() time.Time                       { return c.at }
-func (c frozenClock) NewTicker(time.Duration) *time.Ticker { return time.NewTicker(time.Hour) }
-
 // inMemoryProductionConfig is zap.NewProductionConfig — JSON encoding, Info
 // threshold, the 100:100 sampler — with only its destination swapped for the
 // sink, which it empties first.
@@ -69,7 +62,7 @@ func inMemoryProductionConfig(t *testing.T) zap.Config {
 func buildProductionLoggerInMemory(t *testing.T) *zap.Logger {
 	t.Helper()
 	cfg := inMemoryProductionConfig(t)
-	logger, err := BuildLogger(cfg, zap.WithClock(frozenClock{at: time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)}))
+	logger, err := BuildLogger(cfg, erroridtest.FrozenClock())
 	require.NoError(t, err)
 	return logger
 }

@@ -154,7 +154,7 @@ func validateWritePayload(ctx context.Context, v writeValidation) error {
 	// counts only — no violation text, no payload — so they widen nothing.
 	//
 	// Volume is bounded by zap's production sampling, not by this code:
-	// cmd/server and cmd/lambda install bootstrap.NewProductionLogger, whose
+	// cmd/server and cmd/lambda install factory.NewProductionLogger, whose
 	// sampler passes the first 100 entries per second for an identical message
 	// and every 100th after. This message is constant, so a violation-heavy
 	// corpus is capped at that rate, and the milestone line carries cumulative

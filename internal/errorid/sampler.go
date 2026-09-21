@@ -2,14 +2,34 @@ package errorid
 
 import (
 	"errors"
+	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+// SamplerOption wraps a logger's core in the sampler cfg describes — the same
+// construction zap.Config.Build performs for its Sampling field — with lines
+// named LoggerName routed to the core underneath it. It is the one place the
+// exemption is installed: internal/bootstrap.BuildLogger applies it for a
+// zap.Config, factory.SamplerOption hands it to an embedder that assembles
+// its own core, and a test installs it over an observer to prove a
+// correlation record survives production-equivalent sampling.
+func SamplerOption(cfg *zap.SamplingConfig) zap.Option {
+	return zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		var samplerOpts []zapcore.SamplerOption
+		if cfg.Hook != nil {
+			samplerOpts = append(samplerOpts, zapcore.SamplerHook(cfg.Hook))
+		}
+		sampled := zapcore.NewSamplerWithOptions(core, time.Second, cfg.Initial, cfg.Thereafter, samplerOpts...)
+		return ExemptFromSampler(sampled, core)
+	})
+}
 
 // ExemptFromSampler returns a core that sends entries named LoggerName to
 // unsampled and every other entry to sampled. The two are expected to be the
 // same underlying core with and without a zapcore sampler in front of it;
-// internal/bootstrap builds them that way.
+// SamplerOption builds them that way.
 //
 // It keys on the entry's logger name because that is the only thing a core
 // can see at Check time: fields arrive at Write, after the sampler has

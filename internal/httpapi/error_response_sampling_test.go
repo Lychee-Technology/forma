@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -51,14 +51,13 @@ func requireEachIDJoinsOneLine(t *testing.T, ids []string, logs *observer.Observ
 // would otherwise hand callers ids whose lines were never written. Both
 // id-minting branches are covered: the redacted Errorw line (#301) and the
 // withheld-detail Warnw line (#361). The observer sits under the production
-// sampler as bootstrap installs it.
+// sampler as every production logger installs it, on a frozen clock so all
+// 150 lines land in one sampler tick.
 func TestRespondErrorIDsSurviveProductionSampling(t *testing.T) {
 	const bursts = 150
 
 	t.Run("redacted 5xx", func(t *testing.T) {
-		core, logs := observer.New(zap.DebugLevel)
-		restore := zap.ReplaceGlobals(zap.New(core).WithOptions(bootstrap.SamplerOption(zap.NewProductionConfig().Sampling)))
-		t.Cleanup(restore)
+		logs := erroridtest.ObserveUnderProductionSampler(t, zap.DebugLevel)
 
 		ids := respondNTimes(t, bursts, "query failed", operatorDetailError())
 
@@ -66,9 +65,7 @@ func TestRespondErrorIDsSurviveProductionSampling(t *testing.T) {
 	})
 
 	t.Run("disclosed 4xx with withheld detail", func(t *testing.T) {
-		core, logs := observer.New(zap.DebugLevel)
-		restore := zap.ReplaceGlobals(zap.New(core).WithOptions(bootstrap.SamplerOption(zap.NewProductionConfig().Sampling)))
-		t.Cleanup(restore)
+		logs := erroridtest.ObserveUnderProductionSampler(t, zap.DebugLevel)
 		err := forma.WithOperatorDetail(forma.InvalidInputf("attribute 'age'"), fmt.Errorf("operator cause"))
 
 		ids := respondNTimes(t, bursts, "create failed", err)

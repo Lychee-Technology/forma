@@ -326,7 +326,7 @@ func resolvePublicMessage(err error) (string, bool) {
 //
 // Log levels are contract. Every redacted response logs at Errorw whatever its
 // status, because a redacted body is the operator's only remaining copy of the
-// detail and the production logger runs at Info (bootstrap.NewProductionLogger,
+// detail and the production logger runs at Info (factory.NewProductionLogger,
 // installed by cmd/server/main.go). A
 // disclosed 4xx logs at Debugw when the chain holds nothing beyond its
 // publication — the caller already has everything — but at Warnw when

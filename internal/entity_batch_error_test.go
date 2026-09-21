@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/transform"
@@ -202,12 +202,11 @@ func TestBatchResultFailuresCarryDistinctIDs(t *testing.T) {
 // the 101st identical failure inside one second would return an id whose line
 // was never written — reachable within one best-effort batch, whose default
 // MaxBatchSize is 1000. The logger here is an observer under the production
-// sampler as bootstrap installs it; 150 failures must yield 150 ids, each
+// sampler as every production logger installs it, on a frozen clock so all
+// 150 lines land in one sampler tick; 150 failures must yield 150 ids, each
 // joining exactly one line that holds the withheld driver text.
 func TestBatchResultEveryFailureSurvivesProductionSampling(t *testing.T) {
-	core, logs := observer.New(zap.WarnLevel)
-	restore := zap.ReplaceGlobals(zap.New(core).WithOptions(bootstrap.SamplerOption(zap.NewProductionConfig().Sampling)))
-	t.Cleanup(restore)
+	logs := erroridtest.ObserveUnderProductionSampler(t, zap.WarnLevel)
 	repository := &insertFailingRepository{
 		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
 		insertErr:                      errors.New("storage unavailable: disk quota exceeded on node-7"),

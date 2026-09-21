@@ -411,6 +411,11 @@ func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *federated.CircuitBreaker {
 // function. The factory validates database state and builds the entity manager
 // around the provided registry; it does not create a fallback registry.
 //
+// The manager logs through zap's global logger. Install it with
+// NewProductionLogger (or BuildLogger / SamplerOption for a custom config or
+// core) rather than zap.NewProduction: the error_id on a failed best-effort
+// operation joins a log line that stock production sampling can drop.
+//
 // Usage:
 //
 // import (

@@ -71,6 +71,10 @@ type OperationError struct {
 	// set on every failed operation, published message or not, because every
 	// failure logs that line. Same shape and wire name as the error_id on an
 	// internal/httpapi response body. Code classifies, it does not correlate.
+	// The line is written around zap's production sampler only when the
+	// process logger was built with factory.NewProductionLogger, BuildLogger
+	// or SamplerOption; under stock zap.NewProduction, the 101st identical
+	// failure in a second returns an id whose line was sampled away.
 	// omitempty so a hand-built OperationError serialises without one.
 	ErrorID string         `json:"error_id,omitempty"`
 	Details map[string]any `json:"details,omitempty"`

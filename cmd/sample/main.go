@@ -41,7 +41,7 @@ func buildSampleLogger(verbose *bool) (*zap.SugaredLogger, func()) {
 		cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 		cfg.Development = true
 	}
-	logger, err := bootstrap.BuildLogger(cfg)
+	logger, err := factory.BuildLogger(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to build logger: %v\n", err)
 		os.Exit(1)

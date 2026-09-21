@@ -1760,21 +1760,38 @@ level and message — the first 100 identical entries per second, then every
 batch of 101 failing operations, well inside the default `MaxBatchSize` of
 1000, would return 101 ids and write 100 lines, and a database outage does the
 same to the HTTP `Errorw` line. So both surfaces write their id-carrying lines
-through `errorid.Logger`, the global logger under the name `errorid`, and
-every production binary builds its logger with `bootstrap.NewProductionLogger`
-(or `bootstrap.BuildLogger` for `cmd/sample`'s console variant), which installs
-the sampler through `errorid.ExemptFromSampler`: an entry named `errorid`
-goes to the core underneath the sampler, everything else through it. The
-exemption is by logger name because that is all a core can see when the
-sampler decides; fields arrive afterwards, which is why adding one cannot
-help. Nothing else changes for those lines — level, fields, encoding are the
-global logger's — and every other line, including the report-only validation
-line that relies on the sampler for its volume bound (#317), is sampled as
-before. The id-carrying line does gain a `logger: errorid` field, which an
-operator can filter on. Pinned by
+through `errorid.Logger`, the global logger under the name `errorid`, and the
+production logger installs its sampler through `errorid.SamplerOption`, which
+wraps it in `errorid.ExemptFromSampler`: an entry named `errorid` goes to the
+core underneath the sampler, everything else through it. The exemption is by
+logger name because that is all a core can see when the sampler decides;
+fields arrive afterwards, which is why adding one cannot help. Nothing else
+changes for those lines — level, fields, encoding are the global logger's —
+and every other line, including the report-only validation line that relies
+on the sampler for its volume bound (#317), is sampled as before. The
+id-carrying line does gain a `logger: errorid` field, which an operator can
+filter on.
+
+The global logger belongs to the process that embeds Forma, so the exemption
+has to be installable from outside `internal/`: `factory.NewProductionLogger`
+(zap's production config), `factory.BuildLogger` (an embedder's own
+`zap.Config`) and `factory.SamplerOption` (a hand-assembled core) are the
+public entry points, delegating to `internal/bootstrap.BuildLogger`.
+`cmd/server`, `cmd/lambda` and `cmd/sample` build their loggers through those
+same `factory` functions; `cmd/tools` calls `bootstrap` directly because it
+does not otherwise link `factory`. An embedder that keeps stock
+`zap.NewProduction()` still receives an `error_id` on every failure, and the
+join holds up to the sampler's first 100 identical failures per second; past
+that the id points at a line that was never written. Pinned by
 `TestBatchResultEveryFailureSurvivesProductionSampling`,
-`TestRespondErrorIDsSurviveProductionSampling` and, through the real
-production config, `TestProductionLoggerNeverSamplesACorrelationLine`.
+`TestRespondErrorIDsSurviveProductionSampling`, and through the real
+production config by `TestProductionLoggerNeverSamplesACorrelationLine`
+(`internal/bootstrap`) and `TestEmbedderBatchFailureIDsSurviveProductionSampling`
+(`factory`: a manager built the way an external project builds one, the
+logger installed through the public constructor, 150 failures inside one
+sampler tick, every id on exactly one written line while ordinary lines are
+still cut to 100). The sampler tests run on a frozen clock so the lines
+cannot straddle a tick boundary and pass with the exemption gone.
 
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
 reproduced in the batch path. It is reserved for the three federated read-path

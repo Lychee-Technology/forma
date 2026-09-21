@@ -1,10 +1,12 @@
-package errorid
+package errorid_test
 
 import (
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/errorid"
+	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -25,35 +27,41 @@ func logNTimes(logger *zap.SugaredLogger, n int, msg string) {
 	}
 }
 
-// frozenClock pins every entry to one instant so all of a test's lines fall
-// inside a single sampler tick, whatever the wall clock does meanwhile.
-type frozenClock struct{ at time.Time }
+// TestSamplerOptionKeepsEveryCorrelationLine is the invariant the exemption
+// exists for: 150 identical lines from Logger inside one second all reach the
+// core, while the same 150 from the plain global logger are cut to the
+// sampler's first 100 — proof the sampler is live and the exemption is what
+// saved the correlation lines, not its absence.
+func TestSamplerOptionKeepsEveryCorrelationLine(t *testing.T) {
+	logs := erroridtest.ObserveUnderProductionSampler(t, zap.InfoLevel)
 
-func (c frozenClock) Now() time.Time                       { return c.at }
-func (c frozenClock) NewTicker(time.Duration) *time.Ticker { return time.NewTicker(time.Hour) }
-
-func frozenClockOption() zap.Option {
-	return zap.WithClock(frozenClock{at: time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)})
-}
-
-// TestExemptFromSamplerKeepsEveryCorrelationLine is the invariant the
-// wrapper exists for: 150 identical lines from Logger inside one second all
-// reach the core, while the same 150 from the plain global logger are cut to
-// the sampler's first 100 — proof the sampler is live and the exemption is
-// what saved the correlation lines, not its absence.
-func TestExemptFromSamplerKeepsEveryCorrelationLine(t *testing.T) {
-	core, logs := observer.New(zap.InfoLevel)
-	restore := zap.ReplaceGlobals(zap.New(ExemptFromSampler(productionSampled(core), core), frozenClockOption()))
-	t.Cleanup(restore)
-
-	logNTimes(Logger(), 150, "correlated")
+	logNTimes(errorid.Logger(), 150, "correlated")
 	logNTimes(zap.S(), 150, "uncorrelated")
 
 	require.Len(t, logs.FilterMessage("correlated").All(), 150, "a correlation line is never sampled")
 	require.Len(t, logs.FilterMessage("uncorrelated").All(), 100, "every other line still is")
 	for _, entry := range logs.FilterMessage("correlated").All() {
-		require.Equal(t, LoggerName, entry.LoggerName)
+		require.Equal(t, errorid.LoggerName, entry.LoggerName)
 	}
+}
+
+// TestSamplerOptionHonoursTheHook: a sampling hook an embedder configured
+// must still fire for the sampled side, since SamplerOption stands in for
+// zap.Config.Build's own sampler installation.
+func TestSamplerOptionHonoursTheHook(t *testing.T) {
+	core, _ := observer.New(zap.InfoLevel)
+	dropped := 0
+	cfg := &zap.SamplingConfig{Initial: 1, Thereafter: 0, Hook: func(_ zapcore.Entry, d zapcore.SamplingDecision) {
+		if d == zapcore.LogDropped {
+			dropped++
+		}
+	}}
+	logger := zap.New(core, erroridtest.FrozenClock(), errorid.SamplerOption(cfg))
+
+	logNTimes(logger.Sugar(), 3, "uncorrelated")
+	logNTimes(logger.Sugar().Named(errorid.LoggerName), 3, "correlated")
+
+	require.Equal(t, 2, dropped, "the hook sees the sampled side's drops and none from the exempt side")
 }
 
 // TestExemptFromSamplerSurvivesWith pins that a child logger built with
@@ -61,10 +69,10 @@ func TestExemptFromSamplerKeepsEveryCorrelationLine(t *testing.T) {
 // again rather than collapse to one of them.
 func TestExemptFromSamplerSurvivesWith(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
-	logger := zap.New(ExemptFromSampler(productionSampled(core), core), frozenClockOption()).
+	logger := zap.New(errorid.ExemptFromSampler(productionSampled(core), core), erroridtest.FrozenClock()).
 		With(zap.String("component", "test"))
 
-	logNTimes(logger.Sugar().Named(LoggerName), 150, "correlated")
+	logNTimes(logger.Sugar().Named(errorid.LoggerName), 150, "correlated")
 	logNTimes(logger.Sugar(), 150, "uncorrelated")
 
 	require.Len(t, logs.FilterMessage("correlated").All(), 150)
@@ -77,13 +85,13 @@ func TestExemptFromSamplerSurvivesWith(t *testing.T) {
 // level, and Sync must flush both sides and report either failure.
 func TestExemptFromSamplerLevelAndSync(t *testing.T) {
 	core, _ := observer.New(zap.WarnLevel)
-	wrapped := ExemptFromSampler(productionSampled(core), core)
+	wrapped := errorid.ExemptFromSampler(productionSampled(core), core)
 	require.Equal(t, zap.WarnLevel, zapcore.LevelOf(wrapped))
 	require.False(t, wrapped.Enabled(zap.InfoLevel))
 	require.True(t, wrapped.Enabled(zap.WarnLevel))
 
 	syncErr := errors.New("flush failed")
-	failing := ExemptFromSampler(core, &syncFailingCore{Core: core, err: syncErr})
+	failing := errorid.ExemptFromSampler(core, &syncFailingCore{Core: core, err: syncErr})
 	require.ErrorIs(t, failing.Sync(), syncErr)
 }
 
