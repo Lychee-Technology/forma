@@ -283,3 +283,47 @@ func TestDuckMerger_QuoteBearingSourceAndTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "a-v2", title)
 }
+
+// TestDuckMerger_CarriesRetiredReservedNameColumnsThrough is the compaction
+// half of #549. The source is what the exporter wrote while Created_At (a
+// case variant of the federated CTE's created_at) and Row_Id (a case variant
+// of the physical row_id, which DuckDB deduplicated to Row_Id_1 at COPY time)
+// were active attributes that the registry has since retired. The merge's
+// SELECT * over union_by_name binds row_id, changed_at and deleted_at to the
+// system columns and carries the retired columns through verbatim: no
+// ambiguity, no loss, which is why the registration guard exempts a retired
+// entry from its reserved-column half.
+func TestDuckMerger_CarriesRetiredReservedNameColumnsThrough(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "flushed_while_active.parquet")
+	tmpPath := filepath.Join(dir, "merged.parquet")
+	_, err = db.Exec(fmt.Sprintf(`COPY (
+  SELECT CAST('%s' AS UUID) AS row_id, CAST(100 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at,
+    CAST(50 AS BIGINT) AS ltbase_created_at, 'a-v1' AS title, 'stale' AS Created_At, 'stale' AS Row_Id
+  UNION ALL
+  SELECT CAST('%s' AS UUID), CAST(200 AS BIGINT), CAST(0 AS BIGINT), CAST(50 AS BIGINT), 'a-v2', 'stale-v2', 'stale-v2'
+) TO '%s' (FORMAT PARQUET)`, rowA, rowA, sqlutil.EscapeLiteral(srcPath)))
+	require.NoError(t, err)
+
+	merger := &DuckMerger{DB: db}
+	stats, err := merger.MergeToTmp(context.Background(), []string{srcPath}, tmpPath)
+	require.NoError(t, err, "a source carrying retired reserved-name columns must merge")
+	require.Equal(t, int64(2), stats.RowsIn)
+	require.Equal(t, int64(1), stats.RowsOut)
+
+	var rowID, title, createdAt, rowIDAttr string
+	var changedAt int64
+	err = db.QueryRow(fmt.Sprintf(
+		"SELECT CAST(row_id AS VARCHAR), changed_at, title, Created_At, Row_Id_1 FROM read_parquet('%s')",
+		sqlutil.EscapeLiteral(tmpPath))).Scan(&rowID, &changedAt, &title, &createdAt, &rowIDAttr)
+	require.NoError(t, err)
+	require.Equal(t, rowA, rowID, "row_id binds to the system column")
+	require.Equal(t, int64(200), changedAt, "the newest version wins on the system changed_at")
+	require.Equal(t, "a-v2", title)
+	require.Equal(t, "stale-v2", createdAt, "the retired Created_At column is carried through verbatim")
+	require.Equal(t, "stale-v2", rowIDAttr, "and so is the deduplicated Row_Id_1")
+}
