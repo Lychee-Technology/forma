@@ -26,21 +26,21 @@ type loggedLine struct {
 	ErrorID string `json:"error_id"`
 }
 
-// installEmbedderLogger does what an embedder is told to do, against a file
+// buildEmbedderLogger does what an embedder is told to do, against a file
 // the test can read back: the real production config — JSON, Info, the
-// 100:100 sampler — built through the public BuildLogger and installed as the
-// global logger. The clock is frozen so every line lands in one sampler
-// tick. Returns a reader for the lines written so far.
-func installEmbedderLogger(t *testing.T) func() []loggedLine {
+// 100:100 sampler — built through the public BuildLogger. The clock is
+// frozen so every line lands in one sampler tick. Returns the logger, for
+// the test to install as the global, and a reader for the lines written so
+// far.
+func buildEmbedderLogger(t *testing.T) (*zap.Logger, func() []loggedLine) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "forma.log")
 	cfg := zap.NewProductionConfig()
 	cfg.OutputPaths = []string{path}
 	logger, err := BuildLogger(cfg, erroridtest.FrozenClock())
 	require.NoError(t, err)
-	t.Cleanup(zap.ReplaceGlobals(logger))
 
-	return func() []loggedLine {
+	return logger, func() []loggedLine {
 		require.NoError(t, logger.Sync())
 		raw, err := os.ReadFile(path)
 		require.NoError(t, err)
@@ -54,22 +54,20 @@ func installEmbedderLogger(t *testing.T) func() []loggedLine {
 	}
 }
 
-// TestEmbedderBatchFailureIDsSurviveProductionSampling is the review finding
-// on #398 from the outside: an external project builds its manager through
-// this package and cannot reach internal/bootstrap, so the sampler exemption
-// has to be installable through the public surface for the OperationError
-// contract to hold there. 150 failed best-effort operations — inside the
-// default MaxBatchSize of 1000 and past the sampler's 100 — must each return
-// an id that appears on exactly one written line, while the plain lines the
-// manager logs on the way stay under the sampler as before.
-func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
-	readLog := installEmbedderLogger(t)
+// embedderBatchFailures is the failure storm from the outside: a manager
+// built the way an external project builds one, 150 ordinary warnings to
+// prove the sampler is live, then one best-effort batch of 150 operations
+// that all fail — inside the default MaxBatchSize of 1000 and past the
+// sampler's 100.
+const embedderBatchFailures = 150
+
+func runEmbedderBatchFailures(t *testing.T) *forma.BatchResult {
+	t.Helper()
 	manager, err := newEntityManagerWithConfigContext(context.Background(), newUnitEntityManagerConfig(t), nil,
 		buildUnitEntityManagerDeps(schemameta.NewMetadataCache()))
 	require.NoError(t, err)
 
-	const failures = 150
-	operations := make([]forma.EntityOperation, failures)
+	operations := make([]forma.EntityOperation, embedderBatchFailures)
 	for i := range operations {
 		operations[i] = forma.EntityOperation{
 			EntityIdentifier: forma.EntityIdentifier{SchemaName: "nosuchschema"},
@@ -77,20 +75,27 @@ func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
 			Data:             map[string]any{"i": i},
 		}
 	}
-	for i := 0; i < failures; i++ {
+	for i := 0; i < embedderBatchFailures; i++ {
 		zap.S().Warnw("an ordinary warning", "i", i)
 	}
 
 	result, err := manager.BatchCreate(context.Background(), &forma.BatchOperation{Operations: operations})
-
 	require.NoError(t, err)
-	require.Len(t, result.Failed, failures)
+	require.Len(t, result.Failed, embedderBatchFailures)
+	return result
+}
+
+// requireEveryIDJoinsOneLine: each returned id appears on exactly one written
+// line, under wantLogger, while the ordinary lines were cut to the sampler's
+// 100 — so it is the exemption, not a dead sampler, that kept them.
+func requireEveryIDJoinsOneLine(t *testing.T, result *forma.BatchResult, lines []loggedLine, wantLogger string) {
+	t.Helper()
 	linesByID := map[string]int{}
 	ordinary := 0
-	for _, line := range readLog() {
+	for _, line := range lines {
 		switch line.Msg {
 		case "BatchCreate operation failed":
-			require.Equal(t, "errorid", line.Logger, "the correlation line names its logger")
+			require.Equal(t, wantLogger, line.Logger, "the correlation line names its logger")
 			linesByID[line.ErrorID]++
 		case "an ordinary warning":
 			ordinary++
@@ -103,6 +108,34 @@ func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
 		require.Equal(t, 1, linesByID[failure.ErrorID],
 			"id %s must join exactly one written line; the sampler must not have dropped it", failure.ErrorID)
 	}
+}
+
+// TestEmbedderBatchFailureIDsSurviveProductionSampling is the review finding
+// on #398 from the outside: an external project builds its manager through
+// this package and cannot reach internal/bootstrap, so the sampler exemption
+// has to be installable through the public surface for the OperationError
+// contract to hold there.
+func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
+	logger, readLog := buildEmbedderLogger(t)
+	t.Cleanup(zap.ReplaceGlobals(logger))
+
+	result := runEmbedderBatchFailures(t)
+
+	requireEveryIDJoinsOneLine(t, result, readLog(), "errorid")
+}
+
+// TestEmbedderBatchFailureIDsSurviveProductionSamplingUnderANamedGlobal is
+// the same contract for an embedder that names its global logger —
+// zap.ReplaceGlobals(logger.Named("svc")) — so the correlation line arrives
+// as "svc.errorid". The exemption keys on the last name segment; an exact
+// match would send every one of these lines back through the sampler.
+func TestEmbedderBatchFailureIDsSurviveProductionSamplingUnderANamedGlobal(t *testing.T) {
+	logger, readLog := buildEmbedderLogger(t)
+	t.Cleanup(zap.ReplaceGlobals(logger.Named("svc")))
+
+	result := runEmbedderBatchFailures(t)
+
+	requireEveryIDJoinsOneLine(t, result, readLog(), "svc.errorid")
 }
 
 // TestNewProductionLoggerIsTheBootstrapLogger: the public constructor has to

@@ -17,13 +17,13 @@
 // constant message, so under a failure storm — the moment an operator needs
 // the join most — the sampler would drop lines whose ids callers already hold.
 // Logger routes such lines around the sampler: it names them LoggerName, and
-// ExemptFromSampler sends entries with that name to the unsampled core.
-// Nothing else changes for them: level, fields and encoding are the global
-// logger's. SamplerOption installs the pair; internal/bootstrap applies it to
-// every cmd/ binary's logger, and factory.NewProductionLogger, BuildLogger and
-// SamplerOption hand the same installation to an embedder, since the global
-// logger is the embedder's and the join holds only if their sampler carries
-// the exemption too.
+// the core SamplerOption installs sends entries whose last name segment is
+// LoggerName (IsCorrelationLogger) to the core beneath the sampler. Nothing
+// else changes for them: level, fields and encoding are the global logger's.
+// internal/bootstrap applies SamplerOption to every cmd/ binary's logger, and
+// factory.NewProductionLogger, BuildLogger and SamplerOption hand the same
+// installation to an embedder, since the global logger is the embedder's and
+// the join holds only if their sampler carries the exemption too.
 package errorid
 
 import (
@@ -31,9 +31,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// LoggerName is the name Logger gives its entries, and the only thing
-// ExemptFromSampler keys on. It reaches the output as the encoder's name
-// field ("logger" in the production config), so an operator can filter on it.
+// LoggerName is the name Logger gives its entries, and the only thing the
+// sampler exemption keys on (IsCorrelationLogger). It reaches the output as
+// the encoder's name field ("logger" in the production config) — on its own
+// under an unnamed global logger, or as the last segment ("svc.errorid")
+// under a global the embedder named — so an operator can filter on it.
 const LoggerName = "errorid"
 
 // New returns a fresh correlation id: a canonical UUID string, so it parses
@@ -45,8 +47,8 @@ func New() string {
 // Logger returns the global sugared logger for a line that carries an id
 // minted by New. It is the global logger under LoggerName and nothing more,
 // so a test that installs an observer through zap.ReplaceGlobals sees these
-// lines like any other; the name only matters once ExemptFromSampler is in
-// the chain. Resolved on every call rather than cached so it follows
+// lines like any other; the name only matters once SamplerOption's core is
+// in the chain. Resolved on every call rather than cached so it follows
 // zap.ReplaceGlobals, exactly as zap.S() does.
 func Logger() *zap.SugaredLogger {
 	return zap.S().Named(LoggerName)

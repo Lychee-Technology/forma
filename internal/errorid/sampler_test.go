@@ -3,7 +3,6 @@ package errorid_test
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
@@ -12,13 +11,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
-
-// productionSampled wraps core in the sampler zap.NewProductionConfig
-// installs: 100 identical (level, message) entries per second, then every
-// 100th.
-func productionSampled(core zapcore.Core) zapcore.Core {
-	return zapcore.NewSamplerWithOptions(core, time.Second, 100, 100)
-}
 
 // logNTimes writes the same Warn message n times.
 func logNTimes(logger *zap.SugaredLogger, n int, msg string) {
@@ -64,12 +56,51 @@ func TestSamplerOptionHonoursTheHook(t *testing.T) {
 	require.Equal(t, 2, dropped, "the hook sees the sampled side's drops and none from the exempt side")
 }
 
-// TestExemptFromSamplerSurvivesWith pins that a child logger built with
-// fields (zap's With) keeps the routing: the wrapper must wrap both sides
-// again rather than collapse to one of them.
-func TestExemptFromSamplerSurvivesWith(t *testing.T) {
+// TestSamplerOptionRoutesByTheLastNameSegment pins what the exemption keys
+// on. Logger builds on the global logger with Named, and zap joins names with
+// a period, so under a global the embedder already named the line arrives
+// as "svc.errorid": that must still clear the sampler, or a named-global
+// embedder gets ids whose lines were dropped. A child of the correlation
+// logger or a name that merely ends in the letters is not one and stays
+// sampled. The sampler here keeps one line in a hundred, so two writes per
+// name tell the two routes apart.
+func TestSamplerOptionRoutesByTheLastNameSegment(t *testing.T) {
+	cases := []struct {
+		name   string
+		exempt bool
+	}{
+		{errorid.LoggerName, true},
+		{"svc." + errorid.LoggerName, true},
+		{"a.b." + errorid.LoggerName, true},
+		{"", false},
+		{"svc", false},
+		{"my" + errorid.LoggerName, false},
+		{errorid.LoggerName + ".child", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.exempt, errorid.IsCorrelationLogger(tc.name))
+
+			core, logs := observer.New(zap.InfoLevel)
+			logger := zap.New(core, erroridtest.FrozenClock(),
+				errorid.SamplerOption(&zap.SamplingConfig{Initial: 1, Thereafter: 100})).Named(tc.name)
+			logNTimes(logger.Sugar(), 2, "line")
+
+			want := 1
+			if tc.exempt {
+				want = 2
+			}
+			require.Len(t, logs.All(), want)
+		})
+	}
+}
+
+// TestSamplerOptionSurvivesWith pins that a child logger built with fields
+// (zap's With) keeps the routing: the wrapper must wrap both sides again
+// rather than collapse to one of them.
+func TestSamplerOptionSurvivesWith(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
-	logger := zap.New(errorid.ExemptFromSampler(productionSampled(core), core), erroridtest.FrozenClock()).
+	logger := zap.New(core, erroridtest.FrozenClock(), errorid.SamplerOption(zap.NewProductionConfig().Sampling)).
 		With(zap.String("component", "test"))
 
 	logNTimes(logger.Sugar().Named(errorid.LoggerName), 150, "correlated")
@@ -81,23 +112,30 @@ func TestExemptFromSamplerSurvivesWith(t *testing.T) {
 		"the With fields reach the unsampled side too")
 }
 
-// TestExemptFromSamplerLevelAndSync: zapcore.LevelOf must see the wrapped
-// level, and Sync must flush both sides and report either failure.
-func TestExemptFromSamplerLevelAndSync(t *testing.T) {
+// TestSamplerOptionLevelAndSync: zapcore.LevelOf must see the wrapped level,
+// and one logger.Sync must reach the sink exactly once — the sampler and
+// the exemption both sit over the same core, and zapcore.Core does not
+// promise a second Sync is harmless — and report its failure.
+func TestSamplerOptionLevelAndSync(t *testing.T) {
 	core, _ := observer.New(zap.WarnLevel)
-	wrapped := errorid.ExemptFromSampler(productionSampled(core), core)
-	require.Equal(t, zap.WarnLevel, zapcore.LevelOf(wrapped))
-	require.False(t, wrapped.Enabled(zap.InfoLevel))
-	require.True(t, wrapped.Enabled(zap.WarnLevel))
+	sink := &countingCore{Core: core, err: errors.New("flush failed")}
+	logger := zap.New(sink, errorid.SamplerOption(zap.NewProductionConfig().Sampling))
 
-	syncErr := errors.New("flush failed")
-	failing := errorid.ExemptFromSampler(core, &syncFailingCore{Core: core, err: syncErr})
-	require.ErrorIs(t, failing.Sync(), syncErr)
+	require.Equal(t, zap.WarnLevel, zapcore.LevelOf(logger.Core()))
+	require.False(t, logger.Core().Enabled(zap.InfoLevel))
+	require.True(t, logger.Core().Enabled(zap.WarnLevel))
+
+	require.ErrorIs(t, logger.Sync(), sink.err)
+	require.Equal(t, 1, sink.syncs, "one Sync of the logger is one Sync of the sink")
 }
 
-type syncFailingCore struct {
+type countingCore struct {
 	zapcore.Core
-	err error
+	syncs int
+	err   error
 }
 
-func (c *syncFailingCore) Sync() error { return c.err }
+func (c *countingCore) Sync() error {
+	c.syncs++
+	return c.err
+}
