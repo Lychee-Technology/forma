@@ -335,10 +335,13 @@ func resolvePublicMessage(err error) (string, bool) {
 // inheriting Errorw's alerting weight for something a caller can trigger at
 // will. The Warnw branch also mints an error_id shared by line and body (#361).
 //
-// The two lines that carry an error_id go through errorid.Logger rather than
-// zap.S(): op is a constant message, and the production sampler keys on level
-// and message, so a burst of identical failures would otherwise leave callers
-// holding ids whose lines were never written. The Debugw line carries no id
+// The two lines that carry an error_id are written by errorid.Log, which
+// mints the id only when its logger will write the line at that level, so a
+// logger configured above it yields a body without an error_id rather than
+// one that leads nowhere. It writes on errorid.Logger rather than zap.S() for
+// the sampler too: op is a constant message, and the production sampler keys
+// on level and message, so a burst of identical failures would otherwise
+// leave callers holding ids whose lines were never written. The Debugw line carries no id
 // and stays on the sampled global logger.
 func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err error, logFields ...any) {
 	fields := make([]any, 0, len(logFields)+8)
@@ -364,10 +367,10 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 			// detail, so the body carries an error_id the caller can quote back.
 			// The detail-less branch stays id-free: its Debugw line does not
 			// survive the production Info threshold, and an error_id that
-			// correlates to nothing is worse than none.
-			resp.ErrorID = errorid.New()
-			fields = append(fields, "error_id", resp.ErrorID, "error", safe)
-			errorid.Logger().Warnw(op, fields...)
+			// correlates to nothing is worse than none — which is also why
+			// errorid.Log leaves ErrorID empty under a logger set above Warn.
+			fields = append(fields, "error", safe)
+			resp.ErrorID = errorid.Log(zap.WarnLevel, op, fields...)
 		} else {
 			fields = append(fields, "error", safe)
 			zap.S().Debugw(op, fields...)
@@ -377,9 +380,8 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	}
 
 	class := errorClass(err)
-	errorID := errorid.New()
 	schemaID := errorSchemaID(err)
-	fields = append(fields, "error_class", class, "error_id", errorID)
+	fields = append(fields, "error_class", class)
 	// Its own field, not interpolated into the message: operators filter log
 	// queries on schema_id, and parsing it back out of prose is what that would
 	// otherwise cost. Omitted when zero, matching the body, so a log line never
@@ -388,7 +390,7 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 		fields = append(fields, "schema_id", schemaID)
 	}
 	fields = append(fields, "error", safe)
-	errorid.Logger().Errorw(op, fields...)
+	errorID := errorid.Log(zap.ErrorLevel, op, fields...)
 
 	_ = writeJSON(w, status, APIResponse{
 		Success:    false,

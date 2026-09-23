@@ -226,10 +226,47 @@ func TestRespondError4xxPublishesOnlyTheCarriersMessage(t *testing.T) {
 	}
 }
 
+// TestRespondErrorIssuesNoIDForADroppedLine: under a logger set above Warn —
+// an embedder's Error-level factory.BuildLogger config — the withheld-detail
+// 4xx line is dropped at the level check, before the sampler exemption can
+// act, so its body must carry no error_id rather than a handle to nothing.
+// The redacted 5xx line logs at Error, still clears that threshold, and keeps
+// its id joined to the line.
+func TestRespondErrorIssuesNoIDForADroppedLine(t *testing.T) {
+	core, logs := observer.New(zap.ErrorLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	withheld := forma.WithOperatorDetail(forma.InvalidInputf("attribute 'age'"), fmt.Errorf("operator cause"))
+	rec := httptest.NewRecorder()
+	respondError(rec, "create failed", withheld)
+	var disclosed APIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &disclosed); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest || disclosed.ErrorID != "" {
+		t.Fatalf("expected a 400 without error_id under an Error-level logger, got %d %+v", rec.Code, disclosed)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("the Warn line cannot clear an Error threshold, got %v", logs.All())
+	}
+
+	rec = httptest.NewRecorder()
+	respondError(rec, "query failed", fmt.Errorf("db timeout"))
+	var redacted APIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &redacted); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	entries := logs.FilterMessage("query failed").All()
+	if len(entries) != 1 || entries[0].ContextMap()["error_id"] != redacted.ErrorID || redacted.ErrorID == "" {
+		t.Fatalf("redacted body id %q must join its Error line, got %v", redacted.ErrorID, entries)
+	}
+}
+
 // TestRespondErrorWithStatusHonoursCallerStatus pins the executeGet path, which
 // picks its message from the classified status and so passes the status in.
 func TestRespondErrorWithStatusHonoursCallerStatus(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	rec := httptest.NewRecorder()
@@ -317,7 +354,7 @@ func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
 // carries it — which the negative assertion pins. This is the error shape
 // internal/entity_query_sort.go actually produces, prose unchanged.
 func TestUnknownSortAttributeIs400AndPublished(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := forma.InvalidInputf("cannot sort by unknown attribute '%s' in schema '%s'",
@@ -350,7 +387,7 @@ func TestUnknownSortAttributeIs400AndPublished(t *testing.T) {
 // not depend on any trigger word: an error with no sentinel evidence at all is a
 // 500 with an opaque body, whatever its prose.
 func TestSentinelLessErrorIsRedacted500(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := fmt.Errorf("connection reset by peer while streaming %s", canaryKey)

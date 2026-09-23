@@ -34,6 +34,12 @@ func NewProductionLogger(opts ...zap.Option) (*zap.Logger, error) {
 // way NewProductionLogger installs it, for an embedder that starts from its
 // own zap.Config (console encoding, another level, extra output paths). A
 // cfg with Sampling nil builds exactly as cfg.Build would.
+//
+// The level is kept as given, and it decides which ids are issued: a failed
+// best-effort operation and a disclosed 4xx that withholds operator detail
+// log their error_id at Warn, so above Warn they carry no id at all, and a
+// redacted response logs at Error. Forma never returns an id for a line the
+// logger will not write.
 func BuildLogger(cfg zap.Config, opts ...zap.Option) (*zap.Logger, error) {
 	return bootstrap.BuildLogger(cfg, opts...)
 }

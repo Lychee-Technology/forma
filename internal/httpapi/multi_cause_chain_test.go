@@ -26,7 +26,7 @@ import (
 // 400 body. The *status* still follows the sentinel — a 400 with a redacted
 // body is the deny shape itself.
 func TestMixedChainIsRedacted(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	driver := fmt.Errorf(`IO Error: Unable to connect to Postgres at "host=h user=u %s dbname=d" reading %s`,
@@ -65,7 +65,7 @@ func TestMixedChainIsRedacted(t *testing.T) {
 // carrier-less mixed shape: fmt.Errorf with two %w verbs, wrapped once more so
 // the fan-out is not the outermost node.
 func TestMultiVerbWrapChainIsRedacted(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	driver := fmt.Errorf("HTTP Error: 403 reading %s", canaryKey)
@@ -89,7 +89,7 @@ func TestMultiVerbWrapChainIsRedacted(t *testing.T) {
 // sites: forgetting the carrier degrades the caller's 400 to an opaque one,
 // which the site's own feature test should catch.
 func TestUnconvertedSentinelIsRedacted4xx(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := fmt.Errorf("advanced query: %w",
@@ -119,7 +119,7 @@ func TestUnconvertedSentinelIsRedacted4xx(t *testing.T) {
 // every converted client error now has — a carrier under plain context wraps —
 // reaches the caller with its published message intact.
 func TestClientErrorPublishesItsMessage(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := fmt.Errorf("advanced query: %w",
@@ -153,7 +153,7 @@ func TestClientErrorPublishesItsMessage(t *testing.T) {
 // stays out of the body. #361: withheld detail generates an error_id for the
 // Warnw line.
 func TestMixedChainPublishesClientTextOnly(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	renderErr := fmt.Errorf(`template: s3path:1: unclosed action reading %s`, canaryKey)
@@ -194,7 +194,7 @@ func TestMixedChainPublishesClientTextOnly(t *testing.T) {
 // plain context wraps above WrapPublicf, and the boundary must still find the
 // publication and emit the accumulated prefix + leaf.
 func TestCarrierSurvivesReWrapping(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	leaf := forma.InvalidInputf("invalid value for attribute 'age' (attrID=2): cannot convert string to float64")
@@ -223,7 +223,7 @@ func TestCarrierSurvivesReWrapping(t *testing.T) {
 // disclosure back, never open it: a publishing carrier at a 5xx is redacted
 // like any other operator failure.
 func TestCarrierAtA5xxIsRedacted(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	rec := httptest.NewRecorder()
@@ -251,7 +251,7 @@ func TestCarrierAtA5xxIsRedacted(t *testing.T) {
 // disclosed branch: a wrap site that interpolates a DSN into its published
 // message by accident does not ship the password.
 func TestPublishedMessageIsCredentialScrubbed(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := forma.InvalidInputf("cannot use connection string %q",
@@ -287,7 +287,7 @@ func (f *foreignPublicError) PublicMessage() string { return f.msg }
 // The publication must come from the branch that carries the client sentinel;
 // this chain has no such branch, so it takes the deny shape.
 func TestForeignPublicationCannotBorrowSentinelBranch(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := errors.Join(
@@ -319,7 +319,7 @@ func TestForeignPublicationCannotBorrowSentinelBranch(t *testing.T) {
 // foreign publisher in front of a legitimate carrier would silently degrade
 // the caller's 400 to the deny shape.
 func TestForeignNodeDoesNotBlockCarrierResolution(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := errors.Join(
@@ -354,7 +354,7 @@ func TestForeignNodeDoesNotBlockCarrierResolution(t *testing.T) {
 // delegation now run the same canonical resolution (forma.ResolvePublicMessage),
 // so both decorators degrade and the deny shape answers.
 func TestDecoratedForeignPublicationIsRedacted(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	mixed := errors.Join(

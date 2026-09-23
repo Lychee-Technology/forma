@@ -30,7 +30,7 @@ func newParseProbeManager() *mockEntityManager {
 // and (mostly) same text as the pre-#360 direct writeError bodies, but now on
 // the gated branch: no error_class, no error_id, scrub applied.
 func TestParseFailuresPublishThroughTheGate(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	cases := []struct {
@@ -101,7 +101,7 @@ func TestParseFailuresPublishThroughTheGate(t *testing.T) {
 // conversion: sort_order is caller text interpolated into a published message,
 // and before #360 the direct writeError path echoed it with no scrub at all.
 func TestParseFailureScrubsPublishedCredential(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	srv := NewServer(newParseProbeManager(), Options{})

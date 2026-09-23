@@ -63,7 +63,7 @@ func (r *requiredAttrRegistry) ListSchemas() []string {
 // body that omits a required attribute — rather than a hand-written chain, so
 // this fails if the write-only validator ever stops carrying the sentinel.
 func TestCreateMissingRequiredAttributeIs400AndVerbatim(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	_, writeErr := transform.NewTransformer(&requiredAttrRegistry{}).ToAttributes(
@@ -119,7 +119,7 @@ func TestCreateMissingRequiredAttributeIs400AndVerbatim(t *testing.T) {
 // condition — rather than a hand-written chain, so this fails if the sentinel is
 // removed again.
 func TestAdvancedQueryOperatorWhitelistIs400AndVerbatim(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	cache := forma.SchemaAttributeCache{

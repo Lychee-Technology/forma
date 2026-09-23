@@ -25,7 +25,7 @@ import (
 // names the limit, and the probe manager proves the request was rejected
 // before any manager work — the body was never materialized into a batch.
 func TestOversizedBodyIsRefusedBeforeTheManager(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	const limit = 64
@@ -81,7 +81,7 @@ func TestOversizedBodyIsRefusedBeforeTheManager(t *testing.T) {
 // value fits under the cap and whose trailing bytes do not must still answer
 // 413. Before the drain, such a body decoded cleanly and reached the manager.
 func TestBodyCapCoversBytesAfterTheFirstValue(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	const limit = 64
@@ -130,7 +130,7 @@ func TestBodyCapCoversBytesAfterTheFirstValue(t *testing.T) {
 // first is a 400, not a request whose tail is silently discarded. Trailing
 // whitespace stays legal, so newline-terminated bodies keep working.
 func TestSecondJSONValueUnderTheCapIsInvalidInput(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	first := `{"schema_name":"lead","condition":{"a":"s","v":"equals:x"}}`
@@ -201,7 +201,7 @@ func (b *failingBody) Close() error { return nil }
 // redacted branch with the timeout class and Connection: close; any other
 // transport failure is the client going away and stays a redacted 500.
 func TestBodyReadFailureIsNotMalformedJSON(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	timeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
@@ -262,7 +262,7 @@ func TestBodyReadFailureIsNotMalformedJSON(t *testing.T) {
 // headers and half the body and then stalls. The recorder tests cannot see
 // this because httptest enforces no socket deadlines.
 func TestReadTimeoutWhileUploadingAnswers408(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	manager := newParseProbeManager()
@@ -310,7 +310,7 @@ func TestReadTimeoutWhileUploadingAnswers408(t *testing.T) {
 // TestBodyUnderTheLimitReachesTheManager is the other half of the cap: the
 // limit is a ceiling, not a tax on ordinary requests.
 func TestBodyUnderTheLimitReachesTheManager(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	manager := &mockEntityManager{advancedResult: &forma.QueryResult{Data: []*forma.DataRecord{}}}
@@ -350,7 +350,7 @@ func TestDefaultBodyLimitIsTheEntitySizeLimit(t *testing.T) {
 // timeout earns (#465): 504 with the "timeout" class and a fixed message, on
 // the redacted branch like every other non-4xx.
 func TestDeadlineExceededAnswers504(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := fmt.Errorf("failed to query records: %w", context.DeadlineExceeded)
@@ -387,7 +387,7 @@ func TestDeadlineExceededAnswers504(t *testing.T) {
 // first and the cap outranks the parse error. When the whole malformed body
 // fits under the cap, the parse error stands with encoding/json's prose.
 func TestMalformedPrefixOverTheCapIsStill413(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	const limit = 64
@@ -430,7 +430,7 @@ func TestMalformedPrefixOverTheCapIsStill413(t *testing.T) {
 // net/http raises the framing error from r.Body.Read inside readJSONBody, and
 // the answer is the caller's 400, not a redacted 500 (#465 review).
 func TestMalformedChunkFramingAnswers400(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	manager := newParseProbeManager()

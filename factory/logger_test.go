@@ -16,6 +16,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
 
@@ -31,11 +32,13 @@ type loggedLine struct {
 // 100:100 sampler — built through the public BuildLogger. The clock is
 // frozen so every line lands in one sampler tick. Returns the logger, for
 // the test to install as the global, and a reader for the lines written so
-// far.
-func buildEmbedderLogger(t *testing.T) (*zap.Logger, func() []loggedLine) {
+// far. level replaces the production Info threshold, as an embedder's own
+// config may.
+func buildEmbedderLogger(t *testing.T, level zapcore.Level) (*zap.Logger, func() []loggedLine) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "forma.log")
 	cfg := zap.NewProductionConfig()
+	cfg.Level = zap.NewAtomicLevelAt(level)
 	cfg.OutputPaths = []string{path}
 	logger, err := BuildLogger(cfg, erroridtest.FrozenClock())
 	require.NoError(t, err)
@@ -46,6 +49,9 @@ func buildEmbedderLogger(t *testing.T) (*zap.Logger, func() []loggedLine) {
 		require.NoError(t, err)
 		var lines []loggedLine
 		for _, text := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			if text == "" {
+				continue
+			}
 			var line loggedLine
 			require.NoError(t, json.Unmarshal([]byte(text), &line), "not a JSON log line: %s", text)
 			lines = append(lines, line)
@@ -116,7 +122,7 @@ func requireEveryIDJoinsOneLine(t *testing.T, result *forma.BatchResult, lines [
 // has to be installable through the public surface for the OperationError
 // contract to hold there.
 func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
-	logger, readLog := buildEmbedderLogger(t)
+	logger, readLog := buildEmbedderLogger(t, zap.InfoLevel)
 	t.Cleanup(zap.ReplaceGlobals(logger))
 
 	result := runEmbedderBatchFailures(t)
@@ -130,12 +136,33 @@ func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
 // as "svc.errorid". The exemption keys on the last name segment; an exact
 // match would send every one of these lines back through the sampler.
 func TestEmbedderBatchFailureIDsSurviveProductionSamplingUnderANamedGlobal(t *testing.T) {
-	logger, readLog := buildEmbedderLogger(t)
+	logger, readLog := buildEmbedderLogger(t, zap.InfoLevel)
 	t.Cleanup(zap.ReplaceGlobals(logger.Named("svc")))
 
 	result := runEmbedderBatchFailures(t)
 
 	requireEveryIDJoinsOneLine(t, result, readLog(), "svc.errorid")
+}
+
+// TestEmbedderBatchFailuresIssueNoIDAboveWarn: BuildLogger keeps a caller's
+// level, and zap tests the level before the sampler exemption sees the line,
+// so under an Error-level config the Warn correlation line is never written.
+// A failure must then carry no error_id at all — never one that leads
+// nowhere — while still reporting its index and published message.
+func TestEmbedderBatchFailuresIssueNoIDAboveWarn(t *testing.T) {
+	logger, readLog := buildEmbedderLogger(t, zap.ErrorLevel)
+	t.Cleanup(zap.ReplaceGlobals(logger))
+
+	result := runEmbedderBatchFailures(t)
+
+	for i, failure := range result.Failed {
+		require.Empty(t, failure.ErrorID, "failure %d carries an id whose line an Error-level logger dropped", i)
+		require.Equal(t, i, failure.Index)
+		require.NotEmpty(t, failure.Error)
+	}
+	for _, line := range readLog() {
+		require.NotEqual(t, "BatchCreate operation failed", line.Msg, "the Warn line cannot clear an Error threshold")
+	}
 }
 
 // TestNewProductionLoggerIsTheBootstrapLogger: the public constructor has to

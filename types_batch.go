@@ -74,8 +74,10 @@ type OperationError struct {
 	// error" when it published nothing — while the full error goes to the
 	// failure log line alone; ErrorID appears verbatim on that line as
 	// error_id, so a caller quotes it and an operator finds the detail. It is
-	// set on every failed operation, published message or not, because every
-	// failure logs that line. Same shape and wire name as the error_id on an
+	// set on every failed operation, published message or not, whose line the
+	// process logger writes: that line logs at Warn, and under a logger
+	// configured above Warn (or zap's default no-op global) the operation
+	// carries no id rather than one that leads nowhere. Same shape and wire name as the error_id on an
 	// internal/httpapi response body. Code classifies, it does not correlate.
 	// The line is written around zap's production sampler only when the
 	// process logger was built with factory.NewProductionLogger, BuildLogger

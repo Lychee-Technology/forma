@@ -150,7 +150,7 @@ func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 // contract is that ErrInvalidInput surfaces as 4xx, and only that
 // reclassification keeps create failures legible once 5xx bodies are redacted.
 func TestCreateValidationErrorIsClientError(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	manager := &mockEntityManager{
@@ -183,7 +183,7 @@ func TestCreateValidationErrorIsClientError(t *testing.T) {
 // from an error carrying no publication at all
 // (TestUnconvertedSentinelIsRedacted4xx).
 func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	manager := &mockEntityManager{

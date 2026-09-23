@@ -86,7 +86,7 @@ func countMessages(t *testing.T) (counts map[string]int, loggerNames map[string]
 
 // TestProductionLoggerNeverSamplesACorrelationLine is the production half of
 // the #398 contract: through the real production config, 150 identical
-// failure lines written by errorid.Logger inside one second all reach the
+// failure lines written by errorid.Log inside one second all reach the
 // output, while 150 identical lines from the plain logger are cut to the
 // sampler's first 100 — so the sampler is live for everything else, and it
 // is the exemption, not its absence, that keeps every issued id joinable.
@@ -96,7 +96,7 @@ func TestProductionLoggerNeverSamplesACorrelationLine(t *testing.T) {
 	t.Cleanup(restore)
 
 	for i := 0; i < 150; i++ {
-		errorid.Logger().Warnw("BatchCreate operation failed", "error_id", errorid.New())
+		require.NotEmpty(t, errorid.Log(zap.WarnLevel, "BatchCreate operation failed"))
 		zap.S().Warnw("some other warning", "i", i)
 	}
 	require.NoError(t, logger.Sync())

@@ -1736,12 +1736,12 @@ failed best-effort operation now carries `OperationError.ErrorID` (JSON
 `error_id`), and the failure line `executeBestEffortBatch` logs at `Warnw` for
 that operation carries the same id as its `error_id` field, next to the full
 error under `error`. The id is a canonical UUID string minted by
-`internal/errorid.New`, the same generator `respondErrorWithStatus` now uses for
-the HTTP `error_id`, so the two surfaces cannot disagree about the shape of an
-id; it is a correlation handle only — `Code` still classifies. Pinned by
+`internal/errorid.Log`, which also writes the line and is the same call
+`respondErrorWithStatus` now uses for the HTTP `error_id`, so the two surfaces
+cannot disagree about the shape of an id; it is a correlation handle only — `Code` still classifies. Pinned by
 `TestBatchResultWithheldFailureCarriesACorrelationID`.
 
-The id is **unconditional**: a published failure carries it too, pinned by
+The id does not depend on what was published: a published failure carries it too, pinned by
 `TestBatchResultPublishedFailureCarriesACorrelationID`. This is a deliberate
 divergence from the HTTP boundary, which leaves a detail-less disclosed `4xx`
 id-free because its `Debugw` line does not survive the production `Info`
@@ -1750,7 +1750,8 @@ branch — every failure logs the full error at `Warnw` — so every id leads to
 line, including the #318 case where a published message withholds operator
 detail, without a second `HasOperatorDetail` branch to mirror. The published
 message itself is unchanged; the id sits beside it. `error_id` is `omitempty`,
-so an `OperationError` an embedder builds by hand serialises as before. The
+so an `OperationError` an embedder builds by hand serialises as before, and so
+does one whose line the logger will not write (below). The
 entry also carries `Index` (JSON `index`), the operation's position in
 `BatchOperation.Operations`: `Operation` is a copy, and a copy does not say
 which one failed when a batch repeats it, so a caller that maps a failure —
@@ -1758,6 +1759,26 @@ and its id — back to its own input keys on `Index`
 (`TestBatchResultFailureCarriesItsOperationIndex`; `cmd/sample`'s CSV importer
 reports a failed row that way, pinned by
 `TestImportReportsAFailureAgainstItsOwnRow`).
+
+**No line, no id.** `errorid.Log` mints an id only when the global logger is
+enabled at the line's level, and otherwise writes nothing and returns `""`, so
+the caller publishes no `error_id`. The sampler exemption below cannot cover
+this case: zap tests the level before any core sees the logger name, so a
+logger configured above the line's level drops it however the sampler is
+wrapped. `factory.BuildLogger` keeps an embedder's own level, and an
+`ErrorLevel` config — or zap's default no-op global, in a process that never
+installed a logger — would otherwise return ids for `Warnw` lines that were
+never written. Under such a logger a best-effort failure carries no `ErrorID`
+(still its `Index`, `Error` and `Code`), and a withheld-detail disclosed `4xx`
+carries no `error_id`; the redacted `Errorw` line keeps its id as long as the
+logger is enabled at `Error`. This is the HTTP boundary's rule for the
+detail-less `4xx` applied at run time: an id that correlates to nothing is
+worse than none. `errorid` exposes no other way to obtain an id, so a future
+id-bearing surface inherits the rule. Pinned by
+`TestLogIssuesNoIdForALineItWillNotWrite` (`internal/errorid`),
+`TestEmbedderBatchFailuresIssueNoIDAboveWarn` (`factory`, through the public
+`BuildLogger` with an `ErrorLevel` config) and
+`TestRespondErrorIssuesNoIDForADroppedLine` (`internal/httpapi`).
 
 **The line is never sampled.** "Every id leads to a line" would be false under
 the production logger as zap ships it: `zap.NewProductionConfig` samples by
@@ -1767,7 +1788,7 @@ level and message — the first 100 identical entries per second, then every
 batch of 101 failing operations, well inside the default `MaxBatchSize` of
 1000, would return 101 ids and write 100 lines, and a database outage does the
 same to the HTTP `Errorw` line. So both surfaces write their id-carrying lines
-through `errorid.Logger`, the global logger under the name `errorid`, and the
+through `errorid.Log`, which writes on `errorid.Logger`, the global logger under the name `errorid`, and the
 production logger installs its sampler through `errorid.SamplerOption`, whose
 core sends a correlation line to the core underneath the sampler and
 everything else through it. A correlation line is one whose logger name ends

@@ -190,7 +190,7 @@ func TestRedactedBodyCarriesSchemaID(t *testing.T) {
 // spelled `"schema_id":0` would contradict that and tell a client the read was
 // addressed to schema 0.
 func TestRedactedBodyOmitsSchemaIDWithoutACarrier(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	rec := httptest.NewRecorder()
@@ -232,7 +232,7 @@ func TestRedactedBodyOmitsSchemaIDWithoutACarrier(t *testing.T) {
 // the detail's text must not surface either. #361: withheld detail generates an
 // error_id for the Warnw line.
 func TestPublished4xxBodyCarriesNoSchemaID(t *testing.T) {
-	restore := zap.ReplaceGlobals(zap.NewNop())
+	restore := zap.ReplaceGlobals(discardLogger())
 	defer restore()
 
 	err := forma.WithOperatorDetail(forma.InvalidInputf("bad filter"),

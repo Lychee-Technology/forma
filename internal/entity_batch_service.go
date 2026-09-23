@@ -156,13 +156,13 @@ func (s *entityBatchService) executeBestEffortBatch(
 		if err != nil {
 			// The result entry withholds everything the error did not publish,
 			// so this line is the only copy of the full error, and the id is
-			// what joins the two (#398). Warnw, unconditionally: it has to
-			// clear the production Info threshold for the id to lead anywhere.
-			// Through errorid.Logger, not zap.S(): the message is constant, so
-			// the production sampler would drop the 101st identical failure in
-			// a second, and a batch can hold a thousand.
-			errorID := errorid.New()
-			errorid.Logger().Warnw(operationName+" operation failed", "operation", op, "error_id", errorID, "error", err)
+			// what joins the two (#398). At Warn, which clears the production
+			// Info threshold; under a logger set above Warn errorid.Log
+			// returns no id rather than one that leads nowhere.
+			// Through errorid, not zap.S(): the message is constant, so the
+			// production sampler would drop the 101st identical failure in a
+			// second, and a batch can hold a thousand.
+			errorID := errorid.Log(zap.WarnLevel, operationName+" operation failed", "operation", op, "error", err)
 			failed = append(failed, forma.OperationError{
 				Index:     index,
 				Operation: op,
