@@ -3,12 +3,12 @@ package factory
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/lychee-technology/forma/internal/errorid/erroridtest"
 	"github.com/lychee-technology/forma/internal/schemameta"
 
@@ -133,8 +133,9 @@ func TestEmbedderBatchFailureIDsSurviveProductionSampling(t *testing.T) {
 // TestEmbedderBatchFailureIDsSurviveProductionSamplingUnderANamedGlobal is
 // the same contract for an embedder that names its global logger —
 // zap.ReplaceGlobals(logger.Named("svc")) — so the correlation line arrives
-// as "svc.errorid". The exemption keys on the last name segment; an exact
-// match would send every one of these lines back through the sampler.
+// as "svc.errorid". The exemption keys on Forma's own marker, not the
+// name, so the embedder's naming cannot send these lines back through the
+// sampler.
 func TestEmbedderBatchFailureIDsSurviveProductionSamplingUnderANamedGlobal(t *testing.T) {
 	logger, readLog := buildEmbedderLogger(t, zap.InfoLevel)
 	t.Cleanup(zap.ReplaceGlobals(logger.Named("svc")))
@@ -178,17 +179,22 @@ func TestNewProductionLoggerIsTheBootstrapLogger(t *testing.T) {
 // TestSamplerOptionExemptsCorrelationLinesOverAHandBuiltCore covers the
 // embedder who assembles a core rather than a config and installs the
 // sampler as an option, the way zap.Config.Build would have: with
-// SamplerOption in the sampler's place, the exempt line clears it and every
-// other line is still cut.
+// SamplerOption in the sampler's place, Forma's correlation line clears it
+// and every other line is still cut — including the embedder's own lines
+// under a logger it happened to name "errorid", which must not borrow the
+// exemption (PR #606 review).
 func TestSamplerOptionExemptsCorrelationLinesOverAHandBuiltCore(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
 	logger := zap.New(core, erroridtest.FrozenClock(), SamplerOption(zap.NewProductionConfig().Sampling))
+	t.Cleanup(zap.ReplaceGlobals(logger))
 
 	for i := 0; i < 150; i++ {
-		logger.Sugar().Named("errorid").Warnw("correlated", "error_id", fmt.Sprint(i))
+		require.NotEmpty(t, errorid.Log(zap.WarnLevel, "correlated"))
 		logger.Sugar().Warnw("uncorrelated", "i", i)
+		logger.Sugar().Named("errorid").Warnw("host line under the same name", "i", i)
 	}
 
 	require.Len(t, logs.FilterMessage("correlated").All(), 150)
 	require.Len(t, logs.FilterMessage("uncorrelated").All(), 100)
+	require.Len(t, logs.FilterMessage("host line under the same name").All(), 100)
 }

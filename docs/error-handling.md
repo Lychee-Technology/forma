@@ -1763,7 +1763,7 @@ reports a failed row that way, pinned by
 **No line, no id.** `errorid.Log` mints an id only when the global logger is
 enabled at the line's level, and otherwise writes nothing and returns `""`, so
 the caller publishes no `error_id`. The sampler exemption below cannot cover
-this case: zap tests the level before any core sees the logger name, so a
+this case: zap tests the level before the sampler sees the entry, so a
 logger configured above the line's level drops it however the sampler is
 wrapped. `factory.BuildLogger` keeps an embedder's own level, and an
 `ErrorLevel` config — or zap's default no-op global, in a process that never
@@ -1788,22 +1788,27 @@ level and message — the first 100 identical entries per second, then every
 batch of 101 failing operations, well inside the default `MaxBatchSize` of
 1000, would return 101 ids and write 100 lines, and a database outage does the
 same to the HTTP `Errorw` line. So both surfaces write their id-carrying lines
-through `errorid.Log`, which writes on `errorid.Logger`, the global logger under the name `errorid`, and the
-production logger installs its sampler through `errorid.SamplerOption`, whose
-core sends a correlation line to the core underneath the sampler and
-everything else through it. A correlation line is one whose logger name ends
-in the segment `errorid` (`errorid.IsCorrelationLogger`): `Logger` builds on
-the global with `Named`, and zap joins names with a period, so under a global
-the embedder has already named — `zap.ReplaceGlobals(logger.Named("svc"))` —
-the line arrives as `svc.errorid`, and an exact match would send it back
-through the sampler. The exemption is by logger name because that is all a
-core can see when the sampler decides; fields arrive afterwards, which is why
-adding one cannot help. Nothing else changes for those lines — level, fields,
+through `errorid.Log`, which writes on `errorid.Logger`, and the production
+logger installs its sampler through `errorid.SamplerOption`, whose core sends a
+correlation line to the core underneath the sampler and everything else
+through it. A correlation line is one written through `errorid.Logger`, which
+the exemption recognises by a marker rather than by name: `Logger` adds a
+`SkipType` field whose value has an unexported type, zap hands `With` fields
+to every core when the child logger is built, and the exemption's `With`
+answers that marker with the core beneath the sampler and strips it, so the
+sink never sees it. It keys on the marker because the logger name is shared
+with the embedder: a host component logging under `zap.S().Named("errorid")`
+must not borrow the exemption for lines no caller holds an id for (PR #606
+review). The routing is decided at `With` because that is the last point a
+core sees anything but the entry's level, message and name before the sampler
+decides; fields logged with the line arrive afterwards, which is why adding
+one cannot help. Nothing else changes for those lines — level, fields,
 encoding are the global logger's — and every other line, including the
 report-only validation line that relies on the sampler for its volume bound
 (#317), is sampled as before. The id-carrying line does gain a `logger` field
-— `errorid`, or `svc.errorid` under a named global — which an operator can
-filter on.
+— `errorid`, or `svc.errorid` under a global the embedder named with
+`zap.ReplaceGlobals(logger.Named("svc"))` — which an operator can filter on;
+the name is a label, not a reserved namespace.
 
 The global logger belongs to the process that embeds Forma, so the exemption
 has to be installable from outside `internal/`: `factory.NewProductionLogger`
@@ -1824,9 +1829,10 @@ production config by `TestProductionLoggerNeverSamplesACorrelationLine`
 logger installed through the public constructor, 150 failures inside one
 sampler tick, every id on exactly one written line while ordinary lines are
 still cut to 100); its `...UnderANamedGlobal` twin runs the same storm under
-`logger.Named("svc")`, and `TestSamplerOptionRoutesByTheLastNameSegment`
+`logger.Named("svc")`, and `TestSamplerOptionExemptsOnlyTheCorrelationLogger`
 (`internal/errorid`) pins what does and does not count as a correlation
-line. The sampler tests run on a frozen clock so the lines cannot straddle a
+line — Forma's logger under any global name does, a host logger named
+`errorid` does not. The sampler tests run on a frozen clock so the lines cannot straddle a
 tick boundary and pass with the exemption gone.
 
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not

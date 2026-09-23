@@ -48,63 +48,66 @@ func TestSamplerOptionHonoursTheHook(t *testing.T) {
 			dropped++
 		}
 	}}
-	logger := zap.New(core, erroridtest.FrozenClock(), errorid.SamplerOption(cfg))
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core, erroridtest.FrozenClock(), errorid.SamplerOption(cfg))))
 
-	logNTimes(logger.Sugar(), 3, "uncorrelated")
-	logNTimes(logger.Sugar().Named(errorid.LoggerName), 3, "correlated")
+	logNTimes(zap.S(), 3, "uncorrelated")
+	logNTimes(errorid.Logger(), 3, "correlated")
 
 	require.Equal(t, 2, dropped, "the hook sees the sampled side's drops and none from the exempt side")
 }
 
-// TestSamplerOptionRoutesByTheLastNameSegment pins what the exemption keys
-// on. Logger builds on the global logger with Named, and zap joins names with
-// a period, so under a global the embedder already named the line arrives
-// as "svc.errorid": that must still clear the sampler, or a named-global
-// embedder gets ids whose lines were dropped. A child of the correlation
-// logger or a name that merely ends in the letters is not one and stays
-// sampled. The sampler here keeps one line in a hundred, so two writes per
-// name tell the two routes apart.
-func TestSamplerOptionRoutesByTheLastNameSegment(t *testing.T) {
-	cases := []struct {
-		name   string
-		exempt bool
-	}{
-		{errorid.LoggerName, true},
-		{"svc." + errorid.LoggerName, true},
-		{"a.b." + errorid.LoggerName, true},
-		{"", false},
-		{"svc", false},
-		{"my" + errorid.LoggerName, false},
-		{errorid.LoggerName + ".child", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.exempt, errorid.IsCorrelationLogger(tc.name))
-
+// TestSamplerOptionExemptsOnlyTheCorrelationLogger pins what the exemption
+// keys on. It is Logger's marker, not a name: under any global name the
+// embedder chose — none, "svc", "a.b" — Logger's lines clear the sampler,
+// while a host logger that happens to use Forma's label, "errorid" on its
+// own or as the last segment, is sampled like any other (PR #606 review: a
+// name-keyed exemption let such host lines bypass the volume bound). The
+// sampler here keeps one line in a hundred, so two writes per logger tell
+// the two routes apart.
+func TestSamplerOptionExemptsOnlyTheCorrelationLogger(t *testing.T) {
+	for _, global := range []string{"", "svc", "a.b"} {
+		t.Run("global="+global, func(t *testing.T) {
 			core, logs := observer.New(zap.InfoLevel)
-			logger := zap.New(core, erroridtest.FrozenClock(),
-				errorid.SamplerOption(&zap.SamplingConfig{Initial: 1, Thereafter: 100})).Named(tc.name)
-			logNTimes(logger.Sugar(), 2, "line")
+			root := zap.New(core, erroridtest.FrozenClock(),
+				errorid.SamplerOption(&zap.SamplingConfig{Initial: 1, Thereafter: 100})).Named(global)
+			t.Cleanup(zap.ReplaceGlobals(root))
 
-			want := 1
-			if tc.exempt {
-				want = 2
-			}
-			require.Len(t, logs.All(), want)
+			logNTimes(errorid.Logger(), 2, "correlated")
+			logNTimes(zap.S().Named(errorid.LoggerName), 2, "host logger under the label")
+			logNTimes(zap.S().Named("svc").Named(errorid.LoggerName), 2, "host logger under the label as last segment")
+			logNTimes(errorid.Logger().Named("child").With("k", "v"), 2, "child of the correlation logger")
+
+			require.Len(t, logs.FilterMessage("correlated").All(), 2)
+			require.Len(t, logs.FilterMessage("host logger under the label").All(), 1)
+			require.Len(t, logs.FilterMessage("host logger under the label as last segment").All(), 1)
+			require.Len(t, logs.FilterMessage("child of the correlation logger").All(), 2)
 		})
 	}
 }
 
-// TestSamplerOptionSurvivesWith pins that a child logger built with fields
-// (zap's With) keeps the routing: the wrapper must wrap both sides again
-// rather than collapse to one of them.
+// TestSamplerOptionStripsTheMarker: the marker is how the exemption
+// recognises Logger, not part of the line, so the core beneath never
+// receives it — only the fields the caller logged.
+func TestSamplerOptionStripsTheMarker(t *testing.T) {
+	logs := erroridtest.ObserveUnderProductionSampler(t, zap.InfoLevel)
+
+	errorid.Logger().Warnw("correlated", "k", "v")
+
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	require.Equal(t, []zapcore.Field{zap.String("k", "v")}, entries[0].Context)
+}
+
+// TestSamplerOptionSurvivesWith pins that a global built with fields (zap's
+// With) keeps the routing: the wrapper must wrap both sides again rather
+// than collapse to one of them, so the marker still finds it.
 func TestSamplerOptionSurvivesWith(t *testing.T) {
 	core, logs := observer.New(zap.InfoLevel)
-	logger := zap.New(core, erroridtest.FrozenClock(), errorid.SamplerOption(zap.NewProductionConfig().Sampling)).
-		With(zap.String("component", "test"))
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core, erroridtest.FrozenClock(),
+		errorid.SamplerOption(zap.NewProductionConfig().Sampling)).With(zap.String("component", "test"))))
 
-	logNTimes(logger.Sugar().Named(errorid.LoggerName), 150, "correlated")
-	logNTimes(logger.Sugar(), 150, "uncorrelated")
+	logNTimes(errorid.Logger(), 150, "correlated")
+	logNTimes(zap.S(), 150, "uncorrelated")
 
 	require.Len(t, logs.FilterMessage("correlated").All(), 150)
 	require.Len(t, logs.FilterMessage("uncorrelated").All(), 100)

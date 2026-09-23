@@ -131,8 +131,10 @@ func TestBuildLoggerWithoutSamplingIsPlainBuild(t *testing.T) {
 func TestBuildLoggerKeepsProductionThreshold(t *testing.T) {
 	logger := buildProductionLoggerInMemory(t)
 	require.Equal(t, zapcore.InfoLevel, logger.Level())
-	require.False(t, logger.Named(errorid.LoggerName).Core().Enabled(zapcore.DebugLevel))
-	require.True(t, logger.Named(errorid.LoggerName).Core().Enabled(zapcore.InfoLevel))
+	t.Cleanup(zap.ReplaceGlobals(logger))
+	correlation := errorid.Logger().Desugar().Core()
+	require.False(t, correlation.Enabled(zapcore.DebugLevel))
+	require.True(t, correlation.Enabled(zapcore.InfoLevel))
 }
 
 // TestBuildLoggerReportsAnUnbuildableConfig pins the wrapped error.
