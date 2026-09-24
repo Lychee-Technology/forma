@@ -188,6 +188,7 @@ func TestWidthAuditFlagsRejectBadInput(t *testing.T) {
 	}{
 		{[]string{"-width-export-cutover", "2026-08-29"}, "invalid -width-export-cutover"},
 		{[]string{"-change-log-table", "", "-requeue-stale-width-exports"}, "-requeue-stale-width-exports needs -change-log-table"},
+		{[]string{"-entity-main-table", "", "-requeue-stale-width-exports"}, "-requeue-stale-width-exports needs -entity-main-table"},
 	} {
 		args := append([]string{"-schema-dir", t.TempDir(), "-schema-registry-table", "schema_registry_dev"}, tc.args...)
 		err := runValidateSchemaConsistencyOut(context.Background(), args, &strings.Builder{})

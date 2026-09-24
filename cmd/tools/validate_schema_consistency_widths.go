@@ -53,8 +53,13 @@ func (f widthAuditFlags) options() (widthAuditOptions, error) {
 	if err != nil {
 		return widthAuditOptions{}, err
 	}
+	// Reject a requeue that cannot run before the census or any row is
+	// requeued, rather than failing mid-sweep.
 	if *f.requeue && *f.changeLogTable == "" {
 		return widthAuditOptions{}, errors.New("-requeue-stale-width-exports needs -change-log-table: a requeue is a change_log entry")
+	}
+	if *f.requeue && *f.entityMainTable == "" {
+		return widthAuditOptions{}, errors.New("-requeue-stale-width-exports needs -entity-main-table: a requeue advances the row version there")
 	}
 	return widthAuditOptions{
 		changeLogTable:  *f.changeLogTable,

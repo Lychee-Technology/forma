@@ -693,7 +693,9 @@ loses the merge on the warm and cold tiers. Requeued rows are listed in the
 informational block, so a repair run exits zero unless something else fails. A
 row with no `entity_main` row cannot be requeued and stays a failure; it is an
 orphan to delete or restore by hand. A requeue does not need
-`--width-export-cutover`: without one it requeues every candidate. After
+`--width-export-cutover`: without one it requeues every candidate. It does need
+non-empty `--change-log-table` and `--entity-main-table`; the validator rejects
+an empty one before the census runs, so no row is requeued. After
 `cdc-flush`, re-run the validator with the same cutover to confirm the report
 is clean.
 
