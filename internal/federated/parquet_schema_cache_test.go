@@ -53,8 +53,8 @@ func TestValidatedParquetCacheRewritingAPathAtCapacityEvictsNothing(t *testing.T
 }
 
 // TestValidatedParquetCacheSweepsRetiredEntries is the retired-object case: a
-// path compaction retired is never looked up again, so only the insert-side
-// sweep can reclaim it. Once idle past the TTL, the next insert removes it.
+// path compaction retired is never looked up again, so only a sweep can
+// reclaim it. Once idle past the TTL, the next insert removes it.
 func TestValidatedParquetCacheSweepsRetiredEntries(t *testing.T) {
 	c, clock := newTestValidatedParquetCache(time.Minute, 100)
 	for i := 0; i < 10; i++ {
@@ -65,6 +65,24 @@ func TestValidatedParquetCacheSweepsRetiredEntries(t *testing.T) {
 	clock.advance(time.Minute)
 	c.put(cachePath(100), stampWith(), nil)
 	require.Equal(t, 1, c.len(), "retired entries idle past the TTL must be swept, not kept forever")
+}
+
+// TestValidatedParquetCacheHitOnlyTrafficSweepsRetiredEntries covers steady
+// state with no new objects: every query hits a live path and nothing is
+// inserted. The retired path is never looked up again, so if only inserts
+// swept, its entry would be kept for as long as the hits continue.
+func TestValidatedParquetCacheHitOnlyTrafficSweepsRetiredEntries(t *testing.T) {
+	c, clock := newTestValidatedParquetCache(time.Minute, 100)
+	retired, live := cachePath(0), cachePath(1)
+	c.put(retired, stampWith(), nil)
+	c.put(live, stampWith(), nil)
+
+	for i := 0; i < 3; i++ {
+		clock.advance(40 * time.Second)
+		_, ok := c.get(live, nil)
+		require.True(t, ok, "the live path must stay warm (lookup %d)", i)
+	}
+	require.Equal(t, 1, c.len(), "a retired entry idle past the TTL must be swept by hit-only traffic")
 }
 
 // TestValidatedParquetCacheHitRefreshesIdleDeadline pins the steady-state

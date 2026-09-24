@@ -62,11 +62,12 @@ func newValidatedParquetCache(ttl time.Duration, capacity int) *validatedParquet
 // path) is a miss, so the caller re-validates and overwrites the entry. A hit
 // slides the idle deadline; an expired entry is deleted on the way.
 func (c *validatedParquetCache) get(path string, stamp map[string]string) (map[string]string, bool) {
+	now := c.now()
+	c.maybeSweep(now)
 	entry, ok := c.entries[path]
 	if !ok {
 		return nil, false
 	}
-	now := c.now()
 	if !now.Before(entry.expires) {
 		delete(c.entries, path)
 		return nil, false
@@ -80,17 +81,11 @@ func (c *validatedParquetCache) get(path string, stamp map[string]string) (map[s
 }
 
 // put records cols for path together with the stamp they were validated
-// under; stamp must already be a clone the cache can own. It first sweeps
-// expired entries — at most once per TTL, so a burst of cold objects does not
-// pay a full scan each — because get evicts only paths it is asked about, and
-// a retired object's path is never asked about again. A new path arriving at
-// capacity then evicts one arbitrary entry (Go map order).
+// under; stamp must already be a clone the cache can own. A new path arriving
+// at capacity evicts one arbitrary entry (Go map order).
 func (c *validatedParquetCache) put(path string, cols, stamp map[string]string) {
 	now := c.now()
-	if !now.Before(c.nextSweep) {
-		c.sweep(now)
-		c.nextSweep = now.Add(c.ttl)
-	}
+	c.maybeSweep(now)
 	if _, exists := c.entries[path]; !exists && len(c.entries) >= c.capacity {
 		for victim := range c.entries {
 			delete(c.entries, victim)
@@ -98,6 +93,19 @@ func (c *validatedParquetCache) put(path string, cols, stamp map[string]string) 
 		}
 	}
 	c.entries[path] = validatedParquet{cols: cols, stamp: stamp, expires: now.Add(c.ttl)}
+}
+
+// maybeSweep runs a full expiry sweep when one is due, at most once per TTL so
+// a burst of traffic does not pay a full scan per call. Both get and put call
+// it: a retired object's path is never asked about again, so only a sweep can
+// reclaim it, and steady traffic may be all hits on other paths with no insert
+// to trigger one.
+func (c *validatedParquetCache) maybeSweep(now time.Time) {
+	if now.Before(c.nextSweep) {
+		return
+	}
+	c.sweep(now)
+	c.nextSweep = now.Add(c.ttl)
 }
 
 // sweep deletes every entry whose idle deadline has passed.

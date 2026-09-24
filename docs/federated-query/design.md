@@ -854,10 +854,11 @@ would ever mention it.
 the stamp check or the footer probe — so it is bounded rather than kept for the
 life of the process (#466). An entry expires after 30 minutes without a lookup,
 and every hit slides that deadline, so an object queries keep scanning stays
-warm while one that compaction retired ages out: inserts sweep expired entries
-(at most once per TTL window), so a retired path's entry is gone within about
-two TTL windows of its last use. Independently, the cache holds at most 8192
-entries; a new path arriving at the bound evicts one arbitrary entry, so a
+warm while one that compaction retired ages out: lookups and inserts alike
+sweep expired entries (at most once per TTL window), so while the validator
+sees any traffic — even hits alone — a retired path's entry is gone within
+about two TTL windows of its last use. Independently, the cache holds at most
+8192 entries; a new path arriving at the bound evicts one arbitrary entry, so a
 caller-chosen path set cannot grow the heap past it even inside one TTL window.
 One-entry eviction instead of `queryplan.Cache`'s wholesale clear keeps the bound
 from sending every live object back to a footer probe at once. Eviction can only
