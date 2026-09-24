@@ -850,12 +850,27 @@ and any divergence is logged with the footer winning the union; that is a log
 and not an error because the read succeeds, so nothing in the caller's result
 would ever mention it.
 
+**Cache bounds.** The cache is a pure performance memo — a miss falls through to
+the stamp check or the footer probe — so it is bounded rather than kept for the
+life of the process (#466). An entry expires after 30 minutes without a lookup,
+and every hit slides that deadline, so an object queries keep scanning stays
+warm while one that compaction retired ages out: lookups and inserts alike
+sweep expired entries (at most once per TTL window), so while the validator
+sees any traffic — even hits alone — a retired path's entry is gone within
+about two TTL windows of its last use. Independently, the cache holds at most
+8192 entries; a new path arriving at the bound evicts one arbitrary entry, so a
+caller-chosen path set cannot grow the heap past it even inside one TTL window.
+One-entry eviction instead of `queryplan.Cache`'s wholesale clear keeps the bound
+from sending every live object back to a footer probe at once. Eviction can only
+cost a re-validation, never correctness.
+
 **Backfill contract: lazy fallback, no backfill.** There is no migration pass
 and no manifest version bump — field presence is the format signal. Legacy
 entries acquire stamps only when a writer rewrites them (compaction merging
 them into a new base, or an init rerun), and an entry that is never rewritten
-stays probe-based **indefinitely, by design**: an unstamped path costs exactly
-one footer probe per process lifetime, which is the pre-#256 steady state, so
+stays probe-based **indefinitely, by design**: an unstamped path costs one
+footer probe per cache residency (see Cache bounds above; while queries keep
+scanning it, that is once per process), which is the pre-#256 steady state, so
 there is nothing to repair and no window in which correctness depends on the
 stamp existing.
 
