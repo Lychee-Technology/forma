@@ -645,7 +645,11 @@ informational (not a failure):
 path accepted an EAV-only `smallint`/`integer`/`bigint` value that did not fit
 the declared width (`4294967296` under `integer`, `1.5` under anything). Since
 `#384` the write path rejects such values, but rows written earlier are still
-there. The census lists every such row, one line per stored element
+there. For `bigint` the funnel judged the exact int64 rather than the float64
+image `eav_data` stores until `#612`: an int64 from `9223372036854775296`
+(2^63−512) up to `9223372036854775807` was accepted and stored as
+`9223372036854775808` (2^63). Rows written that way before `#612` are
+reported too. The census lists every such row, one line per stored element
 (`array_indices` is shown for list items), and classifies it by what the tiers
 serve for it:
 
@@ -663,7 +667,9 @@ serve for it:
   fraction. Every DuckDB leg still projects `bigint` through
   `TRY_CAST(value_numeric AS BIGINT)`, including the unflushed hot leg, so the
   value diverges whether or not it was ever exported, and a re-flush reproduces
-  the same cast. Only rewriting the value repairs it.
+  the same cast. The OLTP route converts the value through Go's `int64()`,
+  whose result past int64 depends on the platform (`#590`). Only rewriting the
+  value repairs it.
 
 Rows that are pending (`change_log.flushed_at = 0`), never exported, or last
 exported at or after the cutover are not reported: every tier reads them the
@@ -707,9 +713,18 @@ not stamp `change_log`, so the row stays out of the dirty set and the warm and
 cold tiers keep serving the old copy.
 
 **Repair the bigint class** by rewriting the value through the API as an
-integral value within int64. An API write stamps `change_log`, so the next
-flush re-exports the entity. Decide per row whether the value was meant to be
-clamped, rounded, or moved to a `numeric` attribute.
+integral value from `-9223372036854775808` to `9223372036854775295`. That is
+the range the write funnel accepts for an EAV-only `bigint`: `eav_data` keeps
+only the float64 image, and every larger int64 has the image 2^63. A value
+within ±2^53 is stored exactly; one past that is stored rounded to its float64
+image (`#590`). An API write stamps `change_log`, so the next flush re-exports
+the entity. Decide per row whether the value was meant to be clamped, rounded,
+or moved to a `numeric` attribute. Name the attribute in the update itself. An
+update merges into the document the OLTP route reads, so an update that leaves
+the attribute out carries the platform-dependent `int64()` result forward: it
+is written back as `-9223372036854775808` on amd64, where the conversion
+wraps, and is refused as out of range on arm64 (the Lambda build), where it
+saturates to `9223372036854775807`.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
@@ -806,6 +821,9 @@ LIMIT 50;
   `--width-export-cutover` set to the time the `#384` build's `cdc-flush`
   first ran, and if it fails, run it again with
   `--requeue-stale-width-exports` followed by `cdc-flush`
+- no bigint EAV value outside int64 is reported (`#501`, `#612`): rewrite each
+  one through the API, naming the attribute, before an unrelated update on an
+  arm64 build is refused over it
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

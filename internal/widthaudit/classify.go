@@ -26,7 +26,10 @@ const (
 	// ClassBigIntOutOfContract: a bigint value outside int64 or not
 	// integral. Every DuckDB leg, hot included, projects it through
 	// TRY_CAST(... AS BIGINT) to NULL or a rounded value. A re-flush
-	// reproduces the same cast, so only rewriting the value repairs it.
+	// reproduces the same cast, so only rewriting the value repairs it. The
+	// write funnel refuses every such value, judging bigint by the float64
+	// image eav_data stores (#612), so a finding predates that check or was
+	// written around the funnel.
 	ClassBigIntOutOfContract
 )
 

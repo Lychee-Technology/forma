@@ -14,7 +14,8 @@ import (
 
 // checkStorageFit is the single write-side fidelity rule shared by #384 and
 // #459: a value must fit its physical destination — the bound main column
-// when the attribute has one, its declared type otherwise. populateTypedValue
+// when the attribute has one, its declared type otherwise (and, for bigint,
+// the float64 image eav_data keeps, #612). populateTypedValue
 // has already typed the value for the declared valueType; this decides
 // whether that typed value can be stored losslessly where it is going.
 // Every error returned here is wrapped into forma.InvalidInputf by the
@@ -30,10 +31,42 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 		}
 	}
 	binding := meta.ColumnBinding
-	if binding == nil || isSystemManagedColumn(binding.ColumnName) {
+	if binding == nil {
+		// storeInEAV clears the exact sidecar: eav_data keeps the image.
+		return checkBigintImageFit(attr, meta.ValueType, "eav_data.value_numeric")
+	}
+	if isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
+}
+
+// maxBigintImageFit is the largest int64 whose float64 image is still inside
+// int64, quoted in checkBigintImageFit's message: 2^63-512 is a tie between
+// 2^63-1024 and 2^63 and rounds to the even 2^63, so every int64 from there
+// to MaxInt64 has the image 2^63.
+const maxBigintImageFit = 1<<63 - 513
+
+// checkBigintImageFit refuses a declared bigint whose destination keeps only
+// the float64 image (eav_data.value_numeric, a double_* column), when that
+// image is past int64. The declared-type check admits the whole int64 range
+// on the strength of the exact sidecar, but these destinations never persist
+// the sidecar: the image is what every read route converts back, int64() on
+// the OLTP route (platform-dependent past int64) and TRY_CAST(... AS BIGINT),
+// which yields NULL, on the DuckDB routes. This is the slot rule of
+// checkIntegerFit applied to what is stored; the rounding of images inside
+// int64 but past 2^53 is the float64 ceiling #590 owns.
+func checkBigintImageFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
+	if vt != forma.ValueTypeBigInt || attr.ValueInt64 == nil || attr.ValueNumeric == nil {
+		// Without the sidecar the declared-type check already judged the image.
+		return nil
+	}
+	// Constant conversion: math.MaxInt64 rounds up to exactly 2^63.
+	if *attr.ValueNumeric < math.MaxInt64 {
+		return nil
+	}
+	return fmt.Errorf("bigint value %d does not fit %s, which keeps only its float64 image %s, past the bigint range (allowed [-9223372036854775808, %d])",
+		*attr.ValueInt64, dest, formatFitValue(*attr.ValueNumeric), int64(maxBigintImageFit))
 }
 
 // checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
@@ -87,8 +120,14 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 			return err
 		}
 	}
+	dest := fmt.Sprintf("bound column %s (%s)", col, colType)
 	if fitType, ok := columnFitType(colType); ok {
-		return checkIntegerFit(attr, fitType, fmt.Sprintf("bound column %s (%s)", col, colType))
+		return checkIntegerFit(attr, fitType, dest)
+	}
+	if colType == forma.MainColumnTypeDouble {
+		// storeNumericRendering writes a double column from the image, never
+		// the sidecar.
+		return checkBigintImageFit(attr, vt, dest)
 	}
 	return nil
 }

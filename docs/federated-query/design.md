@@ -906,7 +906,9 @@ applied on both sides:
 
 * **Write side**: the EAV write funnel rejects numeric-family values that do
   not fit the declared integer type — out of range or non-integral for
-  `smallint`/`integer`/`bigint` — as user-facing invalid input. `numeric`
+  `smallint`/`integer`/`bigint` — as user-facing invalid input. A `bigint`
+  is judged by the float64 image the row stores, so an int64 whose image is
+  2^63 (from 2^63−512 up) is refused as well (#612). `numeric`
   stays unconstrained (its float64 ceiling is #205). Main-column-bound write
   fidelity is tracked separately (#459).
 * **Projection**: EAV-only `integer`/`smallint` project by **storage width** —

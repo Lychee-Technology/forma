@@ -33,7 +33,11 @@ func TestPopulateTypedValue_DeclaredIntegerFit(t *testing.T) {
 		{"smallint max ok", forma.ValueTypeSmallInt, float64(math.MaxInt16), false},
 		{"smallint min ok", forma.ValueTypeSmallInt, float64(math.MinInt16), false},
 		{"smallint 40000 rejected", forma.ValueTypeSmallInt, float64(40000), true},
-		{"bigint max exact string ok", forma.ValueTypeBigInt, "9223372036854775807", false},
+		// eav_data keeps only the float64 image, and MaxInt64's is 2^63
+		// (#612 review); the largest admitted value is 2^63-513.
+		{"bigint max exact string rejected", forma.ValueTypeBigInt, "9223372036854775807", true},
+		{"bigint 2^63-513 exact string ok", forma.ValueTypeBigInt, "9223372036854775295", false},
+		{"bigint 2^63-512 exact string rejected", forma.ValueTypeBigInt, "9223372036854775296", true},
 		{"bigint min exact string ok", forma.ValueTypeBigInt, "-9223372036854775808", false},
 		{"bigint 2^63 rejected", forma.ValueTypeBigInt, math.Ldexp(1, 63), true},
 		{"bigint -2^63 float ok", forma.ValueTypeBigInt, math.Ldexp(-1, 63), false},
