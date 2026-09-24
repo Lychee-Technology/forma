@@ -3,14 +3,18 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/transform"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // insertFailingRepository fails every insert with one storage error.
@@ -103,4 +107,104 @@ func TestBatchResultScrubsCredentialsFromAPublishedMessage(t *testing.T) {
 	require.Contains(t, failure.Error, "schema not found", "the caller keeps the message authored for them")
 	require.NotContains(t, failure.Error, "s3cr3t")
 	require.Contains(t, failure.Error, redact.Placeholder)
+}
+
+// observeGlobalLog installs an observer as the process-global logger for the
+// test, which is where the batch service writes its failure lines.
+func observeGlobalLog(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+	core, logs := observer.New(zap.InfoLevel)
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
+	return logs
+}
+
+// requireJoinedLine is the #398 join: exactly one written line carries id as
+// its error_id, and it is the Warn failure line. It returns that line's full
+// error text.
+func requireJoinedLine(t *testing.T, logs *observer.ObservedLogs, id string) string {
+	t.Helper()
+	_, err := uuid.Parse(id)
+	require.NoError(t, err, "the id must be a UUID, the same shape as the HTTP error_id")
+	lines := logs.FilterField(zap.String("error_id", id)).All()
+	require.Len(t, lines, 1, "the id must identify exactly one log line")
+	require.Equal(t, zap.WarnLevel, lines[0].Level)
+	require.Equal(t, "BatchCreate operation failed", lines[0].Message)
+	return fmt.Sprint(lines[0].ContextMap()["error"])
+}
+
+// TestBatchResultWithheldFailureCarriesACorrelationID is the #398 acceptance
+// case: the caller reads only "internal error", so the id is their one way to
+// reach the full error, and it has to be on the line that holds it.
+func TestBatchResultWithheldFailureCarriesACorrelationID(t *testing.T) {
+	logs := observeGlobalLog(t)
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("driver: connection reset by peer"),
+	}
+
+	failure := batchCreateOneVisit(t, newBatchErrorManager(t, repository), "visit")
+
+	require.Equal(t, undisclosedBatchError, failure.Error)
+	require.Equal(t, "CREATE_FAILED", failure.Code, "the id sits beside Code, it does not replace it")
+	require.Contains(t, requireJoinedLine(t, logs, failure.ErrorID), "connection reset by peer",
+		"the joined line must hold the error the result withheld")
+}
+
+// TestBatchResultPublishedFailureCarriesACorrelationID pins the decision #398
+// asked to have stated: a published failure carries an id too. It logs the
+// same Warn line with the full error, which can hold operator detail its
+// published message leaves out (#318), so the join is just as useful.
+func TestBatchResultPublishedFailureCarriesACorrelationID(t *testing.T) {
+	logs := observeGlobalLog(t)
+
+	failure := batchCreateOneVisit(t, newBatchErrorManager(t, newMockPersistentRecordRepository()), "no_such_schema")
+
+	require.Contains(t, failure.Error, "schema not found", "the published text is unchanged")
+	require.Contains(t, requireJoinedLine(t, logs, failure.ErrorID), "no_such_schema")
+}
+
+// TestBatchResultIdenticalFailuresCarryDistinctIDs: operations that are byte
+// for byte the same, failing the same way, still produce one id per failure,
+// each joining its own line, so no handle is ambiguous.
+func TestBatchResultIdenticalFailuresCarryDistinctIDs(t *testing.T) {
+	logs := observeGlobalLog(t)
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("driver: connection reset by peer"),
+	}
+	op := forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit"},
+		Type:             forma.OperationCreate,
+		Data:             visitPayload("visit-batch-error-1"),
+	}
+
+	result, err := newBatchErrorManager(t, repository).BatchCreate(context.Background(), &forma.BatchOperation{
+		Operations: []forma.EntityOperation{op, op, op},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 3)
+
+	seen := map[string]bool{}
+	for _, failure := range result.Failed {
+		requireJoinedLine(t, logs, failure.ErrorID)
+		require.False(t, seen[failure.ErrorID], "two failures must never share an id")
+		seen[failure.ErrorID] = true
+	}
+}
+
+// TestBatchResultIssuesAnIDWhateverTheLogger pins where the contract ends.
+// Forma puts the id on the result and on the line it writes. Whether that line
+// is kept is decided by the embedder's logger, not by Forma, so a logger that
+// keeps nothing still leaves every failure with its id.
+func TestBatchResultIssuesAnIDWhateverTheLogger(t *testing.T) {
+	t.Cleanup(zap.ReplaceGlobals(zap.NewNop()))
+	repository := &insertFailingRepository{
+		mockPersistentRecordRepository: newMockPersistentRecordRepository(),
+		insertErr:                      errors.New("driver: connection reset by peer"),
+	}
+
+	failure := batchCreateOneVisit(t, newBatchErrorManager(t, repository), "visit")
+
+	_, err := uuid.Parse(failure.ErrorID)
+	require.NoError(t, err)
 }

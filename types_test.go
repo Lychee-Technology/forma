@@ -588,6 +588,16 @@ func TestOperationError_JSON(t *testing.T) {
 
 	assert.Equal(t, opErr.Error, decoded.Error)
 	assert.Equal(t, opErr.Code, decoded.Code)
+	assert.NotContains(t, string(data), "error_id", "a value with no id must not serialise an empty one")
+
+	opErr.ErrorID = "0b7c3a8e-6a53-4f0e-9d5b-3c1f2a4e5d6f"
+	data, err = json.Marshal(opErr)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"error_id":"0b7c3a8e-6a53-4f0e-9d5b-3c1f2a4e5d6f"`,
+		"the wire name matches the HTTP error body's error_id")
+	decoded = OperationError{}
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, opErr.ErrorID, decoded.ErrorID)
 }
 
 func TestEntityUpdate_JSON(t *testing.T) {
