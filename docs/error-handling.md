@@ -1772,9 +1772,14 @@ Pinned by `TestBatchResultWithheldFailureCarriesACorrelationID`,
 `TestBatchResultIssuesAnIDWhateverTheLogger` (the id does not depend on the
 logger) and `TestOperationError_JSON` (wire name and omission).
 
-Still open on this surface, tracked by #396: the failure log line
-(`zap.S().Warnw(operationName+" operation failed", "operation", op, …)`) records
-the caller's whole payload, which is entity content.
+The failure line names the operation and does not log it whole (#396). `Data`
+and `Updates` are caller content and may be sensitive, the same reason the
+report-only validation warning withholds the payload. The line carries
+`schema_name`, `row_id`, `operation_type`, `operation_index` (the operation's
+position in `Operations`, not in `Failed`), `error_id` and `error`. A
+create's `row_id` is whatever the caller sent, normally nil, because `Create`
+mints the real id and a failed create never returns it. Pinned by
+`TestBestEffortBatchFailureLogOmitsThePayload`.
 
 ### Known gap
 
