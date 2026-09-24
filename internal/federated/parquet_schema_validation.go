@@ -45,9 +45,12 @@ import (
 // parquetcheck invariant before they land, and a stamp records the same
 // name → DuckDB type map a DESCRIBE would have produced, so a cache hit cannot
 // tell — and need not tell — which feeder filled it.
+//
+// The cache is bounded by an idle TTL and a capacity (#466); see
+// validatedParquetCache. Eviction only ever costs a re-validation.
 type parquetSchemaValidator struct {
 	mu    sync.Mutex
-	valid map[string]validatedParquet
+	valid *validatedParquetCache
 	// inflight single-flights the footer probe per (path, stamp): concurrent
 	// misses on the same key would otherwise each issue their own DESCRIBE,
 	// and — because the probe runs outside mu — an older probe could publish
@@ -59,18 +62,9 @@ type parquetSchemaValidator struct {
 	logger *zap.Logger
 }
 
-// validatedParquet is one cache entry: the columns the path was validated
-// with, and the manifest stamp that validation happened under. A lookup only
-// hits while the current stamp still equals stamp — nil==nil for a path that
-// was probe-validated with no stamp in play.
-type validatedParquet struct {
-	cols  map[string]string
-	stamp map[string]string
-}
-
 func newParquetSchemaValidator() *parquetSchemaValidator {
 	return &parquetSchemaValidator{
-		valid:    map[string]validatedParquet{},
+		valid:    newValidatedParquetCache(defaultValidatedParquetIdleTTL, defaultValidatedParquetCapacity),
 		inflight: map[string]chan struct{}{},
 	}
 }
@@ -187,8 +181,11 @@ func (v *parquetSchemaValidator) validateConcrete(
 		if len(stamp) > 0 && parquetcheck.Check(path, stamp) == nil {
 			// Clone: the cache outlives the call and must not alias a
 			// caller-owned map (a manifest entry in production), which
-			// would make it poisonable and racy.
-			v.markValidated(path, maps.Clone(stamp), maps.Clone(stamp))
+			// would make it poisonable and racy. One clone serves as both
+			// cols and stamp — the cache and its readers never mutate
+			// either — so a bounded entry costs one column map, not two.
+			owned := maps.Clone(stamp)
+			v.markValidated(path, owned, owned)
 			union.merge(stamp)
 			continue
 		}
@@ -361,18 +358,13 @@ func (v *parquetSchemaValidator) warnStampDivergence(path string, stamp, probed 
 		zap.Any("footer_cols", probed))
 }
 
-// lookupValidatedCols answers from the cache only while the entry's recorded
-// stamp still equals the one currently in play. A changed stamp (including one
-// appearing on, or disappearing from, a previously validated path) is a miss,
-// so the caller re-validates and overwrites the entry.
+// lookupValidatedCols answers from the cache only while the entry is live and
+// its recorded stamp still equals the one currently in play; see
+// validatedParquetCache.get.
 func (v *parquetSchemaValidator) lookupValidatedCols(path string, stamp map[string]string) (map[string]string, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	entry, ok := v.valid[path]
-	if !ok || !maps.Equal(entry.stamp, stamp) {
-		return nil, false
-	}
-	return entry.cols, true
+	return v.valid.get(path, stamp)
 }
 
 // markValidated records cols for path together with the stamp they were
@@ -380,7 +372,7 @@ func (v *parquetSchemaValidator) lookupValidatedCols(path string, stamp map[stri
 func (v *parquetSchemaValidator) markValidated(path string, cols, stamp map[string]string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.valid[path] = validatedParquet{cols: cols, stamp: stamp}
+	v.valid.put(path, cols, stamp)
 }
 
 // globParquetPaths expands one glob pattern to its concrete matches via
