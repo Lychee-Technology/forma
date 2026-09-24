@@ -37,8 +37,8 @@ type widthAuditFlags struct {
 
 func registerWidthAuditFlags(flags *flag.FlagSet) widthAuditFlags {
 	return widthAuditFlags{
-		changeLogTable: flags.String("change-log-table", bootstrap.Env("CHANGE_LOG_TABLE", "change_log_dev"),
-			"change_log table the integer-width census reads flush state from; empty skips it (no CDC)"),
+		changeLogTable: flags.String("change-log-table", bootstrap.EnvAllowEmpty("CHANGE_LOG_TABLE", "change_log_dev"),
+			"change_log table the integer-width census reads flush state from; empty (or CHANGE_LOG_TABLE= set empty) skips it (no CDC)"),
 		entityMainTable: flags.String("entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"),
 			"entity main table -requeue-stale-width-exports advances row versions in"),
 		cutover: flags.String("width-export-cutover", "",

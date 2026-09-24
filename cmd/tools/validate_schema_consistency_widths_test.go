@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"os"
 	"strings"
 	"testing"
 
@@ -195,6 +197,39 @@ func TestWidthAuditFlagsRejectBadInput(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("args %v: expected %q, got %v", tc.args, tc.want, err)
 		}
+	}
+}
+
+// A deployment without CDC sets CHANGE_LOG_TABLE= (the Make target forwards
+// it as ""); the empty value must disable the census's change_log lookup, not
+// fall back to the default table.
+func TestWidthAuditFlagsHonorEmptyChangeLogTableEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  bool
+		env  string
+		want string
+	}{
+		{"unset takes default", false, "", "change_log_dev"},
+		{"explicit empty disables", true, "", ""},
+		{"explicit name", true, "change_log_prod", "change_log_prod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CHANGE_LOG_TABLE", tc.env)
+			if !tc.set {
+				if err := os.Unsetenv("CHANGE_LOG_TABLE"); err != nil {
+					t.Fatalf("failed to unset CHANGE_LOG_TABLE: %v", err)
+				}
+			}
+			flags := flag.NewFlagSet("t", flag.ContinueOnError)
+			opts, err := registerWidthAuditFlags(flags).options()
+			if err != nil {
+				t.Fatalf("options: %v", err)
+			}
+			if opts.changeLogTable != tc.want {
+				t.Fatalf("expected change_log table %q, got %q", tc.want, opts.changeLogTable)
+			}
+		})
 	}
 }
 

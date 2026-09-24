@@ -208,6 +208,8 @@ build-tools: create-build-dir
 	@$(GOENV) go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_TOOLS)-$(GOOS)-$(GOARCH) $(MAIN_TOOLS)
 	@echo "Tools build complete."
 
+# CHANGE_LOG_TABLE uses ${VAR-default}, not ${VAR:-default}, so an explicit empty
+# CHANGE_LOG_TABLE= reaches the tool as "" (no CDC) instead of the default.
 validate-schema-consistency: build-tools link
 	@echo "Running schema consistency validator..."
 	@./$(BUILD_DIR)/$(BINARY_TOOLS) validate-schema-consistency \
@@ -220,7 +222,7 @@ validate-schema-consistency: build-tools link
 		--schema-registry-table $${SCHEMA_TABLE:-schema_registry_dev} \
 		--schema-dir $${SCHEMA_DIR:-cmd/server/schemas} \
 		--eav-table $${EAV_TABLE:-eav_data_dev} \
-		--change-log-table $${CHANGE_LOG_TABLE:-change_log_dev} \
+		--change-log-table "$${CHANGE_LOG_TABLE-change_log_dev}" \
 		--entity-main-table $${ENTITY_MAIN_TABLE:-entity_main_dev} \
 		--width-export-cutover "$${WIDTH_EXPORT_CUTOVER:-}"
 

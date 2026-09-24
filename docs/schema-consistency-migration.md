@@ -152,6 +152,9 @@ It validates:
   outside its declared width or is non-integral in a way that makes the tiers
   disagree (`#501`). It reads `--change-log-table` to tell exported rows from
   pending ones; pass `--change-log-table ''` on a deployment without CDC
+  (or set `CHANGE_LOG_TABLE=` explicitly empty: the tool and the
+  `make validate-schema-consistency` target keep an empty value instead of
+  falling back to `change_log_dev`)
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 

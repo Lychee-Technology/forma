@@ -18,6 +18,7 @@ Forma Tools CLI
   - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行；
   - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）。
     `-change-log-table`（`CHANGE_LOG_TABLE`，默认 `change_log_dev`）用于区分已导出与待刷新的行；
+    无 CDC 的部署传空值（`-change-log-table ''` 或显式 `CHANGE_LOG_TABLE=`，make 目标同样保留空值）；
     `-width-export-cutover`（RFC3339）为 #384 导出开始生效的时间，早于它导出的行报为失败；
     `-requeue-stale-width-exports` 通过推进版本并写入 `change_log` 将这些行重新排队，
     需在 `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）上执行，之后运行 `cdc-flush`。
