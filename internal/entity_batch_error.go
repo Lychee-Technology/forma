@@ -24,7 +24,8 @@ import (
 // The caller is not left with only this string: forma.OperationError.Code
 // carries the machine-readable classification of the failure alongside it
 // (CREATE_FAILED, UPDATE_FAILED, DELETE_FAILED), and the call site logs the
-// whole error, so nothing an operator needs is lost by publishing less.
+// whole error under the entry's ErrorID (#398), so nothing an operator needs is
+// lost by publishing less and the caller has a handle to quote.
 const undisclosedBatchError = "internal error"
 
 // resolveBatchErrorMessage renders one failed operation for

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/lychee-technology/forma/internal/redact"
 	"go.uber.org/zap"
 )
@@ -358,7 +358,7 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 			// The detail-less branch stays id-free: its Debugw line does not
 			// survive the production Info threshold, and an error_id that
 			// correlates to nothing is worse than none.
-			resp.ErrorID = uuid.NewString()
+			resp.ErrorID = errorid.New()
 			fields = append(fields, "error_id", resp.ErrorID, "error", safe)
 			zap.S().Warnw(op, fields...)
 		} else {
@@ -370,7 +370,7 @@ func respondErrorWithStatus(w http.ResponseWriter, status int, op string, err er
 	}
 
 	class := errorClass(err)
-	errorID := uuid.NewString()
+	errorID := errorid.New()
 	schemaID := errorSchemaID(err)
 	fields = append(fields, "error_class", class, "error_id", errorID)
 	// Its own field, not interpolated into the message: operators filter log

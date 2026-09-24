@@ -1736,6 +1736,42 @@ carriers `errorClass` recognises, all constructed in `internal/federated` and
 `Update` and `Delete`, none of which reads through the federated engine — that
 service's only enrichment call is in `Get`.
 
+**Correlation (#398).** Every failed operation's `forma.OperationError` carries
+an `ErrorID` (JSON `error_id`, `omitempty`). It is a UUID with the same name and
+shape as the HTTP body's `error_id`, and both come from one generator
+(`internal/errorid`). `executeBestEffortBatch` mints one id per failed operation
+and writes it as `error_id` on that operation's `Warnw` failure line, next to
+the full `error`. The caller quotes the id, and the operator greps for it.
+
+- **Always present, not only when withheld.** A published failure writes the same
+  `Warnw` line with the full error, which can hold operator detail the published
+  message leaves out (#318), so its id joins just as well. That is one rule for
+  every failure instead of a second branch keyed on disclosure. The HTTP
+  boundary's id-free branch (a detail-less disclosed 4xx) has no counterpart
+  here, because it exists only because that line is `Debugw`.
+- **Distinct per failure.** Identical operations that fail identically still get
+  distinct ids, one per line.
+- **What Forma guarantees, and what it does not.** Forma guarantees that the id
+  is on the result and on the line it hands to the process-global zap logger.
+  Whether that line is kept belongs to whoever owns the logger, which is the
+  embedding process. A level above `Warn` drops it. zap's production sampler,
+  which `cmd/server` and `cmd/lambda` install, keeps the first 100 identical
+  lines per second and every 100th after that, keyed on level and message. So in
+  a burst of identical failures some ids lead to no retained line. The lines that
+  are kept carry the same message, and in such a burst usually the same cause.
+  This is the same property the HTTP `error_id` has always had. Forma does not
+  exempt these lines from sampling: that would remove the volume bound that other
+  lines rely on (#317), and it would take over logger composition that belongs to
+  the embedder.
+- `Code` is unchanged. It classifies and does not correlate. A hand-built
+  `OperationError` may have no id, and `omitempty` keeps it off the wire.
+
+Pinned by `TestBatchResultWithheldFailureCarriesACorrelationID`,
+`TestBatchResultPublishedFailureCarriesACorrelationID`,
+`TestBatchResultIdenticalFailuresCarryDistinctIDs`,
+`TestBatchResultIssuesAnIDWhateverTheLogger` (the id does not depend on the
+logger) and `TestOperationError_JSON` (wire name and omission).
+
 Still open on this surface, tracked by #396: the failure log line
 (`zap.S().Warnw(operationName+" operation failed", "operation", op, …)`) records
 the caller's whole payload, which is entity content.

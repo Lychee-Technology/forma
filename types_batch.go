@@ -63,5 +63,18 @@ type OperationError struct {
 	Operation EntityOperation `json:"operation"`
 	Error     string          `json:"error"`
 	Code      string          `json:"code"`
-	Details   map[string]any  `json:"details,omitempty"`
+	// ErrorID correlates this failure with the server log line that records
+	// its full error: a UUID the caller can quote to an operator. It has the
+	// same name and shape as the HTTP error body's error_id (#398).
+	//
+	// A failure produced by a best-effort batch always carries one, whether
+	// Error holds a published message or "internal error", and no two failures
+	// share one. The id is written as error_id on that failure's Warn log line,
+	// next to the full error. Forma writes the line through the process-global
+	// zap logger. Whether the line is kept is up to that logger's level,
+	// sampling, and sinks, which belong to the embedding process.
+	//
+	// Empty only on a value Forma did not produce, such as one built by hand.
+	ErrorID string         `json:"error_id,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }

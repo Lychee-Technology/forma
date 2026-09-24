@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/errorid"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/telemetry"
@@ -153,11 +154,15 @@ func (s *entityBatchService) executeBestEffortBatch(
 		op := operation
 		record, err := executor(ctx, &op)
 		if err != nil {
-			zap.S().Warnw(operationName+" operation failed", "operation", op, "error", err)
+			// The id joins this entry to this line (#398): Error may be only
+			// "internal error", and the line is where the full error lives.
+			errorID := errorid.New()
+			zap.S().Warnw(operationName+" operation failed", "operation", op, "error_id", errorID, "error", err)
 			failed = append(failed, forma.OperationError{
 				Operation: op,
 				Error:     resolveBatchErrorMessage(err),
 				Code:      errorCode,
+				ErrorID:   errorID,
 			})
 			continue
 		}
