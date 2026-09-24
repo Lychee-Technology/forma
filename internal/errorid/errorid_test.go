@@ -70,3 +70,59 @@ func TestLogIssuesNoIdForALineItWillNotWrite(t *testing.T) {
 		require.Empty(t, errorid.Log(zap.ErrorLevel, "failed"))
 	})
 }
+
+// raisingCore stands in for an embedder that raises an AtomicLevel under live
+// traffic: the first time the logger consults it — at Enabled, or at Check —
+// it lets the answer through and then raises level to Error, so any later
+// level check in the same write sees the new threshold.
+type raisingCore struct {
+	zapcore.Core
+	level   zap.AtomicLevel
+	raiseAt string
+}
+
+func (c *raisingCore) raise(at string) {
+	if c.raiseAt == at {
+		c.level.SetLevel(zap.ErrorLevel)
+	}
+}
+
+func (c *raisingCore) Enabled(level zapcore.Level) bool {
+	defer c.raise("enabled")
+	return c.Core.Enabled(level)
+}
+
+func (c *raisingCore) With(fields []zapcore.Field) zapcore.Core {
+	return &raisingCore{Core: c.Core.With(fields), level: c.level, raiseAt: c.raiseAt}
+}
+
+func (c *raisingCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	defer c.raise("check")
+	return c.Core.Check(entry, checked)
+}
+
+// TestLogIdMatchesALineWhenTheLevelRisesMidWrite pins the contract against a
+// level raised between Log's decision and its write: the id is returned if
+// and only if the line carrying it was written. Minting after an Enabled
+// probe and then writing through Logw, which checks the level again, lost
+// the line and kept the id when the raise landed between the two checks.
+func TestLogIdMatchesALineWhenTheLevelRisesMidWrite(t *testing.T) {
+	for _, raiseAt := range []string{"enabled", "check"} {
+		t.Run("raised after "+raiseAt, func(t *testing.T) {
+			level := zap.NewAtomicLevelAt(zap.WarnLevel)
+			observed, logs := observer.New(level)
+			core := &raisingCore{Core: observed, level: level, raiseAt: raiseAt}
+			t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
+
+			id := errorid.Log(zap.WarnLevel, "failed")
+
+			require.Equal(t, zap.ErrorLevel, level.Level(), "the level must have risen during the write")
+			written := logs.FilterField(zap.String("error_id", id)).Len()
+			if id == "" {
+				require.Zero(t, logs.Len(), "no id, so no line")
+			} else {
+				require.Equal(t, 1, written, "an issued id must lead to its line")
+			}
+		})
+	}
+}

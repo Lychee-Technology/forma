@@ -63,7 +63,7 @@ func Logger() *zap.SugaredLogger {
 
 // Log is the one way to issue an id: it mints one, writes msg at level
 // through Logger with the id under "error_id" after keysAndValues, and
-// returns it for the caller to publish. When Logger is not enabled at level
+// returns it for the caller to publish. When Logger will not write the line
 // it writes nothing and returns "", and the caller publishes no id.
 //
 // That gate is the correlation contract, not an optimisation. An id is only
@@ -72,17 +72,24 @@ func Logger() *zap.SugaredLogger {
 // sampler sees the entry, so a global logger built above level — an
 // embedder's factory.BuildLogger config at ErrorLevel against a Warn line, or
 // zap's default no-op global in a process that never installed one — drops
-// the line however the sampler is wrapped. Minting behind the same check the
-// write passes keeps every issued id joinable under any configuration, where
-// a minimum-level rule could only be documented. A level raised between the
-// check and the write can still lose one line; an AtomicLevel changed under
-// live traffic is the only way to get there.
+// the line however the sampler is wrapped. Minting behind the check the write
+// passes keeps every issued id joinable under any configuration, where a
+// minimum-level rule could only be documented.
+//
+// The check is made once. Logger.Check returns the entry every core in the
+// chain has accepted, and CheckedEntry.Write writes it without asking the
+// level again, so the id is minted only after the line is committed. Minting
+// between an Enabled probe and Logw — two independent level checks — would
+// let an AtomicLevel raised under live traffic drop the line after its id
+// was issued (PR #606 review).
 func Log(level zapcore.Level, msg string, keysAndValues ...any) string {
-	logger := Logger()
-	if !logger.Desugar().Core().Enabled(level) {
+	// With converts the sugared pairs exactly as Logw would, including its
+	// handling of a malformed pair; the fields land ahead of error_id.
+	checked := Logger().With(keysAndValues...).Desugar().Check(level, msg)
+	if checked == nil {
 		return ""
 	}
 	id := newID()
-	logger.Logw(level, msg, append(keysAndValues, "error_id", id)...)
+	checked.Write(zap.String("error_id", id))
 	return id
 }

@@ -1760,9 +1760,13 @@ and its id — back to its own input keys on `Index`
 reports a failed row that way, pinned by
 `TestImportReportsAFailureAgainstItsOwnRow`).
 
-**No line, no id.** `errorid.Log` mints an id only when the global logger is
-enabled at the line's level, and otherwise writes nothing and returns `""`, so
-the caller publishes no `error_id`. The sampler exemption below cannot cover
+**No line, no id.** `errorid.Log` mints an id only once the global logger has
+accepted the line, and otherwise writes nothing and returns `""`, so the
+caller publishes no `error_id`. The acceptance is a single `Logger.Check`, and
+the id is written through the entry it returns, which does not consult the
+level again: an `AtomicLevel` raised under live traffic either drops the line
+before an id exists or lets through a line that carries it, never one without
+the other (`TestLogIdMatchesALineWhenTheLevelRisesMidWrite`; PR #606 review). The sampler exemption below cannot cover
 this case: zap tests the level before the sampler sees the entry, so a
 logger configured above the line's level drops it however the sampler is
 wrapped. `factory.BuildLogger` keeps an embedder's own level, and an
@@ -1809,6 +1813,15 @@ report-only validation line that relies on the sampler for its volume bound
 — `errorid`, or `svc.errorid` under a global the embedder named with
 `zap.ReplaceGlobals(logger.Named("svc"))` — which an operator can filter on;
 the name is a label, not a reserved namespace.
+
+The exemption has a cost an operator should plan for: correlation lines are
+no longer capped at 100 identical entries per second, so during a failure
+storm their volume — and the encoding and sink work behind it — scales with
+the failure rate, bounded only by the request rate (`MaxBatchSize` lines per
+best-effort batch). Forma adds no rate limit of its own on these paths; size
+ingress limits and log-sink capacity with that in mind. Dropping a line is
+the one thing the exemption exists to prevent, so the bound belongs upstream
+of the logger, not in it.
 
 The global logger belongs to the process that embeds Forma, so the exemption
 has to be installable from outside `internal/`: `factory.NewProductionLogger`
