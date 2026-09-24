@@ -219,7 +219,10 @@ validate-schema-consistency: build-tools link
 		--db-ssl-mode $${DB_SSL_MODE:-disable} \
 		--schema-registry-table $${SCHEMA_TABLE:-schema_registry_dev} \
 		--schema-dir $${SCHEMA_DIR:-cmd/server/schemas} \
-		--eav-table $${EAV_TABLE:-eav_data_dev}
+		--eav-table $${EAV_TABLE:-eav_data_dev} \
+		--change-log-table $${CHANGE_LOG_TABLE:-change_log_dev} \
+		--entity-main-table $${ENTITY_MAIN_TABLE:-entity_main_dev} \
+		--width-export-cutover "$${WIDTH_EXPORT_CUTOVER:-}"
 
 # Build sample for current platform
 build-sample: create-build-dir

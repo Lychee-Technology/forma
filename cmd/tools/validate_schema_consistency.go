@@ -23,6 +23,7 @@ type schemaConsistencyValidator struct {
 	schemaDir   string
 	schemaTable string
 	eavTable    string
+	widths      widthAuditOptions
 	out         io.Writer
 }
 
@@ -81,6 +82,7 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(flags, true)
 	eavTable := flags.String("eav-table", bootstrap.Env("EAV_TABLE", "eav_data_dev"), "EAV data table to validate")
+	widthFlags := registerWidthAuditFlags(flags)
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -90,6 +92,10 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 	}
 
 	if err := schemaRegistry.validate(true); err != nil {
+		return err
+	}
+	widths, err := widthFlags.options()
+	if err != nil {
 		return err
 	}
 
@@ -107,6 +113,7 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 		schemaDir:   schemaRegistry.dir,
 		schemaTable: schemaRegistry.table,
 		eavTable:    *eavTable,
+		widths:      widths,
 		out:         out,
 	}
 	return validator.run(ctx)
@@ -193,6 +200,12 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *sc
 		return nil, err
 	}
 	issues = append(issues, listIssues...)
+
+	widthIssues, err := v.checkIntegerWidthExports(ctx, cache)
+	if err != nil {
+		return nil, err
+	}
+	issues = append(issues, widthIssues...)
 
 	sort.Slice(issues, func(i, j int) bool {
 		if issues[i].category == issues[j].category {

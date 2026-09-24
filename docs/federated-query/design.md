@@ -992,7 +992,11 @@ applied on both sides:
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
 promote the mixed widths losslessly, and the NULLs are unrecoverable from
-parquet alone (re-flush from PG restores them; #501 tracks detection/repair).
+parquet alone. `validate-schema-consistency` finds the affected rows and
+`--requeue-stale-width-exports` re-queues them for a re-flush from PG (#501;
+see `docs/schema-consistency-migration.md`). Declared bigint still projects at
+BIGINT, so a bigint value past int64 diverges on every DuckDB leg; the same
+census reports it for a rewrite.
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.
