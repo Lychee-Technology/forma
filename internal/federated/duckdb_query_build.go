@@ -117,9 +117,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 // q.AttributeOrders); the call arguments only reach the template map under
 // "Limit"/"Offset"/"PageSize"/"SortKeys", which it never reads. So a caller
 // that normalised or clamped its limit but passed q unchanged had its clamp
-// silently ignored: the keyset branch of ExecuteFederatedPaginatedQuery
-// rendered LIMIT 0 for a zero q.Limit and an over-MaxRows q.Limit verbatim,
-// with only its in-memory slice honouring the clamp (#381 review), and
+// silently ignored: the keyset coordinator (ExecuteFederatedKeysetQuery, then
+// the keyset branch of ExecuteFederatedPaginatedQuery) rendered LIMIT 0 for a
+// zero q.Limit and an over-MaxRows q.Limit verbatim, with only its in-memory
+// slice honouring the clamp (#381 review), and
 // computeFederatedCount hand-rolled the very copy made here (#181).
 //
 // Made at this function, the single point the direct render and the compiled

@@ -45,8 +45,8 @@ func TestEverySeamRefusesACursorThatReplacesTheRequestOrder(t *testing.T) {
 	_, err := engine.Query(ctx, tables, newQuery(), &model.FederatedQueryOptions{})
 	require.ErrorContains(t, err, want, "Query seam")
 
-	_, _, err = engine.ExecuteFederatedPaginatedQuery(ctx, tables, newQuery(), 10, 0, orders, &model.FederatedQueryOptions{})
-	require.ErrorContains(t, err, want, "paginated seam")
+	_, _, err = engine.ExecuteFederatedKeysetQuery(ctx, tables, newQuery(), 10, orders, &model.FederatedQueryOptions{})
+	require.ErrorContains(t, err, want, "keyset coordinator seam")
 
 	_, _, err = engine.ExecuteDuckDBFederatedQuery(ctx, tables, newQuery(), 10, 0, orders, nil)
 	require.ErrorContains(t, err, want, "ExecuteDuckDBFederatedQuery seam")

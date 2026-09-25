@@ -60,11 +60,11 @@ func TestQuery_NonPositiveSchemaIDIsNotDegradable(t *testing.T) {
 	}
 }
 
-// TestExecuteFederatedPaginatedQuery_NonPositiveSchemaIDRefused pins the same
-// guard on the second entry point: the paginated coordinator shares the
-// degraded fallback through its keyset and ordered paths, so it must refuse
-// the same request at entry rather than rely on the Postgres leg to notice.
-func TestExecuteFederatedPaginatedQuery_NonPositiveSchemaIDRefused(t *testing.T) {
+// TestExecuteFederatedKeysetQuery_NonPositiveSchemaIDRefused pins the same
+// guard on the second entry point: the keyset coordinator dispatches DuckDB
+// passes itself, so it must refuse the same request at entry rather than let
+// the parquet source report it as a read failure.
+func TestExecuteFederatedKeysetQuery_NonPositiveSchemaIDRefused(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -76,9 +76,9 @@ func TestExecuteFederatedPaginatedQuery_NonPositiveSchemaIDRefused(t *testing.T)
 			engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
 				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
 
-			records, total, err := engine.ExecuteFederatedPaginatedQuery(context.Background(),
+			records, total, err := engine.ExecuteFederatedKeysetQuery(context.Background(),
 				model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-				nonPositiveSchemaQuery(schemaID), 10, 0, nil,
+				nonPositiveSchemaQuery(schemaID), 10, nil,
 				&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
 
 			require.Nil(t, records)
@@ -86,7 +86,6 @@ func TestExecuteFederatedPaginatedQuery_NonPositiveSchemaIDRefused(t *testing.T)
 			require.ErrorContains(t, err, "schema id must be positive")
 			require.NotErrorIs(t, err, ErrFederatedReadFailed)
 			require.Equal(t, 0, pg.queryCalls)
-			require.Equal(t, 0, pg.runOptimizedCalls)
 			require.Equal(t, 0, duck.calls)
 			require.Equal(t, 0, src.pathsCalls)
 		})

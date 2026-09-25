@@ -241,9 +241,10 @@ func TestValidateKeysetCursorValueAndEnumShape(t *testing.T) {
 }
 
 // TestBothSeamsShareOneCursorValidator pins #381 item 1: the engine seam and
-// the paginated seam must refuse exactly the same cursors. Before this change
-// Query accepted arbitrary attribute columns that ExecuteFederatedPaginatedQuery
-// rejected, and neither checked value alignment.
+// the keyset coordinator seam must refuse exactly the same cursors. Before
+// this change Query accepted arbitrary attribute columns that the coordinator
+// (then ExecuteFederatedPaginatedQuery) rejected, and neither checked value
+// alignment.
 func TestBothSeamsShareOneCursorValidator(t *testing.T) {
 	bad := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
@@ -269,46 +270,10 @@ func TestBothSeamsShareOneCursorValidator(t *testing.T) {
 	require.Error(t, queryErr, "engine seam must refuse a misaligned cursor")
 	require.Contains(t, queryErr.Error(), "carries 2 column(s) but 1 value(s)")
 
-	_, _, pageErr := engine.ExecuteFederatedPaginatedQuery(
-		context.Background(), tables, newQuery(), 10, 0, nil, &model.FederatedQueryOptions{})
-	require.Error(t, pageErr, "paginated seam must refuse the same cursor")
+	_, _, pageErr := engine.ExecuteFederatedKeysetQuery(
+		context.Background(), tables, newQuery(), 10, nil, &model.FederatedQueryOptions{})
+	require.Error(t, pageErr, "keyset coordinator seam must refuse the same cursor")
 	require.Contains(t, pageErr.Error(), "carries 2 column(s) but 1 value(s)")
-}
-
-// TestPaginatedQueryTakesKeysetPathOnCursorAlone pins #381 item 3. The keyset
-// branch used to require opts.KeysetEnabled as well as a cursor; with the flag
-// unset, control fell into the in-memory merge, where RunOptimizedQuery
-// applies no cursor while the DuckDB leg does (the renderer keys off
-// q.KeysetCursor, never off the flag). The merged page was then
-// hot-rows-unfiltered union cold-rows-filtered — the same silent-wrong-answer
-// family as #354. An active cursor alone now selects the keyset path.
-func TestPaginatedQueryTakesKeysetPathOnCursorAlone(t *testing.T) {
-	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
-
-	fq := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
-		KeysetCursor: &model.KeysetCursor{
-			Columns: []model.KeysetColumn{
-				{Attribute: "created_at", Direction: forma.SortOrderDesc},
-				// No trailing row_id: the keyset path validates and refuses,
-				// while the in-memory merge path would have run happily. The
-				// refusal is therefore proof of which branch was taken,
-				// without needing a live DuckDB.
-			},
-			Values: []interface{}{int64(5)},
-			Mode:   model.KeysetCursorModeAfter,
-		},
-	}
-
-	_, _, err := engine.ExecuteFederatedPaginatedQuery(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav"},
-		fq, 10, 0, nil, &model.FederatedQueryOptions{})
-
-	require.Error(t, err, "an active cursor alone must select the keyset path")
-	require.Contains(t, err.Error(), `expected "row_id"`)
-	require.Zero(t, pg.runOptimizedCalls,
-		"the keyset path runs, not the in-memory merge path which calls RunOptimizedQuery")
 }
 
 // TestKeysetCursorRejectsEverySqlgenDedupColumn is the cross-package drift

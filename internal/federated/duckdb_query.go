@@ -224,7 +224,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// (queryDuckDBRouted), so under it this deadline is never later than the
 	// request's and a corrupt-parquet retry or a deep-page recount shares
 	// the remainder; the arming here is what bounds callers that reach a
-	// pass directly (ExecuteFederatedPaginatedQuery, the benchmark harness).
+	// pass directly (ExecuteFederatedKeysetQuery, the benchmark harness).
 	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
 	// over all of it.
 	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)

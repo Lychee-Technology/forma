@@ -849,7 +849,7 @@ being read. It is raised before any path reaches a scan.
   parquet source at all: `resolveParquetPaths` relabels every unclassified
   source failure as `ErrFederatedReadFailed`, which `AllowPartialDegradedMode`
   absorbs into a Postgres-only answer. So `Query` and
-  `ExecuteFederatedPaginatedQuery` refuse a non-positive `SchemaID` at entry,
+  `ExecuteFederatedKeysetQuery` refuse a non-positive `SchemaID` at entry,
   before routing (PR #537 review) — the same `schema id must be positive`
   invariant the OLTP repository enforces — and no degraded fallback runs.
 - **Where the zero-stamp rule is enforced.** The same single site,

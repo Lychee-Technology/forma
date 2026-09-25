@@ -13,10 +13,9 @@ import (
 )
 
 type fakePostgresFederatedSource struct {
-	queryCalls        int
-	runOptimizedCalls int
-	lastQuery         *model.PersistentRecordQuery
-	page              *model.PersistentRecordPage
+	queryCalls int
+	lastQuery  *model.PersistentRecordQuery
+	page       *model.PersistentRecordPage
 }
 
 func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
@@ -26,15 +25,6 @@ func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context
 		return f.page, nil
 	}
 	return &model.PersistentRecordPage{}, nil
-}
-
-func (f *fakePostgresFederatedSource) RunOptimizedQuery(ctx context.Context, tables model.StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []model.AttributeOrder, useMainTableAsAnchor bool) ([]*model.PersistentRecord, int64, error) {
-	f.runOptimizedCalls++
-	return nil, 0, nil
-}
-
-func (f *fakePostgresFederatedSource) BuildHybridConditions(tables model.StorageTables, fq *model.FederatedAttributeQuery) (string, []any, error) {
-	return "1=1", nil, nil
 }
 
 type fakeDirtyIDFetcher struct {

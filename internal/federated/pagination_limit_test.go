@@ -10,14 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPaginatedKeysetQueryDispatchesTheEffectiveLimit pins that the keyset
-// branch of ExecuteFederatedPaginatedQuery renders the limit it normalised and
-// clamped, not the caller's fq.Limit (#381 review). The advanced template
-// reads LIMIT/OFFSET from the query object, so before dispatchedQuery a zero
-// fq.Limit rendered LIMIT 0 and an over-MaxRows one rendered verbatim, with
-// only the in-memory slice honouring the clamp. The captured query is the one
-// the builder received, i.e. what renders.
-func TestPaginatedKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
+// TestKeysetQueryDispatchesTheEffectiveLimit pins that the keyset coordinator
+// (ExecuteFederatedKeysetQuery) renders the limit it normalised and clamped,
+// not the caller's fq.Limit (#381 review). The advanced template reads
+// LIMIT/OFFSET from the query object, so before dispatchedQuery a zero fq.Limit
+// rendered LIMIT 0 and an over-MaxRows one rendered verbatim, with only the
+// in-memory slice honouring the clamp. The captured query is the one the
+// builder received, i.e. what renders.
+func TestKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -50,9 +50,9 @@ func TestPaginatedKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 				},
 			}
 
-			_, _, err := engine.ExecuteFederatedPaginatedQuery(context.Background(),
+			_, _, err := engine.ExecuteFederatedKeysetQuery(context.Background(),
 				model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-				fq, tc.argLimit, 0, nil, &model.FederatedQueryOptions{MaxRows: tc.maxRows})
+				fq, tc.argLimit, nil, &model.FederatedQueryOptions{MaxRows: tc.maxRows})
 			require.NoError(t, err)
 
 			require.GreaterOrEqual(t, len(built), 2, "the keyset page and its count are both rendered")
@@ -66,6 +66,34 @@ func TestPaginatedKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 			require.Equal(t, 30, fq.Offset, "the caller's query is not mutated")
 		})
 	}
+}
+
+// TestKeysetQueryWithoutCursorRendersTheOpenFirstPage pins what a nil cursor
+// dispatches. Since #442 there is no offset branch behind the coordinator: a
+// query without an active cursor takes the same path, which renders the open
+// first page (model.KeysetCursor.IsActive) at offset 0 — a stale fq.Offset
+// included — and still recounts, so the total stays the full match count.
+func TestKeysetQueryWithoutCursorRendersTheOpenFirstPage(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	var built []model.FederatedAttributeQuery
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{}, &built)
+	fq := &model.FederatedAttributeQuery{
+		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 30},
+	}
+
+	_, _, err := engine.ExecuteFederatedKeysetQuery(context.Background(),
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
+		fq, 10, nil, &model.FederatedQueryOptions{})
+	require.NoError(t, err)
+
+	require.Len(t, built, 2, "the first page and its count are both rendered")
+	require.Equal(t, 10, built[0].Limit)
+	require.Zero(t, built[0].Offset, "the coordinator never renders an offset")
+	require.False(t, built[0].KeysetCursor.IsActive(), "the first page renders without a cursor")
+	require.Equal(t, 1, built[1].Limit, "the recount renders LIMIT 1")
+	require.Zero(t, built[1].Offset, "the recount renders OFFSET 0")
 }
 
 // TestDispatchedQueryCopiesThePaginationArguments pins the helper itself:

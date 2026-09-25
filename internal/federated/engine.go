@@ -20,13 +20,13 @@ import (
 )
 
 // PostgresFederatedSource is the Postgres-side seam the federated engine
-// queries for hot-tier records. It is intentionally wider than one method:
-// federated pagination needs the optimized clause/args path and hybrid
-// condition building, which QueryPersistentRecords cannot substitute.
+// queries for hot-tier records: the hot-only gate and the degraded fallback.
+// The DuckDB path reads the hot tier itself, through postgres_scan. The seam
+// once also carried RunOptimizedQuery and BuildHybridConditions for the
+// in-memory merge path of ExecuteFederatedPaginatedQuery; both left with that
+// path (#442).
 type PostgresFederatedSource interface {
 	QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error)
-	RunOptimizedQuery(ctx context.Context, tables model.StorageTables, schemaID int16, clause string, args []any, limit, offset int, attributeOrders []model.AttributeOrder, useMainTableAsAnchor bool) ([]*model.PersistentRecord, int64, error)
-	BuildHybridConditions(tables model.StorageTables, fq *model.FederatedAttributeQuery) (string, []any, error)
 }
 
 // DirtyIDFetcher retrieves row IDs from the change log that are newer than
@@ -152,7 +152,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 }
 
 // validateFederatedQueryTarget is the entry guard shared by Query and
-// ExecuteFederatedPaginatedQuery. A non-positive schema ID can never name a
+// ExecuteFederatedKeysetQuery. A non-positive schema ID can never name a
 // schema (schema IDs are always positive), so a request carrying one is a
 // caller invariant violation (an unguarded enumerator or a hand-inserted
 // registry row), not a state of the read surface. It is refused here, before
@@ -194,7 +194,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	}
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go). validateKeysetCursor
-	// (keyset.go) is THE contract — the same call ExecuteFederatedPaginatedQuery
+	// (keyset.go) is THE contract — the same call ExecuteFederatedKeysetQuery
 	// makes, so the two seams cannot disagree about what a cursor may be (#381).
 	if err := validateKeysetCursor(fq.KeysetCursor, fq.AttributeOrders); err != nil {
 		return nil, fmt.Errorf("validate keyset cursor: %w", err)

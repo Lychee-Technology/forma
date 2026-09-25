@@ -3,23 +3,33 @@ package federated
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// ExecuteFederatedPaginatedQuery performs a federated fetch across Postgres (hot) and DuckDB (cold/warm),
-// merges results with last-write-wins semantics, and returns the requested page plus an accurate total
-// deduplicated across sources.
+// ExecuteFederatedKeysetQuery returns one keyset page across all three tiers
+// plus the FULL match count, not the count remaining after the cursor. The
+// page comes from DuckDB's federated template (hot via postgres_scan, warm and
+// cold from S3), which applies the keyset WHERE in the visible CTE after the
+// LWW dedup (rn = 1), so the cursor filters LWW winners rather than row
+// versions (#212). A nil or empty cursor is the open first page
+// (model.KeysetCursor.IsActive).
 //
-// Notes:
-// - This is an MVP coordinator: it caps per-source fetches (opts.MaxRows or default) to avoid OOM.
-// - For very large result sets a keys-only two-phase approach should be implemented later.
-func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
+// The total is what separates this from Query, whose keyset pages report the
+// template's COUNT(*) OVER() — rows remaining after the cursor. The keyset
+// benchmark asserts the full count, so it calls this coordinator.
+//
+// This was ExecuteFederatedPaginatedQuery until #442. Its only caller always
+// passed an active cursor, so the offset path behind the keyset early return —
+// an in-memory Postgres/DuckDB merge — never ran outside unit tests. It was
+// retired rather than wired to a caller: it read the hot tier twice,
+// arbitrated conflicts by UpdatedAt, and capped its total at maxRows. Offset
+// pagination is Query's job.
+func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 	ctx context.Context,
 	tables model.StorageTables,
 	fq *model.FederatedAttributeQuery,
-	limit, offset int,
+	limit int,
 	attributeOrders []model.AttributeOrder,
 	opts *model.FederatedQueryOptions,
 ) ([]*model.PersistentRecord, int64, error) {
@@ -29,146 +39,6 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedPaginatedQuery(
 	if limit <= 0 {
 		limit = model.DefaultPageSize
 	}
-	if offset < 0 {
-		offset = 0
-	}
-
-	// An ACTIVE CURSOR ALONE selects the keyset path (#381 item 3). The
-	// retired opts.KeysetEnabled conjunct meant a cursor with the flag unset
-	// fell into the in-memory merge below, where the Postgres leg applies no
-	// cursor while the DuckDB leg does — a half-filtered page. The flag had no
-	// config wiring and was never read by the production entry point, so it
-	// was deleted rather than made symmetric.
-	if hasKeysetCursor(fq) {
-		return e.executeFederatedKeysetQuery(ctx, tables, fq, limit, attributeOrders, opts)
-	}
-
-	// If explicit attribute ordering is requested, prefer DuckDB federated execution
-	// which can handle ordering correctly in SQL. Fall back to in-memory merge only
-	// if DuckDB is unavailable and AllowPartialDegradedMode is true.
-	if len(attributeOrders) > 0 {
-		if e.duck != nil && e.cfg.Enabled {
-			// Use DuckDB federated query which handles ordering correctly
-			return e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, limit, offset, attributeOrders, opts)
-		}
-		// DuckDB unavailable - only allow if degraded mode permitted
-		if opts == nil || !opts.AllowPartialDegradedMode {
-			return nil, 0, fmt.Errorf("ordered federated pagination requires DuckDB but DuckDB is unavailable")
-		}
-		// Otherwise fall through to in-memory merge which will ignore ordering
-	}
-
-	// Build shared hybrid WHERE clause
-	clause, args, err := e.pgSource.BuildHybridConditions(tables, fq)
-	if err != nil {
-		return nil, 0, fmt.Errorf("build hybrid conditions: %w", err)
-	}
-
-	// Determine per-source fetch cap
-	maxRows := model.FederatedMaxRows
-	if opts != nil && opts.MaxRows > 0 {
-		maxRows = opts.MaxRows
-	}
-
-	// Fetch from Postgres (hot)
-	startPg := time.Now()
-	pgRecs, _, err := e.pgSource.RunOptimizedQuery(ctx, tables, fq.SchemaID, clause, args, maxRows, 0, attributeOrders, fq.UseMainAsAnchor)
-	pgDuration := time.Since(startPg).Milliseconds()
-	if err != nil {
-		return nil, 0, fmt.Errorf("fetch postgres records: %w", err)
-	}
-	// Record Postgres source info if execution plan requested
-	recordPostgresSourcePlan(opts, fq, clause, args, len(pgRecs), pgDuration)
-
-	// Fetch from DuckDB (warm/cold)
-	duckRecs, _, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, maxRows, 0, attributeOrders, opts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("fetch duckdb records: %w", err)
-	}
-
-	// Merge across tiers using existing merge logic
-	inputs := map[model.DataTier][]*model.PersistentRecord{
-		model.DataTierHot:  pgRecs,
-		model.DataTierWarm: nil,
-		model.DataTierCold: duckRecs,
-	}
-
-	startMerge := time.Now()
-	merged, err := MergePersistentRecordsByTier(inputs, fq.PreferHot)
-	mergeMs := time.Since(startMerge).Milliseconds()
-	if err != nil {
-		return nil, 0, fmt.Errorf("merge records by tier: %w", err)
-	}
-	// Record merge plan if requested
-	recordMergePlan(opts, fq.PreferHot, mergeMs)
-
-	total := int64(len(merged))
-
-	// Apply pagination on merged, which is deterministically ordered by MergePersistentRecordsByTier
-	start := offset
-	if start >= len(merged) {
-		return []*model.PersistentRecord{}, total, nil
-	}
-	end := min(start+limit, len(merged))
-	page := merged[start:end]
-
-	return page, total, nil
-}
-
-// recordPostgresSourcePlan appends the hot-tier source entry for one paginated
-// fetch. It no-ops unless the caller asked for a plan, so the call site stays
-// a single line (#319).
-func recordPostgresSourcePlan(opts *model.FederatedQueryOptions, fq *model.FederatedAttributeQuery, clause string, args []any, rowCount int, durationMs int64) {
-	if opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
-		return
-	}
-	dp := model.DataSourcePlan{
-		Tier:   model.DataTierHot,
-		Engine: "postgres",
-		// The full optimized SQL is rendered inside RunOptimizedQuery;
-		// the hybrid WHERE clause and its parameters are what the
-		// coordinator can capture here.
-		SQL:               clause,
-		Params:            formatPlanParams(args),
-		RowEstimate:       0,
-		PredicatePushdown: fq.UseMainAsAnchor,
-		ActualRows:        int64(rowCount),
-		DurationMs:        durationMs,
-		Reason:            "postgres optimized query",
-	}
-	opts.ExecutionPlan.Sources = append(opts.ExecutionPlan.Sources, dp)
-	opts.ExecutionPlan.Timings["postgres_fetch"] = durationMs
-}
-
-// recordMergePlan records the tier-merge step of one paginated fetch. Like
-// recordPostgresSourcePlan it no-ops unless a plan was requested (#319).
-func recordMergePlan(opts *model.FederatedQueryOptions, preferHot bool, durationMs int64) {
-	if opts == nil || !opts.IncludeExecutionPlan || opts.ExecutionPlan == nil {
-		return
-	}
-	opts.ExecutionPlan.Merge = model.MergePlan{
-		Strategy:   model.MergeStrategyLastWriteWins,
-		PreferHot:  preferHot,
-		DedupKeys:  []string{"SchemaID:RowID"},
-		DurationMs: durationMs,
-		Notes:      []string{"attribute-level deduplication applied"},
-	}
-	opts.ExecutionPlan.Timings["merge"] = durationMs
-}
-
-// executeFederatedKeysetQuery performs a keyset-cursor-based federated query.
-// It delegates to DuckDB's federated template, which applies the keyset WHERE
-// clause in the visible CTE after LWW dedup (rn = 1), so the cursor filters
-// LWW winners rather than row versions (#212). The requested page is
-// returned along with the total count and next cursor.
-func (e *DBFederatedQueryEngine) executeFederatedKeysetQuery(
-	ctx context.Context,
-	tables model.StorageTables,
-	fq *model.FederatedAttributeQuery,
-	limit int,
-	attributeOrders []model.AttributeOrder,
-	opts *model.FederatedQueryOptions,
-) ([]*model.PersistentRecord, int64, error) {
 	// The DuckDB template below consumes the cursor unvalidated, so refuse a
 	// malformed one here. Same call as the engine gate (engine.go): one
 	// contract, both seams (#381).
