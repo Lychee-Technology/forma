@@ -13,8 +13,8 @@ const (
 	ValueTypeInteger  ValueType = "integer"
 	ValueTypeBigInt   ValueType = "bigint"
 	ValueTypeNumeric  ValueType = "numeric"  // double precision
-	ValueTypeDate     ValueType = "date"     // for JSON attributes with format `date`
-	ValueTypeDateTime ValueType = "datetime" // for JSON attributes with format `date-time`
+	ValueTypeDate     ValueType = "date"     // for JSON attributes with format `date`; epoch-millisecond precision, finer input floored on write (#589)
+	ValueTypeDateTime ValueType = "datetime" // for JSON attributes with format `date-time`; epoch-millisecond precision, finer input floored on write (#589)
 	ValueTypeUUID     ValueType = "uuid"
 	ValueTypeBool     ValueType = "bool"
 	ValueTypeList     ValueType = "list" // array type stored as DuckDB LIST in parquet

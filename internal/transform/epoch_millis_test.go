@@ -157,3 +157,76 @@ func TestDateTime_EpochMillisRangeIsExact(t *testing.T) {
 		})
 	}
 }
+
+// #589 ruling: epoch milliseconds are the precision of the date/datetime
+// type itself — every tier and the read path carry them — so both funnels
+// floor input finer than a millisecond at normalisation, for every
+// destination alike, and the floored millis are what every destination rule
+// then judges. That is the type's precision contract, not a narrowing one
+// destination applies (#459, #582), so it is documented and pinned here
+// rather than refused. The floor is toward the past for pre-epoch instants
+// too: in the RFC3339 spelling it is always "drop the digits after the
+// third fractional digit".
+func TestDateTime_SubMillisecondInputIsFlooredToMillis(t *testing.T) {
+	c := NewAttributeConverter(nil)
+	whole := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // 1704067200000
+	metas := map[string]forma.AttributeMetadata{
+		"unbound datetime": {AttributeID: 9, ValueType: forma.ValueTypeDateTime},
+		"unbound date":     {AttributeID: 9, ValueType: forma.ValueTypeDate},
+		"unix_ms":          boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs),
+		"default bigint":   boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingDefault),
+	}
+	cases := []struct {
+		name  string
+		value any
+		want  int64
+	}{
+		{"time.Time one microsecond past the second", whole.Add(time.Microsecond), 1704067200000},
+		{"time.Time last nanosecond of a millisecond", whole.Add(124*time.Millisecond - time.Nanosecond), 1704067200123},
+		{"time.Time in an offset zone", whole.Add(time.Microsecond).In(time.FixedZone("plus2", 2*3600)), 1704067200000},
+		{"time.Time last nanosecond before the epoch", time.UnixMilli(-1).Add(time.Millisecond - time.Nanosecond), -1},
+		{"RFC3339 six fractional digits", "2024-01-01T00:00:00.000001Z", 1704067200000},
+		{"RFC3339 nine fractional digits", "2024-01-01T00:00:00.123999999Z", 1704067200123},
+		{"RFC3339 fraction in an offset zone", "2024-01-01T02:00:00.000999+02:00", 1704067200000},
+		{"RFC3339 pre-epoch fraction floors toward the past", "1969-12-31T23:59:59.9995Z", -1},
+	}
+	for _, tc := range cases {
+		for dest, meta := range metas {
+			t.Run(tc.name+"/"+dest, func(t *testing.T) {
+				var rec model.EAVRecord
+				set, err := populateTypedValue(&rec, "seenAt", tc.value, meta)
+				require.NoError(t, err)
+				require.True(t, set)
+				require.Equal(t, tc.want, *rec.ValueInt64)
+				require.Equal(t, float64(tc.want), *rec.ValueNumeric)
+				read, err := extractValueFromEAVRecord(rec, meta.ValueType)
+				require.NoError(t, err)
+				require.Equal(t, time.UnixMilli(tc.want).UTC(), read)
+			})
+		}
+		// The alternate funnel takes a time.Time or a *time.Time, no strings,
+		// and floors both the same way.
+		value, ok := tc.value.(time.Time)
+		if !ok {
+			continue
+		}
+		for shape, input := range map[string]any{"time.Time": value, "*time.Time": &value} {
+			t.Run(tc.name+"/ToEAVRecord/"+shape, func(t *testing.T) {
+				eav, err := c.ToEAVRecord(model.EntityAttribute{
+					SchemaID: 1, AttrID: 9, ValueType: forma.ValueTypeDateTime, Value: input,
+				}, uuid.New())
+				require.NoError(t, err)
+				require.Equal(t, tc.want, *eav.ValueInt64)
+				require.Equal(t, float64(tc.want), *eav.ValueNumeric)
+			})
+		}
+	}
+
+	// The issue's example, by its spelling: the microsecond is gone on the read.
+	var rec model.EAVRecord
+	_, err := populateTypedValue(&rec, "seenAt", "2024-01-01T00:00:00.000001Z", metas["unbound datetime"])
+	require.NoError(t, err)
+	read, err := extractValueFromEAVRecord(rec, forma.ValueTypeDateTime)
+	require.NoError(t, err)
+	require.Equal(t, "2024-01-01T00:00:00Z", read.(time.Time).Format(time.RFC3339Nano))
+}

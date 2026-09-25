@@ -363,12 +363,15 @@ func TestCheckStorageFit_ISO8601WholeSeconds(t *testing.T) {
 		{"datetime year -0001 rejected", iso, "-62167219201000",
 			"datetime value -62167219201000 (-0001-12-31T23:59:59Z) cannot be stored in main column text_02 with encoding iso8601, which keeps years 0000 to 9999"},
 		{"date year 10000 rejected", isoDate, "253402300800000", "keeps years 0000 to 9999"},
-		// The funnel keeps millis for every date/datetime (UnixMilli in
-		// populateTypedValue), so a finer fraction is gone before any fit
-		// decision and the rule judges the millis: admitted, stored at the
-		// whole second. Whether ingestion should refuse sub-millisecond
-		// input is #589, a contract for every date attribute, not this one.
-		{"datetime sub-millisecond fraction is millis-normalised before the check", iso, "2024-01-01T00:00:00.000001Z", ""},
+		// Epoch millis are the type's precision (#589 ruling): the funnel
+		// floors a finer fraction at normalisation, for every destination
+		// alike, and this rule judges the floored millis. A fraction that
+		// floors to a whole second is admitted and stored at that second;
+		// one that floors to .999 is refused for the millis it floored to,
+		// not for the instant the caller spelled.
+		{"datetime sub-millisecond fraction is floored to millis before the check", iso, "2024-01-01T00:00:00.000001Z", ""},
+		{"datetime sub-millisecond fraction is refused on its floored millis", iso, "2024-01-01T00:00:00.9999999Z",
+			"datetime value 1704067200999 (2024-01-01T00:00:00.999Z) cannot be stored in main column text_02 with encoding iso8601, which keeps whole seconds"},
 		{"unbound datetime keeps millis",
 			forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}, "2024-01-01T00:00:00.123Z", ""},
 		{"unix_ms bigint keeps millis",
