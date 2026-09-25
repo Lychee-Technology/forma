@@ -16,11 +16,14 @@ import (
 // the federated route back to the Postgres value at once, and the next flush
 // and compaction make the repair durable on every tier.
 //
-// The stale export is staged the way pre-#384 history left it: the row is
-// flushed while its value is in range, then eav_data is rewritten past the
-// declared width without stamping change_log. The warm parquet copy holds
-// the old value and the row is not dirty, exactly the state a declared-width
-// TRY_CAST export left behind for an out-of-range value.
+// The stale export is staged by flushing the row while its value is in
+// range, then rewriting eav_data past the declared width without stamping
+// change_log. The warm parquet copy disagrees with Postgres and the row is
+// not dirty. That is the state a declared-width TRY_CAST export left behind,
+// though the stale bytes differ: history holds NULL or a rounded value, this
+// fixture holds the old in-range value. The census, dirty-set routing and
+// versioned re-export depend only on the disagreement and the flush state,
+// never on the stale bytes, so the fixture exercises the same repair path.
 
 func TestIntegerWidthAuditRequeueRepairsStaleExport(t *testing.T) {
 	cluster := SharedCluster(t)
