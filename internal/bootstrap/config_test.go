@@ -15,6 +15,23 @@ func TestEnvIntFallbackOnInvalidValue(t *testing.T) {
 	}
 }
 
+func TestEnvAllowEmptyKeepsExplicitEmpty(t *testing.T) {
+	t.Setenv("BOOTSTRAP_EMPTY_TEST", "")
+	if got := EnvAllowEmpty("BOOTSTRAP_EMPTY_TEST", "fallback"); got != "" {
+		t.Fatalf("explicit empty must stay empty, got %q", got)
+	}
+	if got := Env("BOOTSTRAP_EMPTY_TEST", "fallback"); got != "fallback" {
+		t.Fatalf("Env must still treat empty as unset, got %q", got)
+	}
+	t.Setenv("BOOTSTRAP_EMPTY_TEST", "value")
+	if got := EnvAllowEmpty("BOOTSTRAP_EMPTY_TEST", "fallback"); got != "value" {
+		t.Fatalf("expected value, got %q", got)
+	}
+	if got := EnvAllowEmpty("BOOTSTRAP_EMPTY_TEST_UNSET", "fallback"); got != "fallback" {
+		t.Fatalf("unset var must take the default, got %q", got)
+	}
+}
+
 func TestDatabaseConfigFromEnv(t *testing.T) {
 	t.Setenv("DB_HOST", "db-host")
 	t.Setenv("DB_PORT", "15432")

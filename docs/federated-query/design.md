@@ -906,7 +906,9 @@ applied on both sides:
 
 * **Write side**: the EAV write funnel rejects numeric-family values that do
   not fit the declared integer type — out of range or non-integral for
-  `smallint`/`integer`/`bigint` — as user-facing invalid input. `numeric`
+  `smallint`/`integer`/`bigint` — as user-facing invalid input. A `bigint`
+  is judged by the float64 image the row stores, so an int64 whose image is
+  2^63 (from 2^63−512 up) is refused as well (#612). `numeric`
   stays unconstrained (its float64 ceiling is #205). Main-column-bound write
   fidelity is tracked separately (#459).
 * **Projection**: EAV-only `integer`/`smallint` project by **storage width** —
@@ -992,7 +994,11 @@ applied on both sides:
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
 promote the mixed widths losslessly, and the NULLs are unrecoverable from
-parquet alone (re-flush from PG restores them; #501 tracks detection/repair).
+parquet alone. `validate-schema-consistency` finds the affected rows and
+`--requeue-stale-width-exports` re-queues them for a re-flush from PG (#501;
+see `docs/schema-consistency-migration.md`). Declared bigint still projects at
+BIGINT, so a bigint value past int64 diverges on every DuckDB leg; the same
+census reports it for a rewrite.
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.

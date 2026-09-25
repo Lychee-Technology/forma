@@ -31,6 +31,16 @@ func Env(key, defaultValue string) string {
 	return defaultValue
 }
 
+// EnvAllowEmpty is Env for a setting whose empty value is meaningful (for
+// example a table name where empty disables a feature): only an unset var
+// takes the default, so an explicit KEY= is returned as "".
+func EnvAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
 func EnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
