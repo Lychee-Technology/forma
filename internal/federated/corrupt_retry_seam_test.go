@@ -336,7 +336,7 @@ func TestCorruptRetryTimingsDescribeOnlyTheRetryPass(t *testing.T) {
 // TestCorruptRetryRewindPreservesPrePassPlan pins #348 item 2: rewind is a
 // truncate-to-mark, and the strongest wrong implementation — rewinding to an
 // empty mark (executionPlanMark{}) — destroys what the CALLER recorded before
-// the first pass (e.g. the pagination path's postgres source, pagination.go).
+// the first pass (e.g. the keyset coordinator's "keyset pagination" note).
 // Routing alone cannot catch that: rewind never touches Routing.
 func TestCorruptRetryRewindPreservesPrePassPlan(t *testing.T) {
 	restore := initTestDescriptors()

@@ -93,12 +93,13 @@ var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // validateKeysetCursor is THE keyset cursor contract, and the only validation
 // entry point. Both seams call it — the engine gate (engine.go) and the
-// paginated keyset branch (pagination.go) — so the two can no longer disagree
-// about what a cursor may be (#381 item 1). It replaces the retired pair
-// validateKeysetColumns (a system-column allowlist reachable only from
-// ExecuteFederatedPaginatedQuery) and validateKeysetTiebreak (all that
-// DBFederatedQueryEngine.Query applied, so that seam accepted arbitrary
-// attribute columns the code generator could not correctly reference).
+// keyset coordinator ExecuteFederatedKeysetQuery (pagination.go) — so the two
+// can no longer disagree about what a cursor may be (#381 item 1). It replaces
+// the retired pair validateKeysetColumns (a system-column allowlist reachable
+// only from the coordinator, then named ExecuteFederatedPaginatedQuery) and
+// validateKeysetTiebreak (all that DBFederatedQueryEngine.Query applied, so
+// that seam accepted arbitrary attribute columns the code generator could not
+// correctly reference).
 //
 // It enforces, in order:
 //
@@ -226,9 +227,11 @@ func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
 // deliberately: that function is the single confluence of every route to the
 // Postgres-only path — the hot-only gate, the routing decision, and the
 // degraded fallback — so a Postgres-only route added later cannot bypass this
-// check. It is NOT a guard on every route that reaches Postgres at all: the
-// federated merge path also reads Postgres through RunOptimizedQuery
-// (pagination.go) and is not covered here.
+// check. Since #442 retired the in-memory merge path, which read Postgres
+// through RunOptimizedQuery with no cursor applied, queryPostgresOnly is also
+// the engine's only direct read of Postgres records: the DuckDB template
+// reaches the hot tier through postgres_scan, and applies the cursor after the
+// tier merge.
 //
 // Known consequence of guarding at the confluence rather than at each gate:
 // both recordHotOnlyGatePlan (the hot-only gate) and recordRoutedPostgresSource

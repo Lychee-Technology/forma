@@ -243,7 +243,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		IncludeExecutionPlan: true,
 	}
 
-	recs, total, err := engine.ExecuteFederatedPaginatedQuery(ctx, tables, fq, pageSize, 0, nil, opts)
+	recs, total, err := engine.ExecuteFederatedKeysetQuery(ctx, tables, fq, pageSize, nil, opts)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("keyset query page %d: %w", pageNumber, err)
 	}

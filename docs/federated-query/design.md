@@ -247,7 +247,7 @@ separately (#604).
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,
 `federated.validateKeysetCursor`, binds every entry point onto the keyset
-renderer — `DBFederatedQueryEngine.Query`, `ExecuteFederatedPaginatedQuery`, and
+renderer — `DBFederatedQueryEngine.Query`, `ExecuteFederatedKeysetQuery`, and
 the exported `ExecuteDuckDBFederatedQuery` beneath them — and admits
 a column when it is one of the four system columns the `visible` CTE projects
 (`row_id`, `created_at`, `ver_ts`, `deleted_ts`) or an attribute whose
@@ -348,9 +348,10 @@ pagination contract of every DuckDB seam.** The advanced template reads
 `LIMIT`, `OFFSET` and the non-keyset `ORDER BY` from the *query object*
 (`q.Limit`, `q.Offset`, `q.AttributeOrders`), so a caller that normalised or
 clamped its limit but passed the query unchanged used to have the clamp
-silently ignored: the keyset branch of `ExecuteFederatedPaginatedQuery`
-rendered `LIMIT 0` for a zero `fq.Limit` and an over-`MaxRows` `fq.Limit`
-verbatim, with only its in-memory slice honouring the clamp.
+silently ignored: the keyset coordinator (`ExecuteFederatedKeysetQuery`, then
+the keyset branch of `ExecuteFederatedPaginatedQuery`) rendered `LIMIT 0` for a
+zero `fq.Limit` and an over-`MaxRows` `fq.Limit` verbatim, with only its
+in-memory slice honouring the clamp.
 `buildDuckDBQueryWithPlan` — the one point the direct render and the compiled
 plan cache both flow through — now renders a copy of the query carrying the
 dispatched arguments (`federated.dispatchedQuery`), so the rendered skeleton,
@@ -624,14 +625,26 @@ now **enforced**, not merely documented: the engine rejects any cursor whose
 final column is not `row_id`. The rule lives on the cursor type
 (`model.KeysetCursor.ValidateShape`) and is applied by the single validator
 `federated.validateKeysetCursor` at both entry points — the live renderer path
-in `DBFederatedQueryEngine.Query` and the keyset branch of
-`ExecuteFederatedPaginatedQuery`, which an active cursor alone now selects
-since the `KeysetEnabled` flag was retired (#381) — and again inside
+in `DBFederatedQueryEngine.Query` and the keyset coordinator
+`ExecuteFederatedKeysetQuery` (#381) — and again inside
 `generateKeysetWhereClause`, so a direct `internal/sqlgen` caller cannot bypass
 it. A cursor ending on a non-unique key applies a strict inequality on that key
 at the boundary, which silently skips every row tied there; the trailing
 `row_id` gives the composite key a unique tiebreak so each boundary tie is
 resolvable (#183).
+
+The two entry points serve the same page but report different totals. The
+template's `COUNT(*) OVER()` runs after the post-dedup keyset filter, so on a
+continued page `Query` reports the rows remaining after the cursor (it recounts
+only an empty page at a non-zero offset, #181). `ExecuteFederatedKeysetQuery`
+strips the cursor and recounts, so it reports the full match count, which is
+what the keyset benchmark asserts. The coordinator was
+`ExecuteFederatedPaginatedQuery` until #442. That function also held an
+in-memory Postgres/DuckDB merge for offset pages. Its only caller always passed
+a cursor, so the merge never ran, and it was retired rather than wired to a
+caller: it read the hot tier twice (the template already reaches it through
+`postgres_scan`), arbitrated conflicts by `UpdatedAt` rather than by the dirty
+set, and capped its total at `MaxRows`. Offset pagination is `Query`'s job.
 
 **Never-flushed columns (#255).** `union_by_name` can only union columns that
 exist in *some* file. An attribute added to the schema before its first flush is
