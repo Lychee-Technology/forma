@@ -627,6 +627,19 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   second stored as an image the reader cannot parse. The unbound
   `eav_data.value_numeric` image keeps its pre-existing float64 behaviour
   (#205; the contract past 2^53 is #592).
+- The query-filter literal on an `iso8601`-bound attribute follows the same
+  rule (#588): the Postgres binders render it as the canonical stored image
+  (UTC, whole seconds), so `gte:2024-01-02T05:04:05+02:00` and
+  `gte:1704164645000` both bind `2024-01-02T03:04:05Z` whatever the server's
+  zone, and a literal the image cannot hold is refused on the Postgres and
+  DuckDB routes alike with `datetime filter value 2024-01-02T03:04:05.123Z
+  for 'joined' cannot be compared against main column text_03 with encoding
+  iso8601, which keeps whole seconds` (the year rule reads `keeps years 0000
+  to 9999 (the RFC3339 four-digit year)`). Before #588 the Postgres route
+  kept the literal's offset, rendered a unix-ms literal in the process zone
+  and dropped the fraction, while DuckDB compared the exact instant, so the
+  two engines answered the same filter differently. The write image and the
+  filter image come from one function, `internal/iso8601.Image`.
 - `date`/`datetime` precision (#589): the logical value is epoch
   milliseconds, in every tier and on the read path. A write accepts an
   RFC3339 string with any number of fractional digits (`format: date-time`

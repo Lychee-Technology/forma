@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
 )
@@ -242,7 +243,7 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		if err != nil {
 			return false, fmt.Errorf("encoding %s cannot hold a slot in main column %s: %w", binding.Encoding, binding.ColumnName, err)
 		}
-		text, rule := iso8601Rendering(ms)
+		text, rule := iso8601.Image(ms)
 		if rule != "" {
 			return false, fmt.Errorf("encoding %s %s and cannot hold value %d in main column %s",
 				binding.Encoding, rule, ms, binding.ColumnName)
