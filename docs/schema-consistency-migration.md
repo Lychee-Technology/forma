@@ -540,8 +540,10 @@ this migration before upgrading, or the server refuses to load the schema.
 
 Admitted pairs: `text`→text; `uuid`→uuid; `smallint`/`integer`/`bigint`/`numeric`
 → smallint/integer/bigint/double (a value that does not fit the column's
-width is refused at write time as invalid input); `date`/`datetime`→bigint
-(`unix_ms` or default, the full int64 epoch-ms range) or text (`iso8601`, an
+width is refused at write time as invalid input); `date`/`datetime` (whose
+logical value is epoch milliseconds: input finer than a millisecond is
+floored to the millisecond before any destination rule judges it, #589)
+→bigint (`unix_ms` or default, the full int64 epoch-ms range) or text (`iso8601`, an
 RFC3339 string at whole seconds within the layout's four-digit year: a value
 whose epoch millis are off a whole second is refused at write time as invalid
 input rather than truncated, and a value outside 0000-01-01T00:00:00Z to

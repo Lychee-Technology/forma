@@ -627,6 +627,21 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   second stored as an image the reader cannot parse. The unbound
   `eav_data.value_numeric` image keeps its pre-existing float64 behaviour
   (#205; the contract past 2^53 is #592).
+- `date`/`datetime` precision (#589): the logical value is epoch
+  milliseconds, in every tier and on the read path. A write accepts an
+  RFC3339 string with any number of fractional digits (`format: date-time`
+  is RFC 3339, which allows them), or a Go `time.Time` at nanosecond
+  precision through the Go API, and floors it to the millisecond at
+  normalisation, before any destination rule runs and for every destination
+  alike: `2024-01-01T00:00:00.000001Z` is stored and read back as
+  `2024-01-01T00:00:00Z`, unbound or bound. This is the type's precision,
+  not a narrowing by one destination, so it is documented rather than
+  refused (refusing would answer 400 to `time.Now()` and to every Go client
+  whose `time.Time` field marshals as RFC3339Nano). The `iso8601` rule above
+  judges the floored millis: `…00:00:00.9999999Z` floors to `.999` and is
+  refused as off a whole second. The accepted date input shapes are an
+  RFC3339 string with or without a fraction, `YYYY-MM-DD`, `YYYY-MM`, an
+  epoch-millisecond integer string, or a Go `time.Time`.
 
 The published message names the attribute, the value, the destination and
 the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value

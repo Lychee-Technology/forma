@@ -48,10 +48,18 @@ var (
 // as an unrelated in-range instant before any fit decision could see it
 // (#587 review). The comparison is on the instant, so it is exact for every
 // time.Time and zone; a value past either end is refused as the caller's
-// value, never narrowed. Sub-millisecond precision is floored as before
-// (#589 owns whether ingestion should refuse it), and the bound is on the
-// floored millis: an instant inside the last millisecond is admitted as
-// MaxInt64, the same value its epoch-ms string normalises to.
+// value, never narrowed.
+//
+// Precision finer than a millisecond is floored to the millisecond (#589
+// ruling). Epoch millis are the precision of the type itself — every tier
+// and the read path carry them — so the floor is the type's contract for
+// every destination, bound or not, and not a narrowing any one destination
+// could refuse the way #459 and #582 refuse a value its physical destination
+// cannot hold. The floor is toward the past (UnixMilli), which in the
+// RFC3339 spelling is "drop the digits after the third fractional digit" for
+// pre-epoch instants too; the bound is on the floored millis, so an instant
+// inside the last millisecond is admitted as MaxInt64, the same value its
+// epoch-ms string normalises to.
 func epochMillisOf(value time.Time) (int64, error) {
 	if value.Before(minEpochMillisTime) || value.After(lastEpochMillisTime) {
 		return 0, fmt.Errorf("time value %s cannot be stored as epoch milliseconds, which name instants from %s to %s",
