@@ -323,12 +323,17 @@ func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
 }
 
 // #582: the iso8601 rendering is an RFC3339 string, which keeps whole
-// seconds. A sub-second instant used to be silently truncated on the way
-// into the text column (1704067200123 stored as 2024-01-01T00:00:00Z, read
-// back as 1704067200000) — the one admitted binding where the funnel
-// narrowed the caller's value. It is now refused as published invalid input;
-// the same instant unbound, or bound to a bigint column, still keeps its
-// millis.
+// seconds. An instant whose millis are off a whole second used to be
+// silently truncated on the way into the text column (1704067200123 stored
+// as 2024-01-01T00:00:00Z, read back as 1704067200000) — the one admitted
+// binding where the funnel narrowed the caller's value. It is now refused as
+// published invalid input; the same instant unbound, or bound to a bigint
+// column, still keeps its millis.
+//
+// The rule judges the normalised epoch millis, not the spelling the caller
+// sent: epoch millis are the type's precision (#589), so a finer fraction is
+// floored to millis before this check runs. An input that floors to a whole
+// second (.000001Z) is admitted; one that floors to .999 is refused.
 func TestCheckStorageFit_ISO8601WholeSeconds(t *testing.T) {
 	iso := boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601)
 	isoDate := boundMeta(forma.ValueTypeDate, forma.MainColumnText03, forma.MainColumnEncodingISO8601)
