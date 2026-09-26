@@ -23,13 +23,16 @@ const (
 	// so the federated route serves NULL or a rounded value. The row is not
 	// dirty, so its Postgres state has not changed since that export.
 	ClassStaleExport
-	// ClassBigIntOutOfContract: a bigint value outside int64 or not
-	// integral. Every DuckDB leg, hot included, projects it through
-	// TRY_CAST(... AS BIGINT) to NULL or a rounded value. A re-flush
-	// reproduces the same cast, so only rewriting the value repairs it. The
-	// write funnel refuses every such value, judging bigint by the float64
-	// image eav_data stores (#612), so a finding predates that check or was
-	// written around the funnel.
+	// ClassBigIntOutOfContract: a bigint value outside [-2^53, 2^53] (the
+	// range the float64 image eav_data keeps exactly) or not integral. A
+	// value past 2^53 was rounded on the write, so no route can recover the
+	// caller's value; one past int64 or non-integral is projected by every
+	// DuckDB leg, hot included, through TRY_CAST(... AS BIGINT) to NULL or
+	// a rounded value and is refused by the OLTP read. A re-flush
+	// reproduces the same image, so only rewriting the value repairs it.
+	// The write funnel refuses every such value, judging bigint by the
+	// float64 image eav_data stores (#612, #590), so a finding predates
+	// that check or was written around the funnel.
 	ClassBigIntOutOfContract
 )
 

@@ -143,11 +143,11 @@ func TestFederatedReadReturnsStoredMaxInt64(t *testing.T) {
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 const maxUUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
-// float64-exact EAV bigint bound: EAV values travel as float64 through the
-// Go model (transform.extractValueFromEAVRecord), so 2^53 is the largest
-// exactly-representable EAV integer. Bound bigints don't share this limit.
-// As of #205 a bound bigint carries the full int64 range, so it no longer
-// shares this 2^53 EAV ceiling.
+// float64-exact EAV bigint bound: eav_data keeps the float64 image, so 2^53
+// is the largest exactly-representable EAV integer and, since #590, the
+// largest the write funnel admits for an EAV-only bigint. Bound bigints
+// don't share this limit: as of #205 a bound bigint carries the full int64
+// range.
 const maxEAVInt = float64(1 << 53)
 
 // preEpochJoinedMS is 1900-01-01T00:00:00Z in epoch milliseconds — the

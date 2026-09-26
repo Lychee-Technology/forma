@@ -167,11 +167,12 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 }
 
 // storeInEAV appends the record to the row's eav_data attributes. eav_data
-// persists the float64 ValueNumeric image only (#205, 2^53 ceiling): the
-// exact sidecar is memory-only and is cleared here so the create-response
-// echo matches what is written. The funnels derive the image from the exact
-// millis (setEpochMillis), so within 2^53 it is the logical value; the
-// contract past that is #592.
+// persists the float64 ValueNumeric image only (#205): the exact sidecar is
+// memory-only and is cleared here so the create-response echo matches what
+// is written. checkStorageFit has bounded a bigint to the ±2^53 the image
+// keeps exactly (#590, bigint_image.go), so the image is the logical value.
+// The funnels derive a date's image from the exact millis (setEpochMillis);
+// the contract for that image past 2^53 is #592.
 func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord) {
 	attr.ValueInt64 = nil
 	record.OtherAttributes = append(record.OtherAttributes, attr)

@@ -4,10 +4,13 @@ package production
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/lychee-technology/forma"
 )
 
 // boundaryProbe is one filter probe plus the exact set of seeded rows it must
@@ -82,10 +85,11 @@ func TestBigintFilterBoundaryBothDialects(t *testing.T) {
 //
 // The contract has two halves and only asserting both is meaningful:
 //   - the value that was never stored (2^53+1) matches NOTHING on either leg —
-//     an exact bind must not "find" a row by colliding with the same rounding
-//     error the write path made;
-//   - the value that WAS stored (2^53, the rounded form) still matches the row
-//     on either leg — the exactness must not cost reachability.
+//     an exact bind must not "find" a row by colliding with a rounding of the
+//     operand; since #590 the write refuses 2^53+1 outright (it used to be
+//     stored rounded to 2^53), so no row can hold it;
+//   - the value that WAS stored (2^53, the ceiling itself) still matches the
+//     row on either leg — the exactness must not cost reachability.
 //
 // Tier parity is the point: hot Postgres and cold DuckDB must answer the same
 // filter identically. AssertQueryMatches is deliberately unused — the oracle
@@ -98,34 +102,41 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 
 	// `total` (attr 15) is the EAV-only bigint; `amount` (bound bigint_01) is
 	// only row identity here, so assertExactBigintRowSet can name the rows.
-	aboveCeiling := CreateEvent(wide, map[string]any{
-		"title": "eav-2p53p1", "total": int64(1)<<53 + 1, "amount": int64(101),
+	// 2^53+1 is refused at the write (#590): the row that used to hold its
+	// rounded image now holds the ceiling itself.
+	if err := env.ApplyEvents(ctx, CreateEvent(wide, map[string]any{
+		"title": "eav-2p53p1", "total": int64(1)<<53 + 1, "amount": int64(100),
+	})); !errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("create total=2^53+1: err %v, want invalid input (#590)", err)
+	}
+	atCeiling := CreateEvent(wide, map[string]any{
+		"title": "eav-2p53", "total": int64(1) << 53, "amount": int64(101),
 	})
 	belowCeiling := CreateEvent(wide, map[string]any{
 		"title": "eav-small", "total": int64(7), "amount": int64(102),
 	})
-	seeded := []*Event{aboveCeiling, belowCeiling}
+	seeded := []*Event{atCeiling, belowCeiling}
 	mustApplyEvents(ctx, t, env, "eav bigint boundary creates", seeded...)
 
 	probes := []boundaryProbe{
-		// Never stored: the write rounded it away. Empty on both legs.
+		// Never stored: the write refuses it. Empty on both legs.
 		{"eav_equals_2p53_plus_1_matches_nothing",
 			Filter{Attr: "total", Op: "equals", Value: "9007199254740993"}, nil},
-		// Stored (rounded) value stays addressable.
-		{"eav_equals_2p53_matches_rounded_row",
-			Filter{Attr: "total", Op: "equals", Value: "9007199254740992"}, []*Event{aboveCeiling}},
+		// The ceiling itself stays addressable.
+		{"eav_equals_2p53_matches_ceiling_row",
+			Filter{Attr: "total", Op: "equals", Value: "9007199254740992"}, []*Event{atCeiling}},
 		// Below the ceiling nothing is lossy — sanity that the probe schema works.
 		{"eav_equals_below_ceiling", Filter{Attr: "total", Op: "equals", Value: "7"}, []*Event{belowCeiling}},
 		// #357 spellings: same value, decimal/exponent form, same answer.
 		{"eav_equals_2p53_decimal_spelling",
-			Filter{Attr: "total", Op: "equals", Value: "9007199254740992.0"}, []*Event{aboveCeiling}},
+			Filter{Attr: "total", Op: "equals", Value: "9007199254740992.0"}, []*Event{atCeiling}},
 		{"eav_equals_2p53_plus_1_exponent_spelling_matches_nothing",
 			Filter{Attr: "total", Op: "equals", Value: "9.007199254740993e15"}, nil},
 	}
 
 	// PG leg: rows are unflushed, PreferHot short-circuits to postgres-only.
 	hotBase := Query{Schema: wide, PreferHot: true, Limit: 100}
-	assertEAVCeilingStored(ctx, t, env, "hot-pg", hotBase, false, aboveCeiling)
+	assertEAVCeilingStored(ctx, t, env, "hot-pg", hotBase, false, atCeiling)
 	runBoundaryProbes(ctx, t, env, "eav/hot-pg", hotBase, false, probes)
 
 	// DuckDB leg: export to base, then drop the change_log entries so the rows
@@ -138,14 +149,15 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 		wide.ID, rowIDs(seeded))
 
 	coldBase := Query{Schema: wide, Limit: 100}
-	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, true, aboveCeiling)
+	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, true, atCeiling)
 	runBoundaryProbes(ctx, t, env, "eav/cold-duck", coldBase, true, probes)
 }
 
-// assertEAVCeilingStored pins WHY the 2^53+1 probe must come back empty: the
-// tier really holds the rounded 2^53, so an empty result is the storage
-// contract and not a broken binder. Without this the miss probe would pass
-// just as happily against a filter that matches nothing at all.
+// assertEAVCeilingStored pins that the 2^53 probe has a row to find: the tier
+// really holds the ceiling value exactly, so the 2^53+1 miss is the storage
+// contract (nothing past 2^53 is ever written, #590) and not a broken binder.
+// Without this the miss probe would pass just as happily against a filter
+// that matches nothing at all.
 //
 // wantDuck is asserted here too: this control IS the parquet premise on the
 // cold leg, so a silently hot-served control would leave that premise unproven
@@ -160,10 +172,10 @@ func assertEAVCeilingStored(ctx context.Context, t *testing.T, env *Env, label s
 	}
 	for _, rec := range res.Records {
 		if rec.RowID == ev.RowID {
-			// maxEAVInt is 2^53, the value the write path rounded 2^53+1 down
-			// to: eav_data persists value_numeric only (transform clears the
-			// exact int64 sidecar for unbound attributes), so the float64 hop
-			// is lossy above the ceiling (#205).
+			// maxEAVInt is 2^53, the largest value eav_data's float64 image
+			// keeps exactly and the largest the write funnel admits (#590);
+			// eav_data persists value_numeric only (transform clears the exact
+			// int64 sidecar for unbound attributes).
 			assertEAVNumeric(t, label+" eav total", rec, 15, maxEAVInt)
 			return
 		}

@@ -35,7 +35,7 @@ func newWidthCensusMock(t *testing.T, census *pgxmock.Rows) pgxmock.PgxPoolIface
 	mock := newSchemaConsistencyMock(t, attrCensusRows())
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, e\.row_id, e\.array_indices, e\.value_numeric::text`).
 		WithArgs(int16(100), int16(2), "-2147483648", "2147483647",
-			int16(100), int16(3), "-9223372036854775808", "9223372036854775807").
+			int16(100), int16(3), "-9007199254740992", "9007199254740992").
 		WillReturnRows(census)
 	return mock
 }
@@ -110,19 +110,19 @@ func TestValidateSchemaConsistencyReportsWidthCandidatesWithoutCutover(t *testin
 }
 
 // TestValidateSchemaConsistencyFailsBigIntOutOfContract: a bigint value past
-// int64 diverges on every DuckDB leg, never-exported rows included, and a
-// re-flush cannot repair it, so it fails even without a cutover and is never
-// requeued.
+// 2^53 was rounded on the write (#590) and one past int64 diverges on every
+// DuckDB leg, never-exported rows included; a re-flush cannot repair either,
+// so the class fails even without a cutover and is never requeued.
 func TestValidateSchemaConsistencyFailsBigIntOutOfContract(t *testing.T) {
 	mock := newWidthCensusMock(t, widthCensusRows().
-		AddRow(int16(100), int16(3), widthRowA, "", "9223372036854775808", true, int64(0)))
+		AddRow(int16(100), int16(3), widthRowA, "", "9007199254740994", true, int64(0)))
 
 	var out strings.Builder
 	err := newWidthValidator(t, mock, &out, widthAuditOptions{requeue: true}).run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
 		t.Fatalf("expected one bigint failure, got %v", err)
 	}
-	want := "bigint EAV values outside int64 or non-integral in eav_data_dev: schema=contact schema_id=100 attr_id=3 attribute=big declared=bigint"
+	want := "bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=contact schema_id=100 attr_id=3 attribute=big declared=bigint"
 	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "requeued") {
 		t.Fatalf("output missing %q or requeued a bigint row, got %q", want, got)
 	}

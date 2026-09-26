@@ -50,7 +50,9 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		if record.ValueNumeric == nil {
 			return nil, nil
 		}
-		return int64(*record.ValueNumeric), nil
+		// A persisted image (eav_data, a double_* column) converts back
+		// only when it names an int64 (#590, bigint_image.go).
+		return int64FromBigintImage(*record.ValueNumeric)
 
 	case forma.ValueTypeNumeric:
 		if record.ValueText != nil {

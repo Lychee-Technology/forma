@@ -10,7 +10,10 @@
 // parquet never recovers either, so the federated route serves the damaged
 // copy while the OLTP route reads the true value. Declared bigint still
 // projects at BIGINT on every DuckDB leg, so its out-of-contract values
-// diverge whether or not they were ever exported.
+// diverge whether or not they were ever exported. Its contract is the range
+// the float64 image eav_data keeps exactly, [-2^53, 2^53] (#590): a value
+// stored past that was rounded on the write and reads back as the rounded
+// value on every route, so the census reports it too.
 package widthaudit
 
 import (
@@ -108,9 +111,15 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 	return targets
 }
 
+// maxBigintImage is the largest magnitude the float64 image of an EAV-only
+// bigint keeps exactly; the write funnel admits exactly this range for
+// eav_data (transform.checkBigintImageFit, #590).
+const maxBigintImage = 1 << 53
+
 // integerBounds is the inclusive range of an integer width as exact NUMERIC
-// text. It matches the write funnel's fit rule (transform.checkIntegerFit),
-// which also rejects non-integral values.
+// text. It matches the write funnel's fit rule (transform.checkIntegerFit
+// for smallint/integer, transform.checkBigintImageFit for bigint), which
+// also rejects non-integral values.
 func integerBounds(vt forma.ValueType) (lo, hi string, ok bool) {
 	switch vt {
 	case forma.ValueTypeSmallInt:
@@ -118,7 +127,7 @@ func integerBounds(vt forma.ValueType) (lo, hi string, ok bool) {
 	case forma.ValueTypeInteger:
 		return strconv.Itoa(math.MinInt32), strconv.Itoa(math.MaxInt32), true
 	case forma.ValueTypeBigInt:
-		return strconv.FormatInt(math.MinInt64, 10), strconv.FormatInt(math.MaxInt64, 10), true
+		return strconv.Itoa(-maxBigintImage), strconv.Itoa(maxBigintImage), true
 	}
 	return "", "", false
 }

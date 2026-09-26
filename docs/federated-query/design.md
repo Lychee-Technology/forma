@@ -920,10 +920,13 @@ applied on both sides:
 * **Write side**: the EAV write funnel rejects numeric-family values that do
   not fit the declared integer type — out of range or non-integral for
   `smallint`/`integer`/`bigint` — as user-facing invalid input. A `bigint`
-  is judged by the float64 image the row stores, so an int64 whose image is
-  2^63 (from 2^63−512 up) is refused as well (#612). `numeric`
-  stays unconstrained (its float64 ceiling is #205). Main-column-bound write
-  fidelity is tracked separately (#459).
+  is judged by the float64 image the row stores, which is exact only within
+  ±2^53, so an EAV-only `bigint` admits exactly
+  `[-9007199254740992, 9007199254740992]` (#590; #612 had refused only the
+  int64s whose image is 2^63, from 2^63−512 up). `numeric` stays
+  unconstrained (its float64 ceiling is #205). Main-column-bound write
+  fidelity is tracked separately (#459); a `bigint` bound to a `double_*`
+  column takes the same ±2^53 rule, a `bigint_*` column keeps the full int64.
 * **Projection**: EAV-only `integer`/`smallint` project by **storage width** —
   `TRY_CAST(value_numeric AS DOUBLE)`, exactly like the `numeric` class — on
   every DuckDB surface (hot EAV pivot, list elements, CDC parquet export, cold
@@ -1010,8 +1013,9 @@ promote the mixed widths losslessly, and the NULLs are unrecoverable from
 parquet alone. `validate-schema-consistency` finds the affected rows and
 `--requeue-stale-width-exports` re-queues them for a re-flush from PG (#501;
 see `docs/schema-consistency-migration.md`). Declared bigint still projects at
-BIGINT, so a bigint value past int64 diverges on every DuckDB leg; the same
-census reports it for a rewrite.
+BIGINT, so a bigint value past int64 diverges on every DuckDB leg, and the
+OLTP read refuses it as a consistency error (#590); the same census reports
+it, together with every stored bigint past ±2^53, for a rewrite.
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.

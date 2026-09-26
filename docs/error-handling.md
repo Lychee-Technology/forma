@@ -601,21 +601,30 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
 - EAV-only attribute: the destination is the declared `valueType`.
   `smallint`/`integer`/`bigint` must be integral and inside the type's
   range; `numeric` is unconstrained (#205 owns its float64 ceiling).
-  `eav_data` keeps only the float64 image, so a `bigint` is also judged by
-  that image (#612). An int64 from `9223372036854775296` (2^63−512) up has
-  the image 2^63, past int64, and is refused, although it fits the declared
-  type.
+  `eav_data` keeps only the float64 image of a `bigint`, which is exact only
+  within ±2^53, so an unbound `bigint` (list items included) admits exactly
+  `[-9007199254740992, 9007199254740992]` (#590; #612 had refused only the
+  slice from 2^63−512 up, whose image is 2^63). `9007199254740993` is refused
+  with a message naming the value, the destination, the image it would be
+  stored as and the allowed range; before #590 it was stored as
+  `9007199254740992` and read back as that on every route.
 - Column-bound attribute: the declared type **and** the column's own width
-  (`double_*` is unconstrained; #205 owns the float64 ceiling, so
-  `bigint`→`double_01` rounds above 2^53 rather than refusing, but it refuses
-  an image past int64 as the EAV destination does).
+  (`double_*` keeps only the float64 image, so `bigint`→`double_01` admits the
+  same ±2^53 as the EAV destination, #590; a `bigint_*` column keeps the
+  exact int64 and admits the full range).
   `numeric`→`integer_01` refuses `1.5` and `3e9`; `integer`→`smallint_01`
   refuses `40000`. Before #459 these wrapped (`int16(40000) = -25536`) into
   `entity_main`. The width check judges the slot the store actually writes:
   a declared `bigint` carries an exact int64 sidecar and admits the full
-  int64 range, while a `numeric` value is stored from its float64 image, so
-  `numeric`→`bigint_01` refuses `9223372036854775807` (its image is 2^63,
-  which does not fit).
+  int64 range into a `bigint_*` column, while a `numeric` value is stored
+  from its float64 image, so `numeric`→`bigint_01` refuses
+  `9223372036854775807` (its image is 2^63, which does not fit).
+- On the read side a stored `bigint` image (`eav_data`, `double_*`) that is
+  not a whole number or lies outside int64 is a read-path consistency error
+  naming the attribute and row (#590), not a value made up by `int64()`
+  (which wraps platform-dependently). A whole image inside int64, including
+  one past 2^53 written before #590, still reads as the stored value; the
+  #501 census names such rows.
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never

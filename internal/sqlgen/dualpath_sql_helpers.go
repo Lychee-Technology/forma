@@ -142,8 +142,9 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		// A bigint predicate above 2^53 — legal column state since #205 —
 		// compares exactly instead of riding a rounded float64. Fractional
 		// literals keep float64, the numeric family's storage contract.
-		// EAV-only bigints round at write (2^53 ceiling), so exact binds above
-		// it miss on every tier alike — tier parity preserved.
+		// EAV-only bigints are refused past 2^53 at write (#590; they used
+		// to be stored rounded), so exact binds above it miss on every tier
+		// alike — tier parity preserved.
 		//
 		// integer/smallint joined this arm in #355 purely to end the binder
 		// divergence: it changes no query result. Since #384 their operand
