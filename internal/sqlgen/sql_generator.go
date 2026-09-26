@@ -2,40 +2,48 @@ package sqlgen
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
+	"github.com/lychee-technology/forma/internal/iso8601"
 )
 
-// parseDateValue parses a date value string and converts it based on storage encoding.
-// Supports both ISO 8601 format strings and Unix millisecond timestamps.
-// Returns the parsed value ready for SQL query based on the column encoding.
-func parseDateValue(valStr string, meta forma.AttributeMetadata) (any, error) {
+// parseDateValue parses a date filter literal (RFC3339 or unix millis) and
+// converts it to the Go value bound against the attribute's storage. attr
+// names the attribute in the refusal an iso8601 binding can raise.
+func parseDateValue(attr, valStr string, meta forma.AttributeMetadata) (any, error) {
 	parsedTime, err := conditionexpr.ParseRFC3339OrUnixMs(valStr)
 	if err != nil {
 		return nil, err
 	}
-
-	// Convert based on storage encoding
-	if meta.ColumnBinding != nil {
-		encoding := meta.ColumnBinding.Encoding
-		switch encoding {
-		case forma.MainColumnEncodingUnixMs:
-			// Return Unix milliseconds as int64 for bigint column
-			return parsedTime.UnixMilli(), nil
-		case forma.MainColumnEncodingISO8601:
-			// Return ISO 8601 string for text column
-			return parsedTime.Format(time.RFC3339), nil
-		}
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
+		// The text column holds the canonical image; the literal must be
+		// that image or it compares against nothing the store ever wrote.
+		return iso8601FilterImage(attr, valStr, parsedTime.UnixMilli(), meta)
 	}
-
-	// Default: return as time.Time for EAV storage (stored as unix ms in value_numeric)
+	// unix_ms, the bigint default and the EAV value_numeric slot are all
+	// exact epoch millis.
 	return parsedTime.UnixMilli(), nil
 }
 
-func ParseDateValue(valStr string, meta forma.AttributeMetadata) (any, error) {
-	return parseDateValue(valStr, meta)
+// iso8601FilterImage renders a filter literal on an iso8601-bound column as
+// the canonical stored image, through iso8601.Image, the same function the
+// write funnel renders through, so an offset literal, a unix-ms literal and
+// a Z literal naming one instant all bind one string, independent of the
+// process zone (#588). Before this the literal was the RFC3339 rendering of
+// the parsed time: the offset was kept, a unix-ms literal rendered in the
+// server's zone, and a fraction was dropped, so the Postgres route compared
+// a string the store never wrote while DuckDB compared the exact instant. A
+// literal the image cannot hold (off a whole second, or outside the
+// four-digit year) is refused as invalid input on both routes:
+// normalizeDuckPayload applies the same function to its epoch-ms operand.
+func iso8601FilterImage(attr, literal string, ms int64, meta forma.AttributeMetadata) (string, error) {
+	image, rule := iso8601.Image(ms)
+	if rule != "" {
+		return "", forma.InvalidInputf("%s filter value %s for '%s' cannot be compared against main column %s with encoding %s, which %s",
+			meta.ValueType, literal, attr, meta.ColumnBinding.ColumnName, forma.MainColumnEncodingISO8601, rule)
+	}
+	return image, nil
 }
 
 // SQLGenerator converts parsed conditions into SQL fragments and argument lists.

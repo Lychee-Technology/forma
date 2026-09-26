@@ -109,21 +109,6 @@ func TestBuildDuckClause_OR_AllNonPushable_Returns1_0(t *testing.T) {
 	require.Equal(t, "1=0", clause)
 }
 
-// Migrated from the retired TestConvertDateValueForQuery (#140): ParseDateValue
-// must convert a UnixMs literal to an RFC3339 string for ISO8601-encoded
-// columns, and reject non-date input.
-func TestParseDateValue_ISO8601EncodingFromUnixMs(t *testing.T) {
-	meta := forma.AttributeMetadata{
-		ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingISO8601},
-	}
-	val, err := ParseDateValue("1700000000000", meta)
-	require.NoError(t, err)
-	require.Equal(t, time.UnixMilli(1700000000000).Format(time.RFC3339), val)
-
-	_, err = ParseDateValue("not-a-date", meta)
-	require.Error(t, err)
-}
-
 // An unregistered filter attribute must never fold onto a column the visible
 // CTE projects (#512). ParquetAttrColumn is lossy, so "created.at" would
 // otherwise render as created_at and silently filter on the creation

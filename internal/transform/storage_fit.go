@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -170,7 +171,7 @@ func checkISO8601Fit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainCo
 		return fmt.Errorf("%s %w and cannot be stored in main column %s with encoding %s",
 			vt, err, col, forma.MainColumnEncodingISO8601)
 	}
-	_, rule := iso8601Rendering(ms)
+	_, rule := iso8601.Image(ms)
 	if rule == "" {
 		return nil
 	}

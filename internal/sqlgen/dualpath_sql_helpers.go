@@ -40,7 +40,7 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 		}
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		parsedValue, err := parseDateValue(valStr, meta)
+		parsedValue, err := parseDateValue(attr, valStr, meta)
 		if err != nil {
 			return nil, fmt.Errorf("invalid date value for '%s': %w", attr, err)
 		}

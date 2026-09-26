@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -458,8 +459,8 @@ func TestISO8601_BypassSlotIsRefused(t *testing.T) {
 			"encoding iso8601 cannot hold a slot in main column text_02: value %s " + describe + " names no epoch millisecond instant"
 	}
 	yearRule := func(instant string) (string, string) {
-		return "datetime value %s (" + instant + ") cannot be stored in main column text_02 with encoding iso8601, which " + string(iso8601KeepsFourDigitYear),
-			"encoding iso8601 " + string(iso8601KeepsFourDigitYear) + " and cannot hold value %s in main column text_02"
+		return "datetime value %s (" + instant + ") cannot be stored in main column text_02 with encoding iso8601, which " + string(iso8601.KeepsFourDigitYear),
+			"encoding iso8601 " + string(iso8601.KeepsFourDigitYear) + " and cannot hold value %s in main column text_02"
 	}
 	notWhole, beyond := "(not a whole number of epoch milliseconds)", "(beyond any epoch millisecond instant)"
 	cases := []struct {
