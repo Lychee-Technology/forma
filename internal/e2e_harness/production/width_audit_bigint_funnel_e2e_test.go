@@ -27,7 +27,10 @@ import (
 // literal reaches the funnel. What it accepts, the census must never flag;
 // what it refuses is a 400 that names the value's float64 image; and a
 // stored image past 2^53 (a row from before this change) is what the census
-// reports, while the OLTP read still returns the value the table holds.
+// reports, while the OLTP read still returns the value the table holds. The
+// funnel judges the literal, not its image: a fraction whose image is the
+// whole 2^53 is refused as non-integral, and an exponent spelling of 2^53+1
+// is refused as that value (#590 review).
 func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -44,6 +47,7 @@ func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 		{"9223372036854775807", "9223372036854775808"},
 		{"9223372036854775296", "9223372036854775808"},
 		{"1000000000000000000", "1000000000000000000"},
+		{"9.007199254740993e15", "9007199254740992"},
 	} {
 		status, body := postWideTotal(t, srv.URL, wide.Name, tc.lit)
 		if status != http.StatusBadRequest || !strings.Contains(body, "float64 image "+tc.image) ||
@@ -52,8 +56,15 @@ func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 				tc.lit, status, body, http.StatusBadRequest, tc.image)
 		}
 	}
+	for _, lit := range []string{"9007199254740991.5", "-9007199254740991.5", "4503599627370496.5"} {
+		status, body := postWideTotal(t, srv.URL, wide.Name, lit)
+		want := "non-integral value " + lit + " does not fit declared type bigint"
+		if status != http.StatusBadRequest || !strings.Contains(body, want) {
+			t.Fatalf("create total=%s: status %d body %s, want %d naming %q", lit, status, body, http.StatusBadRequest, want)
+		}
+	}
 	accepted := map[string]string{}
-	for _, lit := range []string{"9007199254740992", "-9007199254740992", "9007199254740991"} {
+	for _, lit := range []string{"9007199254740992", "-9007199254740992", "9007199254740991", "9.007199254740992e15"} {
 		status, body := postWideTotal(t, srv.URL, wide.Name, lit)
 		if status != http.StatusCreated {
 			t.Fatalf("create total=%s: status %d body %s, want %d", lit, status, body, http.StatusCreated)

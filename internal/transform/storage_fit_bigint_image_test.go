@@ -73,6 +73,10 @@ func TestCheckStorageFit_BigintImageDestinationParity(t *testing.T) {
 		int64(maxBigintImage) - 1, int64(-maxBigintImage), int64(-maxBigintImage) - 1,
 		float64(-maxBigintImage), math.Ldexp(-1, 63), math.Ldexp(1, 63),
 		0, -1, int64(42), "42",
+		// Spellings whose float64 image is whole and inside the range while
+		// the literal is not the image (#590 review).
+		json.Number("9007199254740991.5"), json.Number("9.007199254740993e15"),
+		json.Number("9.007199254740992e15"), "9007199254740993.000",
 	}
 	for _, dest := range bigintImageDestinations {
 		for _, value := range values {
@@ -139,6 +143,72 @@ func TestCheckStorageFit_BigintImageBoundaryMessage(t *testing.T) {
 			require.Contains(t, msg, "bigint value 1000000000000000000 does not fit")
 		})
 	}
+}
+
+// The funnel judges a declared integer on the literal, not on its float64
+// image (#590 review). Past 2^52 the image is always whole, so a fractional
+// literal there (9007199254740991.5 has the image 2^53) used to pass the
+// slot check and be stored as the image; and an exponent spelling of an
+// integer past 2^53 (9.007199254740993e15) lost its exact sidecar and was
+// admitted as 2^53 on the image destinations, and stored rounded on a
+// bigint column. Every destination and every declared integer type judges
+// the same way.
+func TestPopulateTypedValue_IntegerJudgedOnTheLiteral(t *testing.T) {
+	bigintColumn := boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault)
+	destinations := append(bigintImageDestinations, struct {
+		name    string
+		meta    forma.AttributeMetadata
+		indices string
+	}{"bigint column", bigintColumn, ""})
+
+	for _, dest := range destinations {
+		t.Run(dest.name, func(t *testing.T) {
+			for _, lit := range []any{json.Number("9007199254740991.5"), "9007199254740991.5", json.Number("-9007199254740991.5"), json.Number("9.0071992547409915e15")} {
+				rec := model.EAVRecord{ArrayIndices: dest.indices}
+				_, err := populateTypedValue(&rec, "n", lit, dest.meta)
+				require.ErrorIs(t, err, forma.ErrInvalidInput, "%v", lit)
+				msg, published := forma.ResolvePublicMessage(err)
+				require.True(t, published)
+				require.Contains(t, msg, fmt.Sprintf("non-integral value %v does not fit declared type bigint (whole number required)", lit))
+				require.Nil(t, rec.ValueInt64)
+			}
+
+			exact := model.EAVRecord{ArrayIndices: dest.indices}
+			_, err := populateTypedValue(&exact, "n", json.Number("9.007199254740992e15"), dest.meta)
+			require.NoError(t, err)
+			require.NotNil(t, exact.ValueInt64)
+			require.Equal(t, int64(maxBigintImage), *exact.ValueInt64)
+
+			past := model.EAVRecord{ArrayIndices: dest.indices}
+			_, err = populateTypedValue(&past, "n", json.Number("9.007199254740993e15"), dest.meta)
+			if dest.meta.ColumnBinding != nil && dest.meta.ColumnBinding.ColumnName == forma.MainColumnBigint01 {
+				require.NoError(t, err, "a bigint column stores the exact sidecar")
+				require.NotNil(t, past.ValueInt64)
+				require.Equal(t, int64(maxBigintImage)+1, *past.ValueInt64)
+				return
+			}
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, _ := forma.ResolvePublicMessage(err)
+			require.Contains(t, msg, "bigint value 9007199254740993 does not fit")
+			require.Contains(t, msg, "float64 image 9007199254740992")
+		})
+	}
+
+	// The narrower declared types judge the literal the same way; their
+	// float64 image would have failed on range instead, so the refusal
+	// names the fraction the caller sent rather than a rounded image.
+	for _, vt := range []forma.ValueType{forma.ValueTypeSmallInt, forma.ValueTypeInteger} {
+		var rec model.EAVRecord
+		_, err := populateTypedValue(&rec, "n", json.Number("9007199254740991.5"), forma.AttributeMetadata{AttributeID: 9, ValueType: vt})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, _ := forma.ResolvePublicMessage(err)
+		require.Contains(t, msg, "non-integral value 9007199254740991.5 does not fit declared type "+string(vt))
+	}
+	// numeric keeps float64 semantics: the literal's value is its image.
+	var num model.EAVRecord
+	_, err := populateTypedValue(&num, "n", json.Number("9007199254740991.5"), forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeNumeric})
+	require.NoError(t, err)
+	require.Equal(t, float64(maxBigintImage), *num.ValueNumeric)
 }
 
 // A bigint column persists the exact sidecar, so the image rule does not

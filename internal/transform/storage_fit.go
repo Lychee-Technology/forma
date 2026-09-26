@@ -164,6 +164,16 @@ func errEncodingMismatch(vt forma.ValueType, binding *forma.MainColumnBinding, r
 		vt, binding.ColumnName, binding.ColumnType(), binding.Encoding, renders)
 }
 
+// isIntegerType reports the declared types that carry a width and require a
+// whole number: the numeric family without numeric itself.
+func isIntegerType(vt forma.ValueType) bool {
+	switch vt {
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return true
+	}
+	return false
+}
+
 // isNumericFamily reports the valueTypes whose magnitude is caller-chosen, so
 // checkStorageFit runs the declared-type width check on them (numeric itself
 // passes that check unconstrained, #205). date/datetime and bool also occupy
@@ -199,7 +209,9 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // enforced (#384, #459). numeric stays unconstrained (#205 owns its float64
 // ceiling). The caller guarantees attr.ValueNumeric is non-nil.
 //
-// The check judges the slot the store consumes, not the caller's raw value:
+// The check judges the slot the store consumes, not the caller's raw value
+// (judgeDeclaredInteger has already judged a declared integer type on the
+// raw value, since past 2^52 a fractional literal has a whole image):
 // storeNumericRendering's bigint arm (default and unix_ms encodings) writes
 // the exact ValueInt64 sidecar when it is populated and int64(*ValueNumeric)
 // otherwise, and populateTypedValue fills the sidecar for declared bigint and
@@ -227,7 +239,7 @@ func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) err
 		// (a valid value); math.MaxInt64 rounds up to exactly 2^63, so >=
 		// rejects the first float64 that no longer fits.
 		if numVal != math.Trunc(numVal) {
-			return errNonIntegralFor(numVal, dest)
+			return errNonIntegral(formatFitValue(numVal), dest)
 		}
 		if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
 			return fmt.Errorf("value %s out of range for %s (allowed [-9223372036854775808, 9223372036854775807])", formatFitValue(numVal), dest)
@@ -237,7 +249,7 @@ func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) err
 		return nil
 	}
 	if numVal != math.Trunc(numVal) {
-		return errNonIntegralFor(numVal, dest)
+		return errNonIntegral(formatFitValue(numVal), dest)
 	}
 	if numVal < lo || numVal > hi {
 		return fmt.Errorf("value %s out of range for %s (allowed [%.0f, %.0f])", formatFitValue(numVal), dest, lo, hi)
@@ -245,8 +257,12 @@ func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) err
 	return nil
 }
 
-func errNonIntegralFor(numVal float64, dest string) error {
-	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", formatFitValue(numVal), dest)
+// errNonIntegral refuses a non-integer for an integer destination. value is
+// the spelling the message names: the caller's literal when the funnel
+// judged the literal (judgeDeclaredInteger), the slot's image when it judged
+// the slot (checkIntegerFit).
+func errNonIntegral(value, dest string) error {
+	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", value, dest)
 }
 
 // formatFitValue renders the rejected value in plain digits for the

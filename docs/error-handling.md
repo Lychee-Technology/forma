@@ -607,7 +607,13 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   slice from 2^63−512 up, whose image is 2^63). `9007199254740993` is refused
   with a message naming the value, the destination, the image it would be
   stored as and the allowed range; before #590 it was stored as
-  `9007199254740992` and read back as that on every route.
+  `9007199254740992` and read back as that on every route. A declared
+  integer type is judged on the literal the caller sent, not on its float64
+  image, which is always whole past 2^52: `9007199254740991.5` is refused as
+  `non-integral value 9007199254740991.5 does not fit declared type bigint`
+  although its image is the admitted `9007199254740992`, and
+  `9.007199254740993e15` is the exact `9007199254740993`, refused by the image
+  rule on the image destinations and stored exactly in a `bigint_*` column.
 - Column-bound attribute: the declared type **and** the column's own width
   (`double_*` keeps only the float64 image, so `bigint`→`double_01` admits the
   same ±2^53 as the EAV destination, #590; a `bigint_*` column keeps the

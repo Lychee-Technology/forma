@@ -17,7 +17,9 @@ import (
 // literal in a generated corpus of ParseFloat-accepted spellings it asserts the
 // parser's verdict and value match exact rational arithmetic: a literal is
 // integral-in-range exactly when big.Rat says its denominator is 1 and its
-// numerator fits int64.
+// numerator fits int64, and otherwise the parser says which way it misses,
+// fractional (denominator not 1) or an integer outside int64 (#590 review:
+// the write funnel refuses a fractional bigint literal on that verdict).
 //
 // big.Rat is imported here and nowhere else in the package: the point of the
 // rewrite is that production never pays for it, while tests keep its
@@ -26,13 +28,15 @@ func TestParseIntegralInt64AgainstRat(t *testing.T) {
 	corpus := integralCorpus()
 	require.Greater(t, len(corpus), 3000, "corpus too small to be a meaningful oracle")
 
-	integral, fractional := assertParserMatchesRat(t, corpus)
-	t.Logf("differential corpus: %d literals (%d integral, %d not)", len(corpus), integral, fractional)
+	split := assertParserMatchesRat(t, corpus)
+	t.Logf("differential corpus: %d literals (%d integral, %d fractional, %d out of range)",
+		len(corpus), split.integral, split.fractional, split.outOfRange)
 
-	// A corpus that drifted to all-fractional (or all-integral) would still
-	// pass every assertion above while testing only half the decision.
-	require.Greater(t, integral, 500, "corpus exercises too few integral literals")
-	require.Greater(t, fractional, 500, "corpus exercises too few non-integral literals")
+	// A corpus that drifted to one verdict would still pass every assertion
+	// above while testing only part of the decision.
+	require.Greater(t, split.integral, 500, "corpus exercises too few integral literals")
+	require.Greater(t, split.fractional, 500, "corpus exercises too few fractional literals")
+	require.Greater(t, split.outOfRange, 100, "corpus exercises too few out-of-range integers")
 }
 
 // TestParseWideHexIntegralInt64AgainstRat isolates the 17..18-hex-digit
@@ -48,17 +52,26 @@ func TestParseWideHexIntegralInt64AgainstRat(t *testing.T) {
 		corpus = append(corpus, randomWideHexLiteral(rng))
 	}
 
-	integral, fractional := assertParserMatchesRat(t, corpus)
-	t.Logf("wide-hex corpus: %d literals (%d integral, %d not)", len(corpus), integral, fractional)
-	require.Greater(t, integral, 200, "wide-hex generator no longer reaches the accepting path")
-	require.Greater(t, fractional, 200, "wide-hex generator no longer reaches the rejecting path")
+	split := assertParserMatchesRat(t, corpus)
+	t.Logf("wide-hex corpus: %d literals (%d integral, %d fractional, %d out of range)",
+		len(corpus), split.integral, split.fractional, split.outOfRange)
+	require.Greater(t, split.integral, 200, "wide-hex generator no longer reaches the accepting path")
+	require.Greater(t, split.fractional, 100, "wide-hex generator no longer reaches the fractional path")
+	require.Greater(t, split.outOfRange, 100, "wide-hex generator no longer reaches the out-of-range path")
+}
+
+// verdictSplit counts the corpus by the verdict the reference arithmetic
+// assigns, so callers can assert their own coverage.
+type verdictSplit struct {
+	integral, fractional, outOfRange int
 }
 
 // assertParserMatchesRat compares the parser's verdict and value against exact
 // rational arithmetic for every literal, returning the split so callers can
 // assert their own coverage.
-func assertParserMatchesRat(t *testing.T, corpus []string) (integral, fractional int) {
+func assertParserMatchesRat(t *testing.T, corpus []string) verdictSplit {
 	t.Helper()
+	var split verdictSplit
 	for _, s := range corpus {
 		// The parser is only ever reached behind the ParseFloat gate, so a
 		// literal ParseFloat rejects would be testing a contract that does not
@@ -68,18 +81,25 @@ func assertParserMatchesRat(t *testing.T, corpus []string) (integral, fractional
 
 		r, ok := new(big.Rat).SetString(s)
 		require.True(t, ok, "reference could not read %q", s)
-		wantOK := r.IsInt() && r.Num().IsInt64()
-
-		gotVal, gotOK := parseIntegralInt64(s)
-		require.Equal(t, wantOK, gotOK, "integrality verdict for %q (exact value %s)", s, r.RatString())
-		if wantOK {
-			require.Equal(t, r.Num().Int64(), gotVal, "exact value for %q", s)
-			integral++
-			continue
+		want := IntegralityFractional
+		switch {
+		case r.IsInt() && r.Num().IsInt64():
+			want = IntegralityExact
+			split.integral++
+		case r.IsInt():
+			want = IntegralityOutOfRange
+			split.outOfRange++
+		default:
+			split.fractional++
 		}
-		fractional++
+
+		gotVal, got := parseIntegralInt64(s)
+		require.Equal(t, want, got, "integrality verdict for %q (exact value %s)", s, r.RatString())
+		if want == IntegralityExact {
+			require.Equal(t, r.Num().Int64(), gotVal, "exact value for %q", s)
+		}
 	}
-	return integral, fractional
+	return split
 }
 
 // integralCorpus builds the differential corpus: curated boundary spellings

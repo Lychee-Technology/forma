@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -41,10 +42,8 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 			return handleConversionError(err)
 		}
 		attr.ValueNumeric = &numVal
-		if meta.ValueType == forma.ValueTypeBigInt {
-			if exact, ok := numutil.Int64Exact(value); ok {
-				attr.ValueInt64 = &exact
-			}
+		if err := judgeDeclaredInteger(attr, value, meta.ValueType); err != nil {
+			return handleConversionError(err)
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		timeVal, err := toTime(value)
@@ -105,12 +104,54 @@ func toString(value any) (string, error) {
 	}
 }
 
+// judgeDeclaredInteger judges a value declared smallint, integer or bigint on
+// its own representation (numutil.ClassifyInt64), not on the float64 image
+// populateTypedValue has just taken of it. Past 2^52 that image is always
+// whole, so 9007199254740991.5 has the image 2^53 and the slot check
+// (checkIntegerFit) alone admitted it as that value (#590 review); a
+// fractional input is refused here, naming the literal the caller sent. A
+// bigint that denotes an exact int64 fills the ValueInt64 sidecar in every
+// spelling ParseFloat accepts: "9.007199254740993e15" is 9007199254740993,
+// which the image alone reports as 2^53, and the sidecar is what a bigint_*
+// column stores and what the image destinations judge (bigint_image.go). An
+// integer outside int64, and a whole float, leave only the image, which
+// checkStorageFit bounds. numeric is not judged: its value is its float64
+// image (#205).
+func judgeDeclaredInteger(attr *model.EAVRecord, value any, vt forma.ValueType) error {
+	if !isIntegerType(vt) {
+		return nil
+	}
+	exact, verdict := numutil.ClassifyInt64(value)
+	switch verdict {
+	case numutil.IntegralityFractional:
+		return errNonIntegral(inputSpelling(value, *attr.ValueNumeric), "declared type "+string(vt))
+	case numutil.IntegralityExact:
+		if vt == forma.ValueTypeBigInt {
+			attr.ValueInt64 = &exact
+		}
+	}
+	return nil
+}
+
+// inputSpelling renders a refused value the way the caller sent it: a
+// textual literal verbatim, anything else as its float64 image.
+func inputSpelling(value any, image float64) string {
+	switch v := value.(type) {
+	case json.Number:
+		return string(v)
+	case string:
+		return v
+	default:
+		return formatFitValue(image)
+	}
+}
+
 // toInt64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
 // shapes ToEAVRecord tolerates for numeric values (#282): every pointer type
 // toFloat64ForEAV dereferences must also reach the exact path, or the value
 // silently rides the float64 fallback and rounds above 2^53. *float32 is
-// deliberately absent: numutil.Int64Exact has no float32 case, and a float32
-// cannot hold an integer wide enough to need the exact sidecar.
+// deliberately absent: a float32 cannot hold an integer wide enough to need
+// the exact sidecar.
 func toInt64ExactForEAV(value any) (int64, bool) {
 	switch p := value.(type) {
 	case *int64:

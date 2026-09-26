@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -106,6 +107,7 @@ func TestEAVBigintRoundTripIntegration(t *testing.T) {
 		int64(9007199254740993), "9007199254740993", int64(-9007199254740993),
 		int64(math.MaxInt64), "9223372036854775807", int64(math.MinInt64), "-9223372036854775808",
 		int64(9223372036854775295), float64(1e18), math.Ldexp(1, 54),
+		json.Number("9.007199254740993e15"), // the exact 2^53+1, whose image is 2^53 (#590 review)
 	}
 
 	for _, numeric := range []bool{false, true} {
@@ -159,6 +161,12 @@ func TestEAVBigintRoundTripIntegration(t *testing.T) {
 			require.Equal(t, v, got["amount"])
 		})
 	}
+	t.Run("bigint column exponent spelling stores the exact value", func(t *testing.T) {
+		rowID := f.write(t, map[string]any{"amount": json.Number("9.007199254740993e15")})
+		got, err := f.read(t, rowID)
+		require.NoError(t, err)
+		require.Equal(t, int64(9007199254740993), got["amount"])
+	})
 }
 
 // The read side of a stored image (#590): a whole image inside int64 that
