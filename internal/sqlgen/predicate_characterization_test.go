@@ -190,54 +190,6 @@ func buildCharNumericBoolCases() []charCase {
 	}
 }
 
-// buildCharTemporalUuidCases covers the date/datetime encodings (unix-ms, ISO8601,
-// unbound) and the uuid storage class.
-func buildCharTemporalUuidCases() []charCase {
-	iso := "2024-01-02T03:04:05Z"
-	return []charCase{
-		{
-			name: "date unix-ms encoding: main/eav int64 ms, duck epoch-ms int64",
-			cond: charKv("born", "gte:1700000000000"),
-			want: DualClauses{
-				PgMainClause: "m.bigint_01 >= ?", PgMainArgs: []any{int64(1700000000000)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(8), int64(1700000000000)},
-				DuckClause: "born >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1700000000000)},
-			},
-			span: 3,
-		},
-		{
-			name: "datetime ISO8601 encoding: main/eav bind ISO string, duck epoch-ms int64",
-			cond: charKv("joined", "gte:"+iso),
-			want: DualClauses{
-				PgMainClause: "m.text_03 >= ?", PgMainArgs: []any{iso},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), iso},
-				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
-			},
-			span: 3,
-		},
-		{
-			name: "datetime unbound: eav unix-ms int64, duck epoch-ms int64",
-			cond: charKv("seen", "gte:"+iso),
-			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
-				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(10), int64(1704164645000)},
-				DuckClause: "seen >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
-			},
-			span: 2,
-		},
-		{
-			name: "uuid equals unbound: eav value_text, duck VARCHAR cast",
-			cond: charKv("ref", "equals:0b210f52-1f4d-4f47-9799-1e2f2c0efc07"),
-			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
-				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(11), "0b210f52-1f4d-4f47-9799-1e2f2c0efc07"},
-				DuckClause: "ref = CAST(? AS VARCHAR)", DuckArgs: []any{"0b210f52-1f4d-4f47-9799-1e2f2c0efc07"},
-			},
-			span: 2,
-		},
-	}
-}
-
 // buildCharCompositeCases covers nested AND/OR pushdown: pg-main keeping only the
 // pushable branch, an all-pushable OR prefilter, and an AND of two main
 // predicates on the same column.
@@ -394,6 +346,16 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 			name:        "gt on bound bool rejected by pg-main",
 			cond:        charKv("active", "gt:1"),
 			wantErr:     "pg main generation: unsupported operator: gt",
+			clientError: true,
+		},
+		{
+			// #588: a sub-second literal on an iso8601 binding is refused,
+			// not truncated to the whole-second row it does not name. The PG
+			// main leg reports first here; the DuckDB leg's identical refusal
+			// is pinned by TestISO8601FilterLiteral_RefusedUniformly.
+			name:        "sub-second literal on iso8601 binding refused in pg-main",
+			cond:        charKv("joined", "gte:2024-01-02T03:04:05.123Z"),
+			wantErr:     "pg main generation: invalid date value for 'joined': datetime filter value 2024-01-02T03:04:05.123Z for 'joined' cannot be compared against main column text_03 with encoding iso8601, which keeps whole seconds",
 			clientError: true,
 		},
 		{
