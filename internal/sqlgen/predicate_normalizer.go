@@ -439,7 +439,7 @@ func normalizeDuckPayload(
 	if err != nil {
 		return DuckLeafPayload{Err: err}
 	}
-	if err := checkDuckISO8601Operand(kv.Attr, lenientSQL.Value, rawParam, meta, hasMeta); err != nil {
+	if err := checkDuckISO8601Operand(kv.Attr, lenientSQL.Value, rawParam, valueType, meta, hasMeta); err != nil {
 		return DuckLeafPayload{Err: err}
 	}
 	param, err := ToDuckDBParam(rawParam, valueType)
@@ -453,16 +453,19 @@ func normalizeDuckPayload(
 // rule to the DuckDB leaf's epoch-ms operand when the attribute is bound with
 // that encoding. The DuckDB compare is exact, so without this the refusal the
 // Postgres binders raise (parseDateValue → iso8601FilterImage) would be "400
-// on Postgres, exact compare on DuckDB" for the same literal (#588). A
-// date operand is always an int64 here (parseDuckDBRawParam); any other
-// shape belongs to another type and is not this rule's business.
-func checkDuckISO8601Operand(attr, literal string, rawParam any, meta forma.AttributeMetadata, hasMeta bool) error {
+// on Postgres, exact compare on DuckDB" for the same literal (#588). Only a
+// date/datetime operand is judged: parseDuckDBRawParam binds it as int64
+// epoch millis, the shape iso8601.Image takes.
+func checkDuckISO8601Operand(attr, literal string, rawParam any, valueType forma.ValueType, meta forma.AttributeMetadata, hasMeta bool) error {
+	if valueType != forma.ValueTypeDate && valueType != forma.ValueTypeDateTime {
+		return nil
+	}
 	if !hasMeta || meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
 		return nil
 	}
 	ms, ok := rawParam.(int64)
 	if !ok {
-		return nil
+		return fmt.Errorf("date operand for '%s' bound as %T, expected int64 epoch millis", attr, rawParam)
 	}
 	_, err := iso8601FilterImage(attr, literal, ms, meta)
 	return err
